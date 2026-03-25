@@ -1,0 +1,82 @@
+{
+  "name": "yiyu-thinktank-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "益语智库自用平台桌面版",
+  "type": "module",
+  "main": "build/main/main.js",
+  "scripts": {
+    "dev:renderer": "vite --host 127.0.0.1 --port 4173 --strictPort",
+    "dev:main": "tsc -p tsconfig.node.json --watch",
+    "dev:electron": "wait-on tcp:4173 build/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.node.json",
+    "build:mac-icon": "python3 scripts/generate-mac-icon.py",
+    "build": "npm run build:main && npm run build:renderer",
+    "test:calendar": "npm run build:main && node --test build/shared/calendar.test.js",
+    "backend:test": "cd backend && uv run pytest",
+    "cloud:test": "cd cloud_backend && uv run pytest",
+    "start": "node scripts/open-installed-app.mjs",
+    "start:raw": "node scripts/run-local-electron.mjs .",
+    "install:mac-local": "node scripts/install-mac-app.mjs",
+    "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && electron-builder --mac dmg zip",
+    "dist:mac-local": "npm run build && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false"
+  },
+  "build": {
+    "appId": "com.yiyu.selfworkbench",
+    "productName": "益语智库自用平台",
+    "asar": false,
+    "directories": {
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "build/**/*",
+      "dist/renderer/**/*",
+      "backend/**/*",
+      "!backend/.venv{,/**}",
+      "!backend/tests{,/**}",
+      "!backend/.pytest_cache{,/**}",
+      "!backend/**/__pycache__{,/**}",
+      "!backend/**/*.pyc",
+      "cloud_backend/**/*",
+      "!cloud_backend/.venv{,/**}",
+      "!cloud_backend/tests{,/**}",
+      "!cloud_backend/.pytest_cache{,/**}",
+      "!cloud_backend/**/__pycache__{,/**}",
+      "!cloud_backend/**/*.pyc",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "forceCodeSigning": true,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  },
+  "dependencies": {
+    "lucide-react": "^0.511.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.16",
+    "@types/node": "^22.13.9",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^37.6.1",
+    "electron-builder": "^26.0.12",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.1",
+    "wait-on": "^8.0.3"
+  }
+}

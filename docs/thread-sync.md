@@ -1,0 +1,7006 @@
+# Thread Sync
+
+## 2026-03-25 Session 003 日志与放行收口
+- 线程目标：把虚拟项目组 Session 001–003 的讨论记录整理成连续可读版本，并把 Session 003 的状态从“规格收敛中”推进到“实现前放行”。
+- 已读文件：
+  - `docs/virtual-team/working-session-log.md`
+  - `docs/virtual-team/active-plan.md`
+  - `docs/session-003/task-calendar-p0-implementation-spec.md`
+  - `docs/session-003/task-calendar-judgment-contract.md`
+  - `docs/session-003/task-calendar-release-gates.md`
+  - `memory/2026-03-25.md`
+- 发现的问题：
+  - `working-session-log.md` 之前混入了重复的 Session 002/003 片段，讨论过程虽然存在，但不可读也不可追溯。
+  - `active-plan.md` 仍停在 `Loop 5: Spec Convergence`，和 Session 003 三份文档已经齐备的现实状态不一致。
+- 已做文档修改：
+  - `docs/virtual-team/working-session-log.md`
+  - `docs/virtual-team/active-plan.md`
+- 当前实现：
+  - `working-session-log.md` 已重写成干净的三段结构，只保留连续的 Session 001 / 002 / 003 讨论过程。
+  - Session 003 已明确记录：
+    - 不新增 judgment 真源
+    - 先收 contract，再收首屏骨架
+    - `TaskOrgContextPanel` heuristics 退为 fallback
+    - 下一轮固定按“共用 judgment 装配入口 -> 降级映射 -> fallback 退场 -> 首屏状态条/降级区/动作卡 -> calendar signal bar”进入实现
+  - `active-plan.md` 已升级到 `Active Plan v5`
+  - 当前 phase 已推进到：
+    - `Session 003 + Loop 6: Implementation Ready`
+
+## 2026-03-25 Session 003 方向纠偏：最小必需输入 + 尽力计算
+- 线程目标：把 Session 003 从“缺失项前置”纠偏成“先用最小必需输入集尽力计算，再在边界区提示缺口”。
+- 用户明确要求：
+  - 不要每次打开先看到一大堆缺失项
+  - 不要因为少了附件/会议/其他增强资料就说“无法干活”
+  - 先发挥 AI 的综合计算能力
+  - 默认围绕以下最小必需输入集工作：
+    - 项目/业务核心资料与介绍
+    - 部门/机构季度主要计划
+    - 任务标题
+    - 任务说明
+    - 任务复盘资料
+- 已做文档修改：
+  - `docs/session-003/task-calendar-p0-implementation-spec.md`
+  - `docs/session-003/task-calendar-judgment-contract.md`
+  - `docs/virtual-team/active-plan.md`
+  - `docs/virtual-team/working-session-log.md`
+- 当前实现口径更新为：
+  - 先给保守判断，再提示边界
+  - 会议、附件、支持请求、事件线记忆、日历时间块都属于增强输入，默认不构成“无法干活”
+  - `needs_input` 只在最小必需输入集本身过弱时触发
+  - 原先的“未纳入判断 / 降级处理区”改成紧凑的 `判断依据与边界区`，默认不喧宾夺主
+
+## 2026-03-25 模板填写：里程碑字段补抓官网内部页
+- 线程目标：继续收口“重大事件/里程碑”字段长期落成 `【待确认】` 的问题，并让模板填写链在本地资料不足时优先补官网内部页，而不是只靠官网首页或外部搜索。
+- 已读文件：
+  - `backend/app/services/template_fill.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_template_fill.py`
+  - `backend/tests/test_ai_template_fill.py`
+  - `docs/thread-sync.md`
+- 发现的问题：
+  - 里程碑字段本地资料弱时，链路确实会尝试联网补充，但之前只拿官网首页和 DuckDuckGo HTML 结果。
+  - 对 `中国基金会发展论坛` 这类机构，DuckDuckGo 对 `2008年重大事件/里程碑` 基本返回空结果。
+  - 真实官网 `cfforum.org.cn` 的内部页 `category/20`（关于我们）、`category/21`（大事记）、`category/26`（年度盛会）本身就包含年份和里程碑线索，但旧链路不会主动跟进这些内部页。
+- 最小改动范围：
+  - 只修改模板填写里的公网补充逻辑
+  - 不改 UI，不改客户工作台其他模块
+- 已做代码修改：
+  - `backend/app/services/template_fill.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_template_fill.py`
+- 当前实现：
+  - 新增官网内部页关键词规则；里程碑字段会优先抓取同域名下的 `大事记 / 关于我们 / 我们是谁 / 年度盛会 / 年会 / 发展历程` 页面。
+  - `fetch_template_fill_web_sources(...)` 现在先抓官网首页，再从首页提取同域链接并补抓对应内部页摘要。
+  - 本地资料仍然优先；官网内部页只是本地资料不足时追加的弱证据。
+  - `build_template_fill_context(...)` 已把字段类型传给联网补充逻辑，确保不同字段类型走不同的官网页面策略。
+- 验证：
+  - `python3 -m py_compile backend/app/services/template_fill.py backend/app/main.py`
+  - `cd backend && uv run pytest tests/test_template_fill.py tests/test_ai_template_fill.py -q` 通过，`30 passed`
+  - 真实站点验证：`fetch_template_fill_web_sources(...)` 已能返回
+    - `https://cfforum.org.cn`
+    - `https://cfforum.org.cn/category/21`
+    - `https://cfforum.org.cn/category/20`
+    作为官方来源
+
+## 2026-03-24 模板填写：重复启动导致 0% 假卡住
+- 线程目标：定位“模板填写面板一直显示 0% 正在处理中”的真实原因，并在不重做 UI 的前提下消掉这类假卡住。
+- 已读文件：
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/App.tsx`
+- 发现的问题：
+  - 模板填写执行器是单线程；同一时间只能跑一个模板填写任务。
+  - 当前启动路由每次点击都会新建一条 `queued` run。
+  - 当用户对同一模板重复点击“填写模板”时，前端会切到新建的 0% 队列 run，看起来像卡住，但实际上上一条 run 仍在后台继续处理。
+- 最小改动范围：
+  - 只改模板填写启动路由
+  - 不扩 UI，不调整模板填写主流程
+- 已做代码修改：
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+- 当前实现：
+  - 若同一客户、同一模板已经存在 `queued/running` run，则直接复用该 run，不再新建 0% 队列任务。
+  - 若同一客户已有其他模板填写任务正在运行，则直接返回明确错误，避免继续排队制造假进度。
+  - 前端模板填写弹层对 `queued` 状态单独显示为“排队等待开始”，并明确提示“前面的任务完成后会自动开始，无需重复点击或刷新”。
+  - `queued` 状态不再沿用“正在识别模板字段”的文案，避免看起来像死机。
+- 验证：
+  - 新增 API 级测试：同模板重复启动时会返回已有 `running` run。
+
+## 2026-03-24 模板填写：里程碑字段公共名称修正
+- 线程目标：继续定位为什么“重大事件/里程碑”字段在有公网公开信息时仍落成 `【待确认】`，并确保官网/公开网页补充在模板填写里真正生效，且始终本地资料优先。
+- 已读文件：
+  - `backend/app/services/template_fill.py`
+  - `backend/tests/test_template_fill.py`
+  - `backend/app/main.py`
+- 发现的问题：
+  - 最新真实 run 表明里程碑字段并没有被跳过；本地证据强的年份能填，弱的年份会保守待确认。
+  - 当前真正失效的是公网补充：`webSourceTitles` 仍为空。
+  - 根因进一步收窄到 `derive_template_fill_public_names(...)`：它会被标题里的“基金会实务工具包 / 组织架构图”这类泛候选提前污染，导致官网域名推断和 web query 跑偏。
+- 最小改动范围：
+  - 只收紧模板填写链里的公开名称提取规则
+  - 不扩 UI，不改与模板填写无关的客户工作台逻辑
+- 已做代码修改：
+  - `backend/app/services/template_fill.py`
+  - `backend/tests/test_template_fill.py`
+- 当前实现：
+  - 新增 `_is_generic_template_fill_public_name_candidate(...)`
+  - `derive_template_fill_public_names(...)` 先吸收 snippet 中的正式机构名称，再补充标题候选
+  - 会主动过滤“工具包 / 架构图 / 报告 / 方案 / 手册”等泛标题候选，避免把真实机构名称顶掉
+- 验证：
+  - 待执行：`uv run pytest tests/test_template_fill.py tests/test_ai_template_fill.py -q`
+  - 通过后继续重新打包安装版并复跑真实模板填写
+
+## 2026-03-24 模板填写：里程碑字段与官网补充增强
+- 线程目标：定位“成立以来重大事件/里程碑”字段长期落成 `【待确认】` 的原因，并在模板填写链中补上官网/公开网页的弱证据补充，仍保持本地资料优先。
+- 已读文件：
+  - `backend/app/main.py`
+  - `backend/app/services/template_fill.py`
+  - `backend/tests/test_template_fill.py`
+- 发现的问题：
+  - 里程碑字段虽然已识别为 `structural_summary` 并改成了年份事件检索 query，但联网补充实际仍然可能拿不到结果。
+  - 根因不是“没接官网搜索”，而是公开名称/官网域名推断会被本地资料里的邮箱域名带偏，例如 `mishuchu@cfforum.org` 会压过更准确的 `cfforum.org.cn`，导致 `site:` 查询和官网首页抓取都失焦。
+- 最小改动范围：
+  - 只改 `template_fill.py` 的公开域名推断评分
+  - 只补一条模板单测
+- 已做代码修改：
+  - `backend/app/services/template_fill.py`
+  - `backend/tests/test_template_fill.py`
+- 当前实现：
+  - 官网/网站上下文会显著加权
+  - `@domain` 这类邮箱型域名会降权
+  - 当同根域同时存在 `.org` 和 `.org.cn` 时，优先 `.org.cn`
+  - 会议/协作类通用平台域名（如 `meeting.dingtalk.com`、`feishu`）不再被误判为客户官网
+  - 里程碑字段继续保持“本地资料优先；本地不足时才补官网/公开网页弱证据”
+
+## 2026-03-24 学习导航回滚后白屏根因修复
+- 线程目标：定位并修复学习导航 UI 回滚后正式安装版白屏。
+- 发现的问题：
+  - 错误页明确报 `ReferenceError: ShieldAlert is not defined`
+  - 回滚旧壳时恢复了风险提示卡里的 `<ShieldAlert />`，但 `GrowthLearningWorkbench.tsx` 顶部 `lucide-react` import 列表没有把 `ShieldAlert` 一起补回
+  - 因此不是数据链问题，而是渲染期漏导入导致 React 在启动阶段直接崩溃
+- 已做代码修改：
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 当前实现：
+  - 已补回 `ShieldAlert` 的 import
+  - `npm run build:renderer` 已重新通过
+
+## 2026-03-24 正式安装版白屏根因修复
+- 线程目标：定位并修复“源码已更新但正式安装版仍加载旧前端资产，启动后白屏”的安装链问题。
+- 已读文件：
+  - `package.json`
+  - `scripts/install-mac-app.mjs`
+  - `scripts/open-installed-app.mjs`
+  - `src/renderer/App.tsx`
+  - `runtime/logs/electron-launch.log`
+- 发现的问题：
+  - 当前源码 `App.tsx` 已包含 `setExpandedTaskIds` 状态定义，但正式安装版仍加载旧资产 `index-CHKoDl7U.js`
+  - `dist/renderer` 已更新到新资产，但 `dist/mac-arm64` 和 `~/Applications/益语智库自用平台.app` 仍停在旧版本
+  - 安装链没有在复制前停掉正在运行的正式 app，也没有在安装后校验实际 renderer 资产是否和源包一致
+- 最小改动范围：
+  - 只修改 `scripts/install-mac-app.mjs`
+  - 安装前退出正式 app
+  - 安装后比对源包和安装包的 `index-*.js` 主资产文件名
+- 已做代码修改：
+  - `scripts/install-mac-app.mjs`
+- 当前实现：
+  - 安装前会先退出 `益语智库自用平台`
+  - 安装后若 renderer 主资产不一致会直接失败，不再静默留下旧包
+
+## 2026-03-23 客户工作台回答产物入库
+- 线程目标：把“建立向量 / 导出文件”从旧的内部链路，收成用户可见、可检索、可继续使用的正式文档产物
+- 已读文件：
+  - `backend/app/main.py`
+  - `backend/app/services/knowledge_base.py`
+  - `backend/app/services/knowledge_v2.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+- 发现的问题：
+  - `建立向量` 以前只写隐藏的 surrogate markdown 到向量目录，用户看不到，也不会作为正式项目文档出现
+  - `导出文件` 以前虽然会生成 docx，但没有回写 `documents / knowledge_documents / v2_documents`
+- 最小改动范围：
+  - 在 `main.py` 新增“回答产物入库”辅助函数
+  - 保留旧的 memory surrogate 生成，用于兼容旧检索
+  - 额外生成用户可见的 Markdown / Word，并正式入库
+  - 前端只改成功提示，不扩 UI
+- 已做代码修改：
+  - `backend/app/main.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+- 当前实现：
+  - `建立向量` 现在会：
+    - 保留旧的隐藏 memory surrogate
+    - 另外在客户 `战略陪伴` 目录下生成一份可见的机读 Markdown
+    - 自动登记到 `documents` 并走 `ingest_document_knowledge(...)`
+  - `导出文件` 现在会：
+    - 在客户 `战略陪伴` 目录下生成 Word
+    - 自动登记到 `documents` 并走 `ingest_document_knowledge(...)`
+  - 两个按钮都会在前端明确提示生成的文件名
+
+## 2026-03-22 我的成长全局打通线程
+- 线程名称：growth-global-context-phase1
+- 负责范围：把“我的成长”从周复盘驱动的独立模块升级成全局行为镜像层；本轮优先接通任务/日历、客户工作台、战略陪伴到成长的上下文证据、账本回链、总览呼应关系和学习推荐上下文，不扩团队成长面板
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+  - `backend/app/main.py` 中客户工作台主问答和知识检索逻辑
+- 当前状态：
+  - 已完成现状勘查：任务、周复盘、客户工作台、战略陪伴都已经提供成长所需的项目、事件线、记忆和战略上下文字段，但成长侧还没把这些上下文当成一等证据字段。
+  - 本轮准备扩展 `HandbookEntry / XpLedgerEntry / LearningRecommendation / GrowthOverview / BadgeProgress` 的上下文信息，并新增任务、会议、战略动作的成长候选信号采集。
+  - 前端将同步把成长总览改成“本周成长总览 / 成长呼应关系 / 本周成长来自哪里 / 待放大的成长 / 下一步最值得补的动作”，并移除 demo fallback 驱动的假数据展示。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - `main.py` 需要做最小接线，但必须严格控制在成长信号和响应增强范围内，避免碰客户工作台主链。
+  - 当前部分事件线/会议/战略字段仍是启发式归因，第一阶段先做到可解释和可回链，不承诺全量智能判定。
+
+### Phase 4：P0 收口增强
+- 负责范围：继续收口“我的成长”全局打通剩余 P0，优先完成战略线稳定回链、双层能力图谱、待放大成长的一键闭环动作、勋章已接通/待接通分层，不扩团队成长面板
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+  - `backend/app/main.py` 中客户工作台主问答和知识检索逻辑
+- 当前状态：
+  - 现状已确认：战略呼应仍靠文本高亮，能力图谱仍是“当前 vs 30天前”，待放大成长只有说明没有闭环动作，勋章未区分“模块未接通”和“真实未达成”。
+  - 本轮将优先把这些点补成真实可解释、可点击、可继续操作的状态。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 战略线目前还没有独立持久化 ID，本轮会先做稳定衍生 ID，避免触碰战略快照存储结构。
+  - 待放大成长的一键动作会基于当前真实上下文做启发式跳转和快捷入口，先解决“能补动作”，不在本轮强推新后端表。
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- 当前状态：
+  - 已把战略线从“文本高亮”升级成“稳定衍生 ID + 精确高亮优先，文本回退兜底”：
+    - `StrategicLineRecord` / `StrategicLine` 新增 `id`
+    - 战略陪伴快照现在会为每条战略线生成稳定 ID
+    - 成长上下文会优先回链到 `clientId:strategicLineId`
+    - 战略陪伴页已按 `line.id` 精确高亮对应战略线
+  - 已把项目模块 / 流程接入成长上下文与统一跳转：
+    - 任务候选成长、周复盘成长上下文会带 `project_module / project_flow` 链接
+    - 从成长页点击模块 / 流程可切到任务侧并优先定位相关任务
+  - 已把“待放大成长”从提示态升级成可闭环态：
+    - 支持 `回到源对象`
+    - 支持 `去补复盘`
+    - 支持 `沉淀为经验`
+    - 当前以真实上下文 + 启发式缺口原因为依据，不增加新填表
+  - 已把能力图谱升级成双层视角：
+    - 雷达图现在显示 `当前水平 / 30天前 / 当前项目要求`
+    - 右侧明细卡显示 `当前 vs 要求` 与差距原因
+    - 对可回链的差距来源，优先打开真实对象；其余回到账本
+  - 已把勋章墙升级成“已接通 / 待接通 / 全部”分层：
+    - 依赖未接通模块的勋章会明确标注“当前依赖模块未接通”
+    - 详情页会解释“灰色不等于没做到，而是系统尚未稳定识别”
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 战略线 ID 当前是稳定衍生 ID，不是独立持久化实体 ID；已足够支撑当前跳转和高亮，但未来如果战略线进入独立 CRUD，需要改为正式主键。
+  - 模块 / 流程跳转当前仍以“定位相关任务”作为最小可用落点，还没有独立的项目模块 / 流程详情页。
+  - 待放大成长的快捷动作当前是前端闭环入口，不会直接写后端“已处理”状态；它解决的是“去做下一步”，不是“替你自动确认完成”。
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py backend/app/services/growth_engine.py` 通过
+  - `cd yiyu-thinktank-workbench && PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`7 passed`
+  - `cd yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+### Phase 6：状态流与硬证据收口
+- 负责范围：继续完成“我的成长”全局打通剩余硬缺口；本轮优先补 `pending capture` 持久化状态流、成长资产硬证据详情、项目模块/流程详情接口，并让前端抽屉切到真实结构
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+  - `backend/app/main.py` 中客户工作台主问答和知识检索逻辑
+- 当前状态：
+  - 已确认剩余最关键缺口有三条：
+    - `pendingCaptures` 还没有真正的处理状态，提醒会反复出现，无法收口
+    - 经验资产详情还缺“首次来源 / 最近复用 / 对应 XP 记录”的硬证据链
+    - 模块 / 流程 / 战略线虽然已经能显示和部分跳转，但详情读口还不完整
+  - 本轮会先补后端状态流与详情接口，再把前端抽屉和总览切到新结构
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - `pending capture` 状态流需要新增表，但只落在 growth 侧，不应影响主任务链
+  - 资产硬证据链会复用现有 `growth_signal_events / growth_validation_events / xp_ledger`，本轮以“可追溯”优先，不重构整套手册存储
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+- 当前状态：
+  - 已补 `pending capture` 持久化状态流：
+    - 新增 `growth_capture_states`
+    - 成长总览只展示 `open` 态候选
+    - 前端支持 `标记已处理 / 先不提醒 / 沉淀为经验`
+    - 从待放大信号直接沉淀为经验后，会自动回写 `promoted` 状态并绑定新手册条目
+  - 已把经验资产升级成硬证据详情：
+    - 资产详情新增 `首次来源与适用场景`
+    - 新增 `最近复用场景`
+    - 每次复用会保留来源对象、上下文摘要、回链对象和新增 XP
+  - 已把模块 / 流程详情接口接入成长跳转：
+    - 点击 `project_module / project_flow` 上下文时，前端会优先读取正式详情接口
+    - 再定位到相关任务，提示不再只是静态文案
+  - 已补 `onCreateEntry` 返回真实条目，避免“沉淀为经验”后无法把 `pending capture` 正确升级为 `promoted`
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - `project_module / project_flow` 当前仍以“详情接口 + 相关任务定位”作为最小可用落点，还没有独立详情页
+  - 学习导航里的 `机器人协作 / 节点清单 / 原理说明` 仍是前端推导对象，不是独立后端实体
+- 验证结果：
+  - `python3 -m py_compile backend/app/db.py backend/app/models.py backend/app/services/growth_engine.py backend/app/main.py` 通过
+  - `cd yiyu-thinktank-workbench && PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`9 passed`
+  - `cd yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-22 全局底座统一改造 Phase 1 线程
+- 线程名称：memory-foundation-phase1-v1
+- 负责范围：按“组织笔记 + 事件线记忆”双主轴，把统一记忆底座先落到本地 backend；本轮只做底座表、统一写回、最小查询接口和最小现有响应读口，不改大页面结构
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/memory_foundation.py`
+  - `backend/tests/test_api_smoke.py`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/services/knowledge_base.py`
+  - `backend/app/services/knowledge_v2.py`
+  - `cloud_backend/app/main.py`
+  - `src/renderer/App.tsx`
+- 已改文件：
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/memory_foundation.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已新增 4 张底座表：
+    - `organization_notebook_snapshots`
+    - `event_line_memory_snapshots`
+    - `memory_facts`
+    - `clarification_records`
+  - 已新增统一底座服务 `backend/app/services/memory_foundation.py`，当前已支持：
+    - `organization notebook` 快照刷新
+    - `event line memory` 快照刷新
+    - `memory_facts` 写入/复用
+    - 澄清创建与回答拆解写回
+    - 任务最小背景提示生成
+  - 已接入的 Phase 1 写回点：
+    - DNA 更新
+    - 文档导入高置信摘要写回
+    - 任务创建/更新
+    - 会议发布
+    - 任务附件上传
+    - 周复盘提交
+  - 已开放的 Phase 1 查询接口：
+    - `GET /api/v1/clients/{client_id}/notebook`
+    - `GET /api/v1/clients/{client_id}/memory-status`
+    - `GET /api/v1/event-lines/{event_line_id}/memory`
+    - `POST /api/v1/clarifications`
+    - `POST /api/v1/clarifications/{id}/answer`
+  - 已扩展的最小读口：
+    - `ClientWorkspaceResponse` 新增 `notebookSummary / memoryStatus`
+    - `EventLineDetailRecord` 新增 `memorySnapshot / predictionReadiness / clarificationNeeds`
+    - `TaskRecord` 新增 `memoryHints / backgroundReadiness / linkedFactsPreview`
+  - 已开始接入 Phase 2 的最小消费点：
+    - 客户工作台问答现在会额外读取 `organization notebook + event line memory + memory_facts`
+    - 这条 `background lane` 只进入聊天上下文和 `retrievalSummary`，不进入 `evidence_json / answer_citations`
+  - 本轮顺手修掉了周复盘老链路里两个历史隐性依赖：
+    - `_event_line_snapshot_context()` 不再偷用全局 `state.db`
+    - 该函数也不再依赖 `create_app()` 内部局部 builder
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 会议写回当前仍只稳定写 client 级事实；会议和 event line 的自动对应关系还没补
+  - 客户分析运行 -> `memory_facts` 的高置信写回，本轮还没接
+  - 任务卡/周判断/战略陪伴还没正式切成“事件线记忆优先”
+  - 当前聊天 background lane 还没有显式 UI 展示，只体现在回答生成上下文和 `retrievalSummary`
+- 验证结果：
+  - `python3 -m py_compile backend/app/db.py backend/app/models.py backend/app/main.py backend/app/services/memory_foundation.py backend/tests/test_api_smoke.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'memory_foundation_phase1_builds_notebook_event_line_and_status or clarification_answer_writes_memory_facts or task_attachment_is_archived_to_workspace_and_event_line or client_dna_documents_are_saved_and_prioritized_in_chat_context'` 通过，`4 passed`
+  - 放宽后的导入回归已收口：
+    - `knowledge_v2` 兼容写入现在会补 `file_reclass_events`
+    - 工作区读取 `documentCards` 时已透传 `data_dir`，`surrogateMdPath` 不再为空
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'workspace_import_builds_document_cards_and_knowledge_status or memory_foundation_phase1_builds_notebook_event_line_and_status or clarification_answer_writes_memory_facts or task_attachment_is_archived_to_workspace_and_event_line or client_dna_documents_are_saved_and_prioritized_in_chat_context'` 通过，`5 passed`
+  - 客户工作台问答 background lane 已验证：
+    - 统一记忆背景会出现在聊天上下文中，且排在 DNA 背景之前
+    - `retrievalSummary.memoryBackgroundUsed = true`
+    - 证据链仍只来自知识检索命中
+
+## 2026-03-22 战略陪伴经营判断总览 V3 线程
+- 线程名称：strategic-cockpit-v3-ceo-readmodel
+- 负责范围：把 `strategic_accompaniment` 从前端大拼装收口成“只读为主、CEO 轻量确认、自动生成优先”的经营判断总览页；本轮同时落后端正式读模型、CEO 判权和最小确认写回
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/services/knowledge_base.py`
+  - `backend/app/services/knowledge_v2.py`
+  - `cloud_backend/app/main.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 非战略陪伴链路逻辑
+- 当前状态：
+  - 已确认当前战略陪伴页仍主要依赖前端 `buildDashboardModel(...)` 拼装，尚无正式 `strategic-cockpit` 读模型，也没有 CEO 轻量确认快照。
+  - 已确认 CEO 判权可直接复用现有 `auth/me` 和 `settings/org-model/profile`，其中 `organization.leaderUserId` 是第一版唯一编辑依据，不使用 `admin` 兜底。
+  - 本轮将把产品语言统一从 `一味药` 改成 `核心突破`，并把首页主舞台固定收口到：本周一句话、主矛盾、核心突破、本期聚焦、组织健康、两周变化点。
+
+## 2026-03-22 模板自动填写链路提质线程
+- 线程名称：template-fill-reviewability-hardening-v1
+- 负责范围：只收口客户工作台里的 `docx` 模板自动填写链路，不扩到无关客户工作台 UI 或知识库主链
+- 已读文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `backend/app/services/template_fill.py`
+  - `backend/app/models.py`
+  - `backend/tests/test_template_fill.py`
+  - `backend/tests/test_ai_template_fill.py`
+  - `/Users/guyuanyuan/Downloads/CFFC_慈善组织党建评级资料表_填写版.docx`
+- 发现的问题：
+  - 当前模板链已经能识别字段、检索资料、批量生成、回写 Word，但不同字段几乎共用同一套写法策略，容易把正式填表写成“GPT 代填说明”。
+  - 精确事实、党建治理、数量字段、附件/材料字段没有明确分策略，导致“待核验”“弱推断”“过程性提示语”混在一起。
+  - 当前返回结构只有 `label/value/status/evidenceTitles`，缺少字段类型、值性质、复核说明、后续补件建议。
+  - 样稿里的模板字段识别还存在小问题：括号标签被截断、年份里程碑字段被识别成裸年份、附件清单没有被单独提取。
+- 建议的最小改动范围：
+  - 在 `template_fill.py` 增加字段类型推断、值性质推断、附件清单提取等轻量 helper。
+  - 在 `ai.py` 的模板填写 prompt 和清洗逻辑里按字段类型加保守约束，不重做整套生成器。
+  - 在 `main.py` 里把字段类型、置信度、basisSummary、followUpQuestion、suggestedSources 等复核元数据写回现有 run/response。
+  - 在现有测试基础上补“精确事实保守输出 / 党建治理禁过程提示 / 数量字段禁模糊冒充 / 缺失字段给出补件方向”。
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/template_fill.py`
+  - `backend/app/services/ai.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_template_fill.py`
+  - `backend/tests/test_ai_template_fill.py`
+  - `src/shared/types.ts`
+- 当前状态：
+  - 已新增字段类型枚举思路并落到现有链路：`precise_fact / structural_summary / governance_mechanism / quantitative_result / attachment_material / general`
+  - 已把模板字段返回结构扩成“可复核字段记录”：字段现在带 `fieldType / valueKind / confidence / basisSummary / followUpQuestion / suggestedSources / reviewRequired`
+  - AI 模板填写 prompt 已按字段类型加规则，精确事实、党建治理、数量字段会更保守；过程性提示语会被清洗或降为 `【待确认】`
+  - 已补附件清单提取和年份里程碑字段命名纠偏；样稿里的 `2020/2025` 现会识别成 `2020年重大事件/里程碑` 这类标签
+  - 当前仍然没有单独做“正式填表稿 / 复核草稿”双模式 UI，这次先把后端结果结构和保守策略打牢
+- 是否已做代码修改：已做
+- 风险点：
+  - 当前字段分类仍是启发式关键词，不是训练好的分类器；对极少数边界字段仍可能需要继续微调。
+  - `ClientTemplateFillRunRecord` 轮询时会顺手读取模板里的附件清单，单次成本不高，但如果后续高频大模板轮询增多，可考虑缓存。
+- 验证结果：
+  - `python3 -m py_compile backend/app/services/template_fill.py backend/app/services/ai.py backend/app/models.py backend/app/main.py` 通过
+  - `cd backend && uv run pytest tests/test_template_fill.py tests/test_ai_template_fill.py -q` 通过，`10 passed`
+  - `npm run build:renderer` 通过
+
+## 2026-03-22 AI 超级助理澄清与记忆系统规格线程
+- 线程名称：ai-super-assistant-clarification-memory-spec-v1
+- 负责范围：只把“像总裁助理一样学习资料、任务中澄清、答案沉淀总池、不重复提问”的方案固化成系统规格，不改运行时代码
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/ai-super-assistant-clarification-memory-spec.md`
+- 避开文件：
+  - `src/renderer/App.tsx`
+  - `backend/app/main.py`
+  - `backend/app/services/review_analysis.py`
+  - `cloud_backend/app/main.py`
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/ai-super-assistant-clarification-memory-spec.md`
+- 当前状态：
+  - 已把“超级总裁助理”思路落成正式规格，不再把这件事理解成任务里加一个备注框。
+  - 已明确系统目标是四段链路：
+    - 资料学习
+    - 缺口澄清
+    - 结构化记忆沉淀
+    - 后续复用生成
+  - 已明确新增的核心对象：
+    - `ClarificationRecord`
+    - `Client Memory`
+    - `Person Memory`
+    - `Product Memory`
+    - `Event Line Memory`
+  - 已写死关键交互原则：
+    - AI 可以列 1-5 个短问题
+    - 用户只用一个统一输入框回答
+    - 回答必须拆解并写回对应层级
+    - 问过一次后进入总池，后续不重复发问
+  - 已把“什么时候问、问什么、怎么拆、怎么去重、什么时候重问”写成系统规则，为后续实现澄清池和联系人/产品关系层提供上位设计。
+  - 已补一个更底层的统一原则：每个客户/组织都应该像一个学科一样，拥有一本会持续生长的“业务笔记”。任何功能模块只要捕捉到与该组织相关的新事实，都应该自动回流到这本笔记里，再反哺任务卡、事件线、周总结和风险判断。
+  - 已明确这本“业务笔记”未来要由：
+    - 客户工作台
+    - 联系人画像
+    - 产品关系
+    - 事件线
+    - 会议/附件/决策
+    - 澄清记录
+    共同构成，而不是散落在多个彼此隔离的页面里。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍是规格，还没有实际的 `ClarificationRecord / Person / Product` 数据模型和前台区块
+  - 后续实现时要避免把回答只挂在任务本地备注里，而没有真正写回总池
+- 验证结果：
+  - 文档已创建，可作为后续“AI 澄清层 + 结构化记忆池”实现的上位规格
+
+## 2026-03-22 任务编辑窗口全屏工作台化收口
+- 线程名称：task-editor-workbench-shell-v2
+- 负责范围：只继续收口任务编辑窗口壳层和布局体验，不改任务对象语义与后端接口
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 任务编辑窗口已从“居中窄模态”继续推进成接近全屏的大画布编辑器。
+  - 外壳现在吃满大部分可用视口，不再局限在中间一小块：
+    - 宽度提升到 `min(1840px, 100vw - 24px)` 量级
+    - 高度改成整页可用高度
+  - 主体改成真正的双栏工作台：
+    - 左侧主编辑区独立滚动
+    - 右侧上下文/证据侧栏独立滚动
+    - 右栏单独使用浅蓝工作台底色，与左侧主编辑形成清晰分工
+  - 标题区文案已同步调整，明确“左侧编辑任务，右侧维护项目、事件线和证据”。
+  - 底部动作区继续固定，保证保存/取消不会被长内容推走。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+- 继续收紧任务卡 `AI 洞察` 的表达：不再使用“当前更具体的推进点是 / 主要阻塞是 / 最近已经明确 / 下一步先做”这类解释性前缀，统一压成更短的四类判断卡：`核心判断 / 最大风险 / 可放大点 / 先做什么`。同时把“背景准备度”区块压成 `准备度 + 单条关键提示 + 待补项 + 已关联事实` 的短结构，减少说明书感。
+  - 最新产物：
+    - `dist/renderer/assets/index-Drdtwj4t.js`
+    - `dist/renderer/assets/index-C6nlSvHK.css`
+  - 随后继续推进到右侧抽屉式工作台壳层：
+    - 不再居中展示，而是从右侧展开
+    - 外壳改成 `justify-end + slide-in-from-right`
+    - 桌面端使用右侧大抽屉，保留左侧遮罩背景
+    - 双栏内容结构不变，但整体体验更接近 Plane 的编辑面板而不是传统 modal
+  - 最新产物已刷新为：
+    - `dist/renderer/assets/index-BVjPOC5D.js`
+    - `dist/renderer/assets/index-DZPW2LKT.css`
+
+## 2026-03-22 战略陪伴业务驾驶台落地线程
+- 线程名称：strategic-accompaniment-business-cockpit-v2
+- 负责范围：只落地 `strategic_accompaniment` 页面信息架构升级和第一版周会清单生成体验，优先复用现有客户工作台、任务与周复盘数据，不改客户工作台主问答/知识检索语义
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+  - `src/renderer/App.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `backend/app/services/knowledge_base.py`
+  - `backend/app/services/knowledge_v2.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 主链路逻辑
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+  - `src/renderer/App.tsx`
+  - `backend/app/main.py`
+- 当前状态：
+  - 已完成第一版“业务发展驾驶台”落地。战略陪伴页已从旧的资料混合壳切换成 `汇报 / 分析 / 洞察 / 预测 / 周会清单 / 资产沉淀` 六区结构，并接入现有 `workspace + tasks + reviewDashboard` 数据。
+  - 已补第一版周会清单轻闭环：支持基于现有业务数据生成 `先同步的事实 / 必须澄清的问题 / 必须拍板的事项 / 必须补的资料 / 必须沉淀的资产 / 下周观察点`，并支持复制清单文本、创建会议草稿后继续人工讨论。
+  - 已修复首轮运行时白屏：`lucide-react` 的 `Map` 图标名与 `new Map()` 发生命名冲突，现已改为图标别名 + 显式 `globalThis.Map`，开发版可正常启动。
+  - 已完成第二轮收口：战略陪伴页不再把无背景的零散任务强行升格成洞察/预测；当缺少目标、模块、流程、会议和周判断信号时，会切换为“判断准备度不足”模式，明确提示先补什么。
+  - 已把任务描述权重下沉到任务项目语境生成：以后任务 `desc` 会优先参与 `backgroundSummary / goalSummary / riskSummary / currentFocus / currentBlocker / nextAction / recentProgress` 的构建，不再只让标题主导。
+  - 已更新任务编辑弹窗中的描述提示文案，明确要求补对象背景、合作关系、推进目标和预期结果，方便后续所有分析链路复用。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 第一版周会清单仍是前端即时生成，不含后端持久化对象，也不会自动把讨论结果回填成“业务周判断”。
+  - 现有会议创建接口只能创建草稿，暂时不能把清单条目直接写入议程细项；当前闭环是“创建会议草稿 + 复制清单文本”。
+  - 当前 `git status` 显示上述文件在本地仓库为未跟踪状态，本轮未处理仓库基线问题，只保证实现文件已写入工作区并完成 renderer build 验证。
+- 验证结果：
+  - `npm run build:renderer` 通过
+  - 开发版 Electron 重新启动后通过，启动日志不再出现 `TypeError: Map is not a constructor`
+  - `python3 -m py_compile backend/app/main.py` 通过
+
+## 2026-03-22 资讯情报站追问窗口与快答修复线程
+- 线程名称：topics-chat-panel-and-fast-answer-v1
+
+## 2026-03-22 任务与日历 + 事件线 + 周判断 Action OS 收口线程
+- 线程名称：task-calendar-eventline-weekjudgment-action-os-v1
+- 负责范围：重新审视“任务与日历 + 事件线 + 周判断”主线，把它从任务页优化/周总结美化收口成 `执行痕迹 -> 连续上下文 -> 管理判断 -> 动作闭环` 的行动操作系统方案；本轮先做对象层、视图层、dashboard/drill-down、趋势层的实施计划，不改运行时代码
+- 已读文件：
+  - `tasks/yiyu-thread-tasks-schedule.md`
+  - `docs/event-line-spec.md`
+  - `docs/event-line-week-summary-spec.md`
+  - `docs/calendar-week-context-retrieval-and-prompt-spec.md`
+  - `docs/event-line-implementation-plan.md`
+- 外部参考：
+  - `Plane`
+    - https://github.com/makeplane/plane
+    - https://docs.plane.so/core-concepts/projects/overview
+    - https://docs.plane.so/core-concepts/cycles
+    - https://docs.plane.so/core-concepts/views
+  - `Metabase`
+    - https://github.com/metabase/metabase
+    - https://www.metabase.com/features/drill-through
+- 新增文档：
+  - `docs/action-os-rearchitecture-plan.md`
+- 当前判断：
+  - 当前系统已经具备 Action OS 底座的一半：`sourceType / eventLineId / projectModuleId / projectFlowId` 已基本贯通，事件线、结构化周判断卡、统一附件归档、动作卡闭环都已经存在。
+  - 真正缺的不是新页面，而是四个“收口”动作：
+    - 对象层：把 `businessCategory / currentBlocker / nextAction / recentDecision / evidenceCount` 从推断层和上下文层收成正式主结构
+    - 视图层：把事件线、风险、来源、业务分类做成正式视图，而不是临时筛选
+    - dashboard 层：让周判断第一页的四层卡片全部具备 drill-down target，能点回事件线、任务、会议、支持请求、附件
+    - 趋势层：从“本周判断”进入“连续风险/连续机会判断”
+  - 当前最大现实阻碍不是字段完全缺失，而是：
+    - `businessCategory` 还没成为正式主字段
+    - `evidenceCount` 还没成为任务/事件线/dashboard 共享指标
+    - `currentBlocker / nextAction / recentDecision` 仍更多停留在 project/eventLine context 层
+    - `HierarchyReportCard` 第一屏四层卡已经成形，但 summary/risk/opportunity 还主要停在展示层，缺稳定下钻目标
+  - 本轮给出了一条人工验证链：
+    - `会议 -> 任务(sourceType=meeting) -> 事件线 -> 周判断 -> 动作卡 -> 回写任务/支持/会议`
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 如果继续把 `projectContext` 当主来源，而不把任务和事件线对象再收厚，任务卡和周判断仍会继续趋同
+  - 如果先做更重的“独立事件线中心”而不先做对象/视图/dashboard 收口，会本末倒置
+- 验证结果：
+  - 本轮是方案收口，没有改运行时代码
+- 负责范围：只修资讯情报站右侧情报追问窗口，不碰客户工作台问答主链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/topics/TopicIntelChatPanel.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py` 中客户工作台主问答逻辑
+  - `src/renderer/App.tsx` 的 `client_workspace` 区块
+  - `backend/app/main.py` 中客户工作台相关接口
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/topics/TopicIntelChatPanel.tsx`
+- 当前状态：
+  - 已把资讯情报站追问接口从通用长文聊天链路切到专门的“资讯快答”链路，默认优先在 220 到 420 字内直接回答问题，不再走 180 秒长文推理。
+  - 新快答链路会优先基于当前情报、已有解析和原文摘录回答“它解决什么问题、对谁有用、为什么值钱、会卡在哪”，更贴合资讯站的追问场景。
+  - 前端追问窗口已放大：对话区高度从原来较小的滚动盒改成更高的消息区，并新增自动滚到底，长回答不会再被挤得难看或藏在可视区域下方。
+  - 前端已补 25 秒超时兜底：即便模型偶发卡住，也不会一直停在“思考中”，会给出明确超时提示。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍是整段返回，不是流式 token 级输出；如果后续想让追问更像即时聊天，还需要再补流式渲染。
+  - 这次优化的是资讯站追问链路，其他模块复用的长文聊天链路没有被改动。
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/services/ai.py backend/tests/test_api_smoke.py` 通过
+  - `export YIYU_WORKBENCH_DATA_DIR=$(mktemp -d) && PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "topic_candidate_chat_uses_candidate_context"` 通过，`1 passed`
+  - `npm run build:renderer` 通过
+  - 新 renderer 产物：
+    - `dist/renderer/assets/index-ZXb7ipXq.js`
+    - `dist/renderer/assets/index-D2XBWAsK.css`
+
+## 2026-03-21 资讯情报站大周口径收口线程
+- 线程名称：topics-editorial-tone-product-value-v1
+- 负责范围：只收紧资讯情报站 `topics_management` 的情报分析口径和展示，不碰客户工作台主链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+  - `src/renderer/components/topics/TopicIntelInboxCard.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py` 之外的客户工作台问答逻辑
+  - `backend/app/main.py` 中客户工作台相关接口
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+  - `src/renderer/components/topics/TopicIntelInboxCard.tsx`
+- 当前状态：
+  - 已把“大周前哨判断”的生成提示词收紧成“像产品经理给同事讲价值”，明确要求先讲清楚它解决什么问题、替谁省事、具体省掉哪一步、为什么值钱，再讲局限和继续观察点。
+  - 已对 GitHub 开源项目、工具发布和技术案例增加专门约束：禁止先讲行业趋势，优先回答“这东西到底替谁省事、在哪个场景能用”。
+  - 已补旧缓存自动刷新规则：凡是仍带“背后不仅是”“更折射出”“深层趋势”“专业能力民主化”等宏大评论腔的旧文案，会在再次打开时自动重算成新版口径。
+  - 已在资讯情报站卡片和右侧详情里去掉正文里重复的“大周前哨判断：”前缀，避免标题和正文重复。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 本轮主要是 AI 提示词和缓存刷新规则升级，最终文风仍受原始文章材料和当前模型输出波动影响；极少数内容较薄的文章仍可能生成偏保守的判断。
+  - 当前只对旧式宏大评论腔做了启发式判旧，不是对所有历史文案做一次全量重算。
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/services/ai.py backend/tests/test_api_smoke.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "topic_candidate_insight_extracts_points_reasons_and_practical_uses or topic_candidate_insight_refreshes_stale_editorial_tone"` 通过，`2 passed`
+  - `npm run build:renderer` 通过
+  - 新 renderer 产物：
+    - `dist/renderer/assets/index-BS0jsIh6.js`
+    - `dist/renderer/assets/index-DwMvmdvr.css`
+
+## 2026-03-21 周日历稳定性与空白框选线程
+- 线程名称：week-calendar-stability-and-blank-selection-v1
+- 负责范围：只修周视图两个 bug：
+  - 任意操作后周面板会像横向刷新一样左右滑一下
+  - 框选空白时间段创建任务不稳定或无效
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+- 避开文件：
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - 事件线、周判断、组织模型相关后端逻辑
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+- 当前状态：
+  - 已确认周面板左右“刷一下”的根因不只是视觉问题，而是周 pager 的 `onScroll` 会把任务刷新引发的布局滚动误判成用户横向滑动，随后触发吸附与回正
+  - 现已加上“真实横向手势门槛”：只有近期发生了用户横向滚动手势，周 pager 才会进入吸附结算；普通任务刷新、内容变动不再触发横向刷动
+  - 已确认空白框选创建任务的不稳定根因是 `mouseup` 监听挂载过晚：原先要等一次状态更新和 effect 之后才真正接管拖拽，用户手快时会在监听挂上前就松手
+  - 现已改成在 `mousedown` 当下立即注册 `mousemove / mouseup`，并用 ref 保存实时选择区间，避免竞态丢失
+  - 另外补掉了任务弹窗保存后的共享副作用：周视图中保存任务时，不再调用 `focusCalendarOnTaskDate(...)` 去重置日历聚焦
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 本轮没有改动周视图的业务语义，只是收紧横向滑动触发条件和创建任务的监听时机
+  - 如果后续还要支持鼠标拖拽滚动条切周，需要再补一条非 wheel 的用户手势识别
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+  - 新构建产物：
+    - `dist/renderer/assets/index-idfliXvK.js`
+    - `dist/renderer/assets/index-Czs0is1u.css`
+
+## 2026-03-21 事件线式周判断规格线程
+- 线程名称：event-line-week-summary-spec-v1
+- 负责范围：只把“周总结升级成事件线式总结”的新原则固化成产品规格，不改运行时代码
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/event-line-week-summary-spec.md`
+- 避开文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/*`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/event-line-week-summary-spec.md`
+- 当前状态：
+  - 已把周页面新的目标固定成四层：
+    - `本周关键事件线`
+    - `本周最值得关注的风险`
+    - `本周最值得放大的机会`
+    - `本周建议动作`
+  - 已规定事件线摘要卡的固定五句结构：
+    - 这条线在推进什么
+    - 本周推进到哪
+    - 当前状态
+    - 主要阻碍
+    - 下周最关键变化点
+  - 已把部门负责人视角和 CEO 视角的差异写成硬规则，不再只是文风建议
+  - 已把“每条摘要如何从任务 / 会议 / 支持 / 附件 / 项目背景里自动抽出”的流水线写成可执行规格
+  - 已补统一底层原则：任务上传附件后不能停留在任务局部，而必须自动进入客户 / 项目总文件库，并写入对应事件线证据层，供 AI 后续复用
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这轮仍是规格，不代表现有周判断正文已经切成事件线骨架
+  - 后续实现时要避免再回退成按单条任务或按通用模板写总评
+- 验证结果：
+  - 文档已创建，可作为后续事件线式周判断页面和生成器改造的上位规格
+
+## 2026-03-18 白屏启动修补线程
+- 线程名称：startup-white-screen-hardening-v1
+- 负责范围：只修补主进程渲染页加载壳层，不碰业务模块
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/main/main.ts`
+- 避开文件：
+  - `src/renderer/App.tsx`
+  - `backend/app/main.py`
+  - `cloud_backend/app/main.py`
+  - 任务、客户、成长、情报业务模块
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/main/main.ts`
+- 当前状态：
+  - 已补 `app://renderer/index.html` 协议注册与 HTTP 静态渲染入口的双兜底
+  - 已把窗口改成成功加载后再显示，避免加载失败直接暴露白底窗口
+  - 已为 `loadURL` 失败补出错误页与主进程异常兜底，不再让未处理 Promise rejection 直接落成白屏
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前是启动壳层止血，不代表所有潜在渲染异常都已经根除；如果后续仍白屏，需要继续抓具体 renderer runtime error
+- 验证结果：
+  - `./node_modules/.bin/tsc -p tsconfig.node.json --pretty false` 通过
+  - 重启后日志已确认 `[renderer:did-finish-load] url=http://127.0.0.1:4173/`
+  - 当前启动日志未再出现 `ERR_FAILED (-2) loading 'app://renderer/index.html'`
+
+
+## 2026-03-18 模拟员工命名修正线程
+- 线程名称：sim-employee-rename-v1
+- 负责范围：只修正模拟员工 `user_sim_ruoxi` 的展示姓名，从“若溪”改为“罗茜茜”；同步运行库和种子来源
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `cloud_backend/app/simulation_seed.py`
+  - `cloud_backend/app/task_pressure_seed.py`
+- 避开文件：
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx`
+  - 客户工作台与任务主链路代码
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `cloud_backend/app/simulation_seed.py`
+  - `cloud_backend/app/task_pressure_seed.py`
+- 当前状态：
+  - 已将模拟员工 `user_sim_ruoxi` 的显示名称从“若溪”改为“罗茜茜”
+  - 已同步更新运行中的云端员工库与模拟种子来源，避免后续重新写回旧名字
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前只改展示姓名，保留原 `user_id` 与邮箱 `ruoxi@yiyu-system.com` 不变
+- 验证结果：
+  - 已复核运行库 `employee_accounts` 中 `user_sim_ruoxi` 的 `full_name` 为“罗茜茜”
+  - `rg -n "若溪|ruoxi" cloud_backend docs` 仅剩邮箱 `ruoxi` 与新的罗茜茜配置
+
+
+## 2026-03-18 飞书个人绑定与会议发起线程
+- 线程名称：feishu-user-binding-meeting-v1
+- 负责范围：先做“登录后绑定飞书账号”，再做“绑定后按当前登录用户身份优先发起飞书会议”；只改飞书绑定、会议投递和相关设置入口
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/app/services/feishu.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/main/preload.ts`
+  - `src/main/main.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 业务区块
+  - `tasks`、`topics_management`、`growth_handbook` 的业务逻辑
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/app/services/feishu.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/main/preload.ts`
+  - `src/main/main.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+- 当前状态：
+  - 已新增当前登录用户的飞书个人绑定接口、授权回调和本地持久化记录
+  - 已在系统设置总览补出“飞书账号绑定”面板，支持发起绑定、刷新状态、解除绑定
+  - 已把任务与日历里的“发起飞书会议”收口为：优先按当前登录员工绑定的 `open_id` 发送；若未绑定，再回退到全局配置的飞书接收方
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍基于现有飞书机器人/消息链路，不是直接创建飞书日历会议或飞书视频会议
+  - 飞书 OAuth 端点与应用权限仍需用真实飞书开放平台配置做一次联调验证
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py backend/app/services/feishu.py` 通过
+  - 本地运行态 `openapi.json` 已确认新增路由：`/api/v1/settings/feishu-user-binding`、`/api/v1/settings/feishu-user-binding/start`、`/api/v1/auth/feishu/callback`
+  - 本地运行态 `FeishuMeetingLaunchResponse` schema 已确认新增 `deliveryMode`、`deliveryTarget`
+  - Electron 开发态 `tsc --watch` 增量编译通过，`Found 0 errors`
+  - 使用仓库 `backend/.venv` 跑 `pytest` 时，环境里的 `pydantic_core` 动态库签名失效，测试在收集阶段被阻断；不是这轮飞书改动本身的断言失败
+
+## 2026-03-18 组织邀请码注册分步线程
+- 线程名称：org-invite-register-flow-v1
+- 负责范围：组织搭建中心的邀请码接力注册；只改注册链路、组织搭建中心邀请展示、员工审核展示、云端注册持久化
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关业务区块
+  - 客户工作台问答主链路
+- 当前状态：
+  - 正在把“部门邀请码定部门、员工自己补岗位信息”的两阶段注册流程落成运行代码
+  - 目标是不让 CEO 手工给所有人逐个配岗位，同时保留后续任务、日历、组织治理所需的底层字段
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态（更新）：
+  - 注册页已改成两阶段流程：第 1 步填写部门邀请码锁定部门，第 2 步由员工自己补姓名、邮箱、密码、岗位、直属上级、当前重点和负责人申报
+  - 组织搭建中心的邀请码卡片文案已同步更新，明确告诉部门成员“先填邀请码、再补岗位信息”
+  - 云端注册已把员工自填岗位信息落入 `employee_accounts`
+  - 管理员审核区已能直接看到员工自填的部门、岗位、直属上级、负责人申报和当前重点
+  - 员工在“审批通过 / 改部门 / 保存组织模型”这 3 个时机会自动同步到 `org_employee_role_bindings`；如果能匹配到直属上级，还会补一条默认业务汇报线
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍是邀请码文本链路，不是二维码分发链路
+  - 岗位自动匹配目前是保守启发式：优先精确/模糊匹配角色名，其次退到部门内唯一成员角色；如果部门角色模板很复杂，仍建议管理员在组织搭建中心二次确认
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py cloud_backend/app/models.py cloud_backend/app/db.py cloud_backend/app/main.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k register_approve_login_and_collaboration_flow` 通过，`1 passed`；断言已覆盖 `bindings / reportingLines` 自动同步
+  - 已执行 `npm run build:renderer`，但当前环境里的 npm 包装进程异常挂起；改用底层 `./node_modules/.bin/vite build --debug` 验证通过，产物已成功写入 `dist/renderer`
+- 当前状态（继续）：
+  - 已把“邀请成员加入并补岗位归属”这一步改成真正面向新公司初始化：不再在组织搭建中心回退预设部门目录，部门和岗位只认当前公司自己创建的结构
+  - 没有成员加入时，主任务区会直接显示部门邀请码卡片和引导文案，不再先出现误导性的部门/岗位下拉菜单
+  - 只有成员已经通过邀请码进入后，才会出现手工校正区域，用来补直属上级或少量修正部门与岗位归属
+- 风险点（补充）：
+  - 当前“直接新增岗位”仍要求先选中一个已创建部门；如果后续要进一步降低理解成本，可以再拆成“先选部门，再批量加岗位”的独立小节
+- 当前状态（继续-部门步骤重构）：
+  - 已把“添加部门”重构成空白起步的分步录入：点击新增后输入部门名称和部门负责人姓名，单条确认后折叠成摘要长条
+  - 摘要长条现在直接显示 6 位部门邀请码，并提供“编辑”入口；编辑已有部门时支持取消编辑，不会误删已存在部门
+  - 整个部门模块改成底部统一“完成”后再进入下一步，避免部门还没确认完就被系统自动切走
+  - 注册页已同步支持识别 6 位部门邀请码，不再只认旧的 `dept:...` 形式
+- 验证结果（补充）：
+  - `python3 -m py_compile backend/app/models.py cloud_backend/app/models.py` 通过
+  - `./node_modules/.bin/vite build` 通过
+- 当前状态（继续-邀请码复制交互）：
+  - 已把所有部门邀请码展示收口成同一交互：先显示 6 位邀请码，复制按钮紧跟在邀请码后面，不再让复制入口和邀请码分离
+  - 复制内容已统一为“部门名称 + 6 位邀请码”，不是只复制 6 位数字
+  - 注册页提示已同步支持两种输入：直接填 6 位邀请码，或整段粘贴“部门名称 + 6 位邀请码”
+- 验证结果（本轮补充）：
+  - 已定点重装 `rollup@4.59.0` 与 `@rollup/rollup-darwin-arm64@4.59.0`，修复此前原生依赖签名失效导致的即时报错
+  - 已执行 `npm run build:renderer`；`dist/renderer` 已刷新到 2026-03-18 21:10，但当前环境里的 `vite build` 进程未自行退出，需继续观察是否为本地依赖或插件残留句柄问题
+
+## 2026-03-18 登录自动恢复修补线程
+- 线程名称：auth-auto-restore-v1
+- 负责范围：修补登录失败提示、补齐 remember login / auto login 链路；只改 auth 相关前后端和测试
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_refresh.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_auth_session.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 业务区块
+  - `tasks`、`topics_management`、`growth_handbook` 业务逻辑
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_refresh.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_auth_session.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+- 当前状态：
+  - 已为云端后端新增 refresh token 返回和 `/api/v1/auth/refresh` 接口
+  - 已为本地 backend 增加 `cloud_refresh_token` 持久化，并在 access token 失效时自动刷新会话
+  - 已把登录页的网络失败提示从原始 `Failed to fetch` 收口为本地服务不可用提示
+  - 已在登录页补充“当前设备自动保留登录状态”的说明
+  - 已确认 `guyuan@klngo.org` 在云端库中存在、已审批且为 `admin`
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍是本地设备级“自动记住登录”，不是多设备统一会话管理
+  - 旧的只存 `cloud_access_token` 的历史会话不会自动补出 refresh token；需要用户至少重新登录一次，后续才会进入完整自动恢复链路
+- 验证结果：
+  - `python3 -m py_compile ...` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_refresh.py cloud_backend/tests/test_bootstrap_security.py -q` 通过，`2 passed`
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k register_approve_login_and_collaboration_flow` 通过，`1 passed`
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_auth_session.py backend/tests/test_api_smoke.py -q -k 'auth_me_refreshes_expired_cloud_session or health_and_structural_defaults'` 通过，`2 passed`
+  - `npm run build:renderer` 通过
+
+## 2026-03-18 项目上下文 skill 规格线程
+- 线程名称：project-context-skill-spec-v1
+- 负责范围：只补“项目上下文 schema + growth rubric + project-context-builder skill”相关规格文档，不改运行代码
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/project-context-builder-skill-spec.md`
+- 避开文件：
+  - `src/renderer/App.tsx`
+  - `src/shared/types.ts`
+  - `backend/app/main.py`
+  - `cloud_backend/app/main.py`
+  - 任务、客户工作台、成长手册的运行时代码
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/project-context-builder-skill-spec.md`
+- 当前状态：
+  - 已把“项目上下文生成 skill”正式收口成仓库内规格文档
+  - 明确了 `organization_profile`、`project_profile`、`growth_rubric`、`evidence_map`、`project_match` 的对象边界
+  - 明确了 skill 的 3 个子能力：`extract_context`、`build_growth_rubric`、`generate_structured_briefs`
+  - 明确了输入输出契约、执行顺序、质量闸门和第一版落地范围
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍是规格层，不代表任务、客户工作台、成长系统已经实现同一条 ID 链
+  - 后续如果要真正接运行时代码，需要和“任务与日历”“客户工作台”两条线程统一字段命名和 source-of-truth
+- 验证结果：
+  - 已检查 `docs/project-context-builder-skill-spec.md` 文件创建成功
+  - 已检查文档与现有 `project-context-task-link-plan.md`、`org-model-*` 文档之间的定位不冲突
+
+## 2026-03-18 P0 安全修补线程
+- 线程名称：security-p0-hardening-v1
+- 负责范围：修补云端后端默认 secret/默认管理员口令风险，以及本地后端 localhost 跨站读写风险；只改与这两类 P0 直接相关的后端、测试和登录提示文案
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/app/bootstrap_security.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `cloud_backend/tests/test_simulation_seed.py`
+  - `cloud_backend/tests/test_bootstrap_security.py`
+  - `backend/app/main.py`
+  - `backend/app/local_request_guard.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/App.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 业务区块
+  - `tasks`、`topics_management`、`growth_handbook` 的业务逻辑
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/app/bootstrap_security.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `cloud_backend/tests/test_simulation_seed.py`
+  - `cloud_backend/tests/test_bootstrap_security.py`
+  - `backend/app/main.py`
+  - `backend/app/local_request_guard.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/renderer/App.tsx`
+- 当前状态：
+  - 云端后端不再使用源码内固定 JWT secret，改成“环境变量优先，否则每实例本地持久化随机 secret”
+  - 云端默认 seed 账号不再接受源码内默认口令，改成“环境变量显式提供，或首次启动本地生成 bootstrap 凭据文件”
+  - 登录页已移除 `admin@yiyu-system.com / Admin123!` 这类固定账号提示
+  - 本地后端已从 `allow_origins=["*"]` 收口为本地 renderer origin 白名单，并新增跨站浏览器请求拦截
+  - 已新增安全回归测试，覆盖“默认源码口令失效”和“恶意 Origin 访问 localhost API 被拒绝”
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - `cloud_backend/app/simulation_seed.py` 和 `cloud_backend/app/task_pressure_seed.py` 里仍保留演示/模拟种子口令，但它们不在默认启动主链上；这轮先只修 P0 主路径，不继续扩大范围
+  - 联跑 `cloud_backend/tests/test_auth_tasks.py + test_simulation_seed.py + test_bootstrap_security.py` 时仍出现 2 个复盘/模拟种子相关既有失败，不是这轮新增安全用例本身失败
+- 验证结果：
+  - `python3 -m py_compile ...` 通过
+  - `PYTHONPATH=cloud_backend ... pytest cloud_backend/tests/test_auth_tasks.py -q -k register_approve_login_and_collaboration_flow` 通过，`1 passed`
+  - `PYTHONPATH=cloud_backend ... pytest cloud_backend/tests/test_bootstrap_security.py -q` 通过，`1 passed`
+  - `PYTHONPATH=backend ... pytest backend/tests/test_api_smoke.py -q -k 'health_and_structural_defaults or cross_site_browser_requests_are_rejected'` 通过，`2 passed`
+  - `npm run build:renderer` 通过
+
+## 2026-03-17 官网分发与应用内更新线程
+- 线程名称：packaging-release-updater-v1
+- 负责范围：官网分发版封装、Mac 安装包、应用内更新第二阶段规划与基础接线；只改与桌面分发、主进程更新入口、系统设置更新面板直接相关的文件
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/mac-release-update-plan.md`
+  - `build-resources/README.md`
+  - `src/shared/types.ts`
+  - `src/main/main.ts`
+  - `src/main/preload.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/UpdateSettingsPanel.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台主链路
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关业务区块
+- 当前状态：
+  - 正在把“官网分发 + 应用内更新”从口头讨论收口成仓库内的正式计划和基础入口
+  - 这轮目标不是一次性做完自动更新，而是先把前置清单、仓库内必写内容和软件内更新入口基础信息落下
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前桌面应用启动仍依赖 `uv + venv + uv sync`，这是应用内更新真正落地前的头号阻塞
+  - 如果后续要接 `electron-updater`，还需要补正式签名、公证和官网更新源
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/mac-release-update-plan.md`
+  - `build-resources/README.md`
+  - `src/shared/types.ts`
+  - `src/main/preload.ts`
+  - `src/main/main.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/UpdateSettingsPanel.tsx`
+- 当前状态（更新）：
+  - 已把“官网分发 + 应用内更新”收口成仓库内的正式计划文档《官网分发与应用内更新总计划》
+  - 已在仓库中补出 `build-resources/` 目录说明，明确后续必须落 `icon.icns`
+  - 已给桌面端新增基础应用信息读取能力，当前可从主进程拿到：`版本号 / 是否打包态 / 平台 / 架构 / 计划文档路径 / 构建产物目录`
+  - 已在系统设置的“系统与权限”区最上方接入“版本与更新”面板，当前可直接查看当前版本阶段、打开计划文档、打开构建产物目录
+  - 这轮还没有接真正的自动更新下载与安装逻辑，仍处于前置准备与入口搭建阶段
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前“版本与更新”面板还只是基础入口，不代表已经接通自动更新
+  - `src/main/main.ts` 仍然保留 `uv` 依赖与运行时现建逻辑；如果不先收口这条链路，后续自动更新体验会不稳
+- 验证结果：
+  - `npm run build:main` 通过
+  - `npm run build:renderer` 通过
+- 当前状态（继续更新）：
+  - 已按最新协作边界冻结高冲突文件：`package.json`、`src/main/*`、`src/shared/types.ts`、`src/renderer/App.tsx` 的设置接线区，本轮不再继续推进这些区域
+  - 当前转入“低冲突准备工作”，只补发布流程、更新源规范、回滚方案等独立文档
+  - 这轮目标是把官网分发版的操作规则写实，先把后续实施需要依赖的文档骨架补齐
+- 已改文件（继续更新）：
+  - `docs/thread-sync.md`
+  - `docs/release-process.md`
+  - `docs/update-feed-spec.md`
+  - `docs/release-rollback.md`
+- 是否需要主线程配合（继续更新）：当前不需要
+- 风险点（继续更新）：
+  - 这轮是纯文档落地，不会直接解决签名、公证、更新源和运行时打包问题
+  - 后续一旦进入真正打包接线，仍需要重新确认与任务/身份公共层的文件边界
+
+## 2026-03-15 成长手册提质线程
+- 线程名称：成长手册提质线程
+- 负责范围：`growth_handbook` 为主，必要时最小触达 `settings` 的相关接线；只改与这两个页面直接相关的组件、样式、接口调用
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`（仅替换 `growth_handbook` 的接入层，保持最小补丁）
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态：
+  - 已完成 `growth_handbook` 首轮提质，并从 `App.tsx` 内联实现中抽出独立组件
+  - 新页面已补齐：顶部统计区、搜索、来源筛选、范围筛选、条目列表、详情检查器、来源分布
+  - 新增沉淀表单已支持按系统设置动态控制可选来源类型，并继续复用现有 `createHandbook` 接口，不触碰后端主链路
+- 是否需要主线程配合：不需要
+- 风险点：
+  - 当前成长手册仍只有“新增 + 浏览”，没有编辑、删除、批量整理能力；如后续要补这条链路，需要新增后端接口
+  - 搜索与筛选目前是前端本地层实现，条目量再上去后可能需要服务端查询或分页
+- 验证结果：
+  - 已执行 `npm run build:renderer`；当前环境下命令在 `vite build` 阶段超时未自行退出，但 `dist/renderer` 已刷新到 2026-03-18 22:03
+
+## 2026-03-17 轻量复盘结构重构线程
+- 线程名称：tasks-weekly-review-lite-v1
+- 负责范围：`tasks` 周复盘轻量输入、相关类型、文稿生成、分析逻辑
+- 计划修改的文件：
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+  - `src/renderer/components/tasks/reviewDraft.ts`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/services/growth_engine.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - 相关测试文件
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台主链路之外仅做最小复盘接线
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 当前状态：
+  - 开始将员工端复盘收敛为“1 段话 + 5 个轻量卡点”，并新增 `工作过度饱和`
+  - 本轮同时研究并保留益语智库专属的客户工作台背景接入能力，但不会把 `客户层` 写死成通用必填模型
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 周复盘结构化字段同时存在本地后端与云端后端，兼容迁移需要同步处理
+  - 旧测试和模拟种子仍引用历史字段，需兼容回读，不能硬切
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/app/services/agent_worklogs.py`
+  - `backend/tests/test_review_analysis.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+- 当前状态（更新）：
+  - 员工端逐任务复盘已收敛为“1 段反思 + 1 个可选轻量卡点”
+  - 新增的轻量卡点包含：`资料不足 / 等待他人 / 方向不清 / 资源不够 / 工作过度饱和`
+  - 前台不再要求用户手填部门/机构对齐类字段；后台分析改为基于任务事实、那一句反思和轻量卡点做更保守判断
+  - 新旧结构兼容回读：历史数据里如果只有旧字段，会自动映射到新的反思文本
+  - `工作过度饱和` 已接入分析器，会被识别成容量过载信号而不是普通执行问题
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 旧字段目前仍保留在数据模型里做兼容，不代表继续推荐使用；后续若要彻底删模型，还需同步清理云端种子和机器人生成逻辑
+  - 当前部门/机构对齐判断已不再依赖员工手填，但也因此会更保守，后续应由背景文档和自动推断继续补强
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py backend/app/services/review_analysis.py backend/app/services/review_rollup.py backend/app/services/growth_engine.py backend/app/services/agent_worklogs.py cloud_backend/app/models.py cloud_backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py backend/tests/test_growth_engine.py -q` 通过，`9 passed`
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k register_approve_login_and_collaboration_flow` 通过，`1 passed`
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已落地成长引擎 MVP：周复盘会自动抽取成长信号并写入能力证据、XP 账本和学习推荐
+  - 已打通成长手册沉淀加分：创建手册条目会写入 `codification` XP，历史手册会在成长概览首次打开时自动回填
+  - 已新增成长接口：`/api/v1/growth/overview`、`/api/v1/growth/ledger`、`/api/v1/growth/recommendations`、`/api/v1/growth/recommendations/{id}/accept|dismiss`
+  - 已把成长手册前端改成读取真实能力分、周增量、最近 XP 明细和推荐练习，并支持“一键排入日程”
+  - 已在周复盘输入区补了轻量成长点预判标签，帮助用户理解这条复盘会落到哪些能力
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这版能力归因和学习推荐仍是规则驱动，不是 AI 判定；优点是可解释、可控，缺点是命中精度还会受关键词覆盖影响
+  - 已对 `backend/app/main.py` 做了最小接线修改；当前未触碰客户工作台链路，但如果主线程也在同一段新增路由，后续合并时需要留意冲突
+  - 历史周复盘目前不会自动全量回填，只会对新提交复盘实时入账；历史成长手册会自动回填
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已按最新要求把侧栏里的 `任务与日程` 调整为第一项，当前顺序为：`任务与日程 -> 客户工作台 -> 战略陪伴`
+  - 本轮只调整导航顺序，不改页面内容和既有业务链路
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮是纯导航位次调整，不涉及客户工作台或战略陪伴的数据接线
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已把任务弹窗里的日期时间设置面板从输入框下拉式，改成任务弹窗内部的居中浮层
+  - 当前打开“截止时间”后，面板会固定居中显示，不再被任务弹窗底部裁切
+  - 面板外点击会关闭当前日期时间面板，但不会误关整个任务弹窗
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前是“任务弹窗内部居中浮层”，不是全应用通用日期时间组件；后续如果别的页面也要这套体验，建议再抽成独立组件
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已排查并修正月历空白格子蓝框与滚动闪烁问题
+  - 根因不是后台程序，而是月历格子外层原先用的是 `button`，并且日期格内部还嵌了任务 `button`，形成无效的交互嵌套；空白格子又是禁用按钮，导致 WebKit/Electron 会绘制异常蓝框并在滚动重绘时闪动
+  - 当前已把月历格子外层改成普通容器，仅保留键盘/点击交互，不再使用外层按钮
+  - 原先的蓝色 `ring` 边框选中态也已去掉，保留更轻的背景反馈，避免再出现整格蓝框
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮修掉的是月历格子容器本身的蓝框与闪动；如果后续还要继续压低选中态存在感，可以再把当前浅蓝背景也降一档
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已把任务弹窗里的日期输入和时间下拉合并成一个统一的“截止时间”入口
+  - 当前改成单按钮 + 单弹层结构，弹层内分为 `日期 / 时间段` 两个页签，布局参考滴答清单
+  - 日期页支持：
+    - 月份切换
+    - 月历日期选择
+    - `清除 / 今天 / 确定`
+  - 时间页支持：
+    - 当前截止日期显示
+    - 常用时间快捷项
+    - 小时 / 分钟双列选择
+    - `清除 / 确定`
+  - 这轮已彻底替换掉旧的“日期 input + 独立时间弹层”结构，目的是避免之前那种错层、遮挡和显示异常再次出现
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只重做了任务弹窗里的截止时间控件；月历里的轻量快速新建入口仍然是按日期快速创建，不带这一套完整弹层
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+  - `python3 -m py_compile backend/app/main.py backend/app/services/growth_engine.py backend/app/models.py` 通过
+  - `PYTHONPATH=... uv run pytest backend/tests/test_growth_engine.py` 通过，`3 passed`
+  - 已执行后端烟测：
+    - 提交周复盘后可读取 `/api/v1/growth/overview`，返回有效 `weeklyXp` 和 6 项能力数据
+    - `/api/v1/growth/recommendations/{id}/accept` 可真实创建任务并在 `/api/v1/tasks` 中可见
+  - `npx tsc -p tsconfig.json --noEmit` 未通过，但报错集中在既有的 `App.tsx / settings / unified_workbench` 类型问题，不是这轮成长系统新增代码引入
+- 已改文件（计划更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+- 当前状态（计划更新）：
+  - 正在把经验系统从“单一 delta 入账”改造成“基础经验 + 组织贡献溢价 + 单一总 XP 展示”
+  - 当前目标不是新增第二套组织贡献分，而是在同一条经验事件上追加 `20%~50%` 的组织贡献溢价
+  - 计划让后端账本保留 `base_xp / premium_rate / premium_xp / total_xp / validation_state / contribution_tags`，前台仍只展示一个总经验值
+- 是否需要主线程配合（计划更新）：当前不需要
+- 风险点（计划更新）：
+  - 这轮会继续修改已有的成长引擎数据结构；如果主线程也在同一时间读取 `xp_ledger` 旧字段，需要注意兼容
+  - 组织贡献溢价第一版会先用规则化判定，不会直接引入大模型打分，避免把当前系统复杂度拉爆
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+- 当前状态（更新）：
+  - 已把经验系统重构成“单一总 XP + 组织贡献溢价”模式，不再保留隐含双分逻辑
+  - 后端账本现在会为每条经验记录写入 `base_xp / premium_rate / premium_xp / total_xp / validation_state / contribution_tags / org_contribution_score`
+  - 组织贡献第一版按规则引擎落地，覆盖 `知识资产 / 关键问题 / 协作赋能 / 风险对齐 / 机制建设` 五类标签
+  - 成长手册页已能展示最近经验的“基础 + 溢价”拆分，并把头部第二统计位改成“组织溢价”
+  - 周复盘输入区已补“可能获得组织贡献溢价”的轻提示，帮助用户理解为什么这条复盘会更值钱
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮仍未把“验证事件”前台入口做出来，当前 `validation_state` 主要由事件类型和内容特征推断；后续如果要把溢价从 `observed` 再提升到 `validated / institutionalized`，需要补任务复用或受益确认入口
+  - 兼容老数据时对 `total_xp=0` 的历史行做了 SQL 回退；新老账本混跑可用，但后续若做全量回填，最好再跑一次数据修复脚本
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/db.py backend/app/models.py backend/app/services/growth_engine.py backend/app/main.py` 通过
+  - `PYTHONPATH=... uv run pytest backend/tests/test_growth_engine.py` 通过，`3 passed`
+  - `npm run build:renderer` 通过
+  - 已执行后端烟测：
+    - 提交周复盘后，`/api/v1/growth/overview` 会返回 `weeklyBaseXp / weeklyPremiumXp / premiumRate / validationState / contributionTags`
+    - 样例烟测结果：`weeklyXp=58`，其中 `weeklyBaseXp=44`、`weeklyPremiumXp=14`
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `backend/app/main.py`
+  - `cloud_backend/app/main.py`
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/ReviewHistoryPicker.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态（更新）：
+  - 已把周复盘头部原先可编辑的 `weekLabel` 输入框改为 `查看历史复盘` 按钮，并在标题下方保留当前查看周次提示
+  - 已新增独立历史复盘面板，支持查看当前账号过往周次，并一键切换加载对应周的复盘 dashboard
+  - 本地后端与云端后端都已新增历史复盘接口：`GET /api/v1/reviews/history`
+  - 现有 dashboard 接口已支持按周加载：`GET /api/v1/reviews?weekLabel=...` 与云端 `GET /api/v1/reviews/dashboard?weekLabel=...`
+  - 当前历史列表最小返回：`weekLabel / submittedAt / workItemCount / personalItemCount`，足够支持历史周切换而不额外加重接口
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前“历史复盘”只覆盖已经提交或保存过的周次；不会主动列出从未生成过复盘的空周
+  - 前端切换历史周后仍沿用现有周复盘视图结构；这轮没有额外新增“跨周对比”能力
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py cloud_backend/app/models.py cloud_backend/app/main.py cloud_backend/tests/test_auth_tasks.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k "review_history_lists_previous_weeks_and_dashboard_can_switch_by_weeklabel or task_overdue_only_after_calendar_day_ends"` 通过，`2 passed`
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `docs/org-model-foundation-plan.md`
+- 当前状态（更新）：
+  - 已根据最新组织模型层讨论，输出一版可执行的落地规划文档《组织模型层落地计划（任务与周总结系统）》
+  - 当前文档已拆到：
+    - 7 个核心对象
+    - 数据库设计建议
+    - 4 个页面的信息架构
+    - 与任务系统 / 周计划 / 周总结的嫁接方式
+    - P0-P3 开发阶段与验收目标
+  - 这轮目标不是直接上代码，而是把后续真实落地部门总结、机构总结、权限判断所必需的组织底座先定义清楚
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前仍是规划文档，不代表底层表和页面已经实现
+  - 下一轮如果开始落库设计，会触达 `settings`、`tasks`、`weekly review` 三条链路，需要按 P0 顺序推进，避免一次改太散
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态（更新）：
+  - 已给任务新建/编辑弹窗补齐“日期 + 时间”输入，时间使用 24 小时制 `HH:mm`
+  - 保存时会把日期和时间合成同一条 `dueDate`，格式为 `YYYY-MM-DDTHH:mm`
+  - 任务截止标签现在会自动显示时间，例如 `今天 14:30` / `03-17 14:30`
+  - 云端任务统计的逾期判断已改成按日期解析，不会被带时间的截止字段误伤
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮先补的是任务编辑弹窗和截止标签；月历里的快速新建仍然是“只选日期”的轻量入口，后续如果要和滴答清单更接近，可以再补快捷时间面板
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已给“我的月历”补齐任务拖拽改期
+  - 当前支持把月历格子里的任务直接拖到另一个日期，落点日期会立即写回任务截止日
+  - 若原任务已经带具体时间，拖拽改期时会保留原有 `HH:mm`
+  - 拖拽到目标日期时会高亮落点，完成后月历会自动刷新到新日期
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮先覆盖的是月历格子里的任务条拖拽，右侧当天详情卡片还不能直接拖拽
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已去掉月历空白日期格子的系统按钮蓝色描边
+  - 当前月历格子统一使用无原生按钮外观的中性边框，不再出现首行空白格的蓝框
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只去掉了格子按钮的系统外观，不影响当前选中日期或拖拽落点的蓝色高亮
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已把任务弹窗里的原生时间输入替换成自定义 24 小时时间选择器
+  - 当前时间选择器已补齐：
+    - 精简时钟按钮
+    - 常用时间快捷项
+    - 小时/分钟双列选择
+    - 清除时间
+  - 时间弹层已改成白底灰蓝层次，不再使用系统原生的黑框蓝底样式
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮重做的是任务弹窗时间选择器；其他页面里若后续也要选具体时间，建议复用成独立组件，不要再抄一份
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已给“我的月历”补齐滚轮切月
+  - 当前在左侧月历区域内向下滚会切到下个月，向上滚会切回上个月
+  - 为了避免触控板一小下滚动连跳多个月，已加阈值和短暂锁定
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮先实现的是“单月视图上的滚轮切月”，还不是整页连续堆叠月份的真正万年历布局
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已把“我的月历”协作开关的提示文字改成从开关左侧浮出
+  - 提示层已去掉黑底气泡样式，改为纯灰字，不再遮挡顶部控件
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只改了提示层位置和样式，没有改动“只看我的任务 / 显示协作任务”的过滤逻辑
+- 计划修改的文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态（更新）：
+  - 开始按新稿整页替换成长手册
+  - 本轮目标是把当前成长手册从页面外层结构到内部四个视图一起切到新版本：`成长总览 / 经验沉淀 / 学习导航 / 能力图谱`
+  - 为了避免碰主线程正在持续改的 `App.tsx`，优先保持原 props 接口不变，只在 `GrowthHandbookView.tsx` 内完成替换
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 新稿以卡片化静态体验为主，现有“新增沉淀”表单不会原样保留；会尽量保住已有手册数据的展示与统计，但交互将按新页面结构重排
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态（更新）：
+  - 已完成成长手册整页替换，当前页面已切成新的四视图结构：
+    - `成长总览`
+    - `经验沉淀`
+    - `学习导航`
+    - `能力图谱`
+  - 新页面已不再沿用旧版“左表单 + 右列表 + 来源分布”的壳和功能编排，而是整体替换为新的卡片化成长界面
+  - 现有手册数据仍有接回：
+    - 真实 `entries` 会驱动“经验沉淀”列表、近期掉落、XP 统计与方法复用计数
+    - 无数据时会自动退回到设计稿自带的 mock 内容，保证页面完整
+  - 头部 `记录经验` 按钮保留真实写入能力，改为弹出新的沉淀弹层，继续复用现有 `createHandbook` 接口
+  - 为避免与主线程冲突，本轮未修改 `App.tsx`，成长手册入口仍沿用原接线
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 新版成长总览、学习导航、能力图谱中的部分内容仍属于前端静态编排，尚未对应到独立后端能力模型
+  - 当前移动端虽然已补基础响应式，但最佳体验仍偏桌面端；如果后续要做深度移动适配，需要继续压缩记录详情页和雷达图区域
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 计划修改的文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+  - `src/renderer/App.tsx`（仅非 `client_workspace` 区块的最小接线）
+- 当前状态（更新）：
+  - 开始把“成长能力自动更新 + 复盘驱动入账 + 学习推荐”做成可运行 MVP
+  - 本轮目标是先打通：
+    - 周复盘保存后自动抽成长证据
+    - 成长总览与 XP 账本接口
+    - 学习推荐生成与接受后转任务
+    - 成长手册页读取真实成长数据
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮会最小触达 `backend/app/main.py` 与 `src/renderer/App.tsx` 做非客户工作台接线，但不会改客户工作台问答逻辑
+  - 第一版成长归因会以规则引擎为主，不会等 AI 生成，能力判断会先偏保守
+- 计划修改的文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 开始排查 `settings` 各 section 无法上下滚动的问题
+  - 已确认 `overview / org_dna / tasks / client_workspace / topics / analysis / handbook / system_admin` 8 个 section 共用同一套 `SettingsView` 外层容器
+  - 当前判断是公共容器缺少纵向滚动层，导致内容被主壳 `main` 的 `overflow-hidden` 截断，不是单个 section 独立失效
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这次会优先在 `SettingsView` 公共容器做最小修复；如果 Electron 端仍有个别区块滚轮事件不透传，再考虑补 section 级滚动层
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已完成 `settings` 全部分区的公共滚动修复
+  - 本次核对确认：`overview / org_dna / tasks / client_workspace / topics / analysis / handbook / system_admin` 都不是各自独立坏掉，而是统一被 `SettingsView` 外层缺失 `overflow-y-auto` 影响
+  - 现已在 `SettingsView` 顶层容器补上 `min-h-0 overflow-y-auto`，让整页内容在主壳内部可正常上下滚动
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这次修的是公共容器层，理论上 8 个 section 一起恢复；如果后续只在极窄窗口下出现局部卡顿，再单独评估侧栏和右栏分离滚动
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 计划修改的文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+  - `src/renderer/components/topics/TopicIntelInboxCard.tsx`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+- 当前状态（更新）：
+  - 开始升级资讯情报站的大周内容结构，目标是把“文章观点总结”与“大周深层分析”分开
+  - 本轮准备补齐的生成内容包括：
+    - 文章在讲什么
+    - 文章核心观点
+    - 大周的深层分析
+    - 可直接展开成文的角度
+    - 值得继续追问的问题
+  - 为了让旧的浅层缓存自动重算，本轮会同步调整 `topic_candidate_insights` 的存储字段与刷新判定
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮会最小触达 `backend/app/services/ai.py` 中仅 `topics` 专用的 insight 生成逻辑，避免影响客户工作台问答链路
+  - 旧缓存 insight 在结构升级后会按新规则自动失效并重算，首轮打开情报详情时会比之前多一次生成等待
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+  - `src/renderer/components/topics/TopicIntelInboxCard.tsx`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+- 当前状态（更新）：
+  - 已完成资讯情报站“大周内容结构升级”第一轮
+  - `topic_candidate_insights` 现已补齐两类新生成内容：
+    - `editorialNote`：大周前哨判断，专门写文章观点背后的更深层变化、门槛、机会与张力
+    - `discussionPrompts`：值得继续追问的问题
+  - 现有 `practicalUses` 也已重写为更偏“可直接展开成文”的写作角度，而不再是泛泛的行动建议
+  - 右侧详情区已改成新的内容结构：
+    - 为什么它值得看
+    - 文章在讲什么
+    - 核心观点
+    - 大周前哨判断
+    - 可直接展开成文
+    - 值得继续追问的问题
+  - 左侧卡片的摘要段也已切换为优先展示 `editorialNote`，让列表本身更像前哨评论流，而不是普通摘要流
+  - 旧的浅层 insight 缓存会因新字段缺失而自动重算
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 本轮虽然只触达了 `ai.py` 中 topics 专用的 insight 生成逻辑，但该文件仍属于共享 AI 服务；后续若继续扩生成类型，建议把 topics 专用生成器单独拆出去
+  - 当前 `practicalUses` 的数据库列名仍保留旧名，但语义已经转成“写作角度”；后续如果要做长期清理，可再统一命名为 `writing_angles`
+  - 首次打开旧候选详情时会触发一次新结构重算，因此局部等待时间可能比之前略长
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+  - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -k "topic_candidate_insight_extracts_points_reasons_and_practical_uses or topic_candidate_prefetches_insight_on_create"` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+- 当前状态（更新）：
+  - 已按用户反馈收掉右侧详情区顶部的两个重复模块：
+    - `为什么它值得看`
+    - `文章在讲什么`
+  - `大周前哨判断` 现已移动到详情区最上方，成为用户打开情报后首先看到的内容
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 右侧详情区不再直接展示“文章在讲什么”的独立卡片，因此如果后续要保留文章层摘要，需考虑改成折叠区或轻量副标题，而不是再占用整块卡片
+- 计划修改的文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/services/topic_capture.py`
+  - `backend/tests/test_topic_capture.py`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+- 当前状态（更新）：
+  - 开始排查“资讯情报站立即抓取经常只回 1 条或 0 条”的广度问题
+  - 已定位到 3 个确定因素：
+    - 抓取候选池偏小，搜索与 shortlist 阶段都过早收口
+    - relevance token 提取过粗，会把整句 prompt 切成伪关键词，导致部分相关结果被误筛
+    - 命中结果经常被 `topic_candidate_seen` 吞掉，但前端提示仍像“没搜到”
+  - 本轮会优先修这三点，不碰客户工作台主链路
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 扩大候选池后，每轮抓取的网络请求数会比之前更多；会尽量在不明显拉长等待时间的前提下放宽
+  - 这轮会调整 `capture` 的筛选与提示语义，可能让“已跳过历史命中”的反馈比之前更频繁出现
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/services/topic_capture.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_topic_capture.py`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+- 当前状态（更新）：
+  - 已完成资讯情报站抓取广度第一轮修复
+  - 本轮核心调整：
+    - 抓取候选池从“小池子早收口”改成更大的原始命中池与 shortlist 备选池
+    - `capture` 现在会拿更多备选结果，再在已见历史后继续补位，而不是前 4 条全见过就直接归零
+    - relevance token 改为更短、更有辨识度的关键词，避免把整句 prompt 当成伪关键词误筛结果
+    - 从雷达 prompt 里显式抽取 `“可优先使用 ...”` 这类搜索表达，真正送进抓取链路
+    - 前端提示已能区分“没搜到”与“搜到了但都已在历史里”
+  - 真实复跑结果对比：
+    - 修复前：`totalCreated=0 / totalSkipped=10`
+    - 修复后：`totalCreated=5 / totalSkipped=8`
+  - 当前逐雷达复跑结果：
+    - `GitHub 爆`：`fetched=5 / created=2 / skipped=3`
+    - `公益资助线索`：`fetched=1 / created=1 / skipped=0`
+    - `CodeX 开发`：`fetched=4 / created=0 / skipped=4`
+    - `全球局势重塑`：`fetched=3 / created=2 / skipped=1`
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - `CodeX 开发` 这条雷达当前仍偏窄，主要因为其标题和 prompt 中的可识别查询对象还不够稳定，且现有 4 条命中都已在历史里；下一轮更适合继续补这类雷达的 query 扩展策略
+  - 目前前端消息虽然能区分“已见历史”，但还没有展开到每个雷达维度的详细回执；如果后续要让用户更强感知抓取成因，可再加 per-radar 结果面板
+- 验证结果（更新）：
+  - `backend/.venv/bin/python -m pytest backend/tests/test_topic_capture.py backend/tests/test_api_smoke.py -k "topic_capture or extract_prompt_queries or keyword_tokens"` 通过
+  - `npm run build:renderer` 通过
+  - 重启 Electron 应用后，活服务 `POST /api/v1/topics/capture` 复跑通过
+- 计划修改的文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/services/topic_capture.py`
+  - `backend/tests/test_topic_capture.py`
+- 当前状态（更新）：
+  - 继续补“技术类雷达”的 query 扩展策略，重点处理 `CodeX 开发` 这类标题短、同义词多、新闻与项目混杂的话题
+  - 本轮目标是把技术雷达从“单词匹配”升级成“主题簇检索”，自动补充：
+    - 产品/主体别名
+    - 开源项目
+    - 落地案例
+    - 实战经验
+    - 开发工作流
+    - 产品化/商业化信号
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 技术类 query 扩展如果做得过猛，可能把无关的泛 AI 新闻也带进来；会优先用别名 + 主题簇组合，而不是简单堆更多热词
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/services/topic_capture.py`
+  - `backend/tests/test_topic_capture.py`
+- 当前状态（更新）：
+  - 已完成技术类雷达 query 扩展第一轮
+  - 当前会为 `CodeX / Codex / GitHub / 开源 / developer tool / AI coding agent` 这类主题自动补一组主题簇检索表达
+  - `CodeX 开发` 现在会优先尝试：
+    - `CodeX 开发板 开源项目`
+    - `CodeX 半成型产品 落地经验`
+    - `OpenAI Codex 落地案例`
+    - `Codex 开源项目 实战经验`
+    - `AI coding agent 开发工作流`
+  - 真实重启后复跑结果：
+    - `GitHub 爆`：`fetched=10 / created=5 / skipped=5`
+    - `公益资助线索`：`fetched=1 / created=0 / skipped=1`
+    - `CodeX 开发`：`fetched=4 / created=3 / skipped=1`
+    - `全球局势重塑`：`fetched=4 / created=1 / skipped=3`
+    - 总计：`totalCreated=9 / totalSkipped=10`
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - `GitHub 爆` 与 `CodeX 开发` 的技术类 query 现在明显更宽，但后续仍需要继续观察是否会引入过多泛 AI 资讯
+  - `公益资助线索` 当前仍高度依赖优先网址直抓与少量新闻源，不属于技术 query 扩展可直接解决的问题
+- 验证结果（更新）：
+  - `backend/.venv/bin/python -m pytest backend/tests/test_topic_capture.py -k "expand_topic_queries or candidate_queries or extract_prompt_queries or keyword_tokens or fetch_topic_candidates"` 通过
+  - 重启 Electron 应用后，活服务 `POST /api/v1/topics/capture` 复跑通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 因用户反馈“滚轮与触控板仍不生效”，已继续把 `settings` 改成与 `tasks` 同型的滚动结构
+  - 现在不是让 `SettingsView` 根节点自己滚动，而是改为“头部固定 + 下方内容区 `flex-1 min-h-0 overflow-y-auto`”
+  - `overview / org_dna / tasks / client_workspace / topics / analysis / handbook / system_admin` 8 个 section 继续共用这一层滚动容器
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 若运行中的 Electron 窗口还在使用旧 renderer bundle，仍会表现为不可滚动；需要完全退出后重开或手动 reload 窗口
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 当前状态（冲突记录）：
+  - 用户提出“飞书单机器人接入如何复用客户工作台现有客户切换机制”的规划问题
+## 2026-03-16 品牌 Logo 设置线程
+- 线程名称：品牌 Logo 设置线程
+- 负责范围：`settings` 与左侧主导航品牌区；只改品牌展示、系统设置、相关类型与接口调用
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/BrandLogoSettingsCard.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台问答相关路由与逻辑
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/BrandLogoSettingsCard.tsx`
+- 当前状态：
+  - 已完成“系统设置支持上传 PNG 作为左上角 logo”的第一轮
+  - 左上角品牌位已从内联 SVG 改成“优先读取系统设置中的 PNG logo，缺失时回退默认图标”
+  - 系统设置总览新增品牌 Logo 卡片，支持：
+    - 上传 PNG
+    - 前端压缩到不超过 `256px`
+    - 预览
+    - 清空预览
+    - 保存后即时生效
+  - 后端 `system_admin` 设置记录已新增 `brandLogoDataUrl`，并对非 PNG data URL 与超大内容做了校验
+  - 已额外避免把 base64 logo 直接写进活动日志，日志里只保留脱敏标记
+- 是否需要主线程配合：不需要
+- 风险点：
+  - 当前存储方案是 `data URL -> settings.system_admin`，适合小型品牌图标；如果后续要支持更大的品牌资产，建议再切到应用数据目录文件存储
+  - 本轮只支持 PNG，不支持 SVG/JPG/WebP
+- 验证结果：
+  - `uv run pytest tests/test_api_smoke.py -k "brand_logo or system_admin_settings or employee_can_edit_business_settings_but_not_sensitive_settings"` 通过
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已按用户反馈把左上角品牌位进一步放大
+  - 当前侧栏头部 logo 从 `32px` 调整为“移动端保持 `32px`、桌面端提升到 `44px`”，同时加大了 logo 与标题之间的桌面端间距
+  - 标题字号也同步从 `18px` 提到 `20px`，让品牌头部比例更协调
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮只放大了桌面态头部；移动端窄侧栏仍保持原尺寸，避免挤压 `60px` 侧栏
+
+## 2026-03-15 CEO 周复盘补强线程
+- 线程名称：CEO 周复盘补强线程
+- 负责范围：`tasks` 为主，最小触达 `settings`/后端接线中与周复盘、机器人部门日志直接相关的部分；不改客户工作台主链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/agent_worklogs.py`
+  - `backend/tests/test_agent_worklogs.py`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/ExecutiveReviewPanel.tsx`
+  - `src/renderer/components/tasks/reviewDraft.ts`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台相关接口与逻辑
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 当前状态：
+  - 开始把“庆华 / 大周 / 佳乐”的周摘要从月历侧栏接入 CEO 周复盘视角
+
+## 2026-03-16 任务与日程模块重构策划对齐
+- 线程名称：任务与日程模块重构策划对齐
+- 负责范围：`tasks`、相关 `settings` 配置与最小后端数据结构建议；不触碰客户工作台主链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/agent_worklogs.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_agent_worklogs.py`
+  - `backend/tests/test_review_rollup.py`
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台相关逻辑
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/services/agent_worklogs.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_agent_worklogs.py`
+  - `backend/tests/test_review_rollup.py`
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+- 当前状态：
+  - 已阅读《任务与日程模块功能重构与页面设计策划说明_v2》，并完成与现有实现的第一轮对齐分析
+  - 已记录新增长期设计约束：任务系统是“机器人 + 人类共用”的统一系统，机器人需要被当作团队成员/单人部门执行单元接入任务、日历、周计划、周总结和部门/机构汇总链路
+  - 已完成第一轮基础打通：机器人周日志 + 周计划现已转成正式 `WeeklyReviewTaskEntry` 样本，并直接并入部门/机构周复盘汇总链路
+  - 当前部门/机构总结 `sourcePolicy` 已补 `agentSampleCount`，前端总结卡片会明确显示“含 N 条机器人自动样本”
+- 是否需要主线程配合：不需要
+- 风险点：
+  - 如果后续只把机器人继续当作“外部日志源”，周计划、周总结、部门及时率和计划对齐率都会失真
+  - 本轮先把机器人接入了“正式周复盘样本层”，但还没有把机器人每日工作自动落成真实 `Task` 表记录；这一步仍是下一轮要补的统一执行层改造
+  - 机器人当前仍以部门单人负责人视角自动生成样本，机构战略对齐字段还未自动挂接到正式 `plan_nodes`
+- 验证结果：
+  - `python3 -m py_compile backend/app/services/agent_worklogs.py backend/app/services/review_rollup.py backend/app/main.py backend/tests/test_agent_worklogs.py backend/tests/test_review_rollup.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_agent_worklogs.py backend/tests/test_review_rollup.py -q` 通过，`8 passed`
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/services/agent_worklogs.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_agent_worklogs.py`
+- 当前状态（更新）：
+  - 已继续推进“统一执行层”第一步：机器人日常工作会先同步到本地隐藏执行层，正式写入 `tasks` 表，而不再只停留在周复盘样本层
+  - 已新增 admin 隐藏接口 `GET /api/v1/tasks/agent-execution?week=YYYY-Www`，会先同步机器人自动任务，再返回正式 `TaskRecord`
+  - 自动任务采用 `source_type = agent_auto`，当前会被普通本地任务列表主动排除，避免把人类个人任务板污染成机器人总表
+  - 已补机器人自动任务的活动轨迹读取：`/api/v1/tasks/{task_id}/activity` 在 `agent_task_*` 场景下会返回由机器人真实工作日志生成的活动记录
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮只打通了本地隐藏执行层，还没有把机器人自动任务同步进 cloud backend 的正式任务表
+  - 当前还没有前台正式经理视图来消费 `agent-execution`，所以这批任务仍属于“已入库、可调试、未公开”的执行层基础设施
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/services/agent_worklogs.py backend/app/main.py backend/tests/test_agent_worklogs.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_agent_worklogs.py backend/tests/test_review_rollup.py -q` 通过，`11 passed`
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/main.py`
+  - `backend/tests/test_review_visibility.py`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/tasks/AgentExecutionPanel.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx`
+- 当前状态（更新）：
+  - 已把机器人正式任务接到可见管理视图：`周复盘 -> 部门总结 / 机构总结` 现在会展示机器人本周同步成正式任务对象的执行层事实
+  - 当前不新增一级入口，也不污染个人任务板；管理者仍在周复盘的层级结构里查看机器人执行层
+  - `部门负责人` 现在也能调用 `GET /api/v1/tasks/agent-execution` 查看自己部门的机器人正式任务，不再只有 CEO/admin 能看
+  - 当前机构视角会按部门分组展示机器人正式任务，部门视角会只展示该部门机器人正式任务
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮只把机器人正式任务接进了周复盘管理视图，还没有把它们接进独立的经理任务工作台
+  - 机器人正式任务仍然是本地隐藏执行层，不会出现在 cloud backend 的正式个人任务流里
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/main.py backend/app/services/agent_worklogs.py backend/tests/test_agent_worklogs.py backend/tests/test_review_visibility.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_agent_worklogs.py backend/tests/test_review_rollup.py backend/tests/test_review_visibility.py -q` 通过，`13 passed`
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/main.py`
+  - `cloud_backend/app/task_pressure_seed.py`
+  - `cloud_backend/tests/test_task_pressure_seed.py`
+- 当前状态（更新）：
+  - 已根据《Codex_日程与任务模块_20人压力测试种子数据与背景.md》新增一套可重复执行的 markdown 导入器
+  - 导入器会先备份 `cloud.db`，再按文档里的 20 人组织结构重建任务、协作关系、周总结、部门归属与计划节点
+  - 当前真实 `cloud.db` 已完成替换：旧任务已清空，现已写入 60 条压力测试任务、20 条周总结、60 条逐任务复盘
+  - 当前云端任务列表已返回新数据，admin 视角下可读到 12 条与 CEO 直接相关的任务；列表目录已收口为 `收集箱 / 客户项目 / 产品研发 / 数据分析 / 组织管理 / 品牌市场`
+  - 为让导入后的应用能正常重启，已顺手修复 `backend/app/main.py` 里本地标签回填的两个启动期引用问题；这是启动稳定性修复，不涉及客户工作台主链路
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 当前导入严格按文档原始周次写入 `2026-W11`，因此 `周复盘` 默认当前周视角不会直接展示这批总结；如果后续需要“当前周也直接可见”，要再做当前周镜像或周选择器
+  - 当前 CEO 个人任务视角不会显示全部 60 条任务，而是只显示按当前协作关系与创建关系与 CEO 直接相关的 12 条，这是现有权限模型的结果，不是导入缺失
+- 验证结果（更新）：
+  - `python3 -m py_compile cloud_backend/app/task_pressure_seed.py cloud_backend/tests/test_task_pressure_seed.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_task_pressure_seed.py -q` 通过，`2 passed`
+  - 实库导入结果：`taskCount=60 / reviewCount=20 / reviewItemCount=60`
+  - `curl http://127.0.0.1:47829/api/v1/tasks` 已返回新种子标题
+  - 重启后 `127.0.0.1:47829` / `127.0.0.1:47830` / `127.0.0.1:4173` 均恢复监听
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已按当前反馈完成任务页列表头部的最小改造
+  - 顶部页签文案 `清单列表` 已改为 `任务列表`
+  - 任务列表头部已从固定 `进行中` 改为状态下拉，支持：
+    - `进行中`
+    - `已完成`
+    - `逾期`
+    - `全部`
+  - 当前筛选只作用于前端显示层，不改任务接口与任务数据结构
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - `逾期` 当前只基于明确 `dueDate` 或可解析的 `ddl` 标签判断；`待确认` 这类未定截止任务不会被误判成逾期
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已完成“新建任务进列表但不易在我的月历里看到”的修复
+  - 排查确认：任务创建接口会正常写入 `dueDate / creatorId / ownerId`，任务数据本身没有丢
+  - 本轮已在前端补上：
+    - 统一的任务日期解析，避免 `dueDate` 被前端按不稳定方式解析
+    - 新建任务、快速建任务、编辑任务后自动把月历焦点切到该任务日期
+  - 当前进入 `我的月历` 时，会直接落到刚创建或刚修改任务的那一天，而不是停留在之前浏览的月份/日期
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮修的是“月历焦点不同步 + 日期解析不稳”问题；如果后续还要求“创建后自动切换到我的月历页”，那属于交互策略变更，可再单独决定
+- 验证结果（更新）：
+  - `curl -X POST http://127.0.0.1:47829/api/v1/tasks ...` 冒烟确认新任务会返回正确的 `dueDate / creatorId / ownerId`
+  - `curl http://127.0.0.1:47829/api/v1/tasks` 已能回读到刚创建任务
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/components/tasks/reviewDraft.ts`
+  - `backend/app/main.py`
+  - `cloud_backend/app/main.py`
+- 当前状态（更新）：
+  - 已按当前反馈停用任务标签功能
+  - 新建/编辑任务弹窗底部标签区已移除，不再显示自动标签、手动新建标签和标签选择区
+  - 任务列表、协作收件箱、我的月历、周复盘文稿草稿里都不再展示任务标签
+  - 设置页的任务标签管理已改成停用说明，不再提供新增、编辑、归档、删除入口
+  - 本地后端与云端后端已统一处理为：
+    - 任务面板标签列表返回空
+    - 任务创建/更新时忽略 `tagIds / tags`
+    - 标签增删改接口返回“功能已停用”
+    - 自动标签建议接口返回空结果
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 历史库里的标签字段仍保留在表结构里，但当前任务链路已不再读取和展示；如果后续要做数据库层彻底清理，可再单独迁移
+  - 原来依赖“私人标签”区分成长复盘/组织复盘的旧逻辑也会随之失效；如果后续仍需要私人任务，应改成独立字段，而不是再回到标签
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/main.py cloud_backend/app/main.py` 通过
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已按“我的月历”新要求完成头部切换逻辑改造
+  - 原来顶部两个无效提示按钮已移除
+  - 现已改成苹果风格滑动开关：
+    - 关闭时：只显示自己创建或自己主负责的任务
+    - 打开时：额外显示“别人主负责、但邀请我关注”的协作任务
+  - 当前月历不再默认把所有提及到我的任务直接铺满
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 当前“主任务”按 `creatorId === 我` 或 `ownerId === 我` 判断；如果后续要进一步细分“我创建”和“我负责”，需要再拆第二层过滤
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已把月历头部“跳转日期”按钮改成纯图标按钮
+  - 当前只保留放大镜图标，不再显示“跳转日期”文字
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已把我的月历中“已完成任务”的日期格胶囊样式改成浅灰色
+  - 当前月历格子里，未完成任务继续保留原有强调色；已完成任务会被主动压低视觉权重，方便突出待推进事项
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮只调整了月历日期格里的任务胶囊样式，右侧当天详情列表的完成态视觉没有一起改动，避免一次改太多视觉规则
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已删除我的月历标题下方那排四张统计卡片
+  - 当前只保留标题区上方的一行轻量统计胶囊，避免和下方大卡片重复显示同一组数据
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮只删掉重复展示的统计卡片，保留了顶部统计胶囊；如果后续还想继续极简，可再考虑把统计胶囊也折叠进菜单
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已按“滴答清单式月历优先”方向重排我的月历
+  - 当前默认只显示大月历本体，右侧当天任务详情默认收起；点击任意日期后，右侧详情才展开，并可用箭头收回
+  - 日期格里的任务预览已改成更紧凑的窄胶囊样式，并把任务色点放到左上角，减少任务条本身对空间的占用
+  - 日期格底部原有的完成/待推进统计角标已移除，优先把空间留给任务预览本身
+  - 单日可见任务预览数已从 3 条提升到 4 条，超出部分继续用“+ N 条更多”承接
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮主要优化的是桌面端月历的空间利用率；如果后续要进一步贴近滴答清单的密度，还可以继续压缩顶部说明文案和右侧详情卡片高度
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已删除我的月历标题区下面那两段说明提醒
+  - 当前标题区只保留月份标题、统计胶囊和实际操作控件，不再重复解释协作开关和详情展开规则
+- 是否需要主线程配合（更新）：不需要
+- 风险点（更新）：
+  - 这轮是纯展示减法；如果后续还需要帮助用户理解协作开关含义，建议改成更轻的图标提示而不是整段说明
+
+## 2026-03-16 非客户工作台模块线程（资讯情报站详情信息收缩）
+- 线程名称：非客户工作台模块线程（资讯情报站详情信息收缩）
+- 负责范围：`topics_management` 右侧详情栏信息减法，移除低价值块
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+- 当前状态：
+  - 已删除右侧详情中的 `自定义标签`、`资料备注`、`相关任务` 三个信息块
+  - 已同步删除顶部自定义标签展示，避免保留只读残留信息
+  - 其余核心内容保留为 `核心观点 / 大周前哨判断 / 可直接展开成文 / 值得继续追问的问题`
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这次只删展示层，本地保存的自定义标签与资料备注状态仍存在，但当前页面不再显示或编辑
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-22 主线程：本地封装启动排障
+
+- 负责范围：只排查打包后本地安装包的启动异常、白屏和“无数据”错觉，不改业务功能语义。
+- 已确认根因：
+  - 生产包里的 React `#310` 不是数据目录切错，而是 `src/renderer/App.tsx` 中把 `useClientWorkspaceView()` 当作函数在 `App` 条件分支后调用，导致前后两次渲染的 hooks 数量不一致。
+  - 之前“正在连接本地后端”长时间停留，则是 `getHealth` 调用接入后漏导入，打包态直接触发 `getHealth is not defined`。
+  - “记录没有了”不是数据库丢失，而是软件一度读到了新空目录；当前已重新对准旧目录 `~/Library/Application Support/YiyuThinkTankWorkbench/app.db`。
+- 已改文件：
+  - `src/renderer/App.tsx`
+- 已做处理：
+  - 将 `useClientWorkspaceView` 改为正常组件 `ClientWorkspaceView`，在 `viewMap` 中用 JSX 渲染，消除 hooks 顺序错误。
+  - 修正 `getHealth` 的前端接线。
+  - 重新执行 `npm run build:renderer`、`npm run build:main`、`npm run dist:mac-local`，并把新包重新覆盖安装到 `~/Applications/益语智库自用平台.app`。
+  - 只保留 `~/Applications/益语智库自用平台.app` 这一个主入口重新冷启动。
+- 验证结果：
+  - 打包后冷启动时，本地后端健康检查返回 `clients=6`、`tasks=18`、`provider=qwen`。
+  - 新安装包里的前端资源已经切到 `index-BAPcA6oA.js`，不再包含 `useClientWorkspaceView` 字样。
+  - 本地后端 `/api/v1/clients` 正常返回 6 个客户，数据未丢失。
+
+## 2026-03-22 周页面顶部改成四层入口
+
+- 负责范围：先重组周页面第一屏的信息结构，不改后端分析算法，不删除现有详细区块
+- 计划修改的文件：
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 周页面虽然已经有事实、判断、可能性分析、建议动作，但第一眼仍然先看到摘要和详细块，管理者难以快速建立全局认知
+  - 这轮先把顶部改成统一的四层入口：
+    - `本周关键事件线`
+    - `本周最值得关注的风险`
+    - `本周最值得放大的机会`
+    - `本周建议动作`
+  - 对个人/部门/机构三种报告统一生效
+  - 如果 `analysis` 已存在，就优先读：
+    - `eventLineSummaries`
+    - `riskCards`
+    - `opportunityCards`
+    - `nextWeekFocus`
+  - 如果没有 `analysis`，就回退到报告里已有的：
+    - `focusAreas`
+    - `supportSignals`
+    - `anonymousInsights`
+    - `suggestedActions`
+  - 这样可以先把页面第一屏变成“管理入口”，下方仍保留事实、AI 判断、可能性分析、建议动作的详细展开
+- 已改文件：
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只是前端结构重排，如果后端内容本身还不够深，顶部四格仍会显示得偏保守
+  - 部门/机构视角目前仍有一部分内容来自 `HierarchyReport` 的现有聚合字段，不是完整事件线正文
+- 验证结果：
+  - `python3 -m py_compile backend/app/services/review_analysis.py backend/app/services/review_rollup.py cloud_backend/app/main.py` 通过
+  - `npx vite build` 通过
+
+## 2026-03-22 周页面第一屏结构化条目
+
+- 负责范围：继续做深周页面第一屏，不改后端分析逻辑，只改第一屏内容呈现
+- 计划修改的文件：
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+- 当前状态：
+  - 上一轮虽然已经把第一屏改成四层入口，但每格里仍然是纯文字列表，信息还是偏“长句堆砌”
+  - 这轮把四格都改成结构化条目：
+    - 每条显示 `标题 + 关键句 + 辅助标签`
+    - 事件线格会显示：事件线名、推进句、项目/模块/完整度标签
+    - 风险格会显示：风险标题、风险判断、概率/时间窗标签
+    - 机会格会显示：机会标题、机会判断、把握度/放大收益标签
+    - 动作格会显示：动作标题、动作摘要、动作类型标签
+  - 这样第一眼更像“管理驾驶舱里的判断入口”，而不是四个装了长句的浅色框
+- 已改文件：
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮仍然没有改变后端内容本身，只是把已有结构化对象在第一屏更明确地展开
+  - 如果后端某些事件线内容本身还浅，第一屏仍会显得保守，但至少不再是同质化长句列表
+- 验证结果：
+  - `npx vite build` 通过
+
+## 2026-03-22 事件线背景进入周判断正文
+
+- 负责范围：把事件线维护字段真正接进周判断主生成链，不改周页面结构，不改新的任务卡前端样式
+- 计划修改的文件：
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `src/shared/types.ts`
+  - `backend/tests/test_review_analysis.py`
+- 当前状态：
+  - 周判断原来虽然已经有事件线对象，但正文生成主流程仍主要依赖共享 `projectContext`
+  - 这会导致：
+    - 事件线只参与计数，不参与真正的内容生成
+    - CEO/admin 视角下仍容易出现“知道这条线存在，但不知道它这周到底在推进什么”
+    - 同一项目下多条任务容易被压成同一种泛化话术
+  - 这轮已改成：
+    - 任务周快照新增 `eventLineContext`
+    - 事件线聚合时直接吸收 `summary / intent / currentBlocker / recentDecision / nextStep / stage`
+    - 事件线摘要卡优先写“这条线自己维护的内容”，不再先回退到共享项目背景
+    - CEO/admin 正文也会优先使用事件线摘要和推进事项
+    - 管理视角汇总摘要开始显式带事件线名，避免最后一层汇总把具体业务名压没
+- 已改文件：
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_analysis.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `src/shared/types.ts`
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮把“事件线维护字段”接进了生成链，但前提仍然是事件线本身要有人维护
+  - 如果事件线长期只填了名字，不补 `当前事项 / 当前阻塞 / 下一步 / 最近决策`，周判断会继续回退到项目和任务事实层
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py backend/app/services/review_analysis.py cloud_backend/app/main.py cloud_backend/app/models.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`17 passed`
+  - `npx vite build` 通过
+
+## 2026-03-22 事件线专用澄清线程
+- 线程名称：event-line-clarification-v1
+- 负责范围：补事件线当前态字段与桌面端快速澄清闭环，让任务 AI 洞察优先读取事件线专用阻塞/决策信息
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/db.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+  - `src/renderer/App.tsx`
+  - `backend/tests/test_api_smoke.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中客户工作台聊天与问答主链路
+- 当前状态：
+  - 事件线模型已新增 `currentBlocker` / `recentDecision`，本地与云端 schema、创建、更新、详情返回都已接通
+  - 桌面端事件线详情弹层新增“快速澄清”区，可直接补：
+    - 当前阶段
+    - 当前阻塞
+    - 下一步动作
+    - 最近关键决策
+  - 周判断里的 `快速澄清` 缺口动作，现在会优先直接打开对应事件线详情并进入澄清态；找不到详情时才回退到旧的周复盘表单
+  - 任务卡 `AI 洞察` 已开始优先读取事件线的 `currentBlocker` / `recentDecision`，不再只靠共享项目兜底信息
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/db.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+  - `src/renderer/App.tsx`
+  - `backend/tests/test_api_smoke.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前“快速澄清”仍然挂在事件线详情弹层里，还没有独立成更轻量的专用弹层
+  - 存量任务如果本身没有挂事件线，仍然拿不到这层专用动态信息；这部分需要继续靠归属治理补齐
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/db.py backend/app/main.py cloud_backend/app/models.py cloud_backend/app/db.py cloud_backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "event_line_clarification_fields_persist_locally"` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k "event_line_clarification_fields_persist_in_cloud_backend"` 通过
+  - `npm run build:renderer` 通过
+
+## 2026-03-22 弹窗防误触关闭线程
+- 线程名称：modal-close-guard-v1
+- 负责范围：统一收口桌面端中心弹窗的关闭方式，禁止点击遮罩误关，补固定 `×` 按钮退出
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/ReviewHistoryPicker.tsx`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+  - `src/renderer/components/workbench/UnifiedWorkbenchStudio.tsx`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中客户工作台聊天与问答主链路
+- 当前状态：
+  - 已把高频中心弹窗统一改成“点遮罩不关闭，只能点显式关闭按钮退出”
+  - 已把关闭按钮统一补到头部左上角，优先覆盖：
+    - 新建/编辑任务
+    - 退回任务
+    - 事件线详情
+    - 支持请求
+    - 客户工作台会议/目标/DNA 弹窗
+    - 模板填写进度
+    - 创建/编辑项目
+    - 删除项目确认
+    - 候选解析
+    - 指派任务
+    - 深度追踪规则
+    - 历史复盘
+    - 话题管理的雷达编辑/同步任务
+    - 飞书扫码绑定
+    - 新建诊断
+    - 成长手册新增沉淀
+  - 目标是避免用户正在填写内容时，误触遮罩导致整张弹窗直接退出
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/ReviewHistoryPicker.tsx`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+  - `src/renderer/components/workbench/UnifiedWorkbenchStudio.tsx`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前主要收的是“中心弹窗”；右侧抽屉类组件原本就不是靠点遮罩误触退出，这轮没有强行改它们的交互
+  - 个别弹窗在处理中的禁关逻辑仍保留，例如模板填写进度和话题转任务提交中，避免处理中途误关
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-22 任务卡洞察差异化第二刀
+
+- 用户反馈：
+  - 同一项目下的任务卡 `AI 洞察` 仍然趋同
+  - 怀疑是否需要在任务详情里补更多背景
+- 本轮结论：
+  - 只让用户多写背景，只会小幅改善；根因是卡片取数颗粒度太粗
+  - 当前卡片过度依赖共享 `projectContext / orgContext / eventLineName`
+  - 已把卡片的锚点从“事件线名优先”改成“任务标题优先”
+  - 已让洞察真正读取任务自己的 `title / desc / projectModuleName / projectFlowName`
+- 新增逻辑：
+  - 对任务做轻量语义归类：
+    - `relationship / deliverable / materials / decision / analysis / general`
+  - 按任务说明提取更具体的句子片段：
+    - 推进点
+    - 卡点
+    - 可放大点
+    - 下一步
+  - 如果任务说明不够，才退回到项目 / 事件线背景
+  - 即便退回，也会优先用任务标题做锚点，避免同一项目下所有卡片都被同一个事件线名覆盖
+- 修改文件：
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+- 验证结果：
+  - `npx vite build` 通过
+  - 新构建产物：
+    - `dist/renderer/assets/index-ibVrmfyT.js`
+    - `dist/renderer/assets/index-Co8SkACO.css`
+
+## 2026-03-22 任务卡洞察差异化第三刀
+
+- 目标：
+  - 继续解决“同一项目下卡片趋同”的问题
+  - 不再只靠任务标题和任务说明拉开差异，而是加上明确的业务类别口径
+- 本轮新增：
+  - `TaskOrgContextPanel` 增加轻量 `BusinessCategory` 推断：
+    - `业务扩展`
+    - `正式交付`
+    - `资料沉淀`
+    - `协同确认`
+    - `判断提炼`
+    - `内部推进`
+  - 卡片顶部 `AI 洞察` 区新增业务类别芯片
+  - 风险 / 机会 / 下一步 三类短句不再只是共享背景的不同重排，而会按业务类别切换用语
+- 当前效果：
+  - 同样挂在一个客户/项目下的任务，如果一个更像“会面拓展”，一个更像“资料补齐”，它们会长出明显不同的风险和动作表述
+  - 用户不必靠手工写一大段任务说明，卡片也开始有更强的任务自身差异
+- 修改文件：
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+- 验证结果：
+  - `npx vite build` 通过
+  - 新构建产物：
+    - `dist/renderer/assets/index-BI03aASf.js`
+    - `dist/renderer/assets/index-Co8SkACO.css`
+
+## 2026-03-22 任务卡洞察差异化第四刀
+
+- 目标：
+  - 让卡片不只按任务自身语义分化，还能真正带着事件线的连续上下文说话
+- 本轮新增：
+  - `TaskOrgContextPanel` 开始优先读取事件线自己的四类关键字段：
+    - `summary / intent`
+    - `currentBlocker`
+    - `recentDecision`
+    - `nextStep`
+  - 有事件线的任务现在会优先生成：
+    - 这条线当前主线是什么
+    - 这条线上的主要阻塞是什么
+    - 最近已经明确了什么
+    - 下一步沿着这条线先做什么
+- 当前效果：
+  - 同一条事件线上的任务开始共享一条更真实的“连续上下文”
+  - 不同事件线之间的卡片差异会被进一步拉开
+  - 卡片不再只是在共享项目背景上换句话说，而是能更具体地说“你正在这条线里推进什么”
+- 修改文件：
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+- 验证结果：
+  - `npx vite build` 通过
+  - 新构建产物：
+    - `dist/renderer/assets/index-Brd6x6Os.js`
+    - `dist/renderer/assets/index-Co8SkACO.css`
+
+## 2026-03-22 任务弹窗补事件线当前态维护入口
+
+- 目标：
+  - 不再要求用户先进入事件线抽屉，才能维护这条线的关键背景
+  - 让任务编辑和事件线背景补录发生在同一个工作流里
+- 本轮新增：
+  - 任务弹窗中，已选事件线的摘要卡扩展为：
+    - 这条线想推进什么
+    - 当前阻塞
+    - 下一步
+    - 最近关键决策
+  - 新增内嵌 `快速澄清这条线`
+    - 可直接编辑：
+      - 当前阶段
+      - 当前事项
+      - 当前阻塞
+      - 下一步动作
+      - 最近关键决策
+    - 保存后直接更新事件线对象
+  - 事件线抽屉的保存逻辑也同步支持 `当前事项(intent)` 字段
+- 当前效果：
+  - 任务卡、周总结、事件线详情开始共享同一套可维护的事件线关键背景
+  - 用户不需要离开任务弹窗，就能把这条线的核心语境补实
+- 修改文件：
+  - `src/renderer/App.tsx`
+- 验证结果：
+  - `npx vite build` 通过
+  - 新构建产物：
+    - `dist/renderer/assets/index-Dewt1k_i.js`
+    - `dist/renderer/assets/index-CHu_uC0J.css`
+
+## 2026-03-16 非客户工作台模块线程（资讯情报站单新闻追问）
+- 线程名称：非客户工作台模块线程（资讯情报站单新闻追问）
+- 负责范围：`topics_management` 单条情报的追问入口与轻量 AI 对话
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+  - `src/renderer/components/topics/TopicIntelChatPanel.tsx`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/topics/TopicIntelDetailPanel.tsx`
+  - `src/renderer/components/topics/TopicIntelChatPanel.tsx`
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+- 当前状态：
+  - 已把“值得继续追问的问题”改成可点击的追问入口，点击即可直接向大周发问
+  - 已在详情底部新增基于当前新闻上下文的小型 AI 对话框，支持围绕单条情报继续多轮提问
+  - 后端已新增 `POST /api/v1/topics/candidates/{candidate_id}/chat`，上下文只围绕当前新闻、已有解析、原文摘录和当前对话历史
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前对话记录只保存在前端当前页面状态里，不写回数据库；刷新页面后会丢失
+  - 这轮没有做流式输出，回答是整段返回
+  - 这轮为了 topics 追问最小闭环，最小触达了 `backend/app/main.py`
+- 验证结果：
+  - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -k "topic_candidate_chat_uses_candidate_context"` 通过
+  - `npm run build:renderer` 通过
+
+## 2026-03-16 非客户工作台模块线程（我的月历头部压缩）
+- 线程名称：非客户工作台模块线程（我的月历头部压缩）
+- 负责范围：`tasks` 中我的月历顶部控件与信息条的紧凑化排版
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态：
+  - 已进一步压缩我的月历顶部区域的纵向高度
+  - 月份标题字号、统计胶囊、协作开关、翻月按钮、今天按钮、跳转按钮均已缩小一档
+  - `今天` 当前强制横向显示，不再因为按钮宽度不足而断成两行
+  - 协作开关文案已收短为 `只看主任务 / 显示协作任务`，减少右上角占宽
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已把日历网格内的字号整体放大一号
+  - 当前包含：星期栏、日期数字、`今天` 标记、任务预览胶囊、`+ N 条更多` 提示
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只放大了月历格子内字号；如果后续某些日期任务特别密集，4 条预览的横向容纳会比之前更紧一些
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已删除右侧当天任务详情栏中的单独收起箭头
+  - 当前改为直接用日期点击控制详情栏开合：
+    - 点击其他日期会切换到对应当天
+    - 再次点击当前已选日期会收起右侧详情栏
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮把“收起”动作合并进日期交互；如果后续用户更偏好显式控制，再补一个更轻的收起入口会比原大按钮更合适
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已在不改变任务框尺寸的前提下，把日历格子里的任务预览字号再放大一号
+  - 当前影响范围仅包括任务预览胶囊和 `+ N 条更多` 提示，不改日期格尺寸和任务框 padding
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮继续提高了任务预览的字密度；如果后续遇到特别长的任务标题，单行可见字数会比之前再少一点
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已把月历头部协作开关的文字改成默认隐藏
+  - 当前只有在悬停、聚焦或点击操作开关时，才会浮出 `只看我的任务 / 显示协作任务` 提示
+  - 文案不再常驻占位，顶部横向空间已释放出来
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮改成的是轻提示浮层；如果后续希望在触屏环境下也更稳定可见，可能还需要再加切换后的短暂驻留逻辑
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已删除月历格子中的 `今天` 字样胶囊
+  - 当前改为直接用日期圆点标识今天，并把今天的日期底色改成玫红色，便于在整月视图里快速识别
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 今天的玫红色标识当前优先级高于“选中态”蓝色，因此当你选中今天时，日期仍会保持玫红色而不是变蓝
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态（更新）：
+  - 已把月历头部统计胶囊文案从 `共 N 条` 改成 `本月任务 N 条`
+  - 当前第一枚统计胶囊表达更明确，不再需要用户自己补全上下文
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只改了文案，没有调整统计口径；当前仍是本月月历里可见任务总数，不是全系统任务数
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+  - `src/renderer/components/tasks/reviewDraft.ts`
+  - `backend/app/main.py`
+- 当前状态（更新）：
+  - 已把任务级周复盘采集从多字段“申请表”改成按状态切换的一条输入
+  - 当前规则改为：
+    - 任务已完成：提示 `任务完成了，有什么心得？`
+    - 任务未完成或仍在推进：提示 `需要什么支持，或者有什么思考？`
+  - 原来的计划状态、部门计划挂接、个人-部门对齐、机构主线挂接、成功原因、阻碍原因、下周动作等强制采集入口已从前台移除
+  - 复盘保存时的备注拼装也已同步改成简洁格式，不再落成一长串规则字段
+  - 周复盘草稿里的逐任务说明已改成简洁版，只保留任务背景、当前状态和最终复盘说明
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮是明确的复杂度减法，旧的对齐率相关指标会因为不再强制采集而变得更保守；如果后续仍想保留组织级判断，应转成后台推断而不是继续让用户手填
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已修正任务弹窗里“添加协作者”的下拉界面
+  - 当前下拉候选只显示尚未添加的人，不再把已选协作者混在候选列表里
+  - 点击候选后会自动加入协作者并收起下拉；下拉本身也补了最大高度和滚动，避免把下方区域挤乱
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮保留了“点击下方协作者胶囊可设为负责人”的原交互；如果后续要更直观，可以再补一个更明确的负责人提示
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这轮是纯视觉压缩，没有改变协作过滤规则；如果后续要继续极简，可以再考虑把顶部统计胶囊并进一个折叠菜单
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `src/renderer/components/settings/ReviewGovernanceSettingsPanel.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_analysis.py`
+  - `backend/tests/test_review_rollup.py`
+- 当前状态（更新）：
+  - 已给周复盘治理增加“本周重点计划”输入，部门负责人现在可以在治理页补部门周计划背景，而不是只填月度 DNA
+  - 部门周计划已进入部门总结：部门报告会同时对照 `月度 DNA + 本周重点计划`，空样本提示和建议动作也同步改成“补齐部门计划背景”
+  - 机构层开始自动利用现有 `组织介绍` DNA 抽取季度重点目标，不新增第五个 DNA 模块，也不增加员工端字段
+  - 周分析器已恢复为四张自动指标卡：
+    - `计划及时完成率`
+    - `个人-部门对齐率`
+    - `部门-机构对齐率`
+    - `复盘沉淀率`
+  - 其中“个人-部门对齐率”和“部门-机构对齐率”均为后台自动推断，分别基于：
+    - 任务文本 vs 部门计划背景
+    - 任务文本 vs 组织介绍中抽取的季度重点
+  - 机构汇总摘要现在会把识别到的季度重点直接写进 CEO 视角总结里，不再只停留在后台分析对象里
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 季度重点当前依赖 `组织介绍` 文本中的 `Q1/Q2/季度/本季度` 等显式表达；若原文完全不写季度主线，系统仍会回落到保守判断
+  - 自动对齐率当前仍是启发式词项匹配，不是严格因果判断；适合做管理提醒，不适合直接当绩效结论
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/services/review_analysis.py backend/app/services/review_rollup.py backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`7 passed`
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已在任务新建/编辑弹窗的日期时间区域新增飞书会议图标按钮
+  - 当前按钮为纯图标样式，不显示文字；鼠标悬停时会浮出灰字提示 `发起飞书会议`
+  - 当前点击行为先作为预留入口：会提示“飞书会议入口已预留；下一步可接直接创建会议”，避免先接一个不稳定的外部直链
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮先补的是 UI 入口和提示，不是飞书会议直连创建；如果后续要真的一键起会，建议单独补飞书会议创建链路，不要直接写死外部链接
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+
+## 2026-03-16 非客户页协同提质线程
+- 线程名称：非客户页协同提质线程
+- 负责范围：`tasks`、`topics_management`、`unified_workbench`、`growth_handbook`、`settings`，以及与这些页面直接相关的组件、样式、接口调用
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/*`
+  - `src/renderer/components/topics/*`
+  - `src/renderer/components/workbench/*`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/settings/*`
+  - `src/renderer/lib/api.ts`
+  - `src/shared/types.ts`
+  - `src/renderer/styles.css`
+  - `src/renderer/App.tsx`（仅在必须接线时最小修改非 `client_workspace` 区块）
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已完成接手初始化：读取 `AGENTS.md / SOUL.md / USER.md / MEMORY.md / memory/2026-03-14.md / memory/2026-03-13.md`
+  - 已按要求检查 git：仓库根目录为 `/Users/guyuanyuan/.openclaw/workspace`，`yiyu-thinktank-workbench` 属于外层工作区仓库子目录，不是独立仓库
+  - 已确认当前阶段只在非客户工作台模块内工作，尚未开始页面代码改动
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前工作区根仓库存在大量其他目录的未提交改动，后续必须严格限定到 `yiyu-thinktank-workbench` 子目录和本同步文档，避免误碰外层文件
+  - `backend/app/main.py` 与 `src/renderer/App.tsx` 都已被其他线程触达；除非是非 `client_workspace` 的最小接线，否则优先通过新增组件和局部接线完成
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-17 成长手册复用验证补链
+- 线程名称：成长手册复用验证补链
+- 负责范围：`growth_handbook`，以及与成长经验账本直接相关的前后端接口与类型
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态：
+  - 已新增成长手册“标记复用”接口：手册里的方法型沉淀现在可以显式记一次复用，不再只是静态按钮
+  - 复用不会生成第二套分数，而是按统一经验体系新增一条 `reuse` 经验事件，并自动带上更高的组织贡献溢价
+  - 前端记录详情里的原“调用模板”按钮已接成真实动作，点击后会刷新成长总览并提示本次新增 XP
+  - 后端已把这次手动复用写进 `growth_validation_events`，用于后续审计和更细的验证状态升级
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前前台“被复用 N 次”展示仍是占位口径，还没有接成逐条真实复用次数；这不影响账本入账，但会影响细节可信度
+  - 当前默认按“同一条手册每周可记一次手动复用”去重，适合先控刷分；如果后续要支持同周多次真实复用，需要补来源选择和复用对象
+- 验证结果：
+  - `python3 -m py_compile backend/app/db.py backend/app/models.py backend/app/services/growth_engine.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`4 passed`
+  - `npm run build:renderer` 通过
+  - 接口烟测通过：`POST /api/v1/handbook -> POST /api/v1/growth/handbook/{id}/mark-reused -> GET /api/v1/growth/overview`
+  - 烟测样例：本次复用新增 `114 XP`，其中 `weeklyBaseXp=76`、`weeklyPremiumXp=38`
+
+## 2026-03-17 成长手册段位体系替换
+- 线程名称：成长手册段位体系替换
+- 负责范围：`growth_handbook` 英雄区视觉、段位文案和段位图标
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 计划把当前“成”字圆徽章替换为明确的段位体系，从青铜一路晋升到王者序列
+  - 计划同步替换英雄区文字口径，不再显示 `LV + 阶段`，改成“当前段位 + 距离下一段位差多少 XP”
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这轮只改前端展示，不改后端成长分算法；段位阈值先由前端静态映射，后续如果要全局统一到别的页面，再考虑上收共享常量
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态（更新）：
+  - 已把成长手册英雄区从“成”字圆徽章切换成段位徽章，新增 `倔强青铜 -> 秩序白银 -> 荣耀黄金 -> 尊贵铂金 -> 永恒钻石 -> 至尊星耀 -> 最强王者 -> 荣耀王者 -> 传奇王者` 段位序列
+  - 英雄区标签已从 `LV + 阶段` 改为“当前段位”，并开始显示小段位 `III / II / I`
+  - 中央图标已替换成精致化 SVG 段位徽章：保留进度环，同时加入翼片、盾形、宝石和段位横幅，不再是单一蓝色圆点
+  - 说明文案已改为“当前总经验 + 距离下一段位还差多少 XP”，并额外显示段位进度百分比
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前段位阈值仍是成长手册页面内的前端静态映射，如果后续其他页面也要展示同一段位体系，建议再上收为共享常量
+  - 当前只是英雄区替换，列表和图谱里仍沿用原能力阶段文案；这是刻意保留，不会影响本轮主视觉升级
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+  - 当前仍有既有 chunk size 警告，但不影响本轮构建成功
+
+## 2026-03-17 成长段位全局打通
+- 线程名称：成长段位全局打通
+- 负责范围：`growth_handbook` 以及成长全局数据接线，不涉及 `client_workspace`
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/components/growth/GrowthContext.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/App.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/components/growth/GrowthContext.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/App.tsx`
+- 当前状态：
+  - 段位已不再由成长手册页面私算，后端 `GrowthOverview` 现在会统一返回 `rank`
+  - `rank` 已包含：`key / name / division / fullLabel / progress / nextName / xpToNext`
+  - 前端已新增最小 `GrowthProvider`，全局持有 `growthOverview` 并监听刷新事件
+  - 成长手册页现在优先读取全局 growth context，页面内只保留段位视觉映射，不再定义段位数据真相
+  - 两个高频入口已接刷新：
+    - 周复盘生成/保存
+    - 成长手册新增
+  - `App.tsx` 只做了非 `client_workspace` 的最小接线，没有碰客户工作台主链路
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前全局 growth provider 还只被成长手册消费，其他页面虽然已经可以接，但还没有实际显示段位
+  - 刷新触发目前只补了复盘和手册新增；如果后续还有别的 XP 入口，也需要继续派发同一个 growth refresh 事件
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/services/growth_engine.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`4 passed`
+  - `npm run build:renderer` 通过
+  - 接口烟测通过：`GET /api/v1/growth/overview` 已返回 `rank`
+  - 烟测样例：`totalXp=67`，`rank=倔强青铜 II`，`nextName=秩序白银`，`xpToNext=53`
+
+## 2026-03-17 成长手册英雄区分数压缩
+- 线程名称：成长手册英雄区分数压缩
+- 负责范围：`growth_handbook` 英雄区统计展示
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态：
+  - 已取消英雄区右侧第二张独立分卡，不再展示“组织溢价”单独分数
+  - 顶部胶囊文案也已从“基础 / 溢价”改成只显示“本周总增量”
+  - 当前英雄区只保留一个核心数字：`本周增量`
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这轮只压缩 hero 区的总览展示，下面明细列表里的 `基础 + 溢价` 拆分仍保留，用于账本解释
+- 验证结果：
+  - `npm run build:renderer` 通过
+  - 当前仍有既有 chunk size 警告，但不影响本轮构建成功
+
+## 2026-03-17 经验沉淀替换为成长勋章
+- 线程名称：经验沉淀替换为成长勋章
+- 负责范围：`growth_handbook` 经验沉淀页、相关共享类型、API 和成长后端接口
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/badge_engine.py`
+  - `backend/tests/test_badge_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+  - `src/renderer/App.tsx`（仅在需要传递页面导航回调时最小修改）
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 已改文件：
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 准备把当前“经验沉淀”的列表详情页替换成“成长勋章”页面
+  - 本轮会优先做配置化 badge 定义 + 后端进度计算接口 + 前端勋章墙与详情抽屉
+  - 勋章数据会优先连接现有可用模块：会议、任务、周复盘、成长手册、方法复用、分析运行
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 现有项目并没有 CRM/财务/审批完整数据源，所以 30 枚勋章里会有一部分只能先走“可解释但低进度”的 MVP 计算，不能假造真实业务证据
+  - 本轮会最小修改 `backend/app/main.py` 和 `src/renderer/App.tsx` 做新接口和页面导航，不会触碰客户工作台主链路
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已将任务弹窗中“发起飞书会议”按钮的 icon 微调为更接近纸飞机参考图的白线稿蓝底样式
+  - 保留纯图标按钮与悬停提示，不改当前预留点击逻辑
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 本轮只调整图标视觉，不涉及飞书会议实际创建链路
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx`
+- 当前状态（更新）：
+  - 已删除周复盘分析面板中重复出现的“证据权重”区块，仅保留已确认事实、假设性分析和下周关注点
+  - 保持上方已有分析信息与指标卡不变，避免页面重复
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 本轮只删除前端重复展示，后端仍保留 `evidenceWeights` 数据结构，供后续别的视图复用
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/badge_engine.py`
+  - `backend/tests/test_badge_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已将成长手册里的 `经验沉淀` 视图整体替换为 `成长勋章`
+  - 已新增后端配置化 `badge_engine`，当前按真实业务对象和结构化事件实时计算 30 枚勋章的状态、进度、证据、下一步提示与分组概览
+  - 已新增接口 `/api/v1/growth/badges`
+  - 勋章解锁已与现有成长体系打通：首次满足条件时会写入 `badge_unlock_records`，并同步新增一条 XP 账本记录，自动进入成长总览和近期经验流
+  - `/api/v1/growth/overview` 与 `/api/v1/growth/ledger` 在返回前会自动执行勋章解锁同步，保证总经验与勋章状态一致
+  - 前端勋章页已支持：
+    - 顶部概览卡
+    - 分组勋章墙
+    - 全部 / 已点亮 / 进行中 / 未点亮筛选
+    - 搜索
+    - 详情侧栏
+    - “离点亮还差什么”“马上去做”“系统怎么识别”“最近触发证据”展示
+  - `records` 标签文案已改为 `成长勋章`
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 30 枚勋章里，CRM / 审批 / 报销 / 回款 / 采购 / 带教等业务对象在当前仓库没有真实事件源，因此这部分会诚实显示为未点亮或低进度，不会伪造数据
+  - 第一版规则引擎已配置化并放在后端，但仍基于当前已有结构化对象和日志，还没有独立 `work_events` 总线与夜间全量校准任务
+  - `mastered` 目前只做展示态，不重复发 XP
+- 验证结果（更新）：
+  - `python3 -m py_compile backend/app/db.py backend/app/models.py backend/app/services/growth_engine.py backend/app/services/badge_engine.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_badge_engine.py backend/tests/test_growth_engine.py -q` 通过，`6 passed`
+  - `npm run build:renderer` 通过
+  - API 烟测通过：
+    - `GET /api/v1/growth/badges` 返回 `200`
+    - 返回结构包含 `30` 枚勋章、`6` 个分组
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态（更新）：
+  - 已修复成长勋章页频闪
+  - 根因是 `GrowthHandbookView` 内部把 `records` 视图包装成了每次渲染都会重新生成的新组件函数，导致 `GrowthBadgeWall` 在父组件重渲染时被反复卸载和重新挂载，`fade-in + 数据加载` 循环触发
+  - 当前已改成直接渲染稳定的 `GrowthBadgeWall` 组件，不再通过临时 `RecordsView` 函数包一层
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮是精确修复当前频闪根因，没有继续重构 `OverviewView / LearningView / MapView` 这些内部函数组件；它们当前没有加载副作用，所以不会造成同类问题
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+- 当前状态（更新）：
+  - 已将任务弹窗中的飞书会议图标替换为更接近参考图的青蓝色线稿纸飞机样式
+  - 图标尺寸已放大到按钮可视区约 80%，保留按钮位置、悬停提示和预留点击逻辑
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 本轮只调整图标视觉与占比，未改飞书会议实际创建链路
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态（更新）：
+  - 已将任务与日历里的逾期规则统一为“只按日期判断，过当天 24:00 才算逾期”，不再受具体截止时分影响
+  - 月历顶部逾期统计、任务列表逾期筛选和云端任务统计已按同一规则处理
+  - 已补云端回归测试：今天带具体时间的任务不算逾期，昨天的任务才算逾期
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前规则是明确的按日历日结束判定，所以不会区分“今天 09:00 没完成”和“今天 18:00 没完成”；这是刻意简化后的产品规则
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/HierarchyReportCard.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx`
+  - `src/renderer/components/tasks/reviewDraft.ts`
+- 当前状态（更新）：
+  - 已将采集阶段独立的“分析视角总结”并入“我的本周总结”，在个人总结卡片内新增“可能性分析”和“下周关注重点”
+  - 个人总结卡片保留“建议动作”，并移除了“匿名现场信号”
+  - 原“假设性分析”名称已统一改为“可能性分析”，`下周关注点` 已统一改为 `下周关注重点`
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 本轮只改前端展示层，后端 `WeeklyReviewAnalysis` 数据结构保持不变，后续其他视图如果继续使用旧命名，需要再统一文案
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_rollup.py`
+- 当前状态（更新）：
+  - 已根据《益语智库_基于2026战略规划的AI周总结与任务系统反推报告_最终版》重写四部门总结生成口径
+  - 四部门总结不再直接拼接 `analysis.headline / nextWeekFocus`，而是按部门战略模板 + 当前样本事实生成 headline、summary、focusAreas、supportSignals、suggestedActions
+  - `focusAreas` 已改为稳定的人话短语，避免出现碎片化或近似乱码的关注重点
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前四部门战略模板是益语智库专用口径，适合当前组织，不适合作为通用 SaaS 组织模板直接复用
+
+## 2026-03-17 战略陪伴客户工作台线程切换收口线程
+- 线程名称：client-workspace-thread-separation
+- 负责范围：`client_workspace` 主链路里的客户内问答线程、消息隔离、线程切换交互，以及与此直接相关的前后端接线和最小测试
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/client_workspace/ClientWorkspaceThreadRail.tsx`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `cloud_backend/`
+  - `src/renderer/App.tsx` 中 `tasks`、`topics_management`、`growth_handbook`、`settings` 相关区域
+- 当前状态：
+  - 已完成接手初始化、项目文档阅读、仓库状态检查和客户工作台主链路梳理
+  - 已确认当前前端虽然拿到了 `chat_threads`，但仍以 `workspace?.threads[0]` 为主，缺少真实线程切换，并且存在把同一客户下不同线程消息混在一起展示的风险
+  - 本轮第一目标是把“客户内问答线程”做成真实可切换、可隔离的主链能力，同时顺手把线程相关 UI 从 `App.tsx` 抽出
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - `src/renderer/App.tsx` 和 `backend/app/main.py` 都是高风险文件，只会做围绕线程隔离的最小补丁
+  - 如果其他线程同时修改客户工作台问答区或聊天路由，后续合并时需要重点检查冲突
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/client_workspace/ClientWorkspaceThreadRail.tsx`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+- 当前状态（更新）：
+  - 已把客户工作台问答区从“默认只吃最新线程”改成真实线程切换：左侧新增客户线程栏，支持切线程和新建对话草稿
+  - 前端聊天显示已按 `threadId` 做隔离，不再把同一客户下不同线程的消息混在一条工作流里
+  - 已新增最小后端接口 `/api/v1/clients/{client_id}/workspace/chat/threads/{thread_id}`，前端会在切线程时拉取该线程消息
+  - 已把线程相关 UI 从 `App.tsx` 抽成 `src/renderer/components/client_workspace/ClientWorkspaceThreadRail.tsx`
+  - 已修复客户 DNA 背景未进入正式问答上下文的问题：当前 `build_chat_answer_context(...)` 会先注入“客户背景底稿”，再附上“原始证据包”，明确区分背景理解和正式引证
+  - 同步补齐了 DNA 背景使用规则提示，避免模型把 DNA 文档当正式证据来源
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只把“线程切换 + 线程隔离 + DNA 上下文接回”收口完成，尚未继续重构会议流、目标地图、长文排版等其他客户工作台子区块
+  - 当前前端线程消息是“工作区缓存 + 切线程主动拉取”混合模式，已经解决混线问题；如果后续单线程消息量持续变大，可以再补分页或按线程增量拉取
+  - 本环境缺少浏览器自动化依赖，本轮无法做真正的 GUI 点测；已补 API 级人工烟测，并在汇报里明确说明
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "chat_thread_detail_returns_only_selected_thread_messages or chat_start_returns_loading_then_poll_completes or test_chat_uses_knowledge_citations_and_general_answer_fallback or test_analysis_run_keeps_evidence_summary_when_long_answer_fails or test_client_dna_documents_are_saved_and_prioritized_in_chat_context"` 通过，`5 passed`
+  - `npm run build:renderer` 通过
+  - 已执行 API 级人工烟测：
+    - 创建客户后可看到默认线程 + 新建线程
+    - 切到指定线程后，仅返回该线程自己的 `user` 消息，不再混入其他线程
+    - 上传 1 份 DNA 文档后，工作区返回 `dnaModules.hasDocument=true`
+- 已改文件（计划更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- 当前状态（计划更新）：
+  - 准备新增一个“战略陪伴”独立页面壳，先以静态 mock 结构接入主导航
+  - 本轮只做菜单接入、页面壳落地和基础视觉结构，不接真实后端、不改客户工作台既有语义
+  - 新菜单会放在 `客户工作台` 和 `任务与日程` 之间，作为后续战略陪伴模块的独立承载位
+- 是否需要主线程配合（计划更新）：当前不需要
+- 风险点（计划更新）：
+  - 本轮会最小修改 `src/renderer/App.tsx` 的导航定义和页面映射，但不会触碰 `client_workspace` 主链内部逻辑
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- 当前状态（更新）：
+  - 已新增 `StrategicAccompanimentShell` 独立页面壳，先以本地 mock 数据承载战略基石、里程碑、年度北极星、季度目标、行动足迹、文档会议和学习推荐七个区块
+  - 已把新菜单 `战略陪伴` 接入主侧栏，并调整顺序为：`客户工作台 -> 战略陪伴 -> 任务与日程`
+  - 当前只完成壳接入和基础交互骨架：客户切换、沉浸阅览、编辑态提示、保存按钮占位；尚未接真实后端与客户上下文
+  - 本轮未触碰 `client_workspace` 现有问答、DNA、分析和工作轨迹主链逻辑
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 当前页面仍是静态壳，数据来源是组件内部 mock；下一轮接功能时需要先定义这个页面和现有客户工作台之间的语义边界，避免重复承载
+  - 本轮只验证了编译通过，没有浏览器级点测
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+- 已改文件（更新）：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- 当前状态（更新）：
+  - 已修复战略陪伴静态壳无法向下滚动的问题
+  - 根因是页面根容器沿用了独立页面的 `min-h-screen` 语义，但当前桌面端主容器是 `h-screen + overflow-hidden`，导致内容超出后被主容器裁切
+  - 当前已把新壳根容器改成应用内滚动模式：`h-full + overflow-y-auto`，保留原有视觉结构不变
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 这轮只修滚动，不改变页面静态 mock 的现状
+- 验证结果（更新）：
+  - `npm run build:renderer` 通过
+
+## 2026-03-17 组织模型层 P0 规格细化线程
+- 线程名称：org-model-p0-spec
+- 负责范围：`settings` 相关的组织模型层规划文档、与任务系统/周总结的嫁接规格，不直接落业务代码
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/org-model-foundation-plan.md`
+  - `docs/org-model-p0-spec.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+  - 任务系统和周复盘的真实业务代码链路（本轮不落库、不接接口）
+- 当前状态：
+  - 已完成《组织模型层 P0 规格（数据库 + 接口 + 页面字段）》文档
+  - 文档已细化到：P0 表结构、接口清单、页面字段表、与任务/周计划/周总结的关联关系、迁移顺序和验收标准
+  - 当前可以直接作为 P0 开发起点，不再停留在概念规划层
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 本轮仍是规划文档，不是功能代码；真正进入 P0 开发时会同时触达 `settings`、任务挂接和周总结判断链路
+  - 目前尚未把这份规格转换成 migrations、models 和 API patch，后续落地时要重点控制对现有任务系统的侵入范围
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/org-model-p0-spec.md`
+- 当前状态（更新）：
+  - 已补完整 `docs/org-model-p0-spec.md` 的剩余章节：任务控制规则接口、任务挂接接口、4 个页面字段表、与现有任务系统的关联关系、迁移顺序和 P0 验收标准
+  - 组织模型层的 P0 规格现在已经覆盖“建什么表、开什么接口、页面放什么字段、任务怎么挂接、周总结怎么读取背景”
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 文档里定义的自动挂接和权限校验属于后台高影响逻辑，真正开发时要先做兼容模式，避免一次性改变现有任务编辑体验
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+
+## 2026-03-17 组织模型层 P0 规格细化线程
+- 线程名称：org-model-p0-spec
+- 负责范围：`settings` 相关的组织模型层规划文档、与任务系统/周总结的嫁接规格，不直接落业务代码
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/org-model-foundation-plan.md`
+  - `docs/org-model-p0-spec.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+  - 任务系统和周复盘的真实业务代码链路（本轮不落库、不接接口）
+- 当前状态：
+  - 已完成《组织模型层 P0 规格（数据库 + 接口 + 页面字段）》文档
+  - 文档已细化到：P0 表结构、接口清单、页面字段表、与任务/周计划/周总结的关联关系、迁移顺序和验收标准
+  - 当前可以直接作为 P0 开发起点，不再停留在概念规划层
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 本轮仍是规划文档，不是功能代码；真正进入 P0 开发时会同时触达 `settings`、任务挂接和周总结判断链路
+  - 目前尚未把这份规格转换成 migrations、models 和 API patch，后续落地时要重点控制对现有任务系统的侵入范围
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/org-model-p0-spec.md`
+- 当前状态（更新）：
+  - 已补完整 `docs/org-model-p0-spec.md` 的剩余章节：任务控制规则接口、任务挂接接口、4 个页面字段表、与现有任务系统的关联关系、迁移顺序和 P0 验收标准
+  - 组织模型层的 P0 规格现在已经覆盖“建什么表、开什么接口、页面放什么字段、任务怎么挂接、周总结怎么读取背景”
+- 是否需要主线程配合（更新）：当前不需要
+- 风险点（更新）：
+  - 文档里定义的自动挂接和权限校验属于后台高影响逻辑，真正开发时要先做兼容模式，避免一次性改变现有任务编辑体验
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+- 线程名称：org-model-p0-implementation
+- 负责范围：settings / tasks 相关的组织模型 P0 底座；不触碰 client_workspace 主链路
+- 计划修改的文件：
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台主链路之外的最小接线
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态：
+  - 已落地组织模型 P0 的新表：机构、部门、岗位模板、人员绑定、汇报线、任务控制规则、任务组织挂接占位
+  - 已新增 cloud/local `GET/POST /api/v1/settings/org-model/profile`
+  - 已在“系统与权限”页面接入组织模型层设置面板，可做整包读取和保存
+  - 已补一条 cloud roundtrip 回归测试，验证 profile 可读写
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前保存策略是整包替换，适合 P0，但后面做多人并发编辑时需要拆成分资源接口
+  - `task_org_links` 目前只建表占位，还没接入运行时任务判断和权限校验
+  - 前端 `vite build` 已过，但尚未补独立的 TypeScript 全量类型检查
+
+- 线程名称：org-model-task-linking
+- 负责范围：tasks / org model P0 挂接；不触碰 client_workspace 主链路
+- 已改文件：
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态：
+  - 已新增任务组织挂接辅助逻辑：创建/更新任务后自动写入 `task_org_links`
+  - 自动挂接内容包括：部门、岗位模板、控制规则、是否跨部门、是否需要复核、默认聚焦锚点
+  - 已把任务编辑权限改成读取组织模型：普通任务按创建人/负责人/具备能力的上级判断；部门/机构控制任务按规则字段判断内容、截止时间和负责人修改权
+  - 已修复任务更新时 `ownerId` 单独修改不会同步协作者链路的问题：现在负责人变化会一并重建协作者顺序
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮权限校验只落在 cloud backend 任务接口，还没把控制级别显式展示到前台任务卡
+  - `task_org_links` 目前只在任务创建/更新时重算，历史任务如需批量补链后面要加回填脚本
+  - 周总结尚未正式读取 `task_org_links` 做职责偏离和汇报线判断，这会是下一步
+
+- 线程名称：org-model-review-linking
+- 负责范围：tasks / weekly review / org model 挂接；不触碰 client_workspace 主链路
+- 计划修改的文件：
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/tests/test_review_rollup.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+  - 客户工作台主链路接口
+- 当前状态：
+  - 准备把 `task_org_links` 透传到任务记录，并正式接入部门总结 / 机构总结判断
+  - 本轮目标是让周总结能读取部门、岗位、控制级别和复核状态，生成职责偏离、汇报链瓶颈和控制规则摩擦信号
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前本地总结链路主要吃 cloud 任务快照；如果任务透传字段不完整，会导致组织判断缺证据
+  - 旧历史任务未补链时，部分组织判断会回落到文本和部门成员匹配
+- 已改文件：
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_rollup.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态（更新）：
+  - 已把 `task_org_links` 透传成任务正式字段 `orgContext`，并接入 cloud task API、local task 代理和周复盘任务快照
+  - 部门总结 / 机构总结现在会读取组织挂接信息，生成职责边界、汇报/复核链、控制级别和跨部门协作信号
+  - 部门匹配优先使用 `task_org_links.department_id`，不再只靠负责人姓名匹配
+  - 已补 cloud + backend 回归测试，覆盖任务 orgContext 回传和 review rollup 组织信号判断
+- 是否需要主线程配合（更新）：否
+- 风险点（更新）：
+  - 历史任务如果还没补 `task_org_links`，组织判断仍会回落到旧的成员/文本匹配逻辑
+  - 当前职责偏离判断第一版主要依赖岗位 `shouldAvoid` 字段，后续还需要再补岗位流程和职责模板，才能进一步提高判断精度
+  - 这轮只把组织信号接入部门/机构总结，个人总结暂未直接读取 orgContext
+
+- 线程名称：org-model-self-summary-and-task-hints
+- 负责范围：tasks / weekly review / org model 可见提示；不触碰 client_workspace 主链路
+- 已改文件：
+  - `backend/app/services/review_rollup.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_review_rollup.py`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+- 当前状态：
+  - 已新增 `build_employee_review_report(...)`，个人总结现在会读取 `task_org_links -> orgContext`，生成职责边界、待复核、控制级别、跨部门和管理负荷信号
+  - 本地 `augment_review_response(...)` 已改为优先用新的 employee report builder 生成 `selfReport`
+  - `任务列表` 和 `我的月历` 已增加轻量组织提示：`待复核 / 负责人控制 / 部门控制 / 机构控制 / 跨部门`
+  - 月历任务预览和任务卡标题已补 `title` 提示，可直接看到组织上下文摘要
+- 是否需要主线程配合：否
+- 风险点：
+  - 个人总结的组织判断当前仍是第一版模板化信号，后续需要和岗位流程模板联动，才能继续提升准确度
+  - 前台目前只显示轻量提示，没有开放 orgContext 详情面板
+  - `vite build` 已过，但本轮未额外补前端交互级人工点测
+
+- 线程名称：org-context-visible-panel
+- 负责范围：tasks 前台组织提示增强；不触碰 client_workspace 主链路
+- 已改文件：
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+- 当前状态：
+  - 已新增可复用的 `TaskOrgContextPanel`
+  - `任务列表` 卡片和 `我的月历` 右侧当天详情现在都会显示组织上下文块
+  - 详情块会展示：`待复核 / 控制级别 / 跨部门协作 / 审批状态 / 当前卡点 / 部门焦点 / 机构焦点`
+  - 原有轻量标签保留，详情块承担“看懂上下文”的补充层
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前详情块仍以任务自身 `orgContext` 字段为准，历史任务若未补链会没有这一层信息
+  - 这轮只做了 renderer 构建验证，未额外补浏览器人工点测
+
+- 线程名称：org-model-task-backfill
+- 负责范围：tasks / org model 存量补链；不触碰 client_workspace 主链路
+- 已改文件：
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+- 当前状态：
+  - 已新增 `_backfill_task_org_links(...)`，可批量为存量任务重建 `task_org_links`
+  - cloud backend 启动时会自动对现有机构任务做一次补链
+  - 保存组织模型 profile 后也会自动重跑补链，避免部门/岗位/权限调整后旧任务上下文失真
+  - 已新增 admin 后台接口：`POST /api/v1/settings/org-model/backfill-task-links`
+  - 本地后端已补同名代理接口
+  - 已对真实库执行一次补链：`72` 条任务全部完成更新
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前补链仍主要依据负责人、创建人、协作者和现有组织模型做推断；如果历史任务本身缺负责人/协作者信息，结果仍可能偏弱
+  - 自动补链在启动阶段会增加一小段初始化耗时，但 P0 阶段可接受
+
+- 线程名称：org-model-review-workflow-and-business-context
+- 负责范围：tasks / settings / weekly review / org model；不触碰 client_workspace 主链路本身，仅复用其背景数据
+- 已改文件：
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_rollup.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态：
+  - 已补齐任务复核前台闭环：任务列表和月历当天详情都可直接 `通过复核 / 退回复核`
+  - 本地后端已新增 `/api/v1/tasks/{task_id}/review/approve` 和 `/api/v1/tasks/{task_id}/review/return` 代理路由
+  - 组织模型 P0 已新增 `岗位流程模板` 数据对象、cloud 存储表、整包 profile 读写，以及设置页编辑界面
+  - 周总结引擎已开始读取岗位流程模板，新增 `流程卡点` 判断，不再只知道“卡住了”
+  - 本地周总结已开始自动吸收益语专属 `客户工作台 / 会议纪要 / 客户目标 / 文档线索` 作为业务背景，不增加员工输入字段
+- 是否需要主线程配合：否
+- 风险点：
+  - 客户业务背景当前只取与本周任务直接关联的客户/会议/目标，属于第一版背景增强，不是全量客户画像
+  - 复核按钮权限最终仍以后端为准；前台只做展示和触发，不单独维护权限副本
+  - 岗位流程模板已经进入总结判断，但还未进入“流程步骤级动作推荐”详情页
+
+- 线程名称：org-model-p1-p3-spec-completion
+- 负责范围：组织模型层规格文档补全；只改 `docs` 下与组织模型规划直接相关的文档
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `docs/org-model-p0-spec.md`
+  - `docs/org-model-foundation-plan.md`
+  - `docs/org-model-p1-p3-spec.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台主链路
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+- 当前状态：
+  - 正在把组织模型层的 P1-P3 从目标级描述补成与 P0 同等粒度的可执行规格
+  - 本轮重点不是新增功能代码，而是把后续“部门计划 / 机构目标 / 支持请求 / 趋势分析 / 机器人一等化 / 业务对象层”的表结构、接口、页面和验收标准写实
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮是规格落地，不会直接改变运行时功能
+  - 若后续开发中实际表结构与文档有偏差，需要回写文档，避免计划和代码再次分叉
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `docs/org-model-foundation-plan.md`
+  - `docs/org-model-p0-spec.md`
+  - `docs/org-model-p1-p3-spec.md`
+- 当前状态（更新）：
+  - 已新增《组织模型层 P1-P3 规格（计划、流程、趋势与业务对象）》
+  - 已把 P1 拆到正式对象层：机构季度目标、部门周计划、计划项、任务计划挂接、支持请求
+  - 已把 P2 拆到执行闭环层：复核请求、复核动作、流程状态、AI 建议动作
+  - 已把 P3 拆到趋势与扩展层：趋势快照、负荷快照、业务对象、机器人身份一等化
+  - 已在 `org-model-foundation-plan.md` 和 `org-model-p0-spec.md` 中补充对 P1-P3 规格文档的跳转引用，文档关系已串起来
+
+- 线程名称：growth-handbook-learning-navigation-shell
+- 负责范围：growth_handbook / 学习导航页面壳替换；不触碰 client_workspace 主链路
+- 计划修改的文件：
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 当前状态：
+  - 已把成长手册里的“学习导航”替换成任务作战台式壳层
+  - 新壳已拆成独立组件，包含任务切换、风险提示、机器人协作卡、动作卡、流程地图、技能补强、底部经验回流和 3 个侧边/弹窗层
+  - 现有成长推荐、能力分布和近期经验记录已映射进新壳，不再停留在旧的两列学习卡
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前学习导航缺少完整任务作战台后端数据源，第一版主要复用了成长推荐、能力和近期沉淀数据做壳层映射
+  - “查看节点清单 / 查看原理 / 机器人协助” 已有本地交互，但还不是独立后端实体
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+- 线程名称：growth-handbook-header-button-nowrap
+- 负责范围：growth_handbook 头部按钮样式微调；不触碰 client_workspace 主链路
+- 已改文件：
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 当前状态：
+  - 已把头部“记录经验”文案改成单行显示，避免在窄宽度下断成两行
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前只处理了文案换行，没有重做 header 宽度策略
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+- 线程名称：org-model-p1-realization
+- 负责范围：组织模型 P1 真正落地；补机构目标、部门周计划、任务计划挂接、支持请求，并接入设置页
+- 计划修改的文件：
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台主链路
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 当前状态：
+  - 已完成 P1 数据对象与 cloud 建表的一半：机构目标、部门周计划、计划项、任务计划挂接、支持请求的 shared/cloud/local 模型已补齐，cloud schema 已建表
+  - 正在补 cloud/local profile 读写、任务挂接、设置页入口和回归测试
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮会继续触达 `cloud_backend/app/main.py` 和 `src/renderer/App.tsx`，需要保持补丁足够小，避免影响已有任务/客户工作台链路
+  - 任务计划挂接优先做最小可用版本，第一版仍以规则/文本匹配为主，不会上来就做重模型判断
+
+- 线程名称：growth-handbook-p0-handbook-closure
+- 负责范围：growth_handbook P0 前端闭环；补经验资产、XP 账本、学习导航动作接线，不触碰 client_workspace 主链路
+- 计划修改的文件：
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已新增“经验资产”抽屉，支持搜索、查看资产详情、查看相关 XP 记录、从条目详情直接标记“本次已复用”
+  - 已新增“XP 账本”抽屉，支持看本周/全部、按能力过滤，并展示基础经验与组织溢价拆分
+  - 已把成长手册 header 接上“经验资产 / XP账本”入口
+  - 已把学习导航壳层接上真实动作：忽略推荐、跳转任务页、从练习卡回到任务执行
+  - 已给勋章墙补充事件源说明，避免未接通 CRM/审批/财务模块时被误判为异常
+  - 已把能力卡与能力明细账接到账本抽屉，可按能力查看明细来源
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮仍然是 renderer 侧 P0 收口，未新增独立“手册条目列表页”后端对象；当前以抽屉承接资产层浏览
+  - 学习导航里的“节点清单 / 动作原理 / 机器人协作”仍主要是前端交互层，后续如果要继续深化，需要独立任务作战台对象层
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+- 线程名称：org-model-p1-realization
+- 已改文件：
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已补齐 cloud 端 P1 落库与读取：机构季度重点、部门周计划、计划项、任务计划挂接、支持请求链路可编译可回归
+  - 已补本地代理：`task plan link` / `support requests` 可走本地 backend 透传 cloud
+  - 已补设置页入口：组织模型层现在可直接维护“机构季度重点”和“部门周计划”
+  - 已修复 `EMPTY_ORG_MODEL_SETTINGS` 缺字段导致的前端初始化缺口
+- 是否需要主线程配合：否
+- 风险点：
+  - P1 前端已可编辑，但任务卡/周总结还未提供计划项手动挂接入口，当前仍以后台自动挂接为主
+  - 支持请求目前已打通接口与回归，前端仍未做独立操作面板
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py cloud_backend/app/main.py cloud_backend/app/models.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k "org_model_profile_roundtrip or task_org_link_and_department_control_permissions or task_plan_link_and_support_request_flow or org_model_backfill_restores_missing_task_links_for_existing_tasks"` 通过，`4 passed`
+  - `npm run build:renderer` 通过
+  - `npm run build:main` 通过
+
+- 线程名称：growth-learning-real-task-context
+- 负责范围：growth_handbook 学习导航 P0；把学习导航从前端模拟任务切到真实任务上下文，不触碰 client_workspace 主链路
+- 计划修改的文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 当前状态：
+  - 已确认 `App.tsx` 内已有真实 `tasks` 状态，但尚未传入成长手册
+  - 已确认学习导航当前仍以 `FALLBACK_TASKS` 与推荐卡文案猜测阶段/风险/机器人状态
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮会改 `src/renderer/App.tsx`，需要保持补丁最小，且仅限成长手册挂载点
+  - 第一版会优先用真实任务字段推导阶段/风险/提示，不会上来加新后端接口
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把 `App.tsx` 里的真实 `tasks` 接入成长手册，并传到学习导航
+  - 学习导航现在优先消费真实任务列表，按真实任务字段推导阶段、风险、紧急度、机器人可协助性与下一步建议
+  - 当没有真实任务时，会明确显示“当前暂无真实任务”，再退回成长推荐与示例场景兜底，不再伪装成全真上下文
+  - 学习导航中的主动作在真实任务场景下会回到任务页继续推进，不再默认停留在本地模拟流程里
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仍是“回到任务页”级别的接线，还没有精确到具体 taskId 的深链定位
+  - 阶段/风险/机器人判断目前基于真实任务字段的规则推导，已比原先模拟态更可信，但还不是独立后端任务作战台模型
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+- 线程名称：tasks-client-autofill-and-priority-autofill
+- 已改文件：
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/db.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 任务弹窗已把协作者输入缩成半宽，另一半新增“关联客户”选择
+  - 关联客户默认按标题/说明自动识别，仍允许手动调整
+  - 优先级自动识别已真正接入编辑器状态，仍允许手动调整
+  - 任务对象已补 `clientId`，创建/更新可透传到 cloud backend
+  - 本地代理会根据本地客户资料补出 `clientName`
+- 是否需要主线程配合：否
+- 风险点：
+  - cloud backend 当前只稳定存 `clientId`，`clientName` 由本地代理补出；如果任务在没有本地客户资料的环境里查看，会只剩 ID
+  - 客户自动识别当前是规则识别，不是大模型识别；后续如果要更稳，需要接客户工作台上下文和会议来源
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py cloud_backend/app/models.py cloud_backend/app/main.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k register_approve_login_and_collaboration_flow` 通过，`1 passed`
+  - `npm run build:renderer` 已有本轮产物：
+    - `dist/renderer/assets/index-fD1ocmL5.js`
+    - `dist/renderer/assets/index-D77XdE7j.css`
+
+- 线程名称：tasks-review-no-self-approve
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 自己负责的任务不再显示“通过复核 / 退回复核”按钮
+  - cloud backend 已拒绝任务负责人自己执行复核，即使任务被强制标记为待复核也会返回 `403`
+  - 月历右侧当天任务详情与任务列表卡片的显示逻辑已同步
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前规则以“任务负责人不能自审”为准；如果后面要做“特殊机构任务允许负责人兼审批人”，需要单独加白名单规则
+- 验证结果：
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k test_task_review_approve_and_return_follow_org_permissions` 通过，`1 passed`
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-BiQQs_fd.js`
+    - `dist/renderer/assets/index-D77XdE7j.css`
+
+- 线程名称：project-context-task-link-plan
+- 已改文件：
+  - `docs/project-context-task-link-plan.md`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把“客户工作台 = 项目背景源”的实施方案落成文档
+  - 文档已覆盖：项目对象最小字段表、任务识别项目规则、客户工作台到任务系统的背景注入链、接入周总结引擎的方式
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仍是实施方案，尚未把 `taskProjectContext` 真正建模并挂进运行时代码
+
+- 线程名称：desktop-startup-stability-hotfix
+- 负责范围：桌面端 Electron 启动链路稳定性；排查窗口闪退/长时间无窗口问题；仅改主进程运行时与启动时序，不碰 client_workspace 主链路
+- 计划修改的文件：
+  - `src/main/main.ts`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 当前状态：
+  - 已定位到主窗口创建被启动前置链路阻塞：每次启动都会串行执行 `cloud_backend` 与 `backend` 的 `uv sync`
+  - 已确认 `BettaFish` 与后端健康等待也发生在 `createMainWindow()` 之前，会继续放大首屏无窗口时间
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮会改 `src/main/main.ts` 启动顺序，必须保持对现有本地端口和 runtime 路径兼容
+  - 若缓存判断写错，可能导致后端依赖未及时同步；需要保守地以 `pyproject.toml + uv.lock + uvicorn 可执行` 为门槛
+- 已改文件：
+  - `src/main/main.ts`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已为 `backend/cloud_backend` 运行时增加 `pyproject.toml + uv.lock` 指纹缓存；锁文件未变时，启动不再重复执行 `uv sync`
+  - 已将后端健康等待改为并行，避免窗口创建前串行等待本地后端与云后端
+  - 已将 `BettaFish/MiroFish` 健康等待移到窗口创建之后后台进行，不再阻塞主窗口出现
+  - 已验证二次冷启动时不再出现 `backend:sync` / `cloud_backend:sync` 日志，主窗口正常创建
+- 是否需要主线程配合：否
+- 风险点：
+  - 第一次启动或锁文件变更后，仍会执行一次依赖同步；这是保守策略，不是回退
+  - 当前还没有独立的启动态 UI，若后端预热较慢，窗口会先出来，但业务请求仍可能在首几秒内继续恢复
+- 验证结果：
+  - `npm run build:main` 通过
+  - `npm run build:renderer` 通过
+  - 首次重启已生成 runtime 指纹文件：
+    - `/Users/guyuanyuan/Library/Application Support/yiyu-thinktank-workbench/runtime/backend-venv/.yiyu-backend-runtime.json`
+    - `/Users/guyuanyuan/Library/Application Support/yiyu-thinktank-workbench/runtime/cloud-backend-venv/.yiyu-cloud_backend-runtime.json`
+  - 第二次启动未再输出 `backend:sync` / `cloud_backend:sync`
+  - 当前运行中的主窗口：Electron PID `42853`，window count = `1`
+  - 当前本地后端健康检查通过：`127.0.0.1:47829`
+  - 当前 BettaFish bridge 健康检查通过：`127.0.0.1:18101`
+
+- 线程名称：tasks-project-context-p1
+- 已改文件：
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已给任务对象补 `projectContext`，本地后端会基于客户工作台已有资料生成轻量项目背景摘要
+  - 任务弹窗里的 `关联客户` 现在保留自动识别与手动调整，并新增识别置信度提示
+  - 选中或自动识别客户后，弹窗会显示项目阶段、背景、目标、风险与资料完整度预览
+  - 周复盘任务快照已透传 `clientId / clientName / projectContext`，后续可直接接入总结引擎
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前 `projectContext` 是本地代理层的轻量注入，不是云端持久化对象
+  - 客户自动识别目前还是规则匹配，下一步要接客户工作台、会议纪要和历史同类任务以提升准确率
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py` 通过
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-BJ6BqMkZ.css`
+    - `dist/renderer/assets/index-Be0NpxnI.js`
+
+- 线程名称：feishu-meeting-minutes-v1
+- 已改文件：
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把任务弹窗里的飞书会议按钮从占位入口接成真实链路：创建本地会议草稿 + 发送飞书通知
+  - 已支持通过飞书文本消息按 `纪要回写 meeting_xxx` 格式把会议纪要回写到 meeting 管道
+  - 回写后会自动完成结构化抽取，产出行动项、结论和风险，后续可直接供客户工作台和总结引擎读取
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前是 V1，走的是“飞书消息通知 + 飞书文本回写纪要”，还不是飞书原生妙记/日历会议 API 直连
+  - 真正要做到自动抓取飞书会议录音/妙记，下一步还需要接飞书原生会议或文档开放接口
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k feishu_meeting_launch_and_minutes_writeback_flow` 通过，`1 passed`
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-B7Fe5SeO.js`
+    - `dist/renderer/assets/index-BJ6BqMkZ.css`
+
+- 线程名称：feishu-meeting-button-feedback-fix
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把飞书会议按钮改成显式前置条件交互：未填标题或未关联客户/项目时直接置灰，不再表现成“点了没反应”
+  - 飞书发送失败或被跳过时，会直接弹出真实失败原因、会议编号和纪要回写指令，避免只靠顶部 flash 一闪而过
+  - 真实烟测确认：当前按钮链路已能创建会议草稿，当前环境失败点是飞书机器人 `app secret invalid`
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前环境里的飞书机器人配置虽然存在，但真实发送仍失败；要彻底打通需要更新有效的 App Secret
+- 验证结果：
+  - `curl -X POST /api/v1/clients/client_284afd836e/meetings/launch-feishu` 已返回会议草稿和失败原因 `app secret invalid`
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-3daNAtmJ.js`
+    - `dist/renderer/assets/index-BJ6BqMkZ.css`
+
+- 线程名称：org-model-standalone-pages
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 组织模型层已从“系统与权限”里的单一大面板，拆成 4 个真正可进入的设置子页面：
+    - `组织总览`
+    - `部门与岗位`
+    - `人员配置`
+    - `流程与权限`
+  - 原有 P0 组织模型配置能力仍复用同一套 profile 和保存逻辑，没有额外造第二套表单
+  - `系统与权限` 页面现在提供清晰的组织模型管理入口卡片，跳转到对应独立页面
+  - 非 admin 不显示这 4 个组织模型页面入口
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮是前台入口和信息架构重组，没有新增后台接口
+  - 当前 4 个页面仍共享同一份 `保存组织模型` 动作，后续如果要多人并行编辑，再拆分资源级保存
+- 验证结果：
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-CZP4qOFQ.js`
+    - `dist/renderer/assets/index-BclZPSHc.css`
+
+- 线程名称：calendar-day-detail-time-drag-v1
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已在“我的月历”右侧当天详情加入轻量时间轴
+  - 已设置具体时间的任务会显示为 1 小时时段块，可直接拖动到新的时间槽
+  - 拖动后会直接更新任务 `dueDate` 的时间部分，保持原有日期和任务链路不变
+  - `onRescheduleTask` 已兼容“只改日期”和“直接改到具体时分”两种调用
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前 V1 只有截止时间字段，没有独立开始/结束时间模型，所以时间块先按默认 1 小时展示
+  - 右侧时间轴只支持拖动改时间，暂不支持拖动改时长或跨天
+
+## 2026-03-18 组织搭建中心底盘化
+- 线程名称：org-setup-center-foundation
+- 负责范围：把系统与权限、组织总览、部门与岗位、人员配置、流程与权限收口成一个组织搭建中心，并直接复用现有组织模型驱动任务/日历/学习相关语义
+- 计划修改的文件：`src/renderer/App.tsx`、`src/renderer/components/settings/OrganizationSetupCenter.tsx`、`src/renderer/components/settings/OrganizationModelSettingsPanel.tsx`、`src/renderer/lib/api.ts`、`src/shared/types.ts`
+- 避开文件：`backend/app/main.py`、`backend/app/services/ai.py`、`src/renderer/App.tsx` 中 client_workspace 相关区块
+- 当前判断：现有 org-model 已是云端持久化底层，不重建新表，先做统一入口、引导式搭建、缺失项任务化和任务关联回填。
+- 线程名称：calendar-day-detail-time-drag-v1-followup
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已补时间轴拖拽的落点预览块和当前落点时间反馈
+  - 拖拽过程中会显示目标时段块，不再只是时间槽背景发蓝
+  - 当前保持 V1 约束：仍按默认 1 小时时段展示，不引入独立开始/结束时间字段
+- 是否需要主线程配合：否
+- 风险点：
+  - 任务时长仍为推定值，真正做成滴答清单式时长拖拽还需要额外时长字段
+- 验证结果：
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-Cf4Om5NS.css`
+    - `dist/renderer/assets/index-Knt0qPgw.js`
+- 线程名称：calendar-day-detail-time-drag-v1-15min
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 时间轴拖拽已改成 15 分钟吸附，较上一版 30 分钟更细
+  - 小时线与半小时线已分层显示，拖拽落点反馈仍保留目标时段预览块
+- 是否需要主线程配合：否
+- 风险点：
+  - 仍未引入任务时长字段，当前仍按默认 1 小时块展示
+- 验证结果：
+  - `npm run build:renderer` 通过
+    - `dist/renderer/assets/index-BSILdR8_.css`
+    - `dist/renderer/assets/index-CwlIRCji.js`
+### org-setup-center-foundation / 首轮闭环
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `src/renderer/App.tsx`
+  - `src/renderer/lib/api.ts`
+  - `src/shared/types.ts`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把“系统与权限 + 组织总览 + 部门与岗位 + 人员配置 + 流程与权限”收口成同一页的“组织搭建中心”
+  - 旧的 `org_overview / org_departments / org_people / org_rules` 不再作为左侧并列入口，而是作为同页高级编辑的聚焦入口保留兼容
+  - 组织搭建中心已接入：CEO 确认、组织目标、部门创建、部门负责人指定、岗位模板、人员绑定、流程模板、当前周重点与部门计划
+  - 页面会直接根据现有 org-model 推导待补事项、部门完整度，并提供跳转到 `org_dna / tasks / handbook` 的底盘联动入口
+  - 保存组织底盘后会自动调用现有 `backfill-task-links`，把组织信息回填到任务关联链路
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 部门二维码邀请负责人这一步还没有单独实现，当前第一版先沿用现有账号审批与人员绑定体系
+  - 组织搭建中心当前是前端引导式闭环，缺失项先在页面内任务化展示；如果后续要进入真实任务列表，还需要和主线程统一“组织搭建任务”的落库策略
+  - `App.tsx` 仍较大，这轮已尽量把新增逻辑抽到独立组件，但设置总容器还未彻底拆分
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-18 线程更新：calendar-day-detail-fused-selection
+- 已改文件：
+  - src/renderer/components/tasks/TaskCalendarView.tsx
+  - src/renderer/App.tsx
+  - backend/app/db.py
+  - backend/app/main.py
+  - cloud_backend/app/db.py
+  - cloud_backend/app/main.py
+- 当前状态：
+  - 日详情改成“时间轴折叠卡片 + 点击查看单条详情”结构。
+  - 时间块点击不再直接弹编辑，而是选中后在下方显示该任务详情。
+  - 未设时间任务改成紧凑折叠按钮组。
+  - 任务 `durationMinutes` 已贯通到本地/云端存储与代理，编译和基础任务回归通过。
+- 是否需要主线程配合：否。
+- 风险点：
+  - 时间轴拉伸改时长的手柄交互还没加，当前只是先把时长字段打通，为下一步拉伸留底座。
+- 补充修正：时间轴任务块底色改为实体白底/浅灰底，遮掉底部航线网格，减少视觉噪音。
+- 已追加完成内容：
+  - 组织搭建中心里的“添加部门”已改成批量建部门、批量指定负责人、统一保存
+  - 已新增部门邀请码底层，先用 `dept:<departmentId>` 作为邀请口令；后续二维码可以直接复用这层 payload
+  - 注册页已支持粘贴部门邀请码并自动选中对应部门，不再必须由 CEO 手动为所有人逐个绑定部门
+- 本轮新增文件：
+  - `src/shared/departmentInvite.ts`
+- 新风险点：
+  - 目前是“邀请码”闭环，还没有把同一 payload 渲染成二维码图片，也没有做扫码识别
+- 补充验证：
+  - `npm run build:renderer` 再次通过
+- 本轮补充完成内容：
+  - 左侧月历已从单月跳转改成连续月份堆叠展示，支持顺畅滚动查看跨月任务。
+  - 3 月底到 4 月底这类跨月拖拽不再需要先切月，直接在同一滚动面板里完成。
+## 2026-03-18 线程更新：desktop-startup-window-recovery
+- 已改文件：
+  - src/main/main.ts
+  - build/main/main.js
+- 当前状态：
+  - 修复 macOS 下窗口全关后进程残留、再次启动被 second-instance 吞掉但不重建窗口的问题。
+  - 现在旧进程存在但无窗口时，再次启动会主动创建新窗口；窗口关闭时会同步把 `mainWindow` 置空。
+- 是否需要主线程配合：否。
+- 风险点：
+  - 当前先同步修了 `src/main/main.ts` 和运行时 `build/main/main.js`；后续应以正常 `build:main` 产物覆盖，避免手改编译文件长期漂移。
+- 验证结果：
+  - `src/main/main.ts` TypeScript 解析通过（MAIN_TS_PARSE_OK）
+  - 真实启动后 Electron 进程存在，System Events 检测到窗口数为 `1`
+
+## calendar-today-center
+- 已改文件：src/renderer/components/tasks/TaskCalendarView.tsx
+- 当前状态：连续月份月历打开时会把今天所在日期自动滚到可视区中间附近；点击“今天”或“回到今天”也会重新居中。
+- 是否需要主线程配合：否
+- 风险点：当前是围绕“今天”自动居中，不会在用户手动滚动后持续抢焦点。
+
+## calendar-selected-date-fix
+- 已改文件：src/renderer/App.tsx；src/renderer/components/tasks/TaskCalendarView.tsx
+- 当前状态：连续月份月历已把详情打开逻辑改为真实 selectedDate，不再用月份锚点 + selectedDay 拼接，因此点击 3 月某一天不会再跳到 2 月。
+- 是否需要主线程配合：否
+- 风险点：任务月历与机器人模拟日程现在使用不同选日策略，后者仍保留旧的按月行为。
+
+## calendar-day-open-toggle-fix
+- 已改文件：src/renderer/components/tasks/TaskCalendarView.tsx
+- 当前状态：点击同一天不再把当日日详情反向关闭，双击同一天也会保持打开。
+- 是否需要主线程配合：否
+- 风险点：当前去掉了“点同一天收起详情”的旧行为，关闭详情需要改为切换日期或后续补专门收起手势。
+## electron-startup-stability-fix
+
+- 已改文件：
+  - `src/main/main.ts`
+  - `package.json`
+- 当前状态：
+  - 桌面端生产启动改为直接 `loadFile(dist/renderer/index.html)`，不再依赖本地 renderer 静态服务器，目标是消除黑页 / `Not found` / 4173 未监听导致的启动失败。
+  - 已定位当前启动崩溃发生在 Electron 35 运行时主线程初始化，准备将开发运行时固定升级到 `37.6.1` 再做整体验证。
+- 是否需要主线程配合：
+  - 否。
+- 风险点：
+  - 需要重装 `node_modules` 中的 Electron 运行包并做一次干净启动验证，确认升级后主进程、后端和窗口都能稳定起来。
+
+## electron-app-protocol-cors-fix
+- Added `app://renderer` to local/backend CORS allowlists so the desktop shell can fetch APIs after switching renderer loading to the custom app protocol.
+
+## local-backend-startup-retry
+- Added automatic retry for renderer GET requests during desktop startup so the login shell can survive backend warm-up instead of failing fast with `无法连接本地服务`.
+
+## user-data-path-hardening
+- Pinned Electron userData to `~/Library/Application Support/yiyu-thinktank-workbench` to avoid cache/database contamination between generic Electron, old dev shells, and packaged variants.
+
+## electron-app-identity-hardening
+- Unified dev desktop identity with `APP_DISPLAY_NAME`, `app.setName(...)`, explicit About panel metadata, and the fixed `userData` path so this project is easier to distinguish from other local Electron shells.
+
+## calendar-single-click-toggle-detail
+- Updated the month cell interaction in `src/renderer/components/tasks/TaskCalendarView.tsx` so clicking a date opens that day's detail panel, and clicking the same date again closes the detail panel and returns to the full calendar view.
+
+## calendar-detail-autoscroll-fix
+- Clicking a calendar day now auto-scrolls the day detail timeline into view on narrower layouts, so opening a date does not appear to do nothing when the detail panel renders below the month grid.
+
+## 2026-03-18 任务日历单击详情状态上提
+- 原因：`TaskCalendarView` 内部 `isDetailOpen` 在父层刷新/重渲染时不稳定，导致单击日期后当日时间轴像是没有打开。
+- 处理：把日详情打开状态提升到 `App.tsx` 的任务日历父层，作为 `taskCalendarDetailOpen` 统一传入 `TaskCalendarView`。
+- 结果：单击日期打开当日日详情，再单击同一天收起；不会再被子组件内部状态吞掉。
+
+## 2026-03-18 组织搭建中心去杂线程
+- 线程名称：org-setup-declutter-v1
+- 负责范围：只清理组织搭建中心人员步骤里的快捷新增排版，收口回主流程，不改客户工作台链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+- 当前状态：
+  - 已移除人员步骤下方“直接新增部门 / 直接新增岗位”两块快捷卡片，只保留当前主任务区和手工校正区
+  - 已同步删除对应的本地状态与快捷创建函数，避免 UI 去掉后底层还残留旁路逻辑
+  - 已把部门步骤收口成摘要卡布局：右上角 `编辑`，右下角 `完成`，中间只保留部门名与负责人摘要，位置参考最新确认图
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这一步只是去杂，不新增替代入口；后续如果你要补新的部门级共创入口，需要按你下一轮细节重新设计
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-18 登录恢复线程
+- 线程名称：desktop-login-recovery
+- 负责范围：只修桌面端本地服务启动与登录页“无法连接本地服务”问题，不改客户工作台问答链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/main/main.ts`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/main/main.ts`
+- 当前状态：
+  - 已把 Electron 主进程拉起本地/云端后端的方式从直接执行虚拟环境 `uvicorn` 脚本改成 `python -m uvicorn`。
+  - 实测重启桌面端后，`127.0.0.1:47829` 与 `127.0.0.1:47830` 都已成功监听并返回健康检查。
+  - 使用登录接口实测 `guyuan@klngo.org` 可成功登录，登录页“无法连接本地服务”问题已解除。
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮只修了桌面端启动链路，没有改客户工作台主链路。
+  - 运行时仍依赖本地 Python 虚拟环境；后续若再换运行时打包策略，需要回归验证桌面端后端拉起方式。
+- 验证结果：
+  - `npm run build:main` 通过
+  - 重启 `electron .` 后，`curl http://127.0.0.1:47829/api/v1/system/health` 成功
+  - 重启 `electron .` 后，`curl http://127.0.0.1:47830/health` 成功
+  - `POST /api/v1/auth/login` 实测返回 `authenticated=true`
+
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把桌面端启动初始化改成“先恢复登录态，再加载设置与业务数据”，避免系统设置接口偶发慢/失败时直接掉回登录壳
+  - 已增加本地服务启动失败的首轮自动重试，启动期不再过早暴露登录页并让用户手动点登录
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这次只修启动登录恢复时序，没有改任务与日历业务逻辑
+- 验证结果：
+  - `npm run build:renderer` 通过
+- 2026-03-19：移除日详情顶部三张统计卡（当日任务/待推进/高优先级），保留下方筛选和时间轴，减少重复信息与纵向占高。
+- 2026-03-19：日详情头部日期与星期改为并排显示，减少顶部垂直空白，占高更紧凑。
+- 2026-03-19：日详情中的“未设时间任务”现在仅显示未完成任务，已完成任务不再出现在该快捷排期区。
+
+## 2026-03-19 项目资料待补页
+- 线程名称：project-context-pending-page
+- 负责范围：在客户工作台补一个面向新项目的“资料待补 / 上下文搭建”页面，尽量用新组件接线，不改问答主逻辑
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/client_workspace/*`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已在客户工作台接入新的“项目资料待补 / 项目上下文搭建页”，新项目在资料未补齐时会先进入 setup surface，已有工作痕迹的项目仍可在 header 按钮里来回切换 setup / workspace。
+  - 新页面复用了现有 `dnaModules` 和 4 张基础资料卡（组织介绍、项目介绍、团队介绍、市场背景），不会额外改后端问答链路。
+  - 已把上轮为大文件插接留下的临时 patch 脚本移除，`App.tsx` 内的 surface 切换状态和重置逻辑已整理干净。
+  - 为了跑通 renderer 构建，顺手修复了 `OrganizationSetupCenter` 里一个半残的人员步骤分支：现在未有人加入时显示邀请码卡片，已有成员加入时显示成员接入状态卡。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这轮对 `client_workspace` 做了最小前端接线，仍然没有碰 `backend/app/main.py` 和问答生成主链路。
+  - 项目资料待补页当前基于已有 `dnaModules` 展示和上传，结构化字段仍是前端轻展示，不是新的后端项目上下文 schema。
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-19 组织搭建中心移除手工校正卡片
+- 线程名称：org-setup-remove-manual-correction-card
+- 负责范围：只移除组织搭建中心人员步骤里的“手工校正已加入成员”卡片，并收口对应流程文案
+- 计划修改的文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已移除“手工校正已加入成员”整张卡片和对应的局部状态/保存函数
+  - 已把人员步骤收口为邀请码加入主路径，不再把手工校正作为阻塞项或生成待办
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这次仅移除旁路校正入口；如果后续还需要成员归属修正，需要用新的入口重新设计
+- 验证结果：
+  - `npm run build:renderer` 这轮在当前环境未返回可用结果，未记为通过
+
+## 2026-03-19 组织搭建中心合并部门与负责人流程
+- 线程名称：设置 / 组织搭建中心部门流程合并
+- 负责范围：组织搭建中心中的部门设计、部门负责人、邀请码生成与下一步推进
+- 已改文件：`src/renderer/components/settings/OrganizationSetupCenter.tsx`、`docs/thread-sync.md`
+- 避开文件：`backend/app/main.py`、`backend/app/services/ai.py`、`src/renderer/App.tsx` 的非设置必要区域
+- 当前状态：已完成本轮合并
+- 实际完成：
+  - 已把“添加部门”和“给部门指定负责人”合并成一个页面
+  - 每条部门保存后立即进入已设计部门列表，并直接显示该部门邀请码
+  - 每个已设计部门卡片右上角新增“编辑 / 删除”
+  - 编辑时可直接改部门名称和部门负责人；删除时会一并清理该部门下挂的岗位模板、流程模板、部门计划和相关绑定残留
+  - 当部门信息齐全时，页面会停留在部门卡片，直到点击右下角“完成”才进入下一步
+- 是否需要主线程配合：否
+- 风险点：删除部门时会同步清理与该部门直接绑定的岗位/流程/计划；如果后续希望保留历史归档，需要再补“停用”而不是“删除”的模式
+- 验证结果：`npm run build:renderer` 通过
+
+## 2026-03-19 月/周视图切换与周时间轴
+- 线程名称：任务与日程 / 月周切换
+- 负责范围：在“我的月历”中新增 `月 / 周` 视图切换，并把原有时间轴拖拽逻辑放入周视图
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已新增 `月 / 周` 切换
+  - 周视图已包含 7 天列 + 15 分钟吸附时间轴 + 未设时间任务拖入时间轴
+  - 右侧详情在周视图下改为显示选中任务完整卡片
+  - 为了恢复构建，顺手修复了 `OrganizationSetupCenter.tsx` 里的旧语法残留
+- 验证结果：
+  - `vite build` 通过
+  - 最新产物：
+    - `dist/renderer/assets/index-nW68S-WS.js`
+    - `dist/renderer/assets/index-B87tJh2a.css`
+- 已知边界：
+  - `tsc --noEmit` 仍有仓库里其他历史类型错误，当前不在这次月/周切换范围内
+
+## 2026-03-19 设置页侧栏折叠
+- 线程名称：设置 / 侧栏折叠
+- 负责范围：系统设置页左侧导航的折叠交互与内容区扩展
+- 已改文件：`src/renderer/App.tsx`、`docs/thread-sync.md`
+- 当前状态：已完成
+- 实际完成：
+  - 设置页左侧导航新增箭头按钮
+  - 收起后左栏仅保留 icon
+  - 收起后右侧内容区自动拉宽
+- 是否需要主线程配合：否
+- 风险点：当前折叠状态仅保留在本次界面会话内，尚未做持久化
+- 验证结果：`npm run build:renderer` 通过
+
+## 2026-03-19 组织搭建画布设计规格
+- 线程名称：组织模型 / 组织搭建画布规划
+- 负责范围：基于现有“组织树与完整度”页面，规划可编辑、可拖拽、可供 AI 读取的组织建模画布
+- 已改文件：
+  - `docs/org-canvas-design-spec.md`
+  - `docs/thread-sync.md`
+- 当前状态：已完成规格文档
+- 实际完成：
+  - 明确了 `卡片视图 / 树状图视图 / 协作关系视图`
+  - 明确了组织、部门、岗位、成员四类节点及右侧抽屉内容
+  - 明确了拖拽规则、完整度机制、数据模型、组件拆分、接口建议、开发分期
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仅为产品与实施规格，尚未进入组件开发
+
+## 2026-03-19 主侧栏收起
+- 线程名称：main-sidebar-collapse
+- 负责范围：让主侧栏支持收起为 icon-only，释放中间内容区宽度
+- 计划修改的文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 的业务逻辑区域
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已给主侧栏增加桌面端收起按钮，展开态保留完整文案，收起态只保留导航 icon。
+  - 侧栏宽度和主内容区左边距会同步过渡，中间内容区在收起后会立即变宽。
+  - 收起态下已隐藏品牌文字和底部登录信息卡，避免占宽。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只改了主壳导航宽度和显示，不涉及各业务页面内部布局。
+- 验证结果：
+  - `dist/renderer` 已在 2026-03-19 11:25 刷新产物
+
+## 2026-03-19 主侧栏收起交互补充
+- 线程名称：main-sidebar-collapse-followup
+- 负责范围：补主侧栏收起态的稳定性与 icon hover 提示
+- 已改文件：
+  - src/renderer/App.tsx
+  - docs/thread-sync.md
+- 当前状态：
+  - 已把主侧栏收起状态写入 localStorage，切 tab 或界面重载后不会自动展开。
+  - 收起态点击导航 icon 只切换页面，不会顺带把侧栏弹开。
+  - 收起态鼠标悬停在每个导航 icon 上时，会显示该 icon 对应的原始名称浮层。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮仍然只改主壳导航交互，不涉及各业务页内部布局。
+- 验证结果：
+  - dist/renderer 已在 2026-03-19 11:29 刷新产物
+- 2026-03-19 周视图修复：点击周时间轴任务只选中并打开周详情，不再联动日期切换；周视图网格只显示整点线，15 分钟吸附保留。
+
+
+## 2026-03-19 创建项目入口改造
+- 线程名称：project-create-entry-tighten
+- 负责范围：把客户工作台里的创建入口改成项目语义，并在创建成功后直接落到项目资料待补页
+- 计划修改的文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+
+## 2026-03-19 主侧栏收起按钮位置修正
+- 线程名称：main-sidebar-toggle-reposition
+- 负责范围：调整主侧栏收起按钮的位置与样式，避免遮挡 LOGO；仅改主壳 App 导航
+- 计划修改的文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 当前状态：
+  - 已定位收起按钮在 logo 区域右上角的悬浮圆按钮，确实会遮挡品牌位
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮只改侧栏头部收起控件，不触碰业务页面内容
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已移除 logo 右上角的悬浮圆形收起按钮，避免遮挡品牌位
+  - 已把侧栏收起控件改到 logo 下方，样式改为无底色的小箭头
+  - 收起/展开交互保持不变，但不再以浮层样式压在导航头部
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮只调整主侧栏头部控件位置和样式，不涉及业务页面布局
+- 验证结果：
+  - `npm run build:renderer` 验证中
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已移除 logo 右上角的悬浮圆形收起按钮，避免遮挡品牌位
+  - 已把侧栏收起控件改到 logo 下方，样式改为无底色的小箭头
+  - 收起/展开交互保持不变，但不再以浮层样式压在导航头部
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮只调整主侧栏头部控件位置和样式，不涉及业务页面布局
+- 验证结果：
+  - 已人工核对 `src/renderer/App.tsx` 补丁位置正确
+  - `npm run build:renderer` / `vite build` 本轮本地异常卡住：命令停在 env 壳进程，未产出正常编译结果，需后续单独排查构建环境
+
+
+## 2026-03-19 创建项目入口改造
+- 线程名称：project-create-entry-tighten
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把客户工作台左侧创建入口、空状态入口和创建弹窗改成项目语义。
+  - 创建弹窗现在只保留“项目名称 + 项目别名（选填）”，不再要求用户先填领域、类型、阶段和简介。
+  - 创建成功后会自动切回客户工作台，并优先把新项目落到“项目资料待补页”。
+  - 创建成功提示也改成了“下一步补项目资料”。
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮只改前端入口和创建后的落点，后端仍然复用现有 `createClient` 接口和 `client` 数据结构。
+  - 删除确认弹窗和部分 DNA helper 文案里仍有少量“客户”旧词，后续可以继续顺手收口，但不影响本轮主链路。
+- 验证结果：
+  - `dist/renderer` 已在 2026-03-19 11:42 刷新产物
+- 2026-03-19 周视图拖拽修复：周时间轴拖拽落手后不再走月历聚焦链，避免自动跳回月视图/日视图。
+- 2026-03-19 月视图右侧日详情移除“当日时间轴”和“未设时间任务”模块，时间拖拽能力统一收口到周视图。
+
+
+## 2026-03-19 飞书个人绑定二维码与回调地址收口
+- 线程名称：设置 / 飞书个人绑定
+- 负责范围：飞书个人账号绑定入口、个人绑定回调地址配置、扫码/浏览器双授权入口
+- 已改文件：
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/FeishuBotSettingsPanel.tsx`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+  - `package.json`
+  - `package-lock.json`
+  - `docs/thread-sync.md`
+- 当前状态：已完成本轮前后端接线
+- 实际完成：
+  - 飞书单机器人设置新增“个人绑定回调 URL（可选）”，为空时仍回落本机 callback
+  - 飞书个人绑定起始接口会显式返回 `callbackUrl`、`qrReady`、`qrBlockedReason`
+  - 前端绑定入口改成授权面板：支持二维码展示、浏览器继续授权、复制授权链接、手动刷新绑定状态
+  - 当回调地址仍是本机或非 HTTPS 时，不再假装能扫码成功，而是明确提示只能走当前电脑浏览器授权
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 手机扫码真正可用仍依赖飞书开放平台白名单回调地址与公网 HTTPS 转发，单靠本地桌面端无法完成这一步
+  - 当前环境里 `vite build` 命令有残留卡死现象，这轮已清理旧 build 进程，但完整 renderer build 结果未取回
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py` 通过
+  - 代码级自检已确认新的回调字段、二维码面板状态和绑定弹窗接线都已落到文件中
+
+
+## 2026-03-19 软件闪退排查
+- 线程名称：desktop-crash-investigation
+- 负责范围：全面排查桌面软件闪退原因，覆盖 Electron 主进程、renderer、本地后端与系统崩溃日志
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/main/main.ts`
+  - `src/renderer/App.tsx`
+  - 其他定位到的直接相关文件
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中与本次闪退无关的大范围业务区块
+- 2026-03-19 周/月视图模式提升到 App 父层托管，避免任务更新时间轴拖拽后组件重渲染把周视图重置回月视图。
+- 已改文件：
+  - `docs/thread-sync.md`
+- 当前状态：已完成现场排查，已定位主要根因，当前未改业务代码
+- 实际结论：
+  - 源码运行态 `electron .` 当前稳定，主进程、renderer、`47829/47830` 两个本地后端都可正常存活并返回健康检查
+  - 真正“闪退”的是打包产物 `dist/mac-arm64/益语智库自用平台.app`
+  - macOS 统一日志显示该产物启动后被 `amfid` 判定为 `adhoc signed or signed by an unknown certificate chain`，多个 Helper 与 Electron Framework 动态库被拒绝，随后 `WindowServer` 记录进程死亡
+  - `spctl --assess --type execute --verbose=4 dist/mac-arm64/益语智库自用平台.app` 返回 `rejected`
+  - 当前 `package.json` 的打包配置没有接 Developer ID 签名与 notarization；发布计划文档里这两项也仍是“未准备”
+- 是否需要主线程配合：需要发布链路层面的签名/公证准备，不是客户工作台主链路问题
+- 风险点：
+  - 在 Developer ID Application 证书和 notarization 没接通前，继续分发当前 DMG 会持续出现“闪一下就退出”
+  - 这不是前端业务页引发的 renderer 崩溃，继续改业务页不能解决打包版闪退
+- 验证结果：
+  - `curl http://127.0.0.1:47829/api/v1/system/health` 通过
+  - `curl http://127.0.0.1:47830/health` 通过
+  - `spctl --assess --type execute --verbose=4 dist/mac-arm64/益语智库自用平台.app` 返回 `rejected`
+- 已改文件：
+  - `package.json`
+  - `scripts/ensure-mac-release-prereqs.mjs`
+  - `docs/release-process.md`
+  - `docs/thread-sync.md`
+- 当前状态：已加发布守卫；本机自测包链路已验证可冷启动
+- 实际完成：
+  - `npm run dist:mac` 现在会先检查 Developer ID、notarization 凭据和 `build-resources/icon.icns`
+  - 缺任一项就直接失败，并提示改走 `npm run dist:mac-local`
+  - 正式打包配置补了 `mac.forceCodeSigning=true`，让 electron-builder 自身也作为第二道保险
+  - `dist:mac-local` 改为直接复用本地 `node_modules/electron/dist`，绕开外网下载 Electron 官方压缩包
+  - 本机自测包已验证能够冷启动：先完成 `cloud_backend/backend` 的 `uv sync`，随后拉起 `47829/47830` 两个内置后端并正常打开窗口
+  - 发布文档补充了本机自测包与官网正式包的边界
+- 是否需要主线程配合：需要准备 Developer ID Application 证书、notarization 凭据和正式图标资源
+- 风险点：
+  - `dist:mac-local` 只是本机自测路径，不是官网可分发包
+  - 在证书与公证链接通前，无法从这台机器产出真正可安装分发的稳定 DMG
+- 验证结果：
+  - `node scripts/ensure-mac-release-prereqs.mjs` 按预期失败，明确报出缺少签名、公证与图标资源
+  - `npm run dist:mac` 会被前置检查直接拦下
+  - `./node_modules/.bin/electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false` 通过
+  - 本机自测包启动后：
+    - `lsof -iTCP:47829 -sTCP:LISTEN -nP` 通过
+    - `lsof -iTCP:47830 -sTCP:LISTEN -nP` 通过
+    - `curl http://127.0.0.1:47829/api/v1/system/health` 通过
+    - `curl http://127.0.0.1:47830/health` 通过
+
+
+## 2026-03-19 组织树建模画布重构
+- 线程名称：org-tree-modeling-canvas
+- 负责范围：组织搭建页的组织结构区域；把现有部门卡片升级为可编辑的组织树建模画布，覆盖部门/岗位/成员四层结构与右侧详情抽屉
+- 计划修改的文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `src/renderer/components/settings/OrganizationTreeCanvas.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区块
+- 当前状态：
+  - 已确认当前用户看到的是 `OrganizationSetupCenter` 中的“组织树与完整度”卡片区域，不是之前高级编辑里的树状页
+  - 准备将该区域替换为可展开、可拖拽、可编辑的树状组织建模画布
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮先完成前端结构化建模交互；项目关联仍只在右侧详情中展示，不入树
+  - 拖拽与自动排版将优先采用稳定的原生交互，不引入额外重型依赖
+
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `src/renderer/components/settings/OrganizationTreeCanvas.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把组织搭建页下半区从部门卡片升级为组织树建模画布，支持组织 → 部门 → 岗位 → 成员四层结构
+  - 已支持节点展开/收起、部门拖拽排序、岗位拖拽改归属、成员拖拽改归属
+  - 已加入右侧详情抽屉，可直接编辑部门/岗位/成员字段，并提供补流程、补模板、绑定负责人、关联项目查看入口
+  - 已加入卡片 / 树状图 / 协作关系（预留）视图切换、完整度标签、缺失项提示和新增部门/岗位/成员入口
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮成员“新增”仍基于现有员工列表做绑定，不会凭空创建新账号；真正新增人员账号仍走现有邀请/注册链路
+  - 关联项目当前先读取成员绑定里的 `projectRoleLabels` 作为结构化项目标签展示，尚未接单独项目实体
+  - 协作关系视图目前为占位态，已预留入口但未接真实关系图
+- 验证结果：
+  - `npm run build:renderer` 通过
+  - `node ./node_modules/vite/bin/vite.js build` 通过
+
+## 2026-03-19 组织搭建进度可点击回退
+- 线程名称：系统设置 / 组织搭建中心
+- 负责范围：组织搭建进度交互
+- 已改文件：src/renderer/components/settings/OrganizationSetupCenter.tsx
+- 当前状态：已完成。右侧进度步骤支持点击，中间主任务会切回对应步骤，允许回看和回退到上一步继续修改。
+- 是否需要主线程配合：否
+- 风险点：当前只做步骤切换，不改变原有保存推进规则；完整 renderer build 仍受本机 vite shebang 卡死影响，已做轻量 TS 语法校验。
+
+## 2026-03-19 删除组织树状图模式
+- 线程名称：系统设置 / 组织搭建中心
+- 负责范围：删除组织树状图相关功能与交互
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationTreeCanvas.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已删除顶部 `树状图` 视图按钮
+  - 已将画布默认模式切到 `卡片`
+  - 已移除树状层级主渲染与相关文案，当前只保留卡片视图和协作关系占位视图
+- 是否需要主线程配合：否
+- 风险点：
+  - 右侧详情抽屉仍保留组织 / 部门 / 岗位 / 成员编辑能力，后续如果继续收缩组织建模范围，需要再判断是否进一步简化详情抽屉
+- 2026-03-19 周视图升级为三屏周面板（前一周/当前周/下一周）横向滑动结构，支持触控板左右滑动切周；三屏纵向时间轴滚动同步，周任务拖拽与拉伸逻辑保留在各周面板内。
+
+## 2026-03-19 组织战略树与计划树设计稿
+- 线程名称：组织战略树 / 部门计划树设计
+- 负责范围：组织战略、部门季度计划、月度执行模型
+- 已改文件：docs/organization-strategy-plan-tree.md
+- 当前状态：已完成第一版设计稿，明确年度战略、机构季度计划、部门季度计划、部门月度计划以及任务/会议/日历挂接层。
+- 是否需要主线程配合：否
+- 风险点：当前是结构设计，不含数据库和页面实现；后续落地前需要和任务与日历、成长系统、公用上下文模型统一字段。
+
+## 2026-03-19 战略计划放置层级与分阶段方案
+- 线程名称：战略计划放置与 P1/P2 分层设计
+- 负责范围：年度战略、季度计划、月度计划的模块归属与引导策略
+- 已改文件：docs/strategy-plan-placement-and-rollout.md
+- 当前状态：已完成。明确 P1 先在组织搭建中心承载年度战略 / 机构季度计划 / 部门季度计划，P2 再由任务与日历承接部门月度计划，并定义了首次进入任务页的前置提示逻辑。
+- 是否需要主线程配合：否
+- 风险点：当前为产品方案，尚未进入数据库、类型和页面实现；落地前需要与任务线程对齐任务首页入口位置和深链方式。
+- 2026-03-19 周视图新增可见周索引：顶部周范围标题与统计卡随横向滑动的当前可见周实时联动，不再固定显示中心周。
+
+## 2026-03-19 项目资料 AI 指令与 MD 上传闭环
+- 线程名称：客户工作台 / 项目资料待补页
+- 负责范围：四张全局资料卡的 AI 指令复制与 MD 上传闭环
+- 计划修改的文件：
+  - `src/renderer/lib/clientDnaPromptTemplates.ts`
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 问答主链路
+- 已改文件：
+  - `src/renderer/lib/clientDnaPromptTemplates.ts`
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已为项目资料待补页四张资料卡接通 `复制 AI 指令`
+  - 已把项目资料待补页和客户 DNA 详情面板的上传按钮统一改成 `上传 MD / 替换 MD`
+  - AI 指令模板已统一抽到单独文件，客户工作台入口与详情面板复用同一套文案
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前 `上传 MD` 仍复用现有文件选择桥，界面文案已收紧为 Markdown，但后端暂未额外做文件扩展名强校验
+  - 本轮只接通了项目全局资料四卡，没有进入任务模块 / 流程中心实现
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+
+## 2026-03-19 组织搭建主任务去掉目标前置
+- 线程名称：org-setup-remove-goal-step
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把“补组织目标与季度重点”从组织搭建主流程里移除
+  - 当前唯一主任务不再提前要求上传年度目标和季度重点
+  - “确认组织管理员”步骤也不再顺手写入目标/季度重点，只保留负责人和组织名称
+- 是否需要主线程配合：否
+- 风险点：
+  - 组织目标与季度重点仍保留在高级编辑层，后续可在组织结构基本成形后再录入
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-19 P1 战略与季度计划实施稿
+- 线程名称：P1 战略与计划实施设计
+- 负责范围：组织搭建中心的年度战略 / 当前季度机构计划 / 部门季度计划
+- 已改文件：docs/p1-strategy-plan-implementation.md
+- 当前状态：已完成。明确了 P1 页面定位、页面分区、字段最小集、完整度计算、AI 使用范围和验收标准。
+- 是否需要主线程配合：否
+- 风险点：当前仍是实施设计，不含真实类型、存储和 UI 代码；落地时需要与组织搭建中心现有完整度和右侧详情编辑结构对齐。
+
+## 2026-03-20 三层入口与场景提醒设计稿
+- 线程名称：三层入口与任务页提醒设计
+- 负责范围：深入口 / 浅入口 / 提醒入口的产品分层，及任务与日历的轻入口设计
+- 已改文件：docs/three-layer-entry-and-reminder-design.md
+- 当前状态：已完成。明确 CEO、部门负责人、普通员工三类角色的入口差异，并定义了任务与日历中顶部计划状态条、周总结前置提醒区、事件型轻入口三类浅入口。
+- 是否需要主线程配合：否
+- 风险点：当前为产品设计，不含具体页面实现；P2 落地时需要和任务与日历线程对齐顶部入口位置、提醒频率与按钮深链。
+
+## 2026-03-20 组织启动中心 P1 真落地
+- 线程名称：org-setup-p1-strategy-implementation
+- 负责范围：把组织搭建中心从“组织骨架设置”升级成“组织 DNA 状态 + 年度战略 + 四季计划 + 部门季度计划”的 P1 结构
+- 已改文件：
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `src/renderer/components/settings/OrganizationTreeCanvas.tsx`
+  - `src/renderer/qrcode.d.ts`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已完成 P1 第一版落地
+  - 组织模型新增了：`annualStrategyYear / annualStrategy / quarterPlans`
+  - 部门模型新增了：`businessContext / teamContext / quarterPlan`
+  - 组织搭建中心最后一步已改成：组织 DNA 状态接入、年度目标与年度战略、四季草稿、部门季度计划承接
+  - 组织 DNA 继续复用现有上传模块，不重复造第二套上传器；组织搭建中心只展示状态并给直达入口
+  - 机构当前季度重点和部门季度重点会从新战略字段自动回写到旧 `quarterlyFocus` 字段，保证旧视图不断
+- 是否需要主线程配合：否
+- 风险点：
+  - 这一步还没有实现“真实 AI 拆分年度战略”，当前四季草稿是轻量生成器 + 手动校正
+  - 部门资料仍是结构化文本录入，部门文件上传和成员流程沉淀继续留到下一阶段
+- 验证结果：
+  - `python3 -m py_compile cloud_backend/app/db.py cloud_backend/app/models.py cloud_backend/app/main.py backend/app/models.py` 通过
+  - `npm run build:renderer` 通过
+  - TypeScript 全量检查仍有仓库既有存量错误，但本次新增关键词链路未再报错
+
+## 2026-03-20 组织启动中心角色接力看板
+- 线程名称：org-setup-role-relay-board
+- 负责范围：把组织搭建中心首页从“单线步骤”继续收口成 CEO / 部门负责人 / 普通成员三条接力视图
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已在组织搭建中心首页新增“角色接力看板”
+  - CEO 侧现在直接显示：组织 DNA、年度战略、四季草稿完成度
+  - 部门负责人侧现在直接显示：负责人、部门背景、部门季度计划承接状态
+  - 普通成员侧现在直接显示：成员加入、岗位模板、流程模板铺底状态，并明确流程沉淀入口将进入 P2 的任务与日历
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仍是 P1 的组织母盘视图，成员侧高频入口还没有真正下沉到任务与日历
+- 验证结果：
+  - `npm run build:renderer` 通过
+  - 组件关键词级 TypeScript 检查已确认本次新增 `OrganizationSetupCenter` 链路无新增报错
+
+## 2026-03-20 项目资料四卡与任务/模块/流程打通
+- 线程名称：客户工作台 / 任务上下文三级引用
+- 负责范围：项目资料四卡的 MD 强校验、任务系统主背景源切换、项目/模块/流程数据模型、任务编辑器三级引用
+- 计划修改的文件：
+  - `backend/app/models.py`
+  - `backend/app/db.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/App.tsx`
+  - `backend/tests/test_api_smoke.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中客户工作台问答主链路
+- 已改文件：
+  - `backend/app/models.py`
+  - `backend/app/db.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/App.tsx`
+  - `backend/tests/test_api_smoke.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把项目资料四卡的 Markdown 约束收成前后端双保险：前端只允许选 `.md/.markdown`，后端也会硬拒绝非 Markdown 文件名或路径
+  - 任务系统的 `projectContext` 已改成优先读取四张项目资料卡，并可继续叠加具体 `项目模块 / 流程`
+  - 已新增本地 `project_modules / project_flows` 模型、接口和 workspace 聚合返回
+  - 任务编辑器已支持 `项目 -> 模块 -> 流程` 三级引用，任务保存和回显都会携带模块/流程字段
+  - 客户工作台里的项目资料页已补出“任务模块 / 流程库”最小可用入口，可直接新建并看到当前挂载情况
+  - 顺手补了缺失的 `StrategicAccompanimentShell` 壳组件，恢复 renderer 全量构建
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - `项目 -> 模块 -> 流程` 当前已能创建和引用，但还没有编辑/删除与更浅的“流程中心”入口
+  - 云端任务库当前只负责持久化 `projectModuleId / projectFlowId`，还不做“该模块/流程是否真的属于该项目”的校验
+  - 日历和学习系统还没开始消费模块/流程层，只接通到了任务系统这一层
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/db.py backend/app/main.py cloud_backend/app/models.py cloud_backend/app/db.py cloud_backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "client_dna_documents or tasks_consume_project_dna"` 通过，`3 passed`
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k register_approve_login_and_collaboration_flow` 通过，`1 passed`
+  - `npm run build:renderer` 通过
+
+## 2026-03-20 战略陪伴页面重构
+- 线程名称：战略陪伴 / 机构指南针壳重构
+- 负责范围：把现有“战略陪伴”静态页从 KPI 看板改成基于“双数据源 + 顾问判断”的机构宏观方向页结构
+- 计划修改的文件：
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 主链路
+- 已改文件：
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把战略陪伴页重构为“机构指南针”式页面壳，不再以年度北极星、季度 KPI 作为首页主结构
+  - 当前首页主结构已改为：机构指南针头部、机构底稿、运行信号、发展脉络与边界、战略判断、双源对照、本周期陪伴动作、风险与偏移、关键证据入口、补充参考
+  - 页面内部 mock 数据也已同步重构为“两类数据源 + 顾问判断层”格式，避免继续沿用旧的执行看板语义
+- 当前计划（追加）：
+  - 把当前长页壳进一步收口成四个视图：`总览 / 方向判断 / 执行追踪 / 资料与证据`
+  - 为执行追踪补上顾问推进板、会前准备、待补资料与内部研究等功能承载位，避免继续停留在展示层
+- 当前状态（更新）：
+  - 已把页面交互从单张长页改成四个视图：`总览 / 方向判断 / 执行追踪 / 资料与证据`
+  - 已为执行追踪补上功能壳位：顾问推进板、下次会谈准备、待补资料、内部研究议题
+  - 首页保留机构指南针头部和速读卡，但具体区块会随页内视图切换，后续接真实数据时不需要再重排信息架构
+- 当前状态（再更新）：
+  - 已把战略陪伴页从“组件内 mock 数据”改成直接复用主线程里的 `clients/currentClientId/workspace`
+  - 当前四个视图都已接到真实 `client workspace` 聚合字段：客户摘要、DNA 模块、资料卡、导入、会议、分析、问答线程、目标、任务、知识状态
+  - 页面内部新增了一层前端派生映射，把现有工作区数据转换成“机构底稿 / 运行信号 / 顾问判断 / 执行追踪 / 资料证据”结构；顾问判断层仍是规则派生，不是最终 authored judgment
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前仍是静态壳，尚未把真实 `client workspace` 聚合数据接到这套新结构上
+  - 下一轮如果要接真实数据，需要先定义 authored judgment layer，否则会再次退化成简单资料罗列页
+- 风险点（更新）：
+  - 当前仍是壳层重构，页内视图和状态标签都是 mock；真正接数据时需要明确每个视图对应哪些本地聚合字段
+- 风险点（再更新）：
+  - 当前“方向判断 / 双源对照 / 风险”已经接到真实工作区数据，但判断文案仍是前端规则派生，只能作为过渡层，不能长期替代正式顾问沉淀
+  - 本轮没有新增后端聚合接口，后续如果要让判断层稳定可维护，仍建议补独立 authored data / aggregate read model
+- 验证结果：
+  - `npm run build:renderer` 通过
+- 2026-03-20 周历修复：仅在实际切周时重新居中，不再因同周内任务更新时间而横向晃动；15 分钟格高与任务块最小高度同步压缩，默认仍从 08:00 开始展示；补回战略陪伴缺失壳组件，恢复全量 renderer 构建。
+- 2026-03-20：周视图新增“框选空白时段 -> 弹出新建任务”链路。空白时间网格支持按下开始、拖动扩展、松手后按所选开始时间与时长预填新建任务弹窗；任务编辑草稿同步支持 `durationMinutes`。
+- 2026-03-21：新增《日历模块周判断系统设计规格》，明确周总结应升级为“任务痕迹 + 背景母盘 + AI 推理 + 管理动作”的周判断系统，围绕组织层、部门层、项目层、执行层四层背景生成总结、判断、预测和动作建议。
+- 2026-03-21：补充关键约束：周判断系统的核心目标是“洞察”，不是“罗列”，也不是让员工为了总结继续补材料；证据优先来自机构背景、部门计划、项目计划、会议与任务过程痕迹，一线成员只保留最轻量反思输入。
+- 2026-03-21：新增《日历模块周判断系统实施计划》，把周判断系统继续拆到页面信息架构、证据层、AI 输入输出结构、组件建议和 P1-P3 实施顺序，便于后续直接进入页面重组与分析器改造。
+- 2026-03-21：开始落地周判断系统 P1。已将 `WeeklyReviewSummaryPanel`、`HierarchyReportCard`、`WeeklyReviewAnalysisPanel` 重排为四段式结构：本周事实、AI 判断、可能性分析、建议动作；当前先复用已有分析结果与汇总结果，不增加员工输入负担。
+- 2026-03-20：修复全屏场景下“新建任务”弹窗被遮挡。任务弹窗外层改为可滚动遮罩，内层改为 `max-height + 内容区自滚动 + 固定头尾`，长项目背景或长表单不再从顶部/底部被裁掉；`npm run build:renderer` 通过。
+
+## 2026-03-20 组织启动中心 CEO 季度聚焦与部门接力收口
+- 线程名称：org-setup-quarter-focus-refine
+- 负责范围：继续收口组织搭建中心首页，把 CEO 侧做成“年份 + 当前季度聚焦”，并把部门负责人卡改成更明确的缺口/下一步状态
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - CEO 卡新增战略年份、系统当前季度、季度切换按钮和当前季度聚焦摘要
+  - 当前季度卡现在直接展示：季度目标是否成稿、关键结果/动作/风险数量，以及“当前查看季度”和“系统当前季度”的关系提示
+  - 部门负责人卡新增缺口统计：待负责人、待背景、待季度计划
+  - 每个部门行现在都能明确显示“当前还缺什么”，并提供 `去指定负责人 / 去补部门背景 / 去补季度计划 / 查看已承接内容` 的直接入口
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前首页已经更像接力母盘，但仍然只覆盖 P1；部门月度计划和成员高频流程沉淀继续留在 P2 的任务与日历浅入口
+  - `npm run build:renderer` 当前被仓库内另一个独立阻塞项卡住：`src/renderer/App.tsx` 仍引用缺失的 `./components/strategic_accompaniment/StrategicAccompanimentShell`
+- 验证结果：
+  - 组件关键词级 TypeScript 检查已确认：`OrganizationSetupCenter / annualStrategy / quarterPlans / quarterPlan / selectedStrategyQuarter / focusedQuarterPlan` 无新增报错
+  - `npm run build:renderer` 未通过，失败原因是上述独立缺失引用，不是本次组织搭建中心改动导致
+
+## 2026-03-20 组织启动中心战略母盘总览卡
+- 线程名称：org-setup-planning-motherboard
+- 负责范围：继续收口 `planning` 步骤，把 CEO 的年度战略与季度承接做成“启动母盘”而不是纯表单块
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 在 `planning` 顶部新增了“组织启动母盘”总览卡，直接显示：战略年、当前季度、当前聚焦季度
+  - 同一张卡里新增四个 readiness 指标：组织 DNA、年度战略、四季草稿、部门承接
+  - 新增当前聚焦季度摘要块，直接显示当季主题、目标、关键结果/动作/风险数量
+  - 部门负责人承接区新增“当前默认承接季度”提示，让 CEO 和负责人知道当前这一轮是在承接哪一季
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仍是 P1 的组织母盘，不包含部门月度计划和成员高频流程沉淀入口
+  - 四季草稿仍是结构化录入 + 轻量生成，不是真实 AI 拆分
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 组织启动中心 AI 背景母盘说明强化
+- 线程名称：org-setup-ai-context-clarify
+- 负责范围：继续收口 `planning` 步骤，把“这些字段优先服务 AI 思考背景”直接表达在页面上，并让四季卡可切换聚焦
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 在“年度目标与年度战略”区新增说明：这些字段优先供 AI 读取，不只是后台展示
+  - 四季卡新增 `设为聚焦 / 当前聚焦` 按钮，CEO 可直接切换当前要收口的季度
+  - 被聚焦的季度卡会高亮，和顶部母盘摘要保持一致
+  - 在部门负责人承接区新增说明：这里补的是“承接语境”，AI 会先读公司季度主线，再读部门背景与部门季度目标
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仍是 P1，任务与日历里的月度计划、流程沉淀、场景提醒入口还未接入
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 AI 背景优先总规划重制定
+- 线程名称：ai-context-first-rollout-replan
+- 负责范围：根据“少填表、多利用现有资料和过程痕迹生成候选洞察”的新理解，重排整个组织启动中心 / 任务与日历 / 总结洞察系统的分阶段计划
+- 已改文件：
+  - `docs/ai-context-first-rollout-plan.md`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已形成新的总规划：后台数据首先服务 AI 思考背景，而不是服务人工展示
+  - 已明确五层背景模型：组织母体、年度战略、季度承接、月度执行、过程痕迹
+  - 已重排阶段：
+    - `P1` 继续做 AI 背景母盘
+    - `P2` 再做任务与日历浅入口与月度确认流
+    - `P3` 做洞察、预测、沉淀
+- 是否需要主线程配合：否
+- 风险点：
+  - 现有若干旧规划文档仍然保留旧表达，后续若继续实施，需要逐步以新总规划为准收口
+- 验证结果：
+  - 本次为规划文档更新，无代码构建
+
+## 2026-03-21 全局模块改造清单与阶段路线图
+- 线程名称：global-module-refactor-roadmap
+- 负责范围：基于“AI 背景优先、少填表、多利用资料与痕迹生成候选判断”的原则，统一梳理全局各模块需要重构、完善、收口边界和后续实施顺序
+- 已改文件：
+  - `docs/global-module-refactor-roadmap.md`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把全局模块分成三类：
+    - 必须重构：组织启动中心、任务与日历、项目/客户上下文底座
+    - 明显完善：成长系统、战略陪伴/客户工作台、资讯情报站
+    - 收口边界：系统设置、测试工作台、全局助理
+  - 已把真正需要补的四条底层连接写清：
+    - 组织背景链
+    - 项目上下文链
+    - 执行痕迹链
+    - 自动候选反写链
+  - 已进一步拆出 `P1 / P2 / P3` 的模块顺序、各角色入口和后续设计的硬性判断问题
+- 是否需要主线程配合：否
+- 风险点：
+  - 旧的局部规划文档仍有可能沿用旧视角，后续继续实施时需要逐步向这份总路线图对齐
+  - 当前只是完成总图，不代表每个模块已经进入代码实施
+- 验证结果：
+  - 本次为规划文档更新，无代码构建
+
+## 2026-03-21 旧规划文档向新总路线图收口
+- 线程名称：legacy-plans-align-to-master-roadmap
+- 负责范围：给历史局部规划文档补齐“对齐说明”，避免不同线程继续按旧口径独立执行
+- 已改文件：
+  - `docs/p1-strategy-plan-implementation.md`
+  - `docs/organization-strategy-plan-tree.md`
+  - `docs/project-context-task-link-plan.md`
+  - `docs/calendar-week-intelligence-spec.md`
+  - `docs/three-layer-entry-and-reminder-design.md`
+  - `docs/strategy-plan-placement-and-rollout.md`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 上述局部规划文档都已新增 2026-03-21 对齐说明
+  - 已明确这些文档从属于：
+    - `docs/ai-context-first-rollout-plan.md`
+    - `docs/global-module-refactor-roadmap.md`
+  - 已把“P1 低频根语境 / P2 高频浅入口 / P3 洞察联动”的新口径前置写进文档头部
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前只是统一口径，不代表所有旧表述都已逐段改写；后续深度实施时仍要以总路线图为准
+- 验证结果：
+  - 本次为规划文档更新，无代码构建
+
+## 2026-03-21 组织启动中心候选草稿生成
+- 线程名称：org-setup-candidate-drafts
+- 负责范围：根据“少填表、多利用已有资料和背景生成候选内容”的新原则，收口组织启动中心里仍要求用户从空白开始写的部分
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 年度目标与年度战略区新增“从已上传资料生成候选草稿”
+  - 候选草稿优先读取组织 DNA 模块摘要，不再默认让 CEO 从空白输入框开始写整套年度战略
+  - 部门季度承接区新增：
+    - `批量生成候选承接草稿`
+    - 单部门 `生成候选`
+  - 候选内容优先基于：
+    - 组织名称
+    - 组织 DNA 摘要
+    - 当前聚焦季度主线
+    - 部门名称 / 负责人 / 部门使命
+  - 当前仍保持人工可修改，不引入新的重表单
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前候选草稿还是前端启发式生成，不是真实 AI 结构化抽取；后续仍可再接更强的背景生成器
+  - 这轮先收 CEO 与部门负责人入口，普通成员流程沉淀继续留在 P2
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 组织启动中心候选写入保护与来源链路
+- 线程名称：org-setup-draft-apply-guard
+- 负责范围：继续收口组织启动中心中的候选草稿链路，让系统默认“只补空白字段”，避免覆盖人工已经改过的内容，并把背景来源链路直接显示在页面上
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 母盘顶部新增“背景生成链路”说明：组织 DNA -> 年度战略候选 -> 四季草稿 -> 部门承接候选
+  - 年度战略区新增候选写入方式切换：
+    - `只填空白字段`
+    - `覆盖已有内容`
+  - 部门承接区新增相同切换，默认保护负责人已修改内容
+  - 年度战略区会显示“已读取哪些组织 DNA 模块”，让用户知道候选草稿不是凭空生成
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前“来源链路”仍然是页面内说明，不是结构化 evidence map 展示
+  - 候选生成仍是启发式草稿，不是真实模型抽取
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 四季草稿候选生成与校正模式
+- 线程名称：org-setup-quarter-draft-guard
+- 负责范围：把四季草稿也纳入“先生成候选、再人工校正、默认保护人工修改”的统一模式
+- 已改文件：
+  - `src/renderer/components/settings/OrganizationSetupCenter.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 四季草稿区新增统一的写入方式切换：
+    - `只填空白字段`
+    - `覆盖已有内容`
+  - 新增季度草稿来源说明：年度目标、年度战略说明、组织 DNA 摘要
+  - 每张季度卡现在都有：
+    - `生成候选`
+    - 状态标签：`待补 / 候选已生成 / 已校正`
+    - 最近人工校正提示（若已改动）
+  - 手动编辑季度卡内容时，会记录本次人工校正时间
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前“已校正”判断仍基于本地 `updatedAt` 字段，不区分更细的修改来源
+  - 生成逻辑仍是启发式，不是真实 AI 抽取
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 周判断系统 P2：正式计划对象与项目背景接入
+- 线程名称：calendar-week-intelligence-p2-context
+- 负责范围：把周判断后端从“任务文本 + DNA”升级到“任务文本 + 正式计划对象 + 项目背景”
+- 已改文件：
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_analysis.py`
+  - `backend/tests/test_review_rollup.py`
+  - `src/shared/types.ts`
+- 当前状态：
+  - `ReviewEvidenceWeight` 新增两类来源：
+    - `focus_plan`
+    - `project_context`
+  - 周判断分析器现在会正式读取：
+    - 组织模型里的 `focusItems`
+    - 组织模型里的 `departmentPlans`
+    - 任务快照里的 `projectContext`
+  - `本周事实` 会明确说明：
+    - 有多少任务已挂接项目背景
+    - 已读取哪些正式计划对象
+  - `AI 判断` 新增两类候选判断：
+    - `与项目阶段的关系判断`
+    - `与正式计划对象的关系判断`
+  - 部门/机构 rollup 现在也会把这些背景进入 summary / sourcePolicy，不再只看任务文本和 DNA
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮仍然主要依赖已有 `projectContext` 和组织模型 profile；如果项目背景本身没有维护，系统输出仍会保守
+  - 会议纪要虽已可作为项目背景来源之一，但“飞书直连会议链接”仍未完成
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py backend/app/services/review_analysis.py backend/app/services/review_rollup.py backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`10 passed`
+  - `npx vite build` 通过
+## 2026-03-21 - 周判断系统 P3：预测信号转动作卡
+
+- 周判断后端已把 `ReviewActionCardRecord` 真正接入到个人 / 部门 / 机构三层报告，不再只是 `suggestedActions` 纯文本。
+- 新增的动作卡来源于真实管理信号：
+  - 复核链 / 跨部门 / 流程卡点 -> `meeting`
+  - 容量过载 / 管理负荷 -> `resource_request`
+  - 职责边界偏移 -> `one_on_one`
+  - 支持依赖聚集 -> `support_request`
+  - 项目风险 / 计划偏移 -> `task`
+- `HierarchyReportCard` 的“建议动作”区已升级为：
+  - 先展示结构化动作卡
+  - 再展示原有文本建议
+- 新增 sourcePolicy 指标：
+  - `overloadCount`
+  - `supportNeedCount`
+  - `misalignedCount`
+  - `projectRiskCount`
+- 验证：
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_rollup.py -q` -> `6 passed`
+  - `npx vite build` -> passed
+
+## 2026-03-21 - 周判断系统 P3.1：动作卡一键闭环
+
+- `HierarchyReportCard` 的结构化动作卡现在支持直接触发已有动作链路，不再只是展示建议。
+- 已接通的闭环包括：
+  - `meeting` -> 直接走飞书会议发起链路
+  - `support_request` / `resource_request` -> 直接创建支持请求
+  - `task` / `one_on_one` -> 直接转成正式任务
+- 动作卡会优先读取 rollup 产出的结构化 payload：
+  - `summary`
+  - `relatedTaskIds`
+  - `relatedTaskTitles`
+  - `primaryClientId`
+  - `primaryDepartmentId`
+- `WeeklyReviewSummaryPanel` 已透传动作触发回调，个人 / 部门 / 机构三层报告都能执行同一套动作闭环。
+- 边界：
+  - 会议动作仍依赖任务已挂接项目背景，没有 `primaryClientId` 时会直接提示不可发起
+  - 当前动作触发后会复用现有任务、飞书会议、支持请求链路，不新增第二套对象
+- 验证：
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_rollup.py -q` -> `6 passed`
+  - `npx vite build` -> passed
+
+## 2026-03-21 - 周判断系统 P3.2：动作卡结果回填与打开入口
+
+- 动作卡执行后，现在会在卡片内直接显示执行结果，不再只靠 toast：
+  - `已创建任务`
+  - `已发起会议草稿`
+  - `已创建支持请求`
+- 结果信息会回填：
+  - 对象标题
+  - 对象编号
+  - 关联项目名称（如有）
+- 已补的就地打开能力：
+  - 任务动作 -> 可直接打开刚创建的任务
+  - 会议动作 -> 可直接切到对应项目工作台并刷新上下文
+- 当前支持请求动作先显示结果，不强行做跳转，因为前台还没有独立的支持请求面板。
+- 验证：
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_rollup.py -q` -> `6 passed`
+  - `npx vite build` -> passed
+
+## 2026-03-21 - 周判断系统 P3.3：支持请求弹层闭环
+
+- 前端已补支持请求 API：
+  - `getSupportRequests`
+  - `resolveSupportRequest`
+- 动作卡如果创建的是支持请求，现在会：
+  - 在执行结果里记录完整支持请求对象
+  - 支持点击 `打开请求`
+  - 弹出轻量支持请求面板
+- 支持请求面板当前支持：
+  - 查看摘要、目标范围、紧急度、状态、编号
+  - 填写处理说明
+  - 标记 `接受 / 解决 / 驳回`
+- 当前策略：
+  - 不新造完整支持请求模块
+  - 先在周判断页内把“从洞察到请求处理”的闭环做通
+- 验证：
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_rollup.py -q` -> `6 passed`
+  - `npx vite build` -> passed
+
+## 2026-03-21 - 组织启动中心：部门承接卡状态与来源收口
+
+- `部门负责人承接季度计划` 区不再只看“有没有季度目标”，现在每张承接卡都会区分：
+  - `待补`
+  - `候选已生成`
+  - `已校正`
+- 状态判断已和人工修改时间打通：
+  - 手动改 `部门业务介绍 / 团队介绍` 会更新部门级 `updatedAt`
+  - 手动改季度目标 / 关键产出 / 成功标准 / 主要风险 会更新 `quarterPlan.updatedAt`
+  - 系统批量或单卡生成候选时，默认不覆盖人工修改痕迹；只有在 `覆盖已有内容` 模式下才会清空人工校正标记
+- 每张承接卡现在会明确显示候选来源：
+  - 当前聚焦季度
+  - 年度战略主线
+  - 组织 DNA
+  - 部门名称 / 负责人 / 部门使命
+- 卡片说明文案也改成了“系统先生成候选，负责人再轻量校正”，避免继续把负责人推回空白表单。
+- 验证：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 - 组织启动中心：部门承接卡结构重排
+
+- 把部门承接卡从“连续大输入框”重排成了三段结构：
+  - `部门背景`
+  - `当前季度承接`
+  - `执行判断`
+- 卡片顶部新增了轻量概览：
+  - 年度
+  - 季度
+  - 关键产出数
+  - 主要风险数
+- `部门背景` 区现在只承接：
+  - 部门业务介绍
+  - 团队情况
+- `当前季度承接` 区明确拆成：
+  - 本季度目标
+  - 关键产出
+  - 成功标准
+  - 主要风险
+- 文案也改成“先补这个部门在组织里承担的价值、再承接季度目标、再补执行判断”，减少负责人面对整张空白表单时的理解成本。
+- 验证：
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 - 闪退排查：旧 runtime 壳损坏
+
+- 已现场排查 macOS 崩溃报告：
+  - `~/Library/Logs/DiagnosticReports/Electron-2026-03-21-132223.ips`
+  - `~/Library/Logs/DiagnosticReports/Electron Helper-2026-03-21-132928.ips`
+  - `~/Library/Logs/DiagnosticReports/Electron Helper (GPU)-2026-03-21-132221.000.ips`
+- 当前两次闪退对应的不是现行业务代码，而是旧的本地运行时壳：
+  - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron/益语智库工作台.app`
+  - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron-dist/益语智库工作台.app`
+- 这些旧 bundle 检查结果异常：
+  - `Info.plist=not bound`
+  - `Sealed Resources=none` 或资源绑定异常
+  - `spctl` 报 `code has no resources but signature indicates they must be present`
+- 已执行修复动作：
+  - 把旧 runtime app 备份到：
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/backup-corrupted-apps/20260321-141451/`
+  - 用当前可运行的 app 替换到旧路径，避免继续点到损坏入口
+- 当前结论：
+  - 这次闪退不是组织搭建中心或任务业务逻辑触发
+  - 是旧 Electron 壳 / 本地运行时入口损坏
+  - 更深层仍有一条待收口风险：本地自测 app 仍是 ad-hoc / 非正式签名链，后续要继续收口打包与本地启动底座
+
+## 2026-03-21 - 封装前清理：启动壳与打包基线
+
+- 已改文件：
+  - `scripts/run-local-electron.mjs`
+  - `package.json`
+  - `backend/app/main.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 开发启动脚本不再把 `node_modules/electron/dist/Electron.app` 写成旧产品身份；现在会在启动前把源 bundle 回正到默认 `Electron / com.github.Electron`，并且只在检测到污染时才重写和重签。
+  - 已现场把 `node_modules/electron/dist/Electron.app` 的顶层与 Helper `Info.plist` 回正，避免继续把 `益语智库工作台 / com.yiyu.thinktank.workbench.local` 带进后续产物。
+  - 打包白名单已排除：
+    - `backend/.venv`
+    - `cloud_backend/.venv`
+    - 两端 `tests`
+    - `.pytest_cache`
+    - `__pycache__`
+    - `*.pyc`
+  - 飞书绑定成功页文案已统一成“益语智库自用平台”。
+- 是否需要主线程配合：否
+- 风险点：
+  - 本地 `dir` 产物的 `Info.plist` 已恢复正确 `productName/appId`，但仍是本地无正式签名产物，`spctl` 继续报 `invalid Info.plist (plist or signature have been modified)`，这属于明天封装链里仍需处理的正式签名/公证问题，不是旧身份污染残留。
+  - 运行时源 bundle 仍是“启动前自检并必要时回正”的保守方案，不是完全零副作用复制式运行时。
+- 验证：
+  - `node --check scripts/run-local-electron.mjs` 通过
+  - `node scripts/run-local-electron.mjs --version` 通过
+  - `npm run build:main` 通过
+  - `npm run build:renderer` 通过
+  - `npm run dist:mac-local` 通过
+  - `dist/mac-arm64/益语智库自用平台.app/Contents/Info.plist` 已确认：
+    - `CFBundleIdentifier = com.yiyu.selfworkbench`
+    - `CFBundleName = 益语智库自用平台`
+
+## 2026-03-21 - 封装前清理：装错包自检
+
+- 已改文件：
+  - `src/main/main.ts`
+  - `src/shared/types.ts`
+  - `src/renderer/components/settings/UpdateSettingsPanel.tsx`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 设置页“版本与更新”现在会显示当前运行包的真实路径，并扫描：
+    - `/Applications`
+    - `~/Applications`
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron`
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron-dist`
+  - 如果检测到旧入口或重复安装包，会直接给出警告，并支持一键在 Finder 中定位。
+  - 当前已确认的真实误开源头包括：
+    - `/Applications/益语智库.app`（旧壳，`com.yiyu.shell`）
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron/益语智库工作台.app`（旧 runtime 入口）
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只做了“识别和提示”，还没有自动清理旧 app 包；避免在未确认前误删用户入口。
+- 验证：
+  - `npm run build:main` 通过
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 - 封装前清理：唯一安装入口策略
+
+- 已改文件：
+  - `scripts/install-mac-app.mjs`
+  - `package.json`
+  - `docs/release-process.md`
+  - `src/renderer/components/settings/UpdateSettingsPanel.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已新增本地安装脚本：
+    - `npm run install:mac-local`
+  - 该脚本会把当前构建产物安装到唯一推荐入口：
+    - `~/Applications/益语智库自用平台.app`
+  - 如果该路径已有旧版本，会先自动归档到：
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/install-backups/`
+  - 设置页“版本与更新”也已明确显示唯一建议安装入口，避免继续从 `dist/mac-arm64/*.app` 或 runtime 目录直接运行。
+  - 发版文档已明确：手动安装验证和本地封装验证只认 `~/Applications/益语智库自用平台.app`，不再把 `dist` 里的裸 app 当长期使用入口。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只统一了推荐入口和安装方式，历史壳已先做可恢复归档，但仍未做“自动永久删除”。
+- 验证：
+  - `node --check scripts/install-mac-app.mjs` 通过
+  - `npm run build:main` 通过
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 - 封装前清理：旧入口归档
+
+- 已改动对象（运行环境）：
+  - `/Applications/益语智库.app`
+  - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron/益语智库工作台.app`
+  - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/local-electron-dist/益语智库工作台.app`
+  - `~/Applications/益语智库自用平台.old-20260321-1525.app`
+- 当前状态：
+  - 上述旧入口与旧备份已全部移出常用路径，归档到：
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/legacy-app-archive/20260321-150139/`
+    - `~/Library/Application Support/yiyu-thinktank-workbench/runtime/install-backups/`
+  - 现在 Spotlight 返回的有效主入口只剩：
+    - `~/Applications/益语智库自用平台.app`
+- 验证：
+  - `mdfind ...` 当前仅返回 `~/Applications/益语智库自用平台.app`
+
+## 2026-03-21 - 封装前清理：发布图标与前置检查
+
+- 已改文件：
+  - `scripts/generate-mac-icon.py`
+  - `package.json`
+  - `build-resources/README.md`
+  - `docs/release-process.md`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已生成正式打包占位图标：
+    - `build-resources/icon.icns`
+  - 已新增脚本：
+    - `npm run build:mac-icon`
+  - `dist:mac-local` 日志里已不再出现“default Electron icon is used”。
+  - 当前官网发布前置检查已从“缺图标 + 缺证书/公证”收敛成仅剩两项外部阻塞：
+    - `Developer ID Application` 证书
+    - notarization 凭据
+- 是否需要主线程配合：否
+- 风险点：
+  - 现在的图标是为了先打通封装链的占位品牌图标，后续如有正式品牌素材仍建议替换。
+- 验证：
+  - `npm run build:mac-icon` 通过
+  - `node scripts/ensure-mac-release-prereqs.mjs`
+    - 当前只报：
+      - 没有 `Developer ID Application` 证书
+      - 没有 notarization 凭据
+  - `npm run dist:mac-local` 通过
+
+## 2026-03-21 - 客户工作台：项目搭建页导入优先
+
+- 已改文件：
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 项目搭建页首屏已改成“先导入原始资料”
+  - 页面中部新增主动作：`导入文件 / 导入文件夹`
+  - 顶部文案已从“下一步补项目资料”改成“第一步先导入已有资料”
+  - 四张资料卡已从“先手工上传 MD”调整成“系统待生成候选文档”的第二阶段
+  - 仍保留 `复制 AI 指令` 和 `直接上传整理好的 MD`，但已降为次级入口
+- 是否需要主线程配合：否
+- 风险点：
+  - 目前仍是“导入资料 -> 用户等待 -> 查看生成结果”的界面重排，真正的自动扫描生成状态还主要依赖现有知识库作业状态，不是专门的新扫描流程页
+  - 模块 / 流程区域仍在同页下半部分，后续如果继续收口，建议等四张候选文档稳定后再逐步引导用户进入
+- 验证：
+  - `npm run build:renderer` 通过
+- 2026-03-21 14:11 修正月视图右侧 DAY DETAIL 只显示单条任务的问题：根因不是日期匹配，而是右侧面板一直绑定 `selectedDetailTask` 单卡渲染。现已改成按 `filteredDayTasks` 渲染当日全部任务，筛选 `全部/待推进/已完成` 会直接作用到列表，不再只显示默认选中的第一条。
+- 2026-03-21 14:18 继续梳理“事件线”能力：明确其不是标签，而是独立的一等对象，用于把任务、会议、支持请求、附件、复核、复盘和状态变化串成 AI 可读工作记忆线。已新增 `docs/event-line-spec.md` 与 `docs/event-line-implementation-plan.md`，并明确当前状态为“尚未落到产品 UI 与对象模型”，所以现在在任务/日历里看不到事件线入口是正常的。
+
+## 2026-03-21 - 客户工作台：导入后自动生成候选 MD
+
+- 已改文件：
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/client_workspace/ClientProjectSetupPage.tsx`
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 原始资料导入完成后，后台知识作业会自动补一轮 `generate_client_dna_candidates`
+  - 四张项目资料卡现在不只是静态“待生成”文案，而是真会落生成候选 MD
+  - `client_dna_documents` 新增：
+    - `source_kind`
+    - `missing_info_json`
+  - 前端会识别：
+    - `系统候选 / 人工确认`
+    - 动态缺失信息
+  - 扫描状态区新增：
+    - `重新扫描并生成候选`
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前候选 MD 还是“系统先生成一版，人工再确认”的策略，暂未补编辑器内联修改
+  - 候选生成目前优先基于 document card 摘要和分类结果，不是深度全量文档抽取
+- 验证：
+  - `python3 -m py_compile backend/app/models.py backend/app/db.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "workspace_import_auto_generates_client_dna_candidates or client_dna_documents_are_saved_and_prioritized_in_chat_context or client_dna_documents_only_accept_markdown_extensions"` 通过
+  - `npm run build:renderer` 通过
+
+## 2026-03-21 - 事件线 P1：对象、任务挂接与基础抽屉
+
+- 已改文件：
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `backend/app/db.py`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+- 当前状态：
+  - 事件线已从纯设计稿进入第一版可运行对象：
+    - 新增 `EventLine / EventLineDetail / EventLineActivity`
+    - 任务对象新增 `eventLineId / eventLineName`
+  - 本地与云端都已支持：
+    - `GET /api/v1/event-lines`
+    - `POST /api/v1/event-lines`
+    - `GET /api/v1/event-lines/{id}`
+    - `PATCH /api/v1/event-lines/{id}`
+  - 任务创建/更新已能保存 `eventLineId`
+  - 支持请求会继续往事件线写入活动记录
+  - 任务弹窗已新增：
+    - `加入事件线` 下拉
+    - `从当前任务新建` 按钮
+    - `查看事件线` 入口
+  - 已补最小事件线详情抽屉：
+    - 事件线摘要 / 阶段 / 关联任务 / 最近事件
+    - 可从抽屉直接打开关联任务
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮还是 `P1`，重点是“对象通了、任务能挂上、能看详情”
+  - 还没把周复盘正式按事件线分组，也还没做 PDF 证据线导出
+  - 事件线抽屉目前是最小版，支持查看，但还没有独立列表页和高级编辑页
+- 验证：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py backend/app/db.py cloud_backend/app/main.py cloud_backend/app/models.py cloud_backend/app/db.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k "event_line_roundtrip_and_detail_collects_task_and_support_request or task_plan_link_and_support_request_flow"` 通过，`2 passed`
+  - `npx vite build` 通过
+
+## 2026-03-21 - 飞书手机扫码绑定中继
+
+- 线程名称：
+  - 飞书手机扫码绑定中继
+- 负责范围：
+  - 飞书个人账号绑定
+  - 本地后端与云端回调中继
+  - 绑定面板交互文案
+- 计划修改的文件：
+  - `backend/app/main.py`
+  - `backend/app/models.py`
+  - `backend/tests/test_api_smoke.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 里客户工作台问答主链路
+
+- 已改文件：
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `cloud_backend/app/db.py`
+  - `cloud_backend/app/main.py`
+  - `cloud_backend/app/models.py`
+  - `cloud_backend/tests/test_auth_tasks.py`
+  - `src/renderer/components/settings/FeishuAccountBindingPanel.tsx`
+  - `src/renderer/components/settings/FeishuBotSettingsPanel.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 本地后端发起个人飞书绑定时，若未单独配置公网回调，会优先尝试使用 `cloudApiUrl` 对应的云端 HTTPS 中继回调。
+  - 手机扫码后的授权结果现在会先回传到云端中继，再由桌面工作台轮询消费并完成本地绑定。
+  - 原有“当前电脑浏览器完成授权”的本地回调路径保留，未被破坏。
+  - 绑定面板和飞书设置文案已改成“优先用云端 HTTPS 中继”，不再默认把手机扫码判死。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这条链已经写通，但真正让手机扫码可用，仍要求运行环境里的 `cloudApiUrl` 是飞书后台允许的公网 HTTPS 地址；如果当前仍是 `127.0.0.1`，界面还是会按预期提示不能扫码。
+  - 当前云端只做“扫码结果中继”，最终个人绑定记录仍保存在桌面端本地。
+- 验证：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py cloud_backend/app/main.py cloud_backend/app/models.py cloud_backend/app/db.py` 通过
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k feishu_binding_relay_session_roundtrip` 通过，`1 passed`
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "feishu_user_binding_callback_persists_current_user or feishu_user_binding_start_uses_configured_public_callback or feishu_user_binding_uses_cloud_relay_for_mobile_scan"` 通过，`3 passed`
+  - `npm run build:renderer` 通过
+- 2026-03-21：事件线 `P2` 已落地到周复盘采集页。当前周复盘不再只按单条任务展开，而是优先按 `eventLineId` 分组；同一条事件线下的多条任务会折叠成一个复盘模块，共享一条轻量复盘输入。没有事件线的任务仍按单条事项复盘。当前保存仍复用 `taskEntries` 协议：同组共享判断会同步写回这条线下的任务，避免新增人工填写负担。
+- 2026-03-21：事件线 `P2` 继续推进到文稿生成层。`buildWeeklyReviewDocumentDraft(...)` 不再固定输出“逐任务执行情况”，而是优先输出“逐事件线推进情况”；同一条事件线下的任务会在文稿里聚合成一个模块，统一写背景、相关任务和共享复盘判断，减少重复罗列。
+- 2026-03-21：事件线已正式接入后端周判断与汇总。`review_analysis.py` 会把 `eventLineId / eventLineName` 写进“本周事实”“可能性分析”“下周关注重点”；`review_rollup.py` 会在个人、部门、机构三层报告里补充事件线连续推进的摘要、支持信号和来源计数（`eventLineCount / multiTaskEventLineCount / blockedEventLineCount`）。这意味着前台按事件线分组后，后端输出也开始按连续工作线理解任务，而不再只把它们当成离散单项。
+- 2026-03-21：周判断动作卡现在会正式回挂事件线。`review_rollup.py` 的动作 payload 已补 `primaryEventLineId / primaryEventLineName`；前端从动作卡创建任务时会透传 `eventLineId`，创建支持请求时也会透传 `eventLineId`，云端支持请求创建逻辑会在没有直接绑定任务的情况下仍把活动写入该事件线。动作执行结果卡也开始显示“关联事件线”，让 AI 和记忆线都能追踪这次动作属于哪条连续工作线。
+- 2026-03-21：根据用户对 CEO 视角和项目语境的补充反馈，新增 `docs/calendar-week-context-retrieval-and-prompt-spec.md`。这份规格专门约束：
+  - 周判断必须先按事件线/项目线聚合，再做业务分类
+  - CEO 视角禁止输出 `部门对齐度`
+  - 项目工作台需要补 `当前事项 / 当前阶段 / 当前阻塞 / 下一步动作`
+  - 输出要短则一段、长则分条，直接给内容，不展开机理
+- 2026-03-21：封装排障继续推进。`~/Applications/益语智库自用平台.app` 一度出现“软件打不开”，这次已确认不再是“装错包”，而是新安装包自身在本机 ad-hoc 状态下启动即崩。现场对安装包重新执行 `codesign --force --deep --sign -` 后，应用恢复可启动；冷启动后进程、窗口和 Renderer 都已起来。当前判断：旧入口污染已基本收口，但本地无正式签名的安装包仍然脆弱，明天封装的主要外部阻塞仍是 Developer ID 证书和 notarization 凭据。
+- 2026-03-21：本轮“白屏”已定位到真实前端 bug，不是封装清理把渲染资源删坏。`electron-launch.log` 明确记录 `ReferenceError: Cannot access 'yt' before initialization`，经 sourcemap 回溯到 `src/renderer/App.tsx` 中 `knowledgeStatus` 在声明前就被读取。现已修复为先声明 `knowledgeStatus`，再计算 `sourceDocumentCount`；重新构建、重新安装并对本地 app 自动 ad-hoc 重签后，白屏对应的压缩栈已不再出现。顺手把 `scripts/install-mac-app.mjs` 补成安装后自动 `codesign --force --deep --sign -`，降低本机后续“装完即崩”的概率。
+- 2026-03-21：又排查到一类“看起来像数据丢失”的问题。实际不是记录被删，而是之前一度存在两个 `userData` 目录：空的新目录 `~/Library/Application Support/yiyu-thinktank-workbench` 和旧的有效目录 `~/Library/Application Support/YiyuThinkTankWorkbench`。当前源码、构建产物和运行中的本地后端都已经确认回到旧目录；`/api/v1/system/health` 现场返回 `dataDir = .../YiyuThinkTankWorkbench`，并且 `stats.clients = 7 / tasks = 18 / topics = 30`，说明记录仍在。旧目录里的 `app.db` 也已现场核对出 `clients=7 / chat_threads=148 / chat_messages=495 / imports=15` 等数据量，不是封装清理把库抹掉了。
+- 2026-03-21：继续排查“为什么偶尔又像没登录”。现场确认当前运行的是 `~/Applications/益语智库自用平台.app`，而不是 workspace 里的调试包；它的 `userData` 也已经固定到 `~/Library/Application Support/YiyuThinkTankWorkbench`。进一步发现一个真实触发条件：若启动时云端短暂不可达，`/api/v1/auth/me` 之前会立即向云端校验并抛 `502`，前端首屏就会掉回登录壳，看起来像“又要重新登录”。现已修成：只要本地还有缓存用户，云端 `502/503/504` 时继续返回已登录状态，并明确提示“云端暂时不可用，已保留当前设备上的登录状态。”；新增 `test_auth_me_keeps_cached_session_when_cloud_is_temporarily_unavailable` 覆盖这条兜底。
+
+## 2026-03-21 - 登录态保活兜底
+
+- 线程名称：
+  - 登录态保活兜底
+- 负责范围：
+  - 本地登录态持久化
+  - 云端瞬时不可达时的认证兜底
+  - 本机安装包覆盖更新
+- 计划修改的文件：
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 里客户工作台问答主链路
+- 已改文件：
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - `/api/v1/auth/me` 在云端 `502/503/504` 且本地已有缓存用户时，不再把工作台打回登录页，而是继续保留当前设备上的登录状态。
+  - 已确认当前正式应用是 `~/Applications/益语智库自用平台.app`，且使用的 `userData` 是 `~/Library/Application Support/YiyuThinkTankWorkbench`。
+  - 已重新打本机安装包并覆盖安装到 `~/Applications/益语智库自用平台.app`，重启后现场 `/api/v1/auth/me` 返回 `authenticated=true`。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这次修的是“云端暂时不可达时不要误掉登录壳”，不等于跳过真实失效；如果云端返回 `401/403`，本地仍会按预期清 session。
+  - 旧目录 `~/Library/Application Support/yiyu-thinktank-workbench` 和旧安装备份仍然存在，但当前正式应用已经不再使用它们。
+- 验证：
+  - `python3 -m py_compile backend/app/main.py backend/tests/test_api_smoke.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "auth_me_keeps_cached_session_when_cloud_is_temporarily_unavailable or feishu_user_binding_uses_cloud_relay_for_mobile_scan"` 通过，`2 passed`
+  - `npm run build:main` 通过
+  - `npm run dist:mac-local` 通过
+  - `npm run install:mac-local` 通过
+  - 重启正式应用后，`GET http://127.0.0.1:47829/api/v1/auth/me` 返回 `authenticated=true`
+
+- 2026-03-21：再次出现 `Renderer startup failed`，现场错误为 `ReferenceError: ArrowRight is not defined`。已定位到 `src/renderer/App.tsx` 中注册/登录壳使用了 `<ArrowRight />`，但顶部 `lucide-react` 导入列表漏掉了 `ArrowRight`。本次只做最小修复：补导入，不动其它逻辑；待 renderer 重构和安装完成后再验证正式 app。
+- 2026-03-21：修掉 `ArrowRight` 后，启动日志继续暴露第二处同类问题：`getHealth is not defined`。现场确认 `src/renderer/App.tsx` 第 2536 行调用了 `getHealth()`，但顶部 API 导入块漏掉了 `getHealth`。已补最小导入修复，继续按本机安装包链路覆盖安装验证。
+- 2026-03-21：针对“我的本周总结太宽泛、对 CEO 仍沿用员工口径”的问题，已先做第一刀实修。`backend/app/main.py` 现在会把当前登录角色透传给周判断链路；`backend/app/services/review_analysis.py` 对 admin/CEO 视角不再输出“个人-部门对齐率”，改为更贴近机构视角的“事件线成线率”和机构战略对齐，并优先按事件线/项目线生成更具体的业务判断段落；`backend/app/services/review_rollup.py` 的个人报告也新增 admin 分支，优先引用事件线/项目线内容而不是通用员工模板。回归验证已通过：`backend/tests/test_review_analysis.py`、`backend/tests/test_review_rollup.py` 共 `16 passed`，`npx vite build` 通过。
+- 2026-03-21：继续沿着“先识别客户/项目，再识别事件线”的路线推进任务弹窗。`src/renderer/App.tsx` 里的事件线下拉不再只是全局列表，而会优先按当前 `clientId` 过滤；同时新增事件线自动建议逻辑：系统会基于任务标题/说明，在当前项目下优先匹配事件线名称、摘要、意图和下一步语句，并自动回填 `eventLineId` 与解释文案。若用户手动切换客户，也会同步清空旧事件线并重新进入自动建议状态。前端构建验证通过：`npx vite build` 通过，最新 renderer 产物为 `dist/renderer/assets/index-gBY9r6w_.js` 和 `dist/renderer/assets/index-Czs0is1u.css`。
+- 2026-03-21：继续补“项目背景包可写作性”。`TaskProjectContext` 现在新增了 `currentFocus / currentBlocker / nextAction / recentProgress` 四个字段；`backend/app/main.py` 和 `src/renderer/App.tsx` 的项目背景生成器会基于项目模块、流程、目标、会议和资料完整度自动给出“当前事项 / 当前阻塞 / 下一步动作 / 最近进展”。同时 `backend/app/services/review_analysis.py` 的事件线故事聚合会优先读取这些字段，不再只拼 `goalSummary / riskSummary`。回归验证通过：`python3 -m py_compile ...` 通过，`backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py` 共 `16 passed`，`npx vite build` 通过；最新 renderer 产物为 `dist/renderer/assets/index-Y0hiMtzE.js` 和 `dist/renderer/assets/index-Czs0is1u.css`。
+- 2026-03-21：继续修 `Renderer startup failed`。本次错误是 `isImportSubmitting is not defined`，根因不是漏导入，而是作用域写错：外层 `App` 的轮询 effect 在用这个状态，但状态和 `importProgressHoldUntilRef` 被写在 `ClientWorkspaceView` 内层。现已提升到 `App` 顶层，确保首屏渲染时和客户工作台共用同一份导入进度状态。
+- 2026-03-21：打通了“任务附件 -> 项目总文件库 -> 事件线证据层”第一版链路。`src/shared/types.ts` 新增 `TaskAttachment`，任务对象正式带 `attachments`；`backend/app/db.py` 新增 `task_attachments / task_attachments_cloud` 两张表并补 `event_line_activities.created_at` 迁移兜底；`backend/app/main.py` 新增 `POST /api/v1/tasks/{task_id}/attachments`，会把任务上传附件自动归档到客户工作台 `项目与业务/任务附件`，写入 `documents / evidence_refs`，本地任务若已挂事件线还会同步写入 `event_line_activities`。`src/renderer/App.tsx` 任务弹窗已新增“附件”区块，可直接上传或在新建任务时暂存，保存后自动归档；`src/renderer/lib/api.ts` 补了 multipart 上传 helper。为这条链新增了 `backend/tests/test_api_smoke.py::test_task_attachment_is_archived_to_workspace_and_event_line` 回归，验证附件确实进入客户工作台文件库并在事件线上留下 `attachment` 活动。运行环境同时补齐了后端缺失依赖 `python-multipart`（已写入 `backend/pyproject.toml` / `backend/uv.lock`）。验证：`python3 -m py_compile backend/app/main.py backend/app/models.py backend/app/db.py` 通过；`PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k task_attachment_is_archived_to_workspace_and_event_line` 通过，`1 passed`；`npx vite build` 通过，最新 renderer 产物为 `dist/renderer/assets/index-wwpJLfel.js` 和 `dist/renderer/assets/index-DwMvmdvr.css`。
+- 2026-03-21：继续修周日历两个高频 bug。其一，周视图里修改/拖动任务后会出现“从左到右刷一下”的横向滑动，根因不是月/周模式被重置，而是周 pager 同时依赖浏览器自己的 `scroll-snap + smooth` 自动吸附和内部手势判断，任务更新后的布局变化也会触发一次横向回正动画。现已把周 pager 改成 `snap-proximity`，去掉浏览器级 `scroll-smooth`，并补一条“只有真实手势期间才允许横向分页；数据刷新后若 page 偏离中心则立即 `auto` 归中”的兜底。其二，空白时间段框选新建任务不稳定，根因是原来把 `mousedown` 绑在每个 15 分钟小格上，且 `mouseup` 直接在监听里开弹窗，容易被格子层/事件顺序干扰；现已改成整列统一接管空白区框选，任务卡显式拦截 `mousedown`，选区结束后通过 `requestAnimationFrame` 再打开普通新建任务弹窗，仅预填开始时间和时长。验证：`npx vite build` 通过，最新 renderer 产物为 `dist/renderer/assets/index-ZRlU82z1.js` 和 `dist/renderer/assets/index-5to1APn9.css`。
+- 2026-03-21：重新设计了任务卡里的“组织上下文”块，避免继续堆 `待复核 / 机构控制 / 跨部门` 这种低价值标签。`src/renderer/components/tasks/TaskOrgContextPanel.tsx` 现在改成 `AI 洞察` 面板：优先展示 `事件线 / 项目 / 阶段` 摘要胶囊，并从 `projectContext.currentFocus / currentBlocker / nextAction / recentProgress`、事件线名、附件数量和组织上下文里自动生成 2-4 条短而有判断力的洞察句。同步地，`TaskCalendarView.tsx` 和 `App.tsx` 中任务卡顶部的辅助标签也做了减法，只保留任务事实（状态、优先级、负责人、截止时间、项目、事件线），把“意义解释”交给 AI 洞察块。验证：`npx vite build` 通过，最新 renderer 产物为 `dist/renderer/assets/index-CTZzo3Y1.js` 和 `dist/renderer/assets/index-Bpr8W7Mf.css`。
+- 2026-03-22：继续把任务卡往“管理判断入口”方向收。`TaskOrgContextPanel.tsx` 里的洞察短句不再停留在“推进焦点 / 信号”这种中性命名，而改成更明确的四类：`这条线在推进 / 当前主要风险 / 可放大机会 / 下一步`。机会项会优先读 `recentProgress`、附件沉淀和目标摘要，风险项优先读 `currentBlocker / blockedAtStep / needsReview / infoCompleteness`，这样卡片一眼更接近“这条线正在发生什么、哪里危险、哪里值得放大、下一步该做什么”。同时给洞察正文加了 `line-clamp`，避免卡片再次被长句淹没。验证：`npx vite build` 通过，最新 renderer 产物为 `dist/renderer/assets/index-DJKDdRZt.js` 和 `dist/renderer/assets/index-BQ-Bfqbc.css`。
+- 2026-03-22：继续给任务卡补“角色感知”。当前系统里能稳定区分的角色只有 `admin` 和普通成员，所以先把这两套口径做实：`admin` 视角下，洞察排序改成 `当前主要风险 -> 这条线在推进 -> 可放大机会 -> 建议动作`，更贴近 CEO / 管理层扫读；普通成员视角则改成 `当前卡点 -> 下一步 -> 当前推进 -> 可继续沉淀`，更贴近执行者。为此给 `TaskOrgContextPanel` 新增 `viewerRole`，并在 `App.tsx` 的任务列表和 `TaskCalendarView.tsx` 的日/周详情里都透传当前登录角色。验证：`npx vite build` 通过，最新 renderer 产物为 `dist/renderer/assets/index-CGVgWMHx.js` 和 `dist/renderer/assets/index-BQ-Bfqbc.css`。
+
+
+## 2026-03-22 事件线完整度周判断实现线程
+- 线程名称：event-line-week-intelligence-runtime-v1
+- 负责范围：只把周判断从任务式分析升级成事件线式摘要 + 风险/机会卡 + 完整度诊断；不碰客户工作台问答主链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_rollup.py`
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx`
+  - `src/renderer/components/tasks/ExecutiveReviewPanel.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中客户工作台相关区块
+- 当前状态：
+  - 已把 `WeeklyReviewAnalysis` / `WeeklyReviewAnalysisRecord` 扩展为事件线式输出：新增 `eventLineSummaries / eventLineCompleteness / riskCards / opportunityCards`
+  - `backend/app/services/review_analysis.py` 已基于现有事件线、项目上下文、轻量复盘和任务事实生成：
+    - 事件线摘要卡
+    - 事件线完整度评分
+    - 升级中的风险卡
+    - 值得放大的机会卡
+  - 评分规则已按 `当前阶段 / 当前目标 / 当前阻塞 / 下一步动作 / 最近关键变化 / 责任关系 / 最近关键决策 / 项目模块流程归属` 8 槽位实现
+  - `build_hierarchy_report_from_analysis(...)` 已能优先读取事件线摘要和风险/机会卡，不再只靠 `hypothesisHighlights`
+  - `build_employee_review_report(...)` 的 admin 视角已优先引用事件线摘要、风险和机会输出
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx` 已改成“事件线摘要优先”的新结构：
+    - 本周关键事件线
+    - 升级中的风险
+    - 值得放大的机会
+    - 建议动作
+    - 证据与缺口
+    - 下方保留旧的事实与假设分析作为补充解释
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/app/services/review_rollup.py`
+  - `backend/tests/test_review_analysis.py`
+  - `backend/tests/test_review_rollup.py`
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx`
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前第一版风险/机会卡仍是规则化启发式，不是时间序列预测模型；它已经比任务流水账强，但还不是最终版本
+  - 这轮先把事件线式输出接进周判断面板，CEO/部门汇总页还没有单独做更深的事件线卡片布局
+  - 当前“补资料”先回流到项目资料导入引导，“快速澄清”先回流到现有周复盘结构化表单；还没做成专门的事件线澄清弹层
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/services/review_analysis.py backend/app/services/review_rollup.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`16 passed`
+  - `npm run build:renderer` 通过
+
+## 2026-03-22 事件线缺口回流交互线程
+- 线程名称：event-line-gap-actions-v1
+- 负责范围：只把周判断里的“证据与缺口”接成真实动作，不改客户工作台问答主链路，不新增第二套表单系统
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx`
+  - `src/renderer/App.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中客户工作台聊天与问答主链路
+- 当前状态：
+  - `WeeklyReviewAnalysisPanel` 的“证据与缺口”卡已新增两类动作：
+    - `补资料`
+    - `快速澄清`
+  - 动作不再停留在静态提示，而是复用现有入口：
+    - `补资料`：切到对应项目的客户工作台，并打开资料导入引导
+    - `快速澄清`：切回当前周复盘采集区，自动展开对应事件线的结构化复盘表单
+  - `WeeklyReviewSummaryPanel` 已把缺口动作透传到个人周判断面板，不再只在主采集页里可用
+  - 客户工作台顶部“资料导入引导”入口已从“仅首次缺资料时可见”改成可随时手动打开，保证缺口回流后有落点
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/WeeklyReviewAnalysisPanel.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx`
+  - `src/renderer/App.tsx`
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮是前端闭环，项目定位仍依赖当前周复盘分组里的 `task.clientId`，不是后端单独返回的事件线目标项目
+  - “快速澄清”当前复用的是现有复盘结构化表单，字段还不是专门为事件线设计的
+- 验证结果：
+  - `npm run build:renderer` 通过
+
+## 2026-03-22 任务卡 AI 洞察去重线程
+- 线程名称：task-ai-insight-dedup-v1
+- 负责范围：只修任务卡片 `AI 洞察` 的重复兜底问题，不改任务主数据结构，不碰客户工作台问答主链路
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+- 避开文件：
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中客户工作台聊天与问答主链路
+- 当前状态：
+  - 已确认重复原因不是模型输出雷同，而是很多任务上游只拿到了同一套共享上下文：
+    - `orgContext.organizationFocusKey = 战略陪伴闭环`
+    - `approvalState = pending`
+    - `needsReview = true`
+    - 多个任务还共用同一个 `projectContext`（同一客户、无事件线/模块/流程）
+  - `TaskOrgContextPanel` 已收紧显示条件：
+    - 没有事件线 / 模块 / 流程锚点时，不再强行展示共享项目级风险/机会文案
+    - 组织级共享焦点不再直接作为所有任务的“可放大机会”
+    - 有明确锚点的任务会把风险、机会、下一步绑定到具体任务 / 事件线 / 模块 / 流程
+  - 这样会减少“整屏每张卡都一样”的假洞察；背景不够细的任务会少显示，而不是乱显示
+  - 已继续把根因往上游收：
+    - 任务编辑器现在会基于标题 / 说明 / 已选事件线，自动建议 `项目模块 / 流程`
+    - 日历详情卡和任务卡的 `AI 洞察` 现在都能拿到对应 `eventLine` 的 `stage / summary / nextStep / status`
+    - 这意味着有事件线锚点的任务，不再只读共享 `projectContext`，而会优先读事件线动态状态
+  - 已新增“待补归属建议”列表卡：
+    - 任务列表顶部会自动筛出缺 `项目 / 事件线 / 模块 / 流程` 的存量任务
+    - 系统会基于任务标题、说明、当前项目、事件线与项目结构给出可应用建议
+    - 支持逐条“应用建议”和批量“一键应用建议”
+    - 项目级建议只接受中高置信度识别，不会把当前工作台的弱兜底项目批量写回
+    - 列表态会预取这些任务所属项目的模块 / 流程结构，避免建议只在编辑弹窗里出现
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/tasks/TaskOrgContextPanel.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `src/renderer/App.tsx`
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮已经补了模块 / 流程自动建议，但旧任务历史数据并不会自动变好；如果很多存量任务仍然不挂事件线 / 模块 / 流程，洞察会继续偏少
+  - 当前自动建议仍是启发式，不是强制绑定；要想真正把差异化洞察做深，后续还需要补旧任务批量归属与更强的事件线治理
+- 验证结果：
+  - `npm run build:renderer` 通过
+- 继续把周判断第一屏做深：后端 `build_hierarchy_report_from_analysis(...)` 不再只把事件线/风险/机会压成标题或通用短句，而是改成结构化的 `标题｜判断` 字符串；部门和机构 rollup 也同步改成优先保留这类结构化内容，不再在第二层汇总时重新压平成“事件线连续推进 / 职责边界 / 场景判断力产品化”这类空标题。
+- `HierarchyReportCard` 前端也补了 fallback 解析：即使部门/机构卡没有完整 `analysis`，只拿到 `HierarchyReport`，顶部四块和 `AI 判断` 区也能把 `标题｜判断` 渲染成“标题 + 正文”的结构化条目，而不是把整句塞进 chip 或退回为同质化卡片。
+- 继续往内容层收，不再只做结构：`review_analysis.py` 里的 `_build_event_line_intelligence(...)` 已改成按 `业务扩展 / 项目推进 / 产品化沉淀 / 组织协同 / 管理机制 / 外部合作 / 专项推进` 生成不同的摘要、风险、机会和下一步，不再所有事件线都走统一句式。
+- 同时把 `viewer_role` 接进事件线智能生成：
+  - `admin` / CEO 口径会更强调“管理层是否该继续加码、是否看得清这条线的价值”
+  - 普通成员口径会更强调“执行是否会继续停留在反复确认、返工或来回推进里”
+- `业务分类` 顺序也修了：`产品化沉淀` 现在会优先于泛化的“项目推进”命中，避免“模板沉淀/标准件”这类内容被误写成交付推进。
+- 为了不让一个旧引用继续挡前端构建，补回了 `StrategicAccompanimentShell.tsx` 的稳定占位壳，不影响当前主流程，只负责把战略陪伴入口安全接住。
+- 当前验证：
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`19 passed`
+  - `npx vite build` 通过
+- 继续把“部门负责人”从 `admin / employee` 里真正拆开，不再只停留在分析器内部：
+  - `backend/app/main.py` 里新增的 `_resolve_review_viewer_role(...)` 现在已经接入
+    - `local_review_dashboard()`
+    - `augment_review_response()`
+    - `build_executive_review_overlay()`
+  - 这意味着如果当前登录人虽然 `primaryRole = employee`，但在治理配置里是部门负责人，也会稳定走 `department_lead` 分支，而不是入口先按员工口径算完分析、后面再也改不回来。
+- 同时补了两条专门回归：
+  - `test_build_weekly_review_analysis_department_lead_uses_department_view`
+  - `test_build_employee_review_report_department_lead_uses_department_logic`
+  现在部门负责人会稳定拿到：
+  - `部门任务-部门计划对齐率`
+  - `部门任务-机构方向对齐率`
+  - `department_lead_eventline_context_v1`
+- 这轮中间还修了一个真实回归：`review_analysis.py` 在调整指标文案时，把 `aligned_count / partial_count` 的赋值与描述顺序写反了，导致所有 work 分析直接 `UnboundLocalError`。现已修复。
+- 当前验证：
+  - `python3 -m py_compile backend/app/main.py backend/app/services/review_analysis.py backend/app/services/review_rollup.py backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`21 passed`
+- 今天补上了“旧任务刷新到新设置”的真实回填链路，不再要求手动逐条重存任务：
+  - `backend/app/main.py` 新增 `POST /api/v1/tasks/refresh-contexts`
+  - 只补缺失字段：`clientId / eventLineId / projectModuleId / projectFlowId`
+  - 不覆盖已经手动选过的值
+- 这条路由已经通过回归：`backend/tests/test_api_smoke.py::test_refresh_task_contexts_backfills_existing_tasks`。
+- 由于当前运行中的本地 backend 是启动时同步到 `~/Library/Application Support/YiyuThinkTankWorkbench/runtime/backend-venv` 的 runtime 副本，新路由不会自动热更新进已启动进程；因此这次没有强制重启应用，而是直接用工作区里的新 backend 代码挂到同一份数据目录 `~/Library/Application Support/YiyuThinkTankWorkbench` 上做一次性回填。
+- 本次真实回填结果：
+  - 扫描任务：`35`
+  - 成功更新：`7`
+  - 未变化：`28`
+  - 失败：`0`
+  - 本轮命中的都是原来缺失的`客户/项目归属`
+  - `eventLine / module / flow` 这轮没有自动命中，说明现有老任务里这几层要么缺足够语义，要么对应对象尚未建立
+- 为了可回滚，回填前已备份数据库：
+  - `~/Library/Application Support/YiyuThinkTankWorkbench/backups/manual/app.db.refresh-contexts-20260322-115824.bak`
+- 继续往下后，确认了为什么旧任务仍然没有事件线：当前本地数据库 `event_lines` 表为空，本地 `/api/v1/event-lines` 也返回 `0`，所以不是“识别没命中”，而是“根本没有候选事件线对象可挂”。
+- 为了不让老任务一直停在“只有客户、没有连续上下文”的状态，这轮新增了 `POST /api/v1/tasks/bootstrap-event-lines`：
+  - 只处理：`有客户但没有事件线` 的旧任务
+  - 只给看起来是业务线的任务生成最小事件线
+  - 跳过：`吃饭 / 健身 / 体检 / 相机 / 飞北京 / 采购` 这类生活或杂务词
+  - 生成后直接把事件线挂回任务
+- 同时补了回归：
+  - `backend/tests/test_api_smoke.py::test_bootstrap_event_lines_creates_starter_lines_for_existing_tasks`
+  - 验证“业务任务会补事件线，生活类任务不会乱挂”
+- 本次真实执行结果：
+  - 扫描任务：`35`
+  - 新建事件线：`11`
+  - 成功挂回任务：`11`
+  - 跳过：`24`
+  - 失败：`0`
+- 为了可回滚，补事件线前也做了备份：
+  - `~/Library/Application Support/YiyuThinkTankWorkbench/backups/manual/app.db.bootstrap-event-lines-20260322-121527.bak`
+- 排查“生成本周复盘失败”时，确认了真实根因不是页面按钮，而是后端运行态错位：
+  - 活跃的 `47829` 本地 backend 与 `47830` cloud backend 都还跑在旧安装备份目录 `~/Library/Application Support/yiyu-thinktank-workbench/runtime/install-backups/益语智库自用平台.old-20260322-043457.app/...`
+  - 运行中的云端复盘链路还带着两个真实缺陷：
+    - `cloud_backend/app/main.py` 漏导入 `WeeklyReviewEventLineContextRecord`
+    - `cloud_backend/app/db.py` 的 `event_lines` 迁移没补 `primary_client_name`
+- 已补齐工作区代码后，用 runtime venv 直接跑工作区 `cloud_backend` 验证，`/api/v1/reviews/dashboard` 可恢复 `200`；随后切掉旧的 `1437/1438` 进程，把 `47829/47830` 都切回当前工作区代码运行。
+- 现场验证结果：
+  - `GET http://127.0.0.1:47830/api/v1/reviews/dashboard` -> `200`
+  - `GET http://127.0.0.1:47829/api/v1/reviews` -> `200`
+
+- 2026-03-22 启动白窗根因继续收敛：当前正式安装版的日志已能证明 renderer 完整渲染成功，但用户仍会先看到一扇浅灰空窗。主因不是后端没起，而是 `src/main/main.ts` 里 `BrowserWindow.once("ready-to-show")` 过早触发，窗口会在启动页真正绘制前先显示。已改成：先 `loadURL(data:bootstrap)`，再显式 `show()`；不再依赖 `ready-to-show` 自动弹空窗。
+
+- 2026-03-22 模板自动填写链路继续提质：新增“公开网页弱证据”补充，但只在资料稀薄且字段类型适合时启用，不把模板填写改造成无限制联网链。
+  - 已读文件：
+    - `backend/app/main.py`
+    - `backend/app/services/template_fill.py`
+    - `backend/app/models.py`
+    - `backend/tests/test_template_fill.py`
+    - `backend/tests/test_ai_template_fill.py`
+  - 新发现的问题：
+    - 当前模板填写上下文只吃本地检索和 DNA，不会像 GPT 预填写样稿那样补官方站或公开网页，因此在“机构基本信息 / 平台介绍 / 附件线索”这类稀疏字段上天然比带联网的填写更保守
+    - 这不是检索能力缺失，而是模板填写主链里根本没有真正的 `web supplement`
+  - 最小改动范围：
+    - `backend/app/services/template_fill.py`
+    - `backend/app/main.py`
+    - `backend/app/models.py`
+    - `backend/tests/test_template_fill.py`
+    - `src/shared/types.ts`
+  - 已做代码修改：
+    - `template_fill.py` 增加了公开网页搜索与官网摘要抓取工具，输出 `TemplateWebSource`
+    - `build_template_fill_context(...)` 现在会按字段类型和本地证据数量决定是否补公开网页弱证据，并把网页补充写进模板填写上下文
+    - `ClientTemplateFillFieldRecord` 现在补出 `webSourceTitles`
+    - 字段 basis summary 和前端可见资料标题会同时包含网页线索标题
+    - 补了轻量测试，验证“哪些字段允许联网补充”和“域名标准化”
+  - 风险点：
+    - 当前网页补充仍是弱证据，只适合 `precise_fact / structural_summary / quantitative_result / attachment_material`，不会用于党建治理类字段
+    - DuckDuckGo HTML 抓取是轻量策略，遇到站点反爬或超时会自动降级回纯本地填写链，不影响主流程
+- 2026-03-22 模板填写收口继续补完：不新增第二套模板系统，直接把现有返回里的复核信息在弹层里展示出来。
+  - 已读文件：
+    - `src/renderer/App.tsx`
+    - `src/shared/types.ts`
+  - 新发现的问题：
+    - 虽然后端已经有 `basisSummary / followUpQuestion / suggestedSources / attachmentChecklist / webSourceTitles`，但前端弹层之前只显示了“字段值”和“本次动用资料”，没有把它收成正式的复核产物
+  - 最小改动范围：
+    - `src/renderer/App.tsx`
+  - 已做代码修改：
+    - 待确认字段卡片现在会展示依据摘要、补件提示、建议来源、网页来源
+    - 已填写字段卡片现在会展示依据摘要和网页来源
+    - 新增“缺资料清单”块：按待核验字段自动汇总
+    - 新增“附件清单”块：直接展示模板识别出的附件/材料要求
+  - 风险点：
+    - 缺资料清单目前仍是从字段级元数据派生，不是独立后端对象；但这能保证小改动下先把正式填表所需的收口视图补出来
+
+- 2026-03-22 战略陪伴经营判断总览 V3 已落第一版实现。
+  - 已改文件：
+    - `backend/app/db.py`
+    - `backend/app/models.py`
+    - `backend/app/main.py`
+    - `src/shared/types.ts`
+    - `src/renderer/lib/api.ts`
+    - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+    - `backend/tests/test_api_smoke.py`
+    - `docs/thread-sync.md`
+  - 当前状态：
+    - 已新增正式读模型 `GET /api/v1/clients/{client_id}/strategic-cockpit`
+    - 已新增 CEO 轻量确认接口 `POST /api/v1/clients/{client_id}/strategic-cockpit/confirm`
+    - 战略陪伴页已从前端临时派生切到后端快照驱动，页面结构改为 `总览 / 战略线 / 组织健康 / 周会清单 / 证据与底稿 / 资产沉淀`
+    - 产品语言已统一替换为 `核心突破`
+    - 权限已收紧为：只有 `organization.leaderUserId` 对应账号可确认经营判断、复制周会清单、创建会议草稿；其他账号只读
+  - 是否需要主线程配合：
+    - 需要。后续要把 `organization_notebook_snapshots / event_line_memory_snapshots` 的写回覆盖做厚，否则当前读模型仍会在部分客户上降级为保守判断
+    - 需要。当前“创建会议草稿”仍复用已有会议创建接口，议程只是复制到剪贴板，还没写回正式会议对象
+  - 风险点：
+    - 现在 `strategic-cockpit` 已经是正式后端聚合，但部分判断仍取决于现有周复盘、事件线和知识状态的厚度；底座薄时会走只读降级提示，这是预期行为
+    - CEO 判权严格依赖云端组织模型；若云端组织配置缺失或不可达，页面会回到只读并提示先确认 CEO 账号
+  - 验证结果：
+    - `python3 -m py_compile backend/app/main.py backend/app/models.py` 通过
+    - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k strategic_cockpit` 通过，`3 passed`
+    - `npm run build:renderer` 通过
+
+- 2026-03-22 战略陪伴周会闭环补了第二刀。
+  - 已改文件：
+    - `backend/app/main.py`
+    - `src/renderer/lib/api.ts`
+    - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+    - `backend/tests/test_api_smoke.py`
+    - `docs/thread-sync.md`
+  - 当前状态：
+    - 已新增 `POST /api/v1/clients/{client_id}/strategic-cockpit/meeting-pack`
+      - 会把战略陪伴当前周会清单正式写进会议对象
+      - 同时写入 `meetings.notes / agenda_items / meeting_sources`
+    - 已新增 `POST /api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply`
+      - 会后可把会议结果回灌成战略陪伴页判断草案并直接持久化
+    - 前端动作栏已改成：
+      - `复制周会清单`
+      - `创建正式周会草稿`
+      - `用最近周会回填判断`
+    - 回填门槛已收紧：
+      - 不能拿纯草稿直接回填
+      - 必须已经有会后内容（转写/抽取结果）才允许同步
+  - 是否需要主线程配合：
+    - 需要。后续如果要让“会后回填”更像正式经营结论，而不是基于会议结构字段的第一版归并，还要继续把会议纪要结构和周会模板做厚
+  - 风险点：
+    - 当前回填规则仍是第一版启发式：优先取 `decisions / ambiguities / risks / actionItems` 来生成 `本周一句话 / 主矛盾 / 核心突破 / 本期聚焦`
+    - 这能形成闭环，但还不是最终高质量经营语言，需要后续继续接入更厚的会议结构和事件线记忆
+  - 验证结果：
+    - `python3 -m py_compile backend/app/main.py backend/app/models.py` 通过
+    - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "strategic_cockpit or strategic_meeting_pack"` 通过，`5 passed`
+    - `npm run build:renderer` 通过
+
+- 2026-03-22 战略陪伴继续补“背景锚定 + 事件线记忆写回”。
+  - 已改文件：
+    - `backend/app/main.py`
+    - `backend/app/services/memory_foundation.py`
+    - `backend/tests/test_api_smoke.py`
+    - `docs/thread-sync.md`
+  - 当前状态：
+    - 关系推进类任务现在不会再被“组织级通用背景”自动抬成战略洞察；只有补了具体背景描述，或已经挂到外部记忆事实/事件线记忆上，才会进入经营判断层
+    - 战略陪伴的任务筛选开始正式吃 `backgroundReadiness / memoryHints / linkedFactsPreview`，不再只看 `desc` 是否非空
+    - 战略线页新增了“无模块时回退到 linked event lines + event line memory snapshot”的路径，避免页面没有项目模块就失去主线
+    - 会议发布、战略周会回填现在都会把 `decision / risk / action` 同步写回关联事件线记忆，不再只更新组织笔记
+  - 是否需要主线程配合：
+    - 需要。后续还要继续把任务、会议、分析、复盘对 `event_line_memory_snapshots` 的写回覆盖做厚，当前已通的是关键会议与任务背景规则，不是全量经营记忆
+  - 风险点：
+    - “关系推进任务”目前仍是规则判断，不是实体抽取 + 自动查背景；如果描述太短且没有外部记忆事实，系统会保守降级
+    - 会议写回事件线目前采用“会议来源任务 + 战略周会标题 + linked event lines”组合推断，已经足够支撑当前战略周会闭环，但还不是最终精细映射
+  - 验证结果：
+    - `python3 -m py_compile backend/app/main.py backend/app/services/memory_foundation.py` 通过
+    - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "strategic_cockpit_relationship_task_needs_contextual_description or strategic_meeting_pack_apply_updates_event_line_memory or strategic_cockpit or strategic_meeting_pack or memory_foundation_phase1"` 通过，`8 passed`
+    - `npm run build:renderer` 通过
+
+- 2026-03-22 战略陪伴继续补“任务参考背景事实”写回。
+  - 已改文件：
+    - `backend/app/services/memory_foundation.py`
+    - `backend/tests/test_api_smoke.py`
+    - `docs/thread-sync.md`
+  - 当前状态：
+    - 任务在写回 memory foundation 时，会根据组织笔记自动命中 `组织背景 / 合作背景 / 关键人物 / 业务模块 / 合作目标` 这些参考条目
+    - 命中的条目会被沉成任务自己的 `reference_match:*` 事实，而不是每次前台临时扫 notebook
+    - 任务读口现在会优先把这些参考背景事实冒到 `memoryHints / linkedFactsPreview / backgroundSources`
+    - 这让任务、周判断、战略陪伴后续都能直接复用“任务已知背景”，而不是重复做同一轮背景匹配
+  - 是否需要主线程配合：
+    - 需要。后续如果要把“敦和 / 林红 / 某产品线”这类对象真正升级成稳定的人物/产品记忆，还要在统一底座里把 `person/product` scope 做成可独立写回和查询
+  - 风险点：
+    - 当前仍是基于组织笔记和任务文本的规则命中，不是完整实体识别
+    - 命中的背景事实现在优先服务任务与战略陪伴的上下文增强，还没有单独的对象记忆页面
+  - 验证结果：
+    - `python3 -m py_compile backend/app/services/memory_foundation.py` 通过
+    - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "task_memory_enrichment_matches_notebook_references or strategic_cockpit_relationship_task_needs_contextual_description or strategic_meeting_pack_apply_updates_event_line_memory or strategic_cockpit or strategic_meeting_pack or memory_foundation_phase1_builds_notebook_event_line_and_status"` 通过，`9 passed`
+
+- 2026-03-22 战略陪伴继续补“person/product scope 背景锚定”。
+  - 已改文件：
+    - `backend/app/services/memory_foundation.py`
+    - `backend/tests/test_api_smoke.py`
+    - `docs/thread-sync.md`
+  - 当前状态：
+    - 组织笔记刷新时会从 DNA/业务底稿里额外抽取关键人物候选，并同步写成 `person` scope 记忆事实
+    - 业务模块与关键产品会同步写成 `product` scope 记忆事实
+    - 任务读口现在会优先读取这些 `person/product` 事实，因此像“敦和 / 林红”这类对象不再只靠 notebook 长文本命中，而是能挂到更接近实体级的背景事实上
+    - `memoryHints` 会优先冒出 `人物背景 / 业务背景 / 对象背景`，`backgroundSources` 也会显式标出 `person_facts / product_facts`
+  - 是否需要主线程配合：
+    - 需要。当前 `person/product` 还只是底层 scope 和任务读口增强，没有独立查询接口、没有对象详情页，也没有澄清写回的专门槽位
+  - 风险点：
+    - 当前人物抽取仍是规则模式，主要依赖“由 X 负责 / 联系人 X / 对接人 X”等句式，不是完整 NER
+    - `person/product` scope 已开始可用，但现在主要服务背景锚定，不适合作为独立主数据对外宣称“已完全建好”
+  - 验证结果：
+    - `python3 -m py_compile backend/app/services/memory_foundation.py` 通过
+    - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "task_memory_enrichment_matches_notebook_references or strategic_cockpit_relationship_task_needs_contextual_description or strategic_meeting_pack_apply_updates_event_line_memory or strategic_cockpit or strategic_meeting_pack or memory_foundation_phase1_builds_notebook_event_line_and_status"` 通过，`9 passed`
+
+- 2026-03-22 战略陪伴继续补“澄清回答写入 person/product scope”。
+  - 已改文件：
+    - `backend/app/services/memory_foundation.py`
+    - `backend/tests/test_api_smoke.py`
+    - `docs/thread-sync.md`
+  - 当前状态：
+    - 客户级澄清回答现在不只写回 `client/task/event_line`，还会结合组织笔记里的对象参考条目，把相关内容同步写进 `person/product` scope
+    - 长中文句子的对象匹配已放宽，不再只对短 token 生效；像“林红是敦和基金会合作拓展负责人”这样的澄清语句也能拆出人名并命中对象背景
+    - 这意味着后续任务、周判断、战略陪伴在读到对象相关任务时，可以直接命中“澄清后的实体背景”，而不是只能靠 DNA 长文或任务描述原文
+  - 是否需要主线程配合：
+    - 需要。当前 `person/product` scope 已能写回和被任务读口消费，但还没有独立查询接口、澄清槽位配置和对象详情视图
+  - 风险点：
+    - 仍是规则抽取，不是完整 NER；对非常隐晦或跨句代词型描述的识别仍有限
+    - 现在的 `person/product` scope 主要服务战略陪伴和任务背景锚定，暂时不适合宣称为完整主数据系统
+  - 验证结果：
+    - `python3 -m py_compile backend/app/services/memory_foundation.py` 通过
+    - `backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "clarification_answer_backfills_person_scope_for_task_background or task_memory_enrichment_matches_notebook_references or strategic_cockpit_relationship_task_needs_contextual_description or strategic_meeting_pack_apply_updates_event_line_memory or strategic_cockpit or strategic_meeting_pack or memory_foundation_phase1_builds_notebook_event_line_and_status or clarification_answer_writes_memory_facts"` 通过，`11 passed`
+## 2026-03-22 Action OS 对象层收口（任务 / 事件线正式字段）
+
+- 把 `businessCategory / currentBlocker / nextAction / recentDecision / evidenceCount` 正式接进了任务与事件线的读写链，不再只停留在局部上下文或推断层。
+- 本地 backend：
+  - `build_task / build_cloud_task / build_event_line / build_cloud_event_line` 会统一回传上述字段。
+  - 任务创建、任务更新、事件线创建、事件线更新都会真实写入这些字段。
+  - 周复盘快照里的 `eventLineContext` 已补 `businessCategory / evidenceCount`。
+- cloud backend：
+  - `_task_record / _event_line_record / _event_line_snapshot_context` 都补齐了字段透传。
+  - 任务创建、任务更新、事件线创建、事件线更新都补齐了字段持久化。
+- shared types：
+  - `TaskMutationPayload` 现在正式支持这五个字段，后面前端和接口不需要再走隐式扩展。
+- 新增回归：
+  - 本地：任务 Action OS 字段创建/更新后能持久化回读。
+  - 云端：事件线 `businessCategory / evidenceCount` 能持久化并出现在 review dashboard snapshot。
+- 验证通过：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py cloud_backend/app/main.py cloud_backend/app/models.py`
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'task_action_os_fields_persist_locally or event_line_clarification_fields_persist_locally'`
+  - `PYTHONPATH=cloud_backend cloud_backend/.venv/bin/python -m pytest cloud_backend/tests/test_auth_tasks.py -q -k 'event_line_clarification_fields_persist_in_cloud_backend or review_dashboard_works_for_task_with_event_line_context'`
+  - `npx vite build`
+
+## 2026-03-22 全局底座 V1 补实装（旧任务/旧日程接入新记忆层）
+
+- 把 `review_analysis` 和 `backend/app/main.py` 里的事件线 ID 规范化补齐了，周判断不再把内部 `event_line::...` group key 当成真实 `eventLineId` 往外吐。
+- 修掉了一个真实的后端 500：`/api/v1/tasks` 在云端任务板分支里会调用模块级 `_event_line_snapshot_context()`，但它错误引用了只存在于 `create_app()` 作用域内的 `get_cloud_token()`，导致任务页一打开就 `NameError`。现在改成显式 cloud resolver 注入，这条 500 已消失。
+- 为了让旧云端任务也能吃到新的 `memory foundation`，新增了“本地事件线影子同步”：
+  - 当云端任务带 `eventLineId` 时，会先用 `/api/v1/event-lines/{id}` 拉事件线详情
+  - 再把必要字段镜像进本地 `event_lines`
+  - 同步刷新 `event_line_memory_snapshots`
+  - 所以旧任务即使不在本地任务表里，也能长出 `backgroundReadiness + memoryHints`
+- 新增回归：
+  - `test_cloud_task_board_builds_event_line_shadow_and_memory_hints`
+  - 锁住“云端任务带事件线时，任务板不再 500，并会自动生成事件线影子和记忆提示”
+- 真实运行验证已经完成：
+  - 重新 `dist:mac-local` + `install:mac-local`
+  - 只从 `~/Applications/益语智库自用平台.app` 冷启动
+  - 真机对 `47829` 跑了：
+    - `POST /api/v1/tasks/refresh-contexts`
+    - `POST /api/v1/tasks/bootstrap-event-lines`
+    - `POST /api/v1/memory/backfill`
+  - 返回结果：
+    - `refresh-contexts`: `totalTasks=35 updatedTasks=9 eventLineUpdatedTasks=9`
+    - `bootstrap-event-lines`: `totalTasks=35 linkedTasks=0 skippedTasks=35`
+    - `memory/backfill`: `taskFactsBackfilled=18 reviewSignalsBackfilled=4`
+- 真机 `/api/v1/tasks` 复查结果：
+  - 已恢复 `200`
+  - 旧任务现在会返回 `backgroundReadiness.level=high`
+  - `backgroundSources` 已包含 `event_line_memory`
+  - `memoryHints` 已出现“事件线当前事项 / 当前阻塞 / 下一步”
+- 验证通过：
+  - `python3 -m py_compile backend/app/main.py backend/tests/test_api_smoke.py`
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'cloud_task_board_builds_event_line_shadow_and_memory_hints or memory_foundation_phase1_builds_notebook_event_line_and_status or task_memory_enrichment_matches_notebook_references or clarification_answer_writes_memory_facts or refresh_task_contexts_backfills_existing_tasks or bootstrap_event_lines_creates_starter_lines_for_existing_tasks or memory_backfill_route_upgrades_legacy_tasks_and_reviews'`
+  - `npm run build:main`
+  - `npm run build:renderer`
+  - `npm run dist:mac-local`
+  - `npm run install:mac-local`
+
+## 2026-03-22 任务编辑窗口重排（从窄长表单改成双栏工作台）
+
+- 任务编辑弹窗从原来的窄长居中表单，改成了更宽的工作台式双栏布局。
+- 窗口宽度由原来的小卡片提升到 `max-w-[1240px]`，顶部和底部操作区同步加宽，不再强行挤在中间一小块。
+- 左栏专门处理“任务核心编辑”：
+  - 标题
+  - 任务说明
+  - 基础安排（列表、优先级、截止时间、负责人 / 飞书）
+  - 协作关系
+- 右栏专门处理“上下文与证据”：
+  - 客户 / 项目
+  - 事件线
+  - 项目背景卡
+  - 模块 / 流程
+  - 附件
+- 这次不是简单调顺序，而是把“编辑内容”和“背景/证据内容”硬拆开，解决原来右边过长、左边发空、整页失衡的问题。
+- 已修掉这次重排过程中引入的一处 JSX 语法错误（`projectFlowReason` 三元表达式多了一个右括号）。
+- 验证通过：
+  - `npx vite build`
+  - 最新产物：
+    - `dist/renderer/assets/index-BdvN1di_.js`
+    - `dist/renderer/assets/index-BiZ95q30.css`
+
+- 第二刀继续收紧了布局，不再只是“加宽一点”：
+  - 窗口进一步放宽到 `max-w-[1440px]`
+  - 左右主区改成接近等权，不再明显右重左轻
+  - 左侧底部从单列改成双卡并排：
+    - `基础安排`
+    - `协作关系`
+  - 这样能明显减少左下角大片留白，也让整个窗口更像工作台而不是长表单
+- 再次验证通过：
+  - `npx vite build`
+  - 最新产物：
+    - `dist/renderer/assets/index-CL8GDMkH.js`
+    - `dist/renderer/assets/index-CI-QNS7z.css`
+
+## 2026-03-22 从当前任务新建事件线抢焦点修复
+
+- 负责范围：
+  - 任务编辑弹窗
+  - 事件线创建交互
+- 计划修改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台问答主链路
+
+### 已改文件
+
+- `src/renderer/App.tsx`
+- `docs/thread-sync.md`
+
+### 当前状态
+
+- 已定位原因：`从当前任务新建` 成功后，前端会立刻调用 `openEventLineDetail(created.id)`，主动抢焦点打开事件线详情弹层，所以看起来像“从任务里跳出”。
+- 已改成：
+  - 创建事件线成功后继续停留在当前任务编辑弹窗
+  - 只把新事件线挂到当前任务
+  - 如需继续补阶段/阻塞/决策，改由右侧现有 `查看事件线` 入口显式进入
+
+### 是否需要主线程配合
+
+- 不需要
+
+### 风险点
+
+- 当前修的是交互抢焦点，不涉及事件线创建接口本身
+- 如果用户后续希望“创建后自动进入澄清态”，应单独设计显式二次动作，不宜再次默认打断任务编辑
+
+### 验证结果
+
+- `npm run build:renderer` 通过
+
+- 继续打磨时，把弹窗外壳进一步放大到 `max-w-[1480px]`，并给标题区补了“左侧编辑 / 右侧上下文”的说明，帮助用户更快理解新的信息分仓。
+- 这一轮尝试过把主体改成左右独立滚动，但中途产生了重复结构；最后已经回收回干净的双栏工作台版本，并重新验证通过。
+- 最新稳定产物：
+  - `dist/renderer/assets/index-BNovS259.js`
+  - `dist/renderer/assets/index-Ba9ppTXQ.css`
+
+## 2026-03-22 我的成长全局打通（Phase 1）
+
+- 线程名称：
+  - `growth-global-context-phase1`
+- 负责范围：
+  - 我的成长 / 成长总览 / 成长勋章 / 学习导航 / 经验资产 / XP 账本
+  - 对应后端成长引擎、勋章引擎与手册详情接口
+- 计划修改的文件：
+  - `backend/app/models.py`
+  - `backend/app/db.py`
+  - `backend/app/services/growth_engine.py`
+  - `backend/app/services/badge_engine.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台问答主链路
+  - `src/renderer/App.tsx` 里的 `client_workspace` 相关区块
+
+### 已改文件
+
+- `backend/app/models.py`
+- `backend/app/db.py`
+- `backend/app/services/growth_engine.py`
+- `backend/app/services/badge_engine.py`
+- `backend/app/main.py`
+- `backend/tests/test_growth_engine.py`
+- `src/shared/types.ts`
+- `src/renderer/lib/api.ts`
+- `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- `src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx`
+- `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+- `src/renderer/components/handbook/GrowthBadgeWall.tsx`
+- `docs/thread-sync.md`
+
+### 当前状态
+
+- 已把“我的成长”从单纯 `周复盘 + 手册沉淀` 升级成上下文感知的全局行为镜像层。
+- 成长证据现在能回链到：
+  - 任务 / 附件
+  - 会议 / 客户
+  - 事件线
+  - 战略动作
+  - 手册资产 / 复用
+- `growth overview / ledger / recommendations / handbook` 均已扩展上下文字段。
+- 新增 `GET /api/v1/handbook/{id}`，资产详情不再靠前端标题模糊匹配拼接。
+- 学习导航已经优先读取真实任务与真实推荐上下文，不再用 demo task 撑满页面。
+- 成长总览已经去掉 demo fallback，改为：
+  - 本周成长总览
+  - 成长呼应关系
+  - 本周成长来自哪里
+  - 系统已看到但还没放大的成长
+  - 下一步最值得补的动作
+- 勋章系统已补“未接通事件源”提示，避免把系统未接通伪装成用户没做到。
+
+### 是否需要主线程配合
+
+- 当前不需要。
+- 本阶段只做“我的成长”个人视角，不涉及客户工作台问答主链路改造。
+
+### 风险点
+
+- 当前的回链仍是“跳到模块级 tab”，还没有做到精确 deep link 到某个 `taskId / meetingId / clientId / eventLineId`。
+- `学习导航` 已经吃真实任务与推荐上下文，但“机器人协作 / 节点清单 / 原理说明”仍是前端交互层，不是独立后端对象层。
+- `能力图谱` 已补“当前能力差距”数据，但还没有完全改成“双层雷达图（我当前能力 vs 当前项目要求能力）”。
+- 勋章系统已经能诚实提示未接通来源，但 CRM / 审批 / 财务 / 采购类真实事件源仍需后续模块逐步接入。
+
+### 验证结果
+
+- `python3 -m py_compile backend/app/db.py backend/app/models.py backend/app/services/growth_engine.py backend/app/services/badge_engine.py backend/app/main.py` 通过
+- `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`7 passed`
+- `npm run build:renderer` 通过
+
+### 冲突检查
+
+- 当前未发现与主线程范围冲突。
+
+## 2026-03-22 我的成长全局打通（Phase 3）
+
+- 线程名称：
+  - `growth-global-context-phase3`
+- 负责范围：
+  - 战略陪伴上下文回链
+  - XP 账本回链按钮
+  - 成长上下文里的战略呼应精确打开
+- 计划修改的文件：
+  - `backend/app/services/growth_engine.py`
+  - `backend/tests/test_growth_engine.py`
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+  - `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台问答主链路
+  - `src/renderer/App.tsx` 里的 `client_workspace` 主业务逻辑
+
+### 已改文件
+
+- `backend/app/services/growth_engine.py`
+- `backend/tests/test_growth_engine.py`
+- `src/renderer/App.tsx`
+- `src/renderer/components/strategic_accompaniment/StrategicAccompanimentShell.tsx`
+- `src/renderer/components/handbook/GrowthLedgerDrawer.tsx`
+- `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- `docs/thread-sync.md`
+
+### 当前状态
+
+- 后端现在会为带 `strategicLink + clientId` 的成长证据自动补一条 `strategic_focus` 上下文回链。
+- 成长模块点到这类回链时，不再只切到 `战略陪伴` tab，而会：
+  - 切到对应 client
+  - 自动切到 `战略线` 视图
+  - 高亮匹配的战略线卡片
+  - 顶部给出“已定位到战略呼应”的提示
+- XP 账本里的上下文回链已经可点击，不再只是静态标签。
+- 账本、总览、勋章、学习导航现在都已经共享统一的上下文打开能力。
+
+### 是否需要主线程配合
+
+- 当前不需要。
+
+### 风险点
+
+- `strategic_focus` 当前是基于 `strategicLink` 文本做匹配高亮，不是独立战略线 ID；如果后续战略线标题经常变化，建议补正式 ID。
+- XP 账本目前只把 `linkedContexts` 区块做成可点，顶部客户/事件线胶囊仍然是静态展示。
+
+### 验证结果
+
+- `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`7 passed`
+- `npm run build:renderer` 通过
+
+### 冲突检查
+
+- 当前未发现与主线程范围冲突。
+
+## 2026-03-22 我的成长全局打通（Phase 2）
+
+- 线程名称：
+  - `growth-global-context-phase2`
+- 负责范围：
+  - 我的成长页面来源卡片、学习导航、经验资产、勋章页到任务/客户/会议/事件线的精确跳转
+- 计划修改的文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `backend/app/main.py` 中客户工作台问答主链路
+  - `src/renderer/App.tsx` 里的 `client_workspace` 业务逻辑主体，仅做最小接线
+
+### 已改文件
+
+- `src/renderer/App.tsx`
+- `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- `docs/thread-sync.md`
+
+### 当前状态
+
+- 已把成长页的 `onOpenContext` 真正接到 `App` 顶层。
+- 现在来自成长模块的来源跳转会优先尝试精确打开：
+  - 任务详情
+  - 事件线详情
+  - 客户工作台
+  - 客户工作台里的会议详情
+- 学习导航中的这些按钮已从“只切到任务 tab”升级成优先打开真实对象：
+  - `打开当前任务`
+  - `在当前任务中练一次`
+  - `针对此任务生成准备清单`
+  - `去任务页继续执行`
+- 真实任务上下文现在会自动携带：
+  - task context
+  - event line context
+  - client context
+- 推荐卡如果后端已返回 `linkedTaskId / linkedContexts`，学习导航也会优先按真实对象跳转。
+
+### 是否需要主线程配合
+
+- 当前不需要。
+
+### 风险点
+
+- 当前精确跳转已覆盖任务、事件线、客户、会议；战略陪伴和更细粒度项目模块仍暂时停留在模块级跳转。
+- 学习导航里的流程节点、机器人协作、原理说明仍是前端交互层，不是独立后端对象。
+- 客户工作台会议跳转目前是按 meetingId 在各 client workspace 内扫描定位，数据量继续变大后可能需要专门的索引接口。
+
+### 验证结果
+
+- `npm run build:renderer` 通过
+
+### 冲突检查
+
+- 当前未发现与主线程范围冲突。
+
+## 2026-03-22 任务与日历 Action OS 收口（task views + dashboard drill-down）
+
+- 线程名称：
+  - `action-os-task-views-dashboard-drilldown`
+- 负责范围：
+  - 任务正式视图
+  - 周判断 dashboard drill-down
+  - 事件线证据回链
+  - 复盘 dashboard 对“已复盘任务不在本周日期内”的兼容
+
+### 已改文件
+
+- `backend/app/main.py`
+- `backend/app/services/growth_engine.py`
+- `backend/tests/test_api_smoke.py`
+- `src/shared/types.ts`
+- `src/renderer/lib/api.ts`
+- `src/renderer/App.tsx`
+- `src/renderer/components/tasks/HierarchyReportCard.tsx`
+- `src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx`
+
+### 当前状态
+
+- 已新增正式任务视图接口：
+  - `GET /api/v1/task-views`
+  - `POST /api/v1/task-views`
+  - `PATCH /api/v1/task-views/{id}`
+- 任务视图现在有正式对象层：
+  - `事件线视图`
+  - `风险视图`
+  - `来源视图`
+  - `业务分类视图`
+- 月历和周历前端都已经能切换到这些正式视图，不再只靠局部筛选。
+- 周判断第一屏卡片现在带正式 drill target：
+  - `targetType`
+  - `targetId`
+  - `targetFilters`
+  - `evidenceRefs`
+- 已新增 `GET /api/v1/reviews/dashboard/drill-target`：
+  - 可解析到事件线详情
+  - 相关任务
+  - 会议
+  - 支持请求
+  - 附件/证据
+- 前端新增 drill-down 弹层，能从周判断卡片继续打开事件线、任务、会议、支持请求、附件。
+- 修复了一条真实周复盘链 bug：
+  - 之前 `local_review_dashboard()` 只按“任务日期在本周”取任务
+  - 导致已经写进本周复盘的任务，如果日期不在当周，dashboard 里会丢失，`eventLineSummaries` 为空
+  - 现在改成“本周任务 + 本周已复盘任务并集”，并支持任务已不存在时回退到 snapshot
+- 修复 `growth_engine.py` 中周复盘写回的旧字段引用：
+  - `taskSnapshot.projectFlowName` -> `taskSnapshot.projectContext.projectFlowName`
+  - 否则会在 `POST /api/v1/reviews/weekly` 时触发 `AttributeError`
+
+### 验证结果
+
+- `python3 -m py_compile backend/app/main.py backend/app/models.py backend/app/services/growth_engine.py backend/app/services/review_analysis.py backend/app/services/review_rollup.py` 通过
+- `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'task_action_os_fields_persist_locally or strategic_cockpit_relationship_task_needs_contextual_description or tasks_consume_project_dna_and_module_flow_context or task_attachment_is_archived_to_workspace_and_event_line or memory_foundation_phase1_builds_notebook_event_line_and_status or task_memory_enrichment_matches_notebook_references or clarification_answer_backfills_person_scope_for_task_background or refresh_task_contexts_backfills_existing_tasks or bootstrap_event_lines_creates_starter_lines_for_existing_tasks or review_dashboard_drill_target_returns_event_line_evidence or task_views_builtins_and_custom_view_roundtrip'` 通过，`11 passed`
+- `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`21 passed`
+- `npx vite build` 通过
+
+### 风险点
+
+- 当前 drill-down 已优先覆盖 `event_line / task_view`；`meeting / support_request / attachment_group` 的 targetType 还需要下一轮继续补实体级跳转。
+- 任务正式视图当前先以内置 preset 为主，保存与共享逻辑已具备，但还没有单独的“视图管理中心”。
+
+### 冲突检查
+
+- 当前未发现与主线程范围冲突。
+
+## 2026-03-23 趋势信号与证据级 drill-down 收口
+
+### 已完成
+
+- `ReviewDashboard` 的证据链 drill-down 继续往下补了一层，不再只支持：
+  - `event_line`
+  - `task_view`
+- 现在 local backend 正式支持三类新增 target：
+  - `meeting`
+  - `support_request`
+  - `attachment_group`
+- 对应实现位置：
+  - `backend/app/main.py`
+  - 新增 `_drill_target_response_for_meeting()`
+  - 新增 `_drill_target_response_for_support_request()`
+  - 新增 `_drill_target_response_for_attachment_group()`
+- 同时补了几条底层 helper，确保 drill-down 能真正把证据拉回来：
+  - `_task_records_for_ids()`
+  - `_attachments_for_ids()`
+  - `_attachments_for_event_line()`
+  - `_meeting_summary_for_id()`
+  - `_support_request_by_id()`
+- 顺手修了一处证据层缺口：
+  - `_attachments_for_tasks()` 不再在 cloud token 存在时只看 cloud shadow
+  - 现在会合并 local 与 cloud 两侧附件，避免证据链只因为运行模式不同而漏附件
+
+### 前端联动
+
+- `App.tsx` 里的周判断 drill-down 弹层，现在不再只是“展示相关会议 / 支持请求 / 附件”：
+  - 会议卡可继续点 `证据链`
+  - 支持请求卡可继续点 `证据链`
+  - 附件卡可继续点 `证据链`
+- 这样一张周判断卡已经可以形成：
+  - 判断卡
+  - -> 事件线/任务集合
+  - -> 单场会议 / 单条支持请求 / 单组附件
+  的二级下钻链路
+
+### 趋势层
+
+- `TrendSignal` 之前虽然已经在后端模型里生成，但第一页没有真正吃进去。
+- 现在 `HierarchyReportCard.tsx` 已把 `analysis.trendSignals` 正式接入：
+  - 优先并入 `本周最值得关注的风险`
+  - 使用 `高/中/低严重度 + windowLabel` 作为 chips
+  - 保留各自的 `target / evidenceRefs`
+- `WeeklyReviewAnalysisPanel.tsx` 也新增了 `连续趋势信号` 段落：
+  - 不再让跨周信号只停在 JSON 里
+  - 现在能直接看见“这不是单周现象，而是开始持续化的问题”
+
+### 测试与验证
+
+- 新增 smoke 回归：
+  - `test_review_dashboard_drill_target_supports_meeting_and_attachment_group`
+  - `test_review_dashboard_drill_target_supports_support_request`
+- 现有回归继续保留：
+  - `test_review_dashboard_drill_target_returns_event_line_evidence`
+  - `test_task_views_builtins_and_custom_view_roundtrip`
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/tests/test_api_smoke.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'review_dashboard_drill_target_returns_event_line_evidence or review_dashboard_drill_target_supports_meeting_and_attachment_group or review_dashboard_drill_target_supports_support_request or task_views_builtins_and_custom_view_roundtrip'` 通过，`4 passed`
+  - `npx vite build` 通过
+
+### 当前剩余缺口
+
+- `meeting / support_request / attachment_group` 已经能 drill-down，但还没有单独的对象详情页，只是继续落在统一证据弹层。
+- `TrendSignal` 已经上第一页和详细分析页，但还没有自己的告警/订阅机制。
+- `跨周趋势` 目前还是第一版规则识别，接下来最值的是继续把：
+  - 连续改期
+  - 连续待复核
+  - 连续支持请求
+  - 事件线长时间无推进
+  做成正式 dashboard/alert 信号。
+
+### Phase 5：学习导航对象化收口
+- 负责范围：把“我的成长 -> 学习导航”从前端作战壳收口成真实上下文驱动的项目感知作战台；本轮优先接通 `currentFocusActions / pendingCaptures / TaskProjectContext / TaskOrgContext`，不扩客户工作台主链
+- 计划修改的文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+  - `backend/app/main.py` 中客户工作台主问答和知识检索逻辑
+- 当前状态：
+  - 已确认学习导航已接入真实任务和真实推荐，但流程节点、动作卡、机器人说明、节点清单、支撑资料仍主要依赖前端固定文案。
+  - 本轮将把这些内容改成由真实任务、项目阶段、事件线、待放大成长和当前推荐共同推导的动态对象层。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 现有后端还没有独立的“学习节点 / 机器人作战包 / 原理说明”实体，本轮先基于真实业务对象和成长上下文做结构化推导，解决“真上下文驱动”，不额外引入新后端表。
+- 已改文件：
+  - `docs/thread-sync.md`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 当前状态：
+  - 已把学习导航从“真实任务 + 固定壳文案”升级成“真实任务/推荐动作/待放大成长共同驱动”的项目感知作战台。
+  - 任务卡现在优先来自真实任务；若当前没有真实任务，会回退到 `currentFocusActions / recommendations / pendingCaptures` 推导出的上下文任务，而不是继续展示纯示例壳。
+  - 当前任务的上下文已扩展到 `task / event_line / client / project_module / project_flow`，学习导航头部与主卡都会展示这些真实回链。
+  - 流程节点、检查清单、机器人协作说明、支撑资料和“完成后沉淀”动作都改成由真实任务字段、推荐动作、待放大成长信号动态生成，不再展示固定说明。
+  - 学习导航里的“沉淀为经验”现在可以直接带标题和摘要打开成长记录弹层，真正形成从任务动作到经验沉淀的闭环。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前“机器人协作 / 节点清单 / 原理说明”仍然是前端推导对象，不是独立后端实体；但它们现在已经严格依赖真实任务、推荐和待放大成长上下文，不再是无根据的演示壳。
+  - 项目模块 / 流程在学习导航里已经成为真实回链来源，但仍通过任务侧落点打开，还没有独立模块/流程详情页。
+- 验证结果：
+  - `cd yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+### Phase 6：Action OS 跨周趋势层收口
+- 负责范围：把 `任务与日历 + 事件线 + 周判断` 的趋势判断从“本周启发式”推进到真实跨周信号；这一轮只补 `repeat_reschedule / repeat_review_pending / repeat_support_request / escalating_blocker`，不扩独立告警系统。
+- 计划修改的文件：
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `cloud_backend/*`
+  - `src/renderer/*`（本轮不改前端结构）
+  - `backend/app/services/review_analysis.py`（已有分析器不重写）
+- 当前状态：
+  - 已在 `backend/app/main.py` 新增跨周趋势 enrichment：
+    - 从最近 2 周 `weekly_review_task_entries` 历史记录中回看 `needsReview / supportNeeded / blockerReason`
+    - 从最近 21 天 `activity_logs` 回看任务改期记录
+    - 合并生成 `TrendSignalRecord`
+  - 新增的趋势信号包括：
+    - `repeat_reschedule`
+    - `repeat_review_pending`
+    - `repeat_support_request`
+    - `escalating_blocker`
+  - `augment_review_response(...)` 已把这层趋势 enrichment 接回 `/api/v1/reviews` 主链，所以周判断第一页和详细分析页都会吃到同一批趋势信号。
+  - 补了回归测试 `test_review_dashboard_surfaces_cross_week_trend_signals`，验证连续两周改期 / 待复核 / 支持请求 / 阻塞升级都能在 dashboard 出现。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 这轮趋势层依赖历史 review 记录和活动日志质量；如果任务没有持续写 review snapshot 或 activity log，趋势信号会回退到“无判断”而不是猜测。
+  - 当前只做了最小跨周信号，还没做自动告警 / 订阅 / 趋势时间序列图。
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/tests/test_api_smoke.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'review_dashboard_surfaces_cross_week_trend_signals or review_dashboard_drill_target_returns_event_line_evidence or review_dashboard_drill_target_supports_meeting_and_attachment_group or review_dashboard_drill_target_supports_support_request or task_views_builtins_and_custom_view_roundtrip'` 通过，`5 passed`
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`21 passed`
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+
+## 2026-03-23 模板四列表右侧字段修复
+- 负责范围：只修客户工作台模板自动填写链路里“字段/填写内容/字段/填写内容”四列表右侧字段未识别、未回写的问题，不扩 UI。
+- 已读文件：
+  - `backend/app/services/template_fill.py`
+  - `backend/tests/test_template_fill.py`
+  - `docs/thread-sync.md`
+- 发现的问题：
+  - 当前模板字段提取和 docx 回写默认只读取每行 `cells[0] -> cells[1]`。
+  - 对 CFFC 党建评级表这类四列表模板，右侧 `cells[2] -> cells[3]` 根本没有进入字段识别，也不会被回写。
+- 最小改动范围：
+  - 在 `template_fill.py` 增加基于表头的多组“字段-填写内容”目标列识别；
+  - 保留原有无表头/两列表模板的 fallback；
+  - 在测试里补四列表右侧字段识别与回写回归。
+- 是否已做代码修改：是
+- 验证结果：
+  - `uv run pytest tests/test_template_fill.py -q` -> `12 passed`
+  - 实测 `extract_docx_template_fields` 对 `CFFC_慈善组织党建评级资料表_模拟版.docx` 的识别数从 `42` 提升到 `65`；
+  - `常用简称/品牌名 / 法定代表人 / 办公地址 / 党组织名称 / 成立时间 / 书记姓名/职务` 等四列表右侧字段现在都已进入模板填写链路；
+  - `政策倡导（Policy / Advocacy）（服务对象/覆盖对象）`、`年会与峰会（Networking）（服务对象/覆盖对象）` 等业务模块表右侧“服务对象/覆盖对象”列现在也能被识别与回写。
+## 2026-03-23
+- 修月历连续滚动卡顿：去掉 `TaskCalendarView` 里按滚轮阈值直接 `onShiftMonth(direction)` 的硬翻页逻辑，改成自然纵向滚动；只有滚到月堆叠容器上下边缘时才无感补前后月份，并做滚动位置补偿，避免滚到月与月之间空白区域时突然跳到下一页。
+
+- 月历改成连续周网格：撤掉按月分段的 section 渲染，去掉月与月之间的标题断层；每月 1 日改为单元格内月标记，滚动时标题随可见月同步，避免 3 月和 4 月之间出现空气与硬跳。
+
+## 2026-03-23 我的成长 Phase 7：学习导航后端快照对象层
+- 负责范围：把“我的成长 / 学习导航”从前端推导壳继续升级成后端快照驱动的对象层；本轮只覆盖成长模块，不改客户工作台主链路。
+- 计划修改的文件：
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `docs/thread-sync.md`
+- 避开文件：
+  - `backend/app/services/ai.py`
+  - `src/renderer/App.tsx` 中 `client_workspace` 相关区域
+  - `backend/app/main.py` 中客户工作台主问答和知识检索逻辑
+- 已改文件：
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已新增后端 `GrowthWorkbenchSnapshot` 对象层，统一返回：
+    - `tasks`
+    - `processSteps`
+    - `actionsBefore / actionsDuring / actionsAfter`
+    - `supportMaterials`
+    - `checklistItems`
+    - `supportCopy`
+    - `robotPlan`
+    - `activeTaskId / activeProcessId / sourceMode`
+  - `GET /api/v1/growth/workbench` 已接到成长主链，优先基于真实任务生成作战台快照；没有真实任务时，会从 `currentFocusActions / recommendations / pendingCaptures` 中回退生成上下文任务，而不是继续渲染固定演示壳。
+  - 学习导航前端现在优先消费后端快照；流程节点、动作卡、支撑资料、节点清单、原理说明和机器人计划都可由后端快照驱动，前端只保留真实数据缺失时的最后兜底推导。
+  - `GrowthHandbookView` 已在加载成长状态时并行请求 `growth overview + growth workbench`，学习导航现在与总览、账本、推荐共享同一份真实成长上下文。
+- 是否需要主线程配合：当前不需要
+- 风险点：
+  - 当前 `project_module / project_flow` 仍通过详情接口 + 相关任务定位承接，没有独立详情页。
+  - 学习导航虽然已有后端快照对象层，但“机器人协作 / 节点清单 / 原理说明”仍是快照型对象，不是独立持久化实体。
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_engine.py -q` 通过，`9 passed`
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-23 本地后端启动超时修复
+
+- 负责范围：
+  - 排查 `本地后端启动失败 / 后端服务启动超时`
+  - 恢复唯一安装入口 `~/Applications/益语智库自用平台.app`
+- 已改文件：
+  - `backend/app/models.py`
+  - `docs/thread-sync.md`
+- 根因：
+  - `backend/app/main.py` 导入并使用了 `GrowthPendingCaptureActionResponse`
+  - `backend/app/models.py` 中缺失该响应模型，导致打包后的本地后端在 import 阶段直接崩溃
+  - Electron 一直等不到 `127.0.0.1:47829` 监听，因此弹出“后端服务启动超时”
+- 实际处理：
+  - 补上 `GrowthPendingCaptureActionResponse`
+  - 重新 `build:main / build:renderer / dist:mac-local / install:mac-local`
+  - 冷启动唯一入口应用
+- 验证结果：
+  - 打包后资源目录直接 import 成功：`PACKAGED_BACKEND_IMPORT_OK`
+  - `GET http://127.0.0.1:47829/api/v1/system/health` 返回 `backend=online`
+  - `127.0.0.1:47829` 与 `127.0.0.1:47830` 均已监听
+- 风险点：
+  - 当前本地 app 仍是本地 ad-hoc 重签名链，正式封装前仍需 Developer ID 与 notarization
+
+## 2026-03-23 日历任务卡误触拖拽卡死修复
+
+- 负责范围：
+  - `任务与日历` 月历 / 周历任务卡交互
+  - 不触碰客户工作台问答主链路
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `docs/thread-sync.md`
+- 根因：
+  - 日历里的任务卡、待排任务卡和周时间轴任务块都把整张卡设成了原生 `draggable`
+  - 同时页面还叠加了自定义拖拽、点击选中和时间轴交互
+  - 在 Electron 里这类“整卡原生拖放 + 复杂鼠标事件”很容易误触发拖放会话，表现就是光标变抓手后界面像卡住
+- 实际处理：
+  - 取消“整张任务卡都可拖”
+  - 改成只有显式的拖动把手才会触发拖拽
+  - 普通点击任务卡只负责选中 / 打开，不再顺带进入拖拽态
+  - 覆盖范围：
+    - 月历单元格任务卡
+    - 周视图上方待排任务池
+    - 周时间轴里的已排任务块
+- 是否需要主线程配合：
+  - 不需要
+- 风险点：
+  - 当前仍保留原生 HTML5 拖放，只是把入口收紧到显式把手
+  - 如果后续 Electron 上仍偶发拖放会话卡死，应继续把这条链彻底改成自定义 pointer drag，不再依赖原生 `draggable`
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-23 任务编辑蓝色项目卡误判“资料较少”排查与修复
+
+- 负责范围：
+  - 任务编辑抽屉中的蓝色项目背景预览卡
+  - 不触碰周判断正文生成链
+- 已改文件：
+  - `src/renderer/App.tsx`
+- 根因：
+  - 该蓝卡原先走的是前端本地启发式预览，不是真正的深度分析链
+  - 老逻辑主要按 `DNA 模块 / goals / 模块 / 流程` 计分，几乎不计：
+    - 客户工作台知识资料数量
+    - 当前任务标题与说明语义
+    - 已上传附件
+    - 事件线摘要 / 阻塞 / 下一步 / 证据数
+  - 因此像 CFFC 这种“知识资料很多但结构化目标/模块/流程尚未补齐”的客户，会被误判成 `资料较少`
+- 实际处理：
+  - `buildTaskProjectPreview(...)` 新增读取：
+    - `taskTitle`
+    - `taskDescription`
+    - `attachmentCount`
+    - `eventLine`
+  - 项目预览改为优先吸收：
+    - 任务语义（见面/演示/线下会谈、资料补齐/设计等）
+    - 客户工作台资料量
+    - 任务附件数
+    - 事件线摘要、阻塞、最近决策、下一步、证据数
+  - 风险/当前事项/下一步/最近进展改成按任务语义和证据层换写法，不再只回退到共享项目背景
+  - `资料较少` 的判定也改成综合：
+    - DNA 完整度
+    - workspace 文档量
+    - 附件
+    - 事件线证据
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+
+## 2026-03-23 周复盘单条保存按钮
+
+- 负责范围：
+  - 任务与日程中的周复盘采集态
+  - 只补单条保存入口，不改整周文稿结构
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+- 实际处理：
+  - 在每个展开的周复盘单项卡里新增 `保存` 按钮，放在条目文本框右上角
+  - 点击后会调用现有 `createWeeklyReview(...)`，把当前整周草稿立即落库，但不会跳去生成文稿页
+  - 保存完成后保留当前展开条目，避免用户逐条补写时被打断
+  - 按钮在当前条目没有有效内容时禁用，避免空保存
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-23 周复盘单条任务三色状态按钮
+
+- 负责范围：
+  - 周复盘采集态单条/单组条目的任务状态快速切换
+  - 不改任务编辑抽屉主链路
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx`
+  - `src/renderer/components/tasks/reviewDraft.ts`
+- 实际处理：
+  - 在单条周复盘卡中新增三色状态按钮：
+    - 绿色 `完成`
+    - 黄色 `延迟`
+    - 红色 `取消`
+  - 点击后会直接更新真实任务状态：
+    - 完成 -> `done`
+    - 延迟 -> `doing`
+    - 取消 -> `rejected`
+  - 同时把当前条目的结构化复盘状态一起同步：
+    - 完成 -> `done_on_time`
+    - 延迟/取消 -> `not_done`
+  - 周复盘列表中的 `rejected` 文案同步改成 `已取消`
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-23 周复盘取消即删除任务
+
+- 负责范围：
+  - 周复盘单条/单组条目中的红色 `取消` 动作改为真实删除任务
+  - 同步补本地后端与云端后端任务删除接口
+- 已改文件：
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/App.tsx`
+  - `backend/app/main.py`
+  - `cloud_backend/app/main.py`
+- 实际处理：
+  - 新增 `DELETE /api/v1/tasks/{task_id}`
+  - 周复盘里点击红色 `取消` 后，不再把任务状态改成 `rejected`
+  - 现在会直接删除任务；如果是一组任务，则删除整组任务
+  - 删除后会刷新任务板、当前周复盘和客户工作台，避免界面残留已删任务
+  - 本地删除时会同时清理：
+    - `activity_logs`
+    - `event_line_activities(task_activity)`
+    - `memory_facts(task scope / task source)`
+    - `growth_signal_events`
+    - `growth_evidence_records`
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py cloud_backend/app/main.py` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run dist:mac-local` 通过
+- 2026-03-23 22:00 主线程：排查“任务看不到了”。根因不是任务被清空，而是本地后端 `/api/v1/tasks` 500。具体是 `backend/app/main.py` 里的模块级 `_sync_task_attachment_scope()` 错误引用了 `create_app()` 作用域内的 `state / build_task_attachment / build_attachment_event_line_activity / ensure_standard_client_folders`。已改成显式注入 `db / data_dir / helper`，重新打包、重装并冷启动后，运行中的 `/api/v1/tasks` 恢复 200，当前真实任务数为 41（`todo=12`, `done=29`）。
+- 2026-03-23 深夜主线程：继续排查任务编辑抽屉里 CFFC 背景卡和四个 AI 洞察框为什么“资料很多但分析仍然泛”。确认根因不是资料量不足，而是两层链路都在复述泛化字段：
+  - `buildTaskProjectPreview(...)` 虽然已经开始读任务标题、附件标题和文档卡，但仍会把“结构化归属不足 / 资料未挂进模块流程”这类系统内部问题当成业务阻碍；
+  - `TaskOrgContextPanel` 又继续优先吃 `eventLine.currentBlocker / recentDecision / nextStep` 这类已经被启发式泛化过的字段，导致四个框互相抄写。
+  本轮已改成：
+  - 对“会谈 / 演示 / 数字化平台 / AI 工具包 / 专题营”类任务，优先生成**业务阻碍**，例如“客户场景、价值主张、会后动作没有钉住”，不再把“资料没挂进模块流程”当主阻碍；
+  - CFFC 这类任务的蓝色预览卡会优先把附件标题、相关文档卡标题/摘要和会谈语义拼成“会前判断”，而不是简单回显共享项目背景；
+  - `TaskOrgContextPanel` 新增泛化字段过滤，像“当前阻塞更像资料不足 / 最近进展：X / X / 结构化归属不足”这类内容不再被拿来生成四张洞察卡。
+  已验证 `npx vite build` 通过，最新 renderer 产物：
+  - `dist/renderer/assets/index-DQXPH-UI.js`
+  - `dist/renderer/assets/index-BwRhRlAr.css`
+
+## 2026-03-23 成长账本首页重复加分观感修复
+
+- 负责范围：
+  - 成长手册首页的最近 XP 掉落展示
+  - 不改底层 XP 记账规则，只修正“同一来源被拆成多条能力入账”带来的重复观感
+- 已改文件：
+  - `src/renderer/components/handbook/GrowthHandbookView.tsx`
+- 实际处理：
+  - 确认根因不是同一条 XP 被写了两次，而是同一次复盘/信号会按多个能力维度分别入账
+  - 首页最近 XP 列表原先直接平铺 `growthOverview.recentEntries`，导致同一来源标题重复出现
+  - 现在改成按 `sourceType + sourceId + taskId/reviewId/meetingId/handbookEntryId + createdAt` 聚合展示
+  - 聚合后会把同一来源的 XP 合并显示，并明确标注涉及了几项能力、哪些能力
+- 当前状态：
+  - 首页不会再把同一次复盘看起来渲染成多条“重复得分”
+  - XP 账本抽屉仍保留逐条能力明细，便于追溯
+- 是否需要主线程配合：
+  - 不需要
+- 风险点：
+  - 这轮只改了首页展示，底层仍然是多能力分别记账；如果后续产品要改成“一次复盘只记一条总账”，需要单独调整 `growth_engine`
+
+## 2026-03-23 客户工作台“根目录快捷通道”文件搜索模式
+
+- 负责范围：
+  - 客户工作台左侧“根目录快捷通道”
+  - 不改后端检索结构，直接复用现有 `/api/v1/clients/{client_id}/knowledge/search`
+- 已改文件：
+  - `src/renderer/App.tsx`
+- 实际处理：
+  - 在“根目录快捷通道”上方新增文件搜索输入框
+  - 支持按回车或点击“搜索”触发
+  - 搜索时调用现有知识检索接口，按文件名和正文片段综合命中
+  - 将多条命中按 `path/title` 聚合成单个文件结果，并按相关度排序
+  - 搜索模式下，下方文件夹卡片会替换为“相关文件排名”
+  - 清空搜索后恢复原文件夹快捷通道
+- 当前状态：
+  - 已实现第一版“文件名/文件内容搜索 -> 相关文件列表”
+  - 点击搜索结果会直接尝试打开对应文件
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-23 主任务列表默认折叠
+
+- 负责范围：
+  - 任务与日程 > 任务列表主卡片
+  - 不改日历、收件箱和客户工作台里的其他列表
+- 已改文件：
+  - `src/renderer/App.tsx`
+- 实际处理：
+  - 主任务列表现在默认全部折叠展示
+  - 点击任务摘要区可展开，再点一次可收起
+  - 折叠态保留标题、简短说明和标签，便于一屏查看更多任务
+  - 展开后才显示复核动作、退回反馈和 AI 洞察
+  - 编辑按钮和状态切换按钮已做事件隔离，不会误触发展开/收起
+  - 右上角箭头已改成独立按钮，展开后会明确显示完整任务说明，不再出现“点了但视觉上没变化”
+- 当前状态：
+  - 主列表已经从“大卡片平铺”改成“摘要优先、按需展开”
+- 是否需要主线程配合：
+  - 不需要
+- 风险点：
+  - 这轮只收了任务列表主视图；如果后面希望月历或收件箱也统一成折叠交互，需要单独评估
+
+## 2026-03-23 学习导航智能化改造（任务理解 + 通用技能 + 项目背景 + 动作主线）
+
+- 负责范围：
+  - 成长手册 > 学习导航
+  - growth workbench 后端快照
+  - 不改客户工作台问答链路，不动 `backend/app/services/ai.py`
+- 已改文件：
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_growth_workbench.py`
+  - `src/shared/types.ts`
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+- 实际处理：
+  - 在 `GET /api/v1/growth/workbench` 的快照里新增结构化任务理解：
+    - `taskIntent`
+    - `universalSkills`
+    - `projectContextPack`
+    - `actionPlan`
+    - `materialRefs`
+  - 内置第一批通用技能规则库，覆盖：
+    - `external_communication`
+    - `agreement_alignment`
+    - `cross_team_coordination`
+    - `meeting_preparation`
+    - `proposal_output`
+    - `review_and_closure`
+  - 学习导航改成四层结构：
+    - 任务理解区
+    - 通用技能区
+    - 项目专属背景区
+    - 现在就做区
+  - 项目背景包按“任务材料优先”生成：
+    - 优先读任务 `desc / note / attachments / memoryHints / linkedFactsPreview / projectContext`
+    - 不足时再补客户工作台与战略线摘要
+  - 动作主线改成 `before / during / after` 三段，并补：
+    - `purpose`
+    - `expectedOutput`
+    - `ifMissing`
+    - `sourceKind`
+    - `linkedContext`
+  - 新增后端测试覆盖“CFFC 战略合作协议沟通”这类技能型任务，验证：
+    - 能识别任务类型
+    - 会拉任务材料与客户背景
+    - 通用技能优先命中规则库
+    - 动作主线完整返回三段
+  - 兼容补丁：
+    - `GrowthWorkbenchTaskRecord` 恢复保留 `clientName / eventLineName / projectStage / businessCategory` 老字段，避免旧的 `projectGuidance`/`genericLessons` 链路被这轮结构升级打断
+- 当前状态：
+  - 学习导航不再只靠阶段和泛化推荐理由拼壳，已经能围绕真实任务给出“这是什么任务、为什么现在推这个、该看哪些背景、现在具体做什么”
+  - 对“沟通 CFFC 战略合作协议”这类任务，系统会优先给出协议沟通类通用技能、任务/客户背景包和前中后动作主线
+- 验证结果：
+  - `python3 -m py_compile backend/app/models.py backend/app/main.py` 通过
+  - `PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_growth_workbench.py backend/tests/test_growth_engine.py -q` 通过，`10 passed`
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+- 是否需要主线程配合：
+  - 不需要
+- 风险点：
+  - 当前“通用技能”仍以内置规则库为主，还没拆成独立后台配置
+  - `projectContextPack` 现阶段是快照对象，不是独立持久化实体
+  - 这轮没有做 APP/云端同步展示，只落桌面端学习导航
+
+## 2026-03-24 学习导航 UI 回滚到旧壳
+
+- 负责范围：
+  - 成长手册 > 学习导航 渲染层
+  - 只回滚视觉结构，不回退这轮已经落下去的后端任务理解与上下文数据
+- 已改文件：
+  - `src/renderer/components/handbook/GrowthLearningWorkbench.tsx`
+  - `docs/thread-sync.md`
+- 实际处理：
+  - 用户明确认为新版学习导航设计过重、过杂，要求回滚到之前截图中的旧版本风格
+  - 已移除顶部新增的这些区块：
+    - `这次真正要学什么`
+    - `这个项目特别在哪`
+    - `现在先做什么`
+    - `AI / 系统怎么得出这个判断`
+    - `当前仍缺什么`
+    - `通用方法参考`
+    - `当前项目证据与上下文`
+    - 新版白底 `现在就做区`
+  - 已恢复旧壳结构：
+    - 任务切换条
+    - 当前任务主卡（标题 + 风险提示）
+    - 机器人协作侧卡
+    - 三栏动作区（开始前 / 执行中 / 完成后）
+    - 下面原有的流程、技能补强、深色 CTA、辅助资料和底部沉淀区保持不变
+  - 注意：
+    - 后端的 `taskIntent / universalSkills / projectContextPack / actionPlan / materialRefs` 没删，后续如果要重新设计 UI，可以直接复用
+- 当前状态：
+  - 学习导航已回到更接近之前截图的旧版本视觉和信息密度
+  - 交互仍然走当前真实数据，不会退回到纯 mock
+- 是否需要主线程配合：
+  - 不需要
+- 风险点：
+  - 这次只回滚了 UI 结构，没有清理所有已落下去的 smarter 数据变量；当前不影响构建，但后续如果继续重构学习导航，应以现在的旧壳为新基线继续收
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 复盘内容恢复
+- 已改文件：backend/app/main.py
+- 当前状态：已修复 `/api/v1/reviews` 因事件线增强漏导入/漏 helper 导致的 500，云端已保存的周复盘内容可重新读回。
+- 是否需要主线程配合：否
+- 风险点：这段事件线增强逻辑此前存在多处私有 helper/模型漏接，后续继续改这里时要优先跑 reviews 相关回归测试。
+
+## 2026-03-24 任务卡折叠交互修复
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 任务列表改成真正的折叠卡；折叠态不再长时间露出大段描述，点击标题区、标签区或右上角箭头都会切换展开状态。
+  - 展开后会稳定显示任务说明与详情区，不再出现“点了箭头但视觉上像没展开”的情况。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前只收了主任务列表卡片，其他任务视图如果后续也要统一成同样折叠逻辑，需要单独一起收口。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 任务详情与日历统一走后端上下文预览
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+- 当前状态：
+  - 任务编辑窗口里的蓝色上下文卡继续走后端 `/api/v1/tasks/{id}/context-preview`。
+  - 任务编辑里的 `TaskOrgContextPanel` 也已切到同一条 preview 链，不再和蓝卡各跑一套判断。
+  - 日历详情页新增选中任务的 preview 读取，周/月详情里的 `TaskOrgContextPanel` 会优先使用后端统一判断。
+  - 顺手修掉了一个串值风险：任务列表展开卡只会在 preview 真的是当前这条任务时才使用，避免把编辑中的 preview 错串到别的任务上。
+- 是否需要主线程配合：否
+- 风险点：
+  - 任务列表展开卡目前还没有单独 fetch 自己的 preview，仍以原有轻量路径为主；如果后面要彻底统一，可再给任务列表加按需 preview 缓存。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+
+## 2026-03-24 客户工作台顶部入口精简
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已删除客户工作台顶部这三枚入口按钮：`资料导入引导 / 会议流 / 目标`。
+  - 这组按钮不再占用头部空间，也不再作为重复入口出现。
+- 是否需要主线程配合：否
+- 风险点：
+  - 删除后，`会议流 / 目标` 只能通过页面内其他现有入口进入；如果后续还要保留这两块能力，需要在更合适的位置重新安放。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 模板填写：里程碑字段与官网补充增强
+- 已改文件：
+  - `backend/app/services/template_fill.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_template_fill.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 里程碑字段不再沿用“模板名 + 字段名”的泛检索 query，改成按 `年份 + 大事记/发展历程/重大事件` 组织本地检索词。
+  - 网页补充对 `20xx年重大事件/里程碑` 这类字段放宽触发条件；即使已有 3 条弱本地证据，也允许继续补公开网页弱证据。
+  - 若客户档案里未显式填写官网域名，模板链现在会优先从本地已命中的资料 excerpt 里抽取域名，优先选 `.org.cn/.org`，再直读官网首页作为弱证据。
+  - 对缩写型客户（如 CFFC），网页补充会先从本地资料标题里推公开名称，再用该名称做搜索，仍保持“本地资料优先，网页只补空白”。
+  - 进一步补强：网页补充不再只依赖“当前字段命中的 2-3 条资料”，而是会从该客户全量已入库资料中补抽公开名称/官网域名线索，再回灌到模板填写搜索，避免里程碑字段因当前命中太泛而完全拿不到官网补充。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前网页补充仍依赖公开网页可访问性；若外网搜索源返回空，至少还能走“本地 excerpt 推官网域名 -> 直读官网首页”这条链。
+  - 这次没有改模板填写 UI，只增强了字段上下文和资料来源。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend && uv run pytest tests/test_template_fill.py tests/test_ai_template_fill.py -q` 通过（21 passed）
+  - `python3 -m py_compile backend/app/services/template_fill.py backend/app/main.py` 通过
+  - 手工验证：`derive_template_fill_public_domain(None, ['https://www.cfforum.org.cn/about'])` 可推出 `cfforum.org.cn`，`fetch_template_fill_web_sources(...)` 可直接带回官网首页摘要
+- 2026-03-24: 启动“周判断深度化重构”第一批收口。后端 `main.py` 的 `EventLineContextBundle / EventLineJudgment` 改成更证据驱动、少模板味：补了 operating mode、关键证据摘要、关键人/产品提示、缺失背景检测，并下调“结构问题/资料问题”对 blocker 的误导优先级。任务详情 `TaskOrgContextPanel` 现在在有 `contextPreview` 时优先显示后端 judgment，不再用本地 heuristics 稀释判断。`review_rollup.py` 开始让 `eventLineJudgment / riskCards / trendSignals` 成为管理视图主来源，减少结构化判断在 rollup 末端被压扁成泛化短句。
+
+## 2026-03-24 任务列表卡片整卡展开修复
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 修复了任务列表卡片“点大部分区域不展开”的问题。
+  - 根因是卡片外层没有绑定展开事件，只有标题区域、标签行和右侧箭头能触发展开，用户点卡片主体留白不会有任何反应。
+  - 现在整张任务卡外层都可点击展开/收起，并支持 `Enter / Space` 键盘操作。
+  - 同时移除了标题区、标签区的重复 toggle 绑定，避免外层接管后出现双重切换。
+- 是否需要主线程配合：否
+- 风险点：
+  - 卡片详情区内部仍通过 `stopPropagation()` 阻止冒泡，避免在详情区操作按钮时误收起；后续如果继续往卡片头部加新按钮，需要继续保持这一层事件边界。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run dist:mac-local` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run install:mac-local` 通过
+
+## 2026-03-24 任务完成按钮无反馈修复
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 排查确认 `PATCH /api/v1/tasks/{id}` 实际可正常更新任务状态，问题不在后端。
+  - 真实问题在前端交互：点击完成时没有乐观更新、没有成功提示、也没有失败兜底；一旦刷新较慢或请求异常，用户会感觉“点了没反应”。
+  - 现在改成：
+    - 点击后先做本地乐观状态更新
+    - 状态按钮进入短暂 busy 态，防止重复点击
+    - 成功后弹 `任务已标记完成 / 已恢复待推进`
+    - 失败后自动回读任务列表并弹错误提示
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前还是“单击立即切状态”，没有二次确认；如果后续要把“完成”改成更重的业务动作，需要再补确认或撤销。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+  - 本地接口实测：示例任务 `task_3c2c7a5ab3` 可在 `done <-> doing` 间正常切换
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run dist:mac-local` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run install:mac-local` 通过
+
+## 2026-03-24 右侧引证卡片收紧
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 右侧“当前回答引证 / 默认背景线索”卡片去掉了正文摘录块，不再展示中间的大段 excerpt。
+  - 卡片现在只保留标题、相关度/阶段/标签和“查看原文”入口，整体高度明显收紧。
+  - 同时把“查看原文”入口改成常驻显示，不再依赖 hover 才看得到。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前用户如果想直接看片段，需要点“查看原文”进入原文件；这符合当前“卡片尽量小、正文不在此处展开”的目标。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 任务删除入口补齐
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 任务删除接口原本已经存在，但 UI 没有正式入口。
+  - 这次补了两个删除入口，避免到处堆危险按钮：
+    - 任务编辑工作台头部右侧：适合“我正在编辑这条任务，确认直接删掉”
+    - 任务列表卡片的 `编辑` 旁边：适合快速删除单条任务
+  - 两个入口都走同一个 `handleDeleteTaskRecord(...)`，先二次确认，再删除，避免一处删得掉、一处不同步。
+  - 删除后会统一刷新任务区块、周复盘（若当前已打开）、工作台上下文；如果当前打开的事件线里包含这条任务，也会同步刷新事件线详情。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前先补的是最常用的两个入口，其他 drill-down 列表和复盘分组里的任务暂未继续堆删除按钮，避免视觉噪音和误触。
+  - 删除仍使用 `window.confirm` 这套轻确认；如果后续要统一成系统级危险操作对话框，可以再整体替换。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+
+## 2026-03-24 月历首屏空白修复
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 月历首屏原来依赖“自动居中今天”的两帧延迟定位；如果初始化时这次定位没命中，月历就会停在渲染范围顶部的空周区，看起来像“刚打开是空白，滚一下内容才出来”。
+  - 这次改成：月视图初次进入时稳定对齐到当前 `calendarDate` 所在月份的 `1号`，而不是盲目居中当天；只有显式点击“今天”时，才再平滑对齐到今天那一天。
+  - 同时把这条定位逻辑移到 `useLayoutEffect`，并加了容器/目标格子的重试判断，避免在容器高度还没稳定时过早标记“已定位”。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前仍保留月历连续周网格的实现，所以不存在“按月份分 section 重启一段”的旧逻辑；如果用户后续仍感到跳动，剩下更可能是标题同步或惯性滚动细节，而不是首屏定位失败。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+- 2026-03-24：排查“周复盘点击不了”，确认按钮本身存在，真正的问题在 `App.tsx` 的两条状态覆盖链：`taskSettingsState.defaultViewMode` 会在后续 settings reload 时再次强制切回默认视图，`growthContextJump` 可能在用户手动切到周复盘时把界面重新拉回列表。已改成：默认视图只在初始化首次生效；用户手动点击任务页视图时，尤其切到 `review`，会清掉悬挂的 `growthContextJump` 并固定进入复盘采集页。构建产物：`dist/renderer/assets/index-DbPCpb5C.js`、`dist/renderer/assets/index-CQFgpITI.css`。
+
+## 2026-03-24 周复盘输入被刷新覆盖修复
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 周复盘输入框本身并没有禁用，真正的问题是 `reviewDashboard` 一刷新，`reviewForm` 会被 `useEffect` 无条件重置，导致用户刚输入的内容立刻被服务端旧值覆盖，看起来像“不能输入”。
+  - 这次新增了本地草稿脏标记：同一周内只要用户已经开始编辑，后续 dashboard 刷新只会补新条目，不会覆盖本地已输入的 structured note。
+  - 只有在切换历史周、生成复盘文稿、或者手动保存成功后，才会清掉脏标记，允许服务端最新值重新接管。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前保护的是“同周本地草稿优先”；如果后续需要多端同时编辑同一周复盘，还要再补更明确的冲突提示。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+# 2026-03-24 周复盘点击无反应修复
+
+- 根因不是前端按钮，而是本地 `GET /api/v1/reviews` 返回 `500`，前端表面表现成“点击无反应 / CORS 失败”。
+- 真实异常位于 `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/main.py` 的 `_context_fact_to_evidence_ref(...)`：
+  - `EventLineContextFactRecord.sourceType` 已允许 `notebook` / `event_line_memory`
+  - 但 `ReviewDashboardEvidenceRefRecord.sourceType` 仍只允许 `task / meeting / support_request / attachment / clarification / event_line`
+  - 当周判断 enrich 链读到组织笔记或事件线记忆证据时，Pydantic 直接抛 `ValidationError`
+- 修复方式：
+  - 扩展本地后端、云端后端和共享前端类型里的 `ReviewDashboardEvidenceRef.sourceType`
+  - 新增回归，锁住“含 notebook / event_line_memory 证据时 `/api/v1/reviews` 仍返回 200”
+- 相关文件：
+  - `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/models.py`
+  - `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/cloud_backend/app/models.py`
+  - `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/src/shared/types.ts`
+  - `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/tests/test_api_smoke.py`
+- 2026-03-24：排查“周复盘点击没反应”，确认 `/api/v1/reviews` 与 CORS 已恢复正常，问题不再是后端 500。定位到任务页主滚动容器在切换 `taskViewMode` 时保留旧滚动位置，导致从月历/周历切到 `review` 后视觉上像“没切过去”；同时安装版 app bundle 没自动吃到工作区最新 `dist`。已在 `src/renderer/App.tsx` 增加任务区视图切换自动回顶，并在点击 `周复盘` 时主动刷新 review 数据；构建后同步 `dist/renderer` 到安装版 app bundle 并重启。
+## 2026-03-24 单条复盘保存修补
+
+- 问题：周复盘单条卡片的“保存”依赖 group dirty 状态，导致某些情况下明明当前条目已有有效内容，仍然表现成无法稳定手动保存。
+- 修补：
+  - [/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/src/renderer/App.tsx](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/src/renderer/App.tsx)
+  - 单条复盘保存现在改成“只要当前组有可保存内容，就允许手动保存”，不再把 dirty 标记当成唯一门槛。
+  - 渲染时显式使用当前组的本地草稿值作为保存对象。
+- 验证：
+  - `npm run build:renderer`
+  - `npm run dist:mac-local`
+  - `npm run install:mac-local`
+  - 冷启动后 `/api/v1/reviews` 返回 `200`
+
+## 2026-03-24 事件线快速澄清改成聊天记录整理
+
+- 已改文件：
+  - `src/shared/types.ts`
+  - `src/renderer/lib/api.ts`
+  - `src/renderer/components/tasks/EventLineClarificationComposer.tsx`
+  - `src/renderer/App.tsx`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/ai.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 原来的多字段手填澄清表单，已经改成“粘贴客户聊天记录 -> AI 自动整理 -> 人工确认保存”的单对话框流程。
+  - 本地后端新增了 `POST /api/v1/event-lines/{id}/clarification-draft`，会结合事件线当前活动、任务上下文和聊天记录生成候选稿。
+  - 候选稿会整理出：
+    - `summary`
+    - `stage`
+    - `intent`
+    - `currentBlocker`
+    - `nextStep`
+    - `recentDecision`
+    - `missingInfo`
+    - `confidence`
+  - 前端新建了可复用的 `EventLineClarificationComposer`，事件线详情和任务编辑里的“快速澄清”都已切到这一套组件。
+  - 保存时仍然复用现有事件线更新链路，没有新造第二套持久化逻辑。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前候选稿生成优先走现有 AI provider；如果 provider 不可用，会退回规则化 fallback，因此复杂聊天记录时仍可能需要人工改一轮。
+  - 这轮先接的是本地后端 AI 草稿能力；云端事件线数据仍通过本地桥接读写，不是云端独立生成。
+- 验证结果：
+  - `python3 -m py_compile /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/services/ai.py` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k "event_line_clarification"` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 任务列表改成时间先后排序
+
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 任务列表之前的排序逻辑会先按状态分组，再按更新时间兜底，所以“今天 14:00”这类更早要处理的任务会被压到后面。
+  - 现在 `清单排序：按时间先后` 会优先按任务时间线排序：
+    - 优先使用任务实际日期时间
+    - 同时间再用状态做次级排序
+    - 最后才用更新时间兜底
+  - 同时把设置里的旧文案从“手动顺序”改成了“按时间先后”，避免界面含义和真实排序逻辑不一致。
+  - `清单排序：按截止日期` 继续保留，用于只按明确截止日排序；没有截止日的任务会靠后。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前只调整了任务列表视图，不影响月历、周复盘和正式视图的独立排序规则。
+  - 存量配置里原本保存为 `manual` 的用户，会自动获得新的“按时间先后”行为，这是有意兼容，不再保留旧的状态优先排序。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 登录页本地服务错误态自动恢复
+
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 排查确认本地服务本身并没有挂：
+    - `127.0.0.1:47829` 正常监听
+    - `127.0.0.1:47830` 正常监听
+    - `/api/v1/system/health`、`/api/v1/auth/me` 都返回 200
+  - 真正的问题是：登录页如果在启动早期先拿到一次“无法连接本地服务”，后续即使本地后端已经起来，也会继续停留在这条旧错误提示上，不会自己恢复。
+  - 这次已在登录页补自动探测恢复：
+    - 只要消息里是“无法连接本地服务”
+    - 前端会静默轮询本地 health
+    - 一旦本地后端恢复，就自动清掉旧错误并重新执行 `loadAll()`
+  - 这样不需要你反复重启或重新输入账号，页面会自己从旧错误态恢复。
+- 是否需要主线程配合：否
+- 风险点：
+  - 当前恢复逻辑只针对“本地服务暂时不可达”的启动型错误；如果是真实账号密码错误或服务端 401，不会被这条自动恢复链吞掉。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 日历与任务判断系统 V3.1 修订清单
+
+- 已新增文件：
+  - `docs/calendar-task-judgment-v3.1-revision-checklist.md`
+- 当前状态：
+  - 基于用户新增的 4 条关键拍板，对既有 V3 方案做了不改骨架的 V3.1 收口。
+  - 本轮没有新发明架构，而是把以下工程边界正式写死：
+    - 共享判断采用“人工发布为主、指定机器人可发布”
+    - 个人任务与组织任务采用完全隔离的双沙箱容器
+    - 附件证据一期只做到 `title + summary`
+    - 旧任务回填的人工确认入口优先放在任务详情页
+  - 同时把 V3 真正要实现的目标重新压成“交叉分析链”：
+    - `任务/会议/附件摘要/澄清池/客户业务笔记/事件线记忆 -> EventLineContextBundle -> EventLineJudgmentRecord -> 任务详情/周判断/dashboard`
+  - V3.1 还明确了 5 条硬规则：
+    - 风险只能写业务风险，不能把结构问题冒充成业务阻碍
+    - 项目共享摘要只能兜底，不能覆盖任务和事件线事实
+    - 证据不足必须正式降级，不允许硬写
+    - 旧任务回填要保守，没把握就 `unresolved`
+    - 本地预览和共享判断必须清楚区分
+  - Dashboard 第一屏继续保持四层结构，但明确要求所有卡片统一 schema 和 drill-down 行为，并通过角色排序逻辑区分 CEO / 部门负责人 / 成员。
+- 是否需要主线程配合：否
+- 风险点：
+  - 本轮是方案修订，不涉及运行时代码；后续真正实施时仍需优先解决 task 真源、shared judgment 发布权限、附件摘要生产和旧任务回填阈值。
+  - 个人任务双沙箱边界已经在方案里写死，但真正落地前仍需检查现有任务编辑 UI 和 API 是否有隐式挂客户/事件线的入口。
+
+## 2026-03-24 本地后端启动卡在“连接中”根因修复
+
+- 已改文件：
+  - `backend/app/local_request_guard.py`
+  - `backend/app/main.py`
+  - `backend/tests/test_api_smoke.py`
+- 当前状态：
+  - 已确认并不是本地后端没起来，而是 renderer 静态服务这次占到了 `http://127.0.0.1:4174`，而本地后端的 CORS 与来源白名单只允许 `4173`，导致浏览器预检被拦截，看起来像“一直在连接本地后端”。
+  - 现在本地来源校验已接受 `127.0.0.1/localhost` 的动态端口，不再因为 `4174/4175` 这类端口漂移卡死启动。
+  - FastAPI CORS 也同步放宽到同一条本地来源规则，避免只修来源判断但浏览器预检仍失败。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只放宽了本机本地来源，不涉及公网来源；如果后续引入新的自定义 scheme 或远程调试来源，还需要同步更新白名单。
+- 验证结果：
+  - `python3 -m py_compile /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/local_request_guard.py /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/main.py` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend && PYTHONPATH=. .venv/bin/python -m pytest tests/test_api_smoke.py -q -k "cross_site_browser_requests_are_rejected or local_browser_requests_allow_dynamic_renderer_ports or local_browser_preflight_allows_dynamic_renderer_ports"` 通过
+
+## 2026-03-24 任务列表改为按真实时间线排序
+
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已定位到任务列表排序不符合时间先后顺序的根因：
+    - 当前页面如果走的是“按优先级”模式，会先按优先级分组，再用更新时间兜底，导致 `03-30` 这类高优先级任务会排在 `今天 14:00` 前面。
+    - 另外旧逻辑对 `ddl` 的解析只看日期，不看 `今天 14:00 / 03-23 18:00` 这类带时刻的文本，时间线精度不够。
+  - 现在已统一引入真实时间线解析：
+    - 优先读 `dueDate`
+    - 没有 `dueDate` 时解析 `ddl`
+    - `ddl` 支持 `今天 HH:MM / 本周 HH:MM / 周X HH:MM / MM-DD HH:MM`
+  - 任务列表排序已改成：
+    - 先按真实时间线排序
+    - 如果排序模式是“按优先级”，优先级只作为同一时刻的次级规则
+    - 最后才用状态和更新时间兜底
+  - 这样在清单页里，“今天 14:00 / 今天 12:30 / 03-28 / 03-30 / 04-07”会真正按时间先后排列。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮修的是前端列表排序和 `ddl` 时间解析；如果后续有新的中文相对时间写法，还需要在 `normalizeDdlToDateTime` 里补解析分支。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-24 月历默认把当天锁定在居中
+
+- 已改文件：
+  - `src/renderer/components/tasks/TaskCalendarView.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已定位到月历打开时默认对齐的是“当月 1 号”，只有显式点“今天”才会把当天滚到居中，因此打开日历后当前日期经常落在视口偏上位置。
+  - 现在月历在“当前月份”默认会把今天作为对齐目标，并按居中逻辑计算滚动位置。
+  - 如果用户切到别的月份浏览，仍然按该月浏览逻辑停在目标月份，不会被强行拉回今天。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只改了月视图默认定位与居中逻辑；周视图和日期跳转交互没有动。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+## 2026-03-24 客户工作台导入工具计数恢复
+
+- 位置：客户工作台右侧“导入工具”六宫格。
+- 调整：
+  - 恢复灰色小字统计行。
+  - 同一行展示：
+    - `N 个向量块`
+    - `M 条提问线程`
+- 文件：
+  - [/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/src/renderer/App.tsx](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/src/renderer/App.tsx)
+- 验证：
+  - `npm run build:renderer`
+  - `npm run dist:mac-local`
+  - `npm run install:mac-local`
+
+## 2026-03-24 客户工作台头部移除“客户知识问答与资料分析”文案
+
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已删除客户工作台头部项目名下方的“客户知识问答与资料分析”提示文案，让头部更干净。
+  - 本轮只做了最小收口，没有改动客户工作台实际工作区能力。
+- 是否需要主线程配合：否
+- 风险点：
+  - 如果后续用户想删的是整个问答工作区功能，而不是这行文案，还需要单独收掉对应功能区块。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-25 资讯情报站修复“大周判断”与原文脱节
+
+- 已改文件：
+  - `backend/app/services/ai.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已定位到“大周判断”和新闻内容经常脱节的核心原因，不是单纯提示词写得不够细，而是后处理层存在一整套按关键词硬套的模板文案。
+  - 旧逻辑只要命中 `GitHub / 开源 / AI / 资助 / 安全 / 筹资` 这类大类词，或模型返回内容偏短，就会把判断改写成泛化模板，导致文字看起来像“懂产品”，但和当前文章的具体事实没有锚点。
+  - 现在已新增 grounded judgment 生成逻辑：优先基于标题、摘要、核心观点和原文摘录里的具体事实，重写 `editorialNote` 和继续追问问题，不再允许只靠分类模板兜底。
+  - 同时把这批旧模板纳入 stale 检测，历史缓存里已经生成过的泛模板判断，现在再次打开候选时会被判定为需要刷新并重算。
+- 当前状态补充：
+  - 尝试通过 `npm run dist:mac-local` 重新打旧壳安装包时，被 `src/renderer/App.tsx:8185` 的现存语法错误阻断。这段位于任务弹窗附件区，属于当前主线程正在持续修改的大文件，不在本轮资讯情报站算法修复范围内。
+  - 为避免碰撞主链路，这轮没有改该处，而是直接把修好的 `backend/app/services/ai.py` 替换进旧壳安装包 `/Users/guyuanyuan/Applications/益语智库自用平台.app`，并完成重启。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮主要修的是“大周判断”和追问问题的 grounded 程度；`recommendationReasons` 和 `practicalUses` 仍保留了一部分类型化兜底逻辑，后续如果继续出现泛化问题，还可以沿同样方式继续收紧。
+  - 旧壳安装包当前尚未重新完整打包；这次生效依赖的是对安装包内后端文件的定点替换。如果后续主线程修复了 `App.tsx` 语法问题，建议再走一次正式重打包安装。
+- 验证结果：
+  - `python3 -m py_compile /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/services/ai.py /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/app/main.py /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend/tests/test_api_smoke.py` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/backend && PYTHONPATH=. .venv/bin/python -m pytest tests/test_api_smoke.py -q -k "topic_candidate_insight_extracts_points_reasons_and_practical_uses or topic_candidate_insight_refreshes_stale_editorial_tone or topic_candidate_insight_refreshes_generic_editorial_template or topic_candidate_insight_grounds_editorial_note_to_article_facts"` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+  - `python3 -m py_compile /Users/guyuanyuan/Applications/益语智库自用平台.app/Contents/Resources/app/backend/app/services/ai.py /Users/guyuanyuan/Applications/益语智库自用平台.app/Contents/Resources/app/backend/app/main.py` 通过
+  - 旧壳重启后活服务检查：`http://127.0.0.1:47829/api/v1/topics` 正常返回 `4` 个雷达、`36` 条候选
+
+## 2026-03-25 任务弹窗基础信息区重排
+
+- 已改文件：
+  - `src/renderer/App.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把任务弹窗里原来的“基础安排 / 协作关系”两张说明式卡片，重排成更紧凑的“关键信息 / 协作者与负责人”。
+  - 去掉了这两块顶部的灰色说明文字，不再靠解释填版面。
+  - `截止时间` 现在改成整行大块显示，优先保证完整可读，不再被压成半句或只有前半截。
+  - `负责人` 从左侧基础安排里移出，提到协作卡顶部单独强调，避免和飞书按钮挤在一个小框里。
+  - 协作者输入和协作者标签继续保留，但空状态收口成简短状态标签，不再显示整段说明文案。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只重排了任务弹窗左侧的关键信息区，没有继续改右侧 `Task Scope / Context Stack` 的说明层；如果用户后续要求更进一步“去说明化”，还可以继续收口右侧灰色解释文字。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-03-25 周判断 V3.1 元数据主链收口
+
+- 已改文件：
+  - `src/shared/types.ts`
+  - `backend/app/models.py`
+  - `backend/app/main.py`
+  - `backend/app/services/review_analysis.py`
+  - `backend/tests/test_review_analysis.py`
+  - `backend/tests/test_api_smoke.py`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已补齐 `EventLineJudgment / TaskContextPreview / HierarchyReport` 的统一元数据：
+    - `judgmentVersion`
+    - `bundleFingerprint`
+    - `coverageScore`
+    - `confidenceScore`
+    - `safeOutputMode`
+    - `publishState`
+  - `backend/app/main.py` 现在会为每条 `EventLineContextBundle` 计算覆盖度、置信度、安全输出模式、发布状态和稳定指纹，再同步写入任务 context preview 与 judgment。
+  - `backend/app/services/review_analysis.py` 已把这些 judgment 元数据聚合到 report 层，不再只停留在事件线卡或 preview 层。
+  - 当前 report 级别会保留：
+    - judgment 版本
+    - bundle 指纹摘要
+    - 平均覆盖度 / 置信度
+    - 安全输出模式
+    - 可发布条目计数
+  - 这为后续 `人工发布 + 指定机器人发布 + stale 失效` 打下了运行时基础，但本轮没有再引入第二套发布系统。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮先把 runtime metadata 打通了，但真正的 `published_by_human / published_by_robot / stale` 迁移逻辑还没做成完整工作流；当前主状态仍以 `local_preview / publish_ready` 为主。
+  - `review_rollup.py` 目前依赖 `HierarchyReportRecord` 继承这些字段，没有新增独立汇总逻辑；如果后续要做更细的 role-specific publish 规则，还需要继续细化。
+- 验证结果：
+  - `python3 -m py_compile backend/app/main.py backend/app/models.py backend/app/services/review_analysis.py backend/app/services/review_rollup.py` 通过
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_review_analysis.py backend/tests/test_review_rollup.py -q` 通过，`22 passed`
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_api_smoke.py -q -k 'task_context_preview_returns_bundle_and_judgment or review_dashboard_drill_target_returns_event_line_evidence'` 通过，`2 passed`
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npx vite build` 通过
+- 2026-03-25：评估 `/Users/guyuanyuan/Downloads/codex_workgroup_bundle.zip` 的“总组 / 子组协作”方案后，新增 [docs/workgroup-v1-mapping.md](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/workgroup-v1-mapping.md)。当前结论：V1 不新造独立 `workgroup` 真源，先把“总组 / 子组”翻译成现有 `organization / department / parentDepartmentId / collaborationDepartmentIds`；只有在跨部门常态化协作、多重归属、独立记忆/权限边界出现后，再进入 V1.5。
+- 2026-03-25：按“Codex-native 虚拟项目组”方向新增仓库级虚拟团队基础设施：
+  - 新增 `.codex/config.toml`
+  - 新增 `.codex/agents/` 下 8 个项目级 agent TOML
+  - 新增仓库根 `AGENTS.md`
+  - 新增 `docs/virtual-team/charter.md`
+  - 新增 `docs/virtual-team/reality-audit.md`
+  - 新增 `docs/virtual-team/strategy-debates.md`
+  - 新增 `docs/virtual-team/active-plan.md`
+  - 新增 `docs/virtual-team/release-gates.md`
+  - 首轮裁决：当前任务不是从零设计 judgment system，而是围绕既有 `memory foundation + event line bundle + event line judgment + task context preview + weekly review analysis + strategic cockpit` 收口；推荐路线为“保守增量路线”，先统一任务详情 AI 面板与周判断的后端 judgment chain，再处理首屏骨架和动作卡闭环。
+- 2026-03-25：按用户新方向，把虚拟项目组从抽象方法论角色重构成真实软件岗位，并补入固定“外部模式扫描”回路：
+  - `.codex/agents/` 现改为：
+    - `program_director`
+    - `product_manager`
+    - `product_operations_manager`
+    - `ux_researcher`
+    - `interaction_designer`
+    - `information_architect`
+    - `staff_software_engineer`
+    - `data_engineer`
+    - `analytics_engineer`
+    - `relevance_engineer`
+    - `platform_engineer`
+    - `qa_engineer`
+    - `competitive_intelligence_analyst`
+  - `.codex/config.toml` 新增 `require_external_pattern_scan_for_nontrivial_design = true`
+  - 新增 `docs/virtual-team/external-pattern-scans.md`
+  - `charter.md / reality-audit.md / strategy-debates.md / active-plan.md / release-gates.md` 均已改为真实岗位口径，并把“外部成熟模式扫描”纳入固定回路
+  - 当前裁决：
+    - 不继续沿用抽象角色作为长期主配置
+    - 采用“真实软件岗位 + 保守增量技术路线”
+    - 后续实现仍围绕既有 judgment objects 和 memory foundation 收口，不新造第二真源
+- 2026-03-25：为“让讨论过程可见”新增 [docs/virtual-team/working-session-log.md](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/virtual-team/working-session-log.md)，并在 `charter.md` 中明确：
+  - `reality-audit.md / external-pattern-scans.md / strategy-debates.md` 记录结论型过程
+  - `working-session-log.md` 记录“谁参与、各自观点、冲突点、裁决、下一步”
+  - 当前已写入 Session 001，完整记录了为何把虚拟项目组从抽象方法论角色迁移到真实软件岗位，以及为何把外部模式扫描升级为固定回路。
+- 2026-03-25：按用户给出的 Session 002 指令，完成任务/日历判断系统第一轮 docs-only 收口：
+  - 新增 `docs/session-002/task-calendar-human-workflows-and-frictions.md`
+  - 新增 `docs/session-002/task-calendar-benchmark-round1.md`
+  - 新增 `docs/session-002/task-calendar-synthesis.md`
+  - `working-session-log.md` 已新增 Session 002，记录：
+    - Workflow A：关键人类工作流、交互阻力、信任阻力
+    - Workflow B：外部成熟模式第一轮对标
+    - Round 1 / Round 2 交叉质询
+    - P0 裁决范围
+  - 当前统一收口判断：
+    - 日历与任务判断系统最需要修的不是“让 AI 说得更完整”，而是“把收件、执行、排期、复盘、判断、动作重新收成可持续的工作节奏，并把动作闭环前置”。
+- 2026-03-25：按 Session 002 指令，新增 `docs/session-002/` 三份首轮文档：
+  - [task-calendar-human-workflows-and-frictions.md](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/session-002/task-calendar-human-workflows-and-frictions.md)
+  - [task-calendar-benchmark-round1.md](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/session-002/task-calendar-benchmark-round1.md)
+  - [task-calendar-synthesis.md](/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/session-002/task-calendar-synthesis.md)
+  本轮结论：
+  - 当前“日历与任务判断系统”最核心的问题不是分析不够长，而是没有把“事实 / 判断 / 降级 / 动作”四层拆开。
+  - 任务详情 AI 面板与周判断仍未稳定共用同一条 judgment chain；这是当前最伤信任的结构问题。
+  - 外部第一轮对标后，最值得借的是 `Linear` 的优先级视图、`Sunsama` 的 ritual、`Akiflow` 的 inbox->calendar 承接、`Fellow` 的 meeting-to-action carry forward、`15Five` 的 check-in -> manager intervention；最应避免的是把益语拉回普通任务软件、单纯仪表盘、长篇 AI 报告页或重流程管理后台。
+  - 已同步将 Session 002 的讨论摘要写入 `docs/virtual-team/working-session-log.md`。
+## 2026-03-25 Session 002
+
+- 新增目录：
+  - `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/session-002`
+- 新增文档：
+  - `task-calendar-human-workflows-and-frictions.md`
+  - `task-calendar-benchmark-round1.md`
+  - `task-calendar-synthesis.md`
+- 结论：
+  - 当前“日历与任务判断系统”最需要修的，不是再扩一层 AI 分析页，而是把 `事实 -> 判断 -> 动作` 的页面骨架和节奏重新排清。
+  - Workflow A 收口到：关键工作流、交互阻力、信任阻力、信号到交互映射、页面骨架建议。
+  - Workflow B 收口到：外部成熟模式中可借的是节奏、carry-forward、manager intervention、adoption 与模板；不应误抄普通任务软件、纯时间优化器和长报告式 AI 页面。
+  - Session 002 的总收口文档已明确下一轮 P0 范围：
+    - 顶部判断状态条
+    - 未纳入判断 / 降级处理区
+    - 角色排序分离
+    - 日历信号前置
+    - 动作卡闭环
+
+## 2026-03-25 Session 003
+
+- 新增目录：
+  - `/Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench/docs/session-003`
+- 新增文档：
+  - `task-calendar-p0-implementation-spec.md`
+  - `task-calendar-judgment-contract.md`
+  - `task-calendar-release-gates.md`
+- 收口结论：
+  - P0 只处理首屏骨架、角色排序、降级区、日历信号条、动作卡闭环
+  - 不新增 judgment 真源
+  - 任务详情 AI 面板与周判断必须共享同一条 judgment source
+  - `TaskOrgContextPanel` 中前端 heuristics 只能保留为 fallback
+- 2026-03-25：继续把 Session 003 从占位稿重写成对象/字段/接口级别的 P0 judgment/data 实施规格：
+  - 重写 `docs/session-003/task-calendar-judgment-contract.md`
+  - 重写 `docs/session-003/task-calendar-p0-implementation-spec.md`
+  - 重写 `docs/session-003/task-calendar-release-gates.md`
+  - 本轮明确：
+    - P0 共享真源继续使用：
+      - `TaskContextPreviewRecord`
+      - `WeeklyReviewAnalysisRecord`
+      - `EventLineContextBundleRecord`
+      - `EventLineJudgmentRecord`
+      - `EventLineSummaryCardRecord`
+      - `EventLineRiskCardRecord`
+      - `EventLineOpportunityCardRecord`
+      - `EventLineCompletenessRecord`
+      - `TrendSignalRecord`
+      - `ReviewActionCardRecord`
+      - `ReviewDashboardDrillTargetResponse`
+    - 只允许新增 transport-only projection：
+      - `GET /api/v1/tasks/judgment-workspace`
+    - `TaskOrgContextPanel.tsx` 中以下前端 heuristics 必须降级为 fallback-only：
+      - `inferTaskMode`
+      - `inferBusinessCategory`
+      - `buildModeFocus`
+      - `buildModeRisk`
+      - `buildModeOpportunity`
+      - `buildModeAction`
+      - `buildContextRisk`
+      - `buildOpportunity`
+      - `buildInsights`
+    - `ReviewDashboardCardTarget.targetType` 前端已支持 `task`，但 backend `/api/v1/reviews/dashboard/drill-target` 仍未支持 `task`；这被确认为 P0 blocker，必须先补。
+    - calendar signal bar 的“已上历”口径必须复用 `TaskCalendarView.tsx` 当前真实规则：
+      - 只有 `dueDate` 带具体时间块的任务，才算真正进入日历承接
+      - 只有日期、没有时间的任务，只能算“挂日期未时间承接”
+    - 动作卡 P0 只优先闭环三类动作：
+      - `task`
+      - `support_request`
+      - `meeting`
+
+## 2026-03-25 历史复盘弹层交互修正
+- 把 ReviewHistoryPicker 从“整屏绝对 button 背景 + dialog”改成标准 overlay 容器：仅在点击真正遮罩空白处时关闭，避免打开按钮点击与遮罩关闭竞争，导致用户感觉按钮没反应。
+- 位置：src/renderer/components/tasks/ReviewHistoryPicker.tsx

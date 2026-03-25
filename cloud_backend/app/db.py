@@ -1,0 +1,847 @@
+from __future__ import annotations
+
+import json
+import shutil
+import sqlite3
+import threading
+from pathlib import Path
+
+
+class Database:
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self.conn.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                PRAGMA foreign_keys=ON;
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS organizations (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS employee_accounts (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    full_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    primary_role TEXT NOT NULL,
+                    account_status TEXT NOT NULL,
+                    approved_at TEXT,
+                    approved_by TEXT,
+                    rejected_reason TEXT,
+                    disabled_at TEXT,
+                    recent_mentions_json TEXT NOT NULL DEFAULT '[]',
+                    last_login_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(approved_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS employee_role_bindings (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, role),
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS auth_refresh_sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    refresh_token TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS auth_audit_logs (
+                    id TEXT PRIMARY KEY,
+                    actor_user_id TEXT,
+                    target_user_id TEXT,
+                    action TEXT NOT NULL,
+                    detail_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(actor_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(target_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS feishu_binding_relay_sessions (
+                    state_token TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    code TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    authorized_at TEXT,
+                    cleared_at TEXT,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS task_lists (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    color TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    archived_at TEXT,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS task_tag_library (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'org',
+                    color TEXT NOT NULL DEFAULT '#5B7BFE',
+                    owner_user_id TEXT NOT NULL DEFAULT '',
+                    created_by TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    archived_at TEXT,
+                    UNIQUE(organization_id, scope, owner_user_id, name),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS task_settings (
+                    user_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    default_list_id TEXT,
+                    default_priority TEXT NOT NULL DEFAULT 'normal',
+                    default_due_date_preset TEXT NOT NULL DEFAULT 'today',
+                    default_view_mode TEXT NOT NULL DEFAULT 'list',
+                    list_sort_mode TEXT NOT NULL DEFAULT 'manual',
+                    show_completed_tasks INTEGER NOT NULL DEFAULT 0,
+                    default_review_scope TEXT NOT NULL DEFAULT 'work',
+                    auto_assign_self INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(default_list_id) REFERENCES task_lists(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS task_views (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'custom',
+                    description TEXT NOT NULL DEFAULT '',
+                    calendar_scope TEXT NOT NULL DEFAULT 'all',
+                    shareability TEXT NOT NULL DEFAULT 'private',
+                    sort_by TEXT NOT NULL DEFAULT 'updatedAt',
+                    sort_direction TEXT NOT NULL DEFAULT 'desc',
+                    visible_fields_json TEXT NOT NULL DEFAULT '[]',
+                    filter_set_json TEXT NOT NULL DEFAULT '{}',
+                    built_in INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_views_org_kind
+                    ON task_views(organization_id, kind, built_in, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    creator_id TEXT NOT NULL,
+                    owner_id TEXT,
+                    due_date TEXT,
+                    duration_minutes INTEGER NOT NULL DEFAULT 60,
+                    scope_mode TEXT NOT NULL DEFAULT 'COLLAB_SHARED',
+                    business_category TEXT,
+                    current_blocker TEXT,
+                    next_action TEXT,
+                    recent_decision TEXT,
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    priority TEXT NOT NULL,
+                    list_id TEXT NOT NULL,
+                    progress_status TEXT NOT NULL DEFAULT 'todo',
+                    source_type TEXT NOT NULL,
+                    source_id TEXT,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    tag_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(creator_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(owner_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE RESTRICT
+                );
+
+                CREATE TABLE IF NOT EXISTS task_collaborators (
+                    task_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    order_index INTEGER NOT NULL,
+                    is_owner INTEGER NOT NULL DEFAULT 0,
+                    inbox_status TEXT NOT NULL,
+                    return_reason TEXT,
+                    handled_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (task_id, user_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS mention_history (
+                    actor_id TEXT NOT NULL,
+                    mentioned_user_id TEXT NOT NULL,
+                    use_count INTEGER NOT NULL DEFAULT 1,
+                    last_mentioned_at TEXT NOT NULL,
+                    PRIMARY KEY (actor_id, mentioned_user_id),
+                    FOREIGN KEY(actor_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(mentioned_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS task_activity_events (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(actor_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS event_lines (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'custom',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    business_category TEXT,
+                    stage TEXT,
+                    summary TEXT,
+                    intent TEXT,
+                    current_blocker TEXT,
+                    recent_decision TEXT,
+                    next_step TEXT,
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    owner_id TEXT,
+                    primary_client_id TEXT,
+                    primary_client_name TEXT,
+                    primary_department_id TEXT,
+                    participant_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(owner_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS event_line_activities (
+                    id TEXT PRIMARY KEY,
+                    event_line_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    happened_at TEXT NOT NULL,
+                    actor_id TEXT,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
+                    FOREIGN KEY(actor_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_units (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    name TEXT NOT NULL,
+                    unit_type TEXT NOT NULL,
+                    leader_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(parent_id) REFERENCES org_units(id) ON DELETE SET NULL,
+                    FOREIGN KEY(leader_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS reporting_lines (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    manager_user_id TEXT NOT NULL,
+                    report_user_id TEXT NOT NULL,
+                    relationship_type TEXT NOT NULL,
+                    effective_from TEXT NOT NULL,
+                    effective_to TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(manager_user_id, report_user_id, relationship_type),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(manager_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(report_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS plan_nodes (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    owner_user_id TEXT,
+                    owner_unit_id TEXT,
+                    level TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    starts_at TEXT,
+                    ends_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(owner_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(owner_unit_id) REFERENCES org_units(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_profiles (
+                    organization_id TEXT PRIMARY KEY,
+                    annual_goal TEXT NOT NULL DEFAULT '',
+                    annual_strategy_year TEXT NOT NULL DEFAULT '',
+                    annual_strategy_text TEXT NOT NULL DEFAULT '',
+                    quarter_plans_json TEXT NOT NULL DEFAULT '[]',
+                    quarterly_focus_json TEXT NOT NULL DEFAULT '[]',
+                    leader_user_id TEXT,
+                    management_user_ids_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(leader_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_departments (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    color TEXT NOT NULL DEFAULT '#5B7BFE',
+                    leader_user_id TEXT,
+                    parent_department_id TEXT,
+                    mission TEXT NOT NULL DEFAULT '',
+                    business_context TEXT NOT NULL DEFAULT '',
+                    team_context TEXT NOT NULL DEFAULT '',
+                    quarter_plan_json TEXT NOT NULL DEFAULT '{}',
+                    quarterly_focus_json TEXT NOT NULL DEFAULT '[]',
+                    collaboration_department_ids_json TEXT NOT NULL DEFAULT '[]',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(leader_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(parent_department_id) REFERENCES org_departments(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_role_templates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_id TEXT,
+                    name TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    manager_role_id TEXT,
+                    is_manager INTEGER NOT NULL DEFAULT 0,
+                    goal TEXT NOT NULL DEFAULT '',
+                    responsibilities_json TEXT NOT NULL DEFAULT '[]',
+                    should_avoid_json TEXT NOT NULL DEFAULT '[]',
+                    collaboration_role_ids_json TEXT NOT NULL DEFAULT '[]',
+                    task_edit_scope TEXT NOT NULL DEFAULT 'self',
+                    can_approve_tasks INTEGER NOT NULL DEFAULT 0,
+                    can_reassign_tasks INTEGER NOT NULL DEFAULT 0,
+                    can_change_deadline INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
+                    FOREIGN KEY(manager_role_id) REFERENCES org_role_templates(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_employee_role_bindings (
+                    user_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_id TEXT,
+                    primary_role_id TEXT,
+                    manager_user_id TEXT,
+                    is_manager INTEGER NOT NULL DEFAULT 0,
+                    project_role_labels_json TEXT NOT NULL DEFAULT '[]',
+                    current_focus TEXT NOT NULL DEFAULT '',
+                    task_edit_scope TEXT NOT NULL DEFAULT 'self',
+                    can_approve_tasks INTEGER NOT NULL DEFAULT 0,
+                    can_reassign_tasks INTEGER NOT NULL DEFAULT 0,
+                    can_change_deadline INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
+                    FOREIGN KEY(primary_role_id) REFERENCES org_role_templates(id) ON DELETE SET NULL,
+                    FOREIGN KEY(manager_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_reporting_lines (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    manager_user_id TEXT NOT NULL,
+                    report_user_id TEXT NOT NULL,
+                    line_type TEXT NOT NULL DEFAULT 'business',
+                    approves_tasks INTEGER NOT NULL DEFAULT 0,
+                    can_adjust_tasks INTEGER NOT NULL DEFAULT 0,
+                    can_change_deadline INTEGER NOT NULL DEFAULT 0,
+                    can_reassign_tasks INTEGER NOT NULL DEFAULT 0,
+                    is_cross_department_approver INTEGER NOT NULL DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, manager_user_id, report_user_id, line_type),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(manager_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(report_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS org_task_control_rules (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    control_level TEXT NOT NULL DEFAULT 'normal',
+                    department_id TEXT,
+                    role_template_id TEXT,
+                    content_editable_by TEXT NOT NULL DEFAULT 'assignee',
+                    deadline_editable_by TEXT NOT NULL DEFAULT 'manager',
+                    owner_editable_by TEXT NOT NULL DEFAULT 'manager',
+                    cancellable_by TEXT NOT NULL DEFAULT 'manager',
+                    require_collab_confirmation INTEGER NOT NULL DEFAULT 0,
+                    default_approver_user_id TEXT,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
+                    FOREIGN KEY(role_template_id) REFERENCES org_role_templates(id) ON DELETE SET NULL,
+                    FOREIGN KEY(default_approver_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_role_process_templates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    role_template_id TEXT,
+                    name TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL DEFAULT 'manual',
+                    trigger_condition TEXT NOT NULL DEFAULT '',
+                    key_steps_json TEXT NOT NULL DEFAULT '[]',
+                    collaboration_step TEXT NOT NULL DEFAULT '',
+                    approval_step TEXT NOT NULL DEFAULT '',
+                    output_artifact TEXT NOT NULL DEFAULT '',
+                    common_blockers_json TEXT NOT NULL DEFAULT '[]',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(role_template_id) REFERENCES org_role_templates(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_focus_items (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    period_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    statement TEXT NOT NULL DEFAULT '',
+                    owner_user_id TEXT,
+                    priority TEXT NOT NULL DEFAULT 'medium',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    evidence_keywords_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(owner_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_department_plans (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_id TEXT,
+                    week_label TEXT NOT NULL,
+                    owner_user_id TEXT,
+                    summary TEXT NOT NULL DEFAULT '',
+                    major_risks_json TEXT NOT NULL DEFAULT '[]',
+                    dependencies_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
+                    FOREIGN KEY(owner_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_org_department_plans_department_week
+                    ON org_department_plans(organization_id, department_id, week_label);
+
+                CREATE TABLE IF NOT EXISTS org_department_plan_items (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    focus_item_id TEXT,
+                    title TEXT NOT NULL,
+                    statement TEXT NOT NULL DEFAULT '',
+                    owner_user_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    expected_output TEXT NOT NULL DEFAULT '',
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(plan_id) REFERENCES org_department_plans(id) ON DELETE CASCADE,
+                    FOREIGN KEY(focus_item_id) REFERENCES org_focus_items(id) ON DELETE SET NULL,
+                    FOREIGN KEY(owner_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS task_plan_links (
+                    task_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_plan_item_id TEXT,
+                    focus_item_id TEXT,
+                    linked_by TEXT NOT NULL DEFAULT 'ai',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_plan_item_id) REFERENCES org_department_plan_items(id) ON DELETE SET NULL,
+                    FOREIGN KEY(focus_item_id) REFERENCES org_focus_items(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS support_requests (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    task_id TEXT,
+                    requester_user_id TEXT NOT NULL,
+                    target_scope TEXT NOT NULL,
+                    target_ref_id TEXT,
+                    request_type TEXT NOT NULL,
+                    urgency TEXT NOT NULL DEFAULT 'medium',
+                    summary TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    resolution_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+                    FOREIGN KEY(requester_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS task_org_links (
+                    task_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_id TEXT,
+                    role_template_id TEXT,
+                    organization_focus_key TEXT,
+                    department_focus_key TEXT,
+                    is_cross_department INTEGER NOT NULL DEFAULT 0,
+                    approval_state TEXT NOT NULL DEFAULT 'none',
+                    blocked_at_step TEXT,
+                    control_rule_id TEXT,
+                    needs_review INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(department_id) REFERENCES org_departments(id) ON DELETE SET NULL,
+                    FOREIGN KEY(role_template_id) REFERENCES org_role_templates(id) ON DELETE SET NULL,
+                    FOREIGN KEY(control_rule_id) REFERENCES org_task_control_rules(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS weekly_review_entries (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    week_label TEXT NOT NULL,
+                    work_progress TEXT NOT NULL,
+                    work_blocker TEXT NOT NULL,
+                    blocker_type TEXT NOT NULL,
+                    work_direction TEXT NOT NULL,
+                    next_week_focus TEXT NOT NULL,
+                    support_needed TEXT NOT NULL,
+                    related_plan_ids_json TEXT NOT NULL DEFAULT '[]',
+                    work_free_note TEXT NOT NULL DEFAULT '',
+                    personal_growth_note TEXT NOT NULL DEFAULT '',
+                    personal_private_note TEXT NOT NULL DEFAULT '',
+                    personal_visibility TEXT NOT NULL DEFAULT 'self',
+                    submitted_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(user_id, week_label),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS weekly_review_sections (
+                    id TEXT PRIMARY KEY,
+                    review_id TEXT NOT NULL,
+                    section_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_domain TEXT NOT NULL,
+                    visibility_scope TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(review_id) REFERENCES weekly_review_entries(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS weekly_review_task_entries (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    review_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    week_label TEXT NOT NULL,
+                    content_domain TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    structured_note_json TEXT NOT NULL DEFAULT '{}',
+                    reviewed_at TEXT NOT NULL,
+                    task_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(review_id, task_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(review_id) REFERENCES weekly_review_entries(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS management_signal_cards (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    review_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    week_label TEXT NOT NULL,
+                    content_domain TEXT NOT NULL DEFAULT 'work',
+                    visibility_scope TEXT NOT NULL DEFAULT 'team',
+                    eligible_for_aggregation INTEGER NOT NULL DEFAULT 1,
+                    eligible_for_manager_retrieval INTEGER NOT NULL DEFAULT 1,
+                    signal_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(review_id, user_id, week_label),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(review_id) REFERENCES weekly_review_entries(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS personal_growth_cards (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    review_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    content_domain TEXT NOT NULL DEFAULT 'personal',
+                    visibility_scope TEXT NOT NULL DEFAULT 'self',
+                    eligible_for_aggregation INTEGER NOT NULL DEFAULT 0,
+                    eligible_for_manager_retrieval INTEGER NOT NULL DEFAULT 0,
+                    summary_json TEXT NOT NULL,
+                    suggestions_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(review_id, user_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(review_id) REFERENCES weekly_review_entries(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS aggregated_scope_reports (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_ref_id TEXT NOT NULL,
+                    week_label TEXT NOT NULL,
+                    logic_mode TEXT NOT NULL,
+                    summary_json TEXT NOT NULL,
+                    source_policy_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_ref_id, week_label, logic_mode),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS report_action_cards (
+                    id TEXT PRIMARY KEY,
+                    report_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(report_id) REFERENCES aggregated_scope_reports(id) ON DELETE CASCADE
+                );
+                """
+            )
+            self._migrate_task_tag_library_schema()
+            self._ensure_column("employee_accounts", "department_id", "TEXT")
+            self._ensure_column("employee_accounts", "department_name", "TEXT")
+            self._ensure_column("employee_accounts", "job_title", "TEXT")
+            self._ensure_column("employee_accounts", "manager_name", "TEXT")
+            self._ensure_column("employee_accounts", "current_focus", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("employee_accounts", "is_department_lead", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("tasks", "project_module_id", "TEXT")
+            self._ensure_column("tasks", "project_flow_id", "TEXT")
+            self._ensure_column("task_tag_library", "scope", "TEXT NOT NULL DEFAULT 'org'")
+            self._ensure_column("task_tag_library", "color", "TEXT NOT NULL DEFAULT '#5B7BFE'")
+            self._ensure_column("task_tag_library", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tag_library", "created_by", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tag_library", "updated_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tag_library", "archived_at", "TEXT")
+            self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("task_lists", "archived_at", "TEXT")
+            self._ensure_column("org_profiles", "annual_strategy_year", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_profiles", "annual_strategy_text", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_profiles", "quarter_plans_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("org_departments", "business_context", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_departments", "team_context", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_departments", "quarter_plan_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("weekly_review_task_entries", "structured_note_json", "TEXT NOT NULL DEFAULT '{}'")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_settings (
+                    user_id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    default_list_id TEXT,
+                    default_priority TEXT NOT NULL DEFAULT 'normal',
+                    default_due_date_preset TEXT NOT NULL DEFAULT 'today',
+                    default_view_mode TEXT NOT NULL DEFAULT 'list',
+                    list_sort_mode TEXT NOT NULL DEFAULT 'manual',
+                    show_completed_tasks INTEGER NOT NULL DEFAULT 0,
+                    default_review_scope TEXT NOT NULL DEFAULT 'work',
+                    auto_assign_self INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(default_list_id) REFERENCES task_lists(id) ON DELETE SET NULL
+                );
+                """
+            )
+            self.conn.execute(
+                "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
+            )
+            self._ensure_column("tasks", "client_id", "TEXT")
+            self._ensure_column("tasks", "duration_minutes", "INTEGER NOT NULL DEFAULT 60")
+            self._ensure_column("tasks", "scope_mode", "TEXT NOT NULL DEFAULT 'COLLAB_SHARED'")
+            self._ensure_column("tasks", "event_line_id", "TEXT")
+            self._ensure_column("tasks", "business_category", "TEXT")
+            self._ensure_column("tasks", "current_blocker", "TEXT")
+            self._ensure_column("tasks", "next_action", "TEXT")
+            self._ensure_column("tasks", "recent_decision", "TEXT")
+            self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("event_lines", "business_category", "TEXT")
+            self._ensure_column("event_lines", "current_blocker", "TEXT")
+            self._ensure_column("event_lines", "recent_decision", "TEXT")
+            self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("event_lines", "primary_client_name", "TEXT")
+            self.conn.commit()
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self.conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+
+    def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
+        if column_name in self._table_columns(table_name):
+            return
+        self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _migrate_task_tag_library_schema(self) -> None:
+        columns = self._table_columns("task_tag_library")
+        if {"scope", "owner_user_id", "updated_at"}.issubset(columns):
+            return
+        self.conn.execute("ALTER TABLE task_tag_library RENAME TO task_tag_library_legacy")
+        self.conn.executescript(
+            """
+            CREATE TABLE task_tag_library (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'org',
+                owner_user_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                UNIQUE(organization_id, scope, owner_user_id, name),
+                FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+            );
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO task_tag_library(id, organization_id, name, scope, owner_user_id, created_at, updated_at)
+            SELECT id, organization_id, name, 'org', '', created_at, created_at
+            FROM task_tag_library_legacy
+            """
+        )
+        self.conn.execute("DROP TABLE task_tag_library_legacy")
+
+    def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            cur = self.conn.execute(query, params)
+            return cur.fetchone()
+
+    def fetchall(self, query: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            cur = self.conn.execute(query, params)
+            return cur.fetchall()
+
+    def execute(self, query: str, params: tuple = ()) -> None:
+        with self._lock:
+            self.conn.execute(query, params)
+            self.conn.commit()
+
+    def executemany(self, query: str, params: list[tuple]) -> None:
+        with self._lock:
+            self.conn.executemany(query, params)
+            self.conn.commit()
+
+    def executescript(self, script: str) -> None:
+        with self._lock:
+            self.conn.executescript(script)
+            self.conn.commit()
+
+    def scalar(self, query: str, params: tuple = ()) -> int:
+        row = self.fetchone(query, params)
+        if not row:
+            return 0
+        first_key = row.keys()[0]
+        value = row[first_key]
+        if value is None:
+            return 0
+        return int(value)
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.execute(
+            """
+            INSERT INTO settings(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        row = self.fetchone("SELECT value FROM settings WHERE key = ?", (key,))
+        return str(row["value"]) if row else default
+
+    def backup_to(self, target_path: Path) -> Path:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self.conn.commit()
+            shutil.copy2(self.db_path, target_path)
+        return target_path
+
+
+def to_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def from_json(value: str | None, default: object) -> object:
+    if not value:
+        return default
+    return json.loads(value)
