@@ -5,7 +5,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
-import type { BettaFishSignal, DiagnosisEngineHealth, ExternalDiagnosisRequest } from '../shared/types.js';
+import type {
+  BettaFishSignal,
+  CommitAndPushToMainPayload,
+  DiagnosisEngineHealth,
+  ExternalDiagnosisRequest,
+  PullSelectedFromMainPayload,
+} from '../shared/types.js';
+import {
+  commitAndPushToMain,
+  findSuggestedCollabRepoPath,
+  getCollabRepoStatus,
+  previewPullFromMain,
+  previewPushToMain,
+  pullSelectedFromMain,
+} from './collabGit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BACKEND_PORT = 47829;
@@ -20,6 +34,7 @@ const releaseArtifactsPath = path.join(projectRoot, 'dist');
 const fixedUserDataPath = path.join(app.getPath('appData'), 'YiyuThinkTankWorkbench');
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
 const electronLaunchLogPath = path.join(runtimeLogsDir, 'electron-launch.log');
+const collabRebuildLogPath = path.join(runtimeLogsDir, 'collab-rebuild.log');
 const emergencyBootstrapLogPath = '/tmp/yiyu-thinktank-electron-bootstrap.log';
 app.setName(APP_DISPLAY_NAME);
 app.setPath('userData', fixedUserDataPath);
@@ -94,6 +109,15 @@ function logElectronInfo(message: string) {
 function logElectronError(message: string) {
   console.error(message);
   appendElectronLaunchLog('ERROR', message);
+}
+
+function getCollabSuggestedCandidates() {
+  return [
+    projectRoot,
+    path.join(app.getPath('documents'), 'yiyu-thinktank-workbench'),
+    path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench'),
+    path.join(app.getPath('home'), 'Documents', 'yiyu-thinktank-workbench'),
+  ];
 }
 
 function resolveBundlePath(executablePath: string) {
@@ -1676,6 +1700,74 @@ ipcMain.handle('yiyu-workbench:selectFolder', async () => {
     properties: ['openDirectory'],
   });
   return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('yiyu-workbench:selectCollabRepo', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择源码仓库目录',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const repoPath = await findSuggestedCollabRepoPath([result.filePaths[0]]);
+  if (!repoPath) {
+    throw new Error('你选中的目录不是 Git 源码仓库，请重新选择。');
+  }
+  return repoPath;
+});
+
+ipcMain.handle('yiyu-workbench:getCollabRepoStatus', async (_event, repoPath?: string | null) => {
+  return getCollabRepoStatus({
+    repoPath,
+    suggestedCandidates: getCollabSuggestedCandidates(),
+    appDbPath: path.join(app.getPath('userData'), 'app.db'),
+  });
+});
+
+ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: string) => {
+  return previewPushToMain({
+    repoPath,
+    suggestedCandidates: getCollabSuggestedCandidates(),
+    appDbPath: path.join(app.getPath('userData'), 'app.db'),
+  });
+});
+
+ipcMain.handle('yiyu-workbench:commitAndPushToMain', async (_event, payload: CommitAndPushToMainPayload) => {
+  return commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+});
+
+ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string) => {
+  return previewPullFromMain({
+    repoPath,
+    suggestedCandidates: getCollabSuggestedCandidates(),
+    appDbPath: path.join(app.getPath('userData'), 'app.db'),
+  });
+});
+
+ipcMain.handle('yiyu-workbench:pullSelectedFromMain', async (_event, payload: PullSelectedFromMainPayload) => {
+  return pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+});
+
+ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPath: string) => {
+  const normalizedRepoPath = path.resolve(repoPath);
+  const rebuildCommand = [
+    `cd ${JSON.stringify(normalizedRepoPath)}`,
+    `mkdir -p ${JSON.stringify(runtimeLogsDir)}`,
+    `npm run dist:mac-local >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
+    `npm run install:mac-local >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
+    `node scripts/open-installed-app.mjs >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
+  ].join(' && ');
+  fs.mkdirSync(runtimeLogsDir, { recursive: true });
+  fs.appendFileSync(collabRebuildLogPath, `\n[${new Date().toISOString()}] start rebuild from ${normalizedRepoPath}\n`, 'utf8');
+  const child = spawn('zsh', ['-lc', rebuildCommand], {
+    cwd: normalizedRepoPath,
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  setTimeout(() => {
+    app.quit();
+  }, 300);
+  return true;
 });
 
 ipcMain.handle('yiyu-workbench:readTextFile', async (_event, targetPath: string) => {

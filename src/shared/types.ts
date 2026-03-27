@@ -3201,11 +3201,121 @@ export interface DesktopAppInfo {
   legacyAppPaths: string[];
 }
 
+export type CollabChangeGroupKey =
+  | 'shared_settings'
+  | 'renderer'
+  | 'desktop_shell'
+  | 'local_backend'
+  | 'cloud_backend'
+  | 'scripts_docs'
+  | 'other';
+
+export type CollabFileChangeType = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+
+export type CollabConflictRiskKind = 'overlap' | 'unmerged' | 'binary' | 'rename' | 'delete_replace';
+
+export interface CollabConflictRisk {
+  kind: CollabConflictRiskKind;
+  message: string;
+}
+
+export interface CollabFileChange {
+  path: string;
+  previousPath?: string | null;
+  type: CollabFileChangeType;
+  groupKey: CollabChangeGroupKey;
+  groupLabel: string;
+  summary: string;
+  risk?: CollabConflictRisk | null;
+}
+
+export interface CollabChangeGroup {
+  key: CollabChangeGroupKey;
+  label: string;
+  fileCount: number;
+}
+
+export type CollabEffectVisibility = 'visible' | 'mixed' | 'background';
+
+export interface CollabEffectPreview {
+  id: string;
+  title: string;
+  summary: string;
+  visibility: CollabEffectVisibility;
+  scopeLabel: string;
+  details: string[];
+  relatedPaths: string[];
+  beforeLabel?: string | null;
+  afterLabel?: string | null;
+  beforeImageDataUrl?: string | null;
+  afterImageDataUrl?: string | null;
+}
+
+export interface CollabRepoStatus {
+  repoPath: string | null;
+  repoName: string | null;
+  suggestedRepoPath?: string | null;
+  isConfigured: boolean;
+  isValid: boolean;
+  branch: string | null;
+  isMainBranch: boolean;
+  hasLocalChanges: boolean;
+  hasUnmergedPaths: boolean;
+  aheadCount: number;
+  behindCount: number;
+  localChangeCount: number;
+  remoteChangeCount: number;
+  statusText: string;
+}
+
+export interface PushPreview {
+  status: CollabRepoStatus;
+  suggestedMessage: string;
+  effects: CollabEffectPreview[];
+  groups: CollabChangeGroup[];
+  files: CollabFileChange[];
+  notice?: string | null;
+  executionBlockReason?: string | null;
+}
+
+export interface PullPreview {
+  status: CollabRepoStatus;
+  suggestedMessage: string;
+  commitSummaries: string[];
+  effects: CollabEffectPreview[];
+  groups: CollabChangeGroup[];
+  files: CollabFileChange[];
+  notice?: string | null;
+  executionBlockReason?: string | null;
+}
+
+export interface CommitAndPushToMainPayload {
+  repoPath: string;
+  selectedPaths: string[];
+  confirmedRiskPaths: string[];
+  message: string;
+}
+
+export interface PullSelectedFromMainPayload {
+  repoPath: string;
+  selectedPaths: string[];
+  confirmedRiskPaths: string[];
+  message: string;
+}
+
+export interface CollabActionResult {
+  status: CollabRepoStatus;
+  changedPaths: string[];
+  createdCommit: boolean;
+  commitMessage?: string | null;
+}
+
 declare global {
   interface Window {
     __YIYU_TEST_DIALOGS__?: {
       selectFiles?: () => Promise<string[]>;
       selectFolder?: () => Promise<string | null>;
+      selectCollabRepo?: () => Promise<string | null>;
       openPath?: (targetPath: string) => Promise<boolean>;
       revealInFinder?: (targetPath: string) => Promise<boolean>;
       saveFileAs?: (sourcePath: string, suggestedName?: string) => Promise<string | null>;
@@ -3215,6 +3325,13 @@ declare global {
       getDesktopAppInfo(): Promise<DesktopAppInfo>;
       selectFiles(): Promise<string[]>;
       selectFolder(): Promise<string | null>;
+      selectCollabRepo(): Promise<string | null>;
+      getCollabRepoStatus(repoPath?: string | null): Promise<CollabRepoStatus>;
+      previewPushToMain(repoPath: string): Promise<PushPreview>;
+      commitAndPushToMain(payload: CommitAndPushToMainPayload): Promise<CollabActionResult>;
+      previewPullFromMain(repoPath: string): Promise<PullPreview>;
+      pullSelectedFromMain(payload: PullSelectedFromMainPayload): Promise<CollabActionResult>;
+      rebuildAndInstallFromRepo(repoPath: string): Promise<boolean>;
       getDroppedFilePath(file: File): string | null;
       readTextFile(targetPath: string): Promise<string>;
       openPath(targetPath: string): Promise<boolean>;

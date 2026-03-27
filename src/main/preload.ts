@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { BettaFishSignal, DesktopAppInfo, DiagnosisEngineHealth, ExternalDiagnosisRequest } from '../shared/types.js';
+import type {
+  BettaFishSignal,
+  CollabActionResult,
+  CollabRepoStatus,
+  CommitAndPushToMainPayload,
+  DesktopAppInfo,
+  DiagnosisEngineHealth,
+  ExternalDiagnosisRequest,
+  PullPreview,
+  PullSelectedFromMainPayload,
+  PushPreview,
+} from '../shared/types.js';
 
 const backendBaseUrl = process.env.YIYU_BACKEND_URL ?? 'http://127.0.0.1:47829';
 
@@ -8,6 +19,19 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   getDesktopAppInfo: (): Promise<DesktopAppInfo> => ipcRenderer.invoke('yiyu-workbench:getDesktopAppInfo'),
   selectFiles: (): Promise<string[]> => ipcRenderer.invoke('yiyu-workbench:selectFiles'),
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('yiyu-workbench:selectFolder'),
+  selectCollabRepo: (): Promise<string | null> => ipcRenderer.invoke('yiyu-workbench:selectCollabRepo'),
+  getCollabRepoStatus: (repoPath?: string | null): Promise<CollabRepoStatus> =>
+    ipcRenderer.invoke('yiyu-workbench:getCollabRepoStatus', repoPath),
+  previewPushToMain: (repoPath: string): Promise<PushPreview> =>
+    ipcRenderer.invoke('yiyu-workbench:previewPushToMain', repoPath),
+  commitAndPushToMain: (payload: CommitAndPushToMainPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:commitAndPushToMain', payload),
+  previewPullFromMain: (repoPath: string): Promise<PullPreview> =>
+    ipcRenderer.invoke('yiyu-workbench:previewPullFromMain', repoPath),
+  pullSelectedFromMain: (payload: PullSelectedFromMainPayload): Promise<CollabActionResult> =>
+    ipcRenderer.invoke('yiyu-workbench:pullSelectedFromMain', payload),
+  rebuildAndInstallFromRepo: (repoPath: string): Promise<boolean> =>
+    ipcRenderer.invoke('yiyu-workbench:rebuildAndInstallFromRepo', repoPath),
   getDroppedFilePath: (file: File): string | null => {
     try {
       return webUtils.getPathForFile(file) || null;

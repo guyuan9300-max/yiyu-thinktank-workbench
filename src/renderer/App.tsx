@@ -65,6 +65,9 @@ import type {
   ClientTemplateFillField,
   ClientWorkspace,
   ClientWorkspaceSettings,
+  CollabRepoStatus,
+  PullPreview,
+  PushPreview,
   DepartmentOption,
   DesktopAppInfo,
   EmployeeRecord,
@@ -193,6 +196,7 @@ import {
   getTopics,
   getTopicsSettings,
   getDiagnosisEngineHealth,
+  getCollabRepoStatus,
   generateClientDnaCandidates,
   generateEventLineClarificationDraft,
   importPaths,
@@ -200,12 +204,16 @@ import {
   login,
   ingestMeeting,
   logout,
+  previewPullFromMain,
+  previewPushToMain,
   publishMeeting,
   rejectTask,
+  rebuildAndInstallFromRepo,
   resolveSupportRequest,
   returnTaskReview,
   rebuildClientKnowledge,
   register,
+  commitAndPushToMain,
   rejectEmployeeReview,
   resolveMeeting,
   runAnalysis,
@@ -247,6 +255,8 @@ import {
   startClientTemplateFill,
   getClientTemplateFillRun,
   backfillClientWorkspaceImports,
+  pullSelectedFromMain,
+  selectCollabRepo,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
@@ -274,6 +284,8 @@ import { FundraisingKnowledgeSettingsPanel } from './components/settings/Fundrai
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
+import { CollabPreviewDialog } from './components/collab/CollabDialogs';
+import { CollabSyncCard } from './components/collab/CollabSyncCard';
 
 type TemplateFillStage = 'queued' | 'parsing' | 'retrieving' | 'writing' | 'completed' | 'failed';
 
@@ -355,6 +367,17 @@ type GrowthContextJumpRequest = {
 type EventLineClarificationState = EventLineClarificationDraftResult & {
   transcript: string;
 };
+
+type CollabDialogState =
+  | {
+      mode: 'push';
+      preview: PushPreview;
+    }
+  | {
+      mode: 'pull';
+      preview: PullPreview;
+    }
+  | null;
 
 function buildEventLineClarificationDraft(
   eventLine?: Pick<EventLine, 'summary' | 'stage' | 'intent' | 'currentBlocker' | 'nextStep' | 'recentDecision'> | null,
@@ -504,6 +527,7 @@ const providerDisplayNames = {
   qwen: 'Qwen 3.5',
 } as const;
 
+const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 const REQUIRED_BACKEND_FEATURES = [
   'knowledge.vectorize-answer',
   'knowledge.reclass-events',
@@ -3202,6 +3226,11 @@ function saveFileAsBridge(sourcePath: string, suggestedName?: string) {
   return window.yiyuWorkbench.saveFileAs(sourcePath, suggestedName);
 }
 
+function selectCollabRepoBridge() {
+  if (window.__YIYU_TEST_DIALOGS__?.selectCollabRepo) return window.__YIYU_TEST_DIALOGS__.selectCollabRepo();
+  return selectCollabRepo();
+}
+
 function createUiId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -3213,6 +3242,18 @@ export default function App() {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem('yiyu-sidebar-collapsed') === '1';
   });
+  const [collabRepoPath, setCollabRepoPath] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return window.localStorage.getItem(COLLAB_REPO_PATH_STORAGE_KEY);
+  });
+  const [collabStatus, setCollabStatus] = useState<CollabRepoStatus | null>(null);
+  const [isCollabStatusLoading, setIsCollabStatusLoading] = useState(false);
+  const [collabBusyAction, setCollabBusyAction] = useState<'push' | 'pull' | 'rebuild' | null>(null);
+  const [collabDialogState, setCollabDialogState] = useState<CollabDialogState>(null);
+  const [collabSelectedPaths, setCollabSelectedPaths] = useState<string[]>([]);
+  const [collabConfirmedRiskPaths, setCollabConfirmedRiskPaths] = useState<string[]>([]);
+  const [collabCommitMessage, setCollabCommitMessage] = useState('');
+  const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('list');
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
     const [taskSelectedDay, setTaskSelectedDay] = useState(initialTodayState.selectedDay);
@@ -3384,6 +3425,173 @@ export default function App() {
       clearLocalServiceStartupBanner();
     }
   }, [health?.backend, health?.startedAt]);
+
+  async function refreshCollabStatus(nextRepoPath = collabRepoPath) {
+    setIsCollabStatusLoading(true);
+    try {
+      const nextStatus = await getCollabRepoStatus(nextRepoPath);
+      setCollabStatus(nextStatus);
+      if (nextStatus.repoPath && nextStatus.repoPath !== nextRepoPath && nextStatus.isValid) {
+        setCollabRepoPath(nextStatus.repoPath);
+      }
+      return nextStatus;
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '源码仓库状态加载失败');
+      return null;
+    } finally {
+      setIsCollabStatusLoading(false);
+    }
+  }
+
+  function openCollabDialog(state: Exclude<CollabDialogState, null>) {
+    setCollabDialogState(state);
+    setCollabSelectedPaths(state.preview.files.map((file) => file.path));
+    setCollabConfirmedRiskPaths([]);
+    setCollabCommitMessage(state.preview.suggestedMessage);
+    setCollabDialogError(null);
+  }
+
+  async function ensureCollabRepoForAction() {
+    if (collabStatus?.repoPath && collabStatus.isValid) {
+      if (collabStatus.repoPath !== collabRepoPath) {
+        setCollabRepoPath(collabStatus.repoPath);
+      }
+      return collabStatus.repoPath;
+    }
+    if (collabStatus?.suggestedRepoPath) {
+      setCollabRepoPath(collabStatus.suggestedRepoPath);
+      return collabStatus.suggestedRepoPath;
+    }
+    const nextRepoPath = await selectCollabRepoBridge();
+    if (!nextRepoPath) return null;
+    setCollabRepoPath(nextRepoPath);
+    setCollabDialogState(null);
+    setCollabSelectedPaths([]);
+    setCollabConfirmedRiskPaths([]);
+    setCollabCommitMessage('');
+    setCollabDialogError(null);
+    flash('success', '源码目录已绑定，后续协作按钮会围绕这个仓库工作。');
+    return nextRepoPath;
+  }
+
+  async function handlePreviewPush() {
+    const repoPath = await ensureCollabRepoForAction();
+    if (!repoPath) {
+      return;
+    }
+    setCollabBusyAction('push');
+    try {
+      const preview = await previewPushToMain(repoPath);
+      openCollabDialog({ mode: 'push', preview });
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '推送预览失败');
+    } finally {
+      setCollabBusyAction(null);
+    }
+  }
+
+  async function handlePreviewPull() {
+    const repoPath = await ensureCollabRepoForAction();
+    if (!repoPath) {
+      return;
+    }
+    setCollabBusyAction('pull');
+    try {
+      const preview = await previewPullFromMain(repoPath);
+      openCollabDialog({ mode: 'pull', preview });
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '同步预览失败');
+    } finally {
+      setCollabBusyAction(null);
+    }
+  }
+
+  function toggleCollabPath(targetPath: string) {
+    setCollabDialogError(null);
+    setCollabSelectedPaths((prev) => (
+      prev.includes(targetPath) ? prev.filter((item) => item !== targetPath) : [...prev, targetPath]
+    ));
+    setCollabConfirmedRiskPaths((prev) => prev.filter((item) => item !== targetPath));
+  }
+
+  function toggleCollabRisk(targetPath: string) {
+    setCollabDialogError(null);
+    setCollabConfirmedRiskPaths((prev) => (
+      prev.includes(targetPath) ? prev.filter((item) => item !== targetPath) : [...prev, targetPath]
+    ));
+  }
+
+  function toggleCollabEffectPaths(targetPaths: string[]) {
+    setCollabDialogError(null);
+    const nextPaths = Array.from(new Set(targetPaths));
+    if (!nextPaths.length) return;
+    setCollabSelectedPaths((prev) => {
+      const prevSet = new Set(prev);
+      const allSelected = nextPaths.every((targetPath) => prevSet.has(targetPath));
+      if (allSelected) {
+        return prev.filter((targetPath) => !nextPaths.includes(targetPath));
+      }
+      const merged = new Set(prev);
+      nextPaths.forEach((targetPath) => merged.add(targetPath));
+      return Array.from(merged);
+    });
+    setCollabConfirmedRiskPaths((prev) => prev.filter((targetPath) => !nextPaths.includes(targetPath)));
+  }
+
+  async function handleConfirmCollabAction() {
+    if (!collabDialogState) return;
+    const repoPath = collabRepoPath || collabStatus?.repoPath;
+    if (!repoPath) {
+      setCollabDialogError('还没有绑定源码目录。');
+      return;
+    }
+    const mode = collabDialogState.mode;
+    setCollabDialogError(null);
+    setCollabBusyAction(mode);
+    try {
+      if (mode === 'push') {
+        await commitAndPushToMain({
+          repoPath,
+          selectedPaths: collabSelectedPaths,
+          confirmedRiskPaths: collabConfirmedRiskPaths,
+          message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
+        });
+        flash('success', '已提交并推送到 main。');
+      } else {
+        await pullSelectedFromMain({
+          repoPath,
+          selectedPaths: collabSelectedPaths,
+          confirmedRiskPaths: collabConfirmedRiskPaths,
+          message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
+        });
+        flash('success', '已把勾选的 main 修改同步到本地源码。');
+      }
+      setCollabDialogState(null);
+      setCollabSelectedPaths([]);
+      setCollabConfirmedRiskPaths([]);
+      setCollabCommitMessage('');
+      setCollabDialogError(null);
+      await refreshCollabStatus(repoPath);
+      if (mode === 'pull') {
+        await loadSystemAdminSettingsBlock(currentSessionUser?.primaryRole === 'admin');
+        const shouldRebuild = window.confirm('源码已经同步完成。要不要继续自动更新本机安装版？');
+        if (shouldRebuild) {
+          setCollabBusyAction('rebuild');
+          await rebuildAndInstallFromRepo(repoPath);
+        }
+      }
+    } catch (error) {
+      setCollabDialogError(error instanceof Error ? error.message : '协作操作失败');
+      await refreshCollabStatus(repoPath);
+    } finally {
+      setCollabBusyAction(null);
+    }
+  }
+
+  function handleCollabMessageChange(nextValue: string) {
+    setCollabDialogError(null);
+    setCollabCommitMessage(nextValue);
+  }
 
   const openDiagnosisProfileSettings = (groupKey: DiagnosisProfileGroupKey, prefillLabel = '') => {
     setActiveTab('settings');
@@ -3952,6 +4160,18 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem('yiyu-sidebar-collapsed', isSidebarCollapsed ? '1' : '0');
   }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    if (collabRepoPath) {
+      window.localStorage.setItem(COLLAB_REPO_PATH_STORAGE_KEY, collabRepoPath);
+      return;
+    }
+    window.localStorage.removeItem(COLLAB_REPO_PATH_STORAGE_KEY);
+  }, [collabRepoPath]);
+
+  useEffect(() => {
+    void refreshCollabStatus(collabRepoPath);
+  }, [collabRepoPath]);
 
   useEffect(() => {
     if (activeTab !== 'topics_management') return undefined;
@@ -14368,7 +14588,7 @@ export default function App() {
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
       <div className="min-h-screen bg-[#F9FAFB] flex font-sans overflow-hidden text-gray-800 antialiased selection:bg-blue-100 selection:text-[#5B7BFE]">
-      <aside className={`w-[60px] ${isSidebarCollapsed ? 'md:w-[88px]' : 'md:w-[240px]'} bg-white border-r border-gray-100 flex flex-col fixed top-[22px] h-[calc(100vh-22px)] z-20 shrink-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)] transition-[width] duration-300`}>
+      <aside className={`w-[60px] ${isSidebarCollapsed ? 'md:w-[88px]' : 'md:w-[240px]'} bg-white border-r border-gray-100 flex flex-col fixed top-[22px] h-[calc(100vh-22px)] z-20 shrink-0 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.02)] transition-[width] duration-300`}>
         <div className={`px-4 py-6 md:py-7 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-6'}`}>
           <div className={`flex items-center gap-3 md:gap-4 justify-center ${isSidebarCollapsed ? 'md:justify-center' : 'md:justify-start'}`}>
             <BrandLogoMark logoDataUrl={systemAdminSettingsState.brandLogoDataUrl || null} className={`w-8 h-8 ${isSidebarCollapsed ? 'md:w-10 md:h-10' : 'md:w-11 md:h-11'}`} />
@@ -14387,49 +14607,69 @@ export default function App() {
           </div>
         </div>
 
-        <nav className={`flex-1 px-2 mt-2 space-y-2 overflow-visible ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'}`}>
-          {navItems.map((item) => {
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                aria-label={item.label}
-                onClick={() => setActiveTab(item.id)}
-                className={`relative w-full flex items-center justify-center px-2 py-3 md:py-3.5 rounded-2xl text-[14px] transition-all duration-300 font-bold group ${isSidebarCollapsed ? 'md:justify-center md:px-2' : 'md:justify-start md:px-4'} ${isActive ? 'bg-[#5B7BFE]/10 text-[#5B7BFE]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}
-              >
-                <div className="flex items-center gap-3.5 relative">
-                  <item.icon size={20} strokeWidth={isActive ? 2.5 : 2} className={`shrink-0 transition-colors ${isActive ? 'text-[#5B7BFE]' : 'text-gray-400 group-hover:text-gray-700'}`} />
-                  <span className={`${isSidebarCollapsed ? 'hidden' : 'hidden md:block'} truncate tracking-wide`}>{item.label}</span>
-                </div>
-                {isSidebarCollapsed && (
-                  <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-700 shadow-[0_12px_30px_rgba(15,23,42,0.12)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
-                    {item.label}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+          <nav className={`px-2 mt-2 space-y-2 overflow-visible ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'}`}>
+            {navItems.map((item) => {
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-label={item.label}
+                  onClick={() => setActiveTab(item.id)}
+                  className={`relative w-full flex items-center justify-center px-2 py-3 md:py-3.5 rounded-2xl text-[14px] transition-all duration-300 font-bold group ${isSidebarCollapsed ? 'md:justify-center md:px-2' : 'md:justify-start md:px-4'} ${isActive ? 'bg-[#5B7BFE]/10 text-[#5B7BFE]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}
+                >
+                  <div className="flex items-center gap-3.5 relative">
+                    <item.icon size={20} strokeWidth={isActive ? 2.5 : 2} className={`shrink-0 transition-colors ${isActive ? 'text-[#5B7BFE]' : 'text-gray-400 group-hover:text-gray-700'}`} />
+                    <span className={`${isSidebarCollapsed ? 'hidden' : 'hidden md:block'} truncate tracking-wide`}>{item.label}</span>
+                  </div>
+                  {isSidebarCollapsed && (
+                    <span className="pointer-events-none absolute left-full top-1/2 z-30 ml-3 hidden -translate-y-1/2 whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-700 shadow-[0_12px_30px_rgba(15,23,42,0.12)] opacity-0 transition-all duration-200 group-hover:translate-x-1 group-hover:opacity-100 md:block">
+                      {item.label}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
 
-        <div className={`px-4 pb-5 ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>
-          <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">当前登录</p>
-            <p className="text-[13px] font-bold text-gray-800">{currentSessionUser.fullName}</p>
-            <p className="text-[11px] text-gray-500 mt-1">{currentSessionUser.primaryRole} · {settingsState?.aiProvider || 'mock'} · {health?.stats.clients || 0} 客户</p>
-            <button
-              className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
-              onClick={() => {
-                void logout()
-                  .then(async () => {
-                    setAuthState({ authenticated: false });
-                    await loadAll();
-                  })
-                  .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
-              }}
-            >
-              退出登录
-            </button>
+          <CollabSyncCard
+            collapsed={isSidebarCollapsed}
+            status={collabStatus}
+            loading={isCollabStatusLoading}
+            busyAction={collabBusyAction}
+            onRevealRepo={() => {
+              const targetPath = collabStatus?.repoPath || collabRepoPath;
+              if (!targetPath) return;
+              void revealInFinderBridge(targetPath);
+            }}
+            onPreviewPush={() => {
+              void handlePreviewPush();
+            }}
+            onPreviewPull={() => {
+              void handlePreviewPull();
+            }}
+          />
+
+          <div className={`px-4 pb-5 ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>
+            <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">当前登录</p>
+              <p className="text-[13px] font-bold text-gray-800">{currentSessionUser.fullName}</p>
+              <p className="text-[11px] text-gray-500 mt-1">{currentSessionUser.primaryRole} · {settingsState?.aiProvider || 'mock'} · {health?.stats.clients || 0} 客户</p>
+              <button
+                className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
+                onClick={() => {
+                  void logout()
+                    .then(async () => {
+                      setAuthState({ authenticated: false });
+                      await loadAll();
+                    })
+                    .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+                }}
+              >
+                退出登录
+              </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -14443,6 +14683,28 @@ export default function App() {
         <GlobalBannerHost />
         {viewMap[activeTab]}
       </main>
+      <CollabPreviewDialog
+        open={Boolean(collabDialogState)}
+        mode={collabDialogState?.mode || 'push'}
+        preview={collabDialogState?.preview || null}
+        selectedPaths={collabSelectedPaths}
+        confirmedRiskPaths={collabConfirmedRiskPaths}
+        message={collabCommitMessage}
+        errorMessage={collabDialogError}
+        busy={collabBusyAction === 'push' || collabBusyAction === 'pull'}
+        onClose={() => {
+          if (collabBusyAction === 'push' || collabBusyAction === 'pull') return;
+          setCollabDialogState(null);
+          setCollabDialogError(null);
+        }}
+        onTogglePath={toggleCollabPath}
+        onToggleEffectPaths={toggleCollabEffectPaths}
+        onToggleRisk={toggleCollabRisk}
+        onMessageChange={handleCollabMessageChange}
+        onConfirm={() => {
+          void handleConfirmCollabAction();
+        }}
+      />
       </div>
     </GrowthProvider>
   );

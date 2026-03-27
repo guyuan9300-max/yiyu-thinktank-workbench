@@ -126,6 +126,12 @@ import type {
   WeeklyReviewPayload,
   LearningRecommendation,
   ReviewDashboardDrillTargetResponse,
+  CollabActionResult,
+  CollabRepoStatus,
+  CommitAndPushToMainPayload,
+  PullPreview,
+  PullSelectedFromMainPayload,
+  PushPreview,
 } from '../../shared/types';
 
 const baseUrl = window.yiyuWorkbench.backendBaseUrl;
@@ -1172,4 +1178,32 @@ export async function getDiagnosisEngineHealth() {
 
 export async function runBettafishDiagnosis(payload: ExternalDiagnosisRequest) {
   return window.yiyuWorkbench.runBettafishDiagnosis(payload) as Promise<BettaFishSignal>;
+}
+
+export async function selectCollabRepo() {
+  return window.yiyuWorkbench.selectCollabRepo() as Promise<string | null>;
+}
+
+export async function getCollabRepoStatus(repoPath?: string | null) {
+  return window.yiyuWorkbench.getCollabRepoStatus(repoPath) as Promise<CollabRepoStatus>;
+}
+
+export async function previewPushToMain(repoPath: string) {
+  return window.yiyuWorkbench.previewPushToMain(repoPath) as Promise<PushPreview>;
+}
+
+export async function commitAndPushToMain(payload: CommitAndPushToMainPayload) {
+  return window.yiyuWorkbench.commitAndPushToMain(payload) as Promise<CollabActionResult>;
+}
+
+export async function previewPullFromMain(repoPath: string) {
+  return window.yiyuWorkbench.previewPullFromMain(repoPath) as Promise<PullPreview>;
+}
+
+export async function pullSelectedFromMain(payload: PullSelectedFromMainPayload) {
+  return window.yiyuWorkbench.pullSelectedFromMain(payload) as Promise<CollabActionResult>;
+}
+
+export async function rebuildAndInstallFromRepo(repoPath: string) {
+  return window.yiyuWorkbench.rebuildAndInstallFromRepo(repoPath) as Promise<boolean>;
 }
