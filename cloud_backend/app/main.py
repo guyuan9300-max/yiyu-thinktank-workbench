@@ -1727,10 +1727,12 @@ def _ensure_seed_data(state: AppState) -> None:
             bound_user_id = user_id
         else:
             bound_user_id = str(existing["id"])
+            password_hash_override = hash_password(str(secret["password"])) if person.password_locked else None
             db.execute(
                 """
                 UPDATE employee_accounts
-                   SET full_name = ?,
+                   SET password_hash = COALESCE(?, password_hash),
+                       full_name = ?,
                        primary_role = ?,
                        account_status = ?,
                        approved_at = COALESCE(approved_at, ?),
@@ -1738,9 +1740,10 @@ def _ensure_seed_data(state: AppState) -> None:
                        department_id = ?,
                        department_name = ?,
                        updated_at = ?
-                 WHERE id = ?
+                WHERE id = ?
                 """,
                 (
+                    password_hash_override,
                     full_name,
                     primary_role,
                     status_value,

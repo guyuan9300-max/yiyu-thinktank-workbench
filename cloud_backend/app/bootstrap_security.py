@@ -21,6 +21,7 @@ class SeedUser:
     account_status: str
     department_id: str | None
     password: str
+    password_locked: bool = False
 
 
 SEED_USER_SPECS: Final = (
@@ -137,9 +138,11 @@ def resolve_seed_users(data_dir: Path) -> list[SeedUser]:
         email = os.environ.get('YIYU_CLOUD_BOOTSTRAP_ADMIN_EMAIL', '').strip() if spec['user_id'] == 'user_admin' else ''
         email = email or str(spec['email'])
         password = os.environ.get(str(spec['password_env']), '').strip()
+        password_locked = bool(password)
         if not password:
             if insecure_seed_passwords and spec['legacy_password']:
                 password = str(spec['legacy_password'])
+                password_locked = True
             else:
                 stored = password_store.get(str(spec['user_id']), {})
                 stored_password = str(stored.get('password', '')).strip()
@@ -167,6 +170,7 @@ def resolve_seed_users(data_dir: Path) -> list[SeedUser]:
                 account_status=str(spec['account_status']),
                 department_id=str(spec['department_id']) if spec['department_id'] else None,
                 password=password,
+                password_locked=password_locked,
             )
         )
 

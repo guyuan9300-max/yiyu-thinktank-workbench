@@ -85,6 +85,13 @@ let backendRuntimeVenv = '';
 let cloudBackendRuntimeVenv = '';
 let ownsBackendProcess = false;
 let ownsCloudBackendProcess = false;
+const LOCAL_DEV_CLOUD_SEED_ENV = {
+  YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD: process.env.YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD || 'Admin123!',
+  YIYU_CLOUD_GUYUAN_PASSWORD: process.env.YIYU_CLOUD_GUYUAN_PASSWORD || 'Guyuan31',
+  YIYU_CLOUD_QINGHUA_PASSWORD: process.env.YIYU_CLOUD_QINGHUA_PASSWORD || 'Qinghua123!',
+  YIYU_CLOUD_JIANING_PASSWORD: process.env.YIYU_CLOUD_JIANING_PASSWORD || 'Jianing123!',
+  YIYU_CLOUD_YISHUO_PASSWORD: process.env.YIYU_CLOUD_YISHUO_PASSWORD || 'Yishuo123!',
+} satisfies NodeJS.ProcessEnv;
 const diagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, ChildProcessWithoutNullStreams | null>> = {};
 const ownedDiagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, boolean>> = {};
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
@@ -1079,7 +1086,10 @@ function startCloudBackend() {
     args,
     {
       cwd: path.join(projectRoot, 'cloud_backend'),
-      env: backendEnv({ VIRTUAL_ENV: cloudBackendRuntimeVenv }),
+      env: backendEnv({
+        VIRTUAL_ENV: cloudBackendRuntimeVenv,
+        ...LOCAL_DEV_CLOUD_SEED_ENV,
+      }),
     },
   );
   ownsCloudBackendProcess = true;
