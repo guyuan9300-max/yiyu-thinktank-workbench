@@ -18,7 +18,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from docx import Document as WordDocument
@@ -55,6 +55,8 @@ from app.models import (
     ClarificationAnswerPayload,
     ClarificationCreatePayload,
     ClarificationRecord,
+    ConsultationKnowledgeProcessSummaryResponse,
+    ConsultationKnowledgeRequestRecord,
     ClientDnaGeneratePayload,
     ClientDnaModuleRecord,
     ClientDnaModulesResponse,
@@ -149,6 +151,7 @@ from app.models import (
     FeishuReceiveIdType,
     FeishuUserBindingRecord,
     FeishuUserBindingStartResponse,
+    DnaReadinessQuestionRecord,
     EventLineActivityRecord,
     EventLineClarificationDraftPayload,
     EventLineClarificationDraftRecord,
@@ -206,6 +209,7 @@ from app.models import (
     TaskListMutationPayload,
     TaskListRecord,
     MemoryBackfillResultRecord,
+    NarrativeAnalysisRecord,
     TaskNotePayload,
     TaskContextRefreshResultRecord,
     TaskEventLineBootstrapResultRecord,
@@ -345,6 +349,7 @@ from app.services.memory_foundation import (
     refresh_organization_notebook_snapshot,
     sanitize_memory_background_text,
 )
+from app.services.platform_dna import extract_platform_dna_text
 from app.services.template_fill import (
     TemplateWebSource,
     apply_docx_template_values,
@@ -360,6 +365,7 @@ from app.services.template_fill import (
 )
 from app.services.topic_capture import fetch_topic_candidates_from_web, fetch_topic_source_excerpt
 from app.services.review_analysis import _dedupe_texts, _story_evidence_refs, build_weekly_review_analysis
+from app.services.review_narrative import build_weekly_overview_draft
 from app.services.review_rollup import build_employee_review_report, build_executive_review_rollup
 from app.services.review_simulation import build_review_simulation_bundle
 from app.services.feishu import (
@@ -434,6 +440,62 @@ CLIENT_DNA_MODULES = [
     ("team_intro", "团队介绍"),
     ("market_intro", "市场背景介绍"),
 ]
+
+SELF_CLIENT_NAME_CANDIDATES = ["益语智库", "益语"]
+
+DNA_READINESS_RULES: dict[str, list[dict[str, object]]] = {
+    "organization_intro": [
+        {
+            "question": "组织定位是否清楚",
+            "contentKeywords": ["定位", "战略陪伴者", "成长合伙人", "可落地的增长咨询"],
+            "missingKeywords": [],
+        },
+        {
+            "question": "组织为什么存在、主要解决什么问题是否清楚",
+            "contentKeywords": ["使命", "市场不确定性", "组织效率", "数字化焦虑", "穿越不确定期"],
+            "missingKeywords": [],
+        },
+        {
+            "question": "当前升级方向或阶段是否清楚",
+            "contentKeywords": ["内部引擎", "应用共建", "学习加速", "升级", "转型"],
+            "missingKeywords": [],
+        },
+    ],
+    "business_intro": [
+        {
+            "question": "主要服务或交付内容是否清楚",
+            "contentKeywords": ["增长咨询", "战略设计", "流程陪伴", "应用共建", "学习加速", "工作平台"],
+            "missingKeywords": [],
+        },
+        {
+            "question": "服务对象和价值是否清楚",
+            "contentKeywords": ["适应性组织", "企业", "持续增长", "客户痛点", "解决方案"],
+            "missingKeywords": [],
+        },
+        {
+            "question": "当前业务重点或推进路径是否清楚",
+            "contentKeywords": ["技术规划", "产品", "0.5", "3.0", "GPT 5.4", "升级"],
+            "missingKeywords": [],
+        },
+    ],
+    "team_intro": [
+        {
+            "question": "关键成员与角色是否清楚",
+            "contentKeywords": ["成员", "负责人", "角色", "团队"],
+            "missingKeywords": ["成员名单", "创始人", "负责人", "履历"],
+        },
+        {
+            "question": "分工与协作结构是否清楚",
+            "contentKeywords": ["分工", "协作", "组织架构", "接口"],
+            "missingKeywords": ["组织架构", "分工", "接口"],
+        },
+        {
+            "question": "当前团队能力重点是否清楚",
+            "contentKeywords": ["AI 技术", "工作平台", "技术布局", "能力", "升级"],
+            "missingKeywords": [],
+        },
+    ],
+}
 
 STRATEGIC_PLACEHOLDER_CONTEXT_PATTERNS = [
     "当前重点仍待补充",
@@ -539,6 +601,7 @@ class AppState:
     volatile_cloud_refresh_token: str = ""
     volatile_cloud_session_user_json: str = ""
     cloud_session_persistent: bool = False
+    consultation_knowledge_sync_running: bool = False
 
 
 _runtime_state: AppState | None = None
@@ -614,6 +677,7 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             color=str(row["color"]),
             sortOrder=int(row["sort_order"] or 0),
             isDefault=bool(int(row["is_default"] or 0)),
+            scope=str(row["scope"] or "org"),
             archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
         )
 
@@ -629,7 +693,7 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             defaultListId=_local_default_list_id(),
             defaultPriority="normal",
             defaultDueDatePreset="today",
-            defaultViewMode="list",
+            defaultViewMode="calendar",
             listSortMode="manual",
             showCompletedTasks=False,
             defaultReviewScope="work",
@@ -930,7 +994,15 @@ def _sync_task_attachment_scope(
     normalized_event_line_id = str(event_line_id or "").strip() or None
     table_name = "task_attachments_cloud" if cloud else "task_attachments"
     attachment_rows = db.fetchall(
-        f"SELECT * FROM {table_name} WHERE task_id = ? ORDER BY created_at DESC",
+        f"""
+        SELECT
+            a.*,
+            d.excerpt AS document_excerpt
+        FROM {table_name} a
+        LEFT JOIN documents d ON d.id = a.document_id
+        WHERE a.task_id = ?
+        ORDER BY a.created_at DESC
+        """,
         (task_id,),
     )
     if not attachment_rows:
@@ -1709,6 +1781,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             color=str(row["color"]),
             sortOrder=int(row["sort_order"] or 0),
             isDefault=bool(int(row["is_default"] or 0)),
+            scope=str(row["scope"] or "org"),
             archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
         )
 
@@ -1724,7 +1797,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             defaultListId=_local_default_list_id(),
             defaultPriority="normal",
             defaultDueDatePreset="today",
-            defaultViewMode="list",
+            defaultViewMode="calendar",
             listSortMode="manual",
             showCompletedTasks=False,
             defaultReviewScope="work",
@@ -3336,19 +3409,166 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             hasDocument=bool(row),
         )
 
+    def _find_self_client_row():
+        for candidate in SELF_CLIENT_NAME_CANDIDATES:
+            row = state.db.fetchone(
+                """
+                SELECT *
+                FROM clients
+                WHERE name = ? OR alias = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (candidate, candidate),
+            )
+            if row:
+                return row
+        return None
+
+    def _extract_readiness_evidence(text: str, keywords: list[str]) -> str | None:
+        normalized_text = re.sub(r"\s+", " ", text).strip()
+        if not normalized_text:
+            return None
+        for keyword in keywords:
+            if not keyword:
+                continue
+            hit_index = normalized_text.find(keyword)
+            if hit_index < 0:
+                continue
+            start = max(0, hit_index - 24)
+            end = min(len(normalized_text), hit_index + 40)
+            snippet = normalized_text[start:end].strip()
+            if not snippet:
+                continue
+            if start > 0:
+                snippet = f"…{snippet}"
+            if end < len(normalized_text):
+                snippet = f"{snippet}…"
+            return snippet
+        return None
+
+    def _build_dna_readiness_questions(
+        module_key: str,
+        normalized_text: str,
+        missing_info: list[str],
+    ) -> list[DnaReadinessQuestionRecord]:
+        rules = DNA_READINESS_RULES.get(module_key, [])
+        if not rules:
+            return []
+        questions: list[DnaReadinessQuestionRecord] = []
+        compact_text = normalized_text or ""
+        for rule in rules:
+            content_keywords = [str(item) for item in (rule.get("contentKeywords") or [])]
+            missing_keywords = [str(item) for item in (rule.get("missingKeywords") or [])]
+            has_content = any(keyword and keyword in compact_text for keyword in content_keywords)
+            blocked = any(
+                keyword and keyword in str(item)
+                for item in missing_info
+                for keyword in missing_keywords
+            )
+            answered = bool(has_content and not blocked)
+            evidence = _extract_readiness_evidence(compact_text, content_keywords) if answered else None
+            questions.append(
+                DnaReadinessQuestionRecord(
+                    question=str(rule.get("question") or ""),
+                    answered=answered,
+                    evidence=evidence,
+                )
+            )
+        return questions
+
+    def _build_organization_dna_readiness(
+        base_module: OrganizationDnaModuleRecord,
+        *,
+        client_module=None,
+        auto_enqueued: bool = False,
+    ) -> OrganizationDnaModuleRecord:
+        preferred_text = ""
+        missing_info: list[str] = []
+        readiness_source: str = "none"
+        if client_module and client_module.hasDocument and client_module.normalizedText.strip():
+            preferred_text = client_module.normalizedText
+            missing_info = list(client_module.missingInfo or [])
+            readiness_source = "client_dna"
+        elif base_module.hasDocument and base_module.normalizedText.strip():
+            preferred_text = base_module.normalizedText
+            missing_info = extract_markdown_missing_info(base_module.markdownContent)
+            readiness_source = "manual_document"
+        elif auto_enqueued:
+            readiness_source = "auto_enqueued"
+
+        questions = _build_dna_readiness_questions(base_module.moduleKey, preferred_text, missing_info)
+        answered_count = sum(1 for item in questions if item.answered)
+        question_count = len(questions)
+        readiness_status: Literal["ready", "missing"] = "missing"
+        if question_count > 0 and answered_count >= (2 if question_count >= 3 else question_count):
+            readiness_status = "ready"
+        elif question_count == 0 and preferred_text.strip():
+            readiness_status = "ready"
+
+        if readiness_source == "client_dna":
+            readiness_summary = f"优先采用客户 DNA，自动判定 {answered_count}/{question_count or 0} 项明确。"
+        elif readiness_source == "manual_document":
+            readiness_summary = f"当前采用手工上传文档，自动判定 {answered_count}/{question_count or 0} 项明确。"
+        elif readiness_source == "auto_enqueued":
+            readiness_summary = "客户 DNA 仍缺失，系统已自动发起补跑。"
+        else:
+            readiness_summary = "当前还没有客户 DNA，也没有补充文档。"
+
+        return base_module.model_copy(
+            update={
+                "readinessStatus": readiness_status,
+                "readinessAnsweredCount": answered_count,
+                "readinessQuestionCount": question_count,
+                "readinessSource": readiness_source,
+                "readinessSummary": readiness_summary,
+                "readinessQuestions": questions,
+            }
+        )
+
     def list_organization_dna_modules() -> list[OrganizationDnaModuleRecord]:
         records_by_key = {
             str(row["module_key"]): row
             for row in state.db.fetchall("SELECT * FROM organization_dna_documents")
         }
-        return [
-            _organization_dna_record(module_key, module_title, records_by_key.get(module_key))
+        base_modules = {
+            module_key: _organization_dna_record(module_key, module_title, records_by_key.get(module_key))
             for module_key, module_title in ORGANIZATION_DNA_MODULES
+        }
+        self_client_row = _find_self_client_row()
+        client_modules_by_key = {}
+        auto_enqueued_keys: set[str] = set()
+        if self_client_row:
+            client_id = str(self_client_row["id"])
+            client_modules = list_client_dna_modules(client_id)
+            client_modules_by_key = {module.moduleKey: module for module in client_modules}
+            required_keys = {"organization_intro", "business_intro", "team_intro"}
+            missing_client_keys = {
+                module_key
+                for module_key in required_keys
+                if not (
+                    client_modules_by_key.get(module_key)
+                    and client_modules_by_key[module_key].hasDocument
+                    and client_modules_by_key[module_key].normalizedText.strip()
+                )
+            }
+            if missing_client_keys:
+                job = maybe_enqueue_client_dna_generation_job(client_id)
+                if job is not None:
+                    auto_enqueued_keys = set(missing_client_keys)
+
+        return [
+            _build_organization_dna_readiness(
+                base_modules[module_key],
+                client_module=client_modules_by_key.get(module_key),
+                auto_enqueued=module_key in auto_enqueued_keys,
+            )
+            for module_key, _module_title in ORGANIZATION_DNA_MODULES
         ]
 
-    def _is_markdown_file_name(file_name: str) -> bool:
+    def _is_supported_org_dna_file_name(file_name: str) -> bool:
         lower_name = file_name.strip().lower()
-        return lower_name.endswith(".md") or lower_name.endswith(".markdown")
+        return lower_name.endswith(".md") or lower_name.endswith(".markdown") or lower_name.endswith(".docx")
 
     def _sanitize_text_list(values: list[str] | None) -> list[str]:
         if not values:
@@ -3361,28 +3581,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cleaned.append(text)
         return cleaned
 
-    def read_organization_markdown_payload(payload: OrganizationDnaUploadPayload) -> tuple[str, str]:
-        markdown_content = (payload.markdownContent or "").strip()
+    def read_organization_document_payload(payload: OrganizationDnaUploadPayload) -> tuple[str, str]:
+        document_content = (payload.markdownContent or "").strip()
         file_name = (payload.fileName or "").strip()
         if payload.filePath:
             source_path = Path(payload.filePath).expanduser()
             if not source_path.exists() or not source_path.is_file():
-                raise HTTPException(status_code=400, detail="Markdown 文件不存在")
-            if not _is_markdown_file_name(source_path.name):
-                raise HTTPException(status_code=400, detail="只允许上传 .md 或 .markdown 文件")
-            markdown_content = source_path.read_text(encoding="utf-8")
+                raise HTTPException(status_code=400, detail="背景文件不存在")
+            if not _is_supported_org_dna_file_name(source_path.name):
+                raise HTTPException(status_code=400, detail="只允许上传 .md、.markdown 或 .docx 文件")
+            if source_path.suffix.lower() == ".docx":
+                document_content = extract_platform_dna_text(source_path).strip()
+            else:
+                document_content = source_path.read_text(encoding="utf-8")
             file_name = file_name or source_path.name
-        if file_name and not _is_markdown_file_name(file_name):
-            raise HTTPException(status_code=400, detail="只允许上传 .md 或 .markdown 文件")
-        if not markdown_content.strip():
-            raise HTTPException(status_code=400, detail="请提供 Markdown 内容")
-        return markdown_content, file_name or "uploaded.md"
+        if file_name and not _is_supported_org_dna_file_name(file_name):
+            raise HTTPException(status_code=400, detail="只允许上传 .md、.markdown 或 .docx 文件")
+        if not document_content.strip():
+            raise HTTPException(status_code=400, detail="请提供可解析的背景内容")
+        return document_content, file_name or "uploaded.md"
 
     def upsert_organization_dna_module(module_key: str, payload: OrganizationDnaUploadPayload) -> OrganizationDnaModuleRecord:
         module_map = dict(ORGANIZATION_DNA_MODULES)
         if module_key not in module_map:
             raise HTTPException(status_code=404, detail="未知的组织 DNA 模块")
-        markdown_content, file_name = read_organization_markdown_payload(payload)
+        markdown_content, file_name = read_organization_document_payload(payload)
         normalized_text = normalize_markdown_text(markdown_content)
         summary = summarize_markdown_document(module_map[module_key], normalized_text)
         content_hash = hashlib.sha256(markdown_content.encode("utf-8")).hexdigest()
@@ -3542,7 +3765,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def upsert_client_dna_module(client_id: str, module_key: str, payload: OrganizationDnaUploadPayload) -> ClientDnaModuleRecord:
         build_client_summary(client_id)
-        markdown_content, file_name = read_organization_markdown_payload(payload)
+        markdown_content, file_name = read_organization_document_payload(payload)
         session_user = get_cached_session_user()
         updated_by = session_user.fullName if session_user else str(current_operator_row()["name"])
         return save_client_dna_module(
@@ -4548,6 +4771,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_session(get_cloud_token(), user)
         return user
 
+    def _parse_iso_moment(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def list_cloud_consultation_knowledge_requests(
+        status_filter: Literal["pending", "processing", "completed", "failed"] | None = None,
+    ) -> list[ConsultationKnowledgeRequestRecord]:
+        suffix = f"?status={quote(status_filter)}" if status_filter else ""
+        payload = cloud_request("GET", f"/api/v1/consultation/knowledge-requests{suffix}")
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Invalid consultation knowledge request payload")
+        return [ConsultationKnowledgeRequestRecord(**item) for item in payload if isinstance(item, dict)]
+
+    def update_cloud_consultation_knowledge_request_status(
+        request_id: str,
+        *,
+        status: Literal["processing", "completed", "failed"],
+        error_message: str = "",
+        local_document_id: str | None = None,
+        local_document_path: str | None = None,
+    ) -> ConsultationKnowledgeRequestRecord:
+        payload = cloud_request(
+            "POST",
+            f"/api/v1/consultation/knowledge-requests/{request_id}/status",
+            json_body={
+                "status": status,
+                "errorMessage": error_message,
+                "localDocumentId": local_document_id,
+                "localDocumentPath": local_document_path,
+            },
+        )
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid consultation knowledge status payload")
+        return ConsultationKnowledgeRequestRecord(**payload)
+
+    def _should_retry_consultation_knowledge_request(request: ConsultationKnowledgeRequestRecord, *, now_ts: float) -> bool:
+        if request.status == "pending":
+            return True
+        if request.status != "processing":
+            return False
+        updated_at = _parse_iso_moment(request.updatedAt)
+        if updated_at is None:
+            return True
+        return now_ts - updated_at.timestamp() >= 300
+
     def resolve_growth_actor() -> tuple[str, str]:
         session_user = get_cached_session_user()
         if get_cloud_token() and session_user is None:
@@ -4640,6 +4912,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def build_task_attachment(row) -> TaskAttachmentRecord:
+        summary_value = None
+        if hasattr(row, "keys"):
+            row_keys = set(row.keys())
+            if "document_excerpt" in row_keys:
+                summary_value = row["document_excerpt"]
+            elif "excerpt" in row_keys:
+                summary_value = row["excerpt"]
         return TaskAttachmentRecord(
             id=str(row["id"]),
             taskId=str(row["task_id"]),
@@ -4647,7 +4926,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
             documentId=str(row["document_id"]) if row["document_id"] else None,
             title=str(row["title"]),
-            summary=str(row["document_excerpt"]) if row["document_excerpt"] else None,
+            summary=str(summary_value) if summary_value else None,
             path=str(row["path"]),
             kind=str(row["kind"]),
             source=str(row["source"]),
@@ -4977,6 +5256,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 color=str(item["color"]),
                 sortOrder=int(item.get("sortOrder", 0)),
                 isDefault=bool(item.get("isDefault", False)),
+                scope=str(item.get("scope") or "org"),
                 archivedAt=str(item.get("archivedAt")) if item.get("archivedAt") else None,
             )
             for item in payload.get("lists", [])
@@ -8339,12 +8619,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=timestamp_iso,
             ai_service=None,
         )
+        document_row = state.db.fetchone("SELECT path FROM documents WHERE id = ?", (document_id,))
+        resolved_path = str(document_row["path"]) if document_row and document_row["path"] else str(target_path)
         return ClientTextDocumentResponse(
             clientId=client_id,
             documentId=document_id,
             title=title,
-            fileName=target_path.name,
-            path=str(target_path),
+            fileName=Path(resolved_path).name,
+            path=resolved_path,
         )
 
     def create_answer_memory_markdown_document(client_id: str, message: ChatMessageRecord) -> ClientTextDocumentResponse:
@@ -8403,6 +8685,147 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             source="answer_export_doc",
             excerpt=message.content,
         )
+
+    def build_consultation_knowledge_title(request: ConsultationKnowledgeRequestRecord) -> str:
+        for candidate in (request.question.strip(), request.answer.strip()):
+            if not candidate:
+                continue
+            normalized = re.sub(r"\s+", " ", candidate)
+            return normalized[:28]
+        return "咨询沉淀"
+
+    def build_consultation_context_lines(request: ConsultationKnowledgeRequestRecord) -> list[str]:
+        lines: list[str] = []
+        if request.clientName or request.clientId:
+            lines.append(f"- 客户：{request.clientName or request.clientId}")
+        if request.taskId:
+            lines.append(f"- 关联任务：{request.taskId}")
+        if request.eventLineId:
+            lines.append(f"- 关联事件线：{request.eventLineId}")
+        if request.requestedByName or request.requestedByUserId:
+            lines.append(f"- 发起人：{request.requestedByName or request.requestedByUserId}")
+        lines.append("- 来源：手机咨询助手")
+        return lines
+
+    def build_consultation_memory_markdown(request: ConsultationKnowledgeRequestRecord) -> str:
+        lines = [
+            "# 手机咨询沉淀记忆",
+            f"生成时间：{now_iso()}",
+            "",
+            "## 关联上下文",
+            *build_consultation_context_lines(request),
+            "",
+        ]
+        if request.question.strip():
+            lines.extend(["## 原始问题", request.question.strip(), ""])
+        lines.extend(["## 答案内容", request.answer.strip(), ""])
+        return "\n".join(lines).strip() + "\n"
+
+    def build_consultation_archive_content(request: ConsultationKnowledgeRequestRecord) -> str:
+        lines = ["## 关联上下文", *build_consultation_context_lines(request), ""]
+        if request.question.strip():
+            lines.extend(["## 原始问题", request.question.strip(), ""])
+        lines.extend(["## 答案内容", request.answer.strip()])
+        return "\n".join(lines).strip()
+
+    def create_consultation_memory_document(
+        client_id: str,
+        request: ConsultationKnowledgeRequestRecord,
+    ) -> ClientTextDocumentResponse:
+        client = build_client_summary(client_id)
+        folders = ensure_client_workspace(state.data_dir, client_id)
+        target_dir = folders["战略陪伴"]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_stem = safe_filename(build_consultation_knowledge_title(request)[:18] or "咨询沉淀记忆")
+        target_path = target_dir / f"{timestamp}_{safe_stem}.md"
+        if target_path.exists():
+            target_path = target_dir / f"{timestamp}_{safe_stem}_{uuid4().hex[:6]}.md"
+        target_path.write_text(build_consultation_memory_markdown(request), encoding="utf-8")
+        return register_generated_workspace_document(
+            client_id,
+            target_path=target_path,
+            title=f"{client.name} · 咨询沉淀记忆",
+            kind="md",
+            source="consultation_knowledge_memory",
+            excerpt=request.answer,
+        )
+
+    def sink_consultation_knowledge_request(
+        request: ConsultationKnowledgeRequestRecord,
+    ) -> ClientTextDocumentResponse:
+        client_id = (request.clientId or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="沉淀请求缺少 clientId，无法写入本地综合库")
+
+        client = build_client_summary(client_id)
+        title = build_consultation_knowledge_title(request)
+        if request.target == "vector_memory":
+            source_links = []
+            if request.taskId:
+                source_links.append(
+                    {
+                        "title": f"关联任务 {request.taskId}",
+                        "documentId": request.taskId,
+                        "path": None,
+                        "sectionLabel": "任务上下文",
+                    }
+                )
+            if request.eventLineId:
+                source_links.append(
+                    {
+                        "title": f"关联事件线 {request.eventLineId}",
+                        "documentId": request.eventLineId,
+                        "path": None,
+                        "sectionLabel": "事件线上下文",
+                    }
+                )
+            create_memory_surrogate_from_answer(
+                state.db,
+                data_dir=state.data_dir,
+                client_id=client_id,
+                title=f"{client.name} · {title}",
+                content=request.answer,
+                actions="",
+                analysis=request.question.strip(),
+                source_links=source_links,
+                created_at=now_iso(),
+                ai_service=state.ai,
+            )
+            generated = create_consultation_memory_document(client_id, request)
+            log_activity(
+                "consultation.knowledge.vector_memory",
+                "knowledge_memory",
+                generated.documentId,
+                {
+                    "requestId": request.id,
+                    "clientId": client_id,
+                    "taskId": request.taskId or "",
+                    "eventLineId": request.eventLineId or "",
+                    "path": generated.path,
+                },
+            )
+            return generated
+
+        generated = create_client_text_document(
+            client_id,
+            ClientTextDocumentPayload(
+                title=f"{client.name} · {title}",
+                content=build_consultation_archive_content(request),
+            ),
+        )
+        log_activity(
+            "consultation.knowledge.document_archive",
+            "document",
+            generated.documentId,
+            {
+                "requestId": request.id,
+                "clientId": client_id,
+                "taskId": request.taskId or "",
+                "eventLineId": request.eventLineId or "",
+                "path": generated.path,
+            },
+        )
+        return generated
 
     def infer_text_document_title(content: str) -> str:
         normalized = re.sub(r"\s+", " ", content).strip()
@@ -8500,12 +8923,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "path": str(target_path),
             },
         )
+        document_row = state.db.fetchone("SELECT path FROM documents WHERE id = ?", (document_id,))
+        resolved_path = str(document_row["path"]) if document_row and document_row["path"] else str(target_path)
         return ClientTextDocumentResponse(
             clientId=client_id,
             documentId=document_id,
             title=resolved_title,
-            fileName=target_path.name,
-            path=str(target_path),
+            fileName=Path(resolved_path).name,
+            path=resolved_path,
         )
 
     def build_template_fill_context(
@@ -11445,6 +11870,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updatedAt=str(row["updated_at"] or row["created_at"]),
         )
 
+    def build_preview_review_record(week_label: str) -> WeeklyReviewRecord:
+        operator = current_operator_row()
+        timestamp = now_iso()
+        return WeeklyReviewRecord(
+            id=f"review_preview::{week_label}",
+            userId=str(operator["id"]),
+            userName=str(operator["name"]),
+            weekLabel=week_label,
+            workFreeNote="",
+            personalGrowthNote="",
+            personalPrivateNote="",
+            submittedAt=timestamp,
+            createdAt=timestamp,
+            updatedAt=timestamp,
+        )
+
     def local_review_entries_by_task(review_id: str) -> dict[str, dict[str, object]]:
         rows = state.db.fetchall(
             "SELECT * FROM weekly_review_task_entries WHERE review_id = ? ORDER BY reviewed_at DESC",
@@ -11505,7 +11946,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task = task_rows[0]
             source_id = (task.sourceId or "").strip()
             source_type = (task.sourceType or "").strip()
-            client_id: str | None = None
+            client_id: str | None = (task.clientId or "").strip() or None
             if source_type == "meeting" and source_id:
                 row = state.db.fetchone("SELECT client_id FROM meetings WHERE id = ?", (source_id,))
                 client_id = str(row["client_id"]) if row else None
@@ -11514,6 +11955,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             elif source_id:
                 row = state.db.fetchone("SELECT client_id FROM goal_records WHERE id = ?", (source_id,))
                 client_id = str(row["client_id"]) if row else None
+            elif task.clientName:
+                row = state.db.fetchone("SELECT id FROM clients WHERE name = ?", (task.clientName,))
+                client_id = str(row["id"]) if row and row["id"] else None
             if client_id and client_id not in seen_client_ids:
                 seen_client_ids.add(client_id)
                 discovered_client_ids.append(client_id)
@@ -11585,6 +12029,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     hasDocument=True,
                 )
             )
+        modules.sort(key=lambda item: ((item.title or "").strip(), (item.summary or "").strip()))
         return modules
 
     def build_review_context_modules(
@@ -13099,6 +13544,180 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             }
         )
 
+    def _narratives_from_event_line_judgments(
+        analysis: WeeklyReviewAnalysisRecord | None,
+    ) -> list[NarrativeAnalysisRecord]:
+        if analysis is None or not analysis.eventLineJudgments:
+            return []
+        bundle_by_id = {
+            bundle.eventLineId: bundle
+            for bundle in (analysis.eventLineContextBundles or [])
+            if bundle.eventLineId
+        }
+        narratives: list[NarrativeAnalysisRecord] = []
+        for judgment in analysis.eventLineJudgments[:4]:
+            bundle = bundle_by_id.get(judgment.eventLineId)
+            missing_lines: list[str] = []
+            if bundle:
+                if not bundle.keyPeople:
+                    missing_lines.append("关键对象和角色")
+                if not bundle.collaborationRelationship:
+                    missing_lines.append("合作关系")
+                if not bundle.recentFacts and not bundle.meetingFacts and not bundle.attachmentFacts:
+                    missing_lines.append("近期证据")
+            current_progress = judgment.nextWeekFocus
+            if bundle and bundle.recentProgress:
+                current_progress = bundle.recentProgress
+            narratives.append(
+                NarrativeAnalysisRecord(
+                    eventLineId=judgment.eventLineId,
+                    eventLineName=judgment.title,
+                    clientName=bundle.projectName if bundle and bundle.projectName else None,
+                    whatThisIs=judgment.whatHappened,
+                    whyImportant=judgment.whyItMatters,
+                    currentProgress=current_progress,
+                    missingUnderstanding="、".join(missing_lines) if missing_lines else judgment.evidenceSummary,
+                    riskNote=judgment.riskIfIgnored or None,
+                    minimumAction=judgment.minimumAction or None,
+                    managementAdvice=judgment.managerImplication or None,
+                    contextLayersUsed=[
+                        label
+                        for label, available in [
+                            ("organization_dna", True),
+                            ("client_profile", bool(bundle and bundle.projectName)),
+                            ("cooperation_relationship", bool(bundle and bundle.collaborationRelationship)),
+                            ("event_line_history", bool(bundle and bundle.recentFacts)),
+                            ("current_tasks", True),
+                        ]
+                        if available
+                    ],
+                    confidenceLevel="high"
+                    if judgment.safeOutputMode == "full_judgment"
+                    else "medium"
+                    if judgment.safeOutputMode == "summary_only"
+                    else "low",
+                )
+            )
+        narratives.sort(key=lambda item: ((item.eventLineName or "").strip(), (item.eventLineId or "").strip()))
+        return narratives
+
+    def _weekly_overview_cache_payload(
+        *,
+        week_label: str,
+        items: list[WeeklyReviewTaskEntryRecord],
+        narratives: list[NarrativeAnalysisRecord],
+        org_modules: list[OrganizationDnaModuleRecord],
+    ) -> dict[str, object]:
+        cache_version = "v2-line-cards"
+        task_signatures = sorted(
+            [
+            {
+                "taskId": item.taskId,
+                "title": item.taskSnapshot.title,
+                "note": item.note,
+                "client": item.taskSnapshot.clientName,
+                "eventLine": item.taskSnapshot.eventLineName,
+            }
+            for item in items
+            ],
+            key=lambda item: (
+                str(item.get("eventLine") or ""),
+                str(item.get("client") or ""),
+                str(item.get("title") or ""),
+                str(item.get("taskId") or ""),
+            ),
+        )
+        narrative_signatures = sorted(
+            [
+            {
+                "eventLineId": item.eventLineId,
+                "eventLineName": item.eventLineName,
+                "whatThisIs": item.whatThisIs,
+                "whyImportant": item.whyImportant,
+                "currentProgress": item.currentProgress,
+                "missingUnderstanding": item.missingUnderstanding,
+            }
+            for item in narratives
+            ],
+            key=lambda item: (
+                str(item.get("eventLineName") or ""),
+                str(item.get("eventLineId") or ""),
+            ),
+        )
+        module_signatures = sorted(
+            [
+            {
+                "moduleKey": item.moduleKey,
+                "title": item.title,
+                "updatedAt": item.updatedAt,
+                "summary": item.summary[:160],
+            }
+            for item in org_modules[:6]
+            ],
+            key=lambda item: (
+                str(item.get("title") or ""),
+                str(item.get("moduleKey") or ""),
+            ),
+        )
+        fingerprint_source = json.dumps(
+            {
+                "cacheVersion": cache_version,
+                "weekLabel": week_label,
+                "tasks": task_signatures,
+                "narratives": narrative_signatures,
+                "modules": module_signatures,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return {
+            "cacheVersion": cache_version,
+            "fingerprint": hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest(),
+        }
+
+    def _load_cached_weekly_overview(
+        *,
+        week_label: str,
+        fingerprint: str,
+    ) -> tuple[str, list[str], list[str]] | None:
+        raw = state.db.get_setting(f"weekly_overview_cache::{week_label}", "")
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or str(payload.get("fingerprint") or "") != fingerprint:
+            return None
+        return (
+            str(payload.get("overview") or ""),
+            [str(item) for item in payload.get("focusLines") or [] if str(item).strip()],
+            [str(item) for item in payload.get("nextFocus") or [] if str(item).strip()],
+        )
+
+    def _save_cached_weekly_overview(
+        *,
+        week_label: str,
+        fingerprint: str,
+        overview: str,
+        focus_lines: list[str],
+        next_focus: list[str],
+    ) -> None:
+        state.db.set_setting(
+            f"weekly_overview_cache::{week_label}",
+            json.dumps(
+                {
+                    "cacheVersion": "v2-line-cards",
+                    "fingerprint": fingerprint,
+                    "overview": overview,
+                    "focusLines": focus_lines,
+                    "nextFocus": next_focus,
+                    "updatedAt": now_iso(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+
     def local_rollup_work_items(week_label: str) -> list[WeeklyReviewTaskEntryRecord]:
         rows = state.db.fetchall(
             """
@@ -13224,6 +13843,48 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             response.workItems,
             target_week,
         )
+        if work_analysis is not None and response.workItems:
+            narrative_modules = build_review_context_modules(response.workItems, list_organization_dna_modules())
+            narrative_analyses = _narratives_from_event_line_judgments(work_analysis)
+            cache_payload = _weekly_overview_cache_payload(
+                week_label=target_week,
+                items=response.workItems,
+                narratives=narrative_analyses,
+                org_modules=narrative_modules,
+            )
+            fingerprint = str(cache_payload["fingerprint"])
+            cached_overview = _load_cached_weekly_overview(
+                week_label=target_week,
+                fingerprint=fingerprint,
+            )
+            if cached_overview is not None:
+                weekly_overview, weekly_focus_lines, weekly_next_focus = cached_overview
+            else:
+                weekly_overview, weekly_focus_lines, weekly_next_focus = build_weekly_overview_draft(
+                    ai=state.ai,
+                    week_label=target_week,
+                    items=response.workItems,
+                    org_dna_modules=narrative_modules,
+                    narratives=narrative_analyses,
+                    fallback_overview=work_analysis.weeklyOverview,
+                    fallback_focus_lines=work_analysis.weeklyFocusLines,
+                    fallback_next_focus=work_analysis.weeklyNextFocus,
+                )
+                _save_cached_weekly_overview(
+                    week_label=target_week,
+                    fingerprint=fingerprint,
+                    overview=weekly_overview,
+                    focus_lines=weekly_focus_lines,
+                    next_focus=weekly_next_focus,
+                )
+            work_analysis = work_analysis.model_copy(
+                update={
+                    "narrativeAnalyses": narrative_analyses,
+                    "weeklyOverview": weekly_overview,
+                    "weeklyFocusLines": weekly_focus_lines,
+                    "weeklyNextFocus": weekly_next_focus,
+                }
+            )
         self_report = response.selfReport
         if self_report is None and work_analysis is not None and response.workItems:
             self_report = build_employee_review_report(
@@ -13351,7 +14012,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 personal_items.append(item)
             else:
                 work_items.append(item)
-        current_review = build_local_review_record(review_row) if review_row else None
+        current_review = build_local_review_record(review_row) if review_row else build_preview_review_record(target_week)
         work_analysis, personal_analysis = build_review_analyses(
             target_week,
             work_items,
@@ -13446,6 +14107,87 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         clear_cloud_session()
         log_activity("auth.logout", "session", "current", {})
         return AuthStateResponse(authenticated=False)
+
+    def process_pending_consultation_knowledge_requests_impl() -> ConsultationKnowledgeProcessSummaryResponse:
+        all_requests = list_cloud_consultation_knowledge_requests()
+        now_ts = time.time()
+        eligible = [
+            item
+            for item in all_requests
+            if _should_retry_consultation_knowledge_request(item, now_ts=now_ts)
+        ]
+        eligible.sort(
+            key=lambda item: (
+                _parse_iso_moment(item.createdAt).timestamp() if _parse_iso_moment(item.createdAt) else now_ts,
+                item.id,
+            )
+        )
+        summary = ConsultationKnowledgeProcessSummaryResponse(
+            totalPending=len(eligible),
+            updatedAt=now_iso(),
+        )
+        if not eligible:
+            return summary
+
+        processed_items: list[ConsultationKnowledgeRequestRecord] = []
+        for item in eligible:
+            summary.processedCount += 1
+            try:
+                update_cloud_consultation_knowledge_request_status(item.id, status="processing")
+                generated = sink_consultation_knowledge_request(item)
+                completed = update_cloud_consultation_knowledge_request_status(
+                    item.id,
+                    status="completed",
+                    local_document_id=generated.documentId,
+                    local_document_path=generated.path,
+                )
+                summary.completedCount += 1
+                processed_items.append(completed)
+            except Exception as exc:
+                detail = exc.detail if isinstance(exc, HTTPException) else exc
+                error_message = str(detail or "本地综合库写入失败")
+                try:
+                    failed = update_cloud_consultation_knowledge_request_status(
+                        item.id,
+                        status="failed",
+                        error_message=error_message,
+                    )
+                except Exception:
+                    failed = ConsultationKnowledgeRequestRecord(
+                        **{
+                            **item.model_dump(),
+                            "status": "failed",
+                            "errorMessage": error_message,
+                            "completedAt": None,
+                            "updatedAt": now_iso(),
+                        }
+                    )
+                summary.failedCount += 1
+                processed_items.append(failed)
+        summary.updatedAt = now_iso()
+        summary.items = processed_items
+        return summary
+
+    @app.get("/api/v1/consultation/knowledge-requests", response_model=list[ConsultationKnowledgeRequestRecord])
+    def list_consultation_knowledge_requests(
+        status_filter: Literal["pending", "processing", "completed", "failed"] | None = Query(default=None, alias="status"),
+    ) -> list[ConsultationKnowledgeRequestRecord]:
+        require_session_user()
+        return list_cloud_consultation_knowledge_requests(status_filter)
+
+    @app.post(
+        "/api/v1/consultation/knowledge-requests/process-pending",
+        response_model=ConsultationKnowledgeProcessSummaryResponse,
+    )
+    def process_pending_consultation_knowledge_requests() -> ConsultationKnowledgeProcessSummaryResponse:
+        require_session_user()
+        if state.consultation_knowledge_sync_running:
+            return ConsultationKnowledgeProcessSummaryResponse(updatedAt=now_iso())
+        state.consultation_knowledge_sync_running = True
+        try:
+            return process_pending_consultation_knowledge_requests_impl()
+        finally:
+            state.consultation_knowledge_sync_running = False
 
     @app.get("/api/v1/admin/employees", response_model=list[EmployeeRecord])
     def list_employee_reviews() -> list[EmployeeRecord]:
@@ -13750,6 +14492,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             get_client_memory_status(state.db, str(merged["primary_client_id"]))
         return build_event_line(updated_row)
 
+    @app.post("/api/v1/event-lines/{event_line_id}/notes")
+    def add_event_line_note(event_line_id: str, payload: dict = Body(...)) -> dict:
+        """Add a manual observation/note to an event line."""
+        note_text = str(payload.get("text", "")).strip()
+        if not note_text:
+            raise HTTPException(status_code=400, detail="Note text is required")
+        el_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        if not el_row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        note_ts = now_iso()
+        note_id = new_id("ela")
+        state.db.execute(
+            """
+            INSERT INTO event_line_activities(
+                id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
+            ) VALUES(?, ?, 'manual_note', ?, ?, NULL, ?, ?, ?, ?, ?)
+            """,
+            (
+                note_id,
+                event_line_id,
+                note_id,
+                note_ts,
+                current_operator_name(),
+                "手动备注",
+                note_text[:500],
+                to_json({"kind": "user_note"}),
+                note_ts,
+            ),
+        )
+        log_activity("event_line.note", "event_line", event_line_id, {"noteLength": len(note_text)})
+        return {"id": note_id, "eventLineId": event_line_id, "text": note_text[:500], "createdAt": note_ts}
+
     @app.get("/api/v1/task-views", response_model=TaskViewsResponse)
     def list_task_views() -> TaskViewsResponse:
         views = _ensure_builtin_task_views()
@@ -13931,7 +14705,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         response = cloud_request("POST", f"/api/v1/support-requests/{request_id}/resolve", json_body=payload.model_dump())
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid support request payload")
-        return SupportRequestRecord(**response)
+        record = SupportRequestRecord(**response)
+        # Write support_request activity to the related event line (if task has one)
+        if record.taskId:
+            task_row = state.db.fetchone("SELECT event_line_id, title FROM tasks WHERE id = ?", (record.taskId,))
+            if task_row and task_row["event_line_id"]:
+                sr_ts = now_iso()
+                state.db.execute(
+                    """
+                    INSERT INTO event_line_activities(
+                        id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
+                    ) VALUES(?, ?, 'support_request', ?, ?, NULL, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_id("ela"),
+                        str(task_row["event_line_id"]),
+                        request_id,
+                        sr_ts,
+                        current_operator_name(),
+                        f"支持请求已处理：{record.requestType}",
+                        f"针对任务「{task_row['title']}」的{record.requestType}请求已{record.status}。" + (f" 处理说明：{record.resolutionNote[:80]}" if record.resolutionNote else ""),
+                        to_json({"taskId": record.taskId, "requestType": record.requestType, "status": record.status}),
+                        sr_ts,
+                    ),
+                )
+        return record
 
     @app.post("/api/v1/admin/employees/{employee_id}/approve", response_model=EmployeeRecord)
     def approve_employee(employee_id: str, payload: EmployeeRolePayload) -> EmployeeRecord:
@@ -16288,6 +17086,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             event_line_ids=strategic_event_line_ids,
             created_at=now_iso(),
         )
+        # Write meeting activity to each related event line
+        meeting_ts = now_iso()
+        action_count = len([i for i in state.db.fetchall("SELECT id FROM action_items WHERE meeting_id = ? AND publish_status = 'published'", (meeting_id,))])
+        decision_rows = state.db.fetchall("SELECT summary FROM decisions WHERE meeting_id = ? ORDER BY created_at LIMIT 3", (meeting_id,))
+        decision_summary = "; ".join(str(d["summary"])[:60] for d in decision_rows) if decision_rows else ""
+        for el_id in strategic_event_line_ids:
+            state.db.execute(
+                """
+                INSERT INTO event_line_activities(
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
+                ) VALUES(?, ?, 'meeting', ?, ?, NULL, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("ela"),
+                    el_id,
+                    meeting_id,
+                    meeting_ts,
+                    current_operator_name(),
+                    f"会议发布：{meeting.title}",
+                    f"会议已发布，产生 {action_count} 条行动项。" + (f" 关键决策：{decision_summary}" if decision_summary else ""),
+                    to_json({"clientId": client_id, "actionCount": action_count, "meetingTitle": meeting.title}),
+                    meeting_ts,
+                ),
+            )
         log_activity("meeting.publish", "meeting", meeting_id, {"tasksWritten": len(meeting.actionItems)})
         return MeetingPipelineResponse(meeting=build_meeting_detail(meeting_id), message="会议已发布，行动项已写入任务收件箱。")
 
@@ -16314,23 +17136,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=502, detail="Invalid task list payload")
             return TaskListRecord(**response)
         session_user = get_cached_session_user()
-        if session_user and session_user.primaryRole != "admin":
+        if session_user and session_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
         trimmed_name = payload.name.strip()
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
         list_id = new_id("list")
-        is_default = bool(payload.isDefault) or state.db.scalar("SELECT COUNT(1) AS count FROM task_lists") == 0
+        next_scope = payload.scope or "org"
+        is_default = bool(payload.isDefault) or state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = ?", (next_scope,)) == 0
         sort_order = payload.sortOrder if payload.sortOrder is not None else state.db.scalar("SELECT COALESCE(MAX(sort_order), -1) + 1 AS count FROM task_lists")
         if is_default:
-            state.db.execute("UPDATE task_lists SET is_default = 0")
+            state.db.execute("UPDATE task_lists SET is_default = 0 WHERE scope = ?", (next_scope,))
         state.db.execute(
             """
-            INSERT INTO task_lists(id, name, color, sort_order, is_default, archived_at)
-            VALUES(?, ?, ?, ?, ?, NULL)
+            INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, NULL)
             """,
-            (list_id, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0),
+            (list_id, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
         )
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert row is not None
@@ -16346,15 +17169,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return TaskListRecord(**response)
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can update public task lists")
+            row_scope = None
+            row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
+            if row:
+                row_scope = str(row["scope"] or "org")
+            if (payload.scope or row_scope or "org") != "personal":
+                raise HTTPException(status_code=403, detail="Only admin can update public task lists")
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
         trimmed_name = payload.name.strip()
         timestamp = now_iso()
         next_archived_at = str(row["archived_at"]) if row["archived_at"] else None
+        next_scope = payload.scope or str(row["scope"] or "org")
         if payload.archived is True:
-            active_list_count = state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE archived_at IS NULL OR archived_at = ''")
+            active_list_count = state.db.scalar(
+                "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')",
+                (next_scope,),
+            )
             if active_list_count <= 1 and not row["archived_at"]:
                 raise HTTPException(status_code=400, detail="至少保留一个可用清单")
             next_archived_at = timestamp
@@ -16364,11 +17196,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if next_archived_at:
             next_is_default = False
         if next_is_default:
-            state.db.execute("UPDATE task_lists SET is_default = 0")
+            state.db.execute("UPDATE task_lists SET is_default = 0 WHERE scope = ?", (next_scope,))
         state.db.execute(
             """
             UPDATE task_lists
-            SET name = ?, color = ?, sort_order = ?, is_default = ?, archived_at = ?
+            SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
             WHERE id = ?
             """,
             (
@@ -16376,22 +17208,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.color.strip(),
                 payload.sortOrder if payload.sortOrder is not None else int(row["sort_order"] or 0),
                 1 if next_is_default else 0,
+                next_scope,
                 next_archived_at,
                 list_id,
             ),
         )
-        if not next_is_default and not next_archived_at and state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE is_default = 1") == 0:
+        if not next_is_default and not next_archived_at and state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND is_default = 1",
+            (next_scope,),
+        ) == 0:
             state.db.execute(
                 "UPDATE task_lists SET is_default = 1 WHERE id = ?",
                 (list_id,),
             )
         if next_archived_at and bool(int(row["is_default"] or 0)):
             fallback_row = state.db.fetchone(
-                "SELECT id FROM task_lists WHERE id != ? AND (archived_at IS NULL OR archived_at = '') ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
-                (list_id,),
+                "SELECT id FROM task_lists WHERE scope = ? AND id != ? AND (archived_at IS NULL OR archived_at = '') ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
+                (next_scope, list_id),
             )
             if fallback_row:
-                state.db.execute("UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END", (str(fallback_row["id"]),))
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
+                    (str(fallback_row["id"]), next_scope),
+                )
         updated = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert updated is not None
         log_activity("task-list.update", "task_list", list_id, payload.model_dump(exclude_none=True))
@@ -16404,22 +17243,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {"deleted": True}
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
+            row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
+            if not row or str(row["scope"] or "org") != "personal":
+                raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
         task_count = state.db.scalar("SELECT COUNT(1) AS count FROM tasks WHERE list_id = ?", (list_id,))
         if task_count > 0:
             raise HTTPException(status_code=400, detail="该清单已有任务，请先归档，不支持直接删除")
-        if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists") <= 1:
+        if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = ?", (str(row["scope"] or "org"),)) <= 1:
             raise HTTPException(status_code=400, detail="至少保留一个清单")
         if bool(int(row["is_default"] or 0)):
             fallback_row = state.db.fetchone(
-                "SELECT id FROM task_lists WHERE id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
-                (list_id,),
+                "SELECT id FROM task_lists WHERE scope = ? AND id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
+                (str(row["scope"] or "org"), list_id),
             )
             if fallback_row:
-                state.db.execute("UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END", (str(fallback_row["id"]),))
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
+                    (str(fallback_row["id"]), str(row["scope"] or "org")),
+                )
         state.db.execute("DELETE FROM task_lists WHERE id = ?", (list_id,))
         log_activity("task-list.delete", "task_list", list_id, {})
         return {"deleted": True}
@@ -16661,23 +17505,56 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 cloud=False,
             )
             if merged["event_line_id"]:
-                state.db.execute(
-                    """
-                    INSERT INTO event_line_activities(
-                        id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json
-                    ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_id("ela"),
-                        merged["event_line_id"],
-                        task_id,
-                        merged["updated_at"],
-                        merged["owner_name"],
-                        "任务更新",
-                        f"更新任务：{merged['title']}",
-                        to_json({"eventType": "updated"}),
-                    ),
-            )
+                old_status = str(row["status"])
+                new_status = merged["status"]
+                status_changed = old_status != new_status
+                if status_changed:
+                    status_labels = {
+                        "done": ("任务完成", f"任务已完成：{merged['title']}"),
+                        "doing": ("任务开始执行", f"任务进入执行中：{merged['title']}"),
+                        "todo": ("任务已排入计划", f"任务进入待办：{merged['title']}"),
+                        "rejected": ("任务已退回", f"任务被退回：{merged['title']}"),
+                        "inbox": ("任务退回收件箱", f"任务退回收件箱：{merged['title']}"),
+                    }
+                    ela_title, ela_summary = status_labels.get(
+                        new_status,
+                        ("任务状态变更", f"任务状态变更为 {new_status}：{merged['title']}"),
+                    )
+                    state.db.execute(
+                        """
+                        INSERT INTO event_line_activities(
+                            id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json
+                        ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id("ela"),
+                            merged["event_line_id"],
+                            task_id,
+                            merged["updated_at"],
+                            merged["owner_name"],
+                            ela_title,
+                            ela_summary,
+                            to_json({"eventType": "status_change", "from": old_status, "to": new_status}),
+                        ),
+                    )
+                else:
+                    state.db.execute(
+                        """
+                        INSERT INTO event_line_activities(
+                            id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json
+                        ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id("ela"),
+                            merged["event_line_id"],
+                            task_id,
+                            merged["updated_at"],
+                            merged["owner_name"],
+                            "任务更新",
+                            f"更新任务：{merged['title']}",
+                            to_json({"eventType": "updated"}),
+                        ),
+                    )
             log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
             updated_task = fetch_tasks("t.id = ?", (task_id,))[0]
             record_task_writeback(
@@ -18091,10 +18968,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/v1/topics/candidates/{candidate_id}/promote-task", response_model=TaskRecord)
-    def promote_candidate_to_task(candidate_id: str) -> TaskRecord:
+    def promote_candidate_to_task(candidate_id: str, payload: dict = Body(default_factory=dict)) -> TaskRecord:
         row = state.db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Candidate not found")
+        event_line_id = str(payload.get("eventLineId", "") or row.get("event_line_id", "") or "").strip() or None
         state.db.execute("UPDATE topic_candidates SET status = 'promoted', updated_at = ? WHERE id = ?", (now_iso(), candidate_id))
         task = create_task(
             TaskPayload(
@@ -18107,10 +18985,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 tags=["选题"],
                 sourceType="topic_candidate",
                 sourceId=candidate_id,
+                eventLineId=event_line_id,
             ),
             status="inbox",
         )
-        log_activity("topic.promote.task", "topic_candidate", candidate_id, {"taskId": task.id})
+        log_activity("topic.promote.task", "topic_candidate", candidate_id, {"taskId": task.id, "eventLineId": event_line_id})
         return task
 
     @app.delete("/api/v1/topics/candidates/{candidate_id}")
@@ -18423,8 +19302,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             INSERT INTO handbook_entries(
                 id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, source_title,
                 event_line_id, event_line_name, project_module_id, project_module_name, project_flow_id, project_flow_name,
-                project_stage, business_category, ability_keys_json, evidence_refs_json, context_summary, reuse_count, last_reused_at, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                project_stage, business_category, ability_keys_json, evidence_refs_json, context_summary, reuse_count, last_reused_at,
+                author_user_id, author_user_name, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
             """,
             (
                 entry_id,
@@ -18447,6 +19327,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json(payload.abilityKeys),
                 to_json(payload.evidenceRefs),
                 payload.contextSummary.strip(),
+                resolve_growth_actor()[0],
+                resolve_growth_actor()[1],
                 created_at,
             ),
         )
@@ -18674,12 +19556,27 @@ def seed_defaults(state: AppState) -> None:
         state.db.set_setting("current_operator_id", "op_qh")
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists") == 0:
         state.db.executemany(
-            "INSERT INTO task_lists(id, name, color, sort_order, is_default, archived_at) VALUES(?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
             [
-                ("list-0", "收集箱", "#888681", 0, 1),
-                ("list-1", "客户推进", "#5B7BFE", 1, 0),
-                ("list-2", "研究洞察", "#F59E0B", 2, 0),
-                ("list-3", "交付沉淀", "#10B981", 3, 0),
+                ("list-0", "收集箱", "#888681", 0, 1, "org"),
+                ("list-1", "客户推进", "#5B7BFE", 1, 0, "org"),
+                ("list-2", "研究洞察", "#F59E0B", 2, 0, "org"),
+                ("list-3", "交付沉淀", "#10B981", 3, 0, "org"),
+                ("plist-1", "健身", "#5B7BFE", 10, 1, "personal"),
+                ("plist-2", "约会", "#EC4899", 11, 0, "personal"),
+                ("plist-3", "吃饭", "#F59E0B", 12, 0, "personal"),
+                ("plist-4", "学习", "#10B981", 13, 0, "personal"),
+            ],
+        )
+    state.db.execute("UPDATE task_lists SET scope = 'org' WHERE scope IS NULL OR scope = ''")
+    if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = 'personal'") == 0:
+        state.db.executemany(
+            "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
+            [
+                ("plist-1", "健身", "#5B7BFE", 10, 1, "personal"),
+                ("plist-2", "约会", "#EC4899", 11, 0, "personal"),
+                ("plist-3", "吃饭", "#F59E0B", 12, 0, "personal"),
+                ("plist-4", "学习", "#10B981", 13, 0, "personal"),
             ],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_tags") == 0:
@@ -18700,7 +19597,7 @@ def seed_defaults(state: AppState) -> None:
                 operator_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, 'list-0', 'normal', 'today', 'list', 'manual', 0, 'work', 1, ?)
+            ) VALUES(?, 'list-0', 'normal', 'today', 'calendar', 'manual', 0, 'work', 1, ?)
             """,
             [(str(row["id"]), timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
         )

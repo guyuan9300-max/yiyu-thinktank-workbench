@@ -2,20 +2,30 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 
 const APP_NAME = '益语智库自用平台.app';
 const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const installedApp = path.join(os.homedir(), 'Applications', APP_NAME);
+const binaryPath = path.join(installedApp, 'Contents', 'MacOS', '益语智库自用平台');
 const rawElectronPattern = `${projectRoot}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \\.`;
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  return spawnSync(command, args, {
     stdio: options.stdio ?? 'pipe',
     encoding: 'utf8',
     ...options,
   });
-  return result;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function countAppProcesses() {
+  const result = run('pgrep', ['-f', '益语智库自用平台']);
+  return (result.stdout || '').trim().split('\n').filter(Boolean).length;
 }
 
 const exists = run('test', ['-d', installedApp]);
@@ -25,6 +35,32 @@ if (exists.status !== 0) {
   process.exit(1);
 }
 
+// 杀掉旧的 dev electron 进程
 run('pkill', ['-f', rawElectronPattern], { stdio: 'ignore' });
+
+// 方式 1: open -a
+console.log('[open-installed-app] trying open -a ...');
 run('open', ['-a', installedApp], { stdio: 'inherit' });
-run('osascript', ['-e', 'tell application "益语智库自用平台" to activate'], { stdio: 'ignore' });
+await sleep(4000);
+
+if (countAppProcesses() >= 2) {
+  console.log('[open-installed-app] launched via open -a');
+  run('osascript', ['-e', 'tell application "益语智库自用平台" to activate'], { stdio: 'ignore' });
+  process.exit(0);
+}
+
+// 方式 2: 直接执行二进制（Sequoia 需要 tty）
+console.log('[open-installed-app] open -a failed, falling back to direct binary with tty ...');
+if (!fs.existsSync(binaryPath)) {
+  console.error(`[open-installed-app] binary not found: ${binaryPath}`);
+  process.exit(1);
+}
+
+// 用 script -q /dev/null 模拟 tty — Electron 在 macOS Sequoia 上需要 tty 才能正常启动
+const child = spawn('script', ['-q', '/dev/null', binaryPath], {
+  detached: true,
+  stdio: 'ignore',
+  env: { ...process.env },
+});
+child.unref();
+console.log(`[open-installed-app] launched via script+binary (pid: ${child.pid})`);

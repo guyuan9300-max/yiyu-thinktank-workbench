@@ -186,13 +186,13 @@ const PHASE_BY_INDEX: ProcessStep['name'][] = ['需求接收', '信息核对', '
 
 const EMPTY_TASK: WorkbenchTask = {
   id: 'growth-empty-task',
-  title: '当前没有可执行的成长上下文',
+  title: '等待成长上下文接入',
   project: '等待任务、会议或推荐接入',
-  deadline: '暂无时间点',
+  deadline: '尚未关联时间点',
   urgency: '等待上下文',
   urgencyColor: 'text-slate-500 bg-slate-100',
   phase: '信息核对',
-  risks: ['当前没有真实任务、事件线或成长推荐进入任务学习页，所以系统无法推导具体动作。'],
+  risks: ['系统需要真实任务、事件线或成长推荐才能推导具体动作，请先创建一条业务对象。'],
   nextAdvice: '先在任务与日历创建一条任务，或在客户工作台发布会议 / 行动项，任务学习页就会自动补全上下文。',
   robotReady: false,
   robotReasons: ['需要先有真实业务对象和阶段信息，机器人才能判断是否适合接手标准动作。'],
@@ -219,7 +219,7 @@ const EMPTY_TASK: WorkbenchTask = {
     riskTypes: ['fact_gap'],
     requiredAbilities: ['exec', 'collab'],
     confidence: 0.2,
-    whyRelevant: '当前没有真实任务对象，系统无法判断更细的技能与项目背景。',
+    whyRelevant: '系统需要真实任务对象才能判断更细的技能与项目背景，请先创建任务。',
   },
   universalSkills: [],
   projectContextPack: {
@@ -946,9 +946,9 @@ function buildRobotPlan(task: WorkbenchTask, step: ProcessStep, focusActions: Gr
 function buildLearningSummaryFallback(task: WorkbenchTask, sourceMode: GrowthWorkbenchSnapshot['sourceMode']): GrowthLearningSummary {
   if (sourceMode === 'empty') {
     return {
-      headline: '当前还没有可学习的真实任务。',
-      whyItMatters: '没有真实任务、项目上下文或成长信号时，系统不能负责任地给出学习判断。',
-      immediateMove: '先去任务与日历、客户工作台或战略陪伴形成真实对象，再回来学习。',
+      headline: '学习导航等待真实任务接入',
+      whyItMatters: '系统需要真实任务、项目上下文或成长信号才能给出负责任的学习判断。',
+      immediateMove: '前往任务与日历、客户工作台或战略陪伴创建一条真实对象，学习导航将自动激活。',
       generator: 'rules',
       confidence: 'low',
     };
@@ -1646,8 +1646,9 @@ export function GrowthLearningWorkbench({
           ))}
         </div>
         {!tasks.length ? (
-          <div className="mb-4 rounded-[24px] border border-dashed border-slate-200 bg-white px-5 py-8 text-center text-[13px] font-medium text-slate-500 shadow-sm">
-            当前还没有可被学习导航消费的真实任务、会议动作或成长推荐。先去任务与日历、客户工作台或战略陪伴形成真实对象，学习导航才会自动补全阶段、风险和动作。
+          <div className="mb-4 rounded-[24px] border border-dashed border-slate-200 bg-white px-5 py-8 text-center shadow-sm">
+            <p className="text-[13px] font-bold text-slate-500">学习导航等待内容接入</p>
+            <p className="mt-1 text-[12px] text-slate-400">在任务与日历创建任务、在客户工作台发起会议动作，或在战略陪伴添加成长推荐后，学习导航将自动补全阶段、风险和动作。</p>
           </div>
         ) : null}
         <div className="flex gap-4">
@@ -1797,8 +1798,9 @@ export function GrowthLearningWorkbench({
                       </div>
                     </div>
                   )) : (
-                    <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-[12px] font-medium text-slate-400">
-                      当前还没有这一段的动作卡。
+                    <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6">
+                      <p className="text-[13px] font-bold text-slate-500">此阶段尚无动作卡</p>
+                      <p className="mt-1 text-[12px] text-slate-400">补充任务描述或关联更多上下文后，系统会自动生成该阶段的动作建议。</p>
                     </div>
                   )}
                 </div>
@@ -1899,7 +1901,7 @@ export function GrowthLearningWorkbench({
                   <RocketIcon className="h-5 w-5" />
                   现在就推进这件事
                 </h3>
-                <p className="max-w-xl text-sm text-slate-400">别停在“我看完了”。选一个马上能执行的动作，把刚才的标准直接压回当前任务。</p>
+                <p className="max-w-xl text-sm text-slate-400">别停在"我看完了"。选一个马上能执行的动作，把刚才的标准直接压回当前任务。</p>
               </div>
 
               <div className="flex flex-wrap gap-3">
@@ -1992,8 +1994,9 @@ export function GrowthLearningWorkbench({
                   </button>
                 );
               }) : (
-                <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-[12px] font-medium text-slate-400">
-                  当前还没有匹配到可展示的流程说明、经验案例或模板工具。
+                <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 px-4 py-6">
+                  <p className="text-[13px] font-bold text-slate-500">暂未匹配到参考材料</p>
+                  <p className="mt-1 text-[12px] text-slate-400">丰富任务背景或添加附件后，系统会自动匹配流程说明、经验案例和模板工具。</p>
                 </div>
               )}
             </div>
@@ -2025,8 +2028,9 @@ export function GrowthLearningWorkbench({
                   </div>
                 ))
               ) : (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                  当前还没有实战回流记录。先把上面的一个动作排进日程，完成后这里就会开始滚动。
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6">
+                  <p className="text-[13px] font-bold text-slate-500">实战回流等待第一条记录</p>
+                  <p className="mt-1 text-[12px] text-slate-400">把上方任意一个动作排进日程并完成后，回流记录会自动出现在这里。</p>
                 </div>
               )}
             </div>
@@ -2049,8 +2053,8 @@ export function GrowthLearningWorkbench({
             <div className="flex items-start gap-2 rounded-xl border border-blue-100 bg-blue-50/60 p-2.5 text-xs text-slate-600">
               <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
               <span>
-                下一步建议：你的“{activeTask.phase}”动作已经进入可执行阶段，当前最值得补做的是
-                <strong>“{actionGroups.after[0]?.title || '把结果转成一条可复用经验'}”</strong>。
+                下一步建议：你的"{activeTask.phase}"动作已经进入可执行阶段，当前最值得补做的是
+                <strong>"{actionGroups.after[0]?.title || '把结果转成一条可复用经验'}"</strong>。
               </span>
             </div>
           </div>
@@ -2077,7 +2081,7 @@ export function GrowthLearningWorkbench({
 
             <div className="max-h-[60vh] overflow-y-auto p-6">
               <div className="mb-6 rounded-xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
-                我已读取当前任务“{activeTask.title}”的学习上下文。下面先区分机器人可接手的交付物、人必须拍板的部分，以及当前这样分工的原因。
+                我已读取当前任务"{activeTask.title}"的学习上下文。下面先区分机器人可接手的交付物、人必须拍板的部分，以及当前这样分工的原因。
               </div>
               <div className="space-y-5">
                 <div>

@@ -84,6 +84,41 @@ export interface AuthState {
   message?: string | null;
 }
 
+export type ConsultationKnowledgeTarget = 'vector_memory' | 'document_archive';
+export type ConsultationKnowledgeRequestStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export interface ConsultationKnowledgeRequestRecord {
+  id: string;
+  answerId: string;
+  organizationId: string;
+  target: ConsultationKnowledgeTarget;
+  status: ConsultationKnowledgeRequestStatus;
+  requestedByUserId: string;
+  requestedByName: string;
+  clientId?: string | null;
+  clientName?: string | null;
+  taskId?: string | null;
+  eventLineId?: string | null;
+  question: string;
+  answer: string;
+  errorMessage?: string | null;
+  localDocumentId?: string | null;
+  localDocumentPath?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConsultationKnowledgeProcessSummary {
+  totalPending: number;
+  processedCount: number;
+  completedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  updatedAt: string;
+  items: ConsultationKnowledgeRequestRecord[];
+}
+
 export interface EmployeeRecord {
   id: string;
   email: string;
@@ -769,6 +804,7 @@ export interface TaskList {
   color: string;
   sortOrder: number;
   isDefault: boolean;
+  scope?: 'org' | 'personal';
   archivedAt?: string | null;
 }
 
@@ -930,6 +966,39 @@ export interface EventLineDetail {
   memorySnapshot?: EventLineMemorySnapshot | null;
   predictionReadiness?: number | null;
   clarificationNeeds?: string[];
+}
+
+/** 事件线文档附件 — 为 PDF 汇报功能预留 */
+export type EventLineAttachmentDisplayMode = 'expanded' | 'collapsed';
+
+export interface EventLineAttachment {
+  id: string;
+  eventLineId: string;
+  fileName: string;
+  fileType: string;
+  displayMode: EventLineAttachmentDisplayMode;
+  description: string;
+  uploadedBy: string;
+  uploadedAt: string;
+  /** 本地文件路径（不同步到云端） */
+  localPath?: string | null;
+  /** 票据/图片预览 URL */
+  previewUrl?: string | null;
+}
+
+/** 事件线审批节点 */
+export type EventLineApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+export interface EventLineApprovalNode {
+  id: string;
+  eventLineId: string;
+  title: string;
+  requestedBy: string;
+  approverName: string;
+  status: EventLineApprovalStatus;
+  note: string;
+  createdAt: string;
+  resolvedAt?: string | null;
 }
 
 export interface EventLineMutationPayload {
@@ -1424,6 +1493,9 @@ export interface WeeklyReviewAnalysis {
   emphasis: 'summary' | 'analysis';
   headline: string;
   caution: string;
+  weeklyOverview: string;
+  weeklyFocusLines: string[];
+  weeklyNextFocus: string[];
   dnaModuleTitles: string[];
   metricCards: ReviewMetricCard[];
   evidenceWeights: ReviewEvidenceWeight[];
@@ -1437,6 +1509,7 @@ export interface WeeklyReviewAnalysis {
   riskCards: EventLineRiskCard[];
   opportunityCards: EventLineOpportunityCard[];
   trendSignals: TrendSignal[];
+  narrativeAnalyses: NarrativeAnalysis[];
 }
 
 export interface TaskContextPreview {
@@ -1634,6 +1707,111 @@ export interface ReviewDashboard {
   agentDepartmentPlans: AgentWeeklyPlan[];
   simulationBundle?: ReviewSimulationBundle | null;
   plans: PlanNode[];
+}
+
+// ── UnderstandingSnapshotV1: 统一理解输出对象 ──
+
+export type UnderstandingMode = 'basic' | 'enhanced';
+
+export interface UnderstandingSourceBreakdown {
+  sourceType: 'org_dna' | 'client_background' | 'quarterly_focus' | 'task_title' | 'task_desc' | 'review_note' | 'event_line_memory' | 'meeting' | 'support_request' | 'calendar' | 'attachment';
+  available: boolean;
+  label: string;
+}
+
+export interface UnderstandingOptionalAdvice {
+  realBlocker?: string | null;
+  timeGate?: string | null;
+  minimumAction?: string | null;
+  supportAsk?: string | null;
+}
+
+export interface UnderstandingSnapshotV1 {
+  taskId: string;
+  mode: UnderstandingMode;
+  coverage: number;
+  confidence: number;
+  whatIsThis: string;
+  whyItMatters: string;
+  progressNow: string;
+  unknowns: string;
+  knownFacts: string[];
+  optionalAdvice?: UnderstandingOptionalAdvice | null;
+  sourceBreakdown: UnderstandingSourceBreakdown[];
+}
+
+// ── Phase 1: 客户战略画像 + 合作关系 + 事件线周历史 ──
+
+export type CooperationType = 'strategic_companion' | 'single_project' | 'exploring' | 'dormant';
+export type RelationshipHealth = 'thriving' | 'steady' | 'cooling' | 'at_risk';
+
+/** 客户战略画像 — 补充 ClientSummary 中缺失的深层信息 */
+export interface ClientStrategicProfile {
+  clientId: string;
+  industry: string;
+  scale: string;
+  influence: string;
+  currentNeeds: string;
+  painPoints: string;
+  strategicValueToYiyu: string;
+  decisionChain: string;
+  updatedAt: string;
+}
+
+/** 益语与客户的合作关系 */
+export interface CooperationRelationship {
+  id: string;
+  clientId: string;
+  clientName: string;
+  whyConnected: string;
+  meaningToYiyu: string;
+  meaningToClient: string;
+  cooperationType: CooperationType;
+  relationshipHealth: RelationshipHealth;
+  keyStakeholders: CooperationStakeholder[];
+  milestones: string;
+  startedAt: string;
+  updatedAt: string;
+}
+
+export interface CooperationStakeholder {
+  name: string;
+  role: string;
+  relationship: string;
+}
+
+/** 事件线周快照历史 — 每周复盘时自动归档 */
+export interface EventLineWeeklySnapshot {
+  id: string;
+  eventLineId: string;
+  eventLineName: string;
+  weekLabel: string;
+  stageAtThatTime: string;
+  keyDecisions: string[];
+  turningPoints: string[];
+  blockersThen: string[];
+  progressDelta: string;
+  taskCount: number;
+  completedCount: number;
+  createdAt: string;
+}
+
+/** 五层上下文叙事分析 — LLM 生成 */
+export interface NarrativeAnalysis {
+  eventLineId: string;
+  eventLineName: string;
+  clientId?: string | null;
+  clientName?: string | null;
+  whatThisIs: string;
+  whyImportant: string;
+  currentProgress: string;
+  missingUnderstanding: string;
+  riskNote?: string | null;
+  timeGate?: string | null;
+  minimumAction?: string | null;
+  managementAdvice?: string | null;
+  contextLayersUsed: string[];
+  confidenceLevel: 'low' | 'medium' | 'high';
 }
 
 export type StrategicJudgmentStatus = 'system_draft' | 'confirmed' | 'waiting';
@@ -1835,10 +2013,22 @@ export interface OrganizationDnaModule {
   updatedAt?: string | null;
   updatedBy?: string | null;
   hasDocument: boolean;
+  readinessStatus: 'ready' | 'missing';
+  readinessAnsweredCount: number;
+  readinessQuestionCount: number;
+  readinessSource: 'client_dna' | 'manual_document' | 'auto_enqueued' | 'none';
+  readinessSummary: string;
+  readinessQuestions: DnaReadinessQuestion[];
 }
 
 export interface OrganizationDnaResponse {
   modules: OrganizationDnaModule[];
+}
+
+export interface DnaReadinessQuestion {
+  question: string;
+  answered: boolean;
+  evidence?: string | null;
 }
 
 export interface ClientDnaModule {
@@ -2949,6 +3139,7 @@ export interface TaskListMutationPayload {
   name: string;
   color: string;
   isDefault?: boolean;
+  scope?: 'org' | 'personal';
   archived?: boolean;
   sortOrder?: number;
 }

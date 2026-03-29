@@ -96,6 +96,25 @@ const diagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, ChildProcessW
 const ownedDiagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, boolean>> = {};
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
 const legacyAppBasenames = new Set(['益语智库.app', '益语智库工作台.app']);
+const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'https://api.yiyu.love';
+
+function normalizeHttpUrl(rawUrl?: string | null) {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/\/+$/, '');
+}
+
+function remoteCloudBackendUrl() {
+  return (
+    normalizeHttpUrl(process.env.YIYU_REMOTE_CLOUD_API_URL)
+    || normalizeHttpUrl(process.env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL)
+    || (app.isPackaged ? DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL : null)
+  );
+}
+
+function shouldUseRemoteCloudBackend() {
+  return Boolean(remoteCloudBackendUrl());
+}
 
 function appendElectronLaunchLog(level: 'INFO' | 'ERROR', message: string) {
   try {
@@ -120,10 +139,11 @@ function logElectronError(message: string) {
 
 function getCollabSuggestedCandidates() {
   return [
+    path.join(app.getPath('home'), '.openclaw', 'workspace', 'yiyu-thinktank-workbench-main-sync'),
+    path.join(path.dirname(projectRoot), 'yiyu-thinktank-workbench-main-sync'),
     projectRoot,
-    path.join(app.getPath('documents'), 'yiyu-thinktank-workbench'),
-    path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench'),
-    path.join(app.getPath('home'), 'Documents', 'yiyu-thinktank-workbench'),
+    path.join(app.getPath('documents'), 'yiyu-thinktank-workbench-main-sync'),
+    path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench-main-sync'),
   ];
 }
 
@@ -912,7 +932,7 @@ function backendUrl() {
 }
 
 function cloudBackendUrl() {
-  return `http://127.0.0.1:${cloudBackendPort}`;
+  return remoteCloudBackendUrl() || `http://127.0.0.1:${cloudBackendPort}`;
 }
 
 function rendererUrl() {
@@ -1000,8 +1020,12 @@ async function checkBackendHealthAt(port: number, requiredFeatures: string[]): P
 }
 
 async function checkCloudBackendHealthAt(port: number): Promise<boolean> {
+  return checkCloudBackendHealth(`http://127.0.0.1:${port}`);
+}
+
+async function checkCloudBackendHealth(targetUrl: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
+    const req = http.get(`${targetUrl.replace(/\/+$/, '')}/health`, (res) => {
       res.resume();
       resolve((res.statusCode ?? 500) < 500);
     });
@@ -1036,6 +1060,24 @@ async function reservePort(preferredPort: number, reservedPorts = new Set<number
     }
   }
   throw new Error(`无法为本地服务找到可用端口，起始端口=${preferredPort}`);
+}
+
+async function terminateManagedRuntimeProcess(venvPath: string) {
+  const runtimePython = runtimePythonPath(venvPath);
+  if (!fs.existsSync(runtimePython)) return;
+  await new Promise<void>((resolve) => {
+    const child = spawn('pkill', ['-f', `${runtimePython} -m uvicorn app.main:app`], {
+      env: backendEnv({ VIRTUAL_ENV: venvPath }),
+    });
+    child.on('error', () => resolve());
+    child.on('exit', () => resolve());
+  });
+}
+
+async function recyclePackagedRuntimeProcesses() {
+  if (!app.isPackaged) return;
+  await terminateManagedRuntimeProcess(backendRuntimeVenv);
+  await terminateManagedRuntimeProcess(cloudBackendRuntimeVenv);
 }
 
 function logBackend(pipe: NodeJS.ReadableStream, label: string) {
@@ -1567,9 +1609,16 @@ app.whenReady().then(async () => {
   const reuseExistingBackend = await checkBackendHealthAt(DEFAULT_BACKEND_PORT, REQUIRED_BACKEND_FEATURES);
   backendPort = reuseExistingBackend ? DEFAULT_BACKEND_PORT : await reservePort(DEFAULT_BACKEND_PORT, reservedPorts);
   reservedPorts.add(backendPort);
-  const reuseExistingCloudBackend = await checkCloudBackendHealthAt(DEFAULT_CLOUD_BACKEND_PORT);
-  cloudBackendPort = reuseExistingCloudBackend ? DEFAULT_CLOUD_BACKEND_PORT : await reservePort(DEFAULT_CLOUD_BACKEND_PORT, reservedPorts);
-  reservedPorts.add(cloudBackendPort);
+  const usingRemoteCloudBackend = shouldUseRemoteCloudBackend();
+  const configuredRemoteCloudBackendUrl = remoteCloudBackendUrl();
+  let reuseExistingCloudBackend = false;
+  if (usingRemoteCloudBackend) {
+    logElectronInfo(`[cloud] using remote collaboration backend ${configuredRemoteCloudBackendUrl}`);
+  } else {
+    reuseExistingCloudBackend = await checkCloudBackendHealthAt(DEFAULT_CLOUD_BACKEND_PORT);
+    cloudBackendPort = reuseExistingCloudBackend ? DEFAULT_CLOUD_BACKEND_PORT : await reservePort(DEFAULT_CLOUD_BACKEND_PORT, reservedPorts);
+    reservedPorts.add(cloudBackendPort);
+  }
   process.env.YIYU_BACKEND_URL = backendUrl();
   process.env.YIYU_CLOUD_API_URL = cloudBackendUrl();
   uvBinaryPath = resolveUvBinary();
@@ -1585,15 +1634,18 @@ app.whenReady().then(async () => {
   backendRuntimeVenv = path.join(runtimeRoot, 'backend-venv');
   cloudBackendRuntimeVenv = path.join(runtimeRoot, 'cloud-backend-venv');
   try {
-    await ensureProjectRuntime('cloud_backend', cloudBackendRuntimeVenv);
     await ensureProjectRuntime('backend', backendRuntimeVenv);
+    if (!usingRemoteCloudBackend) {
+      await ensureProjectRuntime('cloud_backend', cloudBackendRuntimeVenv);
+    }
     await registerRendererProtocol();
+    await recyclePackagedRuntimeProcesses();
   } catch (error) {
     dialog.showErrorBox('后端运行时准备失败', error instanceof Error ? error.message : String(error));
     app.quit();
     return;
   }
-  if (!reuseExistingCloudBackend) {
+  if (!usingRemoteCloudBackend && !reuseExistingCloudBackend) {
     startCloudBackend();
   }
   if (!reuseExistingBackend) {

@@ -232,7 +232,7 @@ function buildExecutiveOverviewCards(report: HierarchyReport, analysis?: WeeklyR
       title: '本周关键事件线',
       subtitle: '先看这一周真正推进了哪几条线。',
       items: eventLineItems,
-      empty: '当前还没有足够清晰的事件线摘要。',
+      empty: '事件线尚在梳理中|任务痕迹积累足够后，事件线会自动归纳到这里',
       className: 'border-blue-100 bg-blue-50/50',
     },
     {
@@ -240,7 +240,7 @@ function buildExecutiveOverviewCards(report: HierarchyReport, analysis?: WeeklyR
       title: '本周最值得关注的风险',
       subtitle: '优先看未来 1-3 周可能继续放大的问题。',
       items: riskItems,
-      empty: '当前还没有足够明确的升级风险。',
+      empty: '暂无风险信号|当出现延期、阻塞或资源冲突时，风险卡片会自动生成',
       className: 'border-rose-100 bg-rose-50/55',
     },
     {
@@ -248,7 +248,7 @@ function buildExecutiveOverviewCards(report: HierarchyReport, analysis?: WeeklyR
       title: '本周最值得放大的机会',
       subtitle: '不是亮点罗列，而是值得加码的正向势能。',
       items: opportunityItems,
-      empty: '当前还没有形成足够清晰的放大机会。',
+      empty: '暂无机会信号|当出现超预期进展或正向势能时，机会卡片会自动生成',
       className: 'border-emerald-100 bg-emerald-50/45',
     },
     {
@@ -256,7 +256,7 @@ function buildExecutiveOverviewCards(report: HierarchyReport, analysis?: WeeklyR
       title: '本周建议动作',
       subtitle: '把判断收束成可执行的最小动作。',
       items: actionItems,
-      empty: '当前还没有明确建议动作。',
+      empty: '建议待生成|综合事件线、风险和机会分析后，建议动作会自动归纳',
       className: 'border-amber-100 bg-amber-50/55',
     },
   ];
@@ -390,7 +390,7 @@ export function HierarchyReportCard({
                   ))}
                 </div>
               ) : (
-                <div className="mt-4 rounded-2xl bg-white/75 px-3 py-3 text-[12px] leading-6 text-gray-400">{card.empty}</div>
+                <div className="mt-4 rounded-2xl bg-white/75 px-3 py-3 text-center"><p className="text-[13px] font-bold text-slate-500">{card.empty.split('|')[0]}</p><p className="text-[12px] text-slate-400 mt-1">{card.empty.split('|')[1]}</p></div>
               )}
             </div>
           ))}
@@ -446,7 +446,7 @@ export function HierarchyReportCard({
               ))}
             </div>
           ) : (
-            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-[13px] leading-6 text-slate-500">当前还没有更多可解释的判断线索。</div>
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-center"><p className="text-[13px] font-bold text-slate-500">判断线索待积累</p><p className="text-[12px] text-slate-400 mt-1">任务数据和背景信息足够丰富后，AI 会在这里展示解释性判断</p></div>
           )}
         </div>
       </Section>
@@ -476,7 +476,7 @@ export function HierarchyReportCard({
             ))}
           </div>
         ) : (
-          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-[13px] leading-6 text-slate-500">当前还没有形成足够稳定的可能性分析。</div>
+          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-center"><p className="text-[13px] font-bold text-slate-500">可能性分析待生成</p><p className="text-[12px] text-slate-400 mt-1">积累足够的任务和趋势数据后，风险与机会预测会自动展示</p></div>
         )}
       </Section>
 
@@ -573,7 +573,7 @@ export function HierarchyReportCard({
             ))}
           </div>
         ) : (
-          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-[13px] leading-6 text-slate-500">当前还没有明确建议动作。</div>
+          <div className="rounded-2xl bg-slate-50 px-4 py-3 text-center"><p className="text-[13px] font-bold text-slate-500">建议待生成</p><p className="text-[12px] text-slate-400 mt-1">综合分析完成后，可执行的建议动作会归纳到这里</p></div>
         )}
       </Section>
     </div>

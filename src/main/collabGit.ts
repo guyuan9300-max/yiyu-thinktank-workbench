@@ -161,6 +161,10 @@ const BINARY_EXTENSIONS = new Set([
   '.dmg',
 ]);
 
+const IGNORABLE_LOCAL_STATUS_PATHS = new Set([
+  '.yiyu-sync/settings.system_admin.json',
+]);
+
 function formatSyncedJson(value: Record<string, unknown>) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -451,6 +455,10 @@ function formatChangeSummary(type: CollabFileChangeType, previousPath?: string |
 
 function hasBinaryExtension(targetPath: string) {
   return BINARY_EXTENSIONS.has(path.extname(targetPath).toLowerCase());
+}
+
+function isIgnorableLocalStatusPath(targetPath: string) {
+  return IGNORABLE_LOCAL_STATUS_PATHS.has(targetPath.replace(/\\/g, '/'));
 }
 
 function addPathsToSet(targetSet: Set<string>, targetPath: string, previousPath?: string | null) {
@@ -792,11 +800,19 @@ export async function findSuggestedCollabRepoPath(candidates: string[]) {
   return null;
 }
 
-function createStatusText(snapshot: Pick<RepoSnapshot, 'isConfigured' | 'isValid' | 'branch' | 'isMainBranch' | 'hasUnmergedPaths' | 'behindCount' | 'aheadCount' | 'localChangeCount'>) {
+function createStatusText(
+  snapshot: Pick<RepoSnapshot, 'isConfigured' | 'isValid' | 'branch' | 'isMainBranch' | 'hasUnmergedPaths' | 'behindCount' | 'aheadCount' | 'localChangeCount'>,
+  suggestedRepoPath?: string | null,
+) {
   if (!snapshot.isConfigured) return '先绑定源码目录，按钮才会生效。';
   if (!snapshot.isValid) return '当前目录不是有效 Git 仓库。';
   if (snapshot.hasUnmergedPaths) return '检测到 Git 冲突，请先手工收口。';
-  if (!snapshot.isMainBranch) return `当前分支是 ${snapshot.branch || '未知'}，请先切回 main。`;
+  if (!snapshot.isMainBranch) {
+    if (suggestedRepoPath) {
+      return `当前工作目录在 ${snapshot.branch || '未知'} 分支，系统会改用 main 基线仓库继续。`;
+    }
+    return `当前分支是 ${snapshot.branch || '未知'}，请先切回 main。`;
+  }
   if (snapshot.behindCount > 0 && snapshot.localChangeCount > 0) {
     return `main 落后 ${snapshot.behindCount} 个提交，且本地还有 ${snapshot.localChangeCount} 项改动。`;
   }
@@ -860,6 +876,7 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
   const statusResult = await runGit(repoRoot, ['status', '--porcelain=v1', '--branch']);
   const { branchHeader, parsedEntries } = parseStatusEntries(statusResult.stdout);
   const expandedLocalEntries = await expandUntrackedDirectoryEntries(repoRoot, parsedEntries);
+  const collabVisibleLocalEntries = expandedLocalEntries.filter((entry) => !isIgnorableLocalStatusPath(entry.path));
   const { branch, aheadCount, behindCount } = parseBranchHeader(branchHeader);
   const remoteDiffResult = await runGit(repoRoot, ['diff', '--name-status', '--find-renames=50%', 'HEAD..origin/main'], {
     allowNonZero: true,
@@ -878,18 +895,18 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
     hasUnmergedPaths,
     behindCount,
     aheadCount,
-    localChangeCount: expandedLocalEntries.length,
+    localChangeCount: collabVisibleLocalEntries.length,
   };
   return {
     repoPath: repoRoot,
     repoName: path.basename(repoRoot),
     suggestedRepoPath,
     ...snapshotBase,
-    localEntries: expandedLocalEntries,
+    localEntries: collabVisibleLocalEntries,
     remoteEntries,
     localBranchEntries,
     remoteChangeCount: remoteEntries.length,
-    statusText: createStatusText(snapshotBase),
+    statusText: createStatusText(snapshotBase, suggestedRepoPath && suggestedRepoPath !== repoRoot ? suggestedRepoPath : null),
   };
 }
 

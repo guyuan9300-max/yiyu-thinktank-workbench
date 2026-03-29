@@ -23,10 +23,14 @@ class Database:
                 PRAGMA journal_mode=WAL;
                 PRAGMA foreign_keys=ON;
 
+                -- ══ 纯本地表（不同步到云端） ══
+
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                -- ══ 同步表（走云端） ══
 
                 CREATE TABLE IF NOT EXISTS operators (
                     id TEXT PRIMARY KEY,
@@ -69,6 +73,8 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
                 );
+
+                -- ══ 纯本地表（知识库/文件/向量 — 不同步） ══
 
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY,
@@ -631,12 +637,15 @@ class Database:
                     FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
                 );
 
+                -- ══ 同步表（任务/事件线/复盘 — 走云端） ══
+
                 CREATE TABLE IF NOT EXISTS task_lists (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
+                    scope TEXT NOT NULL DEFAULT 'org',
                     archived_at TEXT
                 );
 
@@ -792,6 +801,37 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_event_line_memory_event_line
                     ON event_line_memory_snapshots(event_line_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS event_line_attachments (
+                    id TEXT PRIMARY KEY,
+                    event_line_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL DEFAULT '',
+                    file_type TEXT NOT NULL DEFAULT '',
+                    display_mode TEXT NOT NULL DEFAULT 'collapsed',
+                    description TEXT NOT NULL DEFAULT '',
+                    uploaded_by TEXT NOT NULL DEFAULT '',
+                    uploaded_at TEXT NOT NULL DEFAULT '',
+                    local_path TEXT,
+                    preview_url TEXT,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_el_attachments_line
+                    ON event_line_attachments(event_line_id);
+
+                CREATE TABLE IF NOT EXISTS event_line_approval_nodes (
+                    id TEXT PRIMARY KEY,
+                    event_line_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    requested_by TEXT NOT NULL DEFAULT '',
+                    approver_name TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    resolved_at TEXT,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_el_approvals_line
+                    ON event_line_approval_nodes(event_line_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS memory_facts (
                     id TEXT PRIMARY KEY,
@@ -1080,6 +1120,8 @@ class Database:
                     context_summary TEXT NOT NULL DEFAULT '',
                     reuse_count INTEGER NOT NULL DEFAULT 0,
                     last_reused_at TEXT,
+                    author_user_id TEXT,
+                    author_user_name TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL
                 );
@@ -1273,6 +1315,54 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS client_strategic_profiles (
+                    client_id TEXT PRIMARY KEY,
+                    industry TEXT NOT NULL DEFAULT '',
+                    scale TEXT NOT NULL DEFAULT '',
+                    influence TEXT NOT NULL DEFAULT '',
+                    current_needs TEXT NOT NULL DEFAULT '',
+                    pain_points TEXT NOT NULL DEFAULT '',
+                    strategic_value_to_yiyu TEXT NOT NULL DEFAULT '',
+                    decision_chain TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS cooperation_relationships (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    client_name TEXT NOT NULL DEFAULT '',
+                    why_connected TEXT NOT NULL DEFAULT '',
+                    meaning_to_yiyu TEXT NOT NULL DEFAULT '',
+                    meaning_to_client TEXT NOT NULL DEFAULT '',
+                    cooperation_type TEXT NOT NULL DEFAULT 'exploring',
+                    relationship_health TEXT NOT NULL DEFAULT 'steady',
+                    key_stakeholders_json TEXT NOT NULL DEFAULT '[]',
+                    milestones TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS event_line_weekly_snapshots (
+                    id TEXT PRIMARY KEY,
+                    event_line_id TEXT NOT NULL,
+                    event_line_name TEXT NOT NULL DEFAULT '',
+                    week_label TEXT NOT NULL,
+                    stage_at_that_time TEXT NOT NULL DEFAULT '',
+                    key_decisions_json TEXT NOT NULL DEFAULT '[]',
+                    turning_points_json TEXT NOT NULL DEFAULT '[]',
+                    blockers_then_json TEXT NOT NULL DEFAULT '[]',
+                    progress_delta TEXT NOT NULL DEFAULT '',
+                    task_count INTEGER NOT NULL DEFAULT 0,
+                    completed_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    UNIQUE(event_line_id, week_label),
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_el_weekly_snapshots_line_week
+                    ON event_line_weekly_snapshots(event_line_id, week_label DESC);
+
                 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_master_index_fts USING fts5(
                     entry_id UNINDEXED,
                     client_id UNINDEXED,
@@ -1349,6 +1439,7 @@ class Database:
             self._ensure_column("task_tags", "updated_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "archived_at", "TEXT")
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "client_id", "TEXT")
@@ -1391,6 +1482,9 @@ class Database:
             self._ensure_column("xp_ledger", "org_contribution_score", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("client_template_fill_runs", "processed_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("client_template_fill_runs", "current_field_label", "TEXT")
+            self._ensure_column("handbook_entries", "author_user_id", "TEXT")
+            self._ensure_column("handbook_entries", "author_user_name", "TEXT")
+            self._ensure_column("topic_candidates", "event_line_id", "TEXT")
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_settings (

@@ -21,7 +21,7 @@
     "start:raw": "node scripts/run-local-electron.mjs .",
     "install:mac-local": "node scripts/install-mac-app.mjs",
     "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && electron-builder --mac dmg zip",
-    "dist:mac-local": "npm run build && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false"
+    "dist:mac-local": "npm run build && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库自用平台.app\""
   },
   "build": {
     "appId": "com.yiyu.selfworkbench",

@@ -10,6 +10,9 @@ import type {
   AppSettings,
   AuthLoginPayload,
   AuthRegisterPayload,
+  ConsultationKnowledgeProcessSummary,
+  ConsultationKnowledgeRequestRecord,
+  ConsultationKnowledgeRequestStatus,
   BadgeBoard,
   AuthState,
   ChatMessage,
@@ -21,8 +24,10 @@ import type {
   ClientTemplateFillResponse,
   ClientTemplateFillRun,
   ClientMutationPayload,
+  ClientStrategicProfile,
   ClientSummary,
   ClientWorkspace,
+  CooperationRelationship,
   WorkspaceImportBackfillResponse,
   ClientWorkspaceSettings,
   ClientWorkspaceSettingsPayload,
@@ -134,6 +139,73 @@ import type {
   PushPreview,
 } from '../../shared/types';
 
+function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
+  const backendBaseUrl = 'http://127.0.0.1:47829';
+  const notAvailable = async (action: string) => {
+    throw new Error(`${action} 仅在桌面版可用，请在 Electron 应用中打开。`);
+  };
+
+  return {
+    backendBaseUrl,
+    getDesktopAppInfo: async () => ({
+      appVersion: 'browser-preview',
+      isPackaged: false,
+      platform: 'browser',
+      arch: 'browser',
+      appBundlePath: '',
+      executablePath: '',
+      releasePlanPath: '',
+      releaseArtifactsPath: '',
+      updateChannel: 'beta',
+      updaterPhase: 'planning',
+      recommendedInstallPath: '',
+      installStatus: 'warning',
+      installWarning: '当前为浏览器预览模式，文件选择、协作同步和本地安装能力不可用。',
+      detectedAppPaths: [],
+      legacyAppPaths: [],
+    }),
+    selectFiles: async () => [],
+    selectFolder: async () => null,
+    selectCollabRepo: async () => null,
+    getCollabRepoStatus: async () => ({
+      repoPath: null,
+      repoName: null,
+      suggestedRepoPath: null,
+      isConfigured: false,
+      isValid: false,
+      branch: null,
+      isMainBranch: false,
+      hasLocalChanges: false,
+      hasUnmergedPaths: false,
+      aheadCount: 0,
+      behindCount: 0,
+      localChangeCount: 0,
+      remoteChangeCount: 0,
+      statusText: '当前为浏览器预览模式，Git 协作能力不可用。',
+    }),
+    previewPushToMain: async () => notAvailable('推送到 main'),
+    commitAndPushToMain: async () => notAvailable('推送到 main'),
+    previewPullFromMain: async () => notAvailable('从 main 拉取'),
+    pullSelectedFromMain: async () => notAvailable('从 main 拉取'),
+    rebuildAndInstallFromRepo: async () => notAvailable('重装应用'),
+    getDroppedFilePath: () => null,
+    readTextFile: async () => notAvailable('读取本地文件'),
+    openPath: async () => notAvailable('打开本地路径'),
+    openExternalUrl: async (targetUrl: string) => {
+      window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      return true;
+    },
+    revealInFinder: async () => notAvailable('在 Finder 中显示'),
+    saveFileAs: async () => notAvailable('另存为'),
+    getDiagnosisEngineHealth: async () => [],
+    runBettafishDiagnosis: async () => notAvailable('外部诊断引擎'),
+  };
+}
+
+if (typeof window !== 'undefined' && !window.yiyuWorkbench) {
+  window.yiyuWorkbench = createBrowserWorkbenchFallback();
+}
+
 const baseUrl = window.yiyuWorkbench.backendBaseUrl;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -180,7 +252,46 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function requestForm<T>(path: string, formData: FormData, options?: Omit<RequestInit, 'body'>): Promise<T> {
+type FormRequestOptions = Omit<RequestInit, 'body'> & {
+  onProgress?: (loaded: number, total: number) => void;
+};
+
+async function requestForm<T>(path: string, formData: FormData, options?: FormRequestOptions): Promise<T> {
+  const onProgress = options?.onProgress;
+  if (onProgress) {
+    return new Promise<T>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open((options?.method || 'POST').toUpperCase(), `${baseUrl}${path}`);
+      const headers = new Headers(options?.headers || {});
+      headers.forEach((value, key) => {
+        xhr.setRequestHeader(key, value);
+      });
+      xhr.upload.onprogress = (event) => {
+        onProgress(event.loaded, event.lengthComputable ? event.total : 0);
+      };
+      xhr.onerror = () => {
+        reject(new Error('附件上传失败，请稍后重试。'));
+      };
+      xhr.onload = () => {
+        const text = xhr.responseText || '';
+        if (xhr.status < 200 || xhr.status >= 300) {
+          let detail = text;
+          try {
+            const payload = JSON.parse(text) as { detail?: string };
+            detail = payload.detail || text;
+          } catch {}
+          reject(new Error(detail || `HTTP ${xhr.status}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(text) as T);
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error('附件上传响应解析失败'));
+        }
+      };
+      xhr.send(formData);
+    });
+  }
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     body: formData,
@@ -224,6 +335,17 @@ export async function login(payload: AuthLoginPayload) {
   return request<AuthState>('/api/v1/auth/login', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getConsultationKnowledgeRequests(status?: ConsultationKnowledgeRequestStatus) {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<ConsultationKnowledgeRequestRecord[]>(`/api/v1/consultation/knowledge-requests${suffix}`);
+}
+
+export async function processPendingConsultationKnowledgeRequests() {
+  return request<ConsultationKnowledgeProcessSummary>('/api/v1/consultation/knowledge-requests/process-pending', {
+    method: 'POST',
   });
 }
 
@@ -481,6 +603,36 @@ export async function deleteClientFolder(clientId: string, folderId: string) {
   return request<{ deleted: boolean }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
     method: 'DELETE',
   });
+}
+
+export async function getClientStrategicProfile(clientId: string) {
+  return request<ClientStrategicProfile>(`/api/v1/clients/${clientId}/strategic-profile`);
+}
+
+export async function upsertClientStrategicProfile(clientId: string, payload: ClientStrategicProfile) {
+  return request<ClientStrategicProfile>(`/api/v1/clients/${clientId}/strategic-profile`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getCooperationRelationship(clientId: string) {
+  return request<CooperationRelationship | null>(`/api/v1/clients/${clientId}/cooperation`);
+}
+
+export async function upsertCooperationRelationship(clientId: string, payload: CooperationRelationship) {
+  return request<CooperationRelationship>(`/api/v1/clients/${clientId}/cooperation`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getTaskUnderstanding(taskId: string) {
+  return request<import('../../../shared/types').UnderstandingSnapshotV1>(`/api/v1/tasks/${taskId}/understanding`);
+}
+
+export async function getEventLineWeeklyHistory(eventLineId: string) {
+  return request<import('../../../shared/types').EventLineWeeklySnapshot[]>(`/api/v1/event-lines/${eventLineId}/weekly-history`);
 }
 
 export async function getClientWorkspace(id: string) {
@@ -862,6 +1014,7 @@ export async function uploadTaskAttachment(
     clientId?: string | null;
     eventLineId?: string | null;
     taskTitle?: string | null;
+    onProgress?: (loaded: number, total: number) => void;
   },
 ) {
   const formData = new FormData();
@@ -871,6 +1024,7 @@ export async function uploadTaskAttachment(
   if (payload.taskTitle) formData.append('taskTitle', payload.taskTitle);
   return requestForm<Task>(`/api/v1/tasks/${taskId}/attachments`, formData, {
     method: 'POST',
+    onProgress: payload.onProgress,
   });
 }
 
@@ -893,6 +1047,13 @@ export async function updateEventLine(id: string, payload: Partial<EventLineMuta
   return request<EventLine>(`/api/v1/event-lines/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function addEventLineNote(id: string, text: string) {
+  return request<{ id: string; eventLineId: string; text: string; createdAt: string }>(`/api/v1/event-lines/${id}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
   });
 }
 
@@ -1086,8 +1247,11 @@ export async function promoteCandidateTasks(id: string, tasks: TopicTaskPromotio
   });
 }
 
-export async function promoteCandidateToTask(id: string) {
-  return request<Task>(`/api/v1/topics/candidates/${id}/promote-task`, { method: 'POST' });
+export async function promoteCandidateToTask(id: string, eventLineId?: string) {
+  return request<Task>(`/api/v1/topics/candidates/${id}/promote-task`, {
+    method: 'POST',
+    body: JSON.stringify(eventLineId ? { eventLineId } : {}),
+  });
 }
 
 export async function deleteCandidate(id: string) {

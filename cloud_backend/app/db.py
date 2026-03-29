@@ -107,6 +107,7 @@ class Database:
                     color TEXT NOT NULL,
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
+                    scope TEXT NOT NULL DEFAULT 'org',
                     archived_at TEXT,
                     FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
                 );
@@ -177,6 +178,7 @@ class Database:
                     current_blocker TEXT,
                     next_action TEXT,
                     recent_decision TEXT,
+                    completion_note TEXT,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     priority TEXT NOT NULL,
                     list_id TEXT NOT NULL,
@@ -694,6 +696,7 @@ class Database:
             self._ensure_column("task_tag_library", "updated_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tag_library", "archived_at", "TEXT")
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
             self._ensure_column("org_profiles", "annual_strategy_year", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "annual_strategy_text", "TEXT NOT NULL DEFAULT ''")
@@ -733,12 +736,82 @@ class Database:
             self._ensure_column("tasks", "current_blocker", "TEXT")
             self._ensure_column("tasks", "next_action", "TEXT")
             self._ensure_column("tasks", "recent_decision", "TEXT")
+            self._ensure_column("tasks", "completion_note", "TEXT")
             self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("event_lines", "primary_client_name", "TEXT")
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS task_attachments (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    client_id TEXT,
+                    event_line_id TEXT,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    path TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    mime_type TEXT,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    created_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_attachments_task_created
+                    ON task_attachments(task_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_attachments_event_line_created
+                    ON task_attachments(event_line_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS consultation_answers (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    author_user_id TEXT NOT NULL,
+                    client_id TEXT,
+                    client_name TEXT,
+                    task_id TEXT,
+                    event_line_id TEXT,
+                    question TEXT NOT NULL DEFAULT '',
+                    answer TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'mobile_consult',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(author_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_consultation_answers_org_created
+                    ON consultation_answers(organization_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS consultation_knowledge_requests (
+                    id TEXT PRIMARY KEY,
+                    answer_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    requested_by_user_id TEXT NOT NULL,
+                    error_message TEXT,
+                    local_document_id TEXT,
+                    local_document_path TEXT,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(answer_id) REFERENCES consultation_answers(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(requested_by_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_consultation_knowledge_requests_org_status
+                    ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
+                """
+            )
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:

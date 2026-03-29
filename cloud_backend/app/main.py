@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
@@ -17,6 +17,9 @@ from app.department_catalog import get_department_entry, list_department_catalog
 from app.db import Database, from_json, to_json
 from app.models import (
     AuthTokenResponse,
+    ConsultationKnowledgeRequestCreatePayload,
+    ConsultationKnowledgeRequestRecord,
+    ConsultationKnowledgeRequestUpdatePayload,
     DepartmentOption,
     EmployeeRecord,
     EmployeeDepartmentPayload,
@@ -62,8 +65,10 @@ from app.models import (
     SupportRequestRecord,
     SupportRequestResolvePayload,
     TaskActivityRecord,
+    TaskAttachmentRecord,
     TaskBoardResponse,
     TaskCollaboratorRecord,
+    TaskCompletionReviewPayload,
     TaskCreatePayload,
     TaskListLibraryResponse,
     TaskListMutationPayload,
@@ -104,6 +109,12 @@ def now_iso() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
+
+
+def safe_filename(name: str) -> str:
+    candidate = Path(name or "attachment").name.strip() or "attachment"
+    sanitized = re.sub(r"[^0-9A-Za-z._\-\u4e00-\u9fff]+", "_", candidate)
+    return sanitized[:120] or "attachment"
 
 
 @dataclass
@@ -717,6 +728,54 @@ def _support_request_record(row) -> SupportRequestRecord:
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
+
+
+def _consultation_knowledge_request_record(row) -> ConsultationKnowledgeRequestRecord:
+    return ConsultationKnowledgeRequestRecord(
+        id=str(row["id"]),
+        answerId=str(row["answer_id"]),
+        organizationId=str(row["organization_id"]),
+        target=str(row["target"]),
+        status=str(row["status"]),
+        requestedByUserId=str(row["requested_by_user_id"]),
+        requestedByName=str(row["requested_by_name"] or ""),
+        clientId=str(row["client_id"]) if row["client_id"] else None,
+        clientName=str(row["client_name"]) if row["client_name"] else None,
+        taskId=str(row["task_id"]) if row["task_id"] else None,
+        eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
+        question=str(row["question"] or ""),
+        answer=str(row["answer"] or ""),
+        errorMessage=str(row["error_message"]) if row["error_message"] else None,
+        localDocumentId=str(row["local_document_id"]) if row["local_document_id"] else None,
+        localDocumentPath=str(row["local_document_path"]) if row["local_document_path"] else None,
+        completedAt=str(row["completed_at"]) if row["completed_at"] else None,
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+    )
+
+
+def _consultation_request_row_or_404(state: AppState, request_id: str, organization_id: str):
+    row = state.db.fetchone(
+        """
+        SELECT
+            req.*,
+            ans.client_id,
+            ans.client_name,
+            ans.task_id,
+            ans.event_line_id,
+            ans.question,
+            ans.answer,
+            author.full_name AS requested_by_name
+        FROM consultation_knowledge_requests req
+        JOIN consultation_answers ans ON ans.id = req.answer_id
+        LEFT JOIN employee_accounts author ON author.id = req.requested_by_user_id
+        WHERE req.id = ? AND req.organization_id = ?
+        """,
+        (request_id, organization_id),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Consultation knowledge request not found")
+    return row
 
 
 def _event_line_row_or_404(state: AppState, event_line_id: str, organization_id: str):
@@ -1693,7 +1752,8 @@ def _ensure_seed_data(state: AppState) -> None:
         status_value = person.account_status
         department_id = person.department_id
         secret = {"password": person.password}
-        existing = db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (email.lower(),))
+        existing_by_id = db.fetchone("SELECT id FROM employee_accounts WHERE id = ?", (user_id,))
+        existing = existing_by_id or db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (email.lower(),))
         department = get_department_entry(department_id)
         department_name = department.name if department else None
         if not existing:
@@ -1769,8 +1829,21 @@ def _ensure_seed_data(state: AppState) -> None:
     ]:
         db.execute(
             """
-            INSERT OR IGNORE INTO task_lists(id, organization_id, name, color, sort_order, is_default, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, NULL)
+            INSERT OR IGNORE INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, 'org', NULL)
+            """,
+            (list_id, DEFAULT_ORG_ID, name, color, sort_order, is_default),
+        )
+    for list_id, name, color, sort_order, is_default in [
+        ("plist-1", "健身", "#5B7BFE", 10, 1),
+        ("plist-2", "约会", "#EC4899", 11, 0),
+        ("plist-3", "吃饭", "#F59E0B", 12, 0),
+        ("plist-4", "学习", "#10B981", 13, 0),
+    ]:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, 'personal', NULL)
             """,
             (list_id, DEFAULT_ORG_ID, name, color, sort_order, is_default),
         )
@@ -2354,6 +2427,7 @@ def _task_list_record(row) -> TaskListRecord:
         color=str(row["color"]),
         sortOrder=int(row["sort_order"] or 0),
         isDefault=bool(int(row["is_default"] or 0)),
+        scope=str(row["scope"] or "org"),
         archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
     )
 
@@ -2566,11 +2640,43 @@ def _is_private_task(task: TaskRecord) -> bool:
     return task.scopeMode == "PERSONAL_ONLY" or any(tag.scope == "self" for tag in task.tags)
 
 
+def _task_attachment_record(row) -> TaskAttachmentRecord:
+    return TaskAttachmentRecord(
+        id=str(row["id"]),
+        taskId=str(row["task_id"]),
+        clientId=str(row["client_id"]) if row["client_id"] else None,
+        eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
+        title=str(row["title"]),
+        summary=str(row["summary"]) if row["summary"] else None,
+        path=str(row["path"]),
+        kind=str(row["kind"]),
+        source=str(row["source"]),
+        mimeType=str(row["mime_type"]) if row["mime_type"] else None,
+        sizeBytes=int(row["size_bytes"] or 0),
+        durationSeconds=int(row["duration_seconds"] or 0),
+        createdAt=str(row["created_at"]),
+    )
+
+
+def _task_attachments_for_task(state: AppState, task_id: str) -> list[TaskAttachmentRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT *
+        FROM task_attachments
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        """,
+        (task_id,),
+    )
+    return [_task_attachment_record(row) for row in rows]
+
+
 def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskRecord:
     creator = _get_user_or_404(state, str(row["creator_id"]))
     owner = _get_user_or_404(state, str(row["owner_id"])) if row["owner_id"] else None
     list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (str(row["list_id"]),))
     collaborators = _collaborators_for_task(state, str(row["id"]))
+    attachments = _task_attachments_for_task(state, str(row["id"]))
     viewer_status = next((item.inboxStatus for item in collaborators if item.userId == viewer_id), None)
     org_link_row = _task_org_link_row(state, str(row["id"]))
     task_plan_link_row = _task_plan_link_row(state, str(row["id"]))
@@ -2615,7 +2721,7 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         current_blocker=str(row["current_blocker"]) if row["current_blocker"] else None,
         next_action=str(row["next_action"]) if row["next_action"] else None,
         recent_decision=str(row["recent_decision"]) if row["recent_decision"] else None,
-        evidence_count=int(row["evidence_count"] or 0),
+        evidence_count=max(int(row["evidence_count"] or 0), len(attachments)),
         event_line_row=event_line_row,
     )
     return TaskRecord(
@@ -2646,8 +2752,10 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         currentBlocker=current_blocker,
         nextAction=next_action,
         recentDecision=recent_decision,
-        evidenceCount=evidence_count,
+        completionNote=str(row["completion_note"]) if row["completion_note"] else None,
+        evidenceCount=max(evidence_count, len(attachments)),
         tags=[],
+        attachments=attachments,
         collaborators=collaborators,
         collaborationSummary=_collaboration_summary(collaborators),
         viewerInboxStatus=viewer_status,
@@ -3655,7 +3763,13 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:5173",
             "http://localhost:5173",
             "app://renderer",
+            # Mobile app (Expo dev + production)
+            "http://localhost:8081",
+            "http://localhost:19006",
+            "exp://localhost:8081",
         ],
+        # Allow any origin in dev for mobile (React Native uses various origins)
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -4344,6 +4458,159 @@ def create_app() -> FastAPI:
             )
         return _support_request_record(updated)
 
+    @app.get("/api/v1/consultation/knowledge-requests", response_model=list[ConsultationKnowledgeRequestRecord])
+    def list_consultation_knowledge_requests(
+        status_filter: str | None = Query(default=None, alias="status"),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[ConsultationKnowledgeRequestRecord]:
+        query = [
+            """
+            SELECT
+                req.*,
+                ans.client_id,
+                ans.client_name,
+                ans.task_id,
+                ans.event_line_id,
+                ans.question,
+                ans.answer,
+                author.full_name AS requested_by_name
+            FROM consultation_knowledge_requests req
+            JOIN consultation_answers ans ON ans.id = req.answer_id
+            LEFT JOIN employee_accounts author ON author.id = req.requested_by_user_id
+            WHERE req.organization_id = ?
+            """
+        ]
+        params: list[object] = [current_user.organizationId]
+        if status_filter:
+            query.append("AND req.status = ?")
+            params.append(status_filter)
+        if current_user.primaryRole != "admin":
+            query.append("AND req.requested_by_user_id = ?")
+            params.append(current_user.id)
+        query.append("ORDER BY req.updated_at DESC")
+        rows = state.db.fetchall(" ".join(query), tuple(params))
+        return [_consultation_knowledge_request_record(row) for row in rows]
+
+    @app.post("/api/v1/consultation/knowledge-requests", response_model=ConsultationKnowledgeRequestRecord)
+    def create_consultation_knowledge_request(
+        payload: ConsultationKnowledgeRequestCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ConsultationKnowledgeRequestRecord:
+        normalized_answer = payload.answer.strip()
+        if not normalized_answer:
+            raise HTTPException(status_code=400, detail="答案内容不能为空")
+        if payload.taskId:
+            task_row = _task_row_or_404(state, payload.taskId)
+            if str(task_row["organization_id"]) != current_user.organizationId:
+                raise HTTPException(status_code=404, detail="Task not found")
+        if payload.eventLineId:
+            _event_line_row_or_404(state, payload.eventLineId, current_user.organizationId)
+
+        timestamp = now_iso()
+        answer_id = new_id("consult_answer")
+        request_id = new_id("consult_req")
+        state.db.execute(
+            """
+            INSERT INTO consultation_answers(
+                id, organization_id, author_user_id, client_id, client_name, task_id, event_line_id,
+                question, answer, source, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'mobile_consult', ?, ?)
+            """,
+            (
+                answer_id,
+                current_user.organizationId,
+                current_user.id,
+                payload.clientId,
+                payload.clientName.strip() if payload.clientName else None,
+                payload.taskId,
+                payload.eventLineId,
+                payload.question.strip(),
+                normalized_answer,
+                timestamp,
+                timestamp,
+            ),
+        )
+        state.db.execute(
+            """
+            INSERT INTO consultation_knowledge_requests(
+                id, answer_id, organization_id, target, status, requested_by_user_id, error_message,
+                local_document_id, local_document_path, completed_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                request_id,
+                answer_id,
+                current_user.organizationId,
+                payload.target,
+                current_user.id,
+                timestamp,
+                timestamp,
+            ),
+        )
+        _log_audit(
+            state,
+            "consultation.knowledge_request_created",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={
+                "requestId": request_id,
+                "answerId": answer_id,
+                "target": payload.target,
+                "clientId": payload.clientId or "",
+                "taskId": payload.taskId or "",
+                "eventLineId": payload.eventLineId or "",
+            },
+        )
+        row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
+        return _consultation_knowledge_request_record(row)
+
+    @app.post("/api/v1/consultation/knowledge-requests/{request_id}/status", response_model=ConsultationKnowledgeRequestRecord)
+    def update_consultation_knowledge_request(
+        request_id: str,
+        payload: ConsultationKnowledgeRequestUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ConsultationKnowledgeRequestRecord:
+        row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
+        can_update = current_user.primaryRole == "admin" or str(row["requested_by_user_id"]) == current_user.id
+        if not can_update:
+            raise HTTPException(status_code=403, detail="你当前没有处理该沉淀请求的权限")
+
+        timestamp = now_iso()
+        normalized_error = payload.errorMessage.strip() or None
+        completed_at = timestamp if payload.status == "completed" else None
+        if payload.status == "processing":
+            normalized_error = None
+        state.db.execute(
+            """
+            UPDATE consultation_knowledge_requests
+            SET status = ?, error_message = ?, local_document_id = ?, local_document_path = ?, completed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                payload.status,
+                normalized_error,
+                payload.localDocumentId,
+                payload.localDocumentPath,
+                completed_at,
+                timestamp,
+                request_id,
+            ),
+        )
+        _log_audit(
+            state,
+            "consultation.knowledge_request_updated",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={
+                "requestId": request_id,
+                "status": payload.status,
+                "localDocumentId": payload.localDocumentId or "",
+                "localDocumentPath": payload.localDocumentPath or "",
+            },
+        )
+        updated_row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
+        return _consultation_knowledge_request_record(updated_row)
+
     @app.get("/api/v1/employees/directory", response_model=list[EmployeeRecord])
     def list_employee_directory(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
@@ -4580,6 +4847,33 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def get_task_lists(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskListLibraryResponse:
+        state.db.execute(
+            "UPDATE task_lists SET scope = 'org' WHERE organization_id = ? AND (scope IS NULL OR scope = '')",
+            (current_user.organizationId,),
+        )
+        if state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = 'personal'",
+            (current_user.organizationId,),
+        ) == 0:
+            timestamp = now_iso()
+            for name, color, sort_order, is_default in [
+                ("健身", "#5B7BFE", 10, 1),
+                ("约会", "#EC4899", 11, 0),
+                ("吃饭", "#F59E0B", 12, 0),
+                ("学习", "#10B981", 13, 0),
+            ]:
+                list_id = new_id("list")
+                state.db.execute(
+                    """
+                    INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+                    VALUES(?, ?, ?, ?, ?, ?, 'personal', NULL)
+                    """,
+                    (list_id, current_user.organizationId, name, color, sort_order, is_default),
+                )
+            state.db.execute(
+                "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = 'personal' AND id NOT IN (SELECT id FROM task_lists WHERE organization_id = ? AND scope = 'personal' ORDER BY sort_order ASC LIMIT 1)",
+                (current_user.organizationId, current_user.organizationId),
+            )
         rows = state.db.fetchall(
             """
             SELECT *
@@ -4597,29 +4891,35 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/task-lists", response_model=TaskListRecord)
     def create_task_list(
         payload: TaskListMutationPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskListRecord:
+        if current_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
+            raise HTTPException(status_code=403, detail="Only admin can create public task lists")
         trimmed_name = payload.name.strip()
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
         list_id = new_id("list")
+        next_scope = payload.scope or "org"
         is_default = bool(payload.isDefault) or state.db.scalar(
-            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ?",
-            (current_user.organizationId,),
+            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
+            (current_user.organizationId, next_scope),
         ) == 0
         sort_order = payload.sortOrder if payload.sortOrder is not None else state.db.scalar(
             "SELECT COALESCE(MAX(sort_order), -1) + 1 AS count FROM task_lists WHERE organization_id = ?",
             (current_user.organizationId,),
         )
         if is_default:
-            state.db.execute("UPDATE task_lists SET is_default = 0 WHERE organization_id = ?", (current_user.organizationId,))
+            state.db.execute(
+                "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = ?",
+                (current_user.organizationId, next_scope),
+            )
         state.db.execute(
             """
-            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
             """,
-            (list_id, current_user.organizationId, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0),
+            (list_id, current_user.organizationId, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
         )
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert row is not None
@@ -4629,7 +4929,7 @@ def create_app() -> FastAPI:
     def update_task_list(
         list_id: str,
         payload: TaskListMutationPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskListRecord:
         row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
@@ -4637,11 +4937,14 @@ def create_app() -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
+        if current_user.primaryRole != "admin" and (payload.scope or str(row["scope"] or "org")) != "personal":
+            raise HTTPException(status_code=403, detail="Only admin can update public task lists")
         next_archived_at = str(row["archived_at"]) if row["archived_at"] else None
+        next_scope = payload.scope or str(row["scope"] or "org")
         if payload.archived is True:
             active_list_count = state.db.scalar(
-                "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND (archived_at IS NULL OR archived_at = '')",
-                (current_user.organizationId,),
+                "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ? AND (archived_at IS NULL OR archived_at = '')",
+                (current_user.organizationId, next_scope),
             )
             if active_list_count <= 1 and not row["archived_at"]:
                 raise HTTPException(status_code=400, detail="至少保留一个可用清单")
@@ -4652,11 +4955,14 @@ def create_app() -> FastAPI:
         if next_archived_at:
             next_is_default = False
         if next_is_default:
-            state.db.execute("UPDATE task_lists SET is_default = 0 WHERE organization_id = ?", (current_user.organizationId,))
+            state.db.execute(
+                "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = ?",
+                (current_user.organizationId, next_scope),
+            )
         state.db.execute(
             """
             UPDATE task_lists
-            SET name = ?, color = ?, sort_order = ?, is_default = ?, archived_at = ?
+            SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
             WHERE id = ?
             """,
             (
@@ -4664,6 +4970,7 @@ def create_app() -> FastAPI:
                 payload.color.strip(),
                 payload.sortOrder if payload.sortOrder is not None else int(row["sort_order"] or 0),
                 1 if next_is_default else 0,
+                next_scope,
                 next_archived_at,
                 list_id,
             ),
@@ -4673,14 +4980,17 @@ def create_app() -> FastAPI:
                 """
                 SELECT id
                 FROM task_lists
-                WHERE organization_id = ? AND id != ? AND (archived_at IS NULL OR archived_at = '')
+                WHERE organization_id = ? AND scope = ? AND id != ? AND (archived_at IS NULL OR archived_at = '')
                 ORDER BY sort_order ASC, name COLLATE NOCASE ASC
                 LIMIT 1
                 """,
-                (current_user.organizationId, list_id),
+                (current_user.organizationId, next_scope, list_id),
             )
             if fallback_row:
-                state.db.execute("UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ?", (str(fallback_row["id"]), current_user.organizationId))
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = ?",
+                    (str(fallback_row["id"]), current_user.organizationId, next_scope),
+                )
         updated = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert updated is not None
         return _task_list_record(updated)
@@ -4688,7 +4998,7 @@ def create_app() -> FastAPI:
     @app.delete("/api/v1/task-lists/{list_id}")
     def delete_task_list(
         list_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict[str, bool]:
         row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
@@ -4696,21 +5006,29 @@ def create_app() -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
+        if current_user.primaryRole != "admin" and str(row["scope"] or "org") != "personal":
+            raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
         task_count = state.db.scalar(
             "SELECT COUNT(1) AS count FROM tasks WHERE organization_id = ? AND list_id = ?",
             (current_user.organizationId, list_id),
         )
         if task_count > 0:
             raise HTTPException(status_code=400, detail="该清单已有任务，请先归档，不支持直接删除")
-        if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ?", (current_user.organizationId,)) <= 1:
+        if state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
+            (current_user.organizationId, str(row["scope"] or "org")),
+        ) <= 1:
             raise HTTPException(status_code=400, detail="至少保留一个清单")
         if bool(int(row["is_default"] or 0)):
             fallback_row = state.db.fetchone(
-                "SELECT id FROM task_lists WHERE organization_id = ? AND id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
-                (current_user.organizationId, list_id),
+                "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
+                (current_user.organizationId, str(row["scope"] or "org"), list_id),
             )
             if fallback_row:
-                state.db.execute("UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ?", (str(fallback_row["id"]), current_user.organizationId))
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = ?",
+                    (str(fallback_row["id"]), current_user.organizationId, str(row["scope"] or "org")),
+                )
         state.db.execute("DELETE FROM task_lists WHERE id = ?", (list_id,))
         return {"deleted": True}
 
@@ -5082,6 +5400,109 @@ def create_app() -> FastAPI:
         state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return {"deleted": True}
 
+    @app.post("/api/v1/tasks/{task_id}/attachments", response_model=TaskRecord)
+    async def upload_task_attachment(
+        task_id: str,
+        file: UploadFile = File(...),
+        clientId: str | None = Form(default=None),
+        eventLineId: str | None = Form(default=None),
+        title: str | None = Form(default=None),
+        taskTitle: str | None = Form(default=None),
+        durationSeconds: int | None = Form(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskRecord:
+        task_row = _task_row_or_404(state, task_id)
+        _assert_task_edit_permission(state, current_user, task_row, True, False, False)
+
+        resolved_client_id = str(task_row["client_id"]) if task_row["client_id"] else clientId
+        resolved_event_line_id = str(task_row["event_line_id"]) if task_row["event_line_id"] else eventLineId
+        if resolved_event_line_id:
+            _event_line_row_or_404(state, resolved_event_line_id, current_user.organizationId)
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="上传失败：录音内容为空。")
+
+        base_title = _first_nonempty_text(title, taskTitle, file.filename, str(task_row["title"]), "任务附件") or "任务附件"
+        mime_type = str(file.content_type or "application/octet-stream")
+        fallback_ext = Path(file.filename or "").suffix or (".m4a" if mime_type.startswith("audio/") else "")
+        upload_name = safe_filename(file.filename or f"{base_title}{fallback_ext}")
+        if "." not in upload_name and fallback_ext:
+            upload_name = safe_filename(f"{upload_name}{fallback_ext}")
+
+        task_dir = state.data_dir / "task-attachments" / current_user.organizationId / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = safe_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{upload_name}")
+        attachment_path = task_dir / stored_name
+        attachment_path.write_bytes(content)
+
+        timestamp = now_iso()
+        attachment_id = new_id("tatt")
+        kind = "audio" if mime_type.startswith("audio/") else (Path(stored_name).suffix.lower().lstrip(".") or "file")
+        source = "mobile_recording" if mime_type.startswith("audio/") else "task_attachment"
+        summary = "任务补充录音已归档" if mime_type.startswith("audio/") else "任务附件已归档"
+        resolved_title = base_title.strip() or upload_name
+        relative_path = str(attachment_path.relative_to(state.data_dir))
+
+        state.db.execute(
+            """
+            INSERT INTO task_attachments(
+                id, organization_id, task_id, client_id, event_line_id, title, summary, path, kind, source,
+                mime_type, size_bytes, duration_seconds, created_by_user_id, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attachment_id,
+                current_user.organizationId,
+                task_id,
+                resolved_client_id,
+                resolved_event_line_id,
+                resolved_title,
+                summary,
+                relative_path,
+                kind,
+                source,
+                mime_type,
+                len(content),
+                max(durationSeconds or 0, 0),
+                current_user.id,
+                timestamp,
+            ),
+        )
+
+        attachment_count = int(
+            state.db.scalar("SELECT COUNT(1) AS count FROM task_attachments WHERE task_id = ?", (task_id,)) or 0
+        )
+        state.db.execute(
+            "UPDATE tasks SET evidence_count = ?, updated_at = ? WHERE id = ?",
+            (max(int(task_row["evidence_count"] or 0), attachment_count), timestamp, task_id),
+        )
+
+        activity_payload = {
+            "attachmentId": attachment_id,
+            "title": resolved_title,
+            "kind": kind,
+            "source": source,
+            "clientId": resolved_client_id or "",
+            "eventLineId": resolved_event_line_id or "",
+            "mimeType": mime_type,
+            "sizeBytes": len(content),
+            "durationSeconds": max(durationSeconds or 0, 0),
+            "path": relative_path,
+        }
+        _record_activity(state, task_id, current_user.id, "attachment_added", activity_payload)
+        _record_event_line_activity(
+            state,
+            resolved_event_line_id,
+            "attachment",
+            attachment_id,
+            current_user.id,
+            "上传录音" if mime_type.startswith("audio/") else "上传附件",
+            f"{resolved_title} 已归档到任务附件",
+            activity_payload,
+        )
+        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/accept", response_model=TaskRecord)
     def accept_task(task_id: str, user_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
         if user_id != current_user.id:
@@ -5115,6 +5536,45 @@ def create_app() -> FastAPI:
             (payload.reason.strip(), timestamp, timestamp, task_id, user_id),
         )
         _record_activity(state, task_id, current_user.id, "returned", {"userId": user_id, "reason": payload.reason.strip()})
+        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+
+    @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
+    def complete_task_with_review(
+        task_id: str,
+        payload: TaskCompletionReviewPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskRecord:
+        task_row = _task_row_or_404(state, task_id)
+        _assert_task_edit_permission(state, current_user, task_row, True, False, False)
+        review_note = payload.reviewNote.strip()
+        timestamp = now_iso()
+        previous_status = str(task_row["progress_status"])
+        state.db.execute(
+            """
+            UPDATE tasks
+               SET progress_status = 'done',
+                   completion_note = ?,
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            (review_note, timestamp, task_id),
+        )
+        activity_payload = {
+            "reviewNote": review_note,
+            "previousStatus": previous_status,
+            "nextStatus": "done",
+        }
+        _record_activity(state, task_id, current_user.id, "completed_with_review", activity_payload)
+        _record_event_line_activity(
+            state,
+            str(task_row["event_line_id"]) if task_row["event_line_id"] else None,
+            "review",
+            new_id("trev"),
+            current_user.id,
+            "任务完成复盘",
+            review_note[:120],
+            activity_payload,
+        )
         return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
 
     @app.post("/api/v1/tasks/{task_id}/review/approve", response_model=TaskRecord)

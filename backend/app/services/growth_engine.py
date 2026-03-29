@@ -2308,6 +2308,41 @@ def mark_handbook_entry_reused(
         (timestamp, entry.id),
     )
 
+    # Award reuse XP to the original author if different from the current user
+    author_row = db.fetchone(
+        "SELECT author_user_id, author_user_name FROM handbook_entries WHERE id = ?",
+        (entry.id,),
+    )
+    original_author_id = str(author_row["author_user_id"] or "") if author_row else ""
+    original_author_name = str(author_row["author_user_name"] or "") if author_row else ""
+    if original_author_id and original_author_id != user_id:
+        for ability_key, level, confidence, reason in infer_handbook_hits(entry):
+            _insert_evidence_and_xp(
+                db,
+                user_id=original_author_id,
+                user_name=original_author_name,
+                signal_id=signal_id,
+                ability_key=ability_key,
+                evidence_type="reuse",
+                level=level,
+                confidence=confidence,
+                reason=f"{reason}，方法卡被 {user_name} 复用",
+                review_id=None,
+                task_id=None,
+                handbook_entry_id=entry.id,
+                source_title=entry.title,
+                week_label=week_label,
+                source_type="handbook_entry",
+                raw_text=reuse_text,
+                context={
+                    "sourceLabel": "方法卡被他人复用",
+                    "handbookEntryId": entry.id,
+                    "reusedBy": user_name,
+                    "reusedByUserId": user_id,
+                },
+                created_at=timestamp,
+            )
+
     rebuild_learning_recommendations(db, user_id=user_id, user_name=user_name, week_label=week_label, created_at=timestamp)
     return GrowthValidationActionResponse(
         entryId=entry.id,

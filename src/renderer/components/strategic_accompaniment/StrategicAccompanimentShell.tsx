@@ -813,7 +813,10 @@ function ActionRail({
         {latestMeeting ? (
           <p className="mt-3 text-xs leading-6 text-slate-500">当前将使用《{latestMeeting.title}》回填战略判断。</p>
         ) : (
-          <p className="mt-3 text-xs leading-6 text-slate-500">当前还没有可回填的周会对象。</p>
+          <div className="mt-3">
+            <p className="text-[13px] font-bold text-slate-500">暂无可用周会记录</p>
+            <p className="text-[12px] text-slate-400 mt-1">请先在周会模块中创建一条会议记录，即可用于回填战略判断。</p>
+          </div>
         )}
       </article>
     </aside>
@@ -1002,8 +1005,9 @@ export function StrategicAccompanimentShell({
   const shellBody = (() => {
     if (!selectedClient && !snapshot) {
       return (
-        <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500 shadow-sm">
-          当前还没有选中的业务。
+        <div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-sm">
+          <p className="text-[13px] font-bold text-slate-500">尚未选择业务对象</p>
+          <p className="text-[12px] text-slate-400 mt-1">请在左侧列表中选择一个客户，查看其经营判断总览。</p>
         </div>
       );
     }

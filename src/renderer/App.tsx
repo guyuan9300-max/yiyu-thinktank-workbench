@@ -41,6 +41,13 @@ import {
   Database,
   Layers,
   PenTool,
+  Users,
+  User,
+  GitCommit,
+  Layout,
+  GitMerge,
+  Paperclip,
+  Info,
   UserPlus,
   Trash2,
   X,
@@ -204,6 +211,7 @@ import {
   login,
   ingestMeeting,
   logout,
+  processPendingConsultationKnowledgeRequests,
   previewPullFromMain,
   previewPushToMain,
   publishMeeting,
@@ -226,6 +234,7 @@ import {
   getClientMessage,
   updateEmployeeRole,
   updateEmployeeDepartment,
+  addEventLineNote,
   updateEventLine,
   updateFeishuBotSettings,
   clearFeishuUserBinding,
@@ -268,10 +277,11 @@ import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationC
 import { AgentWeeklyPlanEditor } from './components/tasks/AgentWeeklyPlanEditor';
 import { ReviewHistoryPicker } from './components/tasks/ReviewHistoryPicker';
 import { TaskOrgContextPanel } from './components/tasks/TaskOrgContextPanel';
-import { WeeklyReviewAnalysisPanel, type EventLineGapActionPayload } from './components/tasks/WeeklyReviewAnalysisPanel';
+import type { EventLineGapActionPayload } from './components/tasks/WeeklyReviewTypes';
 import { WeeklyReviewSummaryPanel } from './components/tasks/WeeklyReviewSummaryPanel';
+import { UnderstandingPanel } from './components/tasks/UnderstandingPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
-import { buildWeeklyReviewDocumentDraft, reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
+import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { UnifiedWorkbenchStudio } from './components/workbench/UnifiedWorkbenchStudio';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthHandbookView } from './components/handbook/GrowthHandbookView';
@@ -528,6 +538,14 @@ const providerDisplayNames = {
 } as const;
 
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
+
+function normalizeInitialCollabRepoPath(storedPath: string | null) {
+  if (!storedPath) return null;
+  if (storedPath.endsWith('/yiyu-thinktank-workbench-main-sync')) return storedPath;
+  if (storedPath.endsWith('/yiyu-thinktank-workbench')) return `${storedPath}-main-sync`;
+  return storedPath;
+}
+
 const REQUIRED_BACKEND_FEATURES = [
   'knowledge.vectorize-answer',
   'knowledge.reclass-events',
@@ -542,7 +560,7 @@ const DEFAULT_TASK_SETTINGS: TaskSettings = {
   defaultListId: null,
   defaultPriority: 'normal',
   defaultDueDatePreset: 'today',
-  defaultViewMode: 'list',
+  defaultViewMode: 'calendar',
   listSortMode: 'manual',
   showCompletedTasks: false,
   defaultReviewScope: 'work',
@@ -1057,7 +1075,7 @@ function WorkTracePanel({
       : [];
     const problemFrame = typeof normalized.problemFrame === 'string' && normalized.problemFrame.trim()
       ? normalized.problemFrame.trim()
-      : `围绕“${question}”，先建立背景理解，再确认原始证据，最后形成顾问式判断。`;
+      : `围绕"${question}"，先建立背景理解，再确认原始证据，最后形成顾问式判断。`;
     const analysisPlan = typeof normalized.analysisPlan === 'string' ? normalized.analysisPlan.trim() : '';
     const note = typeof normalized.note === 'string' ? normalized.note.trim() : '这里展示的是本次回答如何利用背景底稿和原始证据，不是模型原始思维全文。';
     if (!problemFrame && !backgroundTrail.length && !materialTrail.length && !webTrail.length) return null;
@@ -1330,7 +1348,7 @@ function deriveLiveFocusQuestions(question: string, analysisFocus: string[]) {
   for (const item of analysisFocus) {
     const normalized = item.trim();
     if (!normalized) continue;
-    cues.push(`当前需要先看清“${normalized}”在整体判断中的位置。`);
+    cues.push(`当前需要先看清"${normalized}"在整体判断中的位置。`);
   }
   return Array.from(new Set(cues)).slice(0, 5);
 }
@@ -1935,6 +1953,25 @@ function formatTaskDuePickerDateLabel(datePart?: string | null) {
   return `${parsedDate.getFullYear()}/${String(parsedDate.getMonth() + 1).padStart(2, '0')}/${String(parsedDate.getDate()).padStart(2, '0')}`;
 }
 
+function taskCalendarSpanDays(durationMinutes?: number | null) {
+  const safeDuration = Math.max(0, durationMinutes ?? 0);
+  if (safeDuration < 24 * 60) return 1;
+  return Math.max(1, Math.ceil(safeDuration / (24 * 60)));
+}
+
+function formatTaskDuePickerSummaryLabel(datePart?: string | null, timePart?: string | null, durationMinutes?: number | null) {
+  const startLabel = formatTaskDuePickerDateLabel(datePart);
+  if (startLabel === '选择日期') return startLabel;
+  const time = (timePart || '').trim();
+  if (time) return `${startLabel} ${time}`;
+  const parsedDate = parseTaskDateValue(datePart);
+  if (!parsedDate) return startLabel;
+  const spanDays = taskCalendarSpanDays(durationMinutes);
+  if (spanDays <= 1) return startLabel;
+  const endDate = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate() + spanDays - 1);
+  return `${startLabel} - ${formatTaskDuePickerDateLabel(formatDateOnlyValue(endDate))}`;
+}
+
 function taskTagPillStyle(tag: TaskTag, emphasized = false): React.CSSProperties {
   return {
     backgroundColor: emphasized ? `${tag.color}26` : getTint(tag.color),
@@ -2041,11 +2078,11 @@ function resolveOrganizationTaskName(organizationName?: string | null) {
 }
 
 function buildOrganizationTaskAutoReason(organizationName?: string | null) {
-  return `默认按组织任务“${resolveOrganizationTaskName(organizationName)}”处理；只有明确命中客户 / 项目名称时才自动关联。`;
+  return `默认按组织任务"${resolveOrganizationTaskName(organizationName)}"处理；只有明确命中客户 / 项目名称时才自动关联。`;
 }
 
 function buildOrganizationTaskManualReason(organizationName?: string | null) {
-  return `已手动设置为组织任务“${resolveOrganizationTaskName(organizationName)}”。`;
+  return `已手动设置为组织任务"${resolveOrganizationTaskName(organizationName)}"。`;
 }
 
 function inferTaskPriority(params: {
@@ -2072,7 +2109,7 @@ function inferTaskPriority(params: {
     if (duePast) return { priority: 'high', reason: '系统识别为高优先级：任务已过截止日，需优先处理。' };
     if (dueToday) return { priority: 'high', reason: '系统识别为高优先级：任务截止到今天，建议优先推进。' };
     if (matchedClient && hasStrategicKeyword) {
-      return { priority: 'high', reason: `系统识别为高优先级：内容涉及客户“${matchedClient}”且带有明确推进动作。` };
+      return { priority: 'high', reason: `系统识别为高优先级：内容涉及客户"${matchedClient}"且带有明确推进动作。` };
     }
     return { priority: 'high', reason: '系统识别为高优先级：标题或说明中包含明显的紧急/交付信号。' };
   }
@@ -2090,15 +2127,34 @@ function inferTaskClient(params: {
   organizationName?: string | null;
 }): { clientId: string; confidence: 'none' | 'low' | 'medium' | 'high'; reason: string } {
   const text = `${params.title}\n${params.desc}`.trim().toLowerCase();
+  const buildNameFragments = (value: string) => {
+    const name = value.trim();
+    if (!name) return [] as string[];
+    const hasCjk = /[\u4e00-\u9fff]/.test(name);
+    if (!hasCjk) return tokenizeScopeText(name, 2, 12);
+    const normalized = name.replace(/\s+/g, '');
+    if (normalized.length < 4) return [normalized.toLowerCase()];
+    const fragments = new Set<string>();
+    const maxLen = Math.min(4, normalized.length);
+    for (let len = 2; len <= maxLen; len += 1) {
+      for (let i = 0; i <= normalized.length - len; i += 1) {
+        fragments.add(normalized.slice(i, i + len).toLowerCase());
+      }
+    }
+    return Array.from(fragments);
+  };
   const normalizedClients = params.clients.map((client) => {
     const domain = client.domain.replace(/^https?:\/\//i, '').replace(/^www\./i, '').trim();
     const domainParts = domain.split(/[/.]/).filter(Boolean);
+    const nameFragments = buildNameFragments(client.name || '');
+    const aliasFragments = buildNameFragments(client.alias || '');
     const exactTokens = [client.name, client.alias]
       .map((item) => item.trim().toLowerCase())
       .filter((item) => item.length >= 2);
     const supportTokens = Array.from(
       new Set(
         [domain, ...domainParts]
+          .concat(nameFragments, aliasFragments)
           .map((item) => item.trim().toLowerCase())
           .filter((item) => item.length >= 2),
       ),
@@ -2120,17 +2176,26 @@ function inferTaskClient(params: {
     const winner = ranked[0];
     const hits = [...winner.exactHits, ...winner.supportHits].slice(0, 2);
     if (winner.exactHits.length === 0) {
+      const strongSupport = winner.supportHits.some((token) => token.length >= 4);
+      const multiSupport = winner.supportHits.length >= 2;
+      if (strongSupport || multiSupport) {
+        return {
+          clientId: winner.client.id,
+          confidence: 'medium',
+          reason: `系统自动识别客户 / 项目：命中多个关键词"${hits.join('、') || winner.client.name}"，已预填为"${winner.client.name}"。`,
+        };
+      }
       return {
         clientId: '',
         confidence: 'low',
-        reason: `系统捕捉到与“${winner.client.name}”相关的弱信号${hits.length ? `（${hits.join('、')}）` : ''}，但不足以自动挂到项目；默认仍按组织任务“${resolveOrganizationTaskName(params.organizationName)}”处理。`,
+        reason: `系统捕捉到与"${winner.client.name}"相关的弱信号${hits.length ? `（${hits.join('、')}）` : ''}，但不足以自动挂到项目；默认仍按组织任务"${resolveOrganizationTaskName(params.organizationName)}"处理。`,
       };
     }
     const confidence = 'high';
     return {
       clientId: winner.client.id,
       confidence,
-      reason: `系统自动识别客户 / 项目：命中“${hits.join('、') || winner.client.name}”，已预填为“${winner.client.name}”。`,
+      reason: `系统自动识别客户 / 项目：命中"${hits.join('、') || winner.client.name}"，已预填为"${winner.client.name}"。`,
     };
   }
   return { clientId: '', confidence: 'none', reason: buildOrganizationTaskAutoReason(params.organizationName) };
@@ -2167,7 +2232,7 @@ function inferTaskEventLine(params: {
     if (params.currentClientId && scopedEventLines.length === 1) {
       return {
         eventLineId: scopedEventLines[0].id,
-        reason: `当前项目下仅有一条事件线，先预填为“${scopedEventLines[0].name}”。`,
+        reason: `当前项目下仅有一条事件线，先预填为"${scopedEventLines[0].name}"。`,
       };
     }
     return { eventLineId: '', reason: summarizeScope() };
@@ -2193,13 +2258,13 @@ function inferTaskEventLine(params: {
     const hits = [...winner.exactHits, ...winner.supportHits].slice(0, 2);
     return {
       eventLineId: winner.eventLine.id,
-      reason: `系统已在${params.currentClientId && scopedEventLines.length > 0 ? '当前项目' : '可选范围'}内匹配到事件线“${winner.eventLine.name}”${hits.length ? `，命中“${hits.join('、')}”` : ''}。`,
+      reason: `系统已在${params.currentClientId && scopedEventLines.length > 0 ? '当前项目' : '可选范围'}内匹配到事件线"${winner.eventLine.name}"${hits.length ? `，命中"${hits.join('、')}"` : ''}。`,
     };
   }
   if (params.currentClientId && scopedEventLines.length === 1) {
     return {
       eventLineId: scopedEventLines[0].id,
-      reason: `当前项目下仅有一条事件线，先预填为“${scopedEventLines[0].name}”，可手动调整。`,
+      reason: `当前项目下仅有一条事件线，先预填为"${scopedEventLines[0].name}"，可手动调整。`,
     };
   }
   return { eventLineId: '', reason: summarizeScope() };
@@ -2234,7 +2299,7 @@ function inferTaskProjectModule(params: {
     if (candidates.length === 1) {
       return {
         projectModuleId: candidates[0].id,
-        reason: `当前项目下仅有 1 个模块，先预填为“${candidates[0].name}”。`,
+        reason: `当前项目下仅有 1 个模块，先预填为"${candidates[0].name}"。`,
       };
     }
     return { projectModuleId: '', reason: `当前项目下已有 ${candidates.length} 个模块，可手动选择。` };
@@ -2263,13 +2328,13 @@ function inferTaskProjectModule(params: {
     const hits = [...winner.exactHits, ...winner.supportHits].slice(0, 3);
     return {
       projectModuleId: winner.module.id,
-      reason: `系统建议挂到模块“${winner.module.name}”${hits.length ? `，命中“${hits.join('、')}”` : ''}。`,
+      reason: `系统建议挂到模块"${winner.module.name}"${hits.length ? `，命中"${hits.join('、')}"` : ''}。`,
     };
   }
   if (candidates.length === 1) {
     return {
       projectModuleId: candidates[0].id,
-      reason: `当前项目下仅有 1 个模块，先预填为“${candidates[0].name}”，可手动调整。`,
+      reason: `当前项目下仅有 1 个模块，先预填为"${candidates[0].name}"，可手动调整。`,
     };
   }
   return { projectModuleId: '', reason: `当前项目下共有 ${candidates.length} 个模块，可手动选择。` };
@@ -2303,7 +2368,7 @@ function inferTaskProjectFlow(params: {
     if (scopedFlows.length === 1) {
       return {
         projectFlowId: scopedFlows[0].id,
-        reason: `当前范围内仅有 1 条流程，先预填为“${scopedFlows[0].name}”。`,
+        reason: `当前范围内仅有 1 条流程，先预填为"${scopedFlows[0].name}"。`,
       };
     }
     return { projectFlowId: '', reason: `当前范围内已有 ${scopedFlows.length} 条流程，可手动选择。` };
@@ -2335,13 +2400,13 @@ function inferTaskProjectFlow(params: {
     const hits = [...winner.exactHits, ...winner.supportHits].slice(0, 3);
     return {
       projectFlowId: winner.flow.id,
-      reason: `系统建议挂到流程“${winner.flow.name}”${hits.length ? `，命中“${hits.join('、')}”` : ''}。`,
+      reason: `系统建议挂到流程"${winner.flow.name}"${hits.length ? `，命中"${hits.join('、')}"` : ''}。`,
     };
   }
   if (scopedFlows.length === 1) {
     return {
       projectFlowId: scopedFlows[0].id,
-      reason: `当前范围内仅有 1 条流程，先预填为“${scopedFlows[0].name}”，可手动调整。`,
+      reason: `当前范围内仅有 1 条流程，先预填为"${scopedFlows[0].name}"，可手动调整。`,
     };
   }
   return { projectFlowId: '', reason: `当前范围内共有 ${scopedFlows.length} 条流程，可手动选择。` };
@@ -2379,7 +2444,7 @@ function buildTaskScopeSuggestion(params: {
         key: 'client',
         label: '项目',
         value: resolvedClient.name,
-        reason: clientInference?.reason || `建议先归到项目“${resolvedClient.name}”。`,
+        reason: clientInference?.reason || `建议先归到项目"${resolvedClient.name}"。`,
       });
     }
   }
@@ -2756,14 +2821,14 @@ function buildTaskProjectPreview(params: {
     if (!isGenericPreviewLine(params.eventLine?.nextStep)) return params.eventLine?.nextStep?.slice(0, 120) || '';
     if (concreteConversationNext) return truncatePreviewText(concreteConversationNext, 120);
     if (relationshipTask) {
-      return `下一步动作：会前先写清“给谁看、解决什么问题、会后推进什么动作”，再带着${focusSubject}去谈。`.slice(0, 120);
+      return `下一步动作：会前先写清"给谁看、解决什么问题、会后推进什么动作"，再带着${focusSubject}去谈。`.slice(0, 120);
     }
     if (materialTask && attachmentCount > 0) {
       return '下一步动作：先把已上传材料压成可谈的结论、关键判断和会后跟进动作，再进入正式推进。'.slice(0, 120);
     }
     if (projectModule?.name) return `下一步动作：围绕${projectModule.name}继续细化并推进落地。`.slice(0, 120);
-    if (goals.length > 0) return `下一步动作：继续围绕“${goals[0]}”推进具体动作。`.slice(0, 120);
-    if (relatedMeetings.length > 0) return `下一步动作：根据最近讨论“${relatedMeetings[0]}”形成明确安排。`.slice(0, 120);
+    if (goals.length > 0) return `下一步动作：继续围绕"${goals[0]}"推进具体动作。`.slice(0, 120);
+    if (relatedMeetings.length > 0) return `下一步动作：根据最近讨论"${relatedMeetings[0]}"形成明确安排。`.slice(0, 120);
     return '下一步动作：先补齐项目背景，再明确这一阶段最核心的推进事项。';
   })();
   const recentProgress = (() => {
@@ -2778,7 +2843,7 @@ function buildTaskProjectPreview(params: {
     if (workspaceDocumentCount >= 8) {
       return `最近进展：客户工作台里已沉淀 ${workspaceDocumentCount} 份相关资料，但还需要继续把它们挂到具体推进结构上。`.slice(0, 120);
     }
-    if (goals.length > 0) return `最近进展：已围绕“${goals[0]}”持续推进。`.slice(0, 120);
+    if (goals.length > 0) return `最近进展：已围绕"${goals[0]}"持续推进。`.slice(0, 120);
     return '最近进展仍待补充，建议尽快沉淀会议或推进记录。';
   })();
   const sourceEvidence = ['任务关联客户'];
@@ -3235,6 +3300,36 @@ function createUiId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+type TaskPropertyRowProps = {
+  icon: React.ReactNode;
+  label: string;
+  children: React.ReactNode;
+};
+
+const COMMON_SURNAME_SET = new Set(['王', '张', '李', '赵', '刘', '陈', '杨', '黄', '周', '吴', '徐', '孙', '胡', '朱', '高', '林', '何', '郭', '马', '罗', '梁', '宋', '郑', '谢', '韩', '唐', '冯', '于', '董', '程']);
+
+const buildNameBadge = (name: string) => {
+  const trimmed = name.trim();
+  if (!trimmed) return '未';
+  const firstChar = trimmed[0];
+  if (COMMON_SURNAME_SET.has(firstChar) && trimmed.length > 1) {
+    return trimmed[1];
+  }
+  return firstChar;
+};
+
+function TaskPropertyRow({ icon, label, children }: TaskPropertyRowProps) {
+  return (
+    <div className="flex items-center">
+      <div className="flex w-[104px] flex-shrink-0 items-center gap-2 text-gray-500">
+        {icon}
+        <span className="text-sm">{label}</span>
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
 export default function App() {
   const initialTodayState = getTodayCalendarState();
   const [activeTab, setActiveTab] = useState<NavKey>('client_workspace');
@@ -3244,7 +3339,7 @@ export default function App() {
   });
   const [collabRepoPath, setCollabRepoPath] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
-    return window.localStorage.getItem(COLLAB_REPO_PATH_STORAGE_KEY);
+    return normalizeInitialCollabRepoPath(window.localStorage.getItem(COLLAB_REPO_PATH_STORAGE_KEY));
   });
   const [collabStatus, setCollabStatus] = useState<CollabRepoStatus | null>(null);
   const [isCollabStatusLoading, setIsCollabStatusLoading] = useState(false);
@@ -3254,7 +3349,8 @@ export default function App() {
   const [collabConfirmedRiskPaths, setCollabConfirmedRiskPaths] = useState<string[]>([]);
   const [collabCommitMessage, setCollabCommitMessage] = useState('');
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
-  const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('list');
+  const collabAutoSwitchTargetRef = useRef<string | null>(null);
+  const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('calendar');
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
     const [taskSelectedDay, setTaskSelectedDay] = useState(initialTodayState.selectedDay);
     const [taskCalendarDisplayMode, setTaskCalendarDisplayMode] = useState<'month' | 'week'>('month');
@@ -3315,6 +3411,7 @@ export default function App() {
     }>
   >([]);
   const [organizationDnaModules, setOrganizationDnaModules] = useState<OrganizationDnaModule[]>([]);
+  const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
   const [clientWorkspaceSettingsState, setClientWorkspaceSettingsState] = useState<ClientWorkspaceSettings>(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
   const [topicsSettingsState, setTopicsSettingsState] = useState<TopicsSettings>(DEFAULT_TOPICS_SETTINGS);
   const [analysisSettingsState, setAnalysisSettingsState] = useState<AnalysisWorkbenchSettings>(DEFAULT_ANALYSIS_SETTINGS);
@@ -3372,6 +3469,7 @@ export default function App() {
   const backendReadyRef = useRef(false);
   const startupLocalServiceErrorGraceUntilRef = useRef(Date.now() + 45000);
   const localServiceBannerProbeInFlightRef = useRef(false);
+  const consultationKnowledgeSyncInFlightRef = useRef(false);
 
   const showBanner = (type: 'success' | 'error' | 'info', text: string) => {
     showGlobalBanner(type, text);
@@ -3452,6 +3550,10 @@ export default function App() {
   }
 
   async function ensureCollabRepoForAction() {
+    if (collabStatus?.isConfigured && collabStatus.isValid && !collabStatus.isMainBranch && collabStatus.suggestedRepoPath) {
+      setCollabRepoPath(collabStatus.suggestedRepoPath);
+      return collabStatus.suggestedRepoPath;
+    }
     if (collabStatus?.repoPath && collabStatus.isValid) {
       if (collabStatus.repoPath !== collabRepoPath) {
         setCollabRepoPath(collabStatus.repoPath);
@@ -4107,7 +4209,7 @@ export default function App() {
   useEffect(() => {
     if (hasAppliedInitialTaskViewModeRef.current) return;
     if (taskSettingsState?.defaultViewMode) {
-      setTaskViewMode(taskSettingsState.defaultViewMode);
+      setTaskViewMode(taskSettingsState.defaultViewMode === 'list' ? 'calendar' : taskSettingsState.defaultViewMode);
       hasAppliedInitialTaskViewModeRef.current = true;
     }
   }, [taskSettingsState?.defaultViewMode]);
@@ -4144,14 +4246,124 @@ export default function App() {
     });
   }, [activeTab, settingsSection, authState.authenticated]);
 
+  useEffect(() => {
+    if (!authState.authenticated) return;
+    let cancelled = false;
+
+    const run = async () => {
+      if (consultationKnowledgeSyncInFlightRef.current) return;
+      consultationKnowledgeSyncInFlightRef.current = true;
+      try {
+        const summary = await processPendingConsultationKnowledgeRequests();
+        if (!cancelled && summary.processedCount > 0) {
+          console.info(
+            `[consultation-knowledge] processed=${summary.processedCount} completed=${summary.completedCount} failed=${summary.failedCount}`,
+          );
+          const touchedCurrentClient = Boolean(
+            currentClientId && summary.items.some((item) => item.clientId === currentClientId),
+          );
+          if (touchedCurrentClient) {
+            await refreshWorkspace(currentClientId).catch(() => undefined);
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[consultation-knowledge] pending sync failed', error);
+        }
+      } finally {
+        consultationKnowledgeSyncInFlightRef.current = false;
+      }
+    };
+
+    void run();
+    const timer = window.setInterval(() => {
+      void run();
+    }, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authState.authenticated, currentClientId, currentSessionUser?.id]);
+
   const effectiveTaskSettings = useMemo(
     () => resolveTaskSettings(taskSettingsState, taskLists),
     [taskSettingsState, taskLists],
   );
-  const activeTaskLists = useMemo(
-    () => taskLists.filter((item) => !item.archivedAt),
-    [taskLists],
-  );
+    const activeTaskLists = useMemo(
+      () => taskLists.filter((item) => !item.archivedAt),
+      [taskLists],
+    );
+    const orgTaskLists = useMemo(
+      () => activeTaskLists.filter((item) => (item.scope || 'org') === 'org'),
+      [activeTaskLists],
+    );
+    const personalTaskLists = useMemo(
+      () => activeTaskLists.filter((item) => (item.scope || 'org') === 'personal'),
+      [activeTaskLists],
+    );
+    const resolveDefaultListId = (scope: 'org' | 'personal') => {
+      const listPool = scope === 'personal' ? personalTaskLists : orgTaskLists;
+      return listPool.find((item) => item.isDefault)?.id || listPool[0]?.id || '';
+    };
+    const seededPersonalListsRef = useRef(false);
+    const seededOrgListsRef = useRef(false);
+    const orgListBootstrapRef = useRef<Promise<TaskList | null> | null>(null);
+
+    const ensureOrgTaskList = async () => {
+      if (orgTaskLists.length > 0) {
+        return orgTaskLists.find((item) => item.isDefault) || orgTaskLists[0] || null;
+      }
+      if (!orgListBootstrapRef.current) {
+        orgListBootstrapRef.current = (async () => {
+          const created = await createTaskList({
+            name: '收集箱',
+            color: '#888681',
+            isDefault: true,
+            scope: 'org',
+          });
+          await loadTaskBlock();
+          return created;
+        })()
+          .finally(() => {
+            orgListBootstrapRef.current = null;
+          });
+      }
+      return orgListBootstrapRef.current;
+    };
+
+    useEffect(() => {
+      if (seededOrgListsRef.current) return;
+      if (!currentSessionUser?.id) return;
+      if (orgTaskLists.length > 0) {
+        seededOrgListsRef.current = true;
+        return;
+      }
+      seededOrgListsRef.current = true;
+      void ensureOrgTaskList().catch(() => {
+        seededOrgListsRef.current = false;
+      });
+    }, [currentSessionUser?.id, orgTaskLists.length]);
+
+    useEffect(() => {
+      if (seededPersonalListsRef.current) return;
+      if (!currentSessionUser?.id) return;
+      if (personalTaskLists.length > 0) {
+        seededPersonalListsRef.current = true;
+        return;
+      }
+      seededPersonalListsRef.current = true;
+      const defaults = [
+        { name: '健身', color: '#5B7BFE', isDefault: true },
+        { name: '约会', color: '#EC4899', isDefault: false },
+        { name: '吃饭', color: '#F59E0B', isDefault: false },
+        { name: '学习', color: '#10B981', isDefault: false },
+      ];
+      Promise.all(defaults.map((item) => createTaskList({ ...item, scope: 'personal' })))
+        .then(() => loadTaskBlock())
+        .catch(() => {
+          // ignore seed failures; user can create manually in settings
+        });
+    }, [currentSessionUser?.id, personalTaskLists.length]);
   const activeTaskTags = useMemo(
     () => taskTags.filter((item) => !item.archivedAt),
     [taskTags],
@@ -4172,6 +4384,22 @@ export default function App() {
   useEffect(() => {
     void refreshCollabStatus(collabRepoPath);
   }, [collabRepoPath]);
+
+  useEffect(() => {
+    const suggestedRepoPath = collabStatus?.suggestedRepoPath || null;
+    if (!suggestedRepoPath) return;
+    const shouldSwitchToSuggested =
+      !collabRepoPath
+      || (collabStatus?.isConfigured && !collabStatus.isMainBranch && suggestedRepoPath !== collabRepoPath);
+    if (!shouldSwitchToSuggested) return;
+    if (collabAutoSwitchTargetRef.current === suggestedRepoPath && collabRepoPath === suggestedRepoPath) return;
+    collabAutoSwitchTargetRef.current = suggestedRepoPath;
+    const switchingFrom = collabRepoPath;
+    setCollabRepoPath(suggestedRepoPath);
+    if (switchingFrom && switchingFrom !== suggestedRepoPath) {
+      flash('info', '协作源码目录已切换到 main 基线仓库。');
+    }
+  }, [collabRepoPath, collabStatus]);
 
   useEffect(() => {
     if (activeTab !== 'topics_management') return undefined;
@@ -4362,10 +4590,10 @@ export default function App() {
                           setDepartmentInviteCode(event.target.value);
                           setMessage('');
                         }}
-                        placeholder="先输入部门邀请码，例如“咨询策略部 邀请码 482193”或 482193"
+                        placeholder={'先输入部门邀请码，例如「咨询策略部 邀请码 482193」或 482193'}
                         className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                       />
-                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴“部门名 + 6 位邀请码”，注册时先锁定部门，后面不用自己手选。</p>
+                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴"部门名 + 6 位邀请码"，注册时先锁定部门，后面不用自己手选。</p>
                       <div className={`rounded-[24px] border px-4 py-4 ${inviteDepartment ? 'border-emerald-200 bg-emerald-50/80' : 'border-dashed border-gray-200 bg-gray-50'}`}>
                         <p className="text-[12px] font-bold text-gray-500">邀请码识别结果</p>
                         {inviteDepartment ? (
@@ -4651,10 +4879,27 @@ export default function App() {
     const [projectStructureCache, setProjectStructureCache] = useState<Record<string, ProjectStructureResponse>>({});
     const [pendingTaskAttachments, setPendingTaskAttachments] = useState<File[]>([]);
     const [isTaskAttachmentBusy, setIsTaskAttachmentBusy] = useState(false);
+    const [taskAttachmentUploadProgress, setTaskAttachmentUploadProgress] = useState<{
+      currentFileName: string;
+      uploadedFiles: number;
+      totalFiles: number;
+      percent: number;
+    } | null>(null);
+    const [pendingTaskDelete, setPendingTaskDelete] = useState<{
+      id: string;
+      title: string;
+      clientId?: string | null;
+      eventLineId?: string | null;
+      closeEditor?: boolean;
+    } | null>(null);
+    const [isSavingTask, setIsSavingTask] = useState(false);
     const [tagDraft, setTagDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
     const [mentionQuery, setMentionQuery] = useState('@');
     const [mentionOptions, setMentionOptions] = useState<MentionCandidate[]>([]);
     const [isMentionMenuOpen, setIsMentionMenuOpen] = useState(false);
+    const [ownerQuery, setOwnerQuery] = useState('');
+    const [ownerOptions, setOwnerOptions] = useState<MentionCandidate[]>([]);
+    const [isOwnerMenuOpen, setIsOwnerMenuOpen] = useState(false);
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
     const [taskViewLibrary, setTaskViewLibrary] = useState<TaskViewDefinition[]>([]);
@@ -4669,6 +4914,8 @@ export default function App() {
     const [isEventLineBusy, setIsEventLineBusy] = useState(false);
     const [isGeneratingEventLineClarification, setIsGeneratingEventLineClarification] = useState(false);
     const [isSavingEventLineClarification, setIsSavingEventLineClarification] = useState(false);
+    const [eventLineNoteText, setEventLineNoteText] = useState('');
+    const [isSavingEventLineNote, setIsSavingEventLineNote] = useState(false);
     const [taskEventLineClarificationDraft, setTaskEventLineClarificationDraft] = useState<EventLineClarificationState>(buildEventLineClarificationDraft(null));
     const [isTaskEventLineClarifyMode, setIsTaskEventLineClarifyMode] = useState(false);
     const [isGeneratingTaskEventLineClarification, setIsGeneratingTaskEventLineClarification] = useState(false);
@@ -4686,20 +4933,29 @@ export default function App() {
     const [savedReviewGroupId, setSavedReviewGroupId] = useState<string | null>(null);
     const [reviewStatusChangingGroupId, setReviewStatusChangingGroupId] = useState<string | null>(null);
 
+    const resetTaskModalTransientState = () => {
+      setIsDuePickerOpen(false);
+      setDuePickerTab('date');
+      setIsMentionMenuOpen(false);
+      setMentionQuery('@');
+      setMentionOptions([]);
+      setIsOwnerMenuOpen(false);
+      setOwnerQuery('');
+      setOwnerOptions([]);
+      setTaskAttachmentUploadProgress(null);
+      setIsTaskAttachmentBusy(false);
+      setIsSavingTask(false);
+    };
+
     const closeTaskModal = (reason: string) => {
       console.info(`[task-modal] close reason=${reason}`);
+      resetTaskModalTransientState();
       setIsTaskModalOpen(false);
     };
     const [showCalendarCollaborations, setShowCalendarCollaborations] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
     const [reviewForm, setReviewForm] = useState<ReviewFormState>(createEmptyReviewForm());
-    const [reviewStage, setReviewStage] = useState<'collect' | 'document'>('collect');
-    const [reviewDocumentScope, setReviewDocumentScope] = useState<'work' | 'personal'>('work');
-    const [reviewDocumentTitle, setReviewDocumentTitle] = useState('');
-    const [reviewDocumentDraft, setReviewDocumentDraft] = useState('');
-    const [isSavingReviewDocument, setIsSavingReviewDocument] = useState(false);
     const taskAttachmentInputRef = useRef<HTMLInputElement | null>(null);
-    const [isSubmittingReviewDocument, setIsSubmittingReviewDocument] = useState(false);
     const [applyingScopeTaskIds, setApplyingScopeTaskIds] = useState<string[]>([]);
     const [isApplyingAllScopeSuggestions, setIsApplyingAllScopeSuggestions] = useState(false);
 
@@ -4753,25 +5009,36 @@ export default function App() {
     useEffect(() => {
       if (!isTaskModalOpen || !editingTask.clientId) return;
       if (editingTask.clientId === workspace?.client.id) return;
+      const clientId = editingTask.clientId;
+      const cachedDnaModules = taskClientDnaCache[clientId];
+      const cachedProjectStructure = projectStructureCache[clientId];
+      if (cachedDnaModules && cachedProjectStructure) return;
       let cancelled = false;
-      void Promise.all([
-        taskClientDnaCache[editingTask.clientId]
-          ? Promise.resolve({ modules: taskClientDnaCache[editingTask.clientId] })
-          : getClientDnaDocuments(editingTask.clientId),
-        projectStructureCache[editingTask.clientId]
-          ? Promise.resolve(projectStructureCache[editingTask.clientId])
-          : getClientProjectStructure(editingTask.clientId),
-      ])
-        .then(([dnaResponse, structureResponse]) => {
+      const dnaPromise = cachedDnaModules
+        ? Promise.resolve(cachedDnaModules)
+        : getClientDnaDocuments(clientId).then((response) => response.modules);
+      const structurePromise = cachedProjectStructure
+        ? Promise.resolve(cachedProjectStructure)
+        : getClientProjectStructure(clientId);
+      void Promise.all([dnaPromise, structurePromise])
+        .then(([modules, structureResponse]) => {
           if (cancelled) return;
-          setTaskClientDnaCache((prev) => ({
-            ...prev,
-            [editingTask.clientId]: dnaResponse.modules,
-          }));
-          setProjectStructureCache((prev) => ({
-            ...prev,
-            [editingTask.clientId]: structureResponse,
-          }));
+          if (!cachedDnaModules) {
+            setTaskClientDnaCache((prev) => (
+              prev[clientId] ? prev : {
+                ...prev,
+                [clientId]: modules,
+              }
+            ));
+          }
+          if (!cachedProjectStructure) {
+            setProjectStructureCache((prev) => (
+              prev[clientId] ? prev : {
+                ...prev,
+                [clientId]: structureResponse,
+              }
+            ));
+          }
         })
         .catch(() => undefined);
       return () => {
@@ -4891,6 +5158,30 @@ export default function App() {
       isTaskModalOpen,
       organizationTaskName,
     ]);
+
+    useEffect(() => {
+      if (!isTaskModalOpen) return;
+      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
+        if (personalTaskLists.length === 0) return;
+        if (personalTaskLists.some((item) => item.id === editingTask.listId)) return;
+        const fallbackListId = resolveDefaultListId('personal');
+        if (!fallbackListId) return;
+        setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
+        return;
+      }
+      if (orgTaskLists.length === 0) return;
+      if (orgTaskLists.some((item) => item.id === editingTask.listId)) return;
+      const fallbackListId = resolveDefaultListId('org');
+      if (!fallbackListId) return;
+      setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
+    }, [
+      editingTask.listId,
+      editingTask.scopeMode,
+      isTaskModalOpen,
+      orgTaskLists,
+      personalTaskLists,
+      resolveDefaultListId,
+    ]);
     const latestReview = reviewDashboard?.currentReview || null;
     const teamReport = reviewDashboard?.teamReport || null;
     const orgReport = reviewDashboard?.orgReport || null;
@@ -4903,7 +5194,6 @@ export default function App() {
     const workReviewItems = reviewDashboard?.workItems || [];
     const personalReviewItems = reviewDashboard?.personalItems || [];
     const collectStageAnalysis = reviewScope === 'work' ? reviewDashboard?.workAnalysis || null : reviewDashboard?.personalAnalysis || null;
-    const documentStageAnalysis = reviewDocumentScope === 'work' ? reviewDashboard?.workAnalysis || null : reviewDashboard?.personalAnalysis || null;
     const calendarMonthLabel = `${taskCalendarDate.getFullYear()}-${String(taskCalendarDate.getMonth() + 1).padStart(2, '0')}`;
     const selectedCalendarWeekLabel = weekLabelForDate(new Date(taskCalendarDate.getFullYear(), taskCalendarDate.getMonth(), taskSelectedDay));
     const selectedWeekAgentDigests = agentWeeklyDigests.filter((item) => item.weekLabel === selectedCalendarWeekLabel);
@@ -4950,6 +5240,9 @@ export default function App() {
         setIsMentionMenuOpen(false);
         setMentionQuery('@');
         setMentionOptions([]);
+        setIsOwnerMenuOpen(false);
+        setOwnerQuery('');
+        setOwnerOptions([]);
         setSuggestedTaskTags([]);
         return;
       }
@@ -4958,6 +5251,14 @@ export default function App() {
         .then((items) => setMentionOptions(items))
         .catch(() => setMentionOptions([]));
     }, [isTaskModalOpen, mentionQuery]);
+
+    useEffect(() => {
+      if (!isTaskModalOpen) return;
+      const normalizedQuery = ownerQuery.trim();
+      void getMentionCandidates(normalizedQuery)
+        .then((items) => setOwnerOptions(items))
+        .catch(() => setOwnerOptions([]));
+    }, [isTaskModalOpen, ownerQuery]);
 
     const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
     const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '收集箱';
@@ -5144,15 +5445,14 @@ export default function App() {
       if (actionType === 'clarify_now') {
         const detail = await openEventLineDetail(eventLineId, { clarify: true });
         if (detail) {
-          flash('info', `已打开“${detail.eventLine.name}”的事件线澄清，优先补：${slotText}`);
+          flash('info', `已打开"${detail.eventLine.name}"的事件线澄清，优先补：${slotText}`);
           return;
         }
-        setReviewStage('collect');
         setReviewScope('work');
         if (target?.groupId) {
           setExpandedReviewGroupId(target.groupId);
         }
-        flash('info', `已定位到“${target?.title || title}”的复盘表单，优先澄清：${slotText}`);
+        flash('info', `已定位到"${target?.title || title}"的复盘表单，优先澄清：${slotText}`);
         return;
       }
 
@@ -5161,7 +5461,7 @@ export default function App() {
         || clients.find((client) => [client.name, client.alias].some((value) => value.trim() && value.trim() === title.trim()))?.id
         || '';
       if (!matchedClientId) {
-        flash('error', `还没定位到“${title}”对应的项目，暂时不能直接跳去补资料。`);
+        flash('error', `还没定位到"${title}"对应的项目，暂时不能直接跳去补资料。`);
         return;
       }
 
@@ -5184,9 +5484,33 @@ export default function App() {
     const collaboratorNames = editingTask.collaborators.map((item) => item.fullName);
     const selectedTaskTags = taskTags.filter((tag) => editingTask.tagIds.includes(tag.id));
     const taskClientOptions = clients
-      .map((client) => ({ id: client.id, label: client.name, alias: client.alias }))
+      .map((client) => ({ id: client.id, name: client.name, label: client.name, alias: client.alias }))
       .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'));
     const selectedTaskClientLabel = taskClientOptions.find((item) => item.id === editingTask.clientId)?.label || '';
+    const applyClientInferenceToDraft = (title: string, desc: string, prev: TaskEditorState) => {
+      if (prev.clientTouched || prev.scopeMode === 'PERSONAL_ONLY') return null;
+      const nextClient = inferTaskClient({
+        title,
+        desc,
+        clients,
+        currentClientId,
+        organizationName: organizationTaskName,
+      });
+      if (nextClient.confidence === 'high' || nextClient.confidence === 'medium') {
+        return {
+          clientId: nextClient.clientId,
+          clientConfidence: nextClient.confidence,
+          clientReason: nextClient.reason,
+        } as const;
+      }
+      if (nextClient.confidence === 'low' && prev.clientConfidence !== 'low') {
+        return {
+          clientConfidence: 'low' as const,
+          clientReason: nextClient.reason,
+        } as const;
+      }
+      return null;
+    };
     const activeTaskDnaModules =
       editingTask.clientId && editingTask.clientId === workspace?.client.id
         ? workspace?.dnaModules || []
@@ -5378,7 +5702,7 @@ export default function App() {
     }, [clients, currentClientId, projectStructureCache, rawListTasks, sortedEventLines, workspace?.client.id, workspace?.projectFlows, workspace?.projectModules]);
     const eventLineScopeHint = editingTask.clientId
       ? selectedTaskClientLabel
-        ? `系统会先在“${selectedTaskClientLabel}”项目下建议事件线。`
+        ? `系统会先在"${selectedTaskClientLabel}"项目下建议事件线。`
         : '系统会先在当前项目下建议事件线。'
       : '系统会先尝试识别项目，再建议事件线。';
     const clientConfidenceBadge = labelTaskClientConfidence(editingTask.clientConfidence);
@@ -5386,7 +5710,16 @@ export default function App() {
       (candidate) => !editingTask.collaborators.some((item) => item.id === candidate.id),
     );
     const duePickerDateLabel = formatTaskDuePickerDateLabel(editingTask.dueDate);
-    const duePickerSummaryLabel = editingTask.dueTime ? `${duePickerDateLabel} ${editingTask.dueTime}` : duePickerDateLabel;
+    const duePickerSummaryLabel = formatTaskDuePickerSummaryLabel(
+      editingTask.dueDate,
+      editingTask.dueTime,
+      editingTask.durationMinutes,
+    );
+    const duePickerDurationLabel = editingTask.dueTime
+      ? editingTask.dueTime
+      : taskCalendarSpanDays(editingTask.durationMinutes) > 1
+        ? `连续 ${taskCalendarSpanDays(editingTask.durationMinutes)} 天`
+        : '--:--';
     const duePickerCalendarCells = useMemo(() => buildCalendarCells(duePickerMonth), [duePickerMonth]);
 
     useEffect(() => {
@@ -5457,17 +5790,6 @@ export default function App() {
       taskProjectModuleOptions,
     ]);
 
-    const openReviewDocumentDraft = (scope: 'work' | 'personal', dashboardOverride?: ReviewDashboard | null) => {
-      const weekLabel = reviewForm.weekLabel || currentWeekLabel();
-      const targetRows = scope === 'work' ? workReviewRows : personalReviewRows;
-      const sourceDashboard = dashboardOverride ?? reviewDashboard;
-      const analysis = scope === 'work' ? sourceDashboard?.workAnalysis || null : sourceDashboard?.personalAnalysis || null;
-      setReviewDocumentScope(scope);
-      setReviewDocumentTitle(`${weekLabel} ${scope === 'work' ? '本周复盘' : '成长复盘'}文档`);
-      setReviewDocumentDraft(buildWeeklyReviewDocumentDraft(scope, weekLabel, targetRows, analysis, sourceDashboard));
-      setReviewStage('document');
-    };
-
     const handleOpenReviewHistory = async () => {
       setIsReviewHistoryOpen((prev) => !prev);
       if (isReviewHistoryOpen || reviewHistory.length > 0) return;
@@ -5484,9 +5806,6 @@ export default function App() {
         setSavedReviewGroupId(null);
         const response = await loadReviewBlock(weekLabel);
         setIsReviewHistoryOpen(false);
-        setReviewStage('collect');
-        setReviewDocumentTitle('');
-        setReviewDocumentDraft('');
         flash('success', `已切换到 ${response.currentReview?.weekLabel || weekLabel} 的复盘。`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '历史复盘打开失败');
@@ -5601,7 +5920,7 @@ export default function App() {
 
     const handleCreateEventLineFromTask = async () => {
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
-        flash('error', '个人任务不会接入事件线，请切回协作任务后再创建。');
+        flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
         return;
       }
       if (!editingTask.title.trim()) {
@@ -5626,7 +5945,7 @@ export default function App() {
           ...prev,
           eventLineId: created.id,
           eventLineTouched: true,
-          eventLineReason: `已从当前任务创建事件线：${created.name}。如需补充阶段、阻塞或关键决策，可点右侧“查看事件线”。`,
+          eventLineReason: `已从当前任务创建事件线：${created.name}。如需补充阶段、阻塞或关键决策，可点右侧"查看事件线"。`,
         }));
         flash('success', '事件线已创建，并已挂到当前任务。当前会继续停留在任务编辑页。');
       } catch (error) {
@@ -5643,17 +5962,170 @@ export default function App() {
     ) => {
       if (files.length === 0) return;
       setIsTaskAttachmentBusy(true);
+      setTaskAttachmentUploadProgress({
+        currentFileName: files[0]?.name || '附件',
+        uploadedFiles: 0,
+        totalFiles: files.length,
+        percent: 0,
+      });
       try {
-        for (const file of files) {
+        for (const [index, file] of files.entries()) {
+          setTaskAttachmentUploadProgress({
+            currentFileName: file.name,
+            uploadedFiles: index,
+            totalFiles: files.length,
+            percent: Math.max(0, Math.min(100, Math.round((index / files.length) * 100))),
+          });
           await uploadTaskAttachment(taskId, {
             file,
             clientId: options.clientId || undefined,
             eventLineId: options.eventLineId || undefined,
             taskTitle: options.taskTitle || undefined,
+            onProgress: (loaded, total) => {
+              const currentRatio = total > 0 ? loaded / total : 0;
+              const overallPercent = ((index + currentRatio) / files.length) * 100;
+              setTaskAttachmentUploadProgress({
+                currentFileName: file.name,
+                uploadedFiles: index,
+                totalFiles: files.length,
+                percent: Math.max(1, Math.min(100, Math.round(overallPercent))),
+              });
+            },
+          });
+          setTaskAttachmentUploadProgress({
+            currentFileName: file.name,
+            uploadedFiles: index + 1,
+            totalFiles: files.length,
+            percent: Math.max(1, Math.min(100, Math.round(((index + 1) / files.length) * 100))),
           });
         }
       } finally {
         setIsTaskAttachmentBusy(false);
+        setTaskAttachmentUploadProgress(null);
+      }
+    };
+
+    const handleSaveTask = async () => {
+      if (!editingTask.title.trim()) {
+        flash('error', '请填写任务标题');
+        return;
+      }
+      let ensuredOrgListId = '';
+      if (!isEditingTaskPersonal && orgTaskLists.length === 0) {
+        try {
+          const ensuredList = await ensureOrgTaskList();
+          ensuredOrgListId = ensuredList?.id || '';
+        } catch (error) {
+          flash('error', error instanceof Error ? `组织任务清单初始化失败：${error.message}` : '组织任务清单初始化失败');
+          return;
+        }
+      }
+      const combinedDueDate = combineTaskDueDateTime(editingTask.dueDate, editingTask.dueTime);
+      const resolvedDdl = combinedDueDate
+        ? duePickerSummaryLabel
+        : (editingTask.ddl.trim() || '待确认');
+      const resolvedListId = (() => {
+        if (isEditingTaskPersonal) {
+          if (personalTaskLists.some((item) => item.id === editingTask.listId)) {
+            return editingTask.listId;
+          }
+          return resolveDefaultListId('personal') || editingTask.listId;
+        }
+        if (orgTaskLists.some((item) => item.id === editingTask.listId)) {
+          return editingTask.listId;
+        }
+        if (ensuredOrgListId) {
+          return ensuredOrgListId;
+        }
+        return resolveDefaultListId('org') || editingTask.listId;
+      })();
+      setIsSavingTask(true);
+      try {
+        const savedTask = editingTask.id
+          ? await updateTask(editingTask.id, {
+              scopeMode: editingTask.scopeMode,
+              title: editingTask.title.trim(),
+              desc: editingTask.desc.trim(),
+              priority: editingTask.priority,
+              listId: resolvedListId,
+              dueDate: combinedDueDate || null,
+              durationMinutes: editingTask.durationMinutes,
+              clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
+              eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
+              projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
+              projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
+              ddl: resolvedDdl,
+              ownerId: ownerCollaborator?.id || currentSessionUser?.id || null,
+              ownerName: ownerCollaborator?.fullName || currentOperatorName,
+              collaboratorIds: editingTask.collaborators.map((item) => item.id),
+              tagIds: [],
+            })
+          : await createTask({
+              scopeMode: editingTask.scopeMode,
+              title: editingTask.title.trim(),
+              desc: editingTask.desc.trim(),
+              priority: editingTask.priority,
+              listId: resolvedListId,
+              dueDate: combinedDueDate || null,
+              durationMinutes: editingTask.durationMinutes,
+              clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
+              eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
+              projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
+              projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
+              ddl: resolvedDdl,
+              ownerId: ownerCollaborator?.id || currentSessionUser?.id || null,
+              ownerName: ownerCollaborator?.fullName || currentOperatorName,
+              collaboratorIds: editingTask.collaborators.map((item) => item.id),
+              tagIds: [],
+            });
+
+        if (!editingTask.id && savedTask?.id) {
+          setEditingTask((prev) => ({
+            ...prev,
+            id: savedTask.id,
+            clientId: savedTask.clientId || prev.clientId,
+            eventLineId: savedTask.eventLineId || prev.eventLineId,
+            projectModuleId: savedTask.projectModuleId || prev.projectModuleId,
+            projectFlowId: savedTask.projectFlowId || prev.projectFlowId,
+          }));
+        }
+
+        try {
+          if (!isEditingTaskPersonal && pendingTaskAttachments.length > 0 && savedTask?.id) {
+            await uploadAttachmentsToTask(savedTask.id, pendingTaskAttachments, {
+              clientId: savedTask.clientId || editingTask.clientId || null,
+              eventLineId: savedTask.eventLineId || editingTask.eventLineId || null,
+              taskTitle: savedTask.title || editingTask.title.trim(),
+            });
+          }
+        } catch (error) {
+          await loadTaskBlock();
+          if ((savedTask?.eventLineId || editingTask.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || editingTask.eventLineId)) {
+            await openEventLineDetail(savedTask?.eventLineId || editingTask.eventLineId);
+          }
+          flash(
+            'error',
+            `${editingTask.id ? '任务已更新' : '任务已创建'}，但附件归档失败：${
+              error instanceof Error ? error.message : '请稍后重试'
+            }`,
+          );
+          return;
+        }
+
+        await loadTaskBlock();
+        if ((savedTask?.eventLineId || editingTask.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || editingTask.eventLineId)) {
+          await openEventLineDetail(savedTask?.eventLineId || editingTask.eventLineId);
+        }
+        if (taskCalendarDisplayMode !== 'week') {
+          focusCalendarOnTaskDate(savedTask?.dueDate || combinedDueDate, savedTask?.ddl || resolvedDdl);
+        }
+        closeTaskModal('save-success');
+        resetTaskDraft();
+        flash('success', pendingTaskAttachments.length > 0 ? '任务和附件已归档' : editingTask.id ? '任务已更新' : '任务已创建');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : editingTask.id ? '更新失败' : '创建失败');
+      } finally {
+        setIsSavingTask(false);
       }
     };
 
@@ -5664,7 +6136,7 @@ export default function App() {
       }
       if (files.length === 0) return;
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
-        flash('error', '个人任务附件不会进入项目文件库，请先切回协作任务。');
+        flash('error', '个人日程附件不会进入项目文件库，请先切回协作任务。');
         return;
       }
       if (!editingTask.clientId) {
@@ -5689,6 +6161,74 @@ export default function App() {
         flash('success', `${files.length} 个附件已归档到项目文件库。`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '附件上传失败');
+      }
+    };
+
+    const requestDeleteTaskRecord = (
+      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
+      options?: { closeEditor?: boolean },
+    ) => {
+      setPendingTaskDelete({
+        id: task.id,
+        title: task.title,
+        clientId: task.clientId || null,
+        eventLineId: task.eventLineId || null,
+        closeEditor: options?.closeEditor || false,
+      });
+    };
+
+    const handleDeleteTaskRecord = async (
+      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
+      options?: { closeEditor?: boolean },
+    ) => {
+      try {
+        await deleteTask(task.id);
+        await loadTaskBlock();
+        if (reviewDashboard?.weekLabel) {
+          await loadReviewBlock(reviewDashboard.weekLabel);
+        }
+        await refreshWorkspace(task.clientId || undefined);
+        if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) {
+          await openEventLineDetail(task.eventLineId);
+        }
+        if (options?.closeEditor || editingTask.id === task.id) {
+          closeTaskModal('delete-success');
+          resetTaskDraft();
+        }
+        flash('success', '任务已删除');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '删除任务失败');
+      }
+    };
+
+    const confirmDeleteTaskRecord = async () => {
+      if (!pendingTaskDelete) return;
+      const payload = pendingTaskDelete;
+      setPendingTaskDelete(null);
+      await handleDeleteTaskRecord(
+        {
+          id: payload.id,
+          title: payload.title,
+          clientId: payload.clientId || null,
+          eventLineId: payload.eventLineId || null,
+        },
+        { closeEditor: payload.closeEditor },
+      );
+    };
+
+    const handleUploadOrgDna = async (moduleKey: OrganizationDnaModule['moduleKey']) => {
+      const paths = await selectFilesBridge();
+      const filePath = paths[0];
+      if (!filePath) return;
+      setOrgDnaSavingKey(moduleKey);
+      try {
+        await updateOrganizationDnaModule(moduleKey, { filePath });
+        await Promise.all([loadSettingsSectionBlock('org_dna', true), loadLogsBlock()]);
+        flash('success', '组织 DNA 已更新');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '组织 DNA 上传失败');
+      } finally {
+        setOrgDnaSavingKey(null);
       }
     };
 
@@ -5978,7 +6518,7 @@ export default function App() {
     const feishuLaunchHint = !editingTask.title.trim()
       ? '请先填写任务标题'
       : isEditingTaskPersonal
-        ? '个人任务不发起组织会议'
+        ? '个人日程不发起组织会议'
       : !editingTask.clientId
         ? '请先关联客户/项目'
         : '发起飞书会议';
@@ -5993,8 +6533,7 @@ export default function App() {
     const resetTaskDraft = (dueDate?: string, options?: { durationMinutes?: number }) => {
       const nextDueDate = dueDate ?? defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset);
       const nextDueParts = splitTaskDueDateTime(nextDueDate);
-      setIsDuePickerOpen(false);
-      setDuePickerTab('date');
+      resetTaskModalTransientState();
       const parsedDate = parseTaskDateValue(nextDueParts.date);
       setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
       setEditingTask({
@@ -6029,8 +6568,6 @@ export default function App() {
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
       setPendingTaskAttachments([]);
-      setMentionQuery('@');
-      setIsMentionMenuOpen(false);
     };
 
     const openTaskEditor = (task?: Task, dueDate?: string, options?: { durationMinutes?: number }) => {
@@ -6041,8 +6578,7 @@ export default function App() {
       }
       const resolvedDueDate = task.dueDate || dueDate || new Date().toISOString().slice(0, 10);
       const resolvedDueParts = splitTaskDueDateTime(resolvedDueDate);
-      setIsDuePickerOpen(false);
-      setDuePickerTab('date');
+      resetTaskModalTransientState();
       const parsedDate = parseTaskDateValue(resolvedDueParts.date);
       setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
       setEditingTask({
@@ -6060,16 +6596,16 @@ export default function App() {
         clientId: task.clientId || '',
         clientTouched: Boolean(task.clientId),
         clientConfidence: task.clientId ? 'manual' : 'none',
-        clientReason: task.clientName ? `当前任务已关联客户“${task.clientName}”，你可以手动调整。` : organizationTaskManualReason,
+        clientReason: task.clientName ? `当前任务已关联客户"${task.clientName}"，你可以手动调整。` : organizationTaskManualReason,
         eventLineId: task.eventLineId || '',
         eventLineTouched: Boolean(task.eventLineId),
-        eventLineReason: task.eventLineName ? `当前任务已挂到事件线“${task.eventLineName}”。` : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
+        eventLineReason: task.eventLineName ? `当前任务已挂到事件线"${task.eventLineName}"。` : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
         projectModuleId: task.projectModuleId || '',
         projectModuleTouched: Boolean(task.projectModuleId),
-        projectModuleReason: task.projectModuleName ? `当前任务已挂到模块“${task.projectModuleName}”。` : '可选：把任务挂到项目下的具体任务模块。',
+        projectModuleReason: task.projectModuleName ? `当前任务已挂到模块"${task.projectModuleName}"。` : '可选：把任务挂到项目下的具体任务模块。',
         projectFlowId: task.projectFlowId || '',
         projectFlowTouched: Boolean(task.projectFlowId),
-        projectFlowReason: task.projectFlowName ? `当前任务已挂到流程“${task.projectFlowName}”。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+        projectFlowReason: task.projectFlowName ? `当前任务已挂到流程"${task.projectFlowName}"。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
         ddl: task.dueDate ? formatTaskDueLabel(task.dueDate) : task.ddl,
         tagIds: [],
         collaborators: task.collaborators.map((item) => ({
@@ -6158,7 +6694,6 @@ export default function App() {
           return;
         }
         setTaskViewMode('review');
-        setReviewStage('collect');
         flash('success', `已切到周复盘，可继续查看「${context.label}」`);
         clearRequest();
       };
@@ -6174,7 +6709,7 @@ export default function App() {
       try {
         await updateTask(suggestion.taskId, suggestion.payload);
         await loadTaskBlock();
-        flash('success', `已为“${suggestion.title}”补齐建议归属。`);
+        flash('success', `已为"${suggestion.title}"补齐建议归属。`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '补齐任务归属失败');
       } finally {
@@ -6354,7 +6889,6 @@ export default function App() {
     const handleManualTaskViewModeChange = (mode: TaskViewMode) => {
       if (mode === 'review') {
         setGrowthContextJump(null);
-        setReviewStage('collect');
         void loadReviewBlock(reviewDashboard?.currentReview?.weekLabel);
       }
       setTaskViewMode(mode);
@@ -6423,7 +6957,8 @@ export default function App() {
         void loadReviewHistoryBlock();
         notifyGrowthRefresh();
         setExpandedReviewGroupId(null);
-        openReviewDocumentDraft(reviewScope, nextDashboard);
+        await loadTaskBlock();
+        flash('success', reviewScope === 'work' ? '本周复盘已更新。' : '成长复盘已更新。');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '生成复盘草稿失败');
       } finally {
@@ -6517,31 +7052,6 @@ export default function App() {
         flash('error', error instanceof Error ? error.message : nextStatus === 'cancelled' ? '任务删除失败' : '任务状态更新失败');
       } finally {
         setReviewStatusChangingGroupId((current) => (current === group.id ? null : current));
-      }
-    };
-
-    const persistReviewDocument = async (action: 'save' | 'submit') => {
-      const setPending = action === 'save' ? setIsSavingReviewDocument : setIsSubmittingReviewDocument;
-      setPending(true);
-      try {
-        const nextDashboard = await createWeeklyReview(buildReviewPayload({
-          workFreeNote: reviewDocumentScope === 'work' ? reviewDocumentDraft.trim() : latestReview?.workFreeNote || '',
-          personalGrowthNote: reviewDocumentScope === 'personal' ? reviewDocumentDraft.trim() : latestReview?.personalGrowthNote || '',
-          personalPrivateNote: reviewDocumentScope === 'personal' ? reviewDocumentDraft.trim() : latestReview?.personalPrivateNote || '',
-        }));
-        clearReviewTasksDirty();
-        setSavedReviewGroupId(null);
-        setReviewDashboard(nextDashboard);
-        void loadReviewHistoryBlock();
-        notifyGrowthRefresh();
-        await loadTaskBlock();
-        setExpandedReviewGroupId(null);
-        setTaskViewMode('review');
-        flash('success', action === 'save' ? '复盘文稿已保存。' : '复盘文稿已提交。');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : action === 'save' ? '保存失败' : '提交失败');
-      } finally {
-        setPending(false);
       }
     };
 
@@ -6714,24 +7224,41 @@ export default function App() {
               <div className={`space-y-3 transition-all duration-300 ${isTaskGroupOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none h-0 overflow-hidden'}`}>
                 {listTasks.length === 0 && (
                   <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-8 text-center text-[13px] text-gray-400">
-                    <p>当前筛选下暂无任务。</p>
-                    {taskBucketCounts.all > 0 && (
-                      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                        {TASK_LIST_FILTER_OPTIONS.map((option) => (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setTaskListFilter(option.value)}
-                            className={`rounded-full border px-3 py-1.5 text-[12px] font-bold transition-colors ${
-                              taskListFilter === option.value
-                                ? 'border-[#5B7BFE] bg-[#EEF2FF] text-[#5B7BFE]'
-                                : 'border-gray-200 bg-white text-gray-500 hover:border-[#C9D6FF] hover:text-[#5B7BFE]'
-                            }`}
-                          >
-                            {option.label} {taskBucketCounts[option.value]}
-                          </button>
-                        ))}
-                      </div>
+                    {taskBucketCounts.all === 0 ? (
+                      <>
+                        <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-[#EEF2FF] flex items-center justify-center">
+                          <Plus className="w-5 h-5 text-[#5B7BFE]" />
+                        </div>
+                        <p className="text-[14px] font-bold text-gray-600 mb-1">还没有任务</p>
+                        <p className="text-gray-400 mb-4">创建第一条任务，系统会自动追踪它的事件线和推进过程。</p>
+                        <button
+                          type="button"
+                          onClick={() => { resetTaskDraft(); setIsTaskModalOpen(true); }}
+                          className="rounded-full bg-[#5B7BFE] px-5 py-2 text-[13px] font-bold text-white hover:bg-[#4a6ae8] transition-colors"
+                        >
+                          创建第一条任务
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <p>当前筛选下暂无任务。</p>
+                        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                          {TASK_LIST_FILTER_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setTaskListFilter(option.value)}
+                              className={`rounded-full border px-3 py-1.5 text-[12px] font-bold transition-colors ${
+                                taskListFilter === option.value
+                                  ? 'border-[#5B7BFE] bg-[#EEF2FF] text-[#5B7BFE]'
+                                  : 'border-gray-200 bg-white text-gray-500 hover:border-[#C9D6FF] hover:text-[#5B7BFE]'
+                              }`}
+                            >
+                              {option.label} {taskBucketCounts[option.value]}
+                            </button>
+                          ))}
+                        </div>
+                      </>
                     )}
                   </div>
                 )}
@@ -6805,7 +7332,7 @@ export default function App() {
                               className="text-[11px] font-bold text-gray-300 hover:text-rose-500"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void handleDeleteTaskRecord(task);
+                                requestDeleteTaskRecord(task);
                               }}
                             >
                               删除
@@ -6880,7 +7407,7 @@ export default function App() {
                             )}
                             {!task.desc && !canReviewTask(task) && !task.collaborators.some((item) => item.inboxStatus === 'returned' && item.returnReason) && !hasDetailContent && (
                               <div className="mb-3 rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-3 py-3">
-                                <p className="text-[12px] text-gray-500">当前还没有补充说明或进一步提醒，后续可在编辑里补充任务描述。</p>
+                                <p className="text-[12px] text-gray-400 italic">点击编辑可以为这条任务添加详细描述、背景说明或注意事项。</p>
                               </div>
                             )}
                             <TaskOrgContextPanel
@@ -6973,7 +7500,15 @@ export default function App() {
                       </div>
                     </div>
                   ))}
-                  {pendingTasks.length === 0 && <div className="text-center py-20 text-gray-400">收件箱已经清空。</div>}
+                  {pendingTasks.length === 0 && (
+                    <div className="text-center py-16 text-gray-400">
+                      <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
+                        <Inbox className="w-5 h-5 text-emerald-500" />
+                      </div>
+                      <p className="text-[14px] font-bold text-gray-600 mb-1">收件箱已清空</p>
+                      <p className="text-[13px] text-gray-400">团队成员分配给你的协作任务会出现在这里。</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -7054,7 +7589,7 @@ export default function App() {
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <h2 className="text-[18px] font-bold text-gray-900">周复盘</h2>
-                    <p className="text-[12px] text-gray-500 mt-1">组织复盘只看公共任务；成长复盘只看带“私人”标签的任务。</p>
+                    <p className="text-[12px] text-gray-500 mt-1">组织复盘只看公共任务；成长复盘只看带"私人"标签的任务。</p>
                     <p className="mt-1 text-[12px] font-bold text-amber-700">当前查看：{reviewForm.weekLabel || currentWeekLabel()}</p>
                   </div>
                   <div className="self-start lg:self-auto">
@@ -7080,7 +7615,6 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setReviewScope('work');
-                      setReviewStage('collect');
                     }}
                     className={`px-4 py-2 rounded-2xl text-[13px] font-bold ${reviewScope === 'work' ? 'bg-[#5B7BFE] text-white shadow-sm' : 'bg-white text-gray-500 border border-gray-200'}`}
                   >
@@ -7090,7 +7624,6 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setReviewScope('personal');
-                      setReviewStage('collect');
                     }}
                     className={`px-4 py-2 rounded-2xl text-[13px] font-bold ${reviewScope === 'personal' ? 'bg-rose-500 text-white shadow-sm' : 'bg-white text-gray-500 border border-gray-200'}`}
                   >
@@ -7099,8 +7632,7 @@ export default function App() {
                 </div>
               </div>
 
-              {reviewStage === 'collect' ? (
-                <>
+              <>
                   <div className="bg-white border border-gray-200 rounded-3xl shadow-sm p-5 space-y-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -7117,8 +7649,21 @@ export default function App() {
                     </div>
 
                     {activeReviewGroups.length === 0 && (
-                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-5 py-10 text-center text-[13px] text-gray-400">
-                        {reviewScope === 'work' ? '这个周标签下还没有可复盘的公共任务。' : '这个周标签下还没有带“私人”标签的任务。'}
+                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-5 py-10 text-center">
+                        <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center">
+                          <Activity className="w-5 h-5 text-amber-500" />
+                        </div>
+                        {reviewScope === 'work' ? (
+                          <>
+                            <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有可复盘的公共任务'}</p>
+                            <p className="text-[13px] text-gray-400">{'先在任务列表中推进本周的工作，完成的任务会自动出现在这里供你复盘。'}</p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有带私人标签的任务'}</p>
+                            <p className="text-[13px] text-gray-400">{'给任务添加私人标签后，它就会出现在成长复盘中。'}</p>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -7242,12 +7787,25 @@ export default function App() {
                     })}
                   </div>
 
-                  {collectStageAnalysis && !selfReviewReport && (
-                    <WeeklyReviewAnalysisPanel
-                      analysis={collectStageAnalysis}
+                  {reviewScope === 'work' && (selfReviewReport || departmentReports.length > 0 || executiveOrgReport || simulationBundle || agentDepartmentDigests.length > 0 || agentDepartmentPlans.length > 0) && (
+                    <WeeklyReviewSummaryPanel
+                      selfReport={selfReviewReport}
+                      selfAnalysis={collectStageAnalysis}
+                      departmentReports={departmentReports}
+                      executiveOrgReport={executiveOrgReport}
+                      organizationDnaModules={organizationDnaModules}
+                      onUploadOrganizationDna={(moduleKey) => handleUploadOrgDna(moduleKey)}
+                      orgDnaSavingKey={orgDnaSavingKey}
+                      agentDepartmentDigests={agentDepartmentDigests}
+                      agentDepartmentPlans={agentDepartmentPlans}
+                      simulationBundle={simulationBundle}
+                      onTriggerAction={handleTriggerReviewAction}
+                      onOpenActionResult={handleOpenReviewActionResult}
+                      onDrillTarget={handleReviewDashboardDrillTarget}
                       onResolveGapAction={(payload) => {
                         void handleResolveEventLineGapAction(payload);
                       }}
+                      viewerRole={currentSessionUser?.primaryRole === 'admin' ? 'admin' : currentSessionUser?.isDepartmentLead ? 'department_lead' : 'employee'}
                     />
                   )}
 
@@ -7270,83 +7828,8 @@ export default function App() {
                     </div>
                   </div>
                 </>
-              ) : (
-                <div className="bg-white border border-gray-200 rounded-3xl shadow-sm overflow-hidden">
-                  <div className="px-6 py-5 border-b border-gray-100 flex items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-[18px] font-bold text-gray-900">{reviewDocumentTitle}</h3>
-                      <p className="text-[12px] text-gray-500 mt-1">这是一篇根据任务背景、完成情况、执行说明和组织视角自动生成的复盘文稿，你可以直接编辑。</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="text-[12px] font-bold text-gray-400 hover:text-[#5B7BFE]"
-                      onClick={() => setReviewStage('collect')}
-                    >
-                      返回任务采集
-                    </button>
-                  </div>
-                  <div className="p-6 bg-[#FCFCFD]">
-                    {documentStageAnalysis && (
-                      <div className="mb-6">
-                        <WeeklyReviewAnalysisPanel
-                          analysis={documentStageAnalysis}
-                          onResolveGapAction={(payload) => {
-                            void handleResolveEventLineGapAction(payload);
-                          }}
-                        />
-                      </div>
-                    )}
-                    <textarea
-                      value={reviewDocumentDraft}
-                      onChange={(event) => setReviewDocumentDraft(event.target.value)}
-                      className="w-full min-h-[780px] bg-white border border-gray-200 rounded-[24px] p-6 text-[14px] leading-8 text-gray-800 outline-none resize-none"
-                    />
-                  </div>
-                  <div className="px-6 py-5 border-t border-gray-100 bg-white flex items-center justify-between gap-4">
-                    <p className="text-[12px] text-gray-500">文稿编辑完成后，可以先保存，再决定是否提交。</p>
-                    <div className="flex items-center gap-3">
-                      <Button onClick={() => void persistReviewDocument('save')} disabled={isSavingReviewDocument || isSubmittingReviewDocument}>
-                        {isSavingReviewDocument ? (
-                          <>
-                            <RefreshCw size={15} className="animate-spin" />
-                            保存中...
-                          </>
-                        ) : (
-                          '保存'
-                        )}
-                      </Button>
-                      <Button primary onClick={() => void persistReviewDocument('submit')} disabled={isSavingReviewDocument || isSubmittingReviewDocument}>
-                        {isSubmittingReviewDocument ? (
-                          <>
-                            <RefreshCw size={15} className="animate-spin" />
-                            提交中...
-                          </>
-                        ) : (
-                          '提交'
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )}
 
-              {reviewStage === 'collect' && reviewScope === 'work' && (
-                <WeeklyReviewSummaryPanel
-                  selfReport={selfReviewReport}
-                  selfAnalysis={collectStageAnalysis}
-                  departmentReports={departmentReports}
-                  executiveOrgReport={executiveOrgReport}
-                  agentDepartmentDigests={agentDepartmentDigests}
-                  agentDepartmentPlans={agentDepartmentPlans}
-                  simulationBundle={simulationBundle}
-                  onTriggerAction={handleTriggerReviewAction}
-                  onOpenActionResult={handleOpenReviewActionResult}
-                  onDrillTarget={handleReviewDashboardDrillTarget}
-                  onResolveGapAction={(payload) => {
-                    void handleResolveEventLineGapAction(payload);
-                  }}
-                />
-              )}
+              {/* 角色视角已合并到上方采集阶段中，不再独立渲染 */}
             </div>
           )}
         </div>
@@ -7617,6 +8100,47 @@ export default function App() {
                   </div>
                 </div>
 
+              {activeEventLine.eventLine.primaryClientId && (
+                <div className="mt-5 rounded-3xl border border-indigo-100 bg-indigo-50/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[12px] font-bold text-indigo-700">合作背景与上下文</p>
+                      <p className="mt-1 text-[11px] leading-5 text-indigo-500/80">补充客户战略画像和合作关系，让 AI 能从背景理解这条线的意义。</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-2xl border border-indigo-200 bg-white px-4 py-2 text-[12px] font-bold text-indigo-700 transition hover:bg-indigo-50"
+                      onClick={() => {
+                        setActiveEventLine(null);
+                        const clientId = activeEventLine.eventLine.primaryClientId;
+                        if (clientId) {
+                          setCurrentClientId(clientId);
+                          setActiveTab('client_workspace');
+                        }
+                      }}
+                    >
+                      前往客户工作台补充
+                    </button>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-[10px] font-bold text-indigo-700">客户：{activeEventLine.eventLine.primaryClientName || '未关联'}</span>
+                    <span className="rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-bold text-violet-700">可补：行业、规模、需求痛点</span>
+                    <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold text-[#33449a]">可补：合作关系、战略价值</span>
+                  </div>
+                </div>
+              )}
+
+              {!activeEventLine.eventLine.primaryClientId && (
+                <div className="mt-5 rounded-3xl border border-dashed border-amber-200 bg-amber-50/30 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <p className="text-[12px] font-bold text-amber-700">这条事件线还没有关联客户</p>
+                      <p className="mt-1 text-[11px] leading-5 text-amber-600/80">关联客户后，系统才能调用客户背景和合作关系来理解这条线的战略意义。</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
                 <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
                   <div className="flex items-center justify-between gap-3">
@@ -7669,6 +8193,60 @@ export default function App() {
                         </div>
                       </div>
                     ))}
+
+                    {/* Manual note input */}
+                    <div className="mt-3 flex gap-2">
+                      <input
+                        type="text"
+                        value={eventLineNoteText}
+                        onChange={(e) => setEventLineNoteText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && eventLineNoteText.trim() && !isSavingEventLineNote) {
+                            void (async () => {
+                              setIsSavingEventLineNote(true);
+                              try {
+                                await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
+                                setEventLineNoteText('');
+                                const refreshed = await getEventLine(activeEventLine.eventLine.id);
+                                setActiveEventLine(refreshed);
+                                flash('success', '备注已添加');
+                              } catch (err) {
+                                flash('error', err instanceof Error ? err.message : '添加备注失败');
+                              } finally {
+                                setIsSavingEventLineNote(false);
+                              }
+                            })();
+                          }
+                        }}
+                        placeholder="记录一条观察、决策或进展..."
+                        className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-2.5 text-[12px] outline-none transition focus:border-[#5B7BFE] focus:ring-1 focus:ring-[#5B7BFE]/20"
+                        disabled={isSavingEventLineNote}
+                      />
+                      <button
+                        type="button"
+                        disabled={!eventLineNoteText.trim() || isSavingEventLineNote}
+                        onClick={() => {
+                          if (!eventLineNoteText.trim()) return;
+                          void (async () => {
+                            setIsSavingEventLineNote(true);
+                            try {
+                              await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
+                              setEventLineNoteText('');
+                              const refreshed = await getEventLine(activeEventLine.eventLine.id);
+                              setActiveEventLine(refreshed);
+                              flash('success', '备注已添加');
+                            } catch (err) {
+                              flash('error', err instanceof Error ? err.message : '添加备注失败');
+                            } finally {
+                              setIsSavingEventLineNote(false);
+                            }
+                          })();
+                        }}
+                        className="shrink-0 rounded-2xl bg-[#5B7BFE] px-4 py-2.5 text-[12px] font-bold text-white transition hover:bg-[#4a6ae8] disabled:opacity-40"
+                      >
+                        {isSavingEventLineNote ? '...' : '添加'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -7744,404 +8322,385 @@ export default function App() {
         )}
 
         {isTaskModalOpen && (
-          <div
-            className="fixed inset-0 z-50 flex items-stretch justify-end bg-slate-950/34 pl-0 pr-0 backdrop-blur-sm animate-in fade-in md:pl-8"
-          >
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/34 px-4 py-6 backdrop-blur-sm">
             <div
-              className="flex h-full w-full max-w-none flex-col overflow-hidden rounded-none border-l border-[#E4E8F2] bg-white shadow-[-24px_0_80px_rgba(15,23,42,0.18)] transform animate-in slide-in-from-right-6 md:w-[min(1760px,calc(100vw-18px))] md:rounded-l-[34px] md:border-y"
+              className="relative z-[81] flex h-[700px] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="shrink-0 border-b border-gray-100 bg-white px-8 py-6 md:px-12 xl:px-14 flex items-center gap-4">
-                <button
-                  type="button"
-                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={() => closeTaskModal('header-close')}
-                  aria-label="关闭任务弹窗"
-                >
-                  <X size={16} />
-                </button>
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
-                      <CheckSquare size={16} strokeWidth={2.5} />
-                    </div>
-                    {editingTask.id ? '编辑任务' : '新建任务'}
-                  </h3>
-                  <p className="mt-1 pl-[42px] text-[12px] leading-5 text-gray-500">
-                    左侧专注编辑任务，右侧持续维护项目、事件线和证据。现在是右侧展开的任务工作台，不再是居中的窄模态。
-                  </p>
+              <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/60 px-6 py-4">
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="flex h-6 w-6 items-center justify-center rounded bg-blue-100 text-blue-600">
+                    <CheckSquare size={14} />
+                  </div>
+                  <h2 className="text-lg font-semibold text-gray-800">{editingTask.id ? '编辑任务' : '新建任务'}</h2>
+                  <span className="ml-2 text-sm text-gray-400">专注核心事务，结构化沉淀</span>
                 </div>
-                {editingTask.id && (
+                <div className="flex items-center gap-2">
+                  {editingTask.id && (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-[12px] font-semibold text-rose-600 transition hover:bg-rose-100"
+                      onClick={() =>
+                        requestDeleteTaskRecord(
+                          {
+                            id: editingTask.id,
+                            title: editingTask.title.trim() || '未命名任务',
+                            clientId: editingTask.clientId || null,
+                            eventLineId: editingTask.eventLineId || null,
+                          },
+                          { closeEditor: true },
+                        )
+                      }
+                    >
+                      <Trash2 size={13} />
+                      删除任务
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className="shrink-0 inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 hover:text-rose-700"
-                    onClick={() =>
-                      void handleDeleteTaskRecord(
-                        {
-                          id: editingTask.id,
-                          title: editingTask.title.trim() || '未命名任务',
-                          clientId: editingTask.clientId || null,
-                          eventLineId: editingTask.eventLineId || null,
-                        },
-                        { closeEditor: true },
-                      )
-                    }
+                    className="rounded-full p-2 text-gray-500 transition hover:bg-gray-200"
+                    onClick={() => closeTaskModal('header-close')}
+                    aria-label="关闭任务弹窗"
                   >
-                    <Trash2 size={14} />
-                    删除任务
+                    <X size={18} />
                   </button>
-                )}
+                </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-hidden bg-[#FCFCFE]">
-                <div className="grid h-full gap-0 xl:grid-cols-[minmax(0,1.04fr)_minmax(0,0.96fr)] 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                  <div className="min-h-0 overflow-y-auto px-8 py-8 md:px-12 xl:px-14 xl:py-10">
-                    <div className="mx-auto max-w-[940px] space-y-6">
-                    <div className="rounded-[28px] border border-gray-200 bg-white p-5 md:p-6 space-y-4">
-                      <div>
-                        <p className="text-[12px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">Task Core</p>
-                        <p className="mt-1 text-[13px] text-gray-500">先把这件事写清楚，再决定它该挂到哪条线、哪个项目和什么流程里。</p>
-                      </div>
-                      <input
-                        value={editingTask.title}
-                        onChange={(event) => setEditingTask((prev) => ({ ...prev, title: event.target.value }))}
-                        placeholder="任务标题"
-                        className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[18px] font-bold text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:bg-white"
-                      />
-                      <div className="space-y-2">
-                        <textarea
-                          value={editingTask.desc}
-                          onChange={(event) => setEditingTask((prev) => ({ ...prev, desc: event.target.value }))}
-                          placeholder="任务描述请尽量写清：对象是谁、他/机构的背景、当前合作关系、这次动作想推动什么、预期形成什么结果。"
-                          className="min-h-[180px] w-full rounded-2xl border border-gray-200 bg-gray-50 p-4 text-[14px] font-medium leading-7 text-gray-800 outline-none transition focus:border-[#5B7BFE] focus:bg-white"
-                        />
-                        <p className="px-1 text-[12px] leading-5 text-gray-500">
-                          这里的描述会直接进入任务项目语境、周复盘、战略陪伴和后续 AI 判断。写得越具体，后面的分析越准。
-                        </p>
-                      </div>
+
+              <div className="flex min-h-0 flex-1 overflow-hidden">
+                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-8">
+                  <input
+                    value={editingTask.title}
+                    onChange={(event) =>
+                      setEditingTask((prev) => {
+                        const nextTitle = event.target.value;
+                        const next = { ...prev, title: nextTitle };
+                        const inferred = applyClientInferenceToDraft(nextTitle, prev.desc, prev);
+                        if (inferred) {
+                          return {
+                            ...next,
+                            ...inferred,
+                          };
+                        }
+                        return next;
+                      })
+                    }
+                    placeholder="任务标题..."
+                    className="mb-6 w-full border-none text-3xl font-bold text-gray-900 outline-none placeholder:text-gray-300"
+                  />
+
+                  <textarea
+                    value={editingTask.desc}
+                    onChange={(event) =>
+                      setEditingTask((prev) => {
+                        const nextDesc = event.target.value;
+                        const next = { ...prev, desc: nextDesc };
+                        const inferred = applyClientInferenceToDraft(prev.title, nextDesc, prev);
+                        if (inferred) {
+                          return {
+                            ...next,
+                            ...inferred,
+                          };
+                        }
+                        return next;
+                      })
+                    }
+                    placeholder="添加任务描述，背景、目的、预期结果..."
+                    className="min-h-[220px] w-full flex-1 resize-none border-none text-[15px] leading-relaxed text-gray-600 outline-none placeholder:text-gray-400"
+                  />
+
+                  <div className="mt-6 space-y-3">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        if (isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy) return;
+                        taskAttachmentInputRef.current?.click();
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          if (isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy) return;
+                          taskAttachmentInputRef.current?.click();
+                        }
+                      }}
+                      className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-gray-400 transition ${
+                        isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy
+                          ? 'cursor-not-allowed border-gray-200 bg-gray-50'
+                          : 'cursor-pointer border-gray-200 hover:border-blue-400 hover:bg-blue-50'
+                      }`}
+                    >
+                      <Paperclip size={24} className="mb-2 text-gray-400" />
+                      <p className="text-sm font-medium text-gray-500">
+                        {isEditingTaskPersonal
+                          ? '个人日程附件不进入项目库'
+                          : !editingTask.clientId
+                            ? '先选择组织/项目后再上传附件'
+                            : '点击或拖拽上传附件'}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-400">保存并关联项目后将自动归档至项目文件库</p>
                     </div>
-
-                    <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                      <div className="rounded-[28px] border border-gray-200 bg-white p-5 md:p-6 space-y-5">
-                        <p className="text-[14px] font-semibold text-gray-900">关键信息</p>
-                        <div className="grid gap-4 lg:grid-cols-2">
-                          <label className="space-y-2">
-                            <span className="px-1 text-[12px] font-semibold text-gray-700">任务清单</span>
-                            <select value={editingTask.listId} onChange={(event) => setEditingTask((prev) => ({ ...prev, listId: event.target.value }))} className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[14px] font-bold outline-none transition focus:border-[#5B7BFE] focus:bg-white">
-                              {activeTaskLists.map((list) => (
-                                <option key={list.id} value={list.id}>
-                                  {list.name}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="space-y-2">
-                            <span className="px-1 text-[12px] font-semibold text-gray-700">优先级</span>
-                            <select
-                              value={editingTask.priority}
-                              onChange={(event) =>
-                                setEditingTask((prev) => ({
-                                  ...prev,
-                                  priority: event.target.value as 'low' | 'normal' | 'high',
-                                  priorityTouched: true,
-                                  priorityReason: '已手动调整优先级，可继续修改。',
-                                }))
-                              }
-                              className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[14px] font-bold outline-none transition focus:border-[#5B7BFE] focus:bg-white"
-                            >
-                              <option value="low">低优先级</option>
-                              <option value="normal">普通优先级</option>
-                              <option value="high">高优先级</option>
-                            </select>
-                          </label>
-                          <div className="space-y-2 lg:col-span-2">
-                            <span className="px-1 text-[12px] font-semibold text-gray-700">截止时间</span>
-                            <div className="relative">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsDuePickerOpen((prev) => !prev);
-                                  setDuePickerTab('date');
-                                }}
-                                className={`flex min-h-[92px] w-full items-center justify-between rounded-3xl border px-5 py-4 text-left transition-all ${
-                                  isDuePickerOpen
-                                    ? 'border-[#C9D5FF] bg-white shadow-[0_12px_28px_rgba(91,123,254,0.14)]'
-                                    : 'border-gray-200 bg-gray-50 hover:border-blue-100 hover:bg-white'
-                                }`}
-                              >
-                                <span className="min-w-0">
-                                  <span className="block text-[12px] font-semibold uppercase tracking-[0.12em] text-[#5B7BFE]">截止时间</span>
-                                  <span className="mt-2 block break-words text-[24px] font-bold leading-tight text-gray-900">{duePickerSummaryLabel}</span>
-                                </span>
-                                <span className="ml-4 inline-flex shrink-0 items-center gap-2 text-gray-400">
-                                  <CalendarIcon size={16} />
-                                  <Clock size={15} />
-                                  <ChevronDown size={16} className={`transition-transform ${isDuePickerOpen ? 'rotate-180 text-[#5B7BFE]' : ''}`} />
-                                </span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-[28px] border border-gray-200 bg-white p-5 md:p-6 space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-[14px] font-semibold text-gray-900">协作者与负责人</p>
-                          <div className="group relative">
+                    <input
+                      ref={taskAttachmentInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        void handleTaskAttachmentSelection(event.target.files);
+                      }}
+                    />
+                    {pendingTaskAttachments.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {pendingTaskAttachments.map((file, index) => (
+                          <span
+                            key={`${file.name}-${file.size}-${index}`}
+                            className="inline-flex items-center gap-2 rounded-full border border-[#DDE6FF] bg-[#F7F9FF] px-3 py-1 text-[12px] text-slate-600"
+                          >
+                            <span className="max-w-[220px] truncate">{file.name}</span>
                             <button
                               type="button"
-                              title={feishuLaunchHint}
-                              aria-label={feishuLaunchHint}
-                              disabled={!canLaunchFeishuMeeting}
-                              onClick={() => {
-                                void handleLaunchFeishuMeeting();
-                              }}
-                              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C9D8FF] ${
-                                canLaunchFeishuMeeting
-                                  ? 'bg-[#5B7BFE] text-white shadow-[0_10px_24px_rgba(91,123,254,0.28)] hover:-translate-y-[1px] hover:bg-[#4C6DF0]'
-                                  : 'cursor-not-allowed bg-gray-200 text-gray-400 shadow-none'
-                              }`}
+                              className="text-slate-400 hover:text-slate-700"
+                              onClick={() =>
+                                setPendingTaskAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
+                              }
                             >
-                              <FeishuMeetingGlyph className="h-[28px] w-[28px]" />
+                              <X size={12} />
                             </button>
-                            <span className="pointer-events-none absolute top-full right-0 mt-2 whitespace-nowrap rounded-full bg-slate-950 px-3 py-1 text-[11px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                              {feishuLaunchHint}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="rounded-3xl border border-[#DCE5FF] bg-[#F7F9FF] px-5 py-4">
-                          <div className="flex flex-wrap items-center gap-3">
-                            <span className="rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#5B7BFE]">负责人</span>
-                            <span className="text-[20px] font-bold text-gray-900">{ownerCollaborator?.fullName || '未选择'}</span>
-                            {editingTask.collaborators.length > 1 && (
-                              <span className="text-[13px] font-medium text-gray-600">
-                                协作：{editingTask.collaborators.slice(1).map((item) => item.fullName).join('、')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="relative">
-                          <input
-                            value={mentionQuery}
-                            onFocus={() => setIsMentionMenuOpen(true)}
-                            onChange={(event) => {
-                              const nextValue = event.target.value.startsWith('@') ? event.target.value : `@${event.target.value}`;
-                              setMentionQuery(nextValue);
-                              setIsMentionMenuOpen(true);
-                            }}
-                            placeholder="@ 同事"
-                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[14px] font-medium outline-none transition focus:border-[#5B7BFE] focus:bg-white"
-                          />
-                          {isMentionMenuOpen && availableMentionOptions.length > 0 && (
-                            <div className="absolute left-0 right-0 top-14 z-20 max-h-64 overflow-y-auto rounded-2xl border border-gray-200 bg-white p-2 shadow-lg">
-                              {availableMentionOptions.map((candidate) => {
-                                return (
-                                  <button
-                                    key={candidate.id}
-                                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[13px] text-gray-700 hover:bg-gray-50"
-                                    onClick={() => {
-                                      setEditingTask((prev) => ({
-                                        ...prev,
-                                        collaborators: [...prev.collaborators, candidate],
-                                      }));
-                                      setMentionQuery('@');
-                                      setIsMentionMenuOpen(false);
-                                    }}
-                                  >
-                                    <span>{candidate.fullName}{candidate.isSelf ? '（自己）' : ''}</span>
-                                    <span className="text-[11px] text-gray-400">{candidate.email}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {editingTask.collaborators.map((candidate, index) => (
-                            <div key={candidate.id} className={`flex items-center gap-2 rounded-full px-3 py-2 text-[12px] font-bold ${index === 0 ? 'bg-[#5B7BFE] text-white' : 'bg-gray-100 text-gray-700'}`}>
-                              <button
-                                type="button"
-                                className="flex items-center gap-2"
-                                onClick={() =>
-                                  setEditingTask((prev) => {
-                                    const currentIndex = prev.collaborators.findIndex((item) => item.id === candidate.id);
-                                    if (currentIndex <= 0) return prev;
-                                    const next = [...prev.collaborators];
-                                    const [selectedItem] = next.splice(currentIndex, 1);
-                                    next.unshift(selectedItem);
-                                    return { ...prev, collaborators: next };
-                                  })
-                                }
-                              >
-                                {candidate.fullName}
-                                {index === 0 && <span className="text-[10px] uppercase tracking-wide opacity-80">负责人</span>}
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`移除${candidate.fullName}`}
-                                onClick={() =>
-                                  setEditingTask((prev) => ({
-                                    ...prev,
-                                    collaborators: prev.collaborators.filter((item) => item.id !== candidate.id),
-                                  }))
-                                }
-                              >
-                                <X size={12} />
-                              </button>
-                            </div>
-                          ))}
-                          {editingTask.collaborators.length === 0 && (
-                            <span className="rounded-full border border-dashed border-gray-200 px-3 py-2 text-[12px] font-medium text-gray-500">暂无协作者</span>
-                          )}
-                        </div>
+                          </span>
+                        ))}
                       </div>
+                    )}
+                    {editingTaskRecord?.attachments?.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {editingTaskRecord.attachments.map((attachment) => (
+                          <span
+                            key={attachment.id}
+                            className="inline-flex max-w-[280px] items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-[12px] text-slate-600"
+                          >
+                            <span className="truncate">{attachment.title}</span>
+                            <span className="shrink-0 text-[10px] text-slate-400">{attachment.kind.toUpperCase()}</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="w-[340px] min-h-0 flex-shrink-0 overflow-y-auto border-l border-gray-100 bg-gray-50/30">
+                  <div className="space-y-4 border-b border-gray-100 p-5">
+                    <div className="flex rounded-lg bg-gray-100 p-1">
+                      {([
+                        ['COLLAB_SHARED', '协作任务', Users],
+                        ['PERSONAL_ONLY', '个人日程', User],
+                      ] as const).map(([value, label, Icon]) => {
+                        const active = editingTask.scopeMode === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() =>
+                              setEditingTask((prev) => {
+                                if (prev.scopeMode === value) return prev;
+                                if (value === 'PERSONAL_ONLY') {
+                                  const personalDefaultListId = resolveDefaultListId('personal');
+                                  return {
+                                    ...prev,
+                                    scopeMode: 'PERSONAL_ONLY',
+                                    listId: personalDefaultListId || prev.listId,
+                                    clientId: '',
+                                    clientTouched: true,
+                                    clientConfidence: 'manual',
+                                    clientReason: '个人日程不会关联客户或项目。',
+                                    eventLineId: '',
+                                    eventLineTouched: true,
+                                    eventLineReason: '个人日程不会挂到事件线。',
+                                    projectModuleId: '',
+                                    projectModuleTouched: true,
+                                    projectModuleReason: '个人日程不进入项目模块。',
+                                    projectFlowId: '',
+                                    projectFlowTouched: true,
+                                    projectFlowReason: '个人日程不进入标准流程。',
+                                  };
+                                }
+                                return {
+                                  ...prev,
+                                  scopeMode: 'COLLAB_SHARED',
+                                  listId: resolveDefaultListId('org') || prev.listId,
+                                  clientTouched: false,
+                                  clientConfidence: 'none',
+                                  clientReason: organizationTaskAutoReason,
+                                  eventLineTouched: false,
+                                  eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
+                                  projectModuleTouched: false,
+                                  projectModuleReason: '可选：把任务挂到项目下的具体任务模块。',
+                                  projectFlowTouched: false,
+                                  projectFlowReason: '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+                                };
+                              })
+                            }
+                            className={`flex flex-1 items-center justify-center gap-2 rounded-md py-1.5 text-sm font-medium transition ${
+                              active ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                          >
+                            <Icon size={16} />
+                            {label}
+                          </button>
+                        );
+                      })}
                     </div>
-                    </div>
+
+                    <TaskPropertyRow icon={<User size={16} />} label="负责人">
+                      <div className="relative w-full">
+                        <button
+                          type="button"
+                          onClick={() => setIsOwnerMenuOpen(true)}
+                          className="flex w-full items-center gap-2 rounded px-2 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+                        >
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 text-xs font-bold text-white">
+                            {buildNameBadge(ownerCollaborator?.fullName || '')}
+                          </div>
+                          <span className="truncate">{ownerCollaborator?.fullName || '未选择'}</span>
+                        </button>
+                        {isOwnerMenuOpen && (
+                          <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+                            <input
+                              value={ownerQuery}
+                              onChange={(event) => setOwnerQuery(event.target.value)}
+                              placeholder="输入姓名搜索"
+                              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#5B7BFE]"
+                            />
+                            <div className="mt-2 max-h-56 overflow-y-auto">
+                              {ownerOptions.length === 0 && (
+                                <div className="px-3 py-2 text-xs text-gray-400">暂无匹配人员</div>
+                              )}
+                              {ownerOptions.map((candidate) => (
+                                <button
+                                  key={candidate.id}
+                                  type="button"
+                                  className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
+                                  onClick={() => {
+                                    setEditingTask((prev) => {
+                                      const nextCollaborators = prev.collaborators.filter((item) => item.id !== candidate.id);
+                                      return { ...prev, collaborators: [candidate, ...nextCollaborators] };
+                                    });
+                                    setOwnerQuery('');
+                                    setIsOwnerMenuOpen(false);
+                                  }}
+                                >
+                                  <span>{candidate.fullName}{candidate.isSelf ? '（自己）' : ''}</span>
+                                  <span className="text-[10px] text-gray-400">{candidate.email}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </TaskPropertyRow>
+
+                    <TaskPropertyRow icon={<CalendarIcon size={16} />} label="截止日期">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsDuePickerOpen((prev) => !prev);
+                          setDuePickerTab('date');
+                        }}
+                        className="rounded px-2 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+                      >
+                        {duePickerSummaryLabel}
+                      </button>
+                    </TaskPropertyRow>
+
+                    <TaskPropertyRow icon={<Flag size={16} className="text-red-500" />} label="优先级">
+                      <select
+                        value={editingTask.priority}
+                        onChange={(event) =>
+                          setEditingTask((prev) => ({
+                            ...prev,
+                            priority: event.target.value as 'low' | 'normal' | 'high',
+                            priorityTouched: true,
+                            priorityReason: '已手动调整优先级，可继续修改。',
+                          }))
+                        }
+                        className="w-full rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-red-600 hover:bg-gray-100"
+                      >
+                        <option value="low">低优先级</option>
+                        <option value="normal">普通优先级</option>
+                        <option value="high">高优先级</option>
+                      </select>
+                    </TaskPropertyRow>
+
+                    <TaskPropertyRow icon={<Layout size={16} />} label={isEditingTaskPersonal ? '个人日程' : '任务清单'}>
+                      <select
+                        value={editingTask.listId}
+                        onChange={(event) => setEditingTask((prev) => ({ ...prev, listId: event.target.value }))}
+                        className="w-full rounded border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+                      >
+                        {(isEditingTaskPersonal ? personalTaskLists : orgTaskLists).length === 0 ? (
+                          <option value="">
+                            {isEditingTaskPersonal ? '暂无个人日程清单' : '暂无组织清单'}
+                          </option>
+                        ) : (
+                          (isEditingTaskPersonal ? personalTaskLists : orgTaskLists).map((list) => (
+                            <option key={list.id} value={list.id}>
+                              {list.name}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </TaskPropertyRow>
                   </div>
 
-                  <div className="min-h-0 overflow-y-auto border-t border-[#E7EBF5] bg-[#F5F8FF] px-8 py-8 md:px-12 xl:border-l xl:border-t-0 xl:px-10 xl:py-10 2xl:px-12">
-                    <div className="mx-auto max-w-[860px] space-y-5">
-                    <div className="rounded-[28px] border border-[#DCE5FF] bg-white p-5 md:p-6 space-y-4">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[12px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">Task Scope</p>
-                          <p className="mt-2 text-[14px] font-semibold text-gray-900">这条任务属于协作系统，还是只属于你个人</p>
-                          <p className="mt-1 text-[12px] leading-5 text-gray-500">
-                            {isEditingTaskPersonal
-                              ? '个人任务进入独立隐私沙箱，不关联客户、项目、事件线、模块、流程，也不进入组织复盘。'
-                              : '协作任务会接入客户/项目、事件线、结构与证据链，进入部门和机构判断。'}
-                          </p>
-                        </div>
-                        <div className="inline-flex rounded-2xl border border-[#DCE5FF] bg-[#F7F9FF] p-1">
-                          {([
-                            ['COLLAB_SHARED', '协作任务'],
-                            ['PERSONAL_ONLY', '个人任务'],
-                          ] as const).map(([value, label]) => {
-                            const active = editingTask.scopeMode === value;
-                            return (
-                              <button
-                                key={value}
-                                type="button"
-                                className={`rounded-[14px] px-4 py-2 text-[12px] font-semibold transition ${
-                                  active
-                                    ? 'bg-[#5B7BFE] text-white shadow-[0_10px_24px_rgba(91,123,254,0.22)]'
-                                    : 'text-slate-500 hover:text-slate-800'
-                                }`}
-                                onClick={() =>
-                                  setEditingTask((prev) => {
-                                    if (prev.scopeMode === value) return prev;
-                                    if (value === 'PERSONAL_ONLY') {
-                                      return {
-                                        ...prev,
-                                        scopeMode: 'PERSONAL_ONLY',
-                                        clientId: '',
-                                        clientTouched: true,
-                                        clientConfidence: 'manual',
-                                        clientReason: '个人任务不会关联客户或项目。',
-                                        eventLineId: '',
-                                        eventLineTouched: true,
-                                        eventLineReason: '个人任务不会挂到事件线。',
-                                        projectModuleId: '',
-                                        projectModuleTouched: true,
-                                        projectModuleReason: '个人任务不进入项目模块。',
-                                        projectFlowId: '',
-                                        projectFlowTouched: true,
-                                        projectFlowReason: '个人任务不进入标准流程。',
-                                      };
-                                    }
-                                    return {
-                                      ...prev,
-                                      scopeMode: 'COLLAB_SHARED',
-                                      clientTouched: false,
-                                      clientConfidence: 'none',
-                                      clientReason: organizationTaskAutoReason,
-                                      eventLineTouched: false,
-                                      eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
-                                      projectModuleTouched: false,
-                                      projectModuleReason: '可选：把任务挂到项目下的具体任务模块。',
-                                      projectFlowTouched: false,
-                                      projectFlowReason: '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
-                                    };
-                                  })
-                                }
-                              >
-                                {label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
+                  <div className="border-b border-gray-100 p-5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">上下文堆栈</h3>
                     </div>
-                    <div className="rounded-[28px] border border-[#E6EBFF] bg-[#F8FAFF] p-5 md:p-6 space-y-4">
-                      <div>
-                        <p className="text-[12px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">Context Stack</p>
-                      </div>
 
-                      <div className="space-y-1">
-                        <label className="px-1 text-[12px] font-semibold text-gray-700">组织 / 客户 / 项目</label>
+                    <div className="space-y-3">
+                      <TaskPropertyRow icon={<Briefcase size={16} />} label="组织/项目">
                         <select
                           value={editingTask.clientId}
-                          onChange={(event) =>
+                          onChange={(event) => {
+                            const selectedId = event.target.value;
                             setEditingTask((prev) => ({
                               ...prev,
-                              clientId: event.target.value,
+                              clientId: selectedId,
                               clientTouched: true,
-                              clientConfidence: event.target.value ? 'manual' : 'none',
-                              clientReason: event.target.value
-                                ? `已手动关联客户：${taskClientOptions.find((item) => item.id === event.target.value)?.label || '已选择客户'}。`
-                                : organizationTaskManualReason,
+                              clientConfidence: selectedId ? 'manual' : 'none',
+                              clientReason: selectedId
+                                ? `已挂到客户/项目：${taskClientOptions.find((item) => item.id === selectedId)?.name || '已选择客户'}。`
+                                : organizationTaskAutoReason,
                               eventLineId: '',
-                              eventLineTouched: false,
-                              eventLineReason: event.target.value
-                                ? '系统会优先在当前项目下建议事件线，你也可以手动调整。'
-                                : '当前按组织任务处理；如这件事会持续推进且属于某个客户项目，可先关联客户后再识别事件线。',
+                              eventLineTouched: true,
+                              eventLineReason: selectedId
+                                ? '请选择事件线，让后续复盘更连贯。'
+                                : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
                               projectModuleId: '',
-                              projectModuleTouched: false,
-                              projectModuleReason: event.target.value
-                                ? '可选：继续把任务挂到该项目下的具体任务模块。'
-                                : '当前按组织任务处理；如需挂到项目模块，请先关联客户 / 项目。',
+                              projectModuleTouched: true,
+                              projectModuleReason: selectedId
+                                ? '请选择任务模块，帮助后续复盘落到项目结构。'
+                                : '可选：把任务挂到项目下的具体任务模块。',
                               projectFlowId: '',
-                              projectFlowTouched: false,
-                              projectFlowReason: event.target.value
-                                ? '可选：继续把任务挂到该项目下的标准流程。'
-                                : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。',
-                            }))
-                          }
+                              projectFlowTouched: true,
+                              projectFlowReason: selectedId
+                                ? '请选择标准流程，让复盘更贴近业务动作。'
+                                : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+                            }));
+                          }}
                           disabled={isEditingTaskPersonal}
-                          className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium text-gray-700 outline-none transition focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                         >
-                          <option value="">{isEditingTaskPersonal ? '个人任务不关联客户 / 项目' : `组织任务（${organizationTaskName}）`}</option>
+                          <option value="">
+                            {isEditingTaskPersonal ? `个人日程（${organizationTaskName}）` : `组织任务（${organizationTaskName}）`}
+                          </option>
                           {taskClientOptions.map((client) => (
                             <option key={client.id} value={client.id}>
-                              {client.label}
+                              {client.name}
                             </option>
                           ))}
                         </select>
-                        <div className="flex items-center justify-between gap-2 px-1">
-                          {clientConfidenceBadge && (
-                            <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${clientConfidenceBadge.className}`}>
-                              {clientConfidenceBadge.text}
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                      </TaskPropertyRow>
 
-                      <div className="rounded-2xl border border-[#DCE5FF] bg-white px-4 py-4 space-y-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-[12px] font-semibold text-gray-800">事件线</p>
-                            <p className="text-[11px] leading-5 text-gray-500">{isEditingTaskPersonal ? '个人任务不接入组织事件线。' : eventLineScopeHint}</p>
-                          </div>
-                          {selectedEventLineSummary && (
-                            <button
-                              type="button"
-                              className="shrink-0 text-[11px] font-semibold text-[#5B7BFE] hover:text-[#4057d6]"
-                              onClick={() => void openEventLineDetail(selectedEventLineSummary.id)}
-                            >
-                              {isEventLineBusy ? '加载中…' : '查看事件线'}
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex flex-col gap-3 md:flex-row">
+                      <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
+                        <div className="flex w-full items-center gap-2">
                           <select
                             value={editingTask.eventLineId}
                             onChange={(event) =>
@@ -8150,422 +8709,259 @@ export default function App() {
                                 eventLineId: event.target.value,
                                 eventLineTouched: true,
                                 eventLineReason: event.target.value
-                                  ? `已挂到事件线：${taskEventLineOptions.find((item) => item.id === event.target.value)?.name || '已选择事件线'}。`
-                                  : '当前未挂事件线；如这件事会持续推进，建议挂到事件线上统一沉淀痕迹。',
-                              }))
-                            }
-                            disabled={isEditingTaskPersonal}
-                            className="min-w-0 flex-1 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:bg-white disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                          >
-                            <option value="">{isEditingTaskPersonal ? '个人任务不关联事件线' : (editingTask.clientId ? '可选：加入当前项目的事件线' : '可选：加入事件线')}</option>
-                            {taskEventLineOptions.map((eventLine) => (
-                              <option key={eventLine.id} value={eventLine.id}>
-                                {eventLine.name}
-                              </option>
-                            ))}
-                          </select>
-                          <Button
-                            type="button"
-                            className="shrink-0 rounded-2xl px-4 py-3 text-[12px]"
-                            onClick={() => void handleCreateEventLineFromTask()}
-                            disabled={isCreatingEventLine || isEditingTaskPersonal}
-                          >
-                            {isCreatingEventLine ? '创建中…' : '从当前任务新建'}
-                          </Button>
-                        </div>
-                        <p className="px-1 text-[11px] leading-5 text-gray-400">{editingTask.eventLineReason}</p>
-
-                        {!isEditingTaskPersonal && selectedEventLineSummary && (
-                          <div className="rounded-2xl border border-[#E3E9FF] bg-[#F7F9FF] px-4 py-3 text-[11px] text-slate-600 space-y-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="truncate text-[12px] font-semibold text-slate-800">{selectedEventLineSummary.name}</p>
-                                <p className="mt-1 text-slate-500">
-                                  {selectedEventLineSummary.stage || '阶段待补充'}
-                                  {selectedEventLineSummary.primaryClientName ? ` · ${selectedEventLineSummary.primaryClientName}` : ''}
-                                </p>
-                              </div>
-                              <span className="shrink-0 rounded-full border border-[#D7E0FF] bg-white px-2 py-1 text-[10px] font-semibold text-[#5B7BFE]">
-                                {selectedEventLineSummary.status === 'active'
-                                  ? '进行中'
-                                  : selectedEventLineSummary.status === 'blocked'
-                                    ? '受阻'
-                                    : selectedEventLineSummary.status === 'paused'
-                                      ? '暂停'
-                                      : selectedEventLineSummary.status === 'done'
-                                        ? '已完成'
-                                        : '已归档'}
-                              </span>
-                            </div>
-                            {selectedEventLineSummary.summary && (
-                              <p className="line-clamp-3 leading-5 text-slate-600">{selectedEventLineSummary.summary}</p>
-                            )}
-                            <div className="grid gap-2 md:grid-cols-2">
-                              <div className="rounded-2xl border border-[#E3E9FF] bg-white px-3 py-2.5">
-                                <p className="text-[10px] font-bold text-slate-400">这条线想推进什么</p>
-                                <p className="mt-1 text-[11px] leading-5 text-slate-700">{selectedEventLineSummary.intent || selectedEventLineSummary.summary || '待补充'}</p>
-                              </div>
-                              <div className="rounded-2xl border border-[#E3E9FF] bg-white px-3 py-2.5">
-                                <p className="text-[10px] font-bold text-slate-400">当前阻塞</p>
-                                <p className="mt-1 text-[11px] leading-5 text-slate-700">{selectedEventLineSummary.currentBlocker || '待补充'}</p>
-                              </div>
-                              <div className="rounded-2xl border border-[#E3E9FF] bg-white px-3 py-2.5">
-                                <p className="text-[10px] font-bold text-slate-400">下一步</p>
-                                <p className="mt-1 text-[11px] leading-5 text-slate-700">{selectedEventLineSummary.nextStep || '待补充'}</p>
-                              </div>
-                              <div className="rounded-2xl border border-[#E3E9FF] bg-white px-3 py-2.5">
-                                <p className="text-[10px] font-bold text-slate-400">最近关键决策</p>
-                                <p className="mt-1 text-[11px] leading-5 text-slate-700">{selectedEventLineSummary.recentDecision || '待补充'}</p>
-                              </div>
-                            </div>
-                            <div className="rounded-2xl border border-[#D7E0FF] bg-white/90 px-3 py-3">
-                              <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div>
-                                  <p className="text-[11px] font-semibold text-[#33449a]">快速澄清这条线</p>
-                                  <p className="mt-1 text-[11px] leading-5 text-[#5c6ba1]">先补清楚当前事项、阻塞、下一步和最近决策，任务卡与周总结会优先读这一层。</p>
-                                </div>
-                                <button
-                                  type="button"
-                                  className="rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[11px] font-bold text-[#33449a] transition hover:bg-white"
-                                  onClick={() => setIsTaskEventLineClarifyMode((prev) => !prev)}
-                                >
-                                  {isTaskEventLineClarifyMode ? '收起澄清' : '快速澄清'}
-                                </button>
-                              </div>
-                              {isTaskEventLineClarifyMode && (
-                                <EventLineClarificationComposer
-                                  compact
-                                  transcript={taskEventLineClarificationDraft.transcript}
-                                  onTranscriptChange={(value) => setTaskEventLineClarificationDraft((prev) => ({ ...prev, transcript: value }))}
-                                  draft={taskEventLineClarificationDraft}
-                                  onDraftChange={(patch) => setTaskEventLineClarificationDraft((prev) => ({ ...prev, ...patch }))}
-                                  onGenerate={() => void handleGenerateTaskEventLineClarification()}
-                                  onCancel={() => {
-                                    setTaskEventLineClarificationDraft(buildEventLineClarificationDraft(selectedEventLineSummary));
-                                    setIsTaskEventLineClarifyMode(false);
-                                  }}
-                                  onSave={() => void handleSaveTaskEventLineClarification()}
-                                  isGenerating={isGeneratingTaskEventLineClarification}
-                                  isSaving={isSavingTaskEventLineClarification}
-                                />
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {!isEditingTaskPersonal && (taskContextPreview || taskClientPreview) && (
-                        <div className="rounded-2xl border border-sky-100 bg-sky-50/70 px-4 py-4 space-y-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-[12px] font-semibold text-slate-800">{taskContextPreview?.clientName || taskClientPreview?.clientName}</p>
-                              <p className="text-[11px] text-slate-500">
-                                {taskContextPreview?.contextBundle.stage
-                                  ? `当前阶段：${taskContextPreview.contextBundle.stage}`
-                                  : taskClientPreview?.stage
-                                    ? `当前阶段：${taskClientPreview.stage}`
-                                    : '当前阶段待补充'}
-                              </p>
-                            </div>
-                            <span
-                              className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold ${
-                                (taskContextPreview?.readiness || taskClientPreview?.infoCompleteness) === 'high'
-                                  ? 'bg-emerald-100 text-emerald-700'
-                                  : (taskContextPreview?.readiness || taskClientPreview?.infoCompleteness) === 'medium'
-                                    ? 'bg-amber-100 text-amber-700'
-                                    : 'bg-rose-100 text-rose-700'
-                              }`}
-                            >
-                              {isTaskContextPreviewLoading
-                                ? '分析中…'
-                                : (taskContextPreview?.readiness || taskClientPreview?.infoCompleteness) === 'high'
-                                ? '资料较完整'
-                                : (taskContextPreview?.readiness || taskClientPreview?.infoCompleteness) === 'medium'
-                                  ? '资料一般'
-                                  : '资料较少'}
-                            </span>
-                          </div>
-                          <div className="space-y-1 text-[11px] leading-5 text-slate-600">
-                            {taskContextPreview?.contextBundle.currentWork
-                              ? <p><span className="font-medium text-slate-700">当前事项：</span>{taskContextPreview.contextBundle.currentWork}</p>
-                              : taskClientPreview?.currentFocus
-                                ? <p><span className="font-medium text-slate-700">当前事项：</span>{taskClientPreview.currentFocus}</p>
-                                : null}
-                            {taskContextPreview?.judgment.coreBlocker
-                              ? <p><span className="font-medium text-slate-700">当前阻碍：</span>{taskContextPreview.judgment.coreBlocker}</p>
-                              : taskClientPreview?.currentBlocker
-                                ? <p><span className="font-medium text-slate-700">当前阻碍：</span>{taskClientPreview.currentBlocker}</p>
-                                : null}
-                            {taskContextPreview?.judgment.minimumAction
-                              ? <p><span className="font-medium text-slate-700">下一步：</span>{taskContextPreview.judgment.minimumAction}</p>
-                              : taskClientPreview?.nextAction
-                                ? <p><span className="font-medium text-slate-700">下一步：</span>{taskClientPreview.nextAction}</p>
-                                : null}
-                            {taskContextPreview?.contextBundle.recentProgress
-                              ? <p><span className="font-medium text-slate-700">最近进展：</span>{taskContextPreview.contextBundle.recentProgress}</p>
-                              : taskClientPreview?.recentProgress
-                                ? <p><span className="font-medium text-slate-700">最近进展：</span>{taskClientPreview.recentProgress}</p>
-                                : null}
-                            {taskContextPreview?.contextBundle.organizationIntro
-                              ? <p><span className="font-medium text-slate-700">背景：</span>{taskContextPreview.contextBundle.organizationIntro}</p>
-                              : taskClientPreview
-                                ? <p><span className="font-medium text-slate-700">背景：</span>{taskClientPreview.backgroundSummary}</p>
-                                : null}
-                            {taskContextPreview?.judgment.whyItMatters
-                              ? <p><span className="font-medium text-slate-700">关键判断：</span>{taskContextPreview.judgment.whyItMatters}</p>
-                              : taskClientPreview
-                                ? <p><span className="font-medium text-slate-700">目标：</span>{taskClientPreview.goalSummary}</p>
-                                : null}
-                            {taskContextPreview?.judgment.riskIfIgnored
-                              ? <p><span className="font-medium text-slate-700">如果不处理：</span>{taskContextPreview.judgment.riskIfIgnored}</p>
-                              : taskClientPreview
-                                ? <p><span className="font-medium text-slate-700">风险：</span>{taskClientPreview.riskSummary}</p>
-                                : null}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="rounded-[28px] border border-gray-200 bg-white p-5 md:p-6 space-y-4">
-                      <div>
-                        <p className="text-[14px] font-semibold text-gray-900">结构与证据</p>
-                        <p className="mt-1 text-[12px] leading-5 text-gray-500">
-                          {isEditingTaskPersonal
-                            ? '个人任务保留在独立隐私沙箱，不进入项目模块、流程和共享证据链。'
-                            : '模块、流程和附件都放在同一块，形成完整的工作线，而不是分散在长页面各处。'}
-                        </p>
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-1">
-                          <div className="px-1">
-                            <p className="text-[12px] font-semibold text-gray-700">任务模块</p>
-                            <p className="text-[11px] leading-5 text-gray-400">可选：把任务继续挂到项目下的具体模块。</p>
-                          </div>
-                          <select
-                            value={editingTask.projectModuleId}
-                            onChange={(event) =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                projectModuleId: event.target.value,
-                                projectModuleTouched: true,
-                                projectModuleReason: event.target.value
-                                  ? `已挂到任务模块：${taskProjectModuleOptions.find((item) => item.id === event.target.value)?.name || '已选择模块'}。`
-                                  : (prev.clientId ? '当前未选择任务模块。' : '当前按组织任务处理；如需挂到项目模块，请先关联客户 / 项目。'),
-                                projectFlowId: '',
-                                projectFlowTouched: false,
-                                projectFlowReason: event.target.value
-                                  ? '可选：继续把任务挂到该模块下的标准流程。'
-                                  : (prev.clientId ? '请先选择任务模块，再选择流程。' : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。'),
+                                  ? `已关联事件线：${taskEventLineOptions.find((item) => item.id === event.target.value)?.name || '已选择事件线'}。`
+                                  : (prev.clientId ? '请选择事件线，让复盘更连贯。' : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。'),
                               }))
                             }
                             disabled={isEditingTaskPersonal || !editingTask.clientId}
-                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700 outline-none disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                          >
-                            <option value="">{isEditingTaskPersonal ? '个人任务不进入任务模块' : (editingTask.clientId ? '可选：选择任务模块' : `组织任务（${organizationTaskName}）`)}</option>
-                            {taskProjectModuleOptions.map((module) => (
-                              <option key={module.id} value={module.id}>
-                                {module.name}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="px-1 text-[11px] leading-5 text-gray-400">{editingTask.projectModuleReason}</p>
-                        </div>
-                        <div className="space-y-1">
-                          <div className="px-1">
-                            <p className="text-[12px] font-semibold text-gray-700">标准流程</p>
-                            <p className="text-[11px] leading-5 text-gray-400">可选：继续挂到项目流程，后续复盘更贴近业务动作。</p>
-                          </div>
-                          <select
-                            value={editingTask.projectFlowId}
-                            onChange={(event) =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                projectFlowId: event.target.value,
-                                projectFlowTouched: true,
-                                projectFlowReason: event.target.value
-                                  ? `已挂到流程：${taskProjectFlowOptions.find((item) => item.id === event.target.value)?.name || '已选择流程'}。`
-                                  : (prev.projectModuleId ? '当前未选择具体流程。' : (prev.clientId ? '请先选择任务模块，再选择流程。' : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。')),
-                              }))
-                            }
-                            disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId}
-                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700 outline-none disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                           >
                             <option value="">
-                              {isEditingTaskPersonal ? '个人任务不进入标准流程' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : !editingTask.projectModuleId ? '请先选择任务模块' : '可选：选择流程')}
+                              {isEditingTaskPersonal ? '个人日程不进入事件线' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : '可选：加入事件线')}
                             </option>
-                            {taskProjectFlowOptions.map((flow) => (
-                              <option key={flow.id} value={flow.id}>
-                                {flow.name}
+                            {taskEventLineOptions.map((line) => (
+                              <option key={line.id} value={line.id}>
+                                {line.name}
                               </option>
                             ))}
                           </select>
-                          <p className="px-1 text-[11px] leading-5 text-gray-400">{editingTask.projectFlowReason}</p>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-4 space-y-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-[12px] font-semibold text-gray-800">附件</p>
-                            <p className="text-[11px] leading-5 text-gray-500">
-                              {isEditingTaskPersonal
-                                ? '个人任务附件只保留在个人沙箱，不会进入项目总文件库，也不会进入事件线证据层。'
-                                : '任务附件会自动进入当前项目总文件库；如果已挂事件线，也会进入这条线的证据层。'}
-                            </p>
-                          </div>
-                          <Button
+                          <button
                             type="button"
-                            className="shrink-0 rounded-2xl px-4 py-2 text-[12px]"
-                            onClick={() => taskAttachmentInputRef.current?.click()}
-                            disabled={isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy}
+                            onClick={() => void handleCreateEventLineFromTask()}
+                            disabled={!editingTask.title.trim() || !editingTask.clientId || isEditingTaskPersonal}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            <UploadCloud size={14} />
-                            {isEditingTaskPersonal ? '个人任务不上传到项目库' : (isTaskAttachmentBusy ? '上传中…' : editingTask.id ? '上传附件' : '保存后自动上传')}
-                          </Button>
+                            新建
+                          </button>
                         </div>
-                        <input
-                          ref={taskAttachmentInputRef}
-                          type="file"
-                          multiple
-                          className="hidden"
-                          onChange={(event) => {
-                            void handleTaskAttachmentSelection(event.target.files);
-                          }}
-                        />
-                        {isEditingTaskPersonal ? (
-                          <p className="text-[11px] text-slate-500">个人任务附件留在个人沙箱；如果后面确认要变成协作任务，再切回协作任务并关联项目后上传。</p>
-                        ) : !editingTask.clientId ? (
-                          <p className="text-[11px] text-amber-600">请先关联客户/项目，附件才会进入对应项目文件库。</p>
-                        ) : null}
-                        {pendingTaskAttachments.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="text-[11px] font-medium text-slate-500">待保存后上传</p>
-                            <div className="flex flex-wrap gap-2">
-                              {pendingTaskAttachments.map((file, index) => (
-                                <span
-                                  key={`${file.name}-${file.size}-${index}`}
-                                  className="inline-flex items-center gap-2 rounded-full border border-[#DDE6FF] bg-[#F7F9FF] px-3 py-1 text-[11px] text-slate-600"
-                                >
-                                  <span className="max-w-[220px] truncate">{file.name}</span>
-                                  <button
-                                    type="button"
-                                    className="text-slate-400 hover:text-slate-700"
-                                    onClick={() =>
-                                      setPendingTaskAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
-                                    }
-                                  >
-                                    <X size={12} />
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {editingTaskRecord?.attachments?.length ? (
-                          <div className="space-y-2">
-                            <p className="text-[11px] font-medium text-slate-500">已归档附件</p>
-                            <div className="flex flex-wrap gap-2">
-                              {editingTaskRecord.attachments.map((attachment) => (
-                                <span
-                                  key={attachment.id}
-                                  className="inline-flex max-w-[280px] items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-[11px] text-slate-600"
-                                >
-                                  <span className="truncate">{attachment.title}</span>
-                                  <span className="shrink-0 text-[10px] text-slate-400">{attachment.kind.toUpperCase()}</span>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : editingTask.id ? (
-                          <p className="text-[11px] text-gray-400">当前还没有附件。</p>
-                        ) : null}
-                      </div>
+                      </TaskPropertyRow>
                     </div>
+                  </div>
+
+                  <div className="border-b border-gray-100 p-5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">结构与证据</h3>
+                      <Info size={14} className="text-gray-300" />
+                    </div>
+
+                    <div className="space-y-3">
+                      <TaskPropertyRow icon={<Layout size={16} />} label="任务模块">
+                        <select
+                          value={editingTask.projectModuleId}
+                          onChange={(event) =>
+                            setEditingTask((prev) => ({
+                              ...prev,
+                              projectModuleId: event.target.value,
+                              projectModuleTouched: true,
+                              projectModuleReason: event.target.value
+                                ? `已挂到模块：${taskProjectModuleOptions.find((item) => item.id === event.target.value)?.name || '已选择模块'}。`
+                                : (prev.clientId ? '请选择任务模块，帮助后续复盘落到项目结构。' : '可选：把任务挂到项目下的具体任务模块。'),
+                            }))
+                          }
+                          disabled={isEditingTaskPersonal || !editingTask.clientId}
+                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                        >
+                          <option value="">
+                            {isEditingTaskPersonal ? '个人日程不进入任务模块' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : '可选：选择任务模块')}
+                          </option>
+                          {taskProjectModuleOptions.map((module) => (
+                            <option key={module.id} value={module.id}>
+                              {module.name}
+                            </option>
+                          ))}
+                        </select>
+                      </TaskPropertyRow>
+
+                      <TaskPropertyRow icon={<GitMerge size={16} />} label="标准流程">
+                        <select
+                          value={editingTask.projectFlowId}
+                          onChange={(event) =>
+                            setEditingTask((prev) => ({
+                              ...prev,
+                              projectFlowId: event.target.value,
+                              projectFlowTouched: true,
+                              projectFlowReason: event.target.value
+                                ? `已挂到流程：${taskProjectFlowOptions.find((item) => item.id === event.target.value)?.name || '已选择流程'}。`
+                                : (prev.projectModuleId ? '当前未选择具体流程。' : (prev.clientId ? '请先选择任务模块，再选择流程。' : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。')),
+                            }))
+                          }
+                          disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId}
+                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                        >
+                          <option value="">
+                            {isEditingTaskPersonal ? '个人日程不进入标准流程' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : !editingTask.projectModuleId ? '请先选择任务模块' : '可选：选择流程')}
+                          </option>
+                          {taskProjectFlowOptions.map((flow) => (
+                            <option key={flow.id} value={flow.id}>
+                              {flow.name}
+                            </option>
+                          ))}
+                        </select>
+                      </TaskPropertyRow>
+                    </div>
+                  </div>
+
+                  <div className="p-5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-gray-500">协作者</span>
+                      <button
+                        type="button"
+                        title={feishuLaunchHint}
+                        aria-label={feishuLaunchHint}
+                        disabled={!canLaunchFeishuMeeting}
+                        onClick={() => {
+                          void handleLaunchFeishuMeeting();
+                        }}
+                        className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
+                          canLaunchFeishuMeeting
+                            ? 'bg-[#5B7BFE] text-white shadow-[0_8px_16px_rgba(91,123,254,0.24)]'
+                            : 'cursor-not-allowed bg-gray-200 text-gray-400'
+                        }`}
+                      >
+                        <FeishuMeetingGlyph className="h-[20px] w-[20px]" />
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        value={mentionQuery}
+                        onFocus={() => setIsMentionMenuOpen(true)}
+                        onChange={(event) => {
+                          const nextValue = event.target.value.startsWith('@') ? event.target.value : `@${event.target.value}`;
+                          setMentionQuery(nextValue);
+                          setIsMentionMenuOpen(true);
+                        }}
+                        placeholder="@ 同事"
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#5B7BFE]"
+                      />
+                      {isMentionMenuOpen && availableMentionOptions.length > 0 && (
+                        <div className="absolute left-0 right-0 top-11 z-20 max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+                          {availableMentionOptions.map((candidate) => {
+                            return (
+                              <button
+                                key={candidate.id}
+                                className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
+                                onClick={() => {
+                                  setEditingTask((prev) => ({
+                                    ...prev,
+                                    collaborators: [...prev.collaborators, candidate],
+                                  }));
+                                  setMentionQuery('@');
+                                  setIsMentionMenuOpen(false);
+                                }}
+                              >
+                                <span>{candidate.fullName}{candidate.isSelf ? '（自己）' : ''}</span>
+                                <span className="text-[10px] text-gray-400">{candidate.email}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {editingTask.collaborators.map((candidate, index) => (
+                        <div
+                          key={candidate.id}
+                          className={`flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold ${
+                            index === 0 ? 'bg-[#5B7BFE] text-white' : 'bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className="flex items-center gap-2"
+                            onClick={() =>
+                              setEditingTask((prev) => {
+                                const currentIndex = prev.collaborators.findIndex((item) => item.id === candidate.id);
+                                if (currentIndex <= 0) return prev;
+                                const next = [...prev.collaborators];
+                                const [selectedItem] = next.splice(currentIndex, 1);
+                                next.unshift(selectedItem);
+                                return { ...prev, collaborators: next };
+                              })
+                            }
+                          >
+                            {candidate.fullName}
+                            {index === 0 && <span className="text-[10px] uppercase tracking-wide opacity-80">负责人</span>}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`移除${candidate.fullName}`}
+                            onClick={() =>
+                              setEditingTask((prev) => ({
+                                ...prev,
+                                collaborators: prev.collaborators.filter((item) => item.id !== candidate.id),
+                              }))
+                            }
+                          >
+                            <X size={11} />
+                          </button>
+                        </div>
+                      ))}
+                      {editingTask.collaborators.length === 0 && (
+                        <span className="rounded-full border border-dashed border-gray-200 px-3 py-1 text-[11px] text-gray-500">
+                          暂无协作者
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
-              <div className="shrink-0 border-t border-gray-100 bg-white/95 px-8 py-5 backdrop-blur md:px-12 xl:px-14 flex justify-end gap-3">
-                <button onClick={() => closeTaskModal('footer-cancel')} className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors">
-                  取消
-                </button>
-                <Button
-                  primary
-                  onClick={() => {
-                    if (!editingTask.title.trim()) {
-                      flash('error', '请填写任务标题');
-                      return;
-                    }
-                    const combinedDueDate = combineTaskDueDateTime(editingTask.dueDate, editingTask.dueTime);
-                    const resolvedDdl = combinedDueDate
-                      ? formatTaskDueLabel(combinedDueDate)
-                      : (editingTask.ddl.trim() || '待确认');
-                    void (editingTask.id
-                      ? updateTask(editingTask.id, {
-                          scopeMode: editingTask.scopeMode,
-                          title: editingTask.title.trim(),
-                          desc: editingTask.desc.trim(),
-                          priority: editingTask.priority,
-                          listId: editingTask.listId,
-                          dueDate: combinedDueDate || null,
-                          durationMinutes: editingTask.durationMinutes,
-                          clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
-                          eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
-                          projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
-                          projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
-                          ddl: resolvedDdl,
-                          ownerId: ownerCollaborator?.id || currentSessionUser?.id || null,
-                          ownerName: ownerCollaborator?.fullName || currentOperatorName,
-                          collaboratorIds: editingTask.collaborators.map((item) => item.id),
-                          tagIds: [],
-                        })
-                      : createTask({
-                          scopeMode: editingTask.scopeMode,
-                          title: editingTask.title.trim(),
-                          desc: editingTask.desc.trim(),
-                          priority: editingTask.priority,
-                          listId: editingTask.listId,
-                          dueDate: combinedDueDate || null,
-                          durationMinutes: editingTask.durationMinutes,
-                          clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
-                          eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
-                          projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
-                          projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
-                          ddl: resolvedDdl,
-                          ownerId: ownerCollaborator?.id || currentSessionUser?.id || null,
-                          ownerName: ownerCollaborator?.fullName || currentOperatorName,
-                          collaboratorIds: editingTask.collaborators.map((item) => item.id),
-                          tagIds: [],
-                        }))
-                      .then(async (savedTask) => {
-                        if (!isEditingTaskPersonal && pendingTaskAttachments.length > 0 && savedTask?.id) {
-                          await uploadAttachmentsToTask(savedTask.id, pendingTaskAttachments, {
-                            clientId: savedTask.clientId || editingTask.clientId || null,
-                            eventLineId: savedTask.eventLineId || editingTask.eventLineId || null,
-                            taskTitle: savedTask.title || editingTask.title.trim(),
-                          });
-                        }
-                        await loadTaskBlock();
-                        if ((savedTask?.eventLineId || editingTask.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || editingTask.eventLineId)) {
-                          await openEventLineDetail(savedTask?.eventLineId || editingTask.eventLineId);
-                        }
-                        if (taskCalendarDisplayMode !== 'week') {
-                          focusCalendarOnTaskDate(savedTask?.dueDate || combinedDueDate, savedTask?.ddl || resolvedDdl);
-                        }
-                        closeTaskModal('save-success');
-                        resetTaskDraft();
-                        flash('success', pendingTaskAttachments.length > 0 ? '任务和附件已归档' : editingTask.id ? '任务已更新' : '任务已创建');
-                      })
-                      .catch((error) => flash('error', error instanceof Error ? error.message : editingTask.id ? '更新失败' : '创建失败'));
-                  }}
-                  className="px-6 shadow-md"
-                >
-                  {editingTask.id ? '保存修改' : '保存任务'}
-                </Button>
+
+              <div className="relative z-[82] flex shrink-0 items-center justify-between border-t border-gray-200 bg-white px-6 py-4">
+                <div className="min-w-0">
+                  <div className="text-sm text-gray-500">
+                    <span className="mr-2 inline-block h-2 w-2 rounded-full bg-green-500" />
+                    {taskAttachmentUploadProgress ? `正在上传附件 ${taskAttachmentUploadProgress.percent}%` : '草稿已自动保存'}
+                  </div>
+                  {taskAttachmentUploadProgress && (
+                    <div className="mt-2 w-[280px] max-w-full">
+                      <div className="mb-1 flex items-center justify-between gap-3 text-[12px] text-gray-400">
+                        <span className="truncate">{taskAttachmentUploadProgress.currentFileName}</span>
+                        <span>
+                          {Math.min(taskAttachmentUploadProgress.uploadedFiles + 1, taskAttachmentUploadProgress.totalFiles)}/
+                          {taskAttachmentUploadProgress.totalFiles}
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-blue-500 transition-[width] duration-200"
+                          style={{ width: `${taskAttachmentUploadProgress.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    className="rounded-lg px-5 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => closeTaskModal('footer-cancel')}
+                    disabled={isSavingTask || isTaskAttachmentBusy}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded-lg px-6 py-2 text-sm font-medium text-white shadow-sm shadow-blue-200 disabled:cursor-wait disabled:opacity-80 ${
+                      isSavingTask || isTaskAttachmentBusy ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'
+                    }`}
+                    onClick={() => {
+                      void handleSaveTask();
+                    }}
+                    disabled={isSavingTask || isTaskAttachmentBusy}
+                  >
+                    {isTaskAttachmentBusy && taskAttachmentUploadProgress
+                      ? `上传中 ${taskAttachmentUploadProgress.percent}%`
+                      : isSavingTask
+                        ? '正在保存…'
+                        : editingTask.id
+                          ? '保存修改'
+                          : '保存任务'}
+                  </button>
+                </div>
               </div>
               {isDuePickerOpen && (
                 <div
-                  className="fixed inset-0 z-[70] flex items-center justify-center bg-black/10 px-6 py-10"
+                  className="fixed inset-0 z-[90] flex items-center justify-center bg-black/10 px-6 py-10"
                   onClick={() => setIsDuePickerOpen(false)}
                 >
                   <div
@@ -8690,7 +9086,7 @@ export default function App() {
                             <span className="font-medium text-gray-800">{duePickerDateLabel}</span>
                           </div>
                           <p className="mt-2 text-[28px] font-bold tracking-tight text-gray-900">
-                            {editingTask.dueTime || '--:--'}
+                            {duePickerDurationLabel}
                           </p>
                         </div>
 
@@ -8777,6 +9173,54 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {pendingTaskDelete && (
+          <div className="fixed inset-0 z-[92] flex items-center justify-center bg-black/35 px-4 py-6 backdrop-blur-sm">
+            <div
+              className="w-full max-w-[420px] overflow-hidden rounded-[24px] border border-rose-100 bg-white shadow-[0_24px_80px_rgba(0,0,0,0.18)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-rose-100 bg-rose-50/70 px-6 py-5">
+                <div className="flex items-center gap-4">
+                  <button
+                    type="button"
+                    className="rounded-2xl border border-rose-200 bg-white p-2 text-rose-400 transition hover:text-rose-700"
+                    onClick={() => setPendingTaskDelete(null)}
+                    aria-label="关闭删除任务确认"
+                  >
+                    <X size={16} />
+                  </button>
+                  <div className="text-[16px] font-bold text-rose-700">确认删除任务</div>
+                </div>
+                <p className="mt-2 text-[12px] leading-6 text-rose-600">
+                  这会永久删除这条任务及其相关活动记录，且无法恢复。
+                </p>
+              </div>
+              <div className="px-6 py-5">
+                <p className="text-[13px] leading-6 text-gray-600">
+                  即将删除：
+                  <span className="mx-1 font-bold text-gray-900">“{pendingTaskDelete.title || '未命名任务'}”</span>
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-3 border-t border-gray-100 bg-gray-50/50 px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => setPendingTaskDelete(null)}
+                  className="px-4 py-2 text-[13px] font-bold text-gray-500 transition-colors hover:text-gray-800"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmDeleteTaskRecord()}
+                  className="rounded-2xl bg-rose-500 px-5 py-2 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(244,63,94,0.28)] transition-colors hover:bg-rose-600"
+                >
+                  确认删除
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -9902,7 +10346,7 @@ export default function App() {
 
     const handleDeleteClientFolder = async (folder: ClientWorkspace['folders'][number]) => {
       if (!currentClientId) return;
-      if (!window.confirm(`确认移除快捷通道里的“${folder.label}”？只有空文件夹可以移除。`)) {
+      if (!window.confirm(`确认移除快捷通道里的"${folder.label}"？只有空文件夹可以移除。`)) {
         return;
       }
       try {
@@ -10582,7 +11026,7 @@ export default function App() {
               {isWorkspaceFileSearchMode && (
                 <div className="mb-3 text-[11px] text-gray-400">
                   {workspaceFileSearchSubmittedQuery
-                    ? `按相关度显示“${workspaceFileSearchSubmittedQuery}”的文件结果 · 共 ${aggregatedWorkspaceFileHits.length} 项`
+                    ? `按相关度显示"${workspaceFileSearchSubmittedQuery}"的文件结果 · 共 ${aggregatedWorkspaceFileHits.length} 项`
                     : '输入关键词后回车或点击搜索'}
                 </div>
               )}
@@ -12083,7 +12527,7 @@ export default function App() {
               <div className="px-7 py-6 space-y-4">
                 <p className="text-[13px] font-medium text-gray-600">
                   请输入客户名称
-                  <span className="mx-1 font-bold text-gray-900">“{clients.find((client) => client.id === editingClientId)?.name || clientDraft.name.trim() || '该客户'}”</span>
+                  <span className="mx-1 font-bold text-gray-900">"{clients.find((client) => client.id === editingClientId)?.name || clientDraft.name.trim() || '该客户'}"</span>
                   以确认删除。
                 </p>
                 <input
@@ -13017,6 +13461,7 @@ export default function App() {
       color: TASK_COLOR_OPTIONS[0],
       isDefault: false,
       archived: false,
+      scope: 'org' as 'org' | 'personal',
     });
     const [editingListId, setEditingListId] = useState<string | null>(null);
     const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
@@ -13093,7 +13538,8 @@ export default function App() {
 
     const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
-    const canManageTaskList = currentSessionUser?.primaryRole === 'admin';
+    const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
+    const canManagePersonalTaskList = Boolean(currentSessionUser?.id);
     const canManageSensitiveSettings = currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
     const canEditOrgDna = canManageSensitiveSettings || systemAdminSettingsState.allowOrgDnaForEmployees;
@@ -13125,7 +13571,7 @@ export default function App() {
     };
     const resetListManager = () => {
       setEditingListId(null);
-      setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false });
+      setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false, scope: 'org' });
     };
 
     const handleImportLegacyEntries = async () => {
@@ -13256,8 +13702,8 @@ export default function App() {
     };
 
     const handleSaveTaskList = async () => {
-      if (!canManageTaskList) {
-        flash('error', '只有管理员可以维护公共清单');
+      if (listManageDraft.scope === 'org' && !canManageOrgTaskList) {
+        flash('error', '只有管理员可以维护组织清单');
         return;
       }
       const trimmedName = listManageDraft.name.trim();
@@ -13272,12 +13718,14 @@ export default function App() {
             color: listManageDraft.color,
             isDefault: listManageDraft.isDefault,
             archived: listManageDraft.archived,
+            scope: listManageDraft.scope,
           });
         } else {
           await createTaskList({
             name: trimmedName,
             color: listManageDraft.color,
             isDefault: listManageDraft.isDefault,
+            scope: listManageDraft.scope,
           });
         }
         await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
@@ -13289,12 +13737,18 @@ export default function App() {
     };
 
     const handleToggleTaskListArchived = async (list: TaskList) => {
-      if (!canManageTaskList) {
-        flash('error', '只有管理员可以维护公共清单');
+      if ((list.scope || 'org') === 'org' && !canManageOrgTaskList) {
+        flash('error', '只有管理员可以维护组织清单');
         return;
       }
       try {
-        await updateTaskList(list.id, { name: list.name, color: list.color, isDefault: list.isDefault, archived: !list.archivedAt });
+        await updateTaskList(list.id, {
+          name: list.name,
+          color: list.color,
+          isDefault: list.isDefault,
+          archived: !list.archivedAt,
+          scope: list.scope || 'org',
+        });
         await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
         flash('success', list.archivedAt ? '清单已恢复' : '清单已归档');
       } catch (error) {
@@ -13303,11 +13757,11 @@ export default function App() {
     };
 
     const handleDeleteTaskList = async (list: TaskList) => {
-      if (!canManageTaskList) {
-        flash('error', '只有管理员可以删除公共清单');
+      if ((list.scope || 'org') === 'org' && !canManageOrgTaskList) {
+        flash('error', '只有管理员可以删除组织清单');
         return;
       }
-      if (!window.confirm(`确认删除清单“${list.name}”？只有未被任务使用的清单才能删除。`)) {
+      if (!window.confirm(`确认删除清单"${list.name}"？只有未被任务使用的清单才能删除。`)) {
         return;
       }
       try {
@@ -13327,7 +13781,7 @@ export default function App() {
         flash('error', '你没有权限删除这个标签');
         return;
       }
-      if (!window.confirm(`确认删除标签“${tag.name}”？相关任务会同步移除这个标签。`)) {
+      if (!window.confirm(`确认删除标签"${tag.name}"？相关任务会同步移除这个标签。`)) {
         return;
       }
       try {
@@ -13342,13 +13796,23 @@ export default function App() {
       }
     };
 
+    const requestDeleteTaskRecord = (
+      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
+      options?: { closeEditor?: boolean },
+    ) => {
+      setPendingTaskDelete({
+        id: task.id,
+        title: task.title,
+        clientId: task.clientId || null,
+        eventLineId: task.eventLineId || null,
+        closeEditor: options?.closeEditor || false,
+      });
+    };
+
     const handleDeleteTaskRecord = async (
       task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
       options?: { closeEditor?: boolean },
     ) => {
-      if (!window.confirm(`确认删除任务“${task.title}”？此操作不可撤销。`)) {
-        return;
-      }
       try {
         await deleteTask(task.id);
         await loadTaskBlock();
@@ -13367,6 +13831,21 @@ export default function App() {
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '删除任务失败');
       }
+    };
+
+    const confirmDeleteTaskRecord = async () => {
+      if (!pendingTaskDelete) return;
+      const payload = pendingTaskDelete;
+      setPendingTaskDelete(null);
+      await handleDeleteTaskRecord(
+        {
+          id: payload.id,
+          title: payload.title,
+          clientId: payload.clientId || null,
+          eventLineId: payload.eventLineId || null,
+        },
+        { closeEditor: payload.closeEditor },
+      );
     };
 
     const handleSaveOperatorSelection = async () => {
@@ -13562,7 +14041,7 @@ export default function App() {
               ? {
                   ...current,
                   isPolling: false,
-                  statusMessage: '授权页已经就绪；完成授权后可点“手动刷新绑定状态”，或重新打开授权页。',
+                  statusMessage: '授权页已经就绪；完成授权后可点"手动刷新绑定状态"，或重新打开授权页。',
                 }
               : current
           ));
@@ -13823,7 +14302,7 @@ export default function App() {
                   </div>
                   <Button onClick={() => void handleUploadOrgDna(meta.moduleKey)} disabled={!canEditOrgDna || orgDnaSavingKey === meta.moduleKey}>
                     {orgDnaSavingKey === meta.moduleKey ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-                    {module?.hasDocument ? '替换 MD' : '上传 MD'}
+                    {module?.hasDocument ? '替换文档' : '上传文档'}
                   </Button>
                 </div>
                 <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 text-[12px] text-slate-700 space-y-2">
@@ -13836,7 +14315,7 @@ export default function App() {
                   <p className="text-[12px] text-slate-700 leading-relaxed whitespace-pre-wrap">{module?.summary || '上传后，这里会显示提炼后的摘要。'}</p>
                 </div>
                 <details className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
-                  <summary className="cursor-pointer text-[12px] font-bold text-gray-700">查看原文 Markdown</summary>
+                  <summary className="cursor-pointer text-[12px] font-bold text-gray-700">查看原文内容</summary>
                   <pre className="mt-3 whitespace-pre-wrap text-[12px] text-gray-600 max-h-[220px] overflow-y-auto">{module?.markdownContent || '暂无原文'}</pre>
                 </details>
                 <details className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
@@ -13864,7 +14343,7 @@ export default function App() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <select value={taskSettingsDraft.defaultListId || ''} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              {activeTaskLists.map((list) => (
+              {orgTaskLists.map((list) => (
                 <option key={list.id} value={list.id}>{list.name}</option>
               ))}
             </select>
@@ -13919,11 +14398,11 @@ export default function App() {
             <div className="flex items-start justify-between gap-4 mb-4">
               <div>
                 <h2 className="text-[16px] font-bold text-gray-900">清单管理</h2>
-                <p className="text-[12px] text-gray-500 mt-1">公共清单由管理员治理，普通成员可查看但不能修改。</p>
+                <p className="text-[12px] text-gray-500 mt-1">组织清单由管理员治理，个人日程清单可自行维护。</p>
               </div>
               {editingListId && <button type="button" className="text-[12px] font-bold text-gray-400 hover:text-gray-700" onClick={resetListManager}>取消编辑</button>}
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_120px_auto] gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_120px_120px_auto] gap-3">
               <input value={listManageDraft.name} onChange={(event) => setListManageDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="输入清单名称" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
               <select value={listManageDraft.color} onChange={(event) => setListManageDraft((prev) => ({ ...prev, color: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
                 {TASK_COLOR_OPTIONS.map((color) => (
@@ -13934,7 +14413,16 @@ export default function App() {
                 <option value="normal">普通清单</option>
                 <option value="default">默认清单</option>
               </select>
-              <Button primary className="rounded-2xl" onClick={() => void handleSaveTaskList()} disabled={!canManageTaskList}>
+              <select value={listManageDraft.scope} onChange={(event) => setListManageDraft((prev) => ({ ...prev, scope: event.target.value as 'org' | 'personal' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
+                <option value="org">组织任务</option>
+                <option value="personal">个人日程</option>
+              </select>
+              <Button
+                primary
+                className="rounded-2xl"
+                onClick={() => void handleSaveTaskList()}
+                disabled={listManageDraft.scope === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}
+              >
                 {editingListId ? '保存清单' : '新建清单'}
               </Button>
             </div>
@@ -13945,15 +14433,18 @@ export default function App() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="w-3 h-3 rounded-full" style={{ backgroundColor: list.color }} />
                       <p className="text-[14px] font-bold text-gray-900">{list.name}</p>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-slate-100 text-slate-600">
+                        {(list.scope || 'org') === 'personal' ? '个人日程' : '组织任务'}
+                      </span>
                       {list.isDefault && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-blue-50 text-[#5B7BFE]">默认</span>}
                       {list.archivedAt && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">已归档</span>}
                     </div>
                     <p className="text-[12px] text-gray-500 mt-2">归档后不会再出现在新建任务和默认清单选项里。</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, color: list.color, isDefault: list.isDefault, archived: Boolean(list.archivedAt) }); }} disabled={!canManageTaskList}>编辑</Button>
-                    <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={!canManageTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
-                    <Button onClick={() => void handleDeleteTaskList(list)} disabled={!canManageTaskList}>删除</Button>
+                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, color: list.color, isDefault: list.isDefault, archived: Boolean(list.archivedAt), scope: (list.scope || 'org') as 'org' | 'personal' }); }} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>编辑</Button>
+                    <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
+                    <Button onClick={() => void handleDeleteTaskList(list)} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>删除</Button>
                   </div>
                 </div>
               ))}
@@ -14633,23 +15124,28 @@ export default function App() {
             })}
           </nav>
 
-          <CollabSyncCard
-            collapsed={isSidebarCollapsed}
-            status={collabStatus}
-            loading={isCollabStatusLoading}
-            busyAction={collabBusyAction}
-            onRevealRepo={() => {
-              const targetPath = collabStatus?.repoPath || collabRepoPath;
-              if (!targetPath) return;
-              void revealInFinderBridge(targetPath);
-            }}
-            onPreviewPush={() => {
-              void handlePreviewPush();
-            }}
-            onPreviewPull={() => {
-              void handlePreviewPull();
-            }}
-          />
+          <div className={`px-3 pb-3 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'} hidden md:block`}>
+            <CollabSyncCard
+              collapsed={isSidebarCollapsed}
+              status={collabStatus}
+              loading={isCollabStatusLoading}
+              busyAction={collabBusyAction}
+              onRevealRepo={() => {
+                const targetPath = collabStatus?.repoPath || collabStatus?.suggestedRepoPath;
+                if (!targetPath) {
+                  flash('error', '当前没有可定位的源码目录。');
+                  return;
+                }
+                void revealInFinderBridge(targetPath);
+              }}
+              onPreviewPush={() => {
+                void handlePreviewPush();
+              }}
+              onPreviewPull={() => {
+                void handlePreviewPull();
+              }}
+            />
+          </div>
 
           <div className={`px-4 pb-5 ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>
             <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">

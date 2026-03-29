@@ -116,6 +116,38 @@ class AuthStateResponse(BaseModel):
     message: str | None = None
 
 
+class ConsultationKnowledgeRequestRecord(BaseModel):
+    id: str
+    answerId: str
+    organizationId: str
+    target: Literal["vector_memory", "document_archive"]
+    status: Literal["pending", "processing", "completed", "failed"] = "pending"
+    requestedByUserId: str
+    requestedByName: str
+    clientId: str | None = None
+    clientName: str | None = None
+    taskId: str | None = None
+    eventLineId: str | None = None
+    question: str = ""
+    answer: str
+    errorMessage: str | None = None
+    localDocumentId: str | None = None
+    localDocumentPath: str | None = None
+    completedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ConsultationKnowledgeProcessSummaryResponse(BaseModel):
+    totalPending: int = 0
+    processedCount: int = 0
+    completedCount: int = 0
+    failedCount: int = 0
+    skippedCount: int = 0
+    updatedAt: str
+    items: list[ConsultationKnowledgeRequestRecord] = Field(default_factory=list)
+
+
 class AuthRegisterPayload(BaseModel):
     email: str
     fullName: str
@@ -1019,6 +1051,7 @@ class TaskListRecord(BaseModel):
     color: str
     sortOrder: int = 0
     isDefault: bool = False
+    scope: Literal["org", "personal"] = "org"
     archivedAt: str | None = None
 
 
@@ -1200,6 +1233,7 @@ class TaskListMutationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=30)
     color: str = Field(min_length=4, max_length=16)
     isDefault: bool | None = None
+    scope: Literal["org", "personal"] | None = None
     archived: bool | None = None
     sortOrder: int | None = None
 
@@ -1215,6 +1249,12 @@ class TaskSettingsPayload(BaseModel):
     autoAssignSelf: bool | None = None
 
 
+class DnaReadinessQuestionRecord(BaseModel):
+    question: str
+    answered: bool = False
+    evidence: str | None = None
+
+
 class OrganizationDnaModuleRecord(BaseModel):
     moduleKey: OrganizationDnaModuleKey
     title: str
@@ -1226,6 +1266,12 @@ class OrganizationDnaModuleRecord(BaseModel):
     updatedAt: str | None = None
     updatedBy: str | None = None
     hasDocument: bool = False
+    readinessStatus: Literal["ready", "missing"] = "missing"
+    readinessAnsweredCount: int = 0
+    readinessQuestionCount: int = 0
+    readinessSource: Literal["client_dna", "manual_document", "auto_enqueued", "none"] = "none"
+    readinessSummary: str = ""
+    readinessQuestions: list[DnaReadinessQuestionRecord] = Field(default_factory=list)
 
 
 class OrganizationDnaResponse(BaseModel):
@@ -1607,6 +1653,31 @@ class EventLineDetailRecord(BaseModel):
     clarificationNeeds: list[str] = Field(default_factory=list)
 
 
+class EventLineAttachmentRecord(BaseModel):
+    id: str
+    eventLineId: str
+    fileName: str = ""
+    fileType: str = ""
+    displayMode: Literal["expanded", "collapsed"] = "collapsed"
+    description: str = ""
+    uploadedBy: str = ""
+    uploadedAt: str = ""
+    localPath: str | None = None
+    previewUrl: str | None = None
+
+
+class EventLineApprovalNodeRecord(BaseModel):
+    id: str
+    eventLineId: str
+    title: str = ""
+    requestedBy: str = ""
+    approverName: str = ""
+    status: Literal["pending", "approved", "rejected"] = "pending"
+    note: str = ""
+    createdAt: str = ""
+    resolvedAt: str | None = None
+
+
 class EventLineCreatePayload(BaseModel):
     name: str = Field(min_length=1)
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
@@ -1916,6 +1987,9 @@ class WeeklyReviewAnalysisRecord(BaseModel):
     emphasis: Literal["summary", "analysis"]
     headline: str
     caution: str
+    weeklyOverview: str = ""
+    weeklyFocusLines: list[str] = Field(default_factory=list)
+    weeklyNextFocus: list[str] = Field(default_factory=list)
     dnaModuleTitles: list[str] = Field(default_factory=list)
     metricCards: list[ReviewMetricCardRecord] = Field(default_factory=list)
     evidenceWeights: list[ReviewEvidenceWeightRecord] = Field(default_factory=list)
@@ -1929,6 +2003,7 @@ class WeeklyReviewAnalysisRecord(BaseModel):
     riskCards: list[EventLineRiskCardRecord] = Field(default_factory=list)
     opportunityCards: list[EventLineOpportunityCardRecord] = Field(default_factory=list)
     trendSignals: list[TrendSignalRecord] = Field(default_factory=list)
+    narrativeAnalyses: list[NarrativeAnalysisRecord] = Field(default_factory=list)
 
 
 class TaskContextPreviewRecord(BaseModel):
@@ -3431,3 +3506,101 @@ class KnowledgeMemoryRecord(BaseModel):
     surrogateMdPath: str
     createdAt: str
     updatedAt: str
+
+
+# ── UnderstandingSnapshotV1: 统一理解输出对象 ──
+
+
+class UnderstandingSourceBreakdownRecord(BaseModel):
+    sourceType: str
+    available: bool = False
+    label: str = ""
+
+
+class UnderstandingOptionalAdviceRecord(BaseModel):
+    realBlocker: str | None = None
+    timeGate: str | None = None
+    minimumAction: str | None = None
+    supportAsk: str | None = None
+
+
+class UnderstandingSnapshotV1Record(BaseModel):
+    taskId: str
+    mode: Literal["basic", "enhanced"] = "basic"
+    coverage: int = 0
+    confidence: int = 0
+    whatIsThis: str = ""
+    whyItMatters: str = ""
+    progressNow: str = ""
+    unknowns: str = ""
+    knownFacts: list[str] = Field(default_factory=list)
+    optionalAdvice: UnderstandingOptionalAdviceRecord | None = None
+    sourceBreakdown: list[UnderstandingSourceBreakdownRecord] = Field(default_factory=list)
+
+
+# ── Phase 1: 客户战略画像 + 合作关系 + 事件线周历史 ──
+
+
+class ClientStrategicProfileRecord(BaseModel):
+    clientId: str
+    industry: str = ""
+    scale: str = ""
+    influence: str = ""
+    currentNeeds: str = ""
+    painPoints: str = ""
+    strategicValueToYiyu: str = ""
+    decisionChain: str = ""
+    updatedAt: str = ""
+
+
+class CooperationStakeholderRecord(BaseModel):
+    name: str
+    role: str = ""
+    relationship: str = ""
+
+
+class CooperationRelationshipRecord(BaseModel):
+    id: str
+    clientId: str
+    clientName: str = ""
+    whyConnected: str = ""
+    meaningToYiyu: str = ""
+    meaningToClient: str = ""
+    cooperationType: Literal["strategic_companion", "single_project", "exploring", "dormant"] = "exploring"
+    relationshipHealth: Literal["thriving", "steady", "cooling", "at_risk"] = "steady"
+    keyStakeholders: list[CooperationStakeholderRecord] = Field(default_factory=list)
+    milestones: str = ""
+    startedAt: str = ""
+    updatedAt: str = ""
+
+
+class EventLineWeeklySnapshotRecord(BaseModel):
+    id: str
+    eventLineId: str
+    eventLineName: str = ""
+    weekLabel: str
+    stageAtThatTime: str = ""
+    keyDecisions: list[str] = Field(default_factory=list)
+    turningPoints: list[str] = Field(default_factory=list)
+    blockersThen: list[str] = Field(default_factory=list)
+    progressDelta: str = ""
+    taskCount: int = 0
+    completedCount: int = 0
+    createdAt: str = ""
+
+
+class NarrativeAnalysisRecord(BaseModel):
+    eventLineId: str
+    eventLineName: str = ""
+    clientId: str | None = None
+    clientName: str | None = None
+    whatThisIs: str = ""
+    whyImportant: str = ""
+    currentProgress: str = ""
+    missingUnderstanding: str = ""
+    riskNote: str | None = None
+    timeGate: str | None = None
+    minimumAction: str | None = None
+    managementAdvice: str | None = None
+    contextLayersUsed: list[str] = Field(default_factory=list)
+    confidenceLevel: Literal["low", "medium", "high"] = "low"

@@ -7004,3 +7004,35 @@
 ## 2026-03-25 历史复盘弹层交互修正
 - 把 ReviewHistoryPicker 从“整屏绝对 button 背景 + dialog”改成标准 overlay 容器：仅在点击真正遮罩空白处时关闭，避免打开按钮点击与遮罩关闭竞争，导致用户感觉按钮没反应。
 - 位置：src/renderer/components/tasks/ReviewHistoryPicker.tsx
+
+## 2026-03-28 当前软件界面与功能现状盘点文档
+- 新增内部盘点文档 `docs/current-software-interface-inventory.md`
+- 文档采用统一状态口径：
+  - 已完成
+  - 部分完成
+  - 未接通/未发现
+  - 仅内部底盘，前台未收口
+- 覆盖了当前一级导航的 7 个页面：
+  - 任务与日程
+  - 客户工作台
+  - 战略陪伴
+  - 资讯情报站
+  - 测试工作台
+  - 成长手册
+  - 系统设置
+- 同时补了专题盘点：
+  - 注册、登录、审批、会话保持
+  - 日历能力（内部 vs 外部）
+  - 任务协作
+  - 文档共享 / 知识库
+  - 飞书
+  - 成长复盘
+- 文档定位是内部现状说明，不写未来规划当成现状，不回避未接通和边界问题。
+
+- 2026-03-29：修复任务附件上传后保存失败。根因是 `upload_task_attachment` 在云端任务附件回读链中，`_sync_task_attachment_scope` 只查附件表原始列，但 `build_task_attachment()` 硬读 `document_excerpt`，导致附件已归档但接口返回 500。已补联表与字段容错，并为任务弹窗补附件上传百分比、当前文件名和“任务已保存但附件失败”的拆分提示。
+- 2026-03-29：火山云协作后端已部署上线。实际采用 `venv + systemd + nginx + Let's Encrypt`，没有走 Docker/Caddy，因为目标 ECS 到 Docker Hub 拉镜像超时。云端协作库已通过 SQLite `.backup` 一致性快照从本机 `YiyuThinkTankCloud/cloud.db` 导入；导入时额外清理了服务器残留的 `cloud.db-wal / cloud.db-shm`，避免空 WAL 覆盖真实数据。当前云端健康检查返回 `employeeCount=8`、`taskCount=91`。注意：`sslip.io` 域名虽然证书签发成功，但外部访问会被火山云 `webblock` 拦截，因此当前**真实可用**公网入口改为 [http://101.126.34.232](http://101.126.34.232)。
+- 2026-03-29：桌面端协作流量已默认切到火山云。`src/main/main.ts` 新增打包版远端协作后端默认值 `http://101.126.34.232`，桌面本地 `backend` 继续保留在 `127.0.0.1:47829`，但 `cloud_backend` 默认不再本地拉起；本地后端通过环境变量 `YIYU_CLOUD_API_URL=http://101.126.34.232` 访问线上协作服务。已验证安装包启动日志出现 `[cloud] using remote collaboration backend http://101.126.34.232`，且运行中的本地后端进程环境与 `/api/v1/tasks` 聚合结果均确认桌面端已吃到线上协作数据。
+- 2026-03-30：继续推进火山云协作后端的正式入口。尝试了两条免费 HTTPS 路线：`101.126.34.232.sslip.io` 虽能签出证书，但公网访问会被火山云 `webblock` 拦截；`101-126-34-232.nip.io` 的 HTTP 访问本身正常，但无论 `HTTP-01` 还是 `TLS-ALPN-01`，Let's Encrypt 校验都返回 `Connection reset by peer`，因此当前无法把默认入口切到免费 HTTPS 域名。结论先收口为：**手机端和桌面端继续统一走 `http://101.126.34.232`，正式 HTTPS 需要自有域名再推进。**
+- 2026-03-30：把火山云协作后端发布链收成了仓库脚本。新增 `cloud_backend/requirements.deploy.txt`、`scripts/deploy-cloud-backend-volcengine.sh`、`scripts/smoke-cloud-backend-volcengine.sh`；本地 now 可以一键把 `cloud_backend/app`、`pyproject.toml`、`uv.lock` 和依赖清单同步到 `/opt/yiyu/cloud-backend`，刷新远端 `.venv`，重启 `yiyu-cloud-backend.service`，最后自动做 `/health` smoke check。对应说明已补到 `deploy/volcengine/cloud-backend/README.md`。
+- 2026-03-30：正式域名 HTTPS 已打通。通过阿里云 DNS 只新增了子域名 `api.yiyu.love -> 101.126.34.232`，没有改动根域名 `yiyu.love` 和 `www` 的现有站点解析；随后在火山云 ECS 上为 `api.yiyu.love` 增加了 nginx 80/443 server block，使用 `acme.sh + Let's Encrypt` 申请并安装证书，当前公网健康检查已通过：[https://api.yiyu.love/health](https://api.yiyu.love/health)。
+- 2026-03-30：双端默认入口已开始收口到正式子域名。`src/main/main.ts` 新增打包版远端协作默认值 `https://api.yiyu.love`，`mobile/lib/api.ts` 和手机端设置页默认示例地址也改成了 `https://api.yiyu.love`；`scripts/smoke-cloud-backend-volcengine.sh` 默认健康检查地址同步切到了正式 HTTPS 子域名。

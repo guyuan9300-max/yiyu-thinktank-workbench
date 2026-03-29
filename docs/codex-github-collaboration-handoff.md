@@ -1,6 +1,6 @@
-# Codex 协作接入说明
+# Claude Code / Codex 协作接入说明
 
-这份文档是写给另一个 Codex 的。目标不是解释背景，而是让对方能够：
+这份文档是写给另一个 Claude Code / Codex 协作者的。目标不是解释背景，而是让对方能够：
 
 1. 从 GitHub 拉下这个项目  
 2. 在本机成功打开并运行这个软件  
@@ -51,7 +51,21 @@ cd yiyu-thinktank-workbench
 
 如果任一前置环境缺失，请先补环境，再继续。
 
-## 4. 克隆项目
+## 4. 克隆项目或拉取最新 main
+
+如果这是第一次接入，请直接 clone。
+
+如果本机已经有仓库，请不要重新建目录，直接在现有目录里执行：
+
+```bash
+git checkout main
+git fetch origin
+git pull --ff-only origin main
+```
+
+然后再继续下面的依赖安装和本地重装步骤。
+
+### 4.1 首次 clone
 
 优先使用 SSH。
 
@@ -93,7 +107,35 @@ uv sync
 cd ..
 ```
 
-## 6. 启动项目
+## 6. 获取最新可运行桌面版
+
+如果你希望拿到“仓库当前 main 的本地安装版”，推荐顺序是：
+
+```bash
+git checkout main
+git fetch origin
+git pull --ff-only origin main
+npm install
+
+cd backend
+uv sync
+cd ..
+
+cd cloud_backend
+uv sync
+cd ..
+
+npm run install:mac-local
+npm run start
+```
+
+说明：
+
+- `npm run install:mac-local` 会把本地桌面 app 安装到：
+  - `~/Applications/益语智库自用平台.app`
+- 如果只是开发调试，不一定要安装版，可以直接用 `npm run dev`
+
+## 7. 启动项目
 
 ### 开发态启动
 
@@ -119,7 +161,7 @@ npm run install:mac-local
 npm run start
 ```
 
-## 7. 启动后最小验证
+## 8. 启动后最小验证
 
 启动成功不等于能用。  
 你必须至少做一次最小人工验证。
@@ -134,37 +176,37 @@ npm run start
 
 如果没有做到这一步，不要回报“已经跑起来了”。
 
-## 7.1 本地开发可用登录账号
+## 8.1 本地开发可用登录账号（仅账号名，不在仓库内存放明文密码）
 
 当你通过项目自带的 Electron 启动链启动本地 app 时，中心后端会注入固定的开发 seed 账号，方便协作调试。
 
-你可以直接使用下面任一账号登录：
+可用账号标识：
 
 - 管理员账号：
   - 邮箱：`admin@yiyu-system.com`
-  - 密码：`Admin123!`
 - 管理员账号：
   - 邮箱：`guyuan@klngo.org`
-  - 密码：`Guyuan31`
 
 说明：
 
-- 这是本地开发协作口令，用于同事拉代码后快速登录验证
+- 密码不要写进仓库、PR、issue、聊天记录或文档。
+- 密码请由仓库维护者通过安全渠道单独提供。
+- 这是本地开发协作账号，用于同事拉代码后快速登录验证。
 - 如果你单独手工启动 `cloud_backend` 而不是通过项目自带桌面启动链，可能需要自己显式设置同名环境变量
-- 不要把这套本地开发口令拿去当线上或公网环境口令
+- 不要把这套本地开发账号拿去当线上或公网环境账号
 
-## 8. Git 协作规则
+## 9. Git 协作规则
 
 不要直接在 `main` 上开发。
 
-### 8.1 同步主线
+### 9.1 同步主线
 
 ```bash
 git checkout main
 git pull --ff-only
 ```
 
-### 8.2 创建自己的分支
+### 9.2 创建自己的分支
 
 ```bash
 git checkout -b feature/<your-feature-name>
@@ -176,7 +218,7 @@ git checkout -b feature/<your-feature-name>
 git checkout -b fix/<your-bug-name>
 ```
 
-### 8.3 开发完成后提交
+### 9.3 开发完成后提交
 
 ```bash
 git add .
@@ -184,12 +226,12 @@ git commit -m "<clear-commit-message>"
 git push -u origin <your-branch-name>
 ```
 
-### 8.4 通过 PR 合并
+### 9.4 通过 PR 合并
 
 不要直接 push 到 `main`。  
 请创建 Pull Request，把你的分支合并回 `main`。
 
-## 9. 不要提交的内容
+## 10. 不要提交的内容
 
 仓库里已经有 `.gitignore`，但你仍然需要主动检查。
 
@@ -213,6 +255,7 @@ git push -u origin <your-branch-name>
 - 不要改仓库边界，把别的工作区内容混进来
 - 不要把整个 workspace 根目录当项目仓
 - 不要提交密钥、token、密码
+- 不要把本地开发登录口令写进文档、测试截图、PR 描述
 - 不要擅自重写 main 分支历史
 - 不要跳过人工验证
 

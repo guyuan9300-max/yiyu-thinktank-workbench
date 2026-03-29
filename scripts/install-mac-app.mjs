@@ -44,6 +44,17 @@ function runQuiet(command, args) {
   return spawnSync(command, args, { stdio: 'ignore' });
 }
 
+function stabilizeInstalledApp(targetPath) {
+  const scriptPath = path.join(projectRoot, 'scripts', 'stabilize-mac-app.mjs');
+  const result = spawnSync(process.execPath, [scriptPath, targetPath], { stdio: 'inherit' });
+  if (result.error) {
+    fail(`stabilize script failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    fail(`stabilize script exited with status ${result.status}`);
+  }
+}
+
 function stopRunningApp() {
   info('stopping running app instances before install');
   runQuiet('osascript', ['-e', 'tell application "益语智库自用平台" to quit']);
@@ -80,11 +91,7 @@ if (fs.existsSync(targetApp)) {
 
 info(`installing ${sourceApp} -> ${targetApp}`);
 runOrFail('ditto', [sourceApp, targetApp]);
-info('clearing local launch xattrs');
-runOrFail('xattr', ['-dr', 'com.apple.provenance', targetApp]);
-runOrFail('xattr', ['-dr', 'com.apple.quarantine', targetApp]);
-info('re-signing installed app for local launch stability');
-runOrFail('codesign', ['--force', '--deep', '--sign', '-', targetApp]);
+stabilizeInstalledApp(targetApp);
 
 const sourceRendererAssetDir = path.join(sourceApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
 const targetRendererAssetDir = path.join(targetApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');

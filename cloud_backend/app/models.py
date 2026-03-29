@@ -23,6 +23,8 @@ OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
 OrgTaskControlLevel = Literal["normal", "leader_control", "department_control", "organization_control"]
 OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organization_lead", "creator"]
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
+ConsultationKnowledgeTarget = Literal["vector_memory", "document_archive"]
+ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed", "failed"]
 
 
 class SessionUser(BaseModel):
@@ -306,6 +308,45 @@ class SupportRequestRecord(BaseModel):
     updatedAt: str
 
 
+class ConsultationKnowledgeRequestCreatePayload(BaseModel):
+    target: ConsultationKnowledgeTarget
+    question: str = ""
+    answer: str = Field(min_length=1)
+    clientId: str | None = None
+    clientName: str | None = None
+    taskId: str | None = None
+    eventLineId: str | None = None
+
+
+class ConsultationKnowledgeRequestUpdatePayload(BaseModel):
+    status: Literal["processing", "completed", "failed"]
+    errorMessage: str = ""
+    localDocumentId: str | None = None
+    localDocumentPath: str | None = None
+
+
+class ConsultationKnowledgeRequestRecord(BaseModel):
+    id: str
+    answerId: str
+    organizationId: str
+    target: ConsultationKnowledgeTarget
+    status: ConsultationKnowledgeRequestStatus = "pending"
+    requestedByUserId: str
+    requestedByName: str
+    clientId: str | None = None
+    clientName: str | None = None
+    taskId: str | None = None
+    eventLineId: str | None = None
+    question: str = ""
+    answer: str
+    errorMessage: str | None = None
+    localDocumentId: str | None = None
+    localDocumentPath: str | None = None
+    completedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
 class OrgModelProfileRecord(BaseModel):
     organization: OrgProfileRecord
     departments: list[OrgDepartmentRecord] = Field(default_factory=list)
@@ -342,6 +383,7 @@ class TaskListRecord(BaseModel):
     color: str
     sortOrder: int = 0
     isDefault: bool = False
+    scope: Literal["org", "personal"] = "org"
     archivedAt: str | None = None
 
 
@@ -417,14 +459,32 @@ class TaskRecord(BaseModel):
     currentBlocker: str | None = None
     nextAction: str | None = None
     recentDecision: str | None = None
+    completionNote: str | None = None
     evidenceCount: int = 0
     tags: list[TaskTagRecord]
+    attachments: list["TaskAttachmentRecord"] = Field(default_factory=list)
     collaborators: list[TaskCollaboratorRecord]
     collaborationSummary: dict[str, int]
     viewerInboxStatus: CollaboratorInboxStatus | None = None
     orgContext: "TaskOrgContextRecord | None" = None
     createdAt: str
     updatedAt: str
+
+
+class TaskAttachmentRecord(BaseModel):
+    id: str
+    taskId: str
+    clientId: str | None = None
+    eventLineId: str | None = None
+    title: str
+    summary: str | None = None
+    path: str
+    kind: str
+    source: str
+    mimeType: str | None = None
+    sizeBytes: int = 0
+    durationSeconds: int = 0
+    createdAt: str
 
 
 class TaskOrgContextRecord(BaseModel):
@@ -507,6 +567,10 @@ class TaskPlanLinkUpsertPayload(BaseModel):
 
 class TaskReturnPayload(BaseModel):
     reason: str = Field(min_length=1)
+
+
+class TaskCompletionReviewPayload(BaseModel):
+    reviewNote: str = Field(min_length=1)
 
 
 class SupportRequestCreatePayload(BaseModel):
@@ -622,6 +686,7 @@ class TaskListMutationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=30)
     color: str = Field(min_length=4, max_length=16)
     isDefault: bool | None = None
+    scope: Literal["org", "personal"] | None = None
     archived: bool | None = None
     sortOrder: int | None = None
 

@@ -267,6 +267,108 @@ def _truncate_overview_text(value: str, limit: int = 84) -> str:
     return normalized[: limit - 1].rstrip("，、；：: ") + "…"
 
 
+OVERVIEW_INFRA_KEYWORDS = ("debug", "排查", "修复", "联调", "上传", "保存", "附件", "可见", "可见性", "回写", "启动", "登录", "卡死")
+OVERVIEW_INTEL_KEYWORDS = ("情报", "资讯", "报告", "研究", "倡导", "引关注", "趋势", "观察")
+OVERVIEW_COLLAB_KEYWORDS = ("合作", "协作", "协同", "交流", "讨论", "对接", "工作坊", "战略", "诊断", "梳理", "收束")
+
+
+def _item_full_text(item: WeeklyReviewTaskEntryRecord) -> str:
+    snap = item.taskSnapshot
+    parts = [
+        snap.title,
+        getattr(snap, "desc", "") or "",
+        getattr(snap, "note", "") or "",
+        item.note or "",
+        _reflection_text(item),
+        snap.clientName or "",
+        snap.eventLineName or "",
+        snap.listName or "",
+    ]
+    return _clean_text(" ".join(part for part in parts if part)).lower()
+
+
+def _client_background_hint(dna_modules: list[OrganizationDnaModuleRecord], client_name: str) -> str:
+    if not client_name:
+        return ""
+    for module in dna_modules:
+        if client_name in module.title:
+            return _module_source_text(module)
+    return ""
+
+
+def _build_weekly_overview(
+    items: list[WeeklyReviewTaskEntryRecord],
+    dna_modules: list[OrganizationDnaModuleRecord],
+    note_items_count: int,
+) -> tuple[str, list[str], list[str]]:
+    if not items:
+        return ("本周暂无可复盘的事项。", [], [])
+
+    texts = [_item_full_text(item) for item in items]
+    infra_items = [item for item, text in zip(items, texts) if _contains_any(text, OVERVIEW_INFRA_KEYWORDS)]
+    intel_items = [item for item, text in zip(items, texts) if _contains_any(text, OVERVIEW_INTEL_KEYWORDS)]
+    collab_items = [item for item, text in zip(items, texts) if _contains_any(text, OVERVIEW_COLLAB_KEYWORDS)]
+    cffc_items = [item for item, text in zip(items, texts) if "cffc" in text or "鸿鹄" in text or "洪峰" in text]
+
+    client_names = _dedupe_texts([item.taskSnapshot.clientName or "" for item in items if item.taskSnapshot.clientName], limit=6)
+    companion_clients = [name for name in client_names if any(key in name for key in ("日慈", "为爱", "向光"))]
+
+    focus_lines: list[str] = []
+    if infra_items:
+        focus_lines.append("软件底层链路修稳")
+    if cffc_items:
+        focus_lines.append("CFFC 合作推进")
+    if companion_clients:
+        focus_lines.append("客户陪伴收束")
+    if intel_items:
+        focus_lines.append("情报沉淀与议题输入")
+    if not focus_lines and collab_items:
+        focus_lines.append("合作与协作线推进")
+
+    overview_parts: list[str] = ["这周对益语来说，更像是一周在打底、铺线、蓄力。"]
+
+    if infra_items:
+        overview_parts.append(
+            "本周花了不少精力在把软件底层链路修稳，围绕附件保存、上传写入、新建任务可见性等做了多轮排查，本质是在补地基。"
+        )
+
+    if cffc_items:
+        background_hint = _client_background_hint(dna_modules, "CFFC")
+        extra = ""
+        if any(keyword in background_hint for keyword in ("枢纽", "基金会", "行业")):
+            extra = "它的意义不只是一次合作，而是通过行业关键枢纽进入更大网络的机会。"
+        overview_parts.append(f"围绕 CFFC 的合作讨论和说明迭代在推进。{extra}".rstrip("。"))
+
+    if companion_clients:
+        names = "、".join(companion_clients[:2])
+        overview_parts.append(f"客户陪伴线开始从泛沟通往更具体的诊断或收束推进，{names} 逐步落到更清楚的项目梳理上。")
+
+    if intel_items:
+        intel_titles = _dedupe_texts([item.taskSnapshot.title for item in intel_items if item.taskSnapshot.title], limit=2)
+        if intel_titles:
+            overview_parts.append(f"本周有值得沉淀的情报线索：{ '；'.join(intel_titles) }，已开始接到后续咨询议题。")
+        else:
+            overview_parts.append("本周有几条情报线索已经开始接到后续咨询议题。")
+
+    review_ratio = note_items_count / max(1, len(items))
+    if review_ratio < 0.3:
+        overview_parts.append("当前系统可读的复盘说明仍然偏少，判断深度主要停留在任务事实和备注层。")
+
+    overview_parts.append("整体来看，这是偏打底和铺线的一周。")
+
+    next_focus: list[str] = []
+    if cffc_items:
+        next_focus.append("把 CFFC 这条线继续往更明确的合作边界和方式上收。")
+    if companion_clients:
+        next_focus.append("把客户陪伴线推进到更清楚的诊断或项目梳理结果。")
+    if review_ratio < 0.3:
+        next_focus.append("把本周任务复盘补进系统，让判断不只看到动作。")
+    if not next_focus and focus_lines:
+        next_focus.append("围绕本周主线做收束性推进，避免同时开太多新线。")
+
+    return " ".join(_dedupe_texts(overview_parts, limit=8)), focus_lines[:4], next_focus[:3]
+
+
 def _overview_line(title: str, body: str) -> str:
     normalized_title = _clean_text(title).rstrip("：:｜")
     normalized_body = _truncate_overview_text(body)
@@ -2309,6 +2411,8 @@ def build_weekly_review_analysis(
     *,
     org_model_profile: OrgModelProfileRecord | None = None,
     viewer_role: ReviewViewerRole = "employee",
+    knowledge_summaries: list[dict] | None = None,
+    meeting_summaries: list[dict] | None = None,
 ) -> WeeklyReviewAnalysisRecord:
     note_items = [item for item in items if item.note.strip() or _reflection_text(item) or _lightweight_tag(item)]
     dna_modules = _select_relevant_modules(items, organization_dna_modules, limit=3 if scope == "work" else 1)
@@ -2339,6 +2443,11 @@ def build_weekly_review_analysis(
     )
     event_line_summary = _event_line_summary(items)
     tag_counts = Counter(_lightweight_tag(item) for item in items if _lightweight_tag(item))
+    weekly_overview, weekly_focus_lines, weekly_next_focus = _build_weekly_overview(
+        items,
+        dna_modules,
+        note_items_count=len(note_items),
+    )
     confirmed_facts = [
         f"{week_label} 共纳入 {len(items)} 项{'工作任务' if scope == 'work' else '私人事项'}，其中已完成 {completed_count} 项，未完成 {len(items) - completed_count} 项。",
         (
@@ -2398,6 +2507,19 @@ def build_weekly_review_analysis(
         preview = "；".join(_dedupe_texts([*focus_item_texts[:2], *structured_plan_texts[:2]], limit=3))
         if preview:
             confirmed_facts.append(f"本轮已读取的正式计划线索包括：{preview}。")
+    # 知识库摘要注入
+    _kb = knowledge_summaries or []
+    if _kb:
+        kb_titles = [item.get("title", "") for item in _kb[:3] if item.get("title")]
+        if kb_titles:
+            confirmed_facts.append(f"本轮已读取 {len(_kb)} 份客户知识库文档，包括：{'、'.join(kb_titles)}。")
+    # 会议内容注入
+    _ms = meeting_summaries or []
+    if _ms:
+        meeting_titles = [item.get("title", "") for item in _ms[:3] if item.get("title")]
+        if meeting_titles:
+            confirmed_facts.append(f"本轮已读取 {len(_ms)} 场相关会议，包括：{'、'.join(meeting_titles)}。")
+
     event_line_summaries, event_line_completeness, risk_cards, opportunity_cards = (
         _build_event_line_intelligence(items, viewer_role=viewer_role) if scope == "work" else ([], [], [], [])
     )
@@ -2438,6 +2560,9 @@ def build_weekly_review_analysis(
             if scope == "work"
             else "以下内容更偏个人总结和自我观察，不应让系统的解释压过你自己的真实感受。"
         ),
+        weeklyOverview=weekly_overview if scope == "work" else "",
+        weeklyFocusLines=weekly_focus_lines if scope == "work" else [],
+        weeklyNextFocus=weekly_next_focus if scope == "work" else [],
         dnaModuleTitles=[module.title for module in dna_modules],
         metricCards=metric_cards,
         evidenceWeights=_build_evidence_weights(

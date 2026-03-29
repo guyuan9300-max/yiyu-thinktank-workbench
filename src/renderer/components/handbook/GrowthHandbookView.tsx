@@ -4,6 +4,7 @@ import {
   BrainCircuit,
   Eye,
   Flame,
+  GitMerge,
   PenTool,
   PlusCircle,
   Rocket,
@@ -1170,8 +1171,12 @@ export function GrowthHandbookView({
                 ))}
               </div>
             ) : (
-              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-[13px] font-medium text-gray-400">
-                当前还没有正式入账的成长记录。先在任务、会议或周判断里留下真实动作与解释，成长账本才会开始累积。
+              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center">
+                <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center">
+                  <BookOpen className="w-5 h-5 text-indigo-500" />
+                </div>
+                <p className="text-[14px] font-bold text-gray-600 mb-1">成长账本还是空的</p>
+                <p className="text-[13px] text-gray-400 max-w-md mx-auto">完成一条任务并写下复盘心得，或者在周复盘中留下反思，系统就会自动生成第一条成长记录。</p>
               </div>
             )}
           </div>
@@ -1216,8 +1221,12 @@ export function GrowthHandbookView({
                 ))}
               </div>
             ) : (
-              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-[13px] font-medium text-gray-400">
-                当前还没有形成“任务 / 会议 / 事件线 / 战略”联动的成长高光。等真实业务动作进入成长引擎后，这里会自动出现链式呼应关系。
+              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center">
+                <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-purple-50 flex items-center justify-center">
+                  <GitMerge className="w-5 h-5 text-purple-500" />
+                </div>
+                <p className="text-[14px] font-bold text-gray-600 mb-1">还没有形成成长呼应</p>
+                <p className="text-[13px] text-gray-400 max-w-md mx-auto">当你的任务、会议和事件线开始联动时，系统会自动识别哪些行动带来了真实成长，并在这里展示呼应关系。</p>
               </div>
             )}
           </div>
@@ -1246,8 +1255,9 @@ export function GrowthHandbookView({
                 ))}
               </div>
             ) : (
-              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-[13px] font-medium text-gray-400">
-                当前还没有成长来源覆盖数据。
+              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center">
+                <p className="text-[14px] font-bold text-gray-600 mb-1">成长来源数据待积累</p>
+                <p className="text-[13px] text-gray-400 max-w-md mx-auto">随着你完成任务、参加会议和提交复盘，这里会按来源分类展示你的成长信号分布。</p>
               </div>
             )}
           </div>
@@ -1312,8 +1322,9 @@ export function GrowthHandbookView({
                 ))}
               </div>
             ) : (
-              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-[13px] font-medium text-gray-400">
-                当前没有待放大的成长信号。要么近期动作都已转正，要么还没有足够的真实业务上下文进入成长系统。
+              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center">
+                <p className="text-[14px] font-bold text-gray-600 mb-1">暂无待放大的信号</p>
+                <p className="text-[13px] text-gray-400 max-w-md mx-auto">当系统检测到你的某些行动有成长潜力但还缺少闭环时，会在这里提醒你补充。</p>
               </div>
             )}
           </div>
@@ -1371,8 +1382,9 @@ export function GrowthHandbookView({
                 ))}
               </div>
             ) : (
-              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center text-[13px] font-medium text-gray-400">
-                当前还没有值得立即补的动作推荐。等系统捕捉到项目、事件线或战略上的缺口后，这里会自动出现。
+              <div className="rounded-[24px] border border-dashed border-gray-200 bg-white px-5 py-10 text-center">
+                <p className="text-[14px] font-bold text-gray-600 mb-1">暂无动作推荐</p>
+                <p className="text-[13px] text-gray-400 max-w-md mx-auto">当项目或事件线上出现能力缺口时，系统会在这里推荐最值得补的下一步动作。</p>
               </div>
             )}
           </div>
@@ -1414,7 +1426,12 @@ export function GrowthHandbookView({
                 </div>
               );
             })}
-            {!abilityCards.length ? <div className="text-[12px] leading-6 text-slate-400">当前还没有能力分布数据。等真实成长证据入账后，这里会自动出现。</div> : null}
+            {!abilityCards.length ? (
+              <div className="text-center py-4">
+                <p className="text-[13px] font-bold text-gray-500 mb-1">能力雷达待激活</p>
+                <p className="text-[12px] text-gray-400">完成任务并写下复盘后，六维能力分布会在这里自动生成。</p>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-4 rounded-[24px] border border-gray-100 bg-white p-6 shadow-sm">
@@ -1457,7 +1474,10 @@ export function GrowthHandbookView({
                 </button>
               ))
             ) : (
-              <div className="text-[12px] leading-6 text-slate-400">当前还没有项目要求能力与个人能力的显著差距。</div>
+              <div className="text-center py-2">
+                <p className="text-[13px] font-bold text-gray-500 mb-1">没有明显的能力差距</p>
+                <p className="text-[12px] text-gray-400">当前项目和事件线对你的能力要求都在覆盖范围内。</p>
+              </div>
             )}
           </div>
 

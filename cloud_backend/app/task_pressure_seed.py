@@ -215,7 +215,7 @@ def _ensure_task_lists(db: Database, organization_id: str) -> None:
             db.execute(
                 """
                 UPDATE task_lists
-                SET organization_id = ?, name = ?, color = ?, sort_order = ?, is_default = ?, archived_at = NULL
+                SET organization_id = ?, name = ?, color = ?, sort_order = ?, is_default = ?, scope = 'org', archived_at = NULL
                 WHERE id = ?
                 """,
                 (organization_id, name, color, sort_order, is_default, list_id),
@@ -223,8 +223,8 @@ def _ensure_task_lists(db: Database, organization_id: str) -> None:
         else:
             db.execute(
                 """
-                INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, archived_at)
-                VALUES(?, ?, ?, ?, ?, ?, NULL)
+                INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+                VALUES(?, ?, ?, ?, ?, ?, 'org', NULL)
                 """,
                 (list_id, organization_id, name, color, sort_order, is_default),
             )

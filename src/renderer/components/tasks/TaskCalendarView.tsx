@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarClock,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -87,12 +88,19 @@ const DAY_TIMELINE_SLOT_MINUTES = 15;
 const DAY_TIMELINE_SLOT_HEIGHT = 14;
 const DAY_TIMELINE_DEFAULT_DURATION_MINUTES = 60;
 const DAY_TIMELINE_DEFAULT_START_MINUTE = 8 * 60;
+const DAY_MINUTES = 24 * 60;
 
 type WeekCreateSelection = {
   dayKey: number;
   dayDate: Date;
   startMinute: number;
   endMinute: number;
+};
+
+type MonthCreateSelection = {
+  startDate: Date;
+  endDate: Date;
+  spanDays: number;
 };
 
 function formatDateInputValue(date: Date) {
@@ -170,6 +178,54 @@ function addDays(baseDate: Date, days: number) {
   return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + days);
 }
 
+function compareCalendarDates(left: Date, right: Date) {
+  return new Date(left.getFullYear(), left.getMonth(), left.getDate()).getTime()
+    - new Date(right.getFullYear(), right.getMonth(), right.getDate()).getTime();
+}
+
+function buildMonthCreateSelection(anchorDate: Date, currentDate: Date): MonthCreateSelection {
+  const isForward = compareCalendarDates(anchorDate, currentDate) <= 0;
+  const startDate = isForward ? anchorDate : currentDate;
+  const endDate = isForward ? currentDate : anchorDate;
+  const diffDays = Math.round(
+    (new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate()).getTime()
+      - new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()).getTime())
+      / (24 * 60 * 60 * 1000),
+  );
+  return {
+    startDate,
+    endDate,
+    spanDays: diffDays + 1,
+  };
+}
+
+function dateFromCalendarCellTarget(target: EventTarget | null) {
+  const element = target instanceof HTMLElement ? target.closest<HTMLElement>('[data-calendar-date]') : null;
+  const dateKey = element?.dataset.calendarDate;
+  if (!dateKey) return null;
+  const [yearText, monthText, dayText] = dateKey.split('-');
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
+}
+
+function taskCalendarSpanDays(task: Task) {
+  const { time } = splitTaskDueDateTime(task.dueDate);
+  if (time) return 1;
+  const durationMinutes = Math.max(0, task.durationMinutes ?? 0);
+  if (durationMinutes < DAY_MINUTES) return 1;
+  return Math.max(1, Math.ceil(durationMinutes / DAY_MINUTES));
+}
+
+function taskCoversCalendarDate(task: Task, date: Date, taskDateForCalendar: (task: Task) => Date) {
+  const startDate = taskDateForCalendar(task);
+  const spanDays = taskCalendarSpanDays(task);
+  const endDate = addDays(startDate, spanDays - 1);
+  return isDateWithinRange(date, startDate, endDate);
+}
+
 function startOfWeek(baseDate: Date) {
   const dayIndex = (baseDate.getDay() + 6) % 7;
   return addDays(baseDate, -dayIndex);
@@ -216,6 +272,17 @@ function taskOrgSummary(task: Task) {
   return parts.join(' · ');
 }
 
+function isTransportItineraryTask(task: Task) {
+  const text = `${task.title || ''}\n${task.desc || ''}`.trim();
+  if (!text) return false;
+  return /(飞[\u4e00-\u9fff]{1,8}|飞去[\u4e00-\u9fff]{1,8}|飞往[\u4e00-\u9fff]{1,8}|航班|机票|火车去[\u4e00-\u9fff]{1,8}|高铁去[\u4e00-\u9fff]{1,8}|动车去[\u4e00-\u9fff]{1,8}|坐火车去[\u4e00-\u9fff]{1,8}|坐高铁去[\u4e00-\u9fff]{1,8}|乘火车去[\u4e00-\u9fff]{1,8}|乘高铁去[\u4e00-\u9fff]{1,8})/.test(text);
+}
+
+function calendarTaskAccentColor(task: Task) {
+  if (isTransportItineraryTask(task)) return '#16A34A';
+  return task.listColor;
+}
+
 function calendarChipStyle(task: Task) {
   if (task.status === 'done') {
     return {
@@ -224,10 +291,11 @@ function calendarChipStyle(task: Task) {
       borderColor: '#E2E8F0',
     };
   }
+  const accentColor = calendarTaskAccentColor(task);
   return {
-    color: task.listColor,
-    backgroundColor: `${task.listColor}14`,
-    borderColor: `${task.listColor}22`,
+    color: accentColor,
+    backgroundColor: `${accentColor}14`,
+    borderColor: `${accentColor}22`,
   };
 }
 
@@ -303,6 +371,7 @@ export function TaskCalendarView({
   const [selectedDetailContextPreview, setSelectedDetailContextPreview] = useState<TaskContextPreview | null>(null);
   const [resizingTaskId, setResizingTaskId] = useState<string | null>(null);
   const [resizePreviewMinutes, setResizePreviewMinutes] = useState<number | null>(null);
+  const [monthCreateSelection, setMonthCreateSelection] = useState<MonthCreateSelection | null>(null);
   const [weekCreateSelection, setWeekCreateSelection] = useState<WeekCreateSelection | null>(null);
   const [visibleWeekPageIndex, setVisibleWeekPageIndex] = useState(1);
   const [isWeekPaging, setIsWeekPaging] = useState(false);
@@ -316,6 +385,11 @@ export function TaskCalendarView({
   } | null>(null);
   const weekCreateSelectionRef = useRef<WeekCreateSelection | null>(null);
   const weekCreateCleanupRef = useRef<(() => void) | null>(null);
+  const monthCreateDraftRef = useRef<{ anchorDate: Date } | null>(null);
+  const monthCreateSelectionRef = useRef<MonthCreateSelection | null>(null);
+  const monthCreateCleanupRef = useRef<(() => void) | null>(null);
+  const monthCreateDidDragRef = useRef(false);
+  const monthCreateSuppressClickRef = useRef(false);
   const timelineScrollRef = useRef<HTMLDivElement | null>(null);
   const timelineSectionRef = useRef<HTMLDivElement | null>(null);
   const weekTimelineScrollRef = useRef<HTMLDivElement | null>(null);
@@ -360,11 +434,15 @@ export function TaskCalendarView({
   const monthTasksByDateKey = useMemo(() => {
     const mapping = new Map<string, Task[]>();
     visibleTasks.forEach((task) => {
-      const date = taskDateForCalendar(task);
-      const key = formatDateInputValue(date);
-      const existing = mapping.get(key) || [];
-      existing.push(task);
-      mapping.set(key, existing);
+      const startDate = taskDateForCalendar(task);
+      const spanDays = taskCalendarSpanDays(task);
+      for (let offset = 0; offset < spanDays; offset += 1) {
+        const date = addDays(startDate, offset);
+        const key = formatDateInputValue(date);
+        const existing = mapping.get(key) || [];
+        existing.push(task);
+        mapping.set(key, existing);
+      }
     });
     mapping.forEach((dayTasks, key) => {
       mapping.set(key, sortTasksForCalendar(dayTasks));
@@ -453,24 +531,14 @@ export function TaskCalendarView({
   const currentWeekPage = weekPages[1];
   const visibleWeekPage = weekPages[visibleWeekPageIndex] ?? currentWeekPage;
   const weekStartKey = weekStartDate.getTime();
-  const weekDays = currentWeekPage.days;
-  const weekEndDate = currentWeekPage.endDate;
-  const weekTasks = currentWeekPage.tasks;
-  const weekTimedTasks = currentWeekPage.timedTasks;
-  const floatingUnscheduledTasks = useMemo(
-    () => sortTasksForCalendar(
-      visibleTasks.filter((task) => {
-        if (task.status === 'done') return false;
-        if (minuteOfDayFromTime(splitTaskDueDateTime(task.dueDate).time) !== null) return false;
-        const taskDate = taskDateForCalendar(task);
-        return taskDate.getMonth() === selectedDate.getMonth() && taskDate.getFullYear() === selectedDate.getFullYear();
-      }),
-    ),
-    [selectedDate, taskDateForCalendar, visibleTasks],
-  );
+  const weekDays = visibleWeekPage.days;
+  const weekEndDate = visibleWeekPage.endDate;
+  const weekTasks = visibleWeekPage.tasks;
+  const weekTimedTasks = visibleWeekPage.timedTasks;
+  const floatingUnscheduledTasks = visibleWeekPage.unscheduledTasks;
 
   const selectedDayTasks = useMemo(
-    () => sortTasksForCalendar(visibleTasks.filter((task) => isSameDay(taskDateForCalendar(task), selectedDate))),
+    () => sortTasksForCalendar(visibleTasks.filter((task) => taskCoversCalendarDate(task, selectedDate, taskDateForCalendar))),
     [selectedDate, taskDateForCalendar, visibleTasks],
   );
 
@@ -641,11 +709,27 @@ export function TaskCalendarView({
     document.body.style.userSelect = '';
   }, []);
 
+  const cleanupMonthCreateInteraction = useCallback(() => {
+    monthCreateCleanupRef.current?.();
+    monthCreateCleanupRef.current = null;
+    monthCreateDraftRef.current = null;
+    monthCreateSelectionRef.current = null;
+    monthCreateDidDragRef.current = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
   useEffect(() => {
     return () => {
       cleanupWeekCreateInteraction();
     };
   }, [cleanupWeekCreateInteraction]);
+
+  useEffect(() => {
+    return () => {
+      cleanupMonthCreateInteraction();
+    };
+  }, [cleanupMonthCreateInteraction]);
 
   useEffect(() => {
     setVisibleMonthDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1));
@@ -817,7 +901,7 @@ export function TaskCalendarView({
         return;
       }
       onSelectDate(date);
-      setSelectedDetailTaskId(weekTasks.find((task) => isSameDay(taskDateForCalendar(task), date))?.id || null);
+      setSelectedDetailTaskId(visibleWeekPage.tasks.find((task) => isSameDay(taskDateForCalendar(task), date))?.id || null);
       return;
     }
     if (isDetailOpen && isSameDay(date, selectedDate)) {
@@ -825,8 +909,81 @@ export function TaskCalendarView({
       return;
     }
     onSelectDate(date);
+  };
+
+  const handleDayDoubleClick = (date: Date) => {
+    // 双击空白日期 → 直接新建任务（参考滴答清单交互）
+    onOpenTaskEditor(undefined, formatDateInputValue(date));
     onAlignCalendarDate(date);
     onSetDetailOpen(true);
+  };
+
+  const handleStartMonthCreateSelection = (
+    cellDate: Date,
+    event: React.MouseEvent<HTMLDivElement>,
+  ) => {
+    if (draggingTaskId || resizingTaskId || event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-no-month-range-drag="true"]')) return;
+    cleanupMonthCreateInteraction();
+    const initialSelection = buildMonthCreateSelection(cellDate, cellDate);
+    monthCreateDraftRef.current = { anchorDate: cellDate };
+    monthCreateSelectionRef.current = initialSelection;
+    monthCreateDidDragRef.current = false;
+    monthCreateSuppressClickRef.current = false;
+    setMonthCreateSelection(initialSelection);
+    setSelectedDetailTaskId(null);
+    document.body.style.cursor = 'crosshair';
+    document.body.style.userSelect = 'none';
+
+    const updateSelectionFromPoint = (target: EventTarget | null) => {
+      const draft = monthCreateDraftRef.current;
+      if (!draft) return;
+      const nextDate = dateFromCalendarCellTarget(target);
+      if (!nextDate) return;
+      const nextSelection = buildMonthCreateSelection(draft.anchorDate, nextDate);
+      monthCreateSelectionRef.current = nextSelection;
+      monthCreateDidDragRef.current = nextSelection.spanDays > 1;
+      setMonthCreateSelection(nextSelection);
+    };
+
+    const handleWindowMouseMove = (moveEvent: MouseEvent) => {
+      updateSelectionFromPoint(document.elementFromPoint(moveEvent.clientX, moveEvent.clientY));
+    };
+
+    const handleWindowMouseUp = (upEvent: MouseEvent) => {
+      updateSelectionFromPoint(document.elementFromPoint(upEvent.clientX, upEvent.clientY));
+      const selection = monthCreateSelectionRef.current;
+      const didDrag = monthCreateDidDragRef.current;
+      cleanupMonthCreateInteraction();
+      setMonthCreateSelection(null);
+      if (!selection || !didDrag) return;
+      monthCreateSuppressClickRef.current = true;
+      const dueDate = formatDateInputValue(selection.startDate);
+      const durationMinutes = selection.spanDays * DAY_MINUTES;
+      window.requestAnimationFrame(() => {
+        onSelectDate(selection.startDate);
+        onAlignCalendarDate(selection.startDate);
+        onSetDetailOpen(true);
+        onOpenTaskEditor(undefined, dueDate, { durationMinutes });
+      });
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+    monthCreateCleanupRef.current = () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+  };
+
+  const handleMonthCreateSelectionHover = (cellDate: Date) => {
+    const draft = monthCreateDraftRef.current;
+    if (!draft) return;
+    const nextSelection = buildMonthCreateSelection(draft.anchorDate, cellDate);
+    monthCreateSelectionRef.current = nextSelection;
+    monthCreateDidDragRef.current = nextSelection.spanDays > 1;
+    setMonthCreateSelection(nextSelection);
   };
 
   const handleTaskDrop = async (task: Task, cellDate: Date) => {
@@ -1213,6 +1370,12 @@ export function TaskCalendarView({
                     const isActiveSelection = isSameDay(cellDate, selectedDate) && isDetailOpen;
                     const isToday = isSameDay(cellDate, today);
                     const isMonthAnchor = cellDate.getDate() === 1;
+                    const isInMonthCreateSelection = monthCreateSelection
+                      ? isDateWithinRange(cellDate, monthCreateSelection.startDate, monthCreateSelection.endDate)
+                      : false;
+                    const isMonthCreateStart = monthCreateSelection
+                      ? isSameDay(cellDate, monthCreateSelection.startDate)
+                      : false;
                     const overflowCount = Math.max(dayTasks.length - 4, 0);
                     const chinaCalendarMarkers = getChinaCalendarMarkers(cellDate);
                     return (
@@ -1220,7 +1383,22 @@ export function TaskCalendarView({
                         key={formatDateInputValue(cellDate)}
                         role="button"
                         tabIndex={0}
-                        onClick={() => handleDaySelect(cellDate)}
+                        onMouseDown={(event) => handleStartMonthCreateSelection(cellDate, event)}
+                        onMouseEnter={() => handleMonthCreateSelectionHover(cellDate)}
+                        onClick={() => {
+                          if (monthCreateSuppressClickRef.current) {
+                            monthCreateSuppressClickRef.current = false;
+                            return;
+                          }
+                          handleDaySelect(cellDate);
+                        }}
+                        onDoubleClick={() => {
+                          if (monthCreateSuppressClickRef.current) {
+                            monthCreateSuppressClickRef.current = false;
+                            return;
+                          }
+                          handleDayDoubleClick(cellDate);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
@@ -1253,6 +1431,8 @@ export function TaskCalendarView({
                           isActiveSelection ? 'bg-blue-50/40' : ''
                         } ${
                           dragTargetDay === cellDate.getTime() ? 'bg-blue-50/70' : ''
+                        } ${
+                          isInMonthCreateSelection ? 'bg-blue-50/75 ring-1 ring-inset ring-[#5B7BFE]/30' : ''
                         }`}
                       >
                         <div className="relative z-10 flex h-full flex-col">
@@ -1283,10 +1463,19 @@ export function TaskCalendarView({
                             )}
                           </div>
 
+                          {isMonthCreateStart && monthCreateSelection && monthCreateSelection.spanDays > 1 && (
+                            <div className="mt-2">
+                              <span className="inline-flex rounded-full border border-[#C9D7FF] bg-white/95 px-2 py-1 text-[10px] font-bold text-[#5B7BFE] shadow-sm">
+                                新建 {monthCreateSelection.spanDays} 天任务
+                              </span>
+                            </div>
+                          )}
+
                           <div className="mt-2.5 flex min-h-0 flex-1 flex-col gap-1">
                             {dayTasks.slice(0, 4).map((task) => (
                               <button
                                 key={task.id}
+                                data-no-month-range-drag="true"
                                 type="button"
                                 className={`relative block max-w-full truncate rounded-lg border px-2 py-1 text-[11px] font-semibold text-left leading-4 ${
                                   task.status === 'done' ? '' : 'shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
@@ -1311,16 +1500,29 @@ export function TaskCalendarView({
                                     setDragTargetDay(null);
                                   }}
                                   onClick={(event) => event.stopPropagation()}
-                                  className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded-md border border-white/70 bg-white/90 p-0.5 text-gray-400 opacity-0 shadow-sm transition group-hover:opacity-100 hover:text-[#5B7BFE]"
+                                  className="absolute right-1 top-1/2 z-10 -translate-y-1/2 cursor-grab rounded-md border border-white/70 bg-white/90 p-0.5 text-gray-300 shadow-sm transition hover:text-[#5B7BFE] active:cursor-grabbing"
                                   title="拖动调整日期"
                                 >
                                   <GripVertical size={11} />
                                 </span>
-                                <span
-                                  className="absolute left-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
-                                  style={{ backgroundColor: task.status === 'done' ? '#CBD5E1' : task.listColor }}
-                                />
-                                <span className="block truncate pl-3 pr-4">{task.title}</span>
+                                <button
+                                  type="button"
+                                  data-no-month-range-drag="true"
+                                  className={`absolute left-1.5 top-1/2 z-10 flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-[4px] border transition ${
+                                    task.status === 'done'
+                                      ? 'border-[#CBD5E1] bg-[#CBD5E1] text-white'
+                                      : 'border-current bg-white/85 hover:bg-white'
+                                  }`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void onToggleTaskStatus(task.id);
+                                  }}
+                                  title={task.status === 'done' ? '取消完成' : '标记完成'}
+                                  aria-label={task.status === 'done' ? `取消完成 ${task.title}` : `完成 ${task.title}`}
+                                >
+                                  {task.status === 'done' ? <Check size={10} strokeWidth={3} /> : null}
+                                </button>
+                                <span className="block truncate pl-5 pr-4">{task.title}</span>
                               </button>
                             ))}
                             {overflowCount > 0 && (
@@ -1330,13 +1532,15 @@ export function TaskCalendarView({
                             )}
                             <button
                               type="button"
-                              aria-label={`${cellDate.getDate()}日详情`}
-                              className="min-h-[18px] flex-1 rounded-lg bg-transparent"
+                              aria-label={`${cellDate.getDate()}日新建任务`}
+                              className="group/add min-h-[18px] flex-1 rounded-lg bg-transparent hover:bg-blue-50/50 transition-colors flex items-center justify-center"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                handleDaySelect(cellDate);
+                                onOpenTaskEditor(undefined, formatDateInputValue(cellDate));
                               }}
-                            />
+                            >
+                              <span className="text-[18px] text-blue-300 opacity-0 group-hover/add:opacity-100 transition-opacity font-light">+</span>
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -1354,13 +1558,12 @@ export function TaskCalendarView({
                   <p className="text-[13px] font-bold text-gray-700">本周时间轴</p>
                   <p className="mt-1 text-[11px] text-gray-400">把任务直接拖到具体日期和时段里，按周统筹时间安排。</p>
                 </div>
-                <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-semibold text-gray-500 border border-gray-200">15 分钟吸附</span>
               </div>
               {floatingUnscheduledTasks.length > 0 && (
                 <div className="rounded-[20px] border border-gray-200 bg-slate-50/70 p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <p className="text-[11px] font-bold text-gray-700">本月待排时间</p>
+                      <p className="text-[11px] font-bold text-gray-700">本周待排时间</p>
                       <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 border border-slate-200">
                         {floatingUnscheduledTasks.length} 条
                       </span>
@@ -1445,6 +1648,7 @@ export function TaskCalendarView({
                             type="button"
                             className={`border-l border-gray-100 px-2 py-3 text-center transition-colors ${isActive ? 'bg-blue-50/60' : 'hover:bg-slate-50'}`}
                             onClick={() => handleDaySelect(day)}
+                            onDoubleClick={() => handleDayDoubleClick(day)}
                           >
                             <p className="text-[11px] font-semibold text-gray-400">{day.toLocaleDateString('zh-CN', { weekday: 'short' })}</p>
                             <div className="mt-2 flex items-center justify-center">
