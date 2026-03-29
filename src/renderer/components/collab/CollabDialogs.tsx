@@ -93,7 +93,15 @@ export function CollabPreviewDialog({
   const confirmedRiskSet = new Set(confirmedRiskPaths);
   const unresolvedRiskCount = preview.files.filter((file) => selectedSet.has(file.path) && file.risk && !confirmedRiskSet.has(file.path)).length;
   const actionLabel = mode === 'push' ? '提交并推送我的修改' : '预览并同步最新版本';
-  const confirmLabel = mode === 'push' ? '确认推到 main' : '确认从 main 同步';
+  const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
+  const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
+  const confirmLabel = noPushChanges
+    ? '当前已同步到 main'
+    : alreadySynced
+      ? '当前已经是最新版本'
+      : mode === 'push'
+        ? '确认推到 main'
+        : '确认从 main 同步';
   const confirmDisabled = busy || Boolean(preview.executionBlockReason) || selectedPaths.length === 0 || unresolvedRiskCount > 0;
 
   return (

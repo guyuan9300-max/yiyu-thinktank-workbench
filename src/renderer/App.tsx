@@ -541,8 +541,10 @@ const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 
 function normalizeInitialCollabRepoPath(storedPath: string | null) {
   if (!storedPath) return null;
-  if (storedPath.endsWith('/yiyu-thinktank-workbench-main-sync')) return storedPath;
-  if (storedPath.endsWith('/yiyu-thinktank-workbench')) return `${storedPath}-main-sync`;
+  if (storedPath.endsWith('/yiyu-thinktank-workbench-main-sync')) {
+    return storedPath.replace(/-main-sync$/, '');
+  }
+  if (storedPath.endsWith('/yiyu-thinktank-workbench')) return storedPath;
   return storedPath;
 }
 

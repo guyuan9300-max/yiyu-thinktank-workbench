@@ -139,11 +139,10 @@ function logElectronError(message: string) {
 
 function getCollabSuggestedCandidates() {
   return [
-    path.join(app.getPath('home'), '.openclaw', 'workspace', 'yiyu-thinktank-workbench-main-sync'),
-    path.join(path.dirname(projectRoot), 'yiyu-thinktank-workbench-main-sync'),
-    projectRoot,
-    path.join(app.getPath('documents'), 'yiyu-thinktank-workbench-main-sync'),
-    path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench-main-sync'),
+    path.join(app.getPath('home'), '.openclaw', 'workspace', 'yiyu-thinktank-workbench'),
+    path.join(path.dirname(projectRoot), 'yiyu-thinktank-workbench'),
+    path.join(app.getPath('documents'), 'yiyu-thinktank-workbench'),
+    path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench'),
   ];
 }
 

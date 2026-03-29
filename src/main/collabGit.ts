@@ -165,6 +165,10 @@ const IGNORABLE_LOCAL_STATUS_PATHS = new Set([
   '.yiyu-sync/settings.system_admin.json',
 ]);
 
+const IGNORABLE_LOCAL_STATUS_PREFIXES = [
+  'mobile/',
+];
+
 function formatSyncedJson(value: Record<string, unknown>) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -458,7 +462,9 @@ function hasBinaryExtension(targetPath: string) {
 }
 
 function isIgnorableLocalStatusPath(targetPath: string) {
-  return IGNORABLE_LOCAL_STATUS_PATHS.has(targetPath.replace(/\\/g, '/'));
+  const normalizedPath = targetPath.replace(/\\/g, '/');
+  return IGNORABLE_LOCAL_STATUS_PATHS.has(normalizedPath)
+    || IGNORABLE_LOCAL_STATUS_PREFIXES.some((prefix) => normalizedPath === prefix.slice(0, -1) || normalizedPath.startsWith(prefix));
 }
 
 function addPathsToSet(targetSet: Set<string>, targetPath: string, previousPath?: string | null) {
