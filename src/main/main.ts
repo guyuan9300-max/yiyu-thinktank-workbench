@@ -96,7 +96,7 @@ const diagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, ChildProcessW
 const ownedDiagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, boolean>> = {};
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
 const legacyAppBasenames = new Set(['益语智库.app', '益语智库工作台.app']);
-const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'https://api.yiyu.love';
+const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
 
 function normalizeHttpUrl(rawUrl?: string | null) {
   const trimmed = rawUrl?.trim();
