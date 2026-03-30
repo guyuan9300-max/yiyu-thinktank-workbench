@@ -1,7 +1,7 @@
 import React from 'react';
 import { Activity, AlertCircle, RefreshCw, Radar, ShieldAlert, Sparkles } from 'lucide-react';
 
-import type { BettaFishSignal, DiagnosisEngineHealth, DiagnosisEngineMode } from '../../../shared/types';
+import type { BettaFishSignal, DiagnosisEngineHealth, DiagnosisEngineMode } from '../../../../src/shared/types';
 
 type DiagnosisEnginePanelProps = {
   supported: boolean;

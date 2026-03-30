@@ -1,5 +1,13 @@
 import type { AnalysisRun, AnalysisTemplate, DiagnosisAudienceType, DiagnosisScene } from '../../../shared/types';
-import type { DiagnosisPlatformDnaContext } from './platformDnaProfiles';
+
+type DiagnosisPlatformDnaContext = {
+  key: string;
+  label: string;
+  summary: string;
+  corePreferences: string[];
+  riskTriggers: string[];
+  tonePreference?: string;
+};
 
 export type DiagnosisWorkspaceKey = 'fundraising' | 'public_opinion' | 'project_design';
 export type DiagnosisModeId =
