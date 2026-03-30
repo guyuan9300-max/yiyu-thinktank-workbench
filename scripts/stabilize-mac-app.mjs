@@ -33,17 +33,21 @@ function clearAllAttributesRecursive(targetPath) {
   run('xattr', ['-cr', targetPath], { allowFailure: true, stdio: 'ignore' });
 }
 
-function removeSigningTempFiles(rootPath) {
+function removeTransientRuntimeFiles(rootPath) {
   const visit = (entryPath) => {
     const stat = fs.lstatSync(entryPath);
     if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
+      if (path.basename(entryPath) === '__pycache__') {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        return;
+      }
       for (const child of fs.readdirSync(entryPath)) {
         visit(path.join(entryPath, child));
       }
       return;
     }
-    if (entryPath.endsWith('.cstemp')) {
+    if (entryPath.endsWith('.cstemp') || entryPath.endsWith('.pyc') || entryPath.endsWith('.pyo')) {
       fs.rmSync(entryPath, { force: true });
     }
   };
@@ -60,13 +64,13 @@ if (!appPath || !fs.existsSync(appPath) || !appPath.endsWith('.app')) {
 }
 
 info(`stabilizing ${appPath}`);
-removeSigningTempFiles(appPath);
+removeTransientRuntimeFiles(appPath);
 clearAllAttributesRecursive(appPath);
 
 info('re-signing app bundle');
 run('codesign', ['--force', '--deep', '--sign', '-', '--timestamp=none', appPath]);
 
-removeSigningTempFiles(appPath);
+removeTransientRuntimeFiles(appPath);
 clearAllAttributesRecursive(appPath);
 
 info('verifying code signature');

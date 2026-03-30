@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
 import type {
@@ -33,9 +33,11 @@ const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
 const fixedUserDataPath = path.join(app.getPath('appData'), 'YiyuThinkTankWorkbench');
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
+const runtimeUiDir = path.join(fixedUserDataPath, 'runtime', 'ui');
 const electronLaunchLogPath = path.join(runtimeLogsDir, 'electron-launch.log');
 const collabRebuildLogPath = path.join(runtimeLogsDir, 'collab-rebuild.log');
 const emergencyBootstrapLogPath = '/tmp/yiyu-thinktank-electron-bootstrap.log';
+const savedApplicationStatePath = path.join(app.getPath('home'), 'Library', 'Saved Application State', `${APP_BUNDLE_ID}.savedState`);
 app.setName(APP_DISPLAY_NAME);
 app.setPath('userData', fixedUserDataPath);
 app.setAboutPanelOptions({
@@ -774,6 +776,8 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   env.PATH = Array.from(pathEntries).join(path.delimiter);
   env.YIYU_CLOUD_API_URL = cloudBackendUrl();
   env.YIYU_WORKBENCH_DATA_DIR = fixedUserDataPath;
+  env.PYTHONDONTWRITEBYTECODE = '1';
+  env.PYTHONPYCACHEPREFIX = path.join(fixedUserDataPath, 'runtime', 'pycache');
   return env;
 }
 
@@ -942,12 +946,19 @@ function rendererProtocolUrl() {
   return 'app://renderer/index.html';
 }
 
-function rendererBootstrapUrl(detail = '正在连接本地界面与后台服务，请稍候…') {
-  return `app://renderer/__bootstrap__.html?detail=${encodeURIComponent(detail)}`;
+function writeRendererDiagnosticPage(fileName: string, html: string) {
+  fs.mkdirSync(runtimeUiDir, { recursive: true });
+  const filePath = path.join(runtimeUiDir, fileName);
+  fs.writeFileSync(filePath, html, 'utf8');
+  return pathToFileURL(filePath).href;
 }
 
-function rendererFailureUrl(detail: string) {
-  return `app://renderer/__renderer_failure__.html?detail=${encodeURIComponent(detail)}`;
+function rendererBootstrapPageUrl(detail = '正在连接本地界面与后台服务，请稍候…') {
+  return writeRendererDiagnosticPage('__bootstrap__.html', buildRendererBootstrapPage(detail));
+}
+
+function rendererFailurePageUrl(detail: string) {
+  return writeRendererDiagnosticPage('__renderer_failure__.html', buildRendererFailurePage(detail));
 }
 
 async function registerRendererProtocol() {
@@ -1077,6 +1088,14 @@ async function recyclePackagedRuntimeProcesses() {
   if (!app.isPackaged) return;
   await terminateManagedRuntimeProcess(backendRuntimeVenv);
   await terminateManagedRuntimeProcess(cloudBackendRuntimeVenv);
+}
+
+function purgeSavedApplicationState() {
+  try {
+    fs.rmSync(savedApplicationStatePath, { recursive: true, force: true });
+  } catch {
+    // Ignore saved-state cleanup errors; they should not block startup.
+  }
 }
 
 function logBackend(pipe: NodeJS.ReadableStream, label: string) {
@@ -1425,7 +1444,7 @@ async function loadRendererWithFallback(window: BrowserWindow) {
   const failureMessage = loadErrors.length > 0
     ? `渲染界面启动失败。\n${loadErrors.join('\n')}`
     : '渲染界面启动失败。';
-  await window.loadURL(rendererFailureUrl(failureMessage));
+  await window.loadURL(rendererFailurePageUrl(failureMessage));
   return 'error';
 }
 
@@ -1556,7 +1575,7 @@ async function createMainWindow() {
     mainWindow = null;
   });
 
-  await mainWindow.loadURL(rendererBootstrapUrl());
+  await mainWindow.loadURL(rendererBootstrapPageUrl());
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     logElectronInfo('[window] showing startup bootstrap page');
     mainWindow.show();
@@ -1639,6 +1658,7 @@ app.whenReady().then(async () => {
     }
     await registerRendererProtocol();
     await recyclePackagedRuntimeProcesses();
+    purgeSavedApplicationState();
   } catch (error) {
     dialog.showErrorBox('后端运行时准备失败', error instanceof Error ? error.message : String(error));
     app.quit();

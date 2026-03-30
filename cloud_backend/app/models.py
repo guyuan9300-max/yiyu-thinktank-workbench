@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
 PrimaryRole = Literal["admin", "employee"]
+CloudWorkspaceMode = Literal["personal", "shared"]
 Priority = Literal["low", "normal", "high"]
 TaskProgressStatus = Literal["todo", "doing", "done"]
 CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
@@ -58,6 +59,76 @@ class RegisterPayload(BaseModel):
 class LoginPayload(BaseModel):
     email: EmailStr
     password: str
+
+
+class RegisterResponse(BaseModel):
+    message: str
+
+
+class CreateOrganizationPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class OrgInvitationCreatePayload(BaseModel):
+    departmentId: str | None = None
+    roleName: str | None = None
+    expiresInDays: int | None = Field(default=7, ge=1, le=30)
+    maxUses: int | None = Field(default=1, ge=1, le=100)
+
+
+class OrgInvitationRedeemPayload(BaseModel):
+    code: str = Field(min_length=1)
+
+
+class OrgInvitationRecord(BaseModel):
+    code: str
+    organizationId: str
+    organizationName: str
+    departmentId: str | None = None
+    departmentName: str | None = None
+    roleName: str | None = None
+    expiresAt: str
+    maxUses: int = 1
+    usedCount: int = 0
+
+
+class AccountMembershipRecord(BaseModel):
+    organizationId: str | None = None
+    organizationName: str | None = None
+    departmentId: str | None = None
+    departmentName: str | None = None
+    jobTitle: str | None = None
+    isPersonalWorkspace: bool = False
+
+
+class ImportTaskListRecord(BaseModel):
+    localId: str
+    name: str
+    color: str
+    scope: Literal["org", "personal"] = "org"
+
+
+class ImportTaskRecord(BaseModel):
+    localId: str
+    title: str
+    description: str = ""
+    priority: Priority = "normal"
+    dueDate: str | None = None
+    durationMinutes: int = 60
+    listLocalId: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class StructuredImportPayload(BaseModel):
+    taskLists: list[ImportTaskListRecord] = Field(default_factory=list)
+    tasks: list[ImportTaskRecord] = Field(default_factory=list)
+
+
+class StructuredImportResult(BaseModel):
+    importedTaskCount: int = 0
+    importedListCount: int = 0
+    importedTagCount: int = 0
+    updatedAt: str
 
 
 class RefreshPayload(BaseModel):

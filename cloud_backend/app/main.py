@@ -17,6 +17,7 @@ from app.department_catalog import get_department_entry, list_department_catalog
 from app.db import Database, from_json, to_json
 from app.models import (
     AuthTokenResponse,
+    AccountMembershipRecord,
     ConsultationKnowledgeRequestCreatePayload,
     ConsultationKnowledgeRequestRecord,
     ConsultationKnowledgeRequestUpdatePayload,
@@ -32,6 +33,7 @@ from app.models import (
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
     FeishuBindingRelaySessionStatusRecord,
+    CreateOrganizationPayload,
     LoginPayload,
     ManagementSignalCardRecord,
     MentionCandidate,
@@ -39,6 +41,9 @@ from app.models import (
     OrgDepartmentPlanItemRecord,
     OrgDepartmentPlanRecord,
     OrgDepartmentQuarterPlanRecord,
+    OrgInvitationCreatePayload,
+    OrgInvitationRedeemPayload,
+    OrgInvitationRecord,
     OrgEmployeeBindingRecord,
     OrgFocusItemRecord,
     OrgModelProfileRecord,
@@ -57,6 +62,7 @@ from app.models import (
     ReviewHistoryEntryRecord,
     ReviewHistoryResponse,
     RegisterPayload,
+    RegisterResponse,
     RejectPayload,
     ReportActionCardRecord,
     RolePayload,
@@ -84,6 +90,8 @@ from app.models import (
     TaskPlanLinkRecord,
     TaskPlanLinkUpsertPayload,
     TaskUpdatePayload,
+    StructuredImportPayload,
+    StructuredImportResult,
     WeeklyReviewCreatePayload,
     WeeklyReviewEntryRecord,
     WeeklyReviewEventLineContextRecord,
@@ -141,6 +149,111 @@ def _row_user(row) -> SessionUser:
         primaryRole=str(row["primary_role"]),
         accountStatus=str(row["account_status"]),
     )
+
+
+def _slugify_organization_name(name: str) -> str:
+    base = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", name.strip().lower()).strip("-")
+    return base[:48] or f"org-{uuid4().hex[:8]}"
+
+
+def _ensure_unique_org_slug(state: AppState, preferred: str) -> str:
+    candidate = preferred
+    suffix = 1
+    while state.db.fetchone("SELECT id FROM organizations WHERE slug = ?", (candidate,)):
+        suffix += 1
+        candidate = f"{preferred}-{suffix}"
+    return candidate
+
+
+def _personal_workspace_name(full_name: str) -> str:
+    trimmed = full_name.strip() or "新用户"
+    return f"{trimmed}的个人空间"
+
+
+def _organization_row_or_404(state: AppState, organization_id: str):
+    row = state.db.fetchone("SELECT * FROM organizations WHERE id = ?", (organization_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="组织不存在")
+    return row
+
+
+def _organization_name(state: AppState, organization_id: str | None) -> str | None:
+    if not organization_id:
+        return None
+    row = state.db.fetchone("SELECT name FROM organizations WHERE id = ?", (organization_id,))
+    return str(row["name"]) if row else None
+
+
+def _is_personal_workspace(row) -> bool:
+    return str(row["workspace_mode"] or "shared") == "personal"
+
+
+def _account_membership_record(state: AppState, current_user: SessionUser) -> AccountMembershipRecord:
+    user_row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+    org_row = state.db.fetchone("SELECT * FROM organizations WHERE id = ?", (current_user.organizationId,))
+    department_name = None
+    if user_row and user_row["department_id"]:
+        department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (str(user_row["department_id"]),))
+        department_name = str(department_row["name"]) if department_row else str(user_row["department_name"] or "") or None
+    return AccountMembershipRecord(
+        organizationId=current_user.organizationId,
+        organizationName=str(org_row["name"]) if org_row else None,
+        departmentId=str(user_row["department_id"]) if user_row and user_row["department_id"] else None,
+        departmentName=department_name,
+        jobTitle=str(user_row["job_title"]) if user_row and user_row["job_title"] else None,
+        isPersonalWorkspace=bool(org_row and _is_personal_workspace(org_row)),
+    )
+
+
+def _department_name_for_org(state: AppState, organization_id: str, department_id: str | None) -> str | None:
+    if not department_id:
+        return None
+    row = state.db.fetchone(
+        "SELECT name FROM org_departments WHERE id = ? AND organization_id = ?",
+        (department_id, organization_id),
+    )
+    return str(row["name"]) if row else None
+
+
+def _ensure_workspace_lists(state: AppState, organization_id: str) -> None:
+    default_rows = [
+        ("收集箱", "#888681", 0, 1, "org"),
+        ("我的事项", "#5B7BFE", 0, 1, "personal"),
+    ]
+    for name, color, sort_order, is_default, scope in default_rows:
+        existing = state.db.fetchone(
+            """
+            SELECT id
+            FROM task_lists
+            WHERE organization_id = ? AND scope = ? AND name = ? AND (archived_at IS NULL OR archived_at = '')
+            ORDER BY sort_order ASC
+            LIMIT 1
+            """,
+            (organization_id, scope, name),
+        )
+        if existing:
+            continue
+        has_default = bool(
+            state.db.fetchone(
+                "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND is_default = 1 LIMIT 1",
+                (organization_id, scope),
+            )
+        )
+        state.db.execute(
+            """
+            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                new_id("list"),
+                organization_id,
+                name,
+                color,
+                sort_order,
+                0 if has_default else is_default,
+                scope,
+            ),
+        )
 
 
 def _employee_record(row) -> EmployeeRecord:
@@ -1739,8 +1852,13 @@ def _ensure_seed_data(state: AppState) -> None:
     timestamp = now_iso()
     if not db.fetchone("SELECT id FROM organizations WHERE id = ?", (DEFAULT_ORG_ID,)):
         db.execute(
-            "INSERT INTO organizations(id, name, slug, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+            "INSERT INTO organizations(id, name, slug, workspace_mode, owner_user_id, created_at, updated_at) VALUES(?, ?, ?, 'shared', 'user_admin', ?, ?)",
             (DEFAULT_ORG_ID, "益语智库", "yiyu-thinktank", timestamp, timestamp),
+        )
+    else:
+        db.execute(
+            "UPDATE organizations SET workspace_mode = COALESCE(NULLIF(workspace_mode, ''), 'shared'), owner_user_id = COALESCE(owner_user_id, 'user_admin'), updated_at = ? WHERE id = ?",
+            (timestamp, DEFAULT_ORG_ID),
         )
 
     people = resolve_seed_users(state.data_dir)
@@ -2677,6 +2795,9 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
     list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (str(row["list_id"]),))
     collaborators = _collaborators_for_task(state, str(row["id"]))
     attachments = _task_attachments_for_task(state, str(row["id"]))
+    tag_ids = [str(item) for item in from_json(row["tag_ids_json"], [])] if isinstance(from_json(row["tag_ids_json"], []), list) else []
+    legacy_tag_names = [str(item) for item in from_json(row["tags_json"], [])] if isinstance(from_json(row["tags_json"], []), list) else []
+    tag_records = _resolve_task_tags(state, _row_user(creator), tag_ids, legacy_tag_names)
     viewer_status = next((item.inboxStatus for item in collaborators if item.userId == viewer_id), None)
     org_link_row = _task_org_link_row(state, str(row["id"]))
     task_plan_link_row = _task_plan_link_row(state, str(row["id"]))
@@ -2754,7 +2875,7 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         recentDecision=recent_decision,
         completionNote=str(row["completion_note"]) if row["completion_note"] else None,
         evidenceCount=max(evidence_count, len(attachments)),
-        tags=[],
+        tags=tag_records,
         attachments=attachments,
         collaborators=collaborators,
         collaborationSummary=_collaboration_summary(collaborators),
@@ -3823,10 +3944,67 @@ def create_app() -> FastAPI:
         return AuthTokenResponse(accessToken=token, refreshToken=refresh_token, user=_row_user(row))
 
     @app.post("/api/v1/auth/register")
-    def register(payload: RegisterPayload) -> dict[str, str]:
+    def register(payload: RegisterPayload) -> dict[str, object]:
         existing = state.db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (payload.email.lower(),))
         if existing:
             raise HTTPException(status_code=409, detail="Email already registered")
+        if not payload.departmentId:
+            timestamp = now_iso()
+            user_id = new_id("emp")
+            organization_id = new_id("org")
+            organization_name = _personal_workspace_name(payload.fullName)
+            organization_slug = _ensure_unique_org_slug(state, _slugify_organization_name(organization_name))
+            state.db.execute(
+                """
+                INSERT INTO organizations(id, name, slug, workspace_mode, owner_user_id, created_at, updated_at)
+                VALUES(?, ?, ?, 'personal', ?, ?, ?)
+                """,
+                (organization_id, organization_name, organization_slug, user_id, timestamp, timestamp),
+            )
+            state.db.execute(
+                """
+                INSERT INTO employee_accounts(
+                    id, organization_id, email, full_name, password_hash, primary_role, account_status,
+                    approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
+                    department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'admin', 'approved', ?, NULL, NULL, NULL, '[]', NULL, NULL, NULL, ?, NULL, ?, 0, ?, ?)
+                """,
+                (
+                    user_id,
+                    organization_id,
+                    payload.email.lower(),
+                    payload.fullName.strip(),
+                    hash_password(payload.password),
+                    timestamp,
+                    payload.jobTitle.strip() if payload.jobTitle else None,
+                    payload.currentFocus.strip() if payload.currentFocus else "",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            state.db.execute(
+                "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, 'admin', ?)",
+                (new_id("role"), user_id, timestamp),
+            )
+            _ensure_workspace_lists(state, organization_id)
+            session_id = new_id("sess")
+            refresh_token = new_id("rt")
+            expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
+            state.db.execute(
+                "INSERT INTO auth_refresh_sessions(id, user_id, refresh_token, created_at, expires_at, revoked_at) VALUES(?, ?, ?, ?, ?, NULL)",
+                (session_id, user_id, refresh_token, timestamp, expires_at),
+            )
+            row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (user_id,))
+            assert row is not None
+            _log_audit(
+                state,
+                "self_register_personal_workspace",
+                actor_user_id=user_id,
+                target_user_id=user_id,
+                detail={"organizationId": organization_id, "organizationName": organization_name},
+            )
+            issued = _issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token)
+            return issued.model_dump()
         department = get_department_entry(payload.departmentId) if payload.departmentId else None
         if payload.departmentId and not department:
             raise HTTPException(status_code=400, detail="请选择有效的部门")
@@ -3954,6 +4132,328 @@ def create_app() -> FastAPI:
             )
         _log_audit(state, "logout", actor_user_id=current_user.id, target_user_id=current_user.id, detail={})
         return {"message": "ok"}
+
+    @app.get("/api/v1/account/membership", response_model=AccountMembershipRecord)
+    def get_account_membership(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> AccountMembershipRecord:
+        return _account_membership_record(state, current_user)
+
+    @app.post("/api/v1/orgs", response_model=AccountMembershipRecord)
+    def create_organization(
+        payload: CreateOrganizationPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> AccountMembershipRecord:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="组织名称不能为空")
+        timestamp = now_iso()
+        current_org_row = _organization_row_or_404(state, current_user.organizationId)
+        current_member_count = int(
+            state.db.scalar("SELECT COUNT(1) AS count FROM employee_accounts WHERE organization_id = ?", (current_user.organizationId,)) or 0
+        )
+        if _is_personal_workspace(current_org_row) and current_member_count <= 1:
+            next_slug = _ensure_unique_org_slug(state, _slugify_organization_name(name))
+            state.db.execute(
+                """
+                UPDATE organizations
+                SET name = ?, slug = ?, workspace_mode = 'shared', owner_user_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (name, next_slug, current_user.id, timestamp, current_user.organizationId),
+            )
+            state.db.execute(
+                """
+                UPDATE employee_accounts
+                SET primary_role = 'admin', account_status = 'approved', updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, current_user.id),
+            )
+            _log_audit(
+                state,
+                "convert_personal_workspace_to_shared",
+                actor_user_id=current_user.id,
+                target_user_id=current_user.id,
+                detail={"organizationId": current_user.organizationId, "organizationName": name},
+            )
+            _ensure_workspace_lists(state, current_user.organizationId)
+            refreshed_user = SessionUser(
+                id=current_user.id,
+                organizationId=current_user.organizationId,
+                email=current_user.email,
+                fullName=current_user.fullName,
+                primaryRole="admin",
+                accountStatus="approved",
+            )
+            return _account_membership_record(state, refreshed_user)
+        organization_id = new_id("org")
+        organization_slug = _ensure_unique_org_slug(state, _slugify_organization_name(name))
+        state.db.execute(
+            """
+            INSERT INTO organizations(id, name, slug, workspace_mode, owner_user_id, created_at, updated_at)
+            VALUES(?, ?, ?, 'shared', ?, ?, ?)
+            """,
+            (organization_id, name, organization_slug, current_user.id, timestamp, timestamp),
+        )
+        state.db.execute(
+            """
+            UPDATE employee_accounts
+            SET organization_id = ?, primary_role = 'admin', account_status = 'approved',
+                department_id = NULL, department_name = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (organization_id, timestamp, current_user.id),
+        )
+        _ensure_workspace_lists(state, organization_id)
+        _log_audit(
+            state,
+            "create_organization",
+            actor_user_id=current_user.id,
+            target_user_id=current_user.id,
+            detail={"organizationId": organization_id, "organizationName": name},
+        )
+        refreshed_user = SessionUser(
+            id=current_user.id,
+            organizationId=organization_id,
+            email=current_user.email,
+            fullName=current_user.fullName,
+            primaryRole="admin",
+            accountStatus="approved",
+        )
+        return _account_membership_record(state, refreshed_user)
+
+    @app.post("/api/v1/org-invitations", response_model=OrgInvitationRecord)
+    def create_org_invitation(
+        payload: OrgInvitationCreatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgInvitationRecord:
+        organization_row = _organization_row_or_404(state, current_user.organizationId)
+        if _is_personal_workspace(organization_row):
+            raise HTTPException(status_code=400, detail="个人空间不能直接邀请成员，请先创建正式组织。")
+        department_name = _department_name_for_org(state, current_user.organizationId, payload.departmentId)
+        if payload.departmentId and not department_name:
+            raise HTTPException(status_code=400, detail="邀请码绑定的部门不存在。")
+        timestamp = now_iso()
+        expires_at = (datetime.now() + timedelta(days=int(payload.expiresInDays or 7))).replace(microsecond=0).isoformat()
+        code = uuid4().hex[:8].upper()
+        while state.db.fetchone("SELECT code FROM org_invitations WHERE code = ?", (code,)):
+            code = uuid4().hex[:8].upper()
+        state.db.execute(
+            """
+            INSERT INTO org_invitations(
+                code, organization_id, department_id, role_name, created_by_user_id, expires_at, max_uses, used_count, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                code,
+                current_user.organizationId,
+                payload.departmentId,
+                payload.roleName.strip() if payload.roleName else None,
+                current_user.id,
+                expires_at,
+                int(payload.maxUses or 1),
+                timestamp,
+                timestamp,
+            ),
+        )
+        _log_audit(
+            state,
+            "create_org_invitation",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={"organizationId": current_user.organizationId, "departmentId": payload.departmentId, "roleName": payload.roleName},
+        )
+        return OrgInvitationRecord(
+            code=code,
+            organizationId=current_user.organizationId,
+            organizationName=str(organization_row["name"]),
+            departmentId=payload.departmentId,
+            departmentName=department_name,
+            roleName=payload.roleName.strip() if payload.roleName else None,
+            expiresAt=expires_at,
+            maxUses=int(payload.maxUses or 1),
+            usedCount=0,
+        )
+
+    @app.post("/api/v1/org-invitations/redeem", response_model=AccountMembershipRecord)
+    def redeem_org_invitation(
+        payload: OrgInvitationRedeemPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> AccountMembershipRecord:
+        code = payload.code.strip().upper()
+        invitation_row = state.db.fetchone("SELECT * FROM org_invitations WHERE code = ?", (code,))
+        if not invitation_row:
+            raise HTTPException(status_code=404, detail="邀请码不存在。")
+        if invitation_row["expires_at"] and datetime.fromisoformat(str(invitation_row["expires_at"])) <= datetime.now():
+            raise HTTPException(status_code=400, detail="邀请码已过期。")
+        max_uses = int(invitation_row["max_uses"] or 1)
+        used_count = int(invitation_row["used_count"] or 0)
+        if used_count >= max_uses:
+            raise HTTPException(status_code=400, detail="邀请码已失效。")
+        target_org_id = str(invitation_row["organization_id"])
+        target_org_row = _organization_row_or_404(state, target_org_id)
+        department_id = str(invitation_row["department_id"]) if invitation_row["department_id"] else None
+        department_name = _department_name_for_org(state, target_org_id, department_id)
+        role_name = str(invitation_row["role_name"]).strip() if invitation_row["role_name"] else None
+        user_row = _get_user_or_404(state, current_user.id)
+        current_job_title = str(user_row["job_title"]).strip() if user_row["job_title"] else ""
+        next_job_title = current_job_title or role_name
+        timestamp = now_iso()
+        current_org_row = _organization_row_or_404(state, current_user.organizationId)
+        next_primary_role: PrimaryRole = current_user.primaryRole if target_org_id == current_user.organizationId else "employee"
+        if _is_personal_workspace(current_org_row) and target_org_id != current_user.organizationId:
+            next_primary_role = "employee"
+        state.db.execute(
+            """
+            UPDATE employee_accounts
+            SET organization_id = ?, department_id = ?, department_name = ?, job_title = ?, primary_role = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (target_org_id, department_id, department_name, next_job_title or None, next_primary_role, timestamp, current_user.id),
+        )
+        state.db.execute(
+            "UPDATE org_invitations SET used_count = used_count + 1, updated_at = ? WHERE code = ?",
+            (timestamp, code),
+        )
+        _ensure_workspace_lists(state, target_org_id)
+        _log_audit(
+            state,
+            "redeem_org_invitation",
+            actor_user_id=current_user.id,
+            target_user_id=current_user.id,
+            detail={"organizationId": target_org_id, "departmentId": department_id, "roleName": role_name},
+        )
+        refreshed_user = SessionUser(
+            id=current_user.id,
+            organizationId=target_org_id,
+            email=current_user.email,
+            fullName=current_user.fullName,
+            primaryRole=next_primary_role,
+            accountStatus=current_user.accountStatus,
+        )
+        return _account_membership_record(state, refreshed_user)
+
+    @app.post("/api/v1/sync/import-local", response_model=StructuredImportResult)
+    def import_local_structured_data(
+        payload: StructuredImportPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> StructuredImportResult:
+        _ensure_workspace_lists(state, current_user.organizationId)
+        imported_list_count = 0
+        imported_task_count = 0
+        tag_count_before = int(
+            state.db.scalar("SELECT COUNT(1) AS count FROM task_tag_library WHERE organization_id = ?", (current_user.organizationId,)) or 0
+        )
+        list_mapping: dict[str, tuple[str, str]] = {}
+        for index, item in enumerate(payload.taskLists):
+            scope = "personal" if item.scope == "personal" else "org"
+            existing = state.db.fetchone(
+                """
+                SELECT *
+                FROM task_lists
+                WHERE organization_id = ? AND scope = ? AND lower(name) = lower(?)
+                ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END, sort_order ASC
+                LIMIT 1
+                """,
+                (current_user.organizationId, scope, item.name.strip()),
+            )
+            if existing:
+                list_mapping[item.localId] = (str(existing["id"]), scope)
+                continue
+            has_default = bool(
+                state.db.fetchone(
+                    "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND is_default = 1 LIMIT 1",
+                    (current_user.organizationId, scope),
+                )
+            )
+            list_id = new_id("list")
+            state.db.execute(
+                """
+                INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    list_id,
+                    current_user.organizationId,
+                    item.name.strip(),
+                    item.color or "#5B7BFE",
+                    index,
+                    0 if has_default else 1,
+                    scope,
+                ),
+            )
+            list_mapping[item.localId] = (list_id, scope)
+            imported_list_count += 1
+        org_default_list_id = _default_list_id(state, current_user.organizationId)
+        if not org_default_list_id:
+            raise HTTPException(status_code=400, detail="当前组织缺少默认任务清单，无法导入。")
+        timestamp = now_iso()
+        for item in payload.tasks:
+            title = item.title.strip()
+            if not title:
+                continue
+            source_id = f"local:{item.localId}"
+            duplicate = state.db.fetchone(
+                """
+                SELECT id
+                FROM tasks
+                WHERE organization_id = ? AND source_type = 'local_import' AND source_id = ?
+                LIMIT 1
+                """,
+                (current_user.organizationId, source_id),
+            )
+            if duplicate:
+                continue
+            mapped_list_id, mapped_scope = list_mapping.get(item.listLocalId or "", (org_default_list_id, "org"))
+            resolved_tags = _normalize_task_tags(state, current_user, None, item.tags)
+            scope_mode = "PERSONAL_ONLY" if mapped_scope == "personal" else "COLLAB_SHARED"
+            task_id = new_id("task")
+            state.db.execute(
+                """
+                INSERT INTO tasks(
+                    id, organization_id, title, description, creator_id, owner_id, due_date, duration_minutes, scope_mode,
+                    business_category, current_blocker, next_action, recent_decision, evidence_count, priority, list_id,
+                    progress_status, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?, 'todo', 'local_import', ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    current_user.organizationId,
+                    title,
+                    item.description,
+                    current_user.id,
+                    current_user.id,
+                    item.dueDate,
+                    item.durationMinutes,
+                    scope_mode,
+                    item.priority,
+                    mapped_list_id,
+                    source_id,
+                    to_json([tag.name for tag in resolved_tags]),
+                    to_json([tag.id for tag in resolved_tags]),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            state.db.execute(
+                """
+                INSERT INTO task_collaborators(
+                    task_id, user_id, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
+                ) VALUES(?, ?, 0, 1, 'accepted', NULL, ?, ?, ?)
+                """,
+                (task_id, current_user.id, timestamp, timestamp, timestamp),
+            )
+            imported_task_count += 1
+        tag_count_after = int(
+            state.db.scalar("SELECT COUNT(1) AS count FROM task_tag_library WHERE organization_id = ?", (current_user.organizationId,)) or 0
+        )
+        return StructuredImportResult(
+            importedTaskCount=imported_task_count,
+            importedListCount=imported_list_count,
+            importedTagCount=max(tag_count_after - tag_count_before, 0),
+            updatedAt=timestamp,
+        )
 
     @app.post("/api/v1/integrations/feishu/user-binding/sessions", response_model=FeishuBindingRelaySessionStatusRecord)
     def create_feishu_binding_relay_session(
@@ -5117,7 +5617,7 @@ def create_app() -> FastAPI:
             _event_line_row_or_404(state, requested_event_line_id, current_user.organizationId)
         timestamp = now_iso()
         task_id = new_id("task")
-        resolved_tags: list[TaskTagRecord] = []
+        resolved_tags = _normalize_task_tags(state, current_user, payload.tagIds, payload.tags)
         event_line_row = _event_line_row_or_404(state, requested_event_line_id, current_user.organizationId) if requested_event_line_id else None
         (
             business_category,
@@ -5272,7 +5772,16 @@ def create_app() -> FastAPI:
             event_line_row = _event_line_row_or_404(state, next_event_line_id, current_user.organizationId)
         else:
             event_line_row = None
-        resolved_tags: list[TaskTagRecord] = []
+        resolved_tags = (
+            _normalize_task_tags(state, current_user, payload.tagIds, payload.tags)
+            if payload.tagIds is not None or payload.tags is not None
+            else _normalize_task_tags(
+                state,
+                current_user,
+                [str(item) for item in from_json(row["tag_ids_json"], [])] if isinstance(from_json(row["tag_ids_json"], []), list) else [],
+                [str(item) for item in from_json(row["tags_json"], [])] if isinstance(from_json(row["tags_json"], []), list) else [],
+            )
+        )
         (
             business_category,
             current_blocker,

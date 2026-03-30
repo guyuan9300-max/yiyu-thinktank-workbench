@@ -39,6 +39,7 @@ from app.models import (
     AnalysisWorkbenchSettingsRecord,
     AnalysisTemplateRecord,
     AnalysisToolsResponse,
+    AccountSyncOverviewResponse,
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
@@ -75,6 +76,10 @@ from app.models import (
     ClientWorkspaceResponse,
     ClientWorkspaceSettingsPayload,
     ClientWorkspaceSettingsRecord,
+    CloudConfigPayload,
+    CloudConfigRecord,
+    CreateOrgInvitationPayload,
+    CreateOrganizationPayload,
     DecisionItem,
     DemoDataResponse,
     DnaTerm,
@@ -128,6 +133,8 @@ from app.models import (
     LegacyScanEntry,
     LegacyScanRequest,
     LegacyScanResponse,
+    LocalStructuredImportPayload,
+    LocalStructuredImportResultRecord,
     KnowledgeJobRecord,
     KnowledgeSearchHitRecord,
     KnowledgeSearchResponse,
@@ -168,6 +175,8 @@ from app.models import (
     OperatorRecord,
     OrgDepartmentRecord,
     OrgEmployeeBindingRecord,
+    OrgInvitationRecord,
+    OrgMembershipSummaryRecord,
     OrgModelProfileRecord,
     OrgProfileRecord,
     OrgReportingLineRecord,
@@ -196,8 +205,10 @@ from app.models import (
     ReviewResponse,
     ReviewSimulationBundleRecord,
     RiskItem,
+    RedeemOrgInvitationPayload,
     SessionUserRecord,
     SettingsResponse,
+    SyncStatusSummaryRecord,
     SystemAdminSettingsPayload,
     SystemAdminSettingsRecord,
     TaskActivityRecord,
@@ -2408,13 +2419,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def build_settings_response() -> SettingsResponse:
         operator = current_operator_row()
         ai_health = state.ai.get_health()
+        cloud_config = get_cloud_config()
         settings = AppSettingsResponse(
             currentOperatorId=str(operator["id"]),
             aiProvider=state.ai.current_provider(),  # type: ignore[arg-type]
             aiModel=state.ai.current_model(),
             dataDir=str(state.data_dir),
             backupDir=str(state.backup_dir),
-            cloudApiUrl=state.cloud_api_url,
+            cloudApiUrl=cloud_config.effectiveApiUrl or "",
             lastBackupAt=state.db.get_setting("last_backup_at", "") or None,
             foldersRootLabel=state.db.get_setting("folders_root_label", "桌面客户资料"),
             aiConfigured=bool(ai_health.fingerprint),
@@ -2434,6 +2446,64 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for row in state.db.fetchall("SELECT * FROM operators ORDER BY created_at")
         ]
         return SettingsResponse(settings=settings, operators=operators, health=build_health())
+
+    def _clean_cloud_api_url(value: str | None) -> str | None:
+        text = (value or "").strip().rstrip("/")
+        if not text:
+            return None
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=400, detail="Cloud API 地址必须是 http(s)://host 形式")
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+    def get_cloud_config() -> CloudConfigRecord:
+        mode_raw = state.db.get_setting("cloud_target_mode", "disabled") or "disabled"
+        mode = mode_raw if mode_raw in {"disabled", "official_test", "custom"} else "disabled"
+        custom_api_url = state.db.get_setting("cloud_custom_api_url", "") or None
+        cleaned_custom_url = _clean_cloud_api_url(custom_api_url) if custom_api_url else None
+        effective_api_url = None
+        if mode == "official_test":
+            effective_api_url = state.cloud_api_url
+        elif mode == "custom":
+            effective_api_url = cleaned_custom_url
+        return CloudConfigRecord(
+            mode=mode,  # type: ignore[arg-type]
+            officialTestApiUrl=state.cloud_api_url,
+            customApiUrl=cleaned_custom_url,
+            effectiveApiUrl=effective_api_url,
+            updatedAt=state.db.get_setting("cloud_target_updated_at", "") or now_iso(),
+        )
+
+    def set_cloud_config(payload: CloudConfigPayload) -> CloudConfigRecord:
+        cleaned_custom_url = _clean_cloud_api_url(payload.customApiUrl) if payload.customApiUrl else None
+        if payload.mode == "custom" and not cleaned_custom_url:
+            raise HTTPException(status_code=400, detail="自定义云端模式需要填写 Cloud API 地址")
+        timestamp = now_iso()
+        state.db.set_setting("cloud_target_mode", payload.mode)
+        state.db.set_setting("cloud_custom_api_url", cleaned_custom_url or "")
+        state.db.set_setting("cloud_target_updated_at", timestamp)
+        return get_cloud_config()
+
+    def _cloud_api_base_url() -> str:
+        config = get_cloud_config()
+        if config.effectiveApiUrl:
+            return config.effectiveApiUrl.rstrip("/")
+        if _has_persisted_cloud_session():
+            # Backward compatibility: old installs may already hold a valid cloud session
+            # before the new explicit cloud-target setting is chosen.
+            return state.cloud_api_url.rstrip("/")
+        raise HTTPException(status_code=400, detail="请先在“账号与同步”中启用云端连接。")
+
+    def _local_session_user() -> SessionUserRecord:
+        operator = current_operator_row()
+        return SessionUserRecord(
+            id=f"local::{operator['id']}",
+            organizationId="local-device",
+            email=f"local+{operator['id']}@yiyu.local",
+            fullName=str(operator["name"] or "本机用户"),
+            primaryRole="admin",
+            accountStatus="approved",
+        )
 
     def _has_persisted_cloud_session() -> bool:
         return bool(state.db.get_setting("cloud_access_token", "") or state.db.get_setting("cloud_refresh_token", ""))
@@ -2494,6 +2564,84 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return SessionUserRecord(**parsed)
         except Exception:
             return None
+
+    def _current_session_mode() -> Literal["local", "cloud"]:
+        return "cloud" if bool(get_cloud_token() or get_cloud_refresh_token()) else "local"
+
+    def _has_local_structured_data() -> tuple[int, int, int]:
+        pending_task_count = int(state.db.scalar("SELECT COUNT(1) AS count FROM tasks WHERE source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)) or 0)
+        pending_list_count = int(state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE archived_at IS NULL OR archived_at = ''") or 0)
+        pending_tag_count = int(state.db.scalar("SELECT COUNT(1) AS count FROM task_tags WHERE archived_at IS NULL OR archived_at = ''") or 0)
+        return pending_task_count, pending_list_count, pending_tag_count
+
+    def _sync_status_for_user(user_id: str | None) -> SyncStatusSummaryRecord:
+        pending_task_count, pending_list_count, pending_tag_count = _has_local_structured_data()
+        if not user_id:
+            return SyncStatusSummaryRecord(
+                needsInitialImport=False,
+                hasLocalStructuredData=bool(pending_task_count or pending_list_count or pending_tag_count),
+                lastImportedAt=state.db.get_setting("cloud_last_imported_at", "") or None,
+                lastImportChoice=(state.db.get_setting("cloud_last_import_choice", "") or None),  # type: ignore[arg-type]
+                pendingTaskCount=pending_task_count,
+                pendingListCount=pending_list_count,
+                pendingTagCount=pending_tag_count,
+            )
+        imported_flag = state.db.get_setting(f"cloud_import_done::{user_id}", "0") == "1"
+        return SyncStatusSummaryRecord(
+            needsInitialImport=bool(not imported_flag and (pending_task_count or pending_list_count or pending_tag_count)),
+            hasLocalStructuredData=bool(pending_task_count or pending_list_count or pending_tag_count),
+            lastImportedAt=state.db.get_setting("cloud_last_imported_at", "") or None,
+            lastImportChoice=(state.db.get_setting("cloud_last_import_choice", "") or None),  # type: ignore[arg-type]
+            pendingTaskCount=pending_task_count,
+            pendingListCount=pending_list_count,
+            pendingTagCount=pending_tag_count,
+        )
+
+    def _mark_sync_choice(user_id: str | None, mode: Literal["keep_local", "import_structured", "start_empty"]) -> SyncStatusSummaryRecord:
+        timestamp = now_iso()
+        state.db.set_setting("cloud_last_imported_at", timestamp)
+        state.db.set_setting("cloud_last_import_choice", mode)
+        if user_id:
+            state.db.set_setting(f"cloud_import_done::{user_id}", "1")
+        return _sync_status_for_user(user_id)
+
+    def _organization_name_for_id(organization_id: str | None) -> str | None:
+        if not organization_id:
+            return None
+        try:
+            payload = cloud_request("GET", "/api/v1/account/membership")
+        except HTTPException:
+            return None
+        if isinstance(payload, dict):
+            return str(payload.get("organizationName") or "") or None
+        return None
+
+    def _membership_summary() -> OrgMembershipSummaryRecord:
+        if _current_session_mode() != "cloud":
+            return OrgMembershipSummaryRecord(isPersonalWorkspace=False)
+        try:
+            payload = cloud_request("GET", "/api/v1/account/membership")
+        except HTTPException:
+            user = get_cached_session_user()
+            return OrgMembershipSummaryRecord(
+                organizationId=user.organizationId if user else None,
+                organizationName=_organization_name_for_id(user.organizationId if user else None),
+                isPersonalWorkspace=False,
+            )
+        if not isinstance(payload, dict):
+            return OrgMembershipSummaryRecord(isPersonalWorkspace=False)
+        return OrgMembershipSummaryRecord(**payload)
+
+    def build_account_sync_overview() -> AccountSyncOverviewResponse:
+        session_mode = _current_session_mode()
+        user = get_cached_session_user() if session_mode == "cloud" else _local_session_user()
+        return AccountSyncOverviewResponse(
+            sessionMode=session_mode,  # type: ignore[arg-type]
+            cloudConnected=session_mode == "cloud",
+            cloudConfig=get_cloud_config(),
+            membership=_membership_summary(),
+            syncStatus=_sync_status_for_user(user.id if session_mode == "cloud" and user else None),
+        )
 
     def current_session_is_admin() -> bool:
         session_user = get_cached_session_user()
@@ -4686,10 +4834,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not refresh_token:
             raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
         persist_session = state.cloud_session_persistent or _has_persisted_cloud_session()
+        cloud_api_base = _cloud_api_base_url()
         try:
             response = httpx.request(
                 "POST",
-                f"{state.cloud_api_url}/api/v1/auth/refresh",
+                f"{cloud_api_base}/api/v1/auth/refresh",
                 json={"refreshToken": refresh_token},
                 timeout=20.0,
             )
@@ -4718,13 +4867,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return user
 
     def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False) -> object:
+        cloud_api_base = _cloud_api_base_url()
+
         def perform_request(token: str | None):
             headers = {}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
             return httpx.request(
                 method,
-                f"{state.cloud_api_url}{path}",
+                f"{cloud_api_base}{path}",
                 json=json_body,
                 headers=headers,
                 timeout=20.0,
@@ -14036,27 +14187,84 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_health() -> HealthResponse:
         return build_health()
 
+    def _collect_local_structured_import_payload() -> dict[str, object]:
+        list_rows = state.db.fetchall(
+            """
+            SELECT id, name, color, scope
+            FROM task_lists
+            WHERE archived_at IS NULL OR archived_at = ''
+            ORDER BY sort_order ASC, name COLLATE NOCASE ASC
+            """
+        )
+        task_rows = state.db.fetchall(
+            """
+            SELECT id, title, desc, priority, due_date, duration_minutes, list_id, tags_json
+            FROM tasks
+            WHERE source_type != ?
+            ORDER BY updated_at DESC
+            """,
+            (AGENT_AUTO_SOURCE_TYPE,),
+        )
+        return {
+            "taskLists": [
+                {
+                    "localId": str(row["id"]),
+                    "name": str(row["name"]),
+                    "color": str(row["color"] or "#5B7BFE"),
+                    "scope": str(row["scope"] or "org"),
+                }
+                for row in list_rows
+            ],
+            "tasks": [
+                {
+                    "localId": str(row["id"]),
+                    "title": str(row["title"] or "").strip(),
+                    "description": str(row["desc"] or ""),
+                    "priority": str(row["priority"] or "normal"),
+                    "dueDate": str(row["due_date"]) if row["due_date"] else None,
+                    "durationMinutes": int(row["duration_minutes"] or 60),
+                    "listLocalId": str(row["list_id"]) if row["list_id"] else None,
+                    "tags": [item for item in _parse_json_list(row["tags_json"]) if item],
+                }
+                for row in task_rows
+                if str(row["title"] or "").strip()
+            ],
+        }
+
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
-            return AuthStateResponse(authenticated=False)
+            return AuthStateResponse(authenticated=True, user=_local_session_user(), sessionMode="local", needsInitialImport=False)
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
                 clear_cloud_session()
-                return AuthStateResponse(authenticated=False, message=str(exc.detail))
+                return AuthStateResponse(
+                    authenticated=True,
+                    user=_local_session_user(),
+                    sessionMode="local",
+                    needsInitialImport=False,
+                    message=str(exc.detail),
+                )
             if exc.status_code in {502, 503, 504} and cached_user is not None:
                 return AuthStateResponse(
                     authenticated=True,
                     user=cached_user,
+                    sessionMode="cloud",
+                    needsInitialImport=_sync_status_for_user(cached_user.id).needsInitialImport,
                     message="云端暂时不可用，已保留当前设备上的登录状态。",
                 )
             raise
-        return AuthStateResponse(authenticated=True, user=user)
+        return AuthStateResponse(
+            authenticated=True,
+            user=user,
+            sessionMode="cloud",
+            needsInitialImport=_sync_status_for_user(user.id).needsInitialImport,
+        )
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options() -> list[DepartmentOptionRecord]:
@@ -14073,8 +14281,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             json_body=payload.model_dump(),
             allow_unauthenticated=True,
         )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid auth payload")
+        token = str(response.get("accessToken", ""))
+        refresh_token = str(response.get("refreshToken", ""))
+        user_payload = response.get("user")
+        if token and refresh_token and isinstance(user_payload, dict):
+            user = SessionUserRecord(**user_payload)
+            set_cloud_session(token, user, persist=True)
+            set_cloud_refresh_token(refresh_token, persist=True)
+            return AuthStateResponse(
+                authenticated=True,
+                user=user,
+                sessionMode="cloud",
+                needsInitialImport=_sync_status_for_user(user.id).needsInitialImport,
+                message="已创建个人账号并连接云端。",
+            )
         message = response.get("message") if isinstance(response, dict) else "你的账号已提交，正在等待管理员审核。"
-        return AuthStateResponse(authenticated=False, message=str(message))
+        return AuthStateResponse(authenticated=True, user=_local_session_user(), sessionMode="local", message=str(message))
 
     @app.post("/api/v1/auth/login", response_model=AuthStateResponse)
     def auth_login(payload: AuthLoginPayload) -> AuthStateResponse:
@@ -14095,7 +14319,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_session(token, user, persist=payload.rememberMe)
         set_cloud_refresh_token(refresh_token, persist=payload.rememberMe)
         log_activity("auth.login", "session", user.id, {"email": user.email})
-        return AuthStateResponse(authenticated=True, user=user)
+        return AuthStateResponse(
+            authenticated=True,
+            user=user,
+            sessionMode="cloud",
+            needsInitialImport=_sync_status_for_user(user.id).needsInitialImport,
+        )
 
     @app.post("/api/v1/auth/logout", response_model=AuthStateResponse)
     def auth_logout() -> AuthStateResponse:
@@ -14106,7 +14335,76 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 pass
         clear_cloud_session()
         log_activity("auth.logout", "session", "current", {})
-        return AuthStateResponse(authenticated=False)
+        return AuthStateResponse(authenticated=True, user=_local_session_user(), sessionMode="local")
+
+    @app.get("/api/v1/account/cloud-config", response_model=CloudConfigRecord)
+    def account_cloud_config() -> CloudConfigRecord:
+        return get_cloud_config()
+
+    @app.post("/api/v1/account/cloud-config", response_model=CloudConfigRecord)
+    def update_account_cloud_config(payload: CloudConfigPayload) -> CloudConfigRecord:
+        return set_cloud_config(payload)
+
+    @app.get("/api/v1/account/overview", response_model=AccountSyncOverviewResponse)
+    def account_sync_overview() -> AccountSyncOverviewResponse:
+        return build_account_sync_overview()
+
+    @app.post("/api/v1/account/orgs", response_model=OrgMembershipSummaryRecord)
+    def create_organization(payload: CreateOrganizationPayload) -> OrgMembershipSummaryRecord:
+        if _current_session_mode() != "cloud":
+            raise HTTPException(status_code=400, detail="请先登录云端账号，再创建组织。")
+        response = cloud_request("POST", "/api/v1/orgs", json_body=payload.model_dump())
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid organization payload")
+        refreshed_user = require_session_user()
+        return OrgMembershipSummaryRecord(**response)
+
+    @app.post("/api/v1/account/org-invitations", response_model=OrgInvitationRecord)
+    def create_org_invitation(payload: CreateOrgInvitationPayload) -> OrgInvitationRecord:
+        if _current_session_mode() != "cloud":
+            raise HTTPException(status_code=400, detail="请先登录云端账号，再生成组织邀请码。")
+        response = cloud_request("POST", "/api/v1/org-invitations", json_body=payload.model_dump())
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid invitation payload")
+        return OrgInvitationRecord(**response)
+
+    @app.post("/api/v1/account/org-invitations/redeem", response_model=OrgMembershipSummaryRecord)
+    def redeem_org_invitation(payload: RedeemOrgInvitationPayload) -> OrgMembershipSummaryRecord:
+        if _current_session_mode() != "cloud":
+            raise HTTPException(status_code=400, detail="请先登录云端账号，再加入组织。")
+        response = cloud_request("POST", "/api/v1/org-invitations/redeem", json_body=payload.model_dump())
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid organization redeem payload")
+        require_session_user()
+        return OrgMembershipSummaryRecord(**response)
+
+    @app.post("/api/v1/account/sync/import-local", response_model=LocalStructuredImportResultRecord)
+    def import_local_structured_data(payload: LocalStructuredImportPayload) -> LocalStructuredImportResultRecord:
+        user_id = get_cached_session_user().id if _current_session_mode() == "cloud" and get_cached_session_user() else None
+        if payload.mode != "import_structured":
+            status = _mark_sync_choice(user_id, payload.mode)
+            return LocalStructuredImportResultRecord(
+                mode=payload.mode,
+                importedTaskCount=0,
+                importedListCount=0,
+                importedTagCount=0,
+                updatedAt=status.lastImportedAt or now_iso(),
+            )
+        if _current_session_mode() != "cloud":
+            raise HTTPException(status_code=400, detail="请先登录云端账号，再导入本机结构化数据。")
+        snapshot = _collect_local_structured_import_payload()
+        response = cloud_request("POST", "/api/v1/sync/import-local", json_body=snapshot)
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid import payload")
+        refreshed_user = require_session_user()
+        status = _mark_sync_choice(refreshed_user.id, payload.mode)
+        return LocalStructuredImportResultRecord(
+            mode=payload.mode,
+            importedTaskCount=int(response.get("importedTaskCount") or 0),
+            importedListCount=int(response.get("importedListCount") or 0),
+            importedTagCount=int(response.get("importedTagCount") or 0),
+            updatedAt=status.lastImportedAt or now_iso(),
+        )
 
     def process_pending_consultation_knowledge_requests_impl() -> ConsultationKnowledgeProcessSummaryResponse:
         all_requests = list_cloud_consultation_knowledge_requests()
@@ -14191,6 +14489,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/admin/employees", response_model=list[EmployeeRecord])
     def list_employee_reviews() -> list[EmployeeRecord]:
+        if _current_session_mode() != "cloud":
+            return []
         payload = cloud_request("GET", "/api/v1/admin/employees")
         if not isinstance(payload, list):
             raise HTTPException(status_code=502, detail="Invalid employee payload")
@@ -14198,6 +14498,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def read_org_model_profile() -> OrgModelProfileRecord:
+        if _current_session_mode() != "cloud":
+            return OrgModelProfileRecord(
+                organization=OrgProfileRecord(
+                    organizationId="",
+                    name="",
+                    annualGoal="",
+                    annualStrategyYear="",
+                    annualStrategy="",
+                    quarterPlans=[],
+                    quarterlyFocus=[],
+                    leaderUserId=None,
+                    managementUserIds=[],
+                    updatedAt="",
+                ),
+                departments=[],
+                roles=[],
+                bindings=[],
+                reportingLines=[],
+                taskControlRules=[],
+                roleProcessTemplates=[],
+                focusItems=[],
+                departmentPlans=[],
+                updatedAt="",
+            )
         payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid org model payload")
@@ -14205,6 +14529,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def update_org_model_profile(payload: OrgModelProfileRecord) -> OrgModelProfileRecord:
+        if _current_session_mode() != "cloud":
+            raise HTTPException(status_code=400, detail="请先登录云端账号并创建或加入组织，再保存组织模型。")
         response = cloud_request("POST", "/api/v1/settings/org-model/profile", json_body=payload.model_dump())
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid org model payload")
@@ -14212,6 +14538,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/org-model/backfill-task-links", response_model=TaskOrgBackfillResultRecord)
     def backfill_org_task_links() -> TaskOrgBackfillResultRecord:
+        if _current_session_mode() != "cloud":
+            raise HTTPException(status_code=400, detail="请先登录云端账号并创建或加入组织，再执行组织任务回填。")
         response = cloud_request("POST", "/api/v1/settings/org-model/backfill-task-links")
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid task org backfill payload")

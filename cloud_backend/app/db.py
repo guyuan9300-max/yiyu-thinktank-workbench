@@ -32,6 +32,8 @@ class Database:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     slug TEXT NOT NULL UNIQUE,
+                    workspace_mode TEXT NOT NULL DEFAULT 'shared',
+                    owner_user_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -84,6 +86,21 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(actor_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
                     FOREIGN KEY(target_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_invitations (
+                    code TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_id TEXT,
+                    role_name TEXT,
+                    created_by_user_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    max_uses INTEGER NOT NULL DEFAULT 1,
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS feishu_binding_relay_sessions (
@@ -686,6 +703,8 @@ class Database:
             self._ensure_column("employee_accounts", "manager_name", "TEXT")
             self._ensure_column("employee_accounts", "current_focus", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "is_department_lead", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("organizations", "workspace_mode", "TEXT NOT NULL DEFAULT 'shared'")
+            self._ensure_column("organizations", "owner_user_id", "TEXT")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
@@ -738,6 +757,24 @@ class Database:
             self._ensure_column("tasks", "recent_decision", "TEXT")
             self._ensure_column("tasks", "completion_note", "TEXT")
             self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS org_invitations (
+                    code TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    department_id TEXT,
+                    role_name TEXT,
+                    created_by_user_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    max_uses INTEGER NOT NULL DEFAULT 1,
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                """
+            )
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")

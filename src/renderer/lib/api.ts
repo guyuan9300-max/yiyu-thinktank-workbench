@@ -7,6 +7,7 @@ import type {
   AnalysisWorkbenchSettings,
   AnalysisWorkbenchSettingsPayload,
   AnalysisTemplate,
+  AccountSyncOverview,
   AppSettings,
   AuthLoginPayload,
   AuthRegisterPayload,
@@ -27,7 +28,11 @@ import type {
   ClientStrategicProfile,
   ClientSummary,
   ClientWorkspace,
+  CloudConfig,
+  CloudConfigPayload,
   CooperationRelationship,
+  CreateOrganizationPayload,
+  CreateOrgInvitationPayload,
   WorkspaceImportBackfillResponse,
   ClientWorkspaceSettings,
   ClientWorkspaceSettingsPayload,
@@ -66,9 +71,13 @@ import type {
   KnowledgeMemoryRecord,
   KnowledgeSearchResult,
   KnowledgeStatus,
+  LocalStructuredImportPayload,
+  LocalStructuredImportResult,
   MentionCandidate,
   OrganizationDnaModule,
   OrgModelSettings,
+  OrgInvitationRecord,
+  OrgMembershipSummary,
   OrganizationDnaResponse,
   OrganizationDnaUploadPayload,
   MeetingPipelineResult,
@@ -117,6 +126,7 @@ import type {
   ReviewHistoryResponse,
   ReviewGovernanceSettings,
   ReviewGovernanceSettingsPayload,
+  RedeemOrgInvitationPayload,
   SupportRequestCreatePayload,
   SupportRequestResolvePayload,
   SupportRequestRecord,
@@ -466,6 +476,49 @@ export async function getSystemAdminSettings() {
 
 export async function updateSystemAdminSettings(payload: SystemAdminSettingsPayload) {
   return request<SystemAdminSettings>('/api/v1/settings/system-admin', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getCloudConfig() {
+  return request<CloudConfig>('/api/v1/account/cloud-config');
+}
+
+export async function updateCloudConfig(payload: CloudConfigPayload) {
+  return request<CloudConfig>('/api/v1/account/cloud-config', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getAccountSyncOverview() {
+  return request<AccountSyncOverview>('/api/v1/account/overview');
+}
+
+export async function createOrganization(payload: CreateOrganizationPayload) {
+  return request<OrgMembershipSummary>('/api/v1/account/orgs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createOrgInvitation(payload: CreateOrgInvitationPayload) {
+  return request<OrgInvitationRecord>('/api/v1/account/org-invitations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function redeemOrgInvitation(payload: RedeemOrgInvitationPayload) {
+  return request<OrgMembershipSummary>('/api/v1/account/org-invitations/redeem', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function importLocalStructuredData(payload: LocalStructuredImportPayload) {
+  return request<LocalStructuredImportResult>('/api/v1/account/sync/import-local', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

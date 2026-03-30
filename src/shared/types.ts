@@ -15,6 +15,8 @@ export type TopicCandidateStatus = 'candidate' | 'tracking' | 'promoted' | 'arch
 export type TopicCandidateInsightStatus = 'pending' | 'ready' | 'failed';
 export type MeetingStage = 'prepared' | 'ingested' | 'extracted' | 'resolved' | 'published';
 export type AiProvider = 'mock' | 'gemini' | 'qwen';
+export type AppSessionMode = 'local' | 'cloud';
+export type CloudTargetMode = 'disabled' | 'official_test' | 'custom';
 export type AccountStatus = 'pending' | 'approved' | 'rejected' | 'disabled';
 export type EmployeeRole = 'admin' | 'employee';
 export type CollaboratorInboxStatus = 'pending' | 'accepted' | 'returned';
@@ -81,7 +83,88 @@ export interface SessionUser {
 export interface AuthState {
   authenticated: boolean;
   user?: SessionUser | null;
+  sessionMode?: AppSessionMode;
+  needsInitialImport?: boolean;
   message?: string | null;
+}
+
+export interface CloudConfig {
+  mode: CloudTargetMode;
+  officialTestApiUrl: string;
+  customApiUrl?: string | null;
+  effectiveApiUrl?: string | null;
+  updatedAt: string;
+}
+
+export interface OrgMembershipSummary {
+  organizationId?: string | null;
+  organizationName?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  jobTitle?: string | null;
+  isPersonalWorkspace: boolean;
+}
+
+export interface SyncStatusSummary {
+  needsInitialImport: boolean;
+  hasLocalStructuredData: boolean;
+  lastImportedAt?: string | null;
+  lastImportChoice?: 'keep_local' | 'import_structured' | 'start_empty' | null;
+  pendingTaskCount: number;
+  pendingListCount: number;
+  pendingTagCount: number;
+}
+
+export interface AccountSyncOverview {
+  sessionMode: AppSessionMode;
+  cloudConnected: boolean;
+  cloudConfig: CloudConfig;
+  membership: OrgMembershipSummary;
+  syncStatus: SyncStatusSummary;
+}
+
+export interface CloudConfigPayload {
+  mode: CloudTargetMode;
+  customApiUrl?: string | null;
+}
+
+export interface CreateOrganizationPayload {
+  name: string;
+}
+
+export interface OrgInvitationRecord {
+  code: string;
+  organizationId: string;
+  organizationName: string;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  roleName?: string | null;
+  expiresAt: string;
+  maxUses: number;
+  usedCount: number;
+}
+
+export interface CreateOrgInvitationPayload {
+  departmentId?: string | null;
+  roleName?: string | null;
+  expiresInDays?: number | null;
+  maxUses?: number | null;
+}
+
+export interface RedeemOrgInvitationPayload {
+  code: string;
+}
+
+export interface LocalStructuredImportPayload {
+  mode: 'keep_local' | 'import_structured' | 'start_empty';
+}
+
+export interface LocalStructuredImportResult {
+  mode: 'keep_local' | 'import_structured' | 'start_empty';
+  importedTaskCount: number;
+  importedListCount: number;
+  importedTagCount: number;
+  updatedAt: string;
 }
 
 export type ConsultationKnowledgeTarget = 'vector_memory' | 'document_archive';

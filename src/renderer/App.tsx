@@ -54,6 +54,7 @@ import {
 } from 'lucide-react';
 
 import type {
+  AccountSyncOverview,
   AgentWorklog,
   AgentWeeklyDigest,
   AgentWeeklyPlanPayload,
@@ -63,6 +64,7 @@ import type {
   AnalysisWorkbenchSettings,
   AnalysisTemplate,
   AppSettings,
+  CloudTargetMode,
   AuthState,
   ChatMessage,
   ClientAnalysisRun,
@@ -94,6 +96,8 @@ import type {
   MentionCandidate,
   OrganizationDnaModule,
   Operator,
+  OrgInvitationRecord,
+  OrgMembershipSummary,
   ProjectFlow,
   ProjectFlowPayload,
   ProjectModule,
@@ -132,7 +136,6 @@ import {
   formatMonthTitle,
   shiftCalendarMonth,
 } from '../shared/calendar';
-import { buildDepartmentInviteCode, parseDepartmentInviteCode } from '../shared/departmentInvite';
 import {
   approveTaskReview,
   confirmTask,
@@ -235,8 +238,11 @@ import {
   updateFeishuBotSettings,
   clearFeishuUserBinding,
   startFeishuUserBinding,
+  createOrgInvitation,
+  createOrganization,
   updateClient,
   updateClientWorkspaceSettings,
+  updateCloudConfig,
   updateProjectFlow,
   updateProjectModule,
   updateSettings,
@@ -257,10 +263,13 @@ import {
   upsertDna,
   vectorizeAnswer,
   exportAnswer,
+  getAccountSyncOverview,
   startClientTemplateFill,
   getClientTemplateFillRun,
   backfillClientWorkspaceImports,
+  importLocalStructuredData,
   pullSelectedFromMain,
+  redeemOrgInvitation,
   selectCollabRepo,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
@@ -338,7 +347,7 @@ import {
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'unified_workbench' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
-type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'analysis' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
+type SettingsSectionKey = 'overview' | 'account_sync' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'analysis' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -3364,6 +3373,15 @@ export default function App() {
 
   const [authState, setAuthState] = useState<AuthState>({ authenticated: false });
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([]);
+  const [accountSyncOverview, setAccountSyncOverview] = useState<AccountSyncOverview | null>(null);
+  const [accountSyncBusyAction, setAccountSyncBusyAction] = useState<string | null>(null);
+  const [accountSyncCloudModeDraft, setAccountSyncCloudModeDraft] = useState<CloudTargetMode>('disabled');
+  const [accountSyncCustomApiUrlDraft, setAccountSyncCustomApiUrlDraft] = useState('');
+  const [accountSyncLoginForm, setAccountSyncLoginForm] = useState({ email: '', password: '', rememberMe: true });
+  const [accountSyncRegisterForm, setAccountSyncRegisterForm] = useState({ email: '', fullName: '', password: '' });
+  const [accountSyncOrgNameDraft, setAccountSyncOrgNameDraft] = useState('');
+  const [accountSyncInviteForm, setAccountSyncInviteForm] = useState({ code: '', roleName: '', departmentId: '', expiresInDays: 7, maxUses: 1 });
+  const [latestOrgInvitation, setLatestOrgInvitation] = useState<OrgInvitationRecord | null>(null);
   const [employeeReviews, setEmployeeReviews] = useState<EmployeeRecord[]>([]);
   const [settingsState, setSettingsState] = useState<AppSettings | null>(null);
   const [taskSettingsState, setTaskSettingsState] = useState<TaskSettings | null>(null);
@@ -3385,6 +3403,7 @@ export default function App() {
   const [diagnosisProfileVersion, setDiagnosisProfileVersion] = useState(0);
   const [settingsSectionLoaded, setSettingsSectionLoaded] = useState<Record<SettingsSectionKey, boolean>>({
     overview: true,
+    account_sync: false,
     org_dna: false,
     tasks: true,
     client_workspace: false,
@@ -3456,6 +3475,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
   const currentSessionUser = authState.user || null;
+  const currentSessionMode = authState.sessionMode || 'local';
+  const isCloudSession = currentSessionMode === 'cloud';
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const defaultTagScope: 'org' | 'self' = canManagePublicTaskTaxonomy ? 'org' : 'self';
@@ -3693,6 +3714,143 @@ export default function App() {
     setCollabCommitMessage(nextValue);
   }
 
+  async function handleSaveCloudConfig() {
+    setAccountSyncBusyAction('cloud-config');
+    try {
+      await updateCloudConfig({
+        mode: accountSyncCloudModeDraft,
+        customApiUrl: accountSyncCloudModeDraft === 'custom' ? accountSyncCustomApiUrlDraft.trim() : null,
+      });
+      await loadAccountSyncOverviewBlock();
+      flash('success', '云端连接方式已更新。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '云端配置保存失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleCloudLogin() {
+    setAccountSyncBusyAction('cloud-login');
+    try {
+      const response = await login(accountSyncLoginForm);
+      setAuthState(response);
+      await loadAll();
+      flash('success', '已连接云端账号。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '云端登录失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleCloudRegister() {
+    setAccountSyncBusyAction('cloud-register');
+    try {
+      const response = await register({
+        email: accountSyncRegisterForm.email.trim(),
+        fullName: accountSyncRegisterForm.fullName.trim(),
+        password: accountSyncRegisterForm.password,
+      });
+      setAuthState(response);
+      await loadAll();
+      flash('success', response.message || '个人账号已创建，现在可以继续配置云端同步。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '云端注册失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleExitCloudSession() {
+    setAccountSyncBusyAction('cloud-logout');
+    try {
+      const response = await logout();
+      setAuthState(response);
+      await loadAll();
+      flash('success', '已退出云端，当前回到本机模式。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '退出云端失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleCreateOrganization() {
+    const trimmedName = accountSyncOrgNameDraft.trim();
+    if (!trimmedName) {
+      flash('error', '请先填写组织名称。');
+      return;
+    }
+    setAccountSyncBusyAction('create-org');
+    try {
+      const membership = await createOrganization({ name: trimmedName });
+      setAccountSyncOverview((prev) => (prev ? { ...prev, membership, cloudConnected: true, sessionMode: 'cloud' } : prev));
+      await Promise.all([loadAccountSyncOverviewBlock(), loadAll()]);
+      setAccountSyncOrgNameDraft('');
+      flash('success', '组织已创建，现在可以继续邀请成员。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '创建组织失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleCreateInvitation() {
+    setAccountSyncBusyAction('create-invite');
+    try {
+      const record = await createOrgInvitation({
+        departmentId: accountSyncInviteForm.departmentId || null,
+        roleName: accountSyncInviteForm.roleName.trim() || null,
+        expiresInDays: accountSyncInviteForm.expiresInDays,
+        maxUses: accountSyncInviteForm.maxUses,
+      });
+      setLatestOrgInvitation(record);
+      await loadAccountSyncOverviewBlock();
+      flash('success', '组织邀请码已生成。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '生成邀请码失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleRedeemInvitation() {
+    const code = accountSyncInviteForm.code.trim();
+    if (!code) {
+      flash('error', '请先填写邀请码。');
+      return;
+    }
+    setAccountSyncBusyAction('redeem-invite');
+    try {
+      const membership = await redeemOrgInvitation({ code });
+      setLatestOrgInvitation(null);
+      setAccountSyncInviteForm((prev) => ({ ...prev, code: '' }));
+      setAccountSyncOverview((prev) => (prev ? { ...prev, membership, cloudConnected: true, sessionMode: 'cloud' } : prev));
+      await Promise.all([loadAccountSyncOverviewBlock(), loadAll()]);
+      flash('success', '已加入组织并刷新当前云端身份。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '加入组织失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
+  async function handleLocalImport(mode: 'keep_local' | 'import_structured' | 'start_empty') {
+    setAccountSyncBusyAction(`import-${mode}`);
+    try {
+      const result = await importLocalStructuredData({ mode });
+      await loadAccountSyncOverviewBlock();
+      flash('success', mode === 'import_structured'
+        ? `已导入 ${result.importedTaskCount} 个任务、${result.importedListCount} 个清单。`
+        : '已记录这次首次同步选择。');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '首次同步处理失败');
+    } finally {
+      setAccountSyncBusyAction(null);
+    }
+  }
+
   const openDiagnosisProfileSettings = (groupKey: DiagnosisProfileGroupKey, prefillLabel = '') => {
     setActiveTab('settings');
     setSettingsSection('analysis');
@@ -3710,6 +3868,15 @@ export default function App() {
     setBackendCompatibilityError(
       missingFeatures.length > 0 ? `本地后端版本过旧，请重启应用。缺少能力：${missingFeatures.join('、')}` : null,
     );
+  }
+
+  async function loadAccountSyncOverviewBlock() {
+    const response = await getAccountSyncOverview();
+    setAccountSyncOverview(response);
+    setAccountSyncCloudModeDraft(response.cloudConfig.mode);
+    setAccountSyncCustomApiUrlDraft(response.cloudConfig.customApiUrl || '');
+    setAccountSyncOrgNameDraft((prev) => prev || '');
+    return response;
   }
 
   async function loadFeishuUserBindingBlock() {
@@ -3783,6 +3950,9 @@ export default function App() {
     if (!force && settingsSectionLoaded[section]) return;
     switch (section) {
       case 'overview':
+        break;
+      case 'account_sync':
+        await loadAccountSyncOverviewBlock();
         break;
       case 'org_dna':
         await loadOrganizationDnaBlock();
@@ -3983,6 +4153,7 @@ export default function App() {
       if (nextAuth.authenticated) {
         markLoadingPhase('正在载入核心模块数据…');
         const backgroundLoaders: Array<{ name: string; run: () => Promise<unknown> }> = [
+          { name: 'account-sync', run: () => loadAccountSyncOverviewBlock() },
           { name: 'task-settings', run: () => loadTaskSettingsBlock() },
           { name: 'activity-logs', run: () => loadLogsBlock() },
           { name: 'task-board', run: () => loadTaskBlock() },
@@ -4037,6 +4208,7 @@ export default function App() {
         }
         setSettingsSectionLoaded({
           overview: true,
+          account_sync: false,
           org_dna: false,
           tasks: true,
           client_workspace: false,
@@ -4090,6 +4262,7 @@ export default function App() {
         setFeishuBindingFlowState(null);
         setSettingsSectionLoaded({
           overview: true,
+          account_sync: false,
           org_dna: false,
           tasks: true,
           client_workspace: false,
@@ -4245,7 +4418,7 @@ export default function App() {
   }, [activeTab, settingsSection, authState.authenticated]);
 
   useEffect(() => {
-    if (!authState.authenticated) return;
+    if (!authState.authenticated || !isCloudSession) return;
     let cancelled = false;
 
     const run = async () => {
@@ -4281,7 +4454,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [authState.authenticated, currentClientId, currentSessionUser?.id]);
+  }, [authState.authenticated, isCloudSession, currentClientId, currentSessionUser?.id]);
 
   const effectiveTaskSettings = useMemo(
     () => resolveTaskSettings(taskSettingsState, taskLists),
@@ -4417,254 +4590,6 @@ export default function App() {
     { id: 'growth_handbook' as const, label: '成长手册', icon: BookOpen },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
-
-  const AuthShell = () => {
-    const createEmptyRegisterForm = (email = '') => ({
-      email,
-      fullName: '',
-      password: '',
-      departmentId: '',
-      jobTitle: '',
-      managerName: '',
-      currentFocus: '',
-      isDepartmentLead: false,
-    });
-    const [mode, setMode] = useState<'login' | 'register'>('login');
-    const [registerStep, setRegisterStep] = useState<1 | 2>(1);
-    const [form, setForm] = useState(() => createEmptyRegisterForm());
-    const [rememberMe, setRememberMe] = useState(true);
-    const [departmentInviteCode, setDepartmentInviteCode] = useState('');
-    const [submitting, setSubmitting] = useState(false);
-    const [message, setMessage] = useState(authState.message || '');
-    const inviteDepartment = useMemo(() => {
-      const inviteKey = parseDepartmentInviteCode(departmentInviteCode);
-      if (!inviteKey) return null;
-      return departmentOptions.find((department) => (
-        department.id === inviteKey || buildDepartmentInviteCode(department.id) === inviteKey
-      )) || null;
-    }, [departmentInviteCode, departmentOptions]);
-
-    useEffect(() => {
-      const href = window.location.href;
-      if (!href.includes('invite=') && !href.includes('departmentId=')) return;
-      setMode('register');
-      setRegisterStep(1);
-      setDepartmentInviteCode(href);
-    }, []);
-
-    useEffect(() => {
-      if (mode !== 'register') return;
-      setForm((prev) => {
-        const nextDepartmentId = inviteDepartment?.id || '';
-        return prev.departmentId === nextDepartmentId ? prev : { ...prev, departmentId: nextDepartmentId };
-      });
-    }, [inviteDepartment, mode]);
-
-    const switchMode = (nextMode: 'login' | 'register') => {
-      setMode(nextMode);
-      setMessage('');
-      if (nextMode === 'register') {
-        setRegisterStep(1);
-        setForm(createEmptyRegisterForm(form.email));
-        return;
-      }
-      setRememberMe(true);
-      setForm((prev) => ({ ...prev, password: '' }));
-    };
-
-    const continueRegister = () => {
-      if (!inviteDepartment) {
-        setMessage('请先填写有效的部门邀请码，再继续注册。');
-        return;
-      }
-      setMessage('');
-      setRegisterStep(2);
-    };
-
-    const backToInviteStep = () => {
-      setMessage('');
-      setRegisterStep(1);
-    };
-
-    const handleSubmit = async () => {
-      setSubmitting(true);
-      try {
-        if (mode === 'register') {
-          const response = await register(form);
-          setMessage(response.message || '你的账号已提交，正在等待管理员审核。');
-          setMode('login');
-          setRegisterStep(1);
-          setDepartmentInviteCode('');
-          setForm(createEmptyRegisterForm(form.email));
-        } else {
-          const response = await login({ email: form.email, password: form.password, rememberMe });
-          setAuthState(response);
-          await loadAll();
-        }
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : '提交失败');
-      } finally {
-        setSubmitting(false);
-      }
-    };
-
-    useEffect(() => {
-      if (!message.includes('无法连接本地服务')) return;
-      let cancelled = false;
-      const tryRecover = async () => {
-        try {
-          const response = await probeLocalBackendHealth(900);
-          if (cancelled) return;
-          setHealth(response);
-          backendReadyRef.current = true;
-          clearLocalServiceStartupBanner();
-          setMessage('');
-          await loadAll(undefined, { allowStartupRetry: false });
-        } catch {
-          // 后端还没起来时保持静默轮询，避免持续打扰用户
-        }
-      };
-      void tryRecover();
-      const timer = window.setInterval(() => {
-        void tryRecover();
-      }, 1500);
-      return () => {
-        cancelled = true;
-        window.clearInterval(timer);
-      };
-    }, [message]);
-
-    return (
-      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
-        <div className="w-full max-w-[980px] grid grid-cols-1 lg:grid-cols-[0.95fr_1.05fr] rounded-[36px] overflow-hidden border border-gray-100 shadow-[0_20px_80px_rgba(0,0,0,0.08)] bg-white">
-          <div className="p-10 bg-gradient-to-br from-[#edf2ff] via-white to-[#f8fbff] border-r border-gray-100">
-            <div className="w-12 h-12 rounded-2xl bg-[#5B7BFE]/10 text-[#5B7BFE] flex items-center justify-center mb-6">
-              <ShieldAlert size={24} />
-            </div>
-            <h1 className="text-[30px] font-bold text-gray-900 leading-tight">益语智库自用平台</h1>
-            <p className="text-[14px] text-gray-500 mt-3 leading-relaxed">内部员工协作入口已经切到真实的账号审核与权限体系。未通过审批前，不能进入业务模块。</p>
-            <div className="mt-8 space-y-3 text-[13px] text-gray-600">
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">邮箱注册后自动进入待审核状态</div>
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">管理员可审批、驳回、停用并设置角色</div>
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">@ 协作任务、收件箱接收/退回都绑定真实员工身份</div>
-            </div>
-          </div>
-          <div className="p-10 lg:p-12">
-            <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 mb-8 w-fit">
-              <button onClick={() => switchMode('login')} className={`px-5 py-2 rounded-xl text-[13px] font-bold ${mode === 'login' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}>登录</button>
-              <button onClick={() => switchMode('register')} className={`px-5 py-2 rounded-xl text-[13px] font-bold ${mode === 'register' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}>注册</button>
-            </div>
-            <div className="space-y-4">
-              {mode === 'login' && (
-                <>
-                  <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                    记住我的登录状态
-                    <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
-                  </label>
-                </>
-              )}
-              {mode === 'register' && (
-                <>
-                  <div className="flex items-center justify-between rounded-2xl border border-blue-100 bg-[#F8FAFF] px-4 py-3">
-                    <div>
-                      <p className="text-[12px] font-bold text-[#5B7BFE]">注册步骤 {registerStep}/2</p>
-                      <p className="text-[12px] text-gray-500 mt-1">
-                        {registerStep === 1 ? '先用邀请码锁定机构和部门，再进入个人信息补全。' : '部门已经锁定，接下来只需要补你自己的岗位信息。'}
-                      </p>
-                    </div>
-                    {registerStep === 2 && (
-                      <button type="button" onClick={backToInviteStep} className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[12px] font-bold text-[#5B7BFE]">
-                        重新填写邀请码
-                      </button>
-                    )}
-                  </div>
-                  {registerStep === 1 ? (
-                    <div className="space-y-4">
-                      <input
-                        value={departmentInviteCode}
-                        onChange={(event) => {
-                          setDepartmentInviteCode(event.target.value);
-                          setMessage('');
-                        }}
-                        placeholder={'先输入部门邀请码，例如「咨询策略部 邀请码 482193」或 482193'}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                      />
-                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴"部门名 + 6 位邀请码"，注册时先锁定部门，后面不用自己手选。</p>
-                      <div className={`rounded-[24px] border px-4 py-4 ${inviteDepartment ? 'border-emerald-200 bg-emerald-50/80' : 'border-dashed border-gray-200 bg-gray-50'}`}>
-                        <p className="text-[12px] font-bold text-gray-500">邀请码识别结果</p>
-                        {inviteDepartment ? (
-                          <div className="mt-2 space-y-1">
-                            <p className="text-[14px] font-bold text-gray-900">机构：益语智库</p>
-                            <p className="text-[13px] text-gray-600">部门：{inviteDepartment.name}</p>
-                          </div>
-                        ) : (
-                          <p className="mt-2 text-[13px] text-gray-500">还没有识别到有效部门。请粘贴管理员发来的邀请码。</p>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="rounded-[24px] border border-emerald-200 bg-emerald-50/80 px-4 py-4">
-                        <p className="text-[12px] font-bold text-emerald-700">你将加入的组织</p>
-                        <p className="mt-2 text-[15px] font-bold text-gray-900">益语智库 · {inviteDepartment?.name || '未识别部门'}</p>
-                        <p className="mt-1 text-[12px] text-gray-500">部门由邀请码决定。你现在只需要补全自己的身份和岗位信息。</p>
-                      </div>
-                      <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="我的岗位，例如：咨询顾问 / 内容运营" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属上级（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前主要负责什么，或最近一段时间的重点（可选）" className="min-h-[96px] w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
-                      <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                        我是这个部门的负责人
-                        <input type="checkbox" checked={form.isDepartmentLead} onChange={(event) => setForm((prev) => ({ ...prev, isDepartmentLead: event.target.checked }))} />
-                      </label>
-                    </div>
-                  )}
-                </>
-              )}
-              {message && <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">{message}</div>}
-              {mode === 'login' ? (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !form.password.trim()}
-                >
-                  {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
-                  进入系统
-                </Button>
-              ) : registerStep === 1 ? (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={continueRegister}
-                  disabled={!inviteDepartment}
-                >
-                  <ArrowRight size={16} />
-                  确认部门，继续填写
-                </Button>
-              ) : (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !form.password.trim() || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
-                >
-                  {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
-                  提交注册
-                </Button>
-              )}
-            </div>
-            <p className="text-[12px] text-gray-400 mt-6">普通成员请使用部门邀请码注册；组织管理员首次进入仍使用服务端 bootstrap 凭据登录。</p>
-            <p className="text-[12px] text-gray-400 mt-2">勾选后会在当前设备持续保留登录状态；不勾选则只保留本次应用会话。</p>
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   const tasksViewBridgeRef = useRef<Record<string, unknown>>({});
   tasksViewBridgeRef.current = {
@@ -14097,6 +14022,7 @@ export default function App() {
 
     const sectionItems: Array<{ key: SettingsSectionKey; label: string; icon: typeof Settings; helper: string }> = [
       { key: 'overview', label: '总览', icon: Settings, helper: '当前账号、AI 与系统状态' },
+      { key: 'account_sync', label: '账号与同步', icon: Users, helper: '本机模式、云端连接与组织加入' },
       { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
       { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认规则、清单与标签' },
       { key: 'client_workspace', label: '客户工作台', icon: Briefcase, helper: '聊天、会议、目标默认规则' },
@@ -14802,6 +14728,334 @@ export default function App() {
       </div>
     );
 
+    const renderAccountSyncSection = () => {
+      const overview = accountSyncOverview;
+      const membership = overview?.membership;
+      const syncStatus = overview?.syncStatus;
+      const cloudConfig = overview?.cloudConfig;
+      const modeOptions: Array<{ value: CloudTargetMode; label: string; helper: string }> = [
+        { value: 'disabled', label: '关闭云端', helper: '默认只在本机使用，不强制登录。' },
+        { value: 'official_test', label: '官方测试云', helper: '用于当前联调和跨设备同步测试。' },
+        { value: 'custom', label: '自定义云端', helper: '开源用户填写自己的 Cloud API 地址。' },
+      ];
+      const busy = (key: string) => accountSyncBusyAction === key;
+
+      return (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[16px] font-bold text-gray-900">当前模式</h2>
+                  <p className="text-[12px] text-gray-500 mt-1">安装后默认进入本机模式；只有需要云端保存、跨设备同步或组织协作时才登录。</p>
+                </div>
+                <span className={`px-3 py-1.5 rounded-full text-[11px] font-bold ${isCloudSession ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-600'}`}>
+                  {isCloudSession ? '云端模式' : '本机模式'}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">当前会话</p>
+                  <p className="text-[14px] font-bold text-slate-900">{currentSessionUser?.fullName || '本机用户'}</p>
+                  <p className="text-[12px] text-slate-600 mt-1">{isCloudSession ? (currentSessionUser?.email || '云端账号') : '当前设备离线可用'}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">同步状态</p>
+                  <p className="text-[13px] font-bold text-slate-900">
+                    {syncStatus?.needsInitialImport ? '等待首次同步选择' : isCloudSession ? '云端已连接' : '未启用云端'}
+                  </p>
+                  <p className="text-[12px] text-slate-600 mt-1">
+                    本地待同步：{syncStatus?.pendingTaskCount || 0} 个任务 / {syncStatus?.pendingListCount || 0} 个清单
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-600">
+                {isCloudSession
+                  ? `当前云端归属：${membership?.organizationName || '未加入组织'}${membership?.isPersonalWorkspace ? '（个人空间）' : ''}`
+                  : '当前未连接云端。你仍然可以直接使用本地任务、客户工作台和个人设置。'}
+              </div>
+            </div>
+
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[16px] font-bold text-gray-900">云端连接</h2>
+                  <p className="text-[12px] text-gray-500 mt-1">客户端只配置 Cloud API 地址，不直接配置数据库。</p>
+                </div>
+                <Button primary onClick={() => void handleSaveCloudConfig()} disabled={busy('cloud-config')}>
+                  <Settings size={16} /> 保存连接
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {modeOptions.map((option) => {
+                  const active = accountSyncCloudModeDraft === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setAccountSyncCloudModeDraft(option.value)}
+                      className={`rounded-2xl border px-4 py-4 text-left transition-all ${active ? 'border-blue-200 bg-blue-50/70 text-[#335CFF]' : 'border-gray-200 bg-white text-gray-700 hover:border-blue-100 hover:bg-blue-50/40'}`}
+                    >
+                      <p className="text-[13px] font-bold">{option.label}</p>
+                      <p className="mt-2 text-[11px] leading-5 text-gray-500">{option.helper}</p>
+                    </button>
+                  );
+                })}
+              </div>
+              {accountSyncCloudModeDraft === 'custom' && (
+                <input
+                  value={accountSyncCustomApiUrlDraft}
+                  onChange={(event) => setAccountSyncCustomApiUrlDraft(event.target.value)}
+                  placeholder="https://your-cloud-api.example.com"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                />
+              )}
+              <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 text-[12px] text-slate-600">
+                当前生效地址：{cloudConfig?.effectiveApiUrl || '未启用云端'}<br />
+                官方测试云：{cloudConfig?.officialTestApiUrl || '未配置'}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[16px] font-bold text-gray-900">我的账号</h2>
+                  <p className="text-[12px] text-gray-500 mt-1">注册和登录只在需要云端同步、跨设备或组织协作时启用。</p>
+                </div>
+                {isCloudSession ? (
+                  <Button onClick={() => void handleExitCloudSession()} disabled={busy('cloud-logout')}>
+                    <ShieldAlert size={16} /> 退出云端
+                  </Button>
+                ) : null}
+              </div>
+
+              {isCloudSession ? (
+                <div className="space-y-3">
+                  <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">云端身份</p>
+                    <p className="text-[14px] font-bold text-slate-900">{currentSessionUser?.fullName || '未命名用户'}</p>
+                    <p className="text-[12px] text-slate-600 mt-1">{currentSessionUser?.email || '未绑定邮箱'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50 px-4 py-3 text-[12px] text-emerald-700">
+                    当前已切到云端模式；本机模式仍然保留，退出云端后会直接回到本机会话。
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4">
+                  <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
+                    <p className="text-[13px] font-bold text-gray-900">连接已有云端账号</p>
+                    <input
+                      value={accountSyncLoginForm.email}
+                      onChange={(event) => setAccountSyncLoginForm((prev) => ({ ...prev, email: event.target.value }))}
+                      placeholder="邮箱"
+                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                    />
+                    <input
+                      type="password"
+                      value={accountSyncLoginForm.password}
+                      onChange={(event) => setAccountSyncLoginForm((prev) => ({ ...prev, password: event.target.value }))}
+                      placeholder="密码"
+                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                    />
+                    <label className="flex items-center gap-2 text-[12px] text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={accountSyncLoginForm.rememberMe}
+                        onChange={(event) => setAccountSyncLoginForm((prev) => ({ ...prev, rememberMe: event.target.checked }))}
+                      />
+                      记住我的云端登录状态
+                    </label>
+                    <Button primary onClick={() => void handleCloudLogin()} disabled={busy('cloud-login')}>
+                      <ArrowRight size={16} /> 登录云端
+                    </Button>
+                  </div>
+
+                  <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
+                    <p className="text-[13px] font-bold text-gray-900">创建个人云端账号</p>
+                    <input
+                      value={accountSyncRegisterForm.fullName}
+                      onChange={(event) => setAccountSyncRegisterForm((prev) => ({ ...prev, fullName: event.target.value }))}
+                      placeholder="显示名"
+                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                    />
+                    <input
+                      value={accountSyncRegisterForm.email}
+                      onChange={(event) => setAccountSyncRegisterForm((prev) => ({ ...prev, email: event.target.value }))}
+                      placeholder="邮箱"
+                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                    />
+                    <input
+                      type="password"
+                      value={accountSyncRegisterForm.password}
+                      onChange={(event) => setAccountSyncRegisterForm((prev) => ({ ...prev, password: event.target.value }))}
+                      placeholder="密码（至少 8 位）"
+                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                    />
+                    <Button primary onClick={() => void handleCloudRegister()} disabled={busy('cloud-register')}>
+                      <UserPlus size={16} /> 创建个人账号
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+              <div>
+                <h2 className="text-[16px] font-bold text-gray-900">组织与成员身份</h2>
+                <p className="text-[12px] text-gray-500 mt-1">组织创建、加入和邀请码都放在这里，不再卡在注册流程前面。</p>
+              </div>
+
+              {!isCloudSession ? (
+                <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-4 text-[12px] text-gray-600">
+                  先在上方连接云端账号，然后你就可以创建组织、生成邀请码或加入别人发来的组织。
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">当前成员身份</p>
+                    <p className="text-[14px] font-bold text-slate-900">{membership?.organizationName || '未加入组织'}</p>
+                    <p className="text-[12px] text-slate-600 mt-1">
+                      {membership?.isPersonalWorkspace ? '当前仍是个人空间' : `部门：${membership?.departmentName || '未设置'} · 岗位：${membership?.jobTitle || '未设置'}`}
+                    </p>
+                  </div>
+
+                  {membership?.isPersonalWorkspace && (
+                    <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
+                      <p className="text-[13px] font-bold text-gray-900">创建正式组织</p>
+                      <input
+                        value={accountSyncOrgNameDraft}
+                        onChange={(event) => setAccountSyncOrgNameDraft(event.target.value)}
+                        placeholder="例如：益语智库协作组"
+                        className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                      />
+                      <Button primary onClick={() => void handleCreateOrganization()} disabled={busy('create-org')}>
+                        <Users size={16} /> 创建组织
+                      </Button>
+                    </div>
+                  )}
+
+                  {!membership?.isPersonalWorkspace && currentSessionUser?.primaryRole === 'admin' && (
+                    <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
+                      <p className="text-[13px] font-bold text-gray-900">生成组织邀请码</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <select
+                          value={accountSyncInviteForm.departmentId}
+                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, departmentId: event.target.value }))}
+                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                        >
+                          <option value="">不预设部门</option>
+                          {departmentOptions.map((department) => (
+                            <option key={department.id} value={department.id}>{department.name}</option>
+                          ))}
+                        </select>
+                        <input
+                          value={accountSyncInviteForm.roleName}
+                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, roleName: event.target.value }))}
+                          placeholder="可选：岗位名称"
+                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          max={30}
+                          value={accountSyncInviteForm.expiresInDays}
+                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, expiresInDays: Math.max(1, Number(event.target.value) || 1) }))}
+                          placeholder="有效期（天）"
+                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={accountSyncInviteForm.maxUses}
+                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, maxUses: Math.max(1, Number(event.target.value) || 1) }))}
+                          placeholder="可使用次数"
+                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                        />
+                      </div>
+                      <Button primary onClick={() => void handleCreateInvitation()} disabled={busy('create-invite')}>
+                        <Copy size={16} /> 生成邀请码
+                      </Button>
+                    </div>
+                  )}
+
+                  <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
+                    <p className="text-[13px] font-bold text-gray-900">加入组织</p>
+                    <input
+                      value={accountSyncInviteForm.code}
+                      onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, code: event.target.value }))}
+                      placeholder="输入别人发来的邀请码"
+                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
+                    />
+                    <Button primary onClick={() => void handleRedeemInvitation()} disabled={busy('redeem-invite')}>
+                      <ArrowRight size={16} /> 加入组织
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {latestOrgInvitation && (
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[16px] font-bold text-gray-900">最新邀请码</h2>
+                  <p className="text-[12px] text-gray-500 mt-1">可以直接复制给同事；后续也可以做成邀请链接。</p>
+                </div>
+                <Button onClick={() => navigator.clipboard.writeText(latestOrgInvitation.code).then(() => flash('success', '邀请码已复制')).catch(() => flash('error', '复制失败'))}>
+                  <Copy size={16} /> 复制
+                </Button>
+              </div>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">邀请码</p>
+                  <p className="text-[18px] font-bold text-slate-900 tracking-[0.12em]">{latestOrgInvitation.code}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">组织</p>
+                  <p className="text-[13px] font-bold text-slate-900">{latestOrgInvitation.organizationName}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">部门 / 岗位</p>
+                  <p className="text-[12px] text-slate-700">{latestOrgInvitation.departmentName || '未预设部门'} / {latestOrgInvitation.roleName || '未预设岗位'}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">有效期</p>
+                  <p className="text-[12px] text-slate-700">{new Date(latestOrgInvitation.expiresAt).toLocaleString('zh-CN', { hour12: false })}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isCloudSession && syncStatus?.needsInitialImport && (
+            <div className="bg-white border border-amber-100 rounded-3xl p-6 shadow-sm space-y-4">
+              <div>
+                <h2 className="text-[16px] font-bold text-gray-900">首次同步向导</h2>
+                <p className="text-[12px] text-gray-500 mt-1">当前检测到本机已有结构化数据，请先决定这批数据如何进入云端。</p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <button type="button" onClick={() => void handleLocalImport('keep_local')} className="rounded-2xl border border-gray-200 bg-white px-4 py-4 text-left hover:border-blue-100 hover:bg-blue-50/40">
+                  <p className="text-[13px] font-bold text-gray-900">保留本地，不导入</p>
+                  <p className="mt-2 text-[11px] leading-5 text-gray-500">继续使用云端账号，但暂时不把本机结构化数据推到云端。</p>
+                </button>
+                <button type="button" onClick={() => void handleLocalImport('import_structured')} className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-4 text-left hover:bg-blue-50">
+                  <p className="text-[13px] font-bold text-[#335CFF]">导入结构化数据</p>
+                  <p className="mt-2 text-[11px] leading-5 text-gray-500">导入任务、清单等结构化记录，不导入本地知识库全文和附件。</p>
+                </button>
+                <button type="button" onClick={() => void handleLocalImport('start_empty')} className="rounded-2xl border border-gray-200 bg-white px-4 py-4 text-left hover:border-blue-100 hover:bg-blue-50/40">
+                  <p className="text-[13px] font-bold text-gray-900">云端从空开始</p>
+                  <p className="mt-2 text-[11px] leading-5 text-gray-500">只建立云端账号与组织关系，不把本机已有结构化记录带上去。</p>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
     const renderSectionContent = () => {
       if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks'].includes(settingsSection)) {
         return (
@@ -14814,6 +15068,8 @@ export default function App() {
       switch (settingsSection) {
         case 'overview':
           return renderOverviewSection();
+        case 'account_sync':
+          return renderAccountSyncSection();
         case 'org_dna':
           return renderOrgDnaSection();
         case 'tasks':
@@ -14848,8 +15104,8 @@ export default function App() {
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">系统设置</h1>
             <p className="text-[12px] text-gray-500 mt-1">把整个软件的默认规则、权限边界和组织级知识底座收口到一个设置中心。</p>
           </div>
-          <Button onClick={() => { void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败')); }}>
-            <ShieldAlert size={16} /> 退出登录
+          <Button onClick={() => { void logout().then(async (response) => { setAuthState(response); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败')); }}>
+            <ShieldAlert size={16} /> {isCloudSession ? '退出云端' : '刷新本机会话'}
           </Button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
@@ -14946,7 +15202,7 @@ export default function App() {
         onTasksReload={loadTaskBlock}
       />
     ),
-    unified_workbench: <UnifiedWorkbenchView />,
+    unified_workbench: UnifiedWorkbenchView(),
     growth_handbook: (
       <GrowthHandbookView
         entries={handbookEntries}
@@ -14965,7 +15221,7 @@ export default function App() {
         flash={flash}
       />
     ),
-    settings: <SettingsView />,
+    settings: SettingsView(),
   };
 
   if (loading) {
@@ -14982,8 +15238,15 @@ export default function App() {
     );
   }
 
-  if (!authState.authenticated || !currentSessionUser) {
-    return <AuthShell />;
+  if (!currentSessionUser) {
+    return (
+      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
+        <div className="flex flex-col items-center gap-3 text-center text-gray-500">
+          <RefreshCw size={18} className="animate-spin" />
+          <p>正在恢复本机会话…</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -15067,14 +15330,14 @@ export default function App() {
                 className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
                 onClick={() => {
                   void logout()
-                    .then(async () => {
-                      setAuthState({ authenticated: false });
+                    .then(async (response) => {
+                      setAuthState(response);
                       await loadAll();
                     })
                     .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
                 }}
               >
-                退出登录
+                {isCloudSession ? '退出云端' : '刷新本机会话'}
               </button>
             </div>
           </div>
