@@ -7,6 +7,8 @@
 - `renderer/components/workbench/platformDnaProfiles.ts`
 - `renderer/components/workbench/DiagnosisEnginePanel.tsx`
 - `renderer/components/tasks/ExecutiveReviewPanel.tsx`
+- `renderer/components/settings/LegacyMigrationDemoPanel.tsx`
+- `renderer/lib/legacySettingsApi.ts`
 
 迁入原则：
 - 当前主界面没有实际 import / 接线
@@ -16,7 +18,6 @@
 暂未迁入、因为当前仍在主流程中运行的旧链路：
 - bootstrap 管理员 / 内部种子账号
 - 部门邀请码注册
-- 演示数据
-- 旧数据导入
+- 演示数据与旧数据导入的后端接口
 
 以后如果用户明确说“旧功能先不删”，默认继续迁入这个目录，而不是直接删除。

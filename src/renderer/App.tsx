@@ -91,7 +91,6 @@ import type {
   HealthResponse,
   HierarchyReport,
   KnowledgeSearchResult,
-  LegacyScanReport,
   MentionCandidate,
   OrganizationDnaModule,
   Operator,
@@ -137,7 +136,6 @@ import { buildDepartmentInviteCode, parseDepartmentInviteCode } from '../shared/
 import {
   approveTaskReview,
   confirmTask,
-  clearDemoData,
   approveEmployee,
   createBackup,
   createClient,
@@ -207,7 +205,6 @@ import {
   generateClientDnaCandidates,
   generateEventLineClarificationDraft,
   importPaths,
-  loadDemoData,
   login,
   ingestMeeting,
   logout,
@@ -226,7 +223,6 @@ import {
   resolveMeeting,
   runAnalysis,
   runBettafishDiagnosis,
-  scanLegacy,
   searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
@@ -11157,25 +11153,12 @@ export default function App() {
                   </div>
                   <p className="text-[16px] font-bold text-gray-800 mb-2">还没有项目工作区</p>
                   <p className="text-[12px] text-center max-w-md leading-relaxed text-gray-500 mb-6">
-                    先创建一个项目开始正式使用；如果只是想演示流程，也可以手动载入演示数据。
+                    先创建一个项目开始正式使用。
                   </p>
                   <div className="flex items-center gap-3">
                     <Button primary onClick={openCreateClientModal}>
                       <Plus size={16} />
                       创建项目
-                    </Button>
-                    <Button
-                      onClick={() =>
-                        void loadDemoData()
-                          .then(async () => {
-                            await loadAll('client_cffc');
-                            flash('success', '演示数据已载入，可用于首次演示');
-                          })
-                          .catch((error) => flash('error', error instanceof Error ? error.message : '载入演示数据失败'))
-                      }
-                    >
-                      <Sparkles size={16} />
-                      载入演示数据
                     </Button>
                   </div>
                 </div>
@@ -13466,9 +13449,6 @@ export default function App() {
       scope: 'org' as 'org' | 'personal',
     });
     const [editingListId, setEditingListId] = useState<string | null>(null);
-    const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
-    const [legacyImportClientId, setLegacyImportClientId] = useState('');
-    const [isImportingLegacy, setIsImportingLegacy] = useState(false);
     const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
     const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
     const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
@@ -13530,15 +13510,6 @@ export default function App() {
       setOrgModelDraft(orgModelState);
     }, [orgModelState]);
 
-    useEffect(() => {
-      const preferredClientId =
-        (currentClientId && clients.some((client) => client.id === currentClientId) && currentClientId) ||
-        clients[0]?.id ||
-        '';
-      setLegacyImportClientId((prev) => (prev && clients.some((client) => client.id === prev) ? prev : preferredClientId));
-    }, [clients, currentClientId]);
-
-    const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
     const canManagePersonalTaskList = Boolean(currentSessionUser?.id);
@@ -13574,32 +13545,6 @@ export default function App() {
     const resetListManager = () => {
       setEditingListId(null);
       setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false, scope: 'org' });
-    };
-
-    const handleImportLegacyEntries = async () => {
-      if (!legacyImportClientId) {
-        flash('error', '请先选择一个客户用于接收旧数据导入');
-        return;
-      }
-      if (!importableLegacyEntries.length) {
-        flash('info', '当前扫描结果中没有可导入的 JSON 或 CSV 文件');
-        return;
-      }
-      setIsImportingLegacy(true);
-      try {
-        const imported = await importPaths(
-          legacyImportClientId,
-          'file',
-          importableLegacyEntries.map((entry) => entry.path),
-          { allowLegacy: true },
-        );
-        await Promise.all([loadLogsBlock(), legacyImportClientId === currentClientId ? refreshWorkspace(legacyImportClientId) : Promise.resolve()]);
-        flash('success', `已向目标客户导入 ${imported.reduce((sum, item) => sum + item.importedCount, 0)} 份旧数据文件`);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '旧数据导入失败');
-      } finally {
-        setIsImportingLegacy(false);
-      }
     };
 
     const handleSaveTag = async () => {
@@ -14824,53 +14769,17 @@ export default function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 gap-6">
           <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <h2 className="text-[16px] font-bold text-gray-900 mb-4">备份与旧数据导入</h2>
-            <div className="flex flex-wrap gap-3 mb-4">
-              <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
-                <Database size={16} /> 立即备份
-              </Button>
-              <Button onClick={() => { void selectFolderBridge().then((folder) => { if (!folder) return; void scanLegacy(folder).then((result) => setLegacyScanResult(result)).catch((error) => flash('error', error instanceof Error ? error.message : '扫描失败')); }); }}>
-                <FolderOpen size={16} /> 扫描旧数据
-              </Button>
-            </div>
-            {legacyScanResult && (
-              <div className="space-y-3">
-                <p className="text-[12px] font-bold text-gray-900">{legacyScanResult.path}</p>
-                <p className="text-[12px] text-gray-500">{legacyScanResult.message}</p>
-                <div className="flex flex-col md:flex-row gap-3">
-                  <select value={legacyImportClientId} onChange={(event) => setLegacyImportClientId(event.target.value)} className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                    <option value="">选择导入目标客户</option>
-                    {clients.map((client) => (
-                      <option key={client.id} value={client.id}>{client.name}</option>
-                    ))}
-                  </select>
-                  <Button onClick={() => void handleImportLegacyEntries()} disabled={isImportingLegacy || !importableLegacyEntries.length}>
-                    {isImportingLegacy ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-                    导入可导入文件
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between gap-4 mb-4">
               <div>
-                <h2 className="text-[16px] font-bold text-gray-900">演示数据</h2>
-                <p className="text-[12px] text-gray-500 mt-1">只在需要演示时手动载入，正式使用可以随时清空。</p>
+                <h2 className="text-[16px] font-bold text-gray-900">数据备份</h2>
+                <p className="text-[12px] text-gray-500 mt-1">保留当前工作台数据快照，便于回退或迁移。</p>
               </div>
-              <span className={`text-[11px] font-bold px-3 py-1.5 rounded-full ${settingsState?.demoDataLoaded ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
-                {settingsState?.demoDataLoaded ? '已载入演示数据' : '未载入演示数据'}
-              </span>
             </div>
             <div className="flex flex-wrap gap-3">
-              <Button onClick={() => { void loadDemoData().then(async () => { await loadAll('client_cffc'); flash('success', '演示数据已载入'); }).catch((error) => flash('error', error instanceof Error ? error.message : '载入失败')); }}>
-                <Sparkles size={16} /> 载入演示数据
-              </Button>
-              <Button onClick={() => { void clearDemoData().then(async () => { await loadAll(); flash('success', '演示数据已清空'); }).catch((error) => flash('error', error instanceof Error ? error.message : '清空失败')); }}>
-                <X size={16} /> 清空演示数据
+              <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
+                <Database size={16} /> 立即备份
               </Button>
             </div>
           </div>

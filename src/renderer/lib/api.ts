@@ -33,7 +33,6 @@ import type {
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
   DnaTerm,
-  DemoDataReport,
   EmployeeRecord,
   EmployeeRejectPayload,
   EmployeeDepartmentPayload,
@@ -67,7 +66,6 @@ import type {
   KnowledgeMemoryRecord,
   KnowledgeSearchResult,
   KnowledgeStatus,
-  LegacyScanReport,
   MentionCandidate,
   OrganizationDnaModule,
   OrgModelSettings,
@@ -502,21 +500,6 @@ export async function clearFeishuUserBinding() {
 
 export async function createBackup() {
   return request<{ backupPath: string; createdAt: string }>('/api/v1/settings/backup', { method: 'POST' });
-}
-
-export async function scanLegacy(path: string) {
-  return request<LegacyScanReport>('/api/v1/settings/legacy-scan', {
-    method: 'POST',
-    body: JSON.stringify({ path }),
-  });
-}
-
-export async function loadDemoData() {
-  return request<DemoDataReport>('/api/v1/settings/demo-data/load', { method: 'POST' });
-}
-
-export async function clearDemoData() {
-  return request<DemoDataReport>('/api/v1/settings/demo-data/clear', { method: 'POST' });
 }
 
 export async function getActivityLogs() {
