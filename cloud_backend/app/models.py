@@ -7,9 +7,8 @@ from pydantic import BaseModel, EmailStr, Field
 
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
 PrimaryRole = Literal["admin", "employee"]
-CloudWorkspaceMode = Literal["personal", "shared"]
 Priority = Literal["low", "normal", "high"]
-TaskProgressStatus = Literal["todo", "doing", "done"]
+TaskProgressStatus = Literal["inbox", "todo", "doing", "done", "rejected"]
 CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
 TaskDueDatePreset = Literal["today", "none"]
 TaskListSortMode = Literal["dueDate", "priority", "manual"]
@@ -26,6 +25,7 @@ OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organizat
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
 ConsultationKnowledgeTarget = Literal["vector_memory", "document_archive"]
 ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed", "failed"]
+SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
 
 
 class SessionUser(BaseModel):
@@ -59,76 +59,6 @@ class RegisterPayload(BaseModel):
 class LoginPayload(BaseModel):
     email: EmailStr
     password: str
-
-
-class RegisterResponse(BaseModel):
-    message: str
-
-
-class CreateOrganizationPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-
-
-class OrgInvitationCreatePayload(BaseModel):
-    departmentId: str | None = None
-    roleName: str | None = None
-    expiresInDays: int | None = Field(default=7, ge=1, le=30)
-    maxUses: int | None = Field(default=1, ge=1, le=100)
-
-
-class OrgInvitationRedeemPayload(BaseModel):
-    code: str = Field(min_length=1)
-
-
-class OrgInvitationRecord(BaseModel):
-    code: str
-    organizationId: str
-    organizationName: str
-    departmentId: str | None = None
-    departmentName: str | None = None
-    roleName: str | None = None
-    expiresAt: str
-    maxUses: int = 1
-    usedCount: int = 0
-
-
-class AccountMembershipRecord(BaseModel):
-    organizationId: str | None = None
-    organizationName: str | None = None
-    departmentId: str | None = None
-    departmentName: str | None = None
-    jobTitle: str | None = None
-    isPersonalWorkspace: bool = False
-
-
-class ImportTaskListRecord(BaseModel):
-    localId: str
-    name: str
-    color: str
-    scope: Literal["org", "personal"] = "org"
-
-
-class ImportTaskRecord(BaseModel):
-    localId: str
-    title: str
-    description: str = ""
-    priority: Priority = "normal"
-    dueDate: str | None = None
-    durationMinutes: int = 60
-    listLocalId: str | None = None
-    tags: list[str] = Field(default_factory=list)
-
-
-class StructuredImportPayload(BaseModel):
-    taskLists: list[ImportTaskListRecord] = Field(default_factory=list)
-    tasks: list[ImportTaskRecord] = Field(default_factory=list)
-
-
-class StructuredImportResult(BaseModel):
-    importedTaskCount: int = 0
-    importedListCount: int = 0
-    importedTagCount: int = 0
-    updatedAt: str
 
 
 class RefreshPayload(BaseModel):
@@ -418,6 +348,50 @@ class ConsultationKnowledgeRequestRecord(BaseModel):
     updatedAt: str
 
 
+class TaskAttachmentTranscriptionResponse(BaseModel):
+    attachmentId: str
+    transcript: str
+    documentRequest: ConsultationKnowledgeRequestRecord
+
+
+class ConsultationChatPayload(BaseModel):
+    message: str
+    clientId: str | None = None
+    clientName: str | None = None
+    eventLineId: str | None = None
+    taskContext: str | None = None
+
+
+class ConsultationChatResponse(BaseModel):
+    reply: str
+    model: str | None = None
+
+
+class SmartTaskDraftRecord(BaseModel):
+    title: str | None = None
+    dueDate: str | None = None
+    endDate: str | None = None
+    dueTime: str | None = None
+    durationMinutes: int | None = None
+    location: str | None = None
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    clientId: str | None = None
+    clientName: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    projectQuery: str | None = None
+    eventLineQuery: str | None = None
+
+
+class SmartTaskDraftResponse(BaseModel):
+    transcript: str
+    intent: SmartInputIntent = "task_schedule"
+    draft: SmartTaskDraftRecord = Field(default_factory=SmartTaskDraftRecord)
+    warnings: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
 class OrgModelProfileRecord(BaseModel):
     organization: OrgProfileRecord
     departments: list[OrgDepartmentRecord] = Field(default_factory=list)
@@ -446,6 +420,12 @@ class MentionCandidate(BaseModel):
     email: EmailStr
     primaryRole: PrimaryRole
     isSelf: bool = False
+
+
+class ClientSummaryRecord(BaseModel):
+    id: str
+    name: str
+    alias: str | None = None
 
 
 class TaskListRecord(BaseModel):
@@ -531,6 +511,7 @@ class TaskRecord(BaseModel):
     nextAction: str | None = None
     recentDecision: str | None = None
     completionNote: str | None = None
+    note: str | None = None
     evidenceCount: int = 0
     tags: list[TaskTagRecord]
     attachments: list["TaskAttachmentRecord"] = Field(default_factory=list)
@@ -702,6 +683,27 @@ class EventLineDetailRecord(BaseModel):
     activities: list[EventLineActivityRecord] = Field(default_factory=list)
 
 
+class EventLineReportAttachmentRecord(BaseModel):
+    id: str
+    taskId: str
+    title: str
+    kind: str
+    mimeType: str | None = None
+    sizeBytes: int = 0
+    downloadUrl: str
+    actorName: str | None = None
+    createdAt: str
+
+
+class EventLineReportSnapshotRecord(BaseModel):
+    eventLine: EventLineRecord
+    activities: list[EventLineActivityRecord]
+    tasks: list[TaskRecord] = Field(default_factory=list)
+    attachments: list[EventLineReportAttachmentRecord] = Field(default_factory=list)
+    participantNames: list[str] = Field(default_factory=list)
+    snapshotAt: str
+
+
 class EventLineCreatePayload(BaseModel):
     name: str = Field(min_length=1)
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
@@ -744,6 +746,35 @@ class TaskTagLibraryResponse(BaseModel):
 
 class TaskListLibraryResponse(BaseModel):
     lists: list[TaskListRecord]
+
+
+class OrgAiConfigRecord(BaseModel):
+    orgId: str
+    aiProvider: str
+    aiModel: str
+    hasApiKey: bool
+    configuredBy: str | None = None
+    updatedAt: str
+
+
+class OrgAiConfigUpdatePayload(BaseModel):
+    aiProvider: str = Field(min_length=1)
+    aiModel: str = ""
+    apiKey: str | None = None
+    clearApiKey: bool = False
+
+
+class OrgAiConfigSecretRecord(BaseModel):
+    """Only returned to authenticated org members — contains decrypted key."""
+    orgId: str
+    aiProvider: str
+    aiModel: str
+    apiKey: str
+    updatedAt: str
+
+
+class TaskNotePayload(BaseModel):
+    note: str
 
 
 class TaskTagMutationPayload(BaseModel):
@@ -885,6 +916,7 @@ class WeeklyReviewTaskSnapshotRecord(BaseModel):
     status: Literal["inbox", "todo", "doing", "done", "rejected"]
     dueDate: str | None = None
     createdAt: str
+    completionNote: str | None = None
     ownerId: str | None = None
     ownerName: str | None = None
     clientId: str | None = None

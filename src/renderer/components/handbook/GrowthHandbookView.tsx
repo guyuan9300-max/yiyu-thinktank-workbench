@@ -1718,7 +1718,7 @@ export function GrowthHandbookView({
           <button
             type="button"
             onClick={openBlankComposer}
-            className="flex items-center space-x-1.5 rounded-full bg-[#335CFF] px-4 py-2 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-[#335CFF]/90"
+            className="flex items-center space-x-1.5 rounded-full bg-[#16A34A] px-4 py-2 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-[#15803D]"
           >
             <PlusCircle className="h-[16px] w-[16px]" />
             <span className="whitespace-nowrap">记录经验</span>

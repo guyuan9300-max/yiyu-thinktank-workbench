@@ -25,13 +25,11 @@ DEFAULT_WORKBENCH_DATA_DIR = Path(
 DEFAULT_PROVIDER = "mock"
 DEFAULT_MODELS = {
     "mock": "mock-summarizer",
-    "gemini": "gemini-2.5-flash-preview-09-2025",
     "qwen": "qwen3.5-plus",
 }
 QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 LLM_TIMEOUT_SECONDS = float(os.getenv("YIYU_BETTAFISH_LLM_TIMEOUT_SECONDS", "25"))
 KEYCHAIN_SERVICES = {
-    "gemini": "com.yiyu.self-workbench.gemini",
     "qwen": "com.yiyu.self-workbench.qwen",
 }
 
@@ -285,13 +283,6 @@ def llm_signal(payload: dict[str, Any], llm_config: dict[str, str]) -> dict[str,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
-    elif provider == "gemini":
-        parsed = gemini_generate_json(
-            api_key=llm_config["api_key"],
-            model=llm_config["model"],
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        )
     else:
         raise RuntimeError(f"unsupported_llm_provider:{provider}")
 
@@ -340,33 +331,6 @@ def qwen_generate_json(*, api_key: str, model: str, system_prompt: str, user_pro
         response.raise_for_status()
         result = response.json()
     content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-    return extract_json_object(content or "")
-
-
-def gemini_generate_json(*, api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict[str, Any]:
-    schema = {
-        "type": "OBJECT",
-        "properties": {
-            "emotion": {"type": "STRING"},
-            "credibility": {"type": "STRING"},
-            "risk_points": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "misunderstanding_points": {"type": "ARRAY", "items": {"type": "STRING"}},
-        },
-    }
-    payload: dict[str, Any] = {
-        "contents": [{"parts": [{"text": user_prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": schema,
-        },
-    }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    with httpx.Client(timeout=LLM_TIMEOUT_SECONDS) as client:
-        response = client.post(url, json=payload)
-        response.raise_for_status()
-        result = response.json()
-    content = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
     return extract_json_object(content or "")
 
 

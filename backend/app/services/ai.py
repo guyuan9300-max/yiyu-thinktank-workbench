@@ -15,7 +15,6 @@ from app.models import AiStructuredResponse
 DEFAULT_PROVIDER = "mock"
 DEFAULT_MODELS = {
     "mock": "mock-summarizer",
-    "gemini": "gemini-2.5-flash-preview-09-2025",
     "qwen": "qwen3.5-plus",
 }
 DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
@@ -94,9 +93,7 @@ class AiService:
                 provider=provider,
                 model=model,
                 ready=False,
-                detail="Gemini 未配置 API Key，当前只能切回 mock。"
-                if provider == "gemini"
-                else "Qwen 3.5 未配置 API Key，当前只能切回 mock。",
+                detail="Qwen 3.5 未配置 API Key，当前只能切回 mock。",
                 credential_source=source,
                 fingerprint=fingerprint,
             )
@@ -104,9 +101,7 @@ class AiService:
             provider=provider,
             model=model,
             ready=True,
-            detail="Gemini 凭证已配置，可用于结构化问答与分析。"
-            if provider == "gemini"
-            else "Qwen 3.5 凭证已配置，可用于结构化问答与分析。",
+            detail="Qwen 3.5 凭证已配置，可用于结构化问答与分析。",
             credential_source=source,
             fingerprint=fingerprint,
         )
@@ -115,29 +110,6 @@ class AiService:
         health = self.get_health()
         if health.provider == "mock" or not health.ready:
             return health
-        if health.provider == "gemini":
-            self._gemini_generate(
-                prompt="请用一句中文确认连接成功。",
-                system_instruction="你是系统健康检查助手。",
-                response_schema={
-                    "type": "OBJECT",
-                    "properties": {
-                        "content": {"type": "STRING"},
-                        "judgment": {"type": "STRING"},
-                        "analysis": {"type": "STRING"},
-                        "actions": {"type": "STRING"},
-                        "timeline": {"type": "STRING"},
-                    },
-                },
-            )
-            return AiHealth(
-                provider=health.provider,
-                model=health.model,
-                ready=True,
-                detail="Gemini 联通测试成功。",
-                credential_source=health.credential_source,
-                fingerprint=health.fingerprint,
-            )
         self._qwen_generate(
             prompt="请用一句中文确认连接成功。",
             system_instruction="你是系统健康检查助手。只返回纯文本。",
@@ -154,11 +126,6 @@ class AiService:
 
     def generate_structured(self, prompt: str, system_instruction: str, context_summary: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider == "gemini" and health.ready:
-            try:
-                return self._gemini_generate_structured(prompt, system_instruction, context_summary)
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         if health.provider == "qwen" and health.ready:
             return self._qwen_generate_structured_with_retry(prompt, system_instruction, context_summary)
         return self._mock_generate(prompt, context_summary)
@@ -170,11 +137,6 @@ class AiService:
                 return self._qwen_generate_general_fallback(prompt, note, subject_name=subject_name)
             except Exception as error:
                 raise AiInvocationError("qwen", self._format_provider_error(error)) from error
-        if health.provider == "gemini" and health.ready:
-            try:
-                return self._gemini_generate_general_fallback(prompt, note, subject_name=subject_name)
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         return self._mock_generate(prompt, note or "当前资料回答阶段失败，以下为本地保守兜底判断。")
 
     def generate_chat_response(
@@ -230,11 +192,6 @@ class AiService:
                         if part
                     )
                     raise AiInvocationError("qwen", detail) from retry_error
-        if health.provider == "gemini" and health.ready:
-            try:
-                return self._gemini_generate_general_fallback(prompt, context_summary)
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         return self._mock_generate(prompt, context_summary)
 
     def generate_topic_candidate_chat_response(
@@ -280,16 +237,6 @@ class AiService:
                         if part
                     )
                     raise AiInvocationError("qwen", detail) from rescue_error
-        if health.provider == "gemini" and health.ready:
-            try:
-                text = self._gemini_generate(
-                    prompt=f"用户问题：{prompt}\n\n当前情报背景：\n{compact_context}",
-                    system_instruction=quick_instruction,
-                    response_schema=None,
-                )
-                return self._structured_from_plain_answer(str(text))
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         return self._mock_generate(prompt, compact_context or context_summary)
 
     def generate_template_field_value(
@@ -366,16 +313,6 @@ class AiService:
                             if part
                         ),
                     ) from second_error
-        if health.provider == "gemini" and health.ready:
-            try:
-                text = self._gemini_generate(
-                    prompt=prompt,
-                    system_instruction=system_instruction,
-                    response_schema=None,
-                )
-                return self._clean_template_field_value(str(text), field_type=field_type)
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         fallback = context_summary.strip().splitlines()
         best_line = next((line.strip() for line in fallback if line.strip()), "")
         return self._clean_template_field_value(best_line or "【待确认】当前缺少可直接填写该字段的资料。", field_type=field_type)
@@ -439,23 +376,6 @@ class AiService:
                 )
             except Exception as error:
                 raise AiInvocationError("qwen", self._format_provider_error(error)) from error
-            if isinstance(payload, dict):
-                return {
-                    label: self._clean_template_field_value(
-                        str(payload.get(label) or "【待确认】当前缺少可直接填写该字段的资料。"),
-                        field_type=str((field_types or {}).get(label) or "general"),
-                    )
-                    for label in labels
-                }
-        if health.provider == "gemini" and health.ready:
-            try:
-                payload = self._gemini_generate(
-                    prompt=prompt,
-                    system_instruction=system_instruction,
-                    response_schema=schema,
-                )
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
             if isinstance(payload, dict):
                 return {
                     label: self._clean_template_field_value(
@@ -724,11 +644,6 @@ class AiService:
                 return self._qwen_generate_compact_grounded_fallback(prompt, note)
             except Exception as error:
                 raise AiInvocationError("qwen", self._format_provider_error(error)) from error
-        if health.provider == "gemini" and health.ready:
-            try:
-                return self._gemini_generate_general_fallback(prompt, note)
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         return self._mock_generate(prompt, note or "基于已命中资料的紧凑综述。")
 
     def generate_brief_grounded_rescue(self, prompt: str, note: str) -> AiStructuredResponse:
@@ -738,25 +653,11 @@ class AiService:
                 return self._qwen_generate_brief_grounded_rescue(prompt, note)
             except Exception as error:
                 raise AiInvocationError("qwen", self._format_provider_error(error)) from error
-        if health.provider == "gemini" and health.ready:
-            try:
-                return self._gemini_generate_general_fallback(prompt, note)
-            except Exception as error:
-                raise AiInvocationError("gemini", self._format_provider_error(error)) from error
         return self._mock_generate(prompt, note or "基于已命中资料的一版简短保守回答。")
 
     def suggest_short_title(self, prompt: str) -> str:
         health = self.get_health()
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(
-                    prompt=f"请将以下追踪规则提炼为 3 到 6 个字的中文标签，只返回标签本身：{prompt}",
-                    system_instruction="你是中文编辑，擅长压缩标题。",
-                    response_schema=None,
-                )
-                title = str(result).strip().replace("“", "").replace("”", "")
-                if title:
-                    return title[:8]
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     prompt=f"请将以下追踪规则提炼为 3 到 6 个字的中文标签，只返回标签本身：{prompt}",
@@ -794,12 +695,6 @@ class AiService:
             f"时间范围：{time_range}\n"
         )
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(query_prompt, "你是检索词生成助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    queries = [str(item).strip() for item in result.get("queries", []) if str(item).strip()]
-                    if queries:
-                        return queries[:3]
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     query_prompt,
@@ -867,12 +762,6 @@ class AiService:
             f"候选结果：\n{joined_entries}"
         )
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(screening_prompt, "你是资讯情报筛选助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    items = result.get("items", [])
-                    if isinstance(items, list):
-                        return [item for item in items if isinstance(item, dict)][:max_items]
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     screening_prompt,
@@ -923,16 +812,6 @@ class AiService:
             f"原始摘要：{cleaned_summary}\n"
         )
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(prompt, "你是资讯翻译编辑助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    localized_title = str(result.get("title") or "").strip()
-                    localized_summary = str(result.get("summary") or "").strip()
-                    if localized_title and localized_summary:
-                        return {
-                            "title": localized_title[:60],
-                            "summary": localized_summary[:140],
-                        }
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     prompt,
@@ -1016,20 +895,6 @@ class AiService:
             f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:4200]}"
         )
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(prompt, "你是资讯研判助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    normalized = self._normalize_topic_candidate_insight_payload(result)
-                    if normalized["keyPoints"]:
-                        return self._localize_topic_insight_payload(
-                            normalized,
-                            candidate_title=candidate_title,
-                            candidate_summary=candidate_summary,
-                            source=source,
-                            published_at=published_at,
-                            source_url=source_url,
-                            source_content=source_content,
-                        )
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     prompt,
@@ -1135,12 +1000,6 @@ class AiService:
             f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:3600]}"
         )
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(prompt, "你是项目执行拆解助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    normalized = self._normalize_topic_task_plan_payload(result)
-                    if normalized["tasks"]:
-                        return normalized
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     prompt,
@@ -1186,24 +1045,6 @@ class AiService:
             f"所属模块：{module}\n"
         )
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(
-                    prompt=prompt,
-                    system_instruction="你是任务标签编辑助手。",
-                    response_schema={
-                        "type": "OBJECT",
-                        "properties": {
-                            "tags": {
-                                "type": "ARRAY",
-                                "items": {"type": "STRING"},
-                            }
-                        },
-                    },
-                )
-                if isinstance(result, dict):
-                    tags = [str(item).strip() for item in result.get("tags", []) if str(item).strip()]
-                    if tags:
-                        return tags[:3]
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(
                     prompt=prompt,
@@ -1554,16 +1395,13 @@ class AiService:
             f"当前解析 discussionPrompts：{'；'.join(normalized['discussionPrompts']) or '无'}"
         )
         try:
-            if health.provider == "gemini":
-                result = self._gemini_generate(prompt, "你是资讯翻译与提炼助手。只返回 JSON。", schema)
-            else:
-                result = self._qwen_generate(
-                    prompt,
-                    "你是资讯翻译与提炼助手。只返回 JSON。",
-                    schema,
-                    timeout_seconds=24.0,
-                    max_tokens=1600,
-                )
+            result = self._qwen_generate(
+                prompt,
+                "你是资讯翻译与提炼助手。只返回 JSON。",
+                schema,
+                timeout_seconds=24.0,
+                max_tokens=1600,
+            )
             if isinstance(result, dict):
                 localized = self._normalize_topic_candidate_insight_payload(result)
                 if self._topic_insight_is_chinese(localized):
@@ -2295,10 +2133,6 @@ class AiService:
             },
         }
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(prompt, "你是知识底座加工助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    return result
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(prompt, "你是知识底座加工助手。只返回 JSON。", schema, timeout_seconds=25.0)
                 if isinstance(result, dict):
@@ -2337,10 +2171,6 @@ class AiService:
             },
         }
         try:
-            if health.provider == "gemini" and health.ready:
-                result = self._gemini_generate(prompt, "你是战略陪伴记忆整理助手。只返回 JSON。", schema)
-                if isinstance(result, dict):
-                    return result
             if health.provider == "qwen" and health.ready:
                 result = self._qwen_generate(prompt, "你是战略陪伴记忆整理助手。只返回 JSON。", schema, timeout_seconds=25.0)
                 if isinstance(result, dict):
@@ -2416,16 +2246,13 @@ class AiService:
             },
         }
         try:
-            if health.provider == "gemini":
-                result = self._gemini_generate(prompt, "你是事件线当前态提炼助手。只返回 JSON。", schema)
-            else:
-                result = self._qwen_generate(
-                    prompt,
-                    "你是事件线当前态提炼助手。只返回 JSON。",
-                    schema,
-                    timeout_seconds=28.0,
-                    max_tokens=1600,
-                )
+            result = self._qwen_generate(
+                prompt,
+                "你是事件线当前态提炼助手。只返回 JSON。",
+                schema,
+                timeout_seconds=28.0,
+                max_tokens=1600,
+            )
             if isinstance(result, dict):
                 normalized = self._normalize_event_line_clarification_draft_payload(result, fallback)
                 if any(
@@ -2580,38 +2407,6 @@ class AiService:
         compact = re.sub(r"\s+", "", prompt)
         return compact[:16] or "当前议题"
 
-    def _gemini_generate_structured(
-        self,
-        prompt: str,
-        system_instruction: str,
-        context_summary: str,
-    ) -> AiStructuredResponse:
-        payload = self._gemini_generate(
-            prompt=f"问题：{prompt}\n\n上下文：{context_summary}",
-            system_instruction=system_instruction,
-            response_schema=self._structured_schema(),
-        )
-        if not isinstance(payload, dict):
-            raise RuntimeError("Gemini 返回了非结构化数据。")
-        return self._structured_from_payload(payload)
-
-    def _gemini_generate_general_fallback(self, prompt: str, note: str, *, subject_name: str = "") -> AiStructuredResponse:
-        text = self._gemini_generate(
-            prompt=(
-                f"问题：{prompt}\n"
-                f"补充说明：{note or '当前资料回答阶段失败，请直接给出通用知识下的初步回答。'}\n"
-                f"当前讨论对象：{subject_name or '当前客户'}\n"
-                "请按以下标题输出纯文本：\n【内容综述】\n【核心判断】\n【结构化分析】\n【建议动作】\n【关键时间线】"
-            ),
-            system_instruction=(
-                "你是益语智库的内部咨询分析助理。请基于通用知识给出完整但克制的初步回答。"
-                "除非问题明确问益语智库或顾问方，否则默认回答对象是当前客户，不要把益语智库、顾问机构或外部服务方当成回答主体。"
-                "必须明确说明这不是基于当前资料的正式结论。不要使用 Markdown 代码块。"
-            ),
-            response_schema=None,
-        )
-        return self._structured_from_text_sections(str(text))
-
     def _qwen_generate_structured(
         self,
         prompt: str,
@@ -2652,39 +2447,6 @@ class AiService:
             actions=str(payload.get("actions", "")),
             timeline=str(payload.get("timeline", "")),
         )
-
-    def _gemini_generate(self, prompt: str, system_instruction: str, response_schema: dict | None) -> object:
-        store = self._store_for("gemini")
-        api_key = store.get_api_key() if store else ""
-        if not api_key:
-            raise RuntimeError("Gemini API Key 未配置。")
-        model = self.current_model()
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        payload: dict[str, object] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-        }
-        if system_instruction:
-            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-        if response_schema:
-            payload["generationConfig"] = {
-                "responseMimeType": "application/json",
-                "responseSchema": response_schema,
-            }
-
-        with httpx.Client(timeout=45.0) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            result = response.json()
-
-        text = (
-            result.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-        )
-        if response_schema:
-            return json.loads(text)
-        return text
 
     def _build_http_timeout(self, read_timeout_seconds: float) -> httpx.Timeout:
         read_timeout = max(4.0, float(read_timeout_seconds))

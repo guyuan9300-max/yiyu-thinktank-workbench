@@ -16,11 +16,9 @@ TopicTaskOwnerMode = Literal["self", "empty"]
 TopicCandidateStatus = Literal["candidate", "tracking", "promoted", "archived"]
 TopicCandidateInsightStatus = Literal["pending", "ready", "failed"]
 MeetingStage = Literal["prepared", "ingested", "extracted", "resolved", "published"]
-AiProvider = Literal["mock", "gemini", "qwen"]
+AiProvider = Literal["mock", "qwen"]
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
 EmployeeRole = Literal["admin", "employee"]
-AppSessionMode = Literal["local", "cloud"]
-CloudTargetMode = Literal["disabled", "official_test", "custom"]
 CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
 OrgRoleLevel = Literal["employee", "supervisor", "department_lead", "organization_lead"]
 OrgReportingLineType = Literal["business", "administrative"]
@@ -115,44 +113,7 @@ class SessionUserRecord(BaseModel):
 class AuthStateResponse(BaseModel):
     authenticated: bool
     user: SessionUserRecord | None = None
-    sessionMode: AppSessionMode = "local"
-    needsInitialImport: bool = False
     message: str | None = None
-
-
-class CloudConfigRecord(BaseModel):
-    mode: CloudTargetMode = "disabled"
-    officialTestApiUrl: str = ""
-    customApiUrl: str | None = None
-    effectiveApiUrl: str | None = None
-    updatedAt: str
-
-
-class OrgMembershipSummaryRecord(BaseModel):
-    organizationId: str | None = None
-    organizationName: str | None = None
-    departmentId: str | None = None
-    departmentName: str | None = None
-    jobTitle: str | None = None
-    isPersonalWorkspace: bool = False
-
-
-class SyncStatusSummaryRecord(BaseModel):
-    needsInitialImport: bool = False
-    hasLocalStructuredData: bool = False
-    lastImportedAt: str | None = None
-    lastImportChoice: Literal["keep_local", "import_structured", "start_empty"] | None = None
-    pendingTaskCount: int = 0
-    pendingListCount: int = 0
-    pendingTagCount: int = 0
-
-
-class AccountSyncOverviewResponse(BaseModel):
-    sessionMode: AppSessionMode = "local"
-    cloudConnected: bool = False
-    cloudConfig: CloudConfigRecord
-    membership: OrgMembershipSummaryRecord
-    syncStatus: SyncStatusSummaryRecord
 
 
 class ConsultationKnowledgeRequestRecord(BaseModel):
@@ -202,50 +163,6 @@ class AuthLoginPayload(BaseModel):
     email: str
     password: str
     rememberMe: bool = True
-
-
-class CloudConfigPayload(BaseModel):
-    mode: CloudTargetMode
-    customApiUrl: str | None = None
-
-
-class CreateOrganizationPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-
-
-class OrgInvitationRecord(BaseModel):
-    code: str
-    organizationId: str
-    organizationName: str
-    departmentId: str | None = None
-    departmentName: str | None = None
-    roleName: str | None = None
-    expiresAt: str
-    maxUses: int = 1
-    usedCount: int = 0
-
-
-class CreateOrgInvitationPayload(BaseModel):
-    departmentId: str | None = None
-    roleName: str | None = None
-    expiresInDays: int | None = Field(default=7, ge=1, le=30)
-    maxUses: int | None = Field(default=1, ge=1, le=100)
-
-
-class RedeemOrgInvitationPayload(BaseModel):
-    code: str = Field(min_length=1)
-
-
-class LocalStructuredImportPayload(BaseModel):
-    mode: Literal["keep_local", "import_structured", "start_empty"]
-
-
-class LocalStructuredImportResultRecord(BaseModel):
-    mode: Literal["keep_local", "import_structured", "start_empty"]
-    importedTaskCount: int = 0
-    importedListCount: int = 0
-    importedTagCount: int = 0
-    updatedAt: str
 
 
 class EmployeeRecord(BaseModel):
@@ -1277,6 +1194,10 @@ class TaskUpdatePayload(BaseModel):
 
 class TaskNotePayload(BaseModel):
     note: str
+
+
+class TaskCompletionReviewPayload(BaseModel):
+    reviewNote: str = Field(min_length=1)
 
 
 class TaskPlanLinkUpsertPayload(BaseModel):

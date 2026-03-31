@@ -425,21 +425,7 @@ def build_narrative_analyses(
                     temperature=0.3,
                 )
             except Exception:
-                # fallback: 如果 qwen 不可用，尝试 gemini
-                try:
-                    raw = ai._gemini_generate(
-                        prompt=(
-                            "请严格返回一个 JSON 对象，不要使用 Markdown。\n"
-                            f"{json.dumps(NARRATIVE_RESPONSE_SCHEMA, ensure_ascii=False)}\n\n"
-                            f"{prompt}"
-                        ),
-                        system_instruction=NARRATIVE_SYSTEM_INSTRUCTION,
-                        response_schema=None,
-                    )
-                    if isinstance(raw, str):
-                        raw = json.loads(raw)
-                except Exception:
-                    raw = None
+                raw = None
 
             if not raw or not isinstance(raw, dict):
                 # 无法调用 LLM，生成保守的规则兜底
@@ -803,23 +789,16 @@ def build_weekly_overview_draft(
     )
 
     try:
-        if health.provider == "qwen":
-            raw = ai._qwen_generate(
-                prompt=prompt,
-                system_instruction=WEEKLY_OVERVIEW_SYSTEM_INSTRUCTION,
-                response_schema=WEEKLY_OVERVIEW_RESPONSE_SCHEMA,
-                timeout_seconds=45.0,
-                max_tokens=1800,
-                temperature=0.35,
-                top_p=0.9,
-                enable_thinking=False,
-            )
-        else:
-            raw = ai._gemini_generate(
-                prompt=prompt,
-                system_instruction=WEEKLY_OVERVIEW_SYSTEM_INSTRUCTION,
-                response_schema=WEEKLY_OVERVIEW_RESPONSE_SCHEMA,
-            )
+        raw = ai._qwen_generate(
+            prompt=prompt,
+            system_instruction=WEEKLY_OVERVIEW_SYSTEM_INSTRUCTION,
+            response_schema=WEEKLY_OVERVIEW_RESPONSE_SCHEMA,
+            timeout_seconds=45.0,
+            max_tokens=1800,
+            temperature=0.35,
+            top_p=0.9,
+            enable_thinking=False,
+        )
         if not isinstance(raw, dict):
             return fallback_summary, fallback_focus, fallback_next
         overview = _clean_text(str(raw.get("overview") or ""))

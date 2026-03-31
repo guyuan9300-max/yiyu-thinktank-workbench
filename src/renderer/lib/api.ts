@@ -7,7 +7,6 @@ import type {
   AnalysisWorkbenchSettings,
   AnalysisWorkbenchSettingsPayload,
   AnalysisTemplate,
-  AccountSyncOverview,
   AppSettings,
   AuthLoginPayload,
   AuthRegisterPayload,
@@ -28,16 +27,13 @@ import type {
   ClientStrategicProfile,
   ClientSummary,
   ClientWorkspace,
-  CloudConfig,
-  CloudConfigPayload,
   CooperationRelationship,
-  CreateOrganizationPayload,
-  CreateOrgInvitationPayload,
   WorkspaceImportBackfillResponse,
   ClientWorkspaceSettings,
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
   DnaTerm,
+  DemoDataReport,
   EmployeeRecord,
   EmployeeRejectPayload,
   EmployeeDepartmentPayload,
@@ -71,13 +67,10 @@ import type {
   KnowledgeMemoryRecord,
   KnowledgeSearchResult,
   KnowledgeStatus,
-  LocalStructuredImportPayload,
-  LocalStructuredImportResult,
+  LegacyScanReport,
   MentionCandidate,
   OrganizationDnaModule,
   OrgModelSettings,
-  OrgInvitationRecord,
-  OrgMembershipSummary,
   OrganizationDnaResponse,
   OrganizationDnaUploadPayload,
   MeetingPipelineResult,
@@ -126,7 +119,6 @@ import type {
   ReviewHistoryResponse,
   ReviewGovernanceSettings,
   ReviewGovernanceSettingsPayload,
-  RedeemOrgInvitationPayload,
   SupportRequestCreatePayload,
   SupportRequestResolvePayload,
   SupportRequestRecord,
@@ -145,6 +137,7 @@ import type {
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
+  EventLineReportSnapshot,
 } from '../../shared/types';
 
 function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
@@ -346,11 +339,6 @@ export async function login(payload: AuthLoginPayload) {
   });
 }
 
-export async function getConsultationKnowledgeRequests(status?: ConsultationKnowledgeRequestStatus) {
-  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
-  return request<ConsultationKnowledgeRequestRecord[]>(`/api/v1/consultation/knowledge-requests${suffix}`);
-}
-
 export async function processPendingConsultationKnowledgeRequests() {
   return request<ConsultationKnowledgeProcessSummary>('/api/v1/consultation/knowledge-requests/process-pending', {
     method: 'POST',
@@ -415,10 +403,6 @@ export async function getOrganizationDna() {
   return request<OrganizationDnaResponse>('/api/v1/settings/org-dna');
 }
 
-export async function getOrganizationDnaModule(moduleKey: OrganizationDnaModule['moduleKey']) {
-  return request<OrganizationDnaModule>(`/api/v1/settings/org-dna/${moduleKey}`);
-}
-
 export async function updateOrganizationDnaModule(moduleKey: OrganizationDnaModule['moduleKey'], payload: OrganizationDnaUploadPayload) {
   return request<OrganizationDnaModule>(`/api/v1/settings/org-dna/${moduleKey}`, {
     method: 'POST',
@@ -481,49 +465,6 @@ export async function updateSystemAdminSettings(payload: SystemAdminSettingsPayl
   });
 }
 
-export async function getCloudConfig() {
-  return request<CloudConfig>('/api/v1/account/cloud-config');
-}
-
-export async function updateCloudConfig(payload: CloudConfigPayload) {
-  return request<CloudConfig>('/api/v1/account/cloud-config', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function getAccountSyncOverview() {
-  return request<AccountSyncOverview>('/api/v1/account/overview');
-}
-
-export async function createOrganization(payload: CreateOrganizationPayload) {
-  return request<OrgMembershipSummary>('/api/v1/account/orgs', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function createOrgInvitation(payload: CreateOrgInvitationPayload) {
-  return request<OrgInvitationRecord>('/api/v1/account/org-invitations', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function redeemOrgInvitation(payload: RedeemOrgInvitationPayload) {
-  return request<OrgMembershipSummary>('/api/v1/account/org-invitations/redeem', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function importLocalStructuredData(payload: LocalStructuredImportPayload) {
-  return request<LocalStructuredImportResult>('/api/v1/account/sync/import-local', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
 export async function getFeishuBotSettings() {
   return request<FeishuBotSettings>('/api/v1/settings/feishu-bot');
 }
@@ -553,6 +494,21 @@ export async function clearFeishuUserBinding() {
 
 export async function createBackup() {
   return request<{ backupPath: string; createdAt: string }>('/api/v1/settings/backup', { method: 'POST' });
+}
+
+export async function scanLegacy(path: string) {
+  return request<LegacyScanReport>('/api/v1/settings/legacy-scan', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function loadDemoData() {
+  return request<DemoDataReport>('/api/v1/settings/demo-data/load', { method: 'POST' });
+}
+
+export async function clearDemoData() {
+  return request<DemoDataReport>('/api/v1/settings/demo-data/clear', { method: 'POST' });
 }
 
 export async function getActivityLogs() {
@@ -639,36 +595,6 @@ export async function deleteClientFolder(clientId: string, folderId: string) {
   return request<{ deleted: boolean }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
     method: 'DELETE',
   });
-}
-
-export async function getClientStrategicProfile(clientId: string) {
-  return request<ClientStrategicProfile>(`/api/v1/clients/${clientId}/strategic-profile`);
-}
-
-export async function upsertClientStrategicProfile(clientId: string, payload: ClientStrategicProfile) {
-  return request<ClientStrategicProfile>(`/api/v1/clients/${clientId}/strategic-profile`, {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function getCooperationRelationship(clientId: string) {
-  return request<CooperationRelationship | null>(`/api/v1/clients/${clientId}/cooperation`);
-}
-
-export async function upsertCooperationRelationship(clientId: string, payload: CooperationRelationship) {
-  return request<CooperationRelationship>(`/api/v1/clients/${clientId}/cooperation`, {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function getTaskUnderstanding(taskId: string) {
-  return request<import('../../../shared/types').UnderstandingSnapshotV1>(`/api/v1/tasks/${taskId}/understanding`);
-}
-
-export async function getEventLineWeeklyHistory(eventLineId: string) {
-  return request<import('../../../shared/types').EventLineWeeklySnapshot[]>(`/api/v1/event-lines/${eventLineId}/weekly-history`);
 }
 
 export async function getClientWorkspace(id: string) {
@@ -765,13 +691,6 @@ export async function importPaths(clientId: string, mode: 'folder' | 'file', pat
   });
 }
 
-export async function sendClientMessage(clientId: string, prompt: string, threadId?: string, searchId?: string) {
-  return request<ChatMessage>(`/api/v1/clients/${clientId}/workspace/chat`, {
-    method: 'POST',
-    body: JSON.stringify({ prompt, threadId, searchId }),
-  });
-}
-
 export async function startClientMessage(
   clientId: string,
   prompt: string,
@@ -825,13 +744,6 @@ export async function createClientTextDocument(clientId: string, payload: { titl
   });
 }
 
-export async function fillClientTemplate(clientId: string, templatePath: string) {
-  return request<ClientTemplateFillResponse>(`/api/v1/clients/${clientId}/documents/fill-template`, {
-    method: 'POST',
-    body: JSON.stringify({ templatePath }),
-  });
-}
-
 export async function startClientTemplateFill(clientId: string, templatePath: string) {
   return request<ClientTemplateFillRun>(`/api/v1/clients/${clientId}/documents/fill-template/start`, {
     method: 'POST',
@@ -858,10 +770,6 @@ export async function createMeeting(clientId: string, title: string, scheduledAt
 
 export async function getStrategicCockpit(clientId: string) {
   return request<StrategicCockpitSnapshot>(`/api/v1/clients/${clientId}/strategic-cockpit`);
-}
-
-export async function getStrategicLineDetail(clientId: string, lineId: string) {
-  return request<StrategicLineDetail>(`/api/v1/clients/${clientId}/strategic-cockpit/lines/${lineId}`);
 }
 
 export async function confirmStrategicCockpit(clientId: string, payload: StrategicCockpitConfirmPayload) {
@@ -975,14 +883,6 @@ export async function getAgentExecutionTasks(weekLabel: string, departmentName?:
   return request<Task[]>(`/api/v1/tasks/agent-execution?${params.toString()}`);
 }
 
-export async function getTaskTags() {
-  return request<{ tags: TaskTag[] }>('/api/v1/task-tags');
-}
-
-export async function getTaskLists() {
-  return request<{ lists: TaskList[] }>('/api/v1/task-lists');
-}
-
 export async function createTaskList(payload: TaskListMutationPayload) {
   return request<TaskList>('/api/v1/task-lists', {
     method: 'POST',
@@ -1079,6 +979,10 @@ export async function getEventLine(id: string) {
   return request<EventLineDetail>(`/api/v1/event-lines/${id}`);
 }
 
+export async function getEventLineReportSnapshot(id: string) {
+  return request<EventLineReportSnapshot>(`/api/v1/event-lines/${id}/report-snapshot`);
+}
+
 export async function updateEventLine(id: string, payload: Partial<EventLineMutationPayload>) {
   return request<EventLine>(`/api/v1/event-lines/${id}`, {
     method: 'PATCH',
@@ -1132,26 +1036,15 @@ export async function saveTaskNote(id: string, note: string) {
   });
 }
 
-export async function getTaskActivity(id: string) {
-  return request<TaskActivityRecord[]>(`/api/v1/tasks/${id}/activity`);
+export async function completeTaskWithReview(id: string, reviewNote: string) {
+  return request<Task>(`/api/v1/tasks/${id}/complete-with-review`, {
+    method: 'POST',
+    body: JSON.stringify({ reviewNote }),
+  });
 }
 
 export async function getTaskViews() {
   return request<TaskViewsResponse>('/api/v1/task-views');
-}
-
-export async function createTaskView(payload: TaskViewMutationPayload) {
-  return request<TaskViewDefinition>('/api/v1/task-views', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function updateTaskView(id: string, payload: TaskViewMutationPayload) {
-  return request<TaskViewDefinition>(`/api/v1/task-views/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  });
 }
 
 export async function getTaskTagSuggestions(payload: TaskTagSuggestionPayload) {
@@ -1241,13 +1134,6 @@ export async function suggestRadarSourceLabel(url: string) {
   });
 }
 
-export async function createCandidate(payload: TopicCandidatePayload) {
-  return request<TopicCandidate>('/api/v1/topics/candidates', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
 export async function getCandidateInsights(id: string) {
   return request<TopicCandidateInsight>(`/api/v1/topics/candidates/${id}/insights`, { method: 'POST' });
 }
@@ -1280,13 +1166,6 @@ export async function promoteCandidateTasks(id: string, tasks: TopicTaskPromotio
   return request<TopicTaskPromotionResult>(`/api/v1/topics/candidates/${id}/promote-tasks`, {
     method: 'POST',
     body: JSON.stringify({ tasks }),
-  });
-}
-
-export async function promoteCandidateToTask(id: string, eventLineId?: string) {
-  return request<Task>(`/api/v1/topics/candidates/${id}/promote-task`, {
-    method: 'POST',
-    body: JSON.stringify(eventLineId ? { eventLineId } : {}),
   });
 }
 
@@ -1339,10 +1218,6 @@ export async function getGrowthLedger(params?: { abilityKey?: string; weekLabel?
   if (params?.weekLabel) search.set('weekLabel', params.weekLabel);
   const suffix = search.toString() ? `?${search.toString()}` : '';
   return request<GrowthLedgerResponse>(`/api/v1/growth/ledger${suffix}`);
-}
-
-export async function getGrowthRecommendations() {
-  return request<LearningRecommendation[]>('/api/v1/growth/recommendations');
 }
 
 export async function acceptGrowthRecommendation(id: string) {

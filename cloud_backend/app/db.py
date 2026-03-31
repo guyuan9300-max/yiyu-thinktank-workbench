@@ -32,8 +32,6 @@ class Database:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     slug TEXT NOT NULL UNIQUE,
-                    workspace_mode TEXT NOT NULL DEFAULT 'shared',
-                    owner_user_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -86,21 +84,6 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(actor_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
                     FOREIGN KEY(target_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS org_invitations (
-                    code TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    department_id TEXT,
-                    role_name TEXT,
-                    created_by_user_id TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    max_uses INTEGER NOT NULL DEFAULT 1,
-                    used_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS feishu_binding_relay_sessions (
@@ -180,6 +163,18 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_task_views_org_kind
                     ON task_views(organization_id, kind, built_in, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS clients (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    alias TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_clients_org_updated
+                    ON clients(organization_id, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
@@ -703,8 +698,6 @@ class Database:
             self._ensure_column("employee_accounts", "manager_name", "TEXT")
             self._ensure_column("employee_accounts", "current_focus", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "is_department_lead", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column("organizations", "workspace_mode", "TEXT NOT NULL DEFAULT 'shared'")
-            self._ensure_column("organizations", "owner_user_id", "TEXT")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
@@ -757,24 +750,6 @@ class Database:
             self._ensure_column("tasks", "recent_decision", "TEXT")
             self._ensure_column("tasks", "completion_note", "TEXT")
             self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
-            self.conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS org_invitations (
-                    code TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    department_id TEXT,
-                    role_name TEXT,
-                    created_by_user_id TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    max_uses INTEGER NOT NULL DEFAULT 1,
-                    used_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
-                );
-                """
-            )
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
@@ -806,6 +781,31 @@ class Database:
                     ON task_attachments(task_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_task_attachments_event_line_created
                     ON task_attachments(event_line_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS org_ai_config (
+                    org_id TEXT PRIMARY KEY,
+                    ai_provider TEXT NOT NULL DEFAULT 'mock',
+                    ai_model TEXT NOT NULL DEFAULT '',
+                    api_key_encrypted TEXT NOT NULL DEFAULT '',
+                    encryption_nonce TEXT NOT NULL DEFAULT '',
+                    configured_by TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS task_notes (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
 
                 CREATE TABLE IF NOT EXISTS consultation_answers (
                     id TEXT PRIMARY KEY,
