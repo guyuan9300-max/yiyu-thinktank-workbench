@@ -54,7 +54,6 @@ import {
 } from 'lucide-react';
 
 import type {
-  AccountSyncOverview,
   AgentWorklog,
   AgentWeeklyDigest,
   AgentWeeklyPlanPayload,
@@ -64,7 +63,6 @@ import type {
   AnalysisWorkbenchSettings,
   AnalysisTemplate,
   AppSettings,
-  CloudTargetMode,
   AuthState,
   ChatMessage,
   ClientAnalysisRun,
@@ -93,11 +91,10 @@ import type {
   HealthResponse,
   HierarchyReport,
   KnowledgeSearchResult,
+  LegacyScanReport,
   MentionCandidate,
   OrganizationDnaModule,
   Operator,
-  OrgInvitationRecord,
-  OrgMembershipSummary,
   ProjectFlow,
   ProjectFlowPayload,
   ProjectModule,
@@ -128,6 +125,7 @@ import type {
   TopicCandidate,
   TopicsSettings,
   TopicRadar,
+  WeeklyReviewTaskEntry,
   WeeklyReviewTaskStructuredNote,
 } from '../shared/types';
 import {
@@ -136,9 +134,12 @@ import {
   formatMonthTitle,
   shiftCalendarMonth,
 } from '../shared/calendar';
+import { buildDepartmentInviteCode, parseDepartmentInviteCode } from '../shared/departmentInvite';
 import {
   approveTaskReview,
+  completeTaskWithReview,
   confirmTask,
+  clearDemoData,
   approveEmployee,
   createBackup,
   createClient,
@@ -208,6 +209,7 @@ import {
   generateClientDnaCandidates,
   generateEventLineClarificationDraft,
   importPaths,
+  loadDemoData,
   login,
   ingestMeeting,
   logout,
@@ -226,6 +228,7 @@ import {
   resolveMeeting,
   runAnalysis,
   runBettafishDiagnosis,
+  scanLegacy,
   searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
@@ -238,11 +241,8 @@ import {
   updateFeishuBotSettings,
   clearFeishuUserBinding,
   startFeishuUserBinding,
-  createOrgInvitation,
-  createOrganization,
   updateClient,
   updateClientWorkspaceSettings,
-  updateCloudConfig,
   updateProjectFlow,
   updateProjectModule,
   updateSettings,
@@ -263,18 +263,17 @@ import {
   upsertDna,
   vectorizeAnswer,
   exportAnswer,
-  getAccountSyncOverview,
   startClientTemplateFill,
   getClientTemplateFillRun,
   backfillClientWorkspaceImports,
-  importLocalStructuredData,
   pullSelectedFromMain,
-  redeemOrgInvitation,
   selectCollabRepo,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
 import { EventLineClarificationComposer } from './components/tasks/EventLineClarificationComposer';
+import EventLineReportPanel from './components/tasks/EventLineReportPanel';
+import type { ReportDraft } from './components/tasks/EventLineReportPanel';
 import { StrategicAccompanimentShell } from './components/strategic_accompaniment/StrategicAccompanimentShell';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { TaskCalendarView } from './components/tasks/TaskCalendarView';
@@ -347,7 +346,7 @@ import {
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'unified_workbench' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
-type SettingsSectionKey = 'overview' | 'account_sync' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'analysis' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
+type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'analysis' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -532,13 +531,11 @@ function FeishuMeetingGlyph({ className = '' }: { className?: string }) {
 const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#06B6D4'];
 const providerDefaultModels = {
   mock: 'mock-summarizer',
-  gemini: 'gemini-2.5-flash-preview-09-2025',
   qwen: 'qwen3.5-plus',
 } as const;
 
 const providerDisplayNames = {
   mock: '本地 Mock',
-  gemini: 'Gemini',
   qwen: 'Qwen 3.5',
 } as const;
 
@@ -546,10 +543,8 @@ const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 
 function normalizeInitialCollabRepoPath(storedPath: string | null) {
   if (!storedPath) return null;
-  if (storedPath.endsWith('/yiyu-thinktank-workbench-main-sync')) {
-    return storedPath.replace(/-main-sync$/, '');
-  }
-  if (storedPath.endsWith('/yiyu-thinktank-workbench')) return storedPath;
+  if (storedPath.endsWith('/yiyu-thinktank-workbench-main-sync')) return storedPath;
+  if (storedPath.endsWith('/yiyu-thinktank-workbench')) return `${storedPath}-main-sync`;
   return storedPath;
 }
 
@@ -3058,6 +3053,83 @@ function isTaskInReviewWeek(task: Task, weekLabel: string) {
   return taskDate >= bounds.start && taskDate <= bounds.end;
 }
 
+function materializeTaskFromReviewItem(item: WeeklyReviewTaskEntry, existingTask?: Task | null): Task {
+  const snapshot = item.taskSnapshot;
+  const eventLineContext = snapshot.eventLineContext;
+  if (existingTask) {
+    return {
+      ...existingTask,
+      title: snapshot.title || existingTask.title,
+      status: snapshot.status || existingTask.status,
+      dueDate: snapshot.dueDate ?? existingTask.dueDate ?? null,
+      clientId: snapshot.clientId ?? existingTask.clientId ?? null,
+      clientName: snapshot.clientName ?? existingTask.clientName ?? null,
+      eventLineId: snapshot.eventLineId ?? eventLineContext?.id ?? existingTask.eventLineId ?? null,
+      eventLineName: snapshot.eventLineName ?? eventLineContext?.name ?? existingTask.eventLineName ?? null,
+      ownerId: snapshot.ownerId ?? existingTask.ownerId ?? null,
+      ownerName: snapshot.ownerName || existingTask.ownerName || '未指定',
+      tags: snapshot.tags?.length ? snapshot.tags : existingTask.tags,
+      listName: snapshot.listName || existingTask.listName,
+      listColor: snapshot.listColor || existingTask.listColor,
+      orgContext: snapshot.orgContext ?? existingTask.orgContext ?? null,
+      projectContext: snapshot.projectContext ?? existingTask.projectContext ?? null,
+      currentBlocker: eventLineContext?.currentBlocker ?? existingTask.currentBlocker ?? null,
+      recentDecision: eventLineContext?.recentDecision ?? existingTask.recentDecision ?? null,
+      nextAction: eventLineContext?.nextStep ?? existingTask.nextAction ?? null,
+      evidenceCount: eventLineContext?.evidenceCount ?? existingTask.evidenceCount ?? 0,
+      createdAt: snapshot.createdAt || existingTask.createdAt,
+      updatedAt: existingTask.updatedAt || snapshot.createdAt,
+    };
+  }
+  const syntheticListId = `review:${snapshot.listName || 'default'}`;
+  return {
+    id: item.taskId,
+    title: snapshot.title || '未命名任务',
+    desc: snapshot.projectContext?.backgroundSummary || eventLineContext?.summary || '',
+    status: snapshot.status || 'todo',
+    creatorId: null,
+    creatorName: null,
+    priority: 'normal',
+    listId: syntheticListId,
+    listName: snapshot.listName || '周复盘',
+    listColor: snapshot.listColor || '#5B7BFE',
+    ddl: snapshot.dueDate || '',
+    dueDate: snapshot.dueDate ?? null,
+    durationMinutes: undefined,
+    scopeMode: item.contentDomain === 'personal' ? 'PERSONAL_ONLY' : 'ALL',
+    clientId: snapshot.clientId ?? null,
+    clientName: snapshot.clientName ?? null,
+    eventLineId: snapshot.eventLineId ?? eventLineContext?.id ?? null,
+    eventLineName: snapshot.eventLineName ?? eventLineContext?.name ?? null,
+    projectModuleId: snapshot.projectContext?.projectModuleId ?? null,
+    projectModuleName: snapshot.projectContext?.projectModuleName ?? null,
+    projectFlowId: snapshot.projectContext?.projectFlowId ?? null,
+    projectFlowName: snapshot.projectContext?.projectFlowName ?? null,
+    ownerId: snapshot.ownerId ?? null,
+    ownerName: snapshot.ownerName || '未指定',
+    sourceType: 'weekly_review',
+    sourceId: item.reviewId ?? item.id,
+    businessCategory: eventLineContext?.businessCategory ?? null,
+    currentBlocker: eventLineContext?.currentBlocker ?? null,
+    nextAction: eventLineContext?.nextStep ?? null,
+    recentDecision: eventLineContext?.recentDecision ?? null,
+    evidenceCount: eventLineContext?.evidenceCount ?? 0,
+    tags: snapshot.tags || [],
+    note: item.note || null,
+    attachments: [],
+    collaborators: [],
+    collaborationSummary: {},
+    viewerInboxStatus: null,
+    orgContext: snapshot.orgContext ?? null,
+    projectContext: snapshot.projectContext ?? null,
+    memoryHints: [],
+    backgroundReadiness: null,
+    linkedFactsPreview: [],
+    createdAt: snapshot.createdAt || new Date().toISOString(),
+    updatedAt: snapshot.createdAt || new Date().toISOString(),
+  };
+}
+
 function pickSharedReviewStructuredNote(rows: ReviewTaskRow[]) {
   const meaningfulRows = rows.filter(({ structuredNote, note }) => hasMeaningfulReviewStructuredNote(structuredNote) || Boolean(note.trim()));
   if (meaningfulRows.length === 0) {
@@ -3373,15 +3445,6 @@ export default function App() {
 
   const [authState, setAuthState] = useState<AuthState>({ authenticated: false });
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([]);
-  const [accountSyncOverview, setAccountSyncOverview] = useState<AccountSyncOverview | null>(null);
-  const [accountSyncBusyAction, setAccountSyncBusyAction] = useState<string | null>(null);
-  const [accountSyncCloudModeDraft, setAccountSyncCloudModeDraft] = useState<CloudTargetMode>('disabled');
-  const [accountSyncCustomApiUrlDraft, setAccountSyncCustomApiUrlDraft] = useState('');
-  const [accountSyncLoginForm, setAccountSyncLoginForm] = useState({ email: '', password: '', rememberMe: true });
-  const [accountSyncRegisterForm, setAccountSyncRegisterForm] = useState({ email: '', fullName: '', password: '' });
-  const [accountSyncOrgNameDraft, setAccountSyncOrgNameDraft] = useState('');
-  const [accountSyncInviteForm, setAccountSyncInviteForm] = useState({ code: '', roleName: '', departmentId: '', expiresInDays: 7, maxUses: 1 });
-  const [latestOrgInvitation, setLatestOrgInvitation] = useState<OrgInvitationRecord | null>(null);
   const [employeeReviews, setEmployeeReviews] = useState<EmployeeRecord[]>([]);
   const [settingsState, setSettingsState] = useState<AppSettings | null>(null);
   const [taskSettingsState, setTaskSettingsState] = useState<TaskSettings | null>(null);
@@ -3403,7 +3466,6 @@ export default function App() {
   const [diagnosisProfileVersion, setDiagnosisProfileVersion] = useState(0);
   const [settingsSectionLoaded, setSettingsSectionLoaded] = useState<Record<SettingsSectionKey, boolean>>({
     overview: true,
-    account_sync: false,
     org_dna: false,
     tasks: true,
     client_workspace: false,
@@ -3475,8 +3537,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
   const currentSessionUser = authState.user || null;
-  const currentSessionMode = authState.sessionMode || 'local';
-  const isCloudSession = currentSessionMode === 'cloud';
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const defaultTagScope: 'org' | 'self' = canManagePublicTaskTaxonomy ? 'org' : 'self';
@@ -3714,143 +3774,6 @@ export default function App() {
     setCollabCommitMessage(nextValue);
   }
 
-  async function handleSaveCloudConfig() {
-    setAccountSyncBusyAction('cloud-config');
-    try {
-      await updateCloudConfig({
-        mode: accountSyncCloudModeDraft,
-        customApiUrl: accountSyncCloudModeDraft === 'custom' ? accountSyncCustomApiUrlDraft.trim() : null,
-      });
-      await loadAccountSyncOverviewBlock();
-      flash('success', '云端连接方式已更新。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '云端配置保存失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleCloudLogin() {
-    setAccountSyncBusyAction('cloud-login');
-    try {
-      const response = await login(accountSyncLoginForm);
-      setAuthState(response);
-      await loadAll();
-      flash('success', '已连接云端账号。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '云端登录失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleCloudRegister() {
-    setAccountSyncBusyAction('cloud-register');
-    try {
-      const response = await register({
-        email: accountSyncRegisterForm.email.trim(),
-        fullName: accountSyncRegisterForm.fullName.trim(),
-        password: accountSyncRegisterForm.password,
-      });
-      setAuthState(response);
-      await loadAll();
-      flash('success', response.message || '个人账号已创建，现在可以继续配置云端同步。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '云端注册失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleExitCloudSession() {
-    setAccountSyncBusyAction('cloud-logout');
-    try {
-      const response = await logout();
-      setAuthState(response);
-      await loadAll();
-      flash('success', '已退出云端，当前回到本机模式。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '退出云端失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleCreateOrganization() {
-    const trimmedName = accountSyncOrgNameDraft.trim();
-    if (!trimmedName) {
-      flash('error', '请先填写组织名称。');
-      return;
-    }
-    setAccountSyncBusyAction('create-org');
-    try {
-      const membership = await createOrganization({ name: trimmedName });
-      setAccountSyncOverview((prev) => (prev ? { ...prev, membership, cloudConnected: true, sessionMode: 'cloud' } : prev));
-      await Promise.all([loadAccountSyncOverviewBlock(), loadAll()]);
-      setAccountSyncOrgNameDraft('');
-      flash('success', '组织已创建，现在可以继续邀请成员。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '创建组织失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleCreateInvitation() {
-    setAccountSyncBusyAction('create-invite');
-    try {
-      const record = await createOrgInvitation({
-        departmentId: accountSyncInviteForm.departmentId || null,
-        roleName: accountSyncInviteForm.roleName.trim() || null,
-        expiresInDays: accountSyncInviteForm.expiresInDays,
-        maxUses: accountSyncInviteForm.maxUses,
-      });
-      setLatestOrgInvitation(record);
-      await loadAccountSyncOverviewBlock();
-      flash('success', '组织邀请码已生成。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '生成邀请码失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleRedeemInvitation() {
-    const code = accountSyncInviteForm.code.trim();
-    if (!code) {
-      flash('error', '请先填写邀请码。');
-      return;
-    }
-    setAccountSyncBusyAction('redeem-invite');
-    try {
-      const membership = await redeemOrgInvitation({ code });
-      setLatestOrgInvitation(null);
-      setAccountSyncInviteForm((prev) => ({ ...prev, code: '' }));
-      setAccountSyncOverview((prev) => (prev ? { ...prev, membership, cloudConnected: true, sessionMode: 'cloud' } : prev));
-      await Promise.all([loadAccountSyncOverviewBlock(), loadAll()]);
-      flash('success', '已加入组织并刷新当前云端身份。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '加入组织失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
-  async function handleLocalImport(mode: 'keep_local' | 'import_structured' | 'start_empty') {
-    setAccountSyncBusyAction(`import-${mode}`);
-    try {
-      const result = await importLocalStructuredData({ mode });
-      await loadAccountSyncOverviewBlock();
-      flash('success', mode === 'import_structured'
-        ? `已导入 ${result.importedTaskCount} 个任务、${result.importedListCount} 个清单。`
-        : '已记录这次首次同步选择。');
-    } catch (error) {
-      flash('error', error instanceof Error ? error.message : '首次同步处理失败');
-    } finally {
-      setAccountSyncBusyAction(null);
-    }
-  }
-
   const openDiagnosisProfileSettings = (groupKey: DiagnosisProfileGroupKey, prefillLabel = '') => {
     setActiveTab('settings');
     setSettingsSection('analysis');
@@ -3868,15 +3791,6 @@ export default function App() {
     setBackendCompatibilityError(
       missingFeatures.length > 0 ? `本地后端版本过旧，请重启应用。缺少能力：${missingFeatures.join('、')}` : null,
     );
-  }
-
-  async function loadAccountSyncOverviewBlock() {
-    const response = await getAccountSyncOverview();
-    setAccountSyncOverview(response);
-    setAccountSyncCloudModeDraft(response.cloudConfig.mode);
-    setAccountSyncCustomApiUrlDraft(response.cloudConfig.customApiUrl || '');
-    setAccountSyncOrgNameDraft((prev) => prev || '');
-    return response;
   }
 
   async function loadFeishuUserBindingBlock() {
@@ -3950,9 +3864,6 @@ export default function App() {
     if (!force && settingsSectionLoaded[section]) return;
     switch (section) {
       case 'overview':
-        break;
-      case 'account_sync':
-        await loadAccountSyncOverviewBlock();
         break;
       case 'org_dna':
         await loadOrganizationDnaBlock();
@@ -4153,7 +4064,6 @@ export default function App() {
       if (nextAuth.authenticated) {
         markLoadingPhase('正在载入核心模块数据…');
         const backgroundLoaders: Array<{ name: string; run: () => Promise<unknown> }> = [
-          { name: 'account-sync', run: () => loadAccountSyncOverviewBlock() },
           { name: 'task-settings', run: () => loadTaskSettingsBlock() },
           { name: 'activity-logs', run: () => loadLogsBlock() },
           { name: 'task-board', run: () => loadTaskBlock() },
@@ -4208,7 +4118,6 @@ export default function App() {
         }
         setSettingsSectionLoaded({
           overview: true,
-          account_sync: false,
           org_dna: false,
           tasks: true,
           client_workspace: false,
@@ -4262,7 +4171,6 @@ export default function App() {
         setFeishuBindingFlowState(null);
         setSettingsSectionLoaded({
           overview: true,
-          account_sync: false,
           org_dna: false,
           tasks: true,
           client_workspace: false,
@@ -4418,7 +4326,7 @@ export default function App() {
   }, [activeTab, settingsSection, authState.authenticated]);
 
   useEffect(() => {
-    if (!authState.authenticated || !isCloudSession) return;
+    if (!authState.authenticated) return;
     let cancelled = false;
 
     const run = async () => {
@@ -4454,7 +4362,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [authState.authenticated, isCloudSession, currentClientId, currentSessionUser?.id]);
+  }, [authState.authenticated, currentClientId, currentSessionUser?.id]);
 
   const effectiveTaskSettings = useMemo(
     () => resolveTaskSettings(taskSettingsState, taskLists),
@@ -4590,6 +4498,254 @@ export default function App() {
     { id: 'growth_handbook' as const, label: '成长手册', icon: BookOpen },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
+
+  const AuthShell = () => {
+    const createEmptyRegisterForm = (email = '') => ({
+      email,
+      fullName: '',
+      password: '',
+      departmentId: '',
+      jobTitle: '',
+      managerName: '',
+      currentFocus: '',
+      isDepartmentLead: false,
+    });
+    const [mode, setMode] = useState<'login' | 'register'>('login');
+    const [registerStep, setRegisterStep] = useState<1 | 2>(1);
+    const [form, setForm] = useState(() => createEmptyRegisterForm());
+    const [rememberMe, setRememberMe] = useState(true);
+    const [departmentInviteCode, setDepartmentInviteCode] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [message, setMessage] = useState(authState.message || '');
+    const inviteDepartment = useMemo(() => {
+      const inviteKey = parseDepartmentInviteCode(departmentInviteCode);
+      if (!inviteKey) return null;
+      return departmentOptions.find((department) => (
+        department.id === inviteKey || buildDepartmentInviteCode(department.id) === inviteKey
+      )) || null;
+    }, [departmentInviteCode, departmentOptions]);
+
+    useEffect(() => {
+      const href = window.location.href;
+      if (!href.includes('invite=') && !href.includes('departmentId=')) return;
+      setMode('register');
+      setRegisterStep(1);
+      setDepartmentInviteCode(href);
+    }, []);
+
+    useEffect(() => {
+      if (mode !== 'register') return;
+      setForm((prev) => {
+        const nextDepartmentId = inviteDepartment?.id || '';
+        return prev.departmentId === nextDepartmentId ? prev : { ...prev, departmentId: nextDepartmentId };
+      });
+    }, [inviteDepartment, mode]);
+
+    const switchMode = (nextMode: 'login' | 'register') => {
+      setMode(nextMode);
+      setMessage('');
+      if (nextMode === 'register') {
+        setRegisterStep(1);
+        setForm(createEmptyRegisterForm(form.email));
+        return;
+      }
+      setRememberMe(true);
+      setForm((prev) => ({ ...prev, password: '' }));
+    };
+
+    const continueRegister = () => {
+      if (!inviteDepartment) {
+        setMessage('请先填写有效的部门邀请码，再继续注册。');
+        return;
+      }
+      setMessage('');
+      setRegisterStep(2);
+    };
+
+    const backToInviteStep = () => {
+      setMessage('');
+      setRegisterStep(1);
+    };
+
+    const handleSubmit = async () => {
+      setSubmitting(true);
+      try {
+        if (mode === 'register') {
+          const response = await register(form);
+          setMessage(response.message || '你的账号已提交，正在等待管理员审核。');
+          setMode('login');
+          setRegisterStep(1);
+          setDepartmentInviteCode('');
+          setForm(createEmptyRegisterForm(form.email));
+        } else {
+          const response = await login({ email: form.email, password: form.password, rememberMe });
+          setAuthState(response);
+          await loadAll();
+        }
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : '提交失败');
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    useEffect(() => {
+      if (!message.includes('无法连接本地服务')) return;
+      let cancelled = false;
+      const tryRecover = async () => {
+        try {
+          const response = await probeLocalBackendHealth(900);
+          if (cancelled) return;
+          setHealth(response);
+          backendReadyRef.current = true;
+          clearLocalServiceStartupBanner();
+          setMessage('');
+          await loadAll(undefined, { allowStartupRetry: false });
+        } catch {
+          // 后端还没起来时保持静默轮询，避免持续打扰用户
+        }
+      };
+      void tryRecover();
+      const timer = window.setInterval(() => {
+        void tryRecover();
+      }, 1500);
+      return () => {
+        cancelled = true;
+        window.clearInterval(timer);
+      };
+    }, [message]);
+
+    return (
+      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
+        <div className="w-full max-w-[980px] grid grid-cols-1 lg:grid-cols-[0.95fr_1.05fr] rounded-[36px] overflow-hidden border border-gray-100 shadow-[0_20px_80px_rgba(0,0,0,0.08)] bg-white">
+          <div className="p-10 bg-gradient-to-br from-[#edf2ff] via-white to-[#f8fbff] border-r border-gray-100">
+            <div className="w-12 h-12 rounded-2xl bg-[#5B7BFE]/10 text-[#5B7BFE] flex items-center justify-center mb-6">
+              <ShieldAlert size={24} />
+            </div>
+            <h1 className="text-[30px] font-bold text-gray-900 leading-tight">益语智库自用平台</h1>
+            <p className="text-[14px] text-gray-500 mt-3 leading-relaxed">内部员工协作入口已经切到真实的账号审核与权限体系。未通过审批前，不能进入业务模块。</p>
+            <div className="mt-8 space-y-3 text-[13px] text-gray-600">
+              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">邮箱注册后自动进入待审核状态</div>
+              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">管理员可审批、驳回、停用并设置角色</div>
+              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">@ 协作任务、收件箱接收/退回都绑定真实员工身份</div>
+            </div>
+          </div>
+          <div className="p-10 lg:p-12">
+            <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 mb-8 w-fit">
+              <button onClick={() => switchMode('login')} className={`px-5 py-2 rounded-xl text-[13px] font-bold ${mode === 'login' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}>登录</button>
+              <button onClick={() => switchMode('register')} className={`px-5 py-2 rounded-xl text-[13px] font-bold ${mode === 'register' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}>注册</button>
+            </div>
+            <div className="space-y-4">
+              {mode === 'login' && (
+                <>
+                  <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                  <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                  <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                    记住我的登录状态
+                    <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+                  </label>
+                </>
+              )}
+              {mode === 'register' && (
+                <>
+                  <div className="flex items-center justify-between rounded-2xl border border-blue-100 bg-[#F8FAFF] px-4 py-3">
+                    <div>
+                      <p className="text-[12px] font-bold text-[#5B7BFE]">注册步骤 {registerStep}/2</p>
+                      <p className="text-[12px] text-gray-500 mt-1">
+                        {registerStep === 1 ? '先用邀请码锁定机构和部门，再进入个人信息补全。' : '部门已经锁定，接下来只需要补你自己的岗位信息。'}
+                      </p>
+                    </div>
+                    {registerStep === 2 && (
+                      <button type="button" onClick={backToInviteStep} className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[12px] font-bold text-[#5B7BFE]">
+                        重新填写邀请码
+                      </button>
+                    )}
+                  </div>
+                  {registerStep === 1 ? (
+                    <div className="space-y-4">
+                      <input
+                        value={departmentInviteCode}
+                        onChange={(event) => {
+                          setDepartmentInviteCode(event.target.value);
+                          setMessage('');
+                        }}
+                        placeholder={'先输入部门邀请码，例如「咨询策略部 邀请码 482193」或 482193'}
+                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                      />
+                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴"部门名 + 6 位邀请码"，注册时先锁定部门，后面不用自己手选。</p>
+                      <div className={`rounded-[24px] border px-4 py-4 ${inviteDepartment ? 'border-emerald-200 bg-emerald-50/80' : 'border-dashed border-gray-200 bg-gray-50'}`}>
+                        <p className="text-[12px] font-bold text-gray-500">邀请码识别结果</p>
+                        {inviteDepartment ? (
+                          <div className="mt-2 space-y-1">
+                            <p className="text-[14px] font-bold text-gray-900">机构：益语智库</p>
+                            <p className="text-[13px] text-gray-600">部门：{inviteDepartment.name}</p>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-[13px] text-gray-500">还没有识别到有效部门。请粘贴管理员发来的邀请码。</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="rounded-[24px] border border-emerald-200 bg-emerald-50/80 px-4 py-4">
+                        <p className="text-[12px] font-bold text-emerald-700">你将加入的组织</p>
+                        <p className="mt-2 text-[15px] font-bold text-gray-900">益语智库 · {inviteDepartment?.name || '未识别部门'}</p>
+                        <p className="mt-1 text-[12px] text-gray-500">部门由邀请码决定。你现在只需要补全自己的身份和岗位信息。</p>
+                      </div>
+                      <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="我的岗位，例如：咨询顾问 / 内容运营" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属上级（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前主要负责什么，或最近一段时间的重点（可选）" className="min-h-[96px] w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
+                      <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                        我是这个部门的负责人
+                        <input type="checkbox" checked={form.isDepartmentLead} onChange={(event) => setForm((prev) => ({ ...prev, isDepartmentLead: event.target.checked }))} />
+                      </label>
+                    </div>
+                  )}
+                </>
+              )}
+              {message && <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">{message}</div>}
+              {mode === 'login' ? (
+                <Button
+                  primary
+                  className="w-full py-3 text-[14px]"
+                  onClick={() => void handleSubmit()}
+                  disabled={submitting || !form.email.trim() || !form.password.trim()}
+                >
+                  {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+                  进入系统
+                </Button>
+              ) : registerStep === 1 ? (
+                <Button
+                  primary
+                  className="w-full py-3 text-[14px]"
+                  onClick={continueRegister}
+                  disabled={!inviteDepartment}
+                >
+                  <ArrowRight size={16} />
+                  确认部门，继续填写
+                </Button>
+              ) : (
+                <Button
+                  primary
+                  className="w-full py-3 text-[14px]"
+                  onClick={() => void handleSubmit()}
+                  disabled={submitting || !form.email.trim() || !form.password.trim() || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
+                >
+                  {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+                  提交注册
+                </Button>
+              )}
+            </div>
+            <p className="text-[12px] text-gray-400 mt-6">普通成员请使用部门邀请码注册；组织管理员首次进入仍使用服务端 bootstrap 凭据登录。</p>
+            <p className="text-[12px] text-gray-400 mt-2">勾选后会在当前设备持续保留登录状态；不勾选则只保留本次应用会话。</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const tasksViewBridgeRef = useRef<Record<string, unknown>>({});
   tasksViewBridgeRef.current = {
@@ -4832,6 +4988,7 @@ export default function App() {
     const [activeReviewDrillTarget, setActiveReviewDrillTarget] = useState<ReviewDashboardDrillTargetResponse | null>(null);
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
     const [activeEventLine, setActiveEventLine] = useState<EventLineDetail | null>(null);
+    const [reportEventLineId, setReportEventLineId] = useState<string | null>(null);
     const [eventLineClarificationDraft, setEventLineClarificationDraft] = useState<EventLineClarificationState>(buildEventLineClarificationDraft(null));
     const [isEventLineClarifyMode, setIsEventLineClarifyMode] = useState(false);
     const [isEventLineBusy, setIsEventLineBusy] = useState(false);
@@ -5305,21 +5462,17 @@ export default function App() {
     }, [activeFormalTaskView, baseCalendarTasks]);
     const isAllSelected = pendingTasks.length > 0 && selectedInboxIds.length === pendingTasks.length;
 
-    const reviewEntriesByTaskId = new Map(
-      [...workReviewItems, ...personalReviewItems].map((item) => [item.taskId, item]),
-    );
-    const reviewTasksForWeek = tasks.filter((task) => isTaskInReviewWeek(task, reviewForm.weekLabel));
-    const buildReviewRows = (privateOnly: boolean): ReviewTaskRow[] =>
-      reviewTasksForWeek
-        .filter((task) => (privateOnly ? isPrivateTask(task) : !isPrivateTask(task)))
-        .map((task) => {
-          const existingEntry = reviewEntriesByTaskId.get(task.id);
-          const structuredNote = reviewForm.entriesByTaskId[task.id] ?? existingEntry?.structuredNote ?? createEmptyReviewStructuredNote();
+    const tasksById = new Map(tasks.map((task) => [task.id, task]));
+    const buildReviewRows = (items: WeeklyReviewTaskEntry[]): ReviewTaskRow[] =>
+      items
+        .map((item) => {
+          const task = materializeTaskFromReviewItem(item, tasksById.get(item.taskId));
+          const structuredNote = reviewForm.entriesByTaskId[item.taskId] ?? item.structuredNote ?? createEmptyReviewStructuredNote();
           return {
             task,
-            note: composeReviewNoteFromStructuredFields(structuredNote, task.status) || existingEntry?.note || '',
+            note: composeReviewNoteFromStructuredFields(structuredNote, task.status) || item.note || '',
             structuredNote,
-            reviewedAt: existingEntry?.reviewedAt || null,
+            reviewedAt: item.reviewedAt || null,
           };
         })
         .sort((left, right) => {
@@ -5330,8 +5483,8 @@ export default function App() {
           const rightTime = taskDateForReview(right.task)?.getTime() || 0;
           return leftTime - rightTime;
         });
-    const workReviewRows = buildReviewRows(false);
-    const personalReviewRows = buildReviewRows(true);
+    const workReviewRows = buildReviewRows(workReviewItems);
+    const personalReviewRows = buildReviewRows(personalReviewItems);
     const activeReviewRows = reviewScope === 'work' ? workReviewRows : personalReviewRows;
     const workReviewGroups = buildReviewGroups(workReviewRows);
     const personalReviewGroups = buildReviewGroups(personalReviewRows);
@@ -6849,6 +7002,25 @@ export default function App() {
       }
     };
 
+    const handleCompleteWithReview = async (taskId: string) => {
+      const reviewNote = window.prompt('请填写完成复核备注（说明完成情况）');
+      if (reviewNote === null) return;
+      if (!reviewNote.trim()) {
+        flash('error', '请填写复核备注。');
+        return;
+      }
+      try {
+        await completeTaskWithReview(taskId, reviewNote.trim());
+        await Promise.all([
+          loadTaskBlock(),
+          loadReviewBlock(reviewDashboard?.currentReview?.weekLabel),
+        ]);
+        flash('success', '任务已完成并发起复核。');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '完成复核失败');
+      }
+    };
+
     const handleConfirmTasks = async (idsToConfirm: string[]) => {
       await Promise.all(idsToConfirm.map((id) => confirmTask(id)));
       setSelectedInboxIds([]);
@@ -7287,10 +7459,14 @@ export default function App() {
                               {task.projectContext.clientName}
                             </span>
                           )}
-                          {task.eventLineName && (
-                            <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-white text-slate-600 border border-slate-200">
+                          {task.eventLineName && task.eventLineId && (
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 px-2 py-1 rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-colors cursor-pointer"
+                              onClick={(e) => { e.stopPropagation(); openEventLineDetail(task.eventLineId!); }}
+                            >
                               事件线 · {task.eventLineName}
-                            </span>
+                            </button>
                           )}
                           {task.collaborators.length > 0 && (
                             <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-gray-50 text-gray-500">
@@ -7304,6 +7480,16 @@ export default function App() {
                               <div className="mb-3 rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
                                 <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">任务说明</p>
                                 <p className="mt-2 text-[12px] leading-6 text-gray-600 whitespace-pre-wrap">{task.desc}</p>
+                              </div>
+                            )}
+                            {task.status === 'doing' && task.orgContext && (
+                              <div className="flex flex-wrap gap-2 mb-2">
+                                <Button
+                                  className="px-3 py-1.5 text-[12px] bg-emerald-500 text-white hover:bg-emerald-600"
+                                  onClick={() => void handleCompleteWithReview(task.id)}
+                                >
+                                  完成并发起复核
+                                </Button>
                               </div>
                             )}
                             {canReviewTask(task) && (
@@ -7953,6 +8139,14 @@ export default function App() {
                     {activeEventLine.eventLine.summary || '这条事件线会把相关任务、会议、支持请求和关键过程痕迹串起来，作为 AI 的工作记忆线。'}
                   </p>
                 </div>
+                <button
+                  type="button"
+                  className="shrink-0 flex items-center gap-2 rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-4 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
+                  onClick={() => { setReportEventLineId(activeEventLine.eventLine.id); setActiveEventLine(null); }}
+                >
+                  <FileBadge size={14} />
+                  汇报预览
+                </button>
               </div>
 
               <div className="mt-5 flex flex-wrap gap-2 text-[12px] font-bold">
@@ -8175,6 +8369,36 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {reportEventLineId && (
+          <EventLineReportPanel
+            eventLineId={reportEventLineId}
+            backendBaseUrl={window.yiyuWorkbench?.backendBaseUrl || 'http://127.0.0.1:47829'}
+            onClose={() => setReportEventLineId(null)}
+            onExportWord={(draft) => {
+              void (async () => {
+                try {
+                  const response = await fetch(`${window.yiyuWorkbench?.backendBaseUrl || 'http://127.0.0.1:47829'}/api/v1/event-lines/${reportEventLineId}/export-word`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(draft),
+                  });
+                  if (!response.ok) throw new Error('导出失败');
+                  const blob = await response.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `${draft.eventLineName || '事件线汇报'}.docx`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  flash('success', 'Word 文档已导出');
+                } catch (err) {
+                  flash('error', err instanceof Error ? err.message : '导出 Word 失败');
+                }
+              })();
+            }}
+          />
         )}
 
         {activeSupportRequest && (
@@ -10003,22 +10227,6 @@ export default function App() {
     }, [latestChatMessageId, thinkingPanelVisible]);
 
     const aiStatus = useMemo(() => {
-      if (health?.ai.provider === 'gemini' && health.ai.ready) {
-        return {
-          label: 'Gemini 已连接',
-          className: 'text-emerald-600 bg-emerald-50 border-emerald-100 hover:bg-emerald-100',
-          dotClassName: 'bg-emerald-500',
-          subtitle: health.ai.model,
-        };
-      }
-      if (health?.ai.provider === 'gemini' && !health.ai.ready) {
-        return {
-          label: 'Gemini 未配置',
-          className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
-          dotClassName: 'bg-amber-500',
-          subtitle: '当前回退 mock',
-        };
-      }
       if (health?.ai.provider === 'qwen' && health.ai.ready) {
         return {
           label: 'Qwen 已连接',
@@ -10511,10 +10719,6 @@ export default function App() {
       } finally {
         setIsCreatingClientTextDocument(false);
       }
-    };
-
-    const handlePlaceholderClientTool = (label: string) => {
-      flash('info', `${label} 功能即将开放`);
     };
 
     const handleDroppedClientFiles = async (paths: string[]) => {
@@ -11078,12 +11282,25 @@ export default function App() {
                   </div>
                   <p className="text-[16px] font-bold text-gray-800 mb-2">还没有项目工作区</p>
                   <p className="text-[12px] text-center max-w-md leading-relaxed text-gray-500 mb-6">
-                    先创建一个项目开始正式使用。
+                    先创建一个项目开始正式使用；如果只是想演示流程，也可以手动载入演示数据。
                   </p>
                   <div className="flex items-center gap-3">
                     <Button primary onClick={openCreateClientModal}>
                       <Plus size={16} />
                       创建项目
+                    </Button>
+                    <Button
+                      onClick={() =>
+                        void loadDemoData()
+                          .then(async () => {
+                            await loadAll('client_cffc');
+                            flash('success', '演示数据已载入，可用于首次演示');
+                          })
+                          .catch((error) => flash('error', error instanceof Error ? error.message : '载入演示数据失败'))
+                      }
+                    >
+                      <Sparkles size={16} />
+                      载入演示数据
                     </Button>
                   </div>
                 </div>
@@ -11532,28 +11749,7 @@ export default function App() {
                             <PenTool size={23} />
                           </span>
                         </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)]"
-                          onClick={() => handlePlaceholderClientTool('资料速记')}
-                          title="资料速记"
-                          aria-label="资料速记"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <BookOpen size={23} />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)]"
-                          onClick={() => handlePlaceholderClientTool('结构导入')}
-                          title="结构导入"
-                          aria-label="结构导入"
-                        >
-                          <span className="flex h-full w-full items-center justify-center">
-                            <Database size={23} />
-                          </span>
-                        </button>
+                        {/* 资料速记、结构导入 — 功能待实现，暂不显示入口 */}
                       </div>
 
                       <div className="mt-3 flex items-center justify-between gap-3 text-[10px] leading-4 text-gray-400">
@@ -12478,838 +12674,6 @@ export default function App() {
     );
   };
 
-  /* const renderTopicsManagementView = () => {
-    const showMessage = (message: string) => {
-      setGlobalMessage(message);
-      setTimeout(() => setGlobalMessage(null), 3000);
-    };
-
-    const formatPublishedAt = (value?: string | null) => {
-      if (!value) return '';
-      const parsed = new Date(value);
-      if (Number.isNaN(parsed.getTime())) return value;
-      return parsed.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
-    };
-
-    const getInsightStatusMeta = (candidate: TopicCandidate) => {
-      if (candidate.insightStatus === 'ready') {
-        return {
-          label: '已解析',
-          badgeClass: 'bg-emerald-50 text-emerald-600',
-          actionLabel: '查看解析',
-          actionClass: 'bg-white border border-gray-200 text-gray-900 shadow-sm hover:bg-gray-50 hover:border-gray-300',
-        };
-      }
-      if (candidate.insightStatus === 'failed') {
-        return {
-          label: '解析失败',
-          badgeClass: 'bg-rose-50 text-rose-600',
-          actionLabel: '解析失败',
-          actionClass: 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed',
-        };
-      }
-      return {
-        label: '解析中',
-        badgeClass: 'bg-gray-100 text-gray-500',
-        actionLabel: '解析中…',
-        actionClass: 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed',
-      };
-    };
-
-    const isCandidateInsightReady = (candidate?: TopicCandidate | null) => candidate?.insightStatus === 'ready';
-
-    const defaultTaskListId = effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0';
-    const selectedTaskPlanCount = taskPlanRows.filter((item) => item.selected).length;
-    const areAllTaskPlansSelected = taskPlanRows.length > 0 && selectedTaskPlanCount === taskPlanRows.length;
-
-    const ensureTaskPlanAssignees = (items: MentionCandidate[]) => {
-      const next = [...items];
-      if (currentSessionUser && !next.some((item) => item.id === currentSessionUser.id)) {
-        next.unshift({
-          id: currentSessionUser.id,
-          fullName: currentSessionUser.fullName,
-          email: currentSessionUser.email,
-          primaryRole: currentSessionUser.primaryRole,
-          isSelf: true,
-        });
-      }
-      return next;
-    };
-
-    const buildFallbackTaskSuggestion = (candidate: TopicCandidate): TopicTaskSuggestion => ({
-      title: candidate.title,
-      desc: candidate.summary,
-      ddl: '待确认',
-      note: `来源：${candidate.source}${candidate.sourceUrl ? `；链接：${candidate.sourceUrl}` : ''}`,
-      priority: 'normal',
-      tags: ['资讯机会'],
-    });
-
-    const buildTaskPlanDraft = (suggestion: TopicTaskSuggestion, ownerId: string): TopicTaskDraftState => ({
-      localId: createUiId('topic-task'),
-      selected: true,
-      title: suggestion.title || '',
-      desc: suggestion.desc || '',
-      listId: defaultTaskListId,
-      priority: suggestion.priority || 'normal',
-      dueDate: suggestion.dueDate || '',
-      ddl: suggestion.ddl || suggestion.dueDate || '待确认',
-      note: suggestion.note || '',
-      tags: (suggestion.tags || []).join(', '),
-      ownerId,
-    });
-
-    const defaultTopicTaskOwnerId = (assignees: MentionCandidate[]) =>
-      topicsSettingsState.defaultTaskOwnerMode === 'self'
-        ? currentSessionUser?.id || assignees[0]?.id || ''
-        : '';
-
-    const closeTaskPlanModal = () => {
-      topicTaskPlanRequestRef.current += 1;
-      setIsTaskPlanModalOpen(false);
-      setTaskPlanCandidate(null);
-      setTaskPlanOverview('');
-      setTaskPlanRows([]);
-      setTaskPlanAssignees([]);
-      setBulkOwnerId(topicsSettingsState.defaultTaskOwnerMode === 'self' ? currentSessionUser?.id || '' : '');
-      setIsPlanningTasks(false);
-      setIsPromotingTasks(false);
-    };
-
-    const closeInsightModal = () => {
-      topicInsightRequestRef.current += 1;
-      setIsInsightModalOpen(false);
-      setInsightCandidate(null);
-      setCandidateInsight(null);
-      setIsLoadingInsight(false);
-    };
-
-    const handleGenerateTitle = async () => {
-      if (!tempPref?.prompt.trim()) {
-        flash('error', '请先填写追踪内容细节');
-        return;
-      }
-      setIsExtractingTitle(true);
-      try {
-        const generatedTitle = await suggestRadarTitle(tempPref.prompt);
-        setTempPref((prev) => (prev ? { ...prev, title: generatedTitle.title } : prev));
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '标题提炼失败');
-      } finally {
-        setIsExtractingTitle(false);
-      }
-    };
-
-    const handleSavePrefEdit = async () => {
-      if (!tempPref || !tempPref.prompt.trim()) return;
-      try {
-        const payload = {
-          title: tempPref.title.trim() || '自定义追踪项',
-          prompt: tempPref.prompt.trim(),
-          timeRange: tempPref.timeRange,
-        };
-        const isExistingRadar = !tempPref.id.startsWith('placeholder-');
-        if (isExistingRadar) {
-          await updateRadar(tempPref.id, payload);
-        } else {
-          await createRadar(payload);
-        }
-        await loadTopicsBlock();
-        setEditingPrefIndex(null);
-        showMessage(isExistingRadar ? '追踪规则已更新。' : '追踪规则已创建。');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '保存失败');
-      }
-    };
-
-    const handleCapture = async () => {
-      setIsCapturing(true);
-      try {
-        const result = await captureTopicRadars();
-        await loadTopicsBlock();
-        const totalFetched = result.runs.reduce((sum, item) => sum + item.fetchedCount, 0);
-        if (result.totalCreated > 0) {
-          showMessage(`大周已抓回 ${result.totalCreated} 条新候选，后台正在解析`);
-        } else if (totalFetched > 0) {
-          showMessage('大周完成本轮检索，但没有发现新的高相关候选');
-        } else {
-          flash('error', '本轮检索没有抓到可用结果，请调整雷达描述后重试');
-        }
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '大周抓取失败');
-      } finally {
-        setIsCapturing(false);
-      }
-    };
-
-    const handleOpenInsight = async (candidate: TopicCandidate) => {
-      if (!isCandidateInsightReady(candidate)) return;
-      const requestId = topicInsightRequestRef.current + 1;
-      topicInsightRequestRef.current = requestId;
-      setInsightCandidate(candidate);
-      setCandidateInsight(null);
-      setIsInsightModalOpen(true);
-      setIsLoadingInsight(true);
-      try {
-        const insight = await getCandidateInsights(candidate.id);
-        if (topicInsightRequestRef.current !== requestId) return;
-        setCandidateInsight(insight);
-      } catch (error) {
-        if (topicInsightRequestRef.current !== requestId) return;
-        flash('error', error instanceof Error ? error.message : '候选解析失败');
-      } finally {
-        if (topicInsightRequestRef.current !== requestId) return;
-        setIsLoadingInsight(false);
-      }
-    };
-
-    const handleOpenTaskPlan = async (candidate: TopicCandidate) => {
-      if (!isCandidateInsightReady(candidate)) {
-        flash('error', '候选解析尚未完成');
-        return;
-      }
-      const requestId = topicTaskPlanRequestRef.current + 1;
-      topicTaskPlanRequestRef.current = requestId;
-      setTaskPlanCandidate(candidate);
-      setTaskPlanOverview('');
-      setTaskPlanRows([]);
-      setTaskPlanAssignees([]);
-      setBulkOwnerId('');
-      setIsTaskPlanModalOpen(true);
-      setIsPlanningTasks(true);
-      try {
-        const [planResult, mentionItems] = await Promise.all([
-          getCandidateTaskPlan(candidate.id).catch(() => null),
-          getMentionCandidates('').catch(() => []),
-        ]);
-        if (topicTaskPlanRequestRef.current !== requestId) return;
-        const assignees = ensureTaskPlanAssignees(mentionItems);
-        const defaultOwnerId = defaultTopicTaskOwnerId(assignees);
-        const suggestions = planResult?.tasks?.length ? planResult.tasks : [buildFallbackTaskSuggestion(candidate)];
-        setTaskPlanAssignees(assignees);
-        setBulkOwnerId(defaultOwnerId);
-        setTaskPlanOverview(planResult?.overview?.trim() || '大周已基于候选摘要与来源内容拆出一版可执行任务，你可以直接改后再派发。');
-        setTaskPlanRows(suggestions.map((item) => buildTaskPlanDraft(item, defaultOwnerId)));
-      } catch (error) {
-        if (topicTaskPlanRequestRef.current !== requestId) return;
-        const fallbackOwnerId = defaultTopicTaskOwnerId(taskPlanAssignees);
-        setTaskPlanRows([buildTaskPlanDraft(buildFallbackTaskSuggestion(candidate), fallbackOwnerId)]);
-        setTaskPlanOverview('任务提炼暂时失败，已为你生成一条可手动编辑的基础任务。');
-        flash('error', error instanceof Error ? error.message : '任务提炼失败');
-      } finally {
-        if (topicTaskPlanRequestRef.current !== requestId) return;
-        setIsPlanningTasks(false);
-      }
-    };
-
-    const handleDeleteCandidate = async (candidate: TopicCandidate) => {
-      try {
-        await deleteCandidate(candidate.id);
-        await loadTopicsBlock();
-        if (insightCandidate?.id === candidate.id) {
-          closeInsightModal();
-        }
-        if (taskPlanCandidate?.id === candidate.id) {
-          closeTaskPlanModal();
-        }
-        flash('success', '候选已删除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除失败');
-      }
-    };
-
-    const handleAddTaskPlanRow = () => {
-      const defaultOwnerId = bulkOwnerId || currentSessionUser?.id || taskPlanAssignees[0]?.id || '';
-      setTaskPlanRows((prev) => [
-        ...prev,
-        {
-          localId: createUiId('topic-task'),
-          selected: true,
-          title: '',
-          desc: '',
-          listId: defaultTaskListId,
-          priority: 'normal',
-          dueDate: '',
-          ddl: '待确认',
-          note: taskPlanCandidate ? `来源：${taskPlanCandidate.source}` : '',
-          tags: '资讯机会',
-          ownerId: defaultOwnerId,
-        },
-      ]);
-    };
-
-    const handleApplyBulkOwner = () => {
-      if (!bulkOwnerId) {
-        flash('error', '请先选择统一负责人');
-        return;
-      }
-      setTaskPlanRows((prev) =>
-        prev.map((item) => (item.selected ? { ...item, ownerId: bulkOwnerId } : item)),
-      );
-    };
-
-    const handlePromoteTasks = async () => {
-      if (!taskPlanCandidate) return;
-      const selectedRows = taskPlanRows.filter((item) => item.selected && item.title.trim());
-      if (selectedRows.length === 0) {
-        flash('error', '请至少勾选一条并填写任务标题');
-        return;
-      }
-      if (selectedRows.some((item) => !item.ownerId)) {
-        flash('error', '请先为每条已勾选任务选择负责人');
-        return;
-      }
-      setIsPromotingTasks(true);
-      try {
-        const payload: TopicTaskPromotionDraft[] = selectedRows.map((item) => {
-          const owner = taskPlanAssignees.find((candidate) => candidate.id === item.ownerId);
-          const resolvedOwnerId = item.ownerId || currentSessionUser?.id || null;
-          return {
-            title: item.title.trim(),
-            desc: item.desc.trim(),
-            priority: item.priority,
-            listId: item.listId,
-            dueDate: item.dueDate || null,
-            ddl: item.ddl.trim() || item.dueDate || '待确认',
-            ownerId: resolvedOwnerId,
-            ownerName: owner?.fullName || currentSessionUser?.fullName || currentOperatorName,
-            collaboratorIds: resolvedOwnerId ? [resolvedOwnerId] : [],
-            tags: item.tags.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
-            note: item.note.trim(),
-          };
-        });
-        const result = await promoteCandidateTasks(taskPlanCandidate.id, payload);
-        await Promise.all([loadTopicsBlock(), loadTaskBlock()]);
-        closeTaskPlanModal();
-        const allAssignedToSelf = selectedRows.every((item) => item.ownerId === currentSessionUser?.id);
-        flash(
-          'success',
-          allAssignedToSelf
-            ? `已指派 ${result.createdCount} 条任务；因负责人是自己，任务已直接进入任务列表`
-            : `已指派 ${result.createdCount} 条任务，并发送到对应同事的收件箱`,
-        );
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '转任务失败');
-      } finally {
-        setIsPromotingTasks(false);
-      }
-    };
-
-    return (
-      <div className="h-full flex flex-col bg-[#F9FAFB] overflow-hidden relative font-sans text-gray-800">
-        <div className="bg-white border-b border-gray-100 px-5 lg:px-8 py-5 shrink-0 z-10 shadow-sm">
-          <div className="flex justify-between items-start md:items-center mb-5 gap-4">
-            <div>
-              <h1 className="text-[18px] lg:text-[20px] font-bold text-gray-900 flex items-center gap-2">
-                <Newspaper size={22} className="text-[#5B7BFE]" /> 资讯情报站
-              </h1>
-              <p className="text-[12px] text-gray-500 mt-1 font-medium">配置专属追踪雷达，让大周执行真实外部搜索，把高相关结果整理成中文后写回候选池。</p>
-            </div>
-            <Button primary className="rounded-2xl px-5" onClick={() => void handleCapture()} disabled={isCapturing || radars.length === 0}>
-              {isCapturing ? <RefreshCw size={16} className="animate-spin" /> : <Search size={16} />}
-              {isCapturing ? '大周抓取中…' : '让大周抓取'}
-            </Button>
-          </div>
-
-          <div className="flex gap-3 w-full overflow-x-auto scrollbar-hide pb-2">
-            {preferences.map((pref, index) => (
-              <button key={pref.id || index} onClick={() => { setEditingPrefIndex(index); setTempPref({ ...pref }); }} className={`flex-1 min-w-[160px] relative flex items-center px-4 py-3 rounded-2xl text-[13px] transition-all border shrink-0 ${pref.title || pref.prompt ? 'bg-blue-50/50 border-blue-100 text-[#5B7BFE] shadow-sm' : 'bg-white border-gray-200 border-dashed text-gray-400'}`}>
-                <Activity size={14} strokeWidth={2.5} className="mr-2 shrink-0" />
-                <span className="font-bold truncate">{pref.title || '点击添加新雷达...'}</span>
-              </button>
-            ))}
-          </div>
-
-          {globalMessage && (
-            <div className="mt-2 flex items-center justify-center animate-in fade-in absolute left-1/2 -translate-x-1/2 top-4 z-50">
-              <div className="text-[12px] font-bold text-emerald-600 bg-emerald-50 px-4 py-2 rounded-full shadow-sm flex items-center gap-2">
-                <CheckCircle2 size={14} /> {globalMessage}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="flex-1 grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-6 p-8 overflow-y-auto">
-          <div className="bg-white border border-gray-100 rounded-[32px] shadow-sm p-6">
-            <div className="mb-4">
-              <div>
-                <h2 className="text-[18px] font-bold text-gray-900">候选池</h2>
-                <p className="text-[12px] text-gray-500 mt-1">从雷达追踪出的中文候选，可先由大周拆成可编辑任务，再转入任务与日程。</p>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              {candidates.map((candidate) => (
-                <div key={candidate.id} className="border border-gray-100 rounded-2xl p-4 flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    {(() => {
-                      const insightMeta = getInsightStatusMeta(candidate);
-                      const canOpenInsight = isCandidateInsightReady(candidate);
-                      return (
-                        <>
-                    <div className="flex items-center gap-2 mb-2">
-                      {canOpenInsight ? (
-                        <button
-                          type="button"
-                          onClick={() => void handleOpenInsight(candidate)}
-                          className="text-[14px] font-bold text-gray-900 text-left hover:text-[#3456f3] transition-colors"
-                        >
-                          {candidate.title}
-                        </button>
-                      ) : (
-                        <span className="text-[14px] font-bold text-gray-500 text-left">{candidate.title}</span>
-                      )}
-                      <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${candidate.status === 'candidate' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>{candidate.status}</span>
-                      <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${insightMeta.badgeClass}`}>{insightMeta.label}</span>
-                      {candidate.capturedBy && (
-                        <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-blue-50 text-[#5B7BFE]">
-                          {candidate.capturedBy}抓取
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[12px] text-gray-500 leading-relaxed">{candidate.summary}</p>
-                    <div className="flex flex-wrap items-center gap-3 mt-2 text-[11px] text-gray-400">
-                      <span>{candidate.source}</span>
-                      {candidate.publishedAt && <span>{formatPublishedAt(candidate.publishedAt)}</span>}
-                      {candidate.sourceUrl && (
-                        <button
-                          type="button"
-                          onClick={() => window.open(candidate.sourceUrl || '', '_blank', 'noopener,noreferrer')}
-                          className="inline-flex items-center gap-1 text-[#5B7BFE] hover:text-[#3456f3] transition-colors"
-                        >
-                          <ExternalLink size={12} />
-                          查看来源
-                        </button>
-                      )}
-                    </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-                  <div className="flex flex-col gap-2 shrink-0">
-                    {(() => {
-                      const insightMeta = getInsightStatusMeta(candidate);
-                      const canOpenInsight = isCandidateInsightReady(candidate);
-                      return (
-                        <>
-                          <button
-                            type="button"
-                            disabled={!canOpenInsight}
-                            onClick={() => void handleOpenInsight(candidate)}
-                            className={`px-4 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 flex items-center justify-center gap-2 ${insightMeta.actionClass}`}
-                          >
-                            {insightMeta.actionLabel}
-                          </button>
-                          <Button disabled={!canOpenInsight} onClick={() => void handleOpenTaskPlan(candidate)}>转任务</Button>
-                          <Button onClick={() => void handleDeleteCandidate(candidate)}>删除</Button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white border border-gray-100 rounded-[32px] shadow-sm p-6 overflow-y-auto">
-            <h2 className="text-[18px] font-bold text-gray-900 mb-4">雷达摘要</h2>
-            <div className="space-y-4">
-              {radars.map((radar) => (
-                <div key={radar.id} className="bg-gray-50/80 border border-gray-100 rounded-2xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Sparkles size={16} className="text-[#5B7BFE]" />
-                    <span className="text-[13px] font-bold text-gray-900">{radar.title}</span>
-                    <span className="text-[10px] font-bold text-[#5B7BFE] bg-blue-50 px-2 py-1 rounded-md ml-auto">{radar.timeRange}</span>
-                  </div>
-                  <p className="text-[12px] text-gray-500 leading-relaxed">{radar.prompt}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {isInsightModalOpen && insightCandidate && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-md z-50 flex items-center justify-center animate-in fade-in">
-            <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[880px] max-h-[88vh] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
-              <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
-                <button
-                  type="button"
-                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={closeInsightModal}
-                  aria-label="关闭候选解析"
-                >
-                  <X size={16} />
-                </button>
-                <div>
-                  <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
-                      <Newspaper size={16} strokeWidth={2.5} />
-                    </div>
-                    候选解析
-                  </h3>
-                  <p className="text-[12px] text-gray-500 mt-1">大周会把这篇内容梳理成可读、可用、可转任务的解析结果。</p>
-                </div>
-              </div>
-
-              <div className="p-8 space-y-5 overflow-y-auto max-h-[calc(88vh-150px)]">
-                <div className="rounded-[24px] border border-blue-100 bg-blue-50/50 px-5 py-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">候选文章</p>
-                      <h4 className="text-[16px] font-bold text-gray-900 mt-1">{insightCandidate.title}</h4>
-                      <p className="text-[12px] text-gray-600 mt-2 leading-relaxed">{insightCandidate.summary}</p>
-                      <div className="flex flex-wrap items-center gap-3 mt-3 text-[11px] text-gray-500">
-                        <span>{insightCandidate.source}</span>
-                        {insightCandidate.publishedAt && <span>{formatPublishedAt(insightCandidate.publishedAt)}</span>}
-                      </div>
-                    </div>
-                    {insightCandidate.sourceUrl && (
-                      <Button onClick={() => window.open(insightCandidate.sourceUrl || '', '_blank', 'noopener,noreferrer')}>
-                        <ExternalLink size={14} />
-                        查看原文
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                {isLoadingInsight ? (
-                  <div className="rounded-[24px] border border-gray-100 bg-gray-50 px-5 py-10 text-center text-gray-500 flex flex-col items-center gap-3">
-                    <RefreshCw size={20} className="animate-spin text-[#5B7BFE]" />
-                    <p className="text-[13px] font-medium">大周正在提炼这篇内容的主要内涵、推荐理由和实用方向…</p>
-                  </div>
-                ) : candidateInsight ? (
-                  <>
-                    <div className="rounded-[24px] border border-gray-100 bg-gray-50/80 px-5 py-4">
-                      <p className="text-[12px] font-bold text-gray-900">内容综述</p>
-                      <p className="text-[13px] text-gray-600 mt-2 leading-7 whitespace-pre-line">{candidateInsight.overview}</p>
-                    </div>
-
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      <div className="rounded-[24px] border border-gray-100 px-5 py-4">
-                        <p className="text-[12px] font-bold text-gray-900 mb-3">主要内涵</p>
-                        <div className="space-y-3">
-                          {candidateInsight.keyPoints.map((item, index) => (
-                            <div key={`${item}-${index}`} className="flex items-start gap-3 text-[13px] text-gray-600">
-                              <span className="w-6 h-6 rounded-full bg-blue-50 text-[#5B7BFE] flex items-center justify-center text-[11px] font-bold shrink-0">{index + 1}</span>
-                              <p className="leading-relaxed">{item}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="rounded-[24px] border border-gray-100 px-5 py-4">
-                        <p className="text-[12px] font-bold text-gray-900 mb-3">推荐理由</p>
-                        <div className="space-y-3">
-                          {candidateInsight.recommendationReasons.map((item, index) => (
-                            <div key={`${item}-${index}`} className="flex items-start gap-3 text-[13px] text-gray-600">
-                              <span className="w-6 h-6 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-[11px] font-bold shrink-0">{index + 1}</span>
-                              <p className="leading-relaxed">{item}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-[24px] border border-gray-100 px-5 py-4">
-                      <p className="text-[12px] font-bold text-gray-900 mb-3">实用方向</p>
-                      <div className="space-y-3">
-                        {candidateInsight.practicalUses.map((item, index) => (
-                          <div key={`${item}-${index}`} className="flex items-start gap-3 text-[13px] text-gray-600">
-                            <span className="w-6 h-6 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center text-[11px] font-bold shrink-0">{index + 1}</span>
-                            <p className="leading-relaxed">{item}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-[24px] border border-rose-100 bg-rose-50 px-5 py-4 text-[13px] text-rose-600">
-                    这篇内容暂时还没有解析结果，请稍后再试。
-                  </div>
-                )}
-              </div>
-
-              <div className="px-8 py-5 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-3">
-                <button onClick={closeInsightModal} className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors">
-                  关闭
-                </button>
-                <Button
-                  primary
-                  onClick={() => {
-                    if (!candidateInsight || !isCandidateInsightReady(insightCandidate)) return;
-                    closeInsightModal();
-                    void handleOpenTaskPlan(insightCandidate);
-                  }}
-                  disabled={isLoadingInsight || !candidateInsight || !isCandidateInsightReady(insightCandidate)}
-                  className="px-6 shadow-md"
-                >
-                  <Sparkles size={14} />
-                  基于解析转任务
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {isTaskPlanModalOpen && taskPlanCandidate && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-md z-50 flex items-center justify-center animate-in fade-in">
-            <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[920px] max-h-[88vh] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
-              <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
-                <button
-                  type="button"
-                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={closeTaskPlanModal}
-                  aria-label="关闭任务指派弹窗"
-                >
-                  <X size={16} />
-                </button>
-                <div>
-                  <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
-                      <Sparkles size={16} strokeWidth={2.5} />
-                    </div>
-                    指派任务
-                  </h3>
-                  <p className="text-[12px] text-gray-500 mt-1">大周会先把候选拆成任务草稿，你可以勾选、改写、加备注，再一次性派发。派给自己会直接进入任务列表，派给同事才会进入对方收件箱。</p>
-                </div>
-              </div>
-
-              <div className="p-8 space-y-5 overflow-y-auto max-h-[calc(88vh-150px)]">
-                <div className="rounded-[24px] border border-blue-100 bg-blue-50/50 px-5 py-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">候选原文</p>
-                      <h4 className="text-[16px] font-bold text-gray-900 mt-1">{taskPlanCandidate.title}</h4>
-                      <p className="text-[12px] text-gray-600 mt-2 leading-relaxed">{taskPlanCandidate.summary}</p>
-                      <div className="flex flex-wrap items-center gap-3 mt-3 text-[11px] text-gray-500">
-                        <span>{taskPlanCandidate.source}</span>
-                        {taskPlanCandidate.publishedAt && <span>{formatPublishedAt(taskPlanCandidate.publishedAt)}</span>}
-                      </div>
-                    </div>
-                    {taskPlanCandidate.sourceUrl && (
-                      <Button onClick={() => window.open(taskPlanCandidate.sourceUrl || '', '_blank', 'noopener,noreferrer')}>
-                        <ExternalLink size={14} />
-                        查看来源
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                {isPlanningTasks ? (
-                  <div className="rounded-[24px] border border-gray-100 bg-gray-50 px-5 py-10 text-center text-gray-500 flex flex-col items-center gap-3">
-                    <RefreshCw size={20} className="animate-spin text-[#5B7BFE]" />
-                    <p className="text-[13px] font-medium">大周正在结合候选摘要和原文内容提炼可执行任务…</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="rounded-[24px] border border-gray-100 bg-gray-50/80 px-5 py-4">
-                      <div className="flex items-center justify-between gap-3 flex-wrap">
-                        <div>
-                          <p className="text-[12px] font-bold text-gray-900">大周判断</p>
-                          <p className="text-[12px] text-gray-600 mt-1 leading-relaxed">{taskPlanOverview || '你可以直接编辑下面的任务草稿。'}</p>
-                        </div>
-                        <Button onClick={handleAddTaskPlanRow}>
-                          <Plus size={14} />
-                          追加任务
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-3 rounded-[24px] border border-gray-100 px-5 py-4">
-                      <button
-                        type="button"
-                        className={`px-3 py-2 rounded-full text-[12px] font-bold ${areAllTaskPlansSelected ? 'bg-[#5B7BFE] text-white' : 'bg-gray-100 text-gray-600'}`}
-                        onClick={() => setTaskPlanRows((prev) => prev.map((item) => ({ ...item, selected: !areAllTaskPlansSelected })))}
-                      >
-                        {areAllTaskPlansSelected ? '取消全选' : '全选任务'}
-                      </button>
-                      <span className="text-[12px] text-gray-500">已勾选 {selectedTaskPlanCount} / {taskPlanRows.length} 条</span>
-                      <select value={bulkOwnerId} onChange={(event) => setBulkOwnerId(event.target.value)} className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none min-w-[180px]">
-                        <option value="">统一派给...</option>
-                        {taskPlanAssignees.map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>
-                            {candidate.fullName}{candidate.isSelf ? '（自己）' : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <Button onClick={handleApplyBulkOwner} disabled={!bulkOwnerId || selectedTaskPlanCount === 0}>
-                        <UserPlus size={14} />
-                        应用到已勾选
-                      </Button>
-                    </div>
-
-                    <div className="space-y-4">
-                      {taskPlanRows.map((item, index) => (
-                        <div key={item.localId} className={`rounded-[24px] border p-5 transition-colors ${item.selected ? 'border-blue-100 bg-blue-50/30' : 'border-gray-100 bg-white'}`}>
-                          <div className="flex items-center gap-3 mb-4">
-                            <button
-                              type="button"
-                              className={`w-6 h-6 rounded-lg border flex items-center justify-center ${item.selected ? 'bg-[#5B7BFE] border-[#5B7BFE] text-white' : 'border-gray-300 text-transparent'}`}
-                              onClick={() => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, selected: !row.selected } : row)))}
-                            >
-                              <CheckSquare size={14} />
-                            </button>
-                            <span className="text-[12px] font-bold text-gray-400">任务 {index + 1}</span>
-                            <button
-                              type="button"
-                              className="ml-auto text-[12px] font-bold text-gray-400 hover:text-rose-500 transition-colors"
-                              onClick={() => setTaskPlanRows((prev) => prev.filter((row) => row.localId !== item.localId))}
-                              disabled={taskPlanRows.length === 1}
-                            >
-                              删除
-                            </button>
-                          </div>
-
-                          <div className="space-y-3">
-                            <input
-                              value={item.title}
-                              onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, title: event.target.value } : row)))}
-                              placeholder="任务标题"
-                              className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[14px] font-medium outline-none focus:border-[#5B7BFE]"
-                            />
-                            <textarea
-                              value={item.desc}
-                              onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, desc: event.target.value } : row)))}
-                              placeholder="任务说明"
-                              className="w-full bg-white border border-gray-200 rounded-2xl p-4 text-[13px] font-medium outline-none min-h-[90px] focus:border-[#5B7BFE]"
-                            />
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                              <select
-                                value={item.ownerId}
-                                onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, ownerId: event.target.value } : row)))}
-                                className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-                              >
-                                <option value="">请选择负责人</option>
-                                {taskPlanAssignees.map((candidate) => (
-                                  <option key={candidate.id} value={candidate.id}>
-                                    {candidate.fullName}{candidate.isSelf ? '（自己）' : ''}
-                                  </option>
-                                ))}
-                              </select>
-                              <select
-                                value={item.listId}
-                                onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, listId: event.target.value } : row)))}
-                                className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-                              >
-                                {activeTaskLists.map((list) => (
-                                  <option key={list.id} value={list.id}>
-                                    {list.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <input
-                                type="date"
-                                value={item.dueDate}
-                                onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, dueDate: event.target.value, ddl: event.target.value || row.ddl } : row)))}
-                                className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-                              />
-                              <select
-                                value={item.priority}
-                                onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, priority: event.target.value as TopicTaskDraftState['priority'] } : row)))}
-                                className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-                              >
-                                <option value="low">低优先级</option>
-                                <option value="normal">普通优先级</option>
-                                <option value="high">高优先级</option>
-                              </select>
-                            </div>
-                            <input
-                              value={item.ddl}
-                              onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, ddl: event.target.value } : row)))}
-                              placeholder="时间描述，例如 3月17日前 / 本周内 / 待确认"
-                              className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-                            />
-                            <input
-                              value={item.tags}
-                              onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, tags: event.target.value } : row)))}
-                              placeholder="标签，多个用逗号分隔"
-                              className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
-                            />
-                            <textarea
-                              value={item.note}
-                              onChange={(event) => setTaskPlanRows((prev) => prev.map((row) => (row.localId === item.localId ? { ...row, note: event.target.value } : row)))}
-                              placeholder="备注 / 来源补充 / 交接说明"
-                              className="w-full bg-white border border-gray-200 rounded-2xl p-4 text-[13px] font-medium outline-none min-h-[96px]"
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="px-8 py-5 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-3">
-                <button onClick={closeTaskPlanModal} className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors">
-                  取消
-                </button>
-                <Button primary onClick={() => void handlePromoteTasks()} disabled={isPlanningTasks || isPromotingTasks || selectedTaskPlanCount === 0} className="px-6 shadow-md">
-                  {isPromotingTasks ? <RefreshCw size={14} className="animate-spin" /> : <CheckSquare size={14} />}
-                  {isPromotingTasks ? '指派任务中…' : `确认指派 ${selectedTaskPlanCount} 条任务`}
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {editingPrefIndex !== null && tempPref && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-md z-50 flex items-center justify-center animate-in fade-in">
-            <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[580px] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
-              <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
-                <button
-                  type="button"
-                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={() => setEditingPrefIndex(null)}
-                  aria-label="关闭追踪规则弹窗"
-                >
-                  <X size={16} />
-                </button>
-                <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
-                    <Target size={16} strokeWidth={2.5} />
-                  </div>
-                  配置深度追踪规则
-                </h3>
-              </div>
-
-              <div className="p-8 space-y-6">
-                <div>
-                  <label className="block text-[12px] font-bold text-gray-500 uppercase tracking-widest mb-2.5 flex justify-between items-end">
-                    想要追踪的具体内容说明
-                    <span className="text-[11px] font-normal text-indigo-400 flex items-center gap-1 bg-indigo-50 px-2 rounded">
-                      <Sparkles size={10} /> 描述越具体越准
-                    </span>
-                  </label>
-                  <textarea value={tempPref.prompt} onChange={(event) => setTempPref({ ...tempPref, prompt: event.target.value })} placeholder="输入一段你感兴趣的详细新闻或行业话题描述..." className="w-full bg-gray-50 border border-gray-200 rounded-2xl p-4 text-[14px] font-medium outline-none focus:bg-white focus:border-[#5B7BFE] min-h-[120px] resize-none" />
-                </div>
-
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-[12px] font-bold text-gray-500 uppercase tracking-widest mb-2.5">雷达标签名</label>
-                    <div className="relative flex">
-                      <input type="text" value={tempPref.title} onChange={(event) => setTempPref({ ...tempPref, title: event.target.value })} placeholder="点击右侧让 AI 提炼" className="w-full bg-gray-50 border border-gray-200 border-r-0 rounded-l-xl px-4 py-3 text-[13px] font-bold outline-none" />
-                      <button onClick={() => void handleGenerateTitle()} disabled={isExtractingTitle || !tempPref.prompt} className="bg-indigo-50 border border-indigo-100 text-indigo-600 px-4 rounded-r-xl hover:bg-indigo-100 transition-colors disabled:opacity-50 flex items-center shrink-0 font-bold text-[12px] gap-1.5">
-                        {isExtractingTitle ? <RefreshCw size={14} className="animate-spin" /> : <><Sparkles size={14} /> ✨ AI 提炼</>}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="px-8 py-5 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-3">
-                <button onClick={() => setEditingPrefIndex(null)} className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors">
-                  取消
-                </button>
-                <Button primary onClick={() => void handleSavePrefEdit()} className="px-6 shadow-md">
-                  保存配置
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }; */
 
   const UnifiedWorkbenchView = () => {
     const enabledTemplates = analysisTemplates.filter((template) => {
@@ -13374,6 +12738,9 @@ export default function App() {
       scope: 'org' as 'org' | 'personal',
     });
     const [editingListId, setEditingListId] = useState<string | null>(null);
+    const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
+    const [legacyImportClientId, setLegacyImportClientId] = useState('');
+    const [isImportingLegacy, setIsImportingLegacy] = useState(false);
     const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
     const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
     const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
@@ -13435,6 +12802,15 @@ export default function App() {
       setOrgModelDraft(orgModelState);
     }, [orgModelState]);
 
+    useEffect(() => {
+      const preferredClientId =
+        (currentClientId && clients.some((client) => client.id === currentClientId) && currentClientId) ||
+        clients[0]?.id ||
+        '';
+      setLegacyImportClientId((prev) => (prev && clients.some((client) => client.id === prev) ? prev : preferredClientId));
+    }, [clients, currentClientId]);
+
+    const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
     const canManagePersonalTaskList = Boolean(currentSessionUser?.id);
@@ -13470,6 +12846,32 @@ export default function App() {
     const resetListManager = () => {
       setEditingListId(null);
       setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false, scope: 'org' });
+    };
+
+    const handleImportLegacyEntries = async () => {
+      if (!legacyImportClientId) {
+        flash('error', '请先选择一个客户用于接收旧数据导入');
+        return;
+      }
+      if (!importableLegacyEntries.length) {
+        flash('info', '当前扫描结果中没有可导入的 JSON 或 CSV 文件');
+        return;
+      }
+      setIsImportingLegacy(true);
+      try {
+        const imported = await importPaths(
+          legacyImportClientId,
+          'file',
+          importableLegacyEntries.map((entry) => entry.path),
+          { allowLegacy: true },
+        );
+        await Promise.all([loadLogsBlock(), legacyImportClientId === currentClientId ? refreshWorkspace(legacyImportClientId) : Promise.resolve()]);
+        flash('success', `已向目标客户导入 ${imported.reduce((sum, item) => sum + item.importedCount, 0)} 份旧数据文件`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '旧数据导入失败');
+      } finally {
+        setIsImportingLegacy(false);
+      }
     };
 
     const handleSaveTag = async () => {
@@ -13733,7 +13135,7 @@ export default function App() {
     const handleSaveAiSettings = async () => {
       try {
         await updateSettings({
-          aiProvider: draft.aiProvider as 'mock' | 'gemini' | 'qwen',
+          aiProvider: draft.aiProvider as 'mock' | 'qwen',
           aiModel: draft.aiModel,
           apiKey: draft.apiKey.trim() || undefined,
         });
@@ -14022,7 +13424,6 @@ export default function App() {
 
     const sectionItems: Array<{ key: SettingsSectionKey; label: string; icon: typeof Settings; helper: string }> = [
       { key: 'overview', label: '总览', icon: Settings, helper: '当前账号、AI 与系统状态' },
-      { key: 'account_sync', label: '账号与同步', icon: Users, helper: '本机模式、云端连接与组织加入' },
       { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
       { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认规则、清单与标签' },
       { key: 'client_workspace', label: '客户工作台', icon: Briefcase, helper: '聊天、会议、目标默认规则' },
@@ -14100,7 +13501,6 @@ export default function App() {
               disabled={!canManageSensitiveSettings}
             >
               <option value="mock">mock（联调模式）</option>
-              <option value="gemini">Gemini</option>
               <option value="qwen">Qwen 3.5</option>
             </select>
             <input value={draft.aiModel} onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))} placeholder="模型名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
@@ -14695,17 +14095,53 @@ export default function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between gap-4 mb-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">数据备份</h2>
-                <p className="text-[12px] text-gray-500 mt-1">保留当前工作台数据快照，便于回退或迁移。</p>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-3">
+            <h2 className="text-[16px] font-bold text-gray-900 mb-4">备份与旧数据导入</h2>
+            <div className="flex flex-wrap gap-3 mb-4">
               <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
                 <Database size={16} /> 立即备份
+              </Button>
+              <Button onClick={() => { void selectFolderBridge().then((folder) => { if (!folder) return; void scanLegacy(folder).then((result) => setLegacyScanResult(result)).catch((error) => flash('error', error instanceof Error ? error.message : '扫描失败')); }); }}>
+                <FolderOpen size={16} /> 扫描旧数据
+              </Button>
+            </div>
+            {legacyScanResult && (
+              <div className="space-y-3">
+                <p className="text-[12px] font-bold text-gray-900">{legacyScanResult.path}</p>
+                <p className="text-[12px] text-gray-500">{legacyScanResult.message}</p>
+                <div className="flex flex-col md:flex-row gap-3">
+                  <select value={legacyImportClientId} onChange={(event) => setLegacyImportClientId(event.target.value)} className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
+                    <option value="">选择导入目标客户</option>
+                    {clients.map((client) => (
+                      <option key={client.id} value={client.id}>{client.name}</option>
+                    ))}
+                  </select>
+                  <Button onClick={() => void handleImportLegacyEntries()} disabled={isImportingLegacy || !importableLegacyEntries.length}>
+                    {isImportingLegacy ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+                    导入可导入文件
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-[16px] font-bold text-gray-900">演示数据</h2>
+                <p className="text-[12px] text-gray-500 mt-1">只在需要演示时手动载入，正式使用可以随时清空。</p>
+              </div>
+              <span className={`text-[11px] font-bold px-3 py-1.5 rounded-full ${settingsState?.demoDataLoaded ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                {settingsState?.demoDataLoaded ? '已载入演示数据' : '未载入演示数据'}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button onClick={() => { void loadDemoData().then(async () => { await loadAll('client_cffc'); flash('success', '演示数据已载入'); }).catch((error) => flash('error', error instanceof Error ? error.message : '载入失败')); }}>
+                <Sparkles size={16} /> 载入演示数据
+              </Button>
+              <Button onClick={() => { void clearDemoData().then(async () => { await loadAll(); flash('success', '演示数据已清空'); }).catch((error) => flash('error', error instanceof Error ? error.message : '清空失败')); }}>
+                <X size={16} /> 清空演示数据
               </Button>
             </div>
           </div>
@@ -14728,334 +14164,6 @@ export default function App() {
       </div>
     );
 
-    const renderAccountSyncSection = () => {
-      const overview = accountSyncOverview;
-      const membership = overview?.membership;
-      const syncStatus = overview?.syncStatus;
-      const cloudConfig = overview?.cloudConfig;
-      const modeOptions: Array<{ value: CloudTargetMode; label: string; helper: string }> = [
-        { value: 'disabled', label: '关闭云端', helper: '默认只在本机使用，不强制登录。' },
-        { value: 'official_test', label: '官方测试云', helper: '用于当前联调和跨设备同步测试。' },
-        { value: 'custom', label: '自定义云端', helper: '开源用户填写自己的 Cloud API 地址。' },
-      ];
-      const busy = (key: string) => accountSyncBusyAction === key;
-
-      return (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-[16px] font-bold text-gray-900">当前模式</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">安装后默认进入本机模式；只有需要云端保存、跨设备同步或组织协作时才登录。</p>
-                </div>
-                <span className={`px-3 py-1.5 rounded-full text-[11px] font-bold ${isCloudSession ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-600'}`}>
-                  {isCloudSession ? '云端模式' : '本机模式'}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">当前会话</p>
-                  <p className="text-[14px] font-bold text-slate-900">{currentSessionUser?.fullName || '本机用户'}</p>
-                  <p className="text-[12px] text-slate-600 mt-1">{isCloudSession ? (currentSessionUser?.email || '云端账号') : '当前设备离线可用'}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">同步状态</p>
-                  <p className="text-[13px] font-bold text-slate-900">
-                    {syncStatus?.needsInitialImport ? '等待首次同步选择' : isCloudSession ? '云端已连接' : '未启用云端'}
-                  </p>
-                  <p className="text-[12px] text-slate-600 mt-1">
-                    本地待同步：{syncStatus?.pendingTaskCount || 0} 个任务 / {syncStatus?.pendingListCount || 0} 个清单
-                  </p>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-600">
-                {isCloudSession
-                  ? `当前云端归属：${membership?.organizationName || '未加入组织'}${membership?.isPersonalWorkspace ? '（个人空间）' : ''}`
-                  : '当前未连接云端。你仍然可以直接使用本地任务、客户工作台和个人设置。'}
-              </div>
-            </div>
-
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-[16px] font-bold text-gray-900">云端连接</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">客户端只配置 Cloud API 地址，不直接配置数据库。</p>
-                </div>
-                <Button primary onClick={() => void handleSaveCloudConfig()} disabled={busy('cloud-config')}>
-                  <Settings size={16} /> 保存连接
-                </Button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {modeOptions.map((option) => {
-                  const active = accountSyncCloudModeDraft === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => setAccountSyncCloudModeDraft(option.value)}
-                      className={`rounded-2xl border px-4 py-4 text-left transition-all ${active ? 'border-blue-200 bg-blue-50/70 text-[#335CFF]' : 'border-gray-200 bg-white text-gray-700 hover:border-blue-100 hover:bg-blue-50/40'}`}
-                    >
-                      <p className="text-[13px] font-bold">{option.label}</p>
-                      <p className="mt-2 text-[11px] leading-5 text-gray-500">{option.helper}</p>
-                    </button>
-                  );
-                })}
-              </div>
-              {accountSyncCloudModeDraft === 'custom' && (
-                <input
-                  value={accountSyncCustomApiUrlDraft}
-                  onChange={(event) => setAccountSyncCustomApiUrlDraft(event.target.value)}
-                  placeholder="https://your-cloud-api.example.com"
-                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                />
-              )}
-              <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 text-[12px] text-slate-600">
-                当前生效地址：{cloudConfig?.effectiveApiUrl || '未启用云端'}<br />
-                官方测试云：{cloudConfig?.officialTestApiUrl || '未配置'}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-[16px] font-bold text-gray-900">我的账号</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">注册和登录只在需要云端同步、跨设备或组织协作时启用。</p>
-                </div>
-                {isCloudSession ? (
-                  <Button onClick={() => void handleExitCloudSession()} disabled={busy('cloud-logout')}>
-                    <ShieldAlert size={16} /> 退出云端
-                  </Button>
-                ) : null}
-              </div>
-
-              {isCloudSession ? (
-                <div className="space-y-3">
-                  <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">云端身份</p>
-                    <p className="text-[14px] font-bold text-slate-900">{currentSessionUser?.fullName || '未命名用户'}</p>
-                    <p className="text-[12px] text-slate-600 mt-1">{currentSessionUser?.email || '未绑定邮箱'}</p>
-                  </div>
-                  <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50 px-4 py-3 text-[12px] text-emerald-700">
-                    当前已切到云端模式；本机模式仍然保留，退出云端后会直接回到本机会话。
-                  </div>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-4">
-                  <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-                    <p className="text-[13px] font-bold text-gray-900">连接已有云端账号</p>
-                    <input
-                      value={accountSyncLoginForm.email}
-                      onChange={(event) => setAccountSyncLoginForm((prev) => ({ ...prev, email: event.target.value }))}
-                      placeholder="邮箱"
-                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                    />
-                    <input
-                      type="password"
-                      value={accountSyncLoginForm.password}
-                      onChange={(event) => setAccountSyncLoginForm((prev) => ({ ...prev, password: event.target.value }))}
-                      placeholder="密码"
-                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                    />
-                    <label className="flex items-center gap-2 text-[12px] text-gray-600">
-                      <input
-                        type="checkbox"
-                        checked={accountSyncLoginForm.rememberMe}
-                        onChange={(event) => setAccountSyncLoginForm((prev) => ({ ...prev, rememberMe: event.target.checked }))}
-                      />
-                      记住我的云端登录状态
-                    </label>
-                    <Button primary onClick={() => void handleCloudLogin()} disabled={busy('cloud-login')}>
-                      <ArrowRight size={16} /> 登录云端
-                    </Button>
-                  </div>
-
-                  <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-                    <p className="text-[13px] font-bold text-gray-900">创建个人云端账号</p>
-                    <input
-                      value={accountSyncRegisterForm.fullName}
-                      onChange={(event) => setAccountSyncRegisterForm((prev) => ({ ...prev, fullName: event.target.value }))}
-                      placeholder="显示名"
-                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                    />
-                    <input
-                      value={accountSyncRegisterForm.email}
-                      onChange={(event) => setAccountSyncRegisterForm((prev) => ({ ...prev, email: event.target.value }))}
-                      placeholder="邮箱"
-                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                    />
-                    <input
-                      type="password"
-                      value={accountSyncRegisterForm.password}
-                      onChange={(event) => setAccountSyncRegisterForm((prev) => ({ ...prev, password: event.target.value }))}
-                      placeholder="密码（至少 8 位）"
-                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                    />
-                    <Button primary onClick={() => void handleCloudRegister()} disabled={busy('cloud-register')}>
-                      <UserPlus size={16} /> 创建个人账号
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">组织与成员身份</h2>
-                <p className="text-[12px] text-gray-500 mt-1">组织创建、加入和邀请码都放在这里，不再卡在注册流程前面。</p>
-              </div>
-
-              {!isCloudSession ? (
-                <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-4 text-[12px] text-gray-600">
-                  先在上方连接云端账号，然后你就可以创建组织、生成邀请码或加入别人发来的组织。
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">当前成员身份</p>
-                    <p className="text-[14px] font-bold text-slate-900">{membership?.organizationName || '未加入组织'}</p>
-                    <p className="text-[12px] text-slate-600 mt-1">
-                      {membership?.isPersonalWorkspace ? '当前仍是个人空间' : `部门：${membership?.departmentName || '未设置'} · 岗位：${membership?.jobTitle || '未设置'}`}
-                    </p>
-                  </div>
-
-                  {membership?.isPersonalWorkspace && (
-                    <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-                      <p className="text-[13px] font-bold text-gray-900">创建正式组织</p>
-                      <input
-                        value={accountSyncOrgNameDraft}
-                        onChange={(event) => setAccountSyncOrgNameDraft(event.target.value)}
-                        placeholder="例如：益语智库协作组"
-                        className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                      />
-                      <Button primary onClick={() => void handleCreateOrganization()} disabled={busy('create-org')}>
-                        <Users size={16} /> 创建组织
-                      </Button>
-                    </div>
-                  )}
-
-                  {!membership?.isPersonalWorkspace && currentSessionUser?.primaryRole === 'admin' && (
-                    <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-                      <p className="text-[13px] font-bold text-gray-900">生成组织邀请码</p>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <select
-                          value={accountSyncInviteForm.departmentId}
-                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, departmentId: event.target.value }))}
-                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                        >
-                          <option value="">不预设部门</option>
-                          {departmentOptions.map((department) => (
-                            <option key={department.id} value={department.id}>{department.name}</option>
-                          ))}
-                        </select>
-                        <input
-                          value={accountSyncInviteForm.roleName}
-                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, roleName: event.target.value }))}
-                          placeholder="可选：岗位名称"
-                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          max={30}
-                          value={accountSyncInviteForm.expiresInDays}
-                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, expiresInDays: Math.max(1, Number(event.target.value) || 1) }))}
-                          placeholder="有效期（天）"
-                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={accountSyncInviteForm.maxUses}
-                          onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, maxUses: Math.max(1, Number(event.target.value) || 1) }))}
-                          placeholder="可使用次数"
-                          className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                        />
-                      </div>
-                      <Button primary onClick={() => void handleCreateInvitation()} disabled={busy('create-invite')}>
-                        <Copy size={16} /> 生成邀请码
-                      </Button>
-                    </div>
-                  )}
-
-                  <div className="rounded-3xl border border-gray-100 bg-gray-50/70 p-4 space-y-3">
-                    <p className="text-[13px] font-bold text-gray-900">加入组织</p>
-                    <input
-                      value={accountSyncInviteForm.code}
-                      onChange={(event) => setAccountSyncInviteForm((prev) => ({ ...prev, code: event.target.value }))}
-                      placeholder="输入别人发来的邀请码"
-                      className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none"
-                    />
-                    <Button primary onClick={() => void handleRedeemInvitation()} disabled={busy('redeem-invite')}>
-                      <ArrowRight size={16} /> 加入组织
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {latestOrgInvitation && (
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-[16px] font-bold text-gray-900">最新邀请码</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">可以直接复制给同事；后续也可以做成邀请链接。</p>
-                </div>
-                <Button onClick={() => navigator.clipboard.writeText(latestOrgInvitation.code).then(() => flash('success', '邀请码已复制')).catch(() => flash('error', '复制失败'))}>
-                  <Copy size={16} /> 复制
-                </Button>
-              </div>
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">邀请码</p>
-                  <p className="text-[18px] font-bold text-slate-900 tracking-[0.12em]">{latestOrgInvitation.code}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">组织</p>
-                  <p className="text-[13px] font-bold text-slate-900">{latestOrgInvitation.organizationName}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">部门 / 岗位</p>
-                  <p className="text-[12px] text-slate-700">{latestOrgInvitation.departmentName || '未预设部门'} / {latestOrgInvitation.roleName || '未预设岗位'}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">有效期</p>
-                  <p className="text-[12px] text-slate-700">{new Date(latestOrgInvitation.expiresAt).toLocaleString('zh-CN', { hour12: false })}</p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {isCloudSession && syncStatus?.needsInitialImport && (
-            <div className="bg-white border border-amber-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">首次同步向导</h2>
-                <p className="text-[12px] text-gray-500 mt-1">当前检测到本机已有结构化数据，请先决定这批数据如何进入云端。</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <button type="button" onClick={() => void handleLocalImport('keep_local')} className="rounded-2xl border border-gray-200 bg-white px-4 py-4 text-left hover:border-blue-100 hover:bg-blue-50/40">
-                  <p className="text-[13px] font-bold text-gray-900">保留本地，不导入</p>
-                  <p className="mt-2 text-[11px] leading-5 text-gray-500">继续使用云端账号，但暂时不把本机结构化数据推到云端。</p>
-                </button>
-                <button type="button" onClick={() => void handleLocalImport('import_structured')} className="rounded-2xl border border-blue-200 bg-blue-50/70 px-4 py-4 text-left hover:bg-blue-50">
-                  <p className="text-[13px] font-bold text-[#335CFF]">导入结构化数据</p>
-                  <p className="mt-2 text-[11px] leading-5 text-gray-500">导入任务、清单等结构化记录，不导入本地知识库全文和附件。</p>
-                </button>
-                <button type="button" onClick={() => void handleLocalImport('start_empty')} className="rounded-2xl border border-gray-200 bg-white px-4 py-4 text-left hover:border-blue-100 hover:bg-blue-50/40">
-                  <p className="text-[13px] font-bold text-gray-900">云端从空开始</p>
-                  <p className="mt-2 text-[11px] leading-5 text-gray-500">只建立云端账号与组织关系，不把本机已有结构化记录带上去。</p>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    };
-
     const renderSectionContent = () => {
       if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks'].includes(settingsSection)) {
         return (
@@ -15068,8 +14176,6 @@ export default function App() {
       switch (settingsSection) {
         case 'overview':
           return renderOverviewSection();
-        case 'account_sync':
-          return renderAccountSyncSection();
         case 'org_dna':
           return renderOrgDnaSection();
         case 'tasks':
@@ -15104,8 +14210,8 @@ export default function App() {
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">系统设置</h1>
             <p className="text-[12px] text-gray-500 mt-1">把整个软件的默认规则、权限边界和组织级知识底座收口到一个设置中心。</p>
           </div>
-          <Button onClick={() => { void logout().then(async (response) => { setAuthState(response); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败')); }}>
-            <ShieldAlert size={16} /> {isCloudSession ? '退出云端' : '刷新本机会话'}
+          <Button onClick={() => { void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败')); }}>
+            <ShieldAlert size={16} /> 退出登录
           </Button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
@@ -15202,7 +14308,7 @@ export default function App() {
         onTasksReload={loadTaskBlock}
       />
     ),
-    unified_workbench: UnifiedWorkbenchView(),
+    unified_workbench: <UnifiedWorkbenchView />,
     growth_handbook: (
       <GrowthHandbookView
         entries={handbookEntries}
@@ -15221,7 +14327,7 @@ export default function App() {
         flash={flash}
       />
     ),
-    settings: SettingsView(),
+    settings: <SettingsView />,
   };
 
   if (loading) {
@@ -15238,15 +14344,8 @@ export default function App() {
     );
   }
 
-  if (!currentSessionUser) {
-    return (
-      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
-        <div className="flex flex-col items-center gap-3 text-center text-gray-500">
-          <RefreshCw size={18} className="animate-spin" />
-          <p>正在恢复本机会话…</p>
-        </div>
-      </div>
-    );
+  if (!authState.authenticated || !currentSessionUser) {
+    return <AuthShell />;
   }
 
   return (
@@ -15330,14 +14429,14 @@ export default function App() {
                 className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
                 onClick={() => {
                   void logout()
-                    .then(async (response) => {
-                      setAuthState(response);
+                    .then(async () => {
+                      setAuthState({ authenticated: false });
                       await loadAll();
                     })
                     .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
                 }}
               >
-                {isCloudSession ? '退出云端' : '刷新本机会话'}
+                退出登录
               </button>
             </div>
           </div>

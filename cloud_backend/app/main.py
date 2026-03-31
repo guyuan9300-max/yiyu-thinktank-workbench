@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import html
+import ipaddress
+import mimetypes
 import os
 import re
 from dataclasses import dataclass
@@ -9,15 +12,17 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from app.department_catalog import get_department_entry, list_department_catalog
 from app.db import Database, from_json, to_json
 from app.models import (
     AuthTokenResponse,
-    AccountMembershipRecord,
+    ClientSummaryRecord,
+    ConsultationChatPayload,
+    ConsultationChatResponse,
     ConsultationKnowledgeRequestCreatePayload,
     ConsultationKnowledgeRequestRecord,
     ConsultationKnowledgeRequestUpdatePayload,
@@ -28,12 +33,13 @@ from app.models import (
     EventLineCreatePayload,
     EventLineDetailRecord,
     EventLineRecord,
+    EventLineReportAttachmentRecord,
+    EventLineReportSnapshotRecord,
     EventLineUpdatePayload,
     HealthResponse,
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
     FeishuBindingRelaySessionStatusRecord,
-    CreateOrganizationPayload,
     LoginPayload,
     ManagementSignalCardRecord,
     MentionCandidate,
@@ -41,9 +47,6 @@ from app.models import (
     OrgDepartmentPlanItemRecord,
     OrgDepartmentPlanRecord,
     OrgDepartmentQuarterPlanRecord,
-    OrgInvitationCreatePayload,
-    OrgInvitationRedeemPayload,
-    OrgInvitationRecord,
     OrgEmployeeBindingRecord,
     OrgFocusItemRecord,
     OrgModelProfileRecord,
@@ -62,16 +65,17 @@ from app.models import (
     ReviewHistoryEntryRecord,
     ReviewHistoryResponse,
     RegisterPayload,
-    RegisterResponse,
     RejectPayload,
     ReportActionCardRecord,
     RolePayload,
     SessionUser,
+    SmartTaskDraftResponse,
     SupportRequestCreatePayload,
     SupportRequestRecord,
     SupportRequestResolvePayload,
     TaskActivityRecord,
     TaskAttachmentRecord,
+    TaskAttachmentTranscriptionResponse,
     TaskBoardResponse,
     TaskCollaboratorRecord,
     TaskCompletionReviewPayload,
@@ -79,6 +83,10 @@ from app.models import (
     TaskListLibraryResponse,
     TaskListMutationPayload,
     TaskListRecord,
+    TaskNotePayload,
+    OrgAiConfigRecord,
+    OrgAiConfigUpdatePayload,
+    OrgAiConfigSecretRecord,
     TaskOrgContextRecord,
     TaskRecord,
     TaskReturnPayload,
@@ -90,8 +98,6 @@ from app.models import (
     TaskPlanLinkRecord,
     TaskPlanLinkUpsertPayload,
     TaskUpdatePayload,
-    StructuredImportPayload,
-    StructuredImportResult,
     WeeklyReviewCreatePayload,
     WeeklyReviewEntryRecord,
     WeeklyReviewEventLineContextRecord,
@@ -99,6 +105,7 @@ from app.models import (
     WeeklyReviewTaskSnapshotRecord,
     WeeklyReviewTaskStructuredNoteRecord,
 )
+from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
 from app.security import create_access_token, decode_access_token, hash_password, verify_password
 
@@ -125,6 +132,34 @@ def safe_filename(name: str) -> str:
     return sanitized[:120] or "attachment"
 
 
+def _is_public_hostname(hostname: str) -> bool:
+    value = hostname.strip().lower()
+    if not value or value == "localhost" or value.endswith(".local"):
+        return False
+    try:
+        return not ipaddress.ip_address(value).is_private and not ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return True
+
+
+def _resolve_public_base_url(request: Request) -> str | None:
+    configured = (
+        os.getenv("YIYU_CLOUD_PUBLIC_BASE_URL", "").strip()
+        or os.getenv("YIYU_PUBLIC_BASE_URL", "").strip()
+    )
+    if configured:
+        return configured.rstrip("/")
+
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    host = forwarded_host or (request.headers.get("host") or "").split(",", 1)[0].strip()
+    hostname = host.split(":", 1)[0]
+    if not _is_public_hostname(hostname):
+        return None
+
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",", 1)[0].strip()
+    return f"{proto}://{host}".rstrip("/")
+
+
 @dataclass
 class AppState:
     db: Database
@@ -149,111 +184,6 @@ def _row_user(row) -> SessionUser:
         primaryRole=str(row["primary_role"]),
         accountStatus=str(row["account_status"]),
     )
-
-
-def _slugify_organization_name(name: str) -> str:
-    base = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", name.strip().lower()).strip("-")
-    return base[:48] or f"org-{uuid4().hex[:8]}"
-
-
-def _ensure_unique_org_slug(state: AppState, preferred: str) -> str:
-    candidate = preferred
-    suffix = 1
-    while state.db.fetchone("SELECT id FROM organizations WHERE slug = ?", (candidate,)):
-        suffix += 1
-        candidate = f"{preferred}-{suffix}"
-    return candidate
-
-
-def _personal_workspace_name(full_name: str) -> str:
-    trimmed = full_name.strip() or "新用户"
-    return f"{trimmed}的个人空间"
-
-
-def _organization_row_or_404(state: AppState, organization_id: str):
-    row = state.db.fetchone("SELECT * FROM organizations WHERE id = ?", (organization_id,))
-    if not row:
-        raise HTTPException(status_code=404, detail="组织不存在")
-    return row
-
-
-def _organization_name(state: AppState, organization_id: str | None) -> str | None:
-    if not organization_id:
-        return None
-    row = state.db.fetchone("SELECT name FROM organizations WHERE id = ?", (organization_id,))
-    return str(row["name"]) if row else None
-
-
-def _is_personal_workspace(row) -> bool:
-    return str(row["workspace_mode"] or "shared") == "personal"
-
-
-def _account_membership_record(state: AppState, current_user: SessionUser) -> AccountMembershipRecord:
-    user_row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
-    org_row = state.db.fetchone("SELECT * FROM organizations WHERE id = ?", (current_user.organizationId,))
-    department_name = None
-    if user_row and user_row["department_id"]:
-        department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (str(user_row["department_id"]),))
-        department_name = str(department_row["name"]) if department_row else str(user_row["department_name"] or "") or None
-    return AccountMembershipRecord(
-        organizationId=current_user.organizationId,
-        organizationName=str(org_row["name"]) if org_row else None,
-        departmentId=str(user_row["department_id"]) if user_row and user_row["department_id"] else None,
-        departmentName=department_name,
-        jobTitle=str(user_row["job_title"]) if user_row and user_row["job_title"] else None,
-        isPersonalWorkspace=bool(org_row and _is_personal_workspace(org_row)),
-    )
-
-
-def _department_name_for_org(state: AppState, organization_id: str, department_id: str | None) -> str | None:
-    if not department_id:
-        return None
-    row = state.db.fetchone(
-        "SELECT name FROM org_departments WHERE id = ? AND organization_id = ?",
-        (department_id, organization_id),
-    )
-    return str(row["name"]) if row else None
-
-
-def _ensure_workspace_lists(state: AppState, organization_id: str) -> None:
-    default_rows = [
-        ("收集箱", "#888681", 0, 1, "org"),
-        ("我的事项", "#5B7BFE", 0, 1, "personal"),
-    ]
-    for name, color, sort_order, is_default, scope in default_rows:
-        existing = state.db.fetchone(
-            """
-            SELECT id
-            FROM task_lists
-            WHERE organization_id = ? AND scope = ? AND name = ? AND (archived_at IS NULL OR archived_at = '')
-            ORDER BY sort_order ASC
-            LIMIT 1
-            """,
-            (organization_id, scope, name),
-        )
-        if existing:
-            continue
-        has_default = bool(
-            state.db.fetchone(
-                "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND is_default = 1 LIMIT 1",
-                (organization_id, scope),
-            )
-        )
-        state.db.execute(
-            """
-            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
-            """,
-            (
-                new_id("list"),
-                organization_id,
-                name,
-                color,
-                sort_order,
-                0 if has_default else is_default,
-                scope,
-            ),
-        )
 
 
 def _employee_record(row) -> EmployeeRecord:
@@ -891,6 +821,84 @@ def _consultation_request_row_or_404(state: AppState, request_id: str, organizat
     return row
 
 
+def _create_consultation_knowledge_request_internal(
+    state: AppState,
+    *,
+    current_user: SessionUser,
+    target: Literal["vector_memory", "document_archive"],
+    question: str,
+    answer: str,
+    client_id: str | None,
+    client_name: str | None,
+    task_id: str | None,
+    event_line_id: str | None,
+    source: str,
+) -> ConsultationKnowledgeRequestRecord:
+    normalized_answer = answer.strip()
+    if not normalized_answer:
+        raise HTTPException(status_code=400, detail="答案内容不能为空")
+
+    timestamp = now_iso()
+    answer_id = new_id("consult_answer")
+    request_id = new_id("consult_req")
+    state.db.execute(
+        """
+        INSERT INTO consultation_answers(
+            id, organization_id, author_user_id, client_id, client_name, task_id, event_line_id,
+            question, answer, source, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            answer_id,
+            current_user.organizationId,
+            current_user.id,
+            client_id,
+            client_name.strip() if client_name else None,
+            task_id,
+            event_line_id,
+            question.strip(),
+            normalized_answer,
+            source,
+            timestamp,
+            timestamp,
+        ),
+    )
+    state.db.execute(
+        """
+        INSERT INTO consultation_knowledge_requests(
+            id, answer_id, organization_id, target, status, requested_by_user_id, error_message,
+            local_document_id, local_document_path, completed_at, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, NULL, ?, ?)
+        """,
+        (
+            request_id,
+            answer_id,
+            current_user.organizationId,
+            target,
+            current_user.id,
+            timestamp,
+            timestamp,
+        ),
+    )
+    _log_audit(
+        state,
+        "consultation.knowledge_request_created",
+        actor_user_id=current_user.id,
+        target_user_id=None,
+        detail={
+            "requestId": request_id,
+            "answerId": answer_id,
+            "target": target,
+            "clientId": client_id or "",
+            "taskId": task_id or "",
+            "eventLineId": event_line_id or "",
+            "source": source,
+        },
+    )
+    row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
+    return _consultation_knowledge_request_record(row)
+
+
 def _event_line_row_or_404(state: AppState, event_line_id: str, organization_id: str):
     row = state.db.fetchone(
         "SELECT * FROM event_lines WHERE id = ? AND organization_id = ?",
@@ -899,6 +907,40 @@ def _event_line_row_or_404(state: AppState, event_line_id: str, organization_id:
     if not row:
         raise HTTPException(status_code=404, detail="Event line not found")
     return row
+
+
+def _event_line_primary_client_id(row) -> str | None:
+    if not row or not row["primary_client_id"]:
+        return None
+    value = str(row["primary_client_id"]).strip()
+    return value or None
+
+
+def _event_line_primary_client_name(row) -> str | None:
+    if not row or not row["primary_client_name"]:
+        return None
+    value = str(row["primary_client_name"]).strip()
+    return value or None
+
+
+def _client_row_by_id(state: AppState, client_id: str | None, organization_id: str | None = None):
+    normalized = (client_id or "").strip()
+    if not normalized:
+        return None
+    if organization_id:
+        return state.db.fetchone(
+            "SELECT * FROM clients WHERE id = ? AND organization_id = ?",
+            (normalized, organization_id),
+        )
+    return state.db.fetchone("SELECT * FROM clients WHERE id = ?", (normalized,))
+
+
+def _client_summary_record(row) -> ClientSummaryRecord:
+    return ClientSummaryRecord(
+        id=str(row["id"]),
+        name=str(row["name"]),
+        alias=str(row["alias"]) if row["alias"] else None,
+    )
 
 
 def _event_line_record(state: AppState, row) -> EventLineRecord:
@@ -911,6 +953,8 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (str(row["primary_department_id"]),))
         department_name = str(department_row["name"]) if department_row else None
     activity_count = int(state.db.scalar("SELECT COUNT(1) FROM event_line_activities WHERE event_line_id = ?", (str(row["id"]),)) or 0)
+    client_row = _client_row_by_id(state, _event_line_primary_client_id(row), str(row["organization_id"]))
+    primary_client_name = _event_line_primary_client_name(row) or (str(client_row["name"]) if client_row and client_row["name"] else None)
     return EventLineRecord(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -926,8 +970,8 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
         ownerId=str(row["owner_id"]) if row["owner_id"] else None,
         ownerName=owner_name,
-        primaryClientId=str(row["primary_client_id"]) if row["primary_client_id"] else None,
-        primaryClientName=None,
+        primaryClientId=_event_line_primary_client_id(row),
+        primaryClientName=primary_client_name,
         primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
         primaryDepartmentName=department_name,
         participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
@@ -1852,13 +1896,8 @@ def _ensure_seed_data(state: AppState) -> None:
     timestamp = now_iso()
     if not db.fetchone("SELECT id FROM organizations WHERE id = ?", (DEFAULT_ORG_ID,)):
         db.execute(
-            "INSERT INTO organizations(id, name, slug, workspace_mode, owner_user_id, created_at, updated_at) VALUES(?, ?, ?, 'shared', 'user_admin', ?, ?)",
+            "INSERT INTO organizations(id, name, slug, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
             (DEFAULT_ORG_ID, "益语智库", "yiyu-thinktank", timestamp, timestamp),
-        )
-    else:
-        db.execute(
-            "UPDATE organizations SET workspace_mode = COALESCE(NULLIF(workspace_mode, ''), 'shared'), owner_user_id = COALESCE(owner_user_id, 'user_admin'), updated_at = ? WHERE id = ?",
-            (timestamp, DEFAULT_ORG_ID),
         )
 
     people = resolve_seed_users(state.data_dir)
@@ -2740,6 +2779,7 @@ def _task_snapshot_from_record(state: AppState, task: TaskRecord) -> WeeklyRevie
         status=task.progressStatus if task.viewerInboxStatus != "pending" else "inbox",
         dueDate=task.dueDate,
         createdAt=task.createdAt,
+        completionNote=task.completionNote,
         tags=task.tags,
         listName=task.listName,
         listColor=task.listColor,
@@ -2776,6 +2816,20 @@ def _task_attachment_record(row) -> TaskAttachmentRecord:
     )
 
 
+def _task_attachment_row_or_404(state: AppState, attachment_id: str, task_id: str, organization_id: str):
+    row = state.db.fetchone(
+        """
+        SELECT *
+        FROM task_attachments
+        WHERE id = ? AND task_id = ? AND organization_id = ?
+        """,
+        (attachment_id, task_id, organization_id),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Task attachment not found")
+    return row
+
+
 def _task_attachments_for_task(state: AppState, task_id: str) -> list[TaskAttachmentRecord]:
     rows = state.db.fetchall(
         """
@@ -2789,15 +2843,17 @@ def _task_attachments_for_task(state: AppState, task_id: str) -> list[TaskAttach
     return [_task_attachment_record(row) for row in rows]
 
 
+def _task_note_text(state: AppState, task_id: str) -> str | None:
+    note_row = state.db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (task_id,))
+    return str(note_row["note"]) if note_row and note_row["note"] else None
+
+
 def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskRecord:
     creator = _get_user_or_404(state, str(row["creator_id"]))
     owner = _get_user_or_404(state, str(row["owner_id"])) if row["owner_id"] else None
     list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (str(row["list_id"]),))
     collaborators = _collaborators_for_task(state, str(row["id"]))
     attachments = _task_attachments_for_task(state, str(row["id"]))
-    tag_ids = [str(item) for item in from_json(row["tag_ids_json"], [])] if isinstance(from_json(row["tag_ids_json"], []), list) else []
-    legacy_tag_names = [str(item) for item in from_json(row["tags_json"], [])] if isinstance(from_json(row["tags_json"], []), list) else []
-    tag_records = _resolve_task_tags(state, _row_user(creator), tag_ids, legacy_tag_names)
     viewer_status = next((item.inboxStatus for item in collaborators if item.userId == viewer_id), None)
     org_link_row = _task_org_link_row(state, str(row["id"]))
     task_plan_link_row = _task_plan_link_row(state, str(row["id"]))
@@ -2828,6 +2884,15 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
     if row["event_line_id"]:
         event_line_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (str(row["event_line_id"]),))
         event_line_name = str(event_line_row["name"]) if event_line_row else None
+    client_row = _client_row_by_id(state, str(row["client_id"]) if row["client_id"] else None, str(row["organization_id"]))
+    client_name = (
+        (str(client_row["name"]) if client_row and client_row["name"] else None)
+        or (
+            _event_line_primary_client_name(event_line_row)
+            if event_line_row and _event_line_primary_client_id(event_line_row) == str(row["client_id"]).strip()
+            else None
+        )
+    )
     (
         business_category,
         current_blocker,
@@ -2859,7 +2924,7 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         durationMinutes=int(row["duration_minutes"] or 60),
         scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),
         clientId=str(row["client_id"]) if row["client_id"] else None,
-        clientName=None,
+        clientName=client_name,
         eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
         eventLineName=event_line_name,
         projectModuleId=str(row["project_module_id"]) if row["project_module_id"] else None,
@@ -2874,8 +2939,9 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         nextAction=next_action,
         recentDecision=recent_decision,
         completionNote=str(row["completion_note"]) if row["completion_note"] else None,
+        note=_task_note_text(state, str(row["id"])),
         evidenceCount=max(evidence_count, len(attachments)),
-        tags=tag_records,
+        tags=[_task_tag_record(tr) for tr in _tag_rows_by_ids(state, [str(i) for i in from_json(row["tag_ids_json"], []) if i])] if row["tag_ids_json"] else [],
         attachments=attachments,
         collaborators=collaborators,
         collaborationSummary=_collaboration_summary(collaborators),
@@ -3874,6 +3940,28 @@ def _backfill_task_org_links(
     )
 
 
+def _sync_qwen_chat(api_key: str, payload: dict, timeout: object) -> str:
+    """Synchronous Qwen chat call, intended to be run via asyncio.to_thread."""
+    import httpx
+    from app.smart_input import QWEN_BASE_URL
+
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(
+            f"{QWEN_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        response.raise_for_status()
+        result = response.json()
+    text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not text:
+        return "抱歉，AI 未能生成有效回复，请稍后重试。"
+    return text.strip()
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.add_middleware(
@@ -3944,67 +4032,10 @@ def create_app() -> FastAPI:
         return AuthTokenResponse(accessToken=token, refreshToken=refresh_token, user=_row_user(row))
 
     @app.post("/api/v1/auth/register")
-    def register(payload: RegisterPayload) -> dict[str, object]:
+    def register(payload: RegisterPayload) -> dict[str, str]:
         existing = state.db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (payload.email.lower(),))
         if existing:
             raise HTTPException(status_code=409, detail="Email already registered")
-        if not payload.departmentId:
-            timestamp = now_iso()
-            user_id = new_id("emp")
-            organization_id = new_id("org")
-            organization_name = _personal_workspace_name(payload.fullName)
-            organization_slug = _ensure_unique_org_slug(state, _slugify_organization_name(organization_name))
-            state.db.execute(
-                """
-                INSERT INTO organizations(id, name, slug, workspace_mode, owner_user_id, created_at, updated_at)
-                VALUES(?, ?, ?, 'personal', ?, ?, ?)
-                """,
-                (organization_id, organization_name, organization_slug, user_id, timestamp, timestamp),
-            )
-            state.db.execute(
-                """
-                INSERT INTO employee_accounts(
-                    id, organization_id, email, full_name, password_hash, primary_role, account_status,
-                    approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
-                    department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, 'admin', 'approved', ?, NULL, NULL, NULL, '[]', NULL, NULL, NULL, ?, NULL, ?, 0, ?, ?)
-                """,
-                (
-                    user_id,
-                    organization_id,
-                    payload.email.lower(),
-                    payload.fullName.strip(),
-                    hash_password(payload.password),
-                    timestamp,
-                    payload.jobTitle.strip() if payload.jobTitle else None,
-                    payload.currentFocus.strip() if payload.currentFocus else "",
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            state.db.execute(
-                "INSERT INTO employee_role_bindings(id, user_id, role, created_at) VALUES(?, ?, 'admin', ?)",
-                (new_id("role"), user_id, timestamp),
-            )
-            _ensure_workspace_lists(state, organization_id)
-            session_id = new_id("sess")
-            refresh_token = new_id("rt")
-            expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
-            state.db.execute(
-                "INSERT INTO auth_refresh_sessions(id, user_id, refresh_token, created_at, expires_at, revoked_at) VALUES(?, ?, ?, ?, ?, NULL)",
-                (session_id, user_id, refresh_token, timestamp, expires_at),
-            )
-            row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (user_id,))
-            assert row is not None
-            _log_audit(
-                state,
-                "self_register_personal_workspace",
-                actor_user_id=user_id,
-                target_user_id=user_id,
-                detail={"organizationId": organization_id, "organizationName": organization_name},
-            )
-            issued = _issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token)
-            return issued.model_dump()
         department = get_department_entry(payload.departmentId) if payload.departmentId else None
         if payload.departmentId and not department:
             raise HTTPException(status_code=400, detail="请选择有效的部门")
@@ -4133,328 +4164,6 @@ def create_app() -> FastAPI:
         _log_audit(state, "logout", actor_user_id=current_user.id, target_user_id=current_user.id, detail={})
         return {"message": "ok"}
 
-    @app.get("/api/v1/account/membership", response_model=AccountMembershipRecord)
-    def get_account_membership(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> AccountMembershipRecord:
-        return _account_membership_record(state, current_user)
-
-    @app.post("/api/v1/orgs", response_model=AccountMembershipRecord)
-    def create_organization(
-        payload: CreateOrganizationPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> AccountMembershipRecord:
-        name = payload.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="组织名称不能为空")
-        timestamp = now_iso()
-        current_org_row = _organization_row_or_404(state, current_user.organizationId)
-        current_member_count = int(
-            state.db.scalar("SELECT COUNT(1) AS count FROM employee_accounts WHERE organization_id = ?", (current_user.organizationId,)) or 0
-        )
-        if _is_personal_workspace(current_org_row) and current_member_count <= 1:
-            next_slug = _ensure_unique_org_slug(state, _slugify_organization_name(name))
-            state.db.execute(
-                """
-                UPDATE organizations
-                SET name = ?, slug = ?, workspace_mode = 'shared', owner_user_id = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (name, next_slug, current_user.id, timestamp, current_user.organizationId),
-            )
-            state.db.execute(
-                """
-                UPDATE employee_accounts
-                SET primary_role = 'admin', account_status = 'approved', updated_at = ?
-                WHERE id = ?
-                """,
-                (timestamp, current_user.id),
-            )
-            _log_audit(
-                state,
-                "convert_personal_workspace_to_shared",
-                actor_user_id=current_user.id,
-                target_user_id=current_user.id,
-                detail={"organizationId": current_user.organizationId, "organizationName": name},
-            )
-            _ensure_workspace_lists(state, current_user.organizationId)
-            refreshed_user = SessionUser(
-                id=current_user.id,
-                organizationId=current_user.organizationId,
-                email=current_user.email,
-                fullName=current_user.fullName,
-                primaryRole="admin",
-                accountStatus="approved",
-            )
-            return _account_membership_record(state, refreshed_user)
-        organization_id = new_id("org")
-        organization_slug = _ensure_unique_org_slug(state, _slugify_organization_name(name))
-        state.db.execute(
-            """
-            INSERT INTO organizations(id, name, slug, workspace_mode, owner_user_id, created_at, updated_at)
-            VALUES(?, ?, ?, 'shared', ?, ?, ?)
-            """,
-            (organization_id, name, organization_slug, current_user.id, timestamp, timestamp),
-        )
-        state.db.execute(
-            """
-            UPDATE employee_accounts
-            SET organization_id = ?, primary_role = 'admin', account_status = 'approved',
-                department_id = NULL, department_name = NULL, updated_at = ?
-            WHERE id = ?
-            """,
-            (organization_id, timestamp, current_user.id),
-        )
-        _ensure_workspace_lists(state, organization_id)
-        _log_audit(
-            state,
-            "create_organization",
-            actor_user_id=current_user.id,
-            target_user_id=current_user.id,
-            detail={"organizationId": organization_id, "organizationName": name},
-        )
-        refreshed_user = SessionUser(
-            id=current_user.id,
-            organizationId=organization_id,
-            email=current_user.email,
-            fullName=current_user.fullName,
-            primaryRole="admin",
-            accountStatus="approved",
-        )
-        return _account_membership_record(state, refreshed_user)
-
-    @app.post("/api/v1/org-invitations", response_model=OrgInvitationRecord)
-    def create_org_invitation(
-        payload: OrgInvitationCreatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
-    ) -> OrgInvitationRecord:
-        organization_row = _organization_row_or_404(state, current_user.organizationId)
-        if _is_personal_workspace(organization_row):
-            raise HTTPException(status_code=400, detail="个人空间不能直接邀请成员，请先创建正式组织。")
-        department_name = _department_name_for_org(state, current_user.organizationId, payload.departmentId)
-        if payload.departmentId and not department_name:
-            raise HTTPException(status_code=400, detail="邀请码绑定的部门不存在。")
-        timestamp = now_iso()
-        expires_at = (datetime.now() + timedelta(days=int(payload.expiresInDays or 7))).replace(microsecond=0).isoformat()
-        code = uuid4().hex[:8].upper()
-        while state.db.fetchone("SELECT code FROM org_invitations WHERE code = ?", (code,)):
-            code = uuid4().hex[:8].upper()
-        state.db.execute(
-            """
-            INSERT INTO org_invitations(
-                code, organization_id, department_id, role_name, created_by_user_id, expires_at, max_uses, used_count, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-            """,
-            (
-                code,
-                current_user.organizationId,
-                payload.departmentId,
-                payload.roleName.strip() if payload.roleName else None,
-                current_user.id,
-                expires_at,
-                int(payload.maxUses or 1),
-                timestamp,
-                timestamp,
-            ),
-        )
-        _log_audit(
-            state,
-            "create_org_invitation",
-            actor_user_id=current_user.id,
-            target_user_id=None,
-            detail={"organizationId": current_user.organizationId, "departmentId": payload.departmentId, "roleName": payload.roleName},
-        )
-        return OrgInvitationRecord(
-            code=code,
-            organizationId=current_user.organizationId,
-            organizationName=str(organization_row["name"]),
-            departmentId=payload.departmentId,
-            departmentName=department_name,
-            roleName=payload.roleName.strip() if payload.roleName else None,
-            expiresAt=expires_at,
-            maxUses=int(payload.maxUses or 1),
-            usedCount=0,
-        )
-
-    @app.post("/api/v1/org-invitations/redeem", response_model=AccountMembershipRecord)
-    def redeem_org_invitation(
-        payload: OrgInvitationRedeemPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> AccountMembershipRecord:
-        code = payload.code.strip().upper()
-        invitation_row = state.db.fetchone("SELECT * FROM org_invitations WHERE code = ?", (code,))
-        if not invitation_row:
-            raise HTTPException(status_code=404, detail="邀请码不存在。")
-        if invitation_row["expires_at"] and datetime.fromisoformat(str(invitation_row["expires_at"])) <= datetime.now():
-            raise HTTPException(status_code=400, detail="邀请码已过期。")
-        max_uses = int(invitation_row["max_uses"] or 1)
-        used_count = int(invitation_row["used_count"] or 0)
-        if used_count >= max_uses:
-            raise HTTPException(status_code=400, detail="邀请码已失效。")
-        target_org_id = str(invitation_row["organization_id"])
-        target_org_row = _organization_row_or_404(state, target_org_id)
-        department_id = str(invitation_row["department_id"]) if invitation_row["department_id"] else None
-        department_name = _department_name_for_org(state, target_org_id, department_id)
-        role_name = str(invitation_row["role_name"]).strip() if invitation_row["role_name"] else None
-        user_row = _get_user_or_404(state, current_user.id)
-        current_job_title = str(user_row["job_title"]).strip() if user_row["job_title"] else ""
-        next_job_title = current_job_title or role_name
-        timestamp = now_iso()
-        current_org_row = _organization_row_or_404(state, current_user.organizationId)
-        next_primary_role: PrimaryRole = current_user.primaryRole if target_org_id == current_user.organizationId else "employee"
-        if _is_personal_workspace(current_org_row) and target_org_id != current_user.organizationId:
-            next_primary_role = "employee"
-        state.db.execute(
-            """
-            UPDATE employee_accounts
-            SET organization_id = ?, department_id = ?, department_name = ?, job_title = ?, primary_role = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (target_org_id, department_id, department_name, next_job_title or None, next_primary_role, timestamp, current_user.id),
-        )
-        state.db.execute(
-            "UPDATE org_invitations SET used_count = used_count + 1, updated_at = ? WHERE code = ?",
-            (timestamp, code),
-        )
-        _ensure_workspace_lists(state, target_org_id)
-        _log_audit(
-            state,
-            "redeem_org_invitation",
-            actor_user_id=current_user.id,
-            target_user_id=current_user.id,
-            detail={"organizationId": target_org_id, "departmentId": department_id, "roleName": role_name},
-        )
-        refreshed_user = SessionUser(
-            id=current_user.id,
-            organizationId=target_org_id,
-            email=current_user.email,
-            fullName=current_user.fullName,
-            primaryRole=next_primary_role,
-            accountStatus=current_user.accountStatus,
-        )
-        return _account_membership_record(state, refreshed_user)
-
-    @app.post("/api/v1/sync/import-local", response_model=StructuredImportResult)
-    def import_local_structured_data(
-        payload: StructuredImportPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> StructuredImportResult:
-        _ensure_workspace_lists(state, current_user.organizationId)
-        imported_list_count = 0
-        imported_task_count = 0
-        tag_count_before = int(
-            state.db.scalar("SELECT COUNT(1) AS count FROM task_tag_library WHERE organization_id = ?", (current_user.organizationId,)) or 0
-        )
-        list_mapping: dict[str, tuple[str, str]] = {}
-        for index, item in enumerate(payload.taskLists):
-            scope = "personal" if item.scope == "personal" else "org"
-            existing = state.db.fetchone(
-                """
-                SELECT *
-                FROM task_lists
-                WHERE organization_id = ? AND scope = ? AND lower(name) = lower(?)
-                ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END, sort_order ASC
-                LIMIT 1
-                """,
-                (current_user.organizationId, scope, item.name.strip()),
-            )
-            if existing:
-                list_mapping[item.localId] = (str(existing["id"]), scope)
-                continue
-            has_default = bool(
-                state.db.fetchone(
-                    "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND is_default = 1 LIMIT 1",
-                    (current_user.organizationId, scope),
-                )
-            )
-            list_id = new_id("list")
-            state.db.execute(
-                """
-                INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (
-                    list_id,
-                    current_user.organizationId,
-                    item.name.strip(),
-                    item.color or "#5B7BFE",
-                    index,
-                    0 if has_default else 1,
-                    scope,
-                ),
-            )
-            list_mapping[item.localId] = (list_id, scope)
-            imported_list_count += 1
-        org_default_list_id = _default_list_id(state, current_user.organizationId)
-        if not org_default_list_id:
-            raise HTTPException(status_code=400, detail="当前组织缺少默认任务清单，无法导入。")
-        timestamp = now_iso()
-        for item in payload.tasks:
-            title = item.title.strip()
-            if not title:
-                continue
-            source_id = f"local:{item.localId}"
-            duplicate = state.db.fetchone(
-                """
-                SELECT id
-                FROM tasks
-                WHERE organization_id = ? AND source_type = 'local_import' AND source_id = ?
-                LIMIT 1
-                """,
-                (current_user.organizationId, source_id),
-            )
-            if duplicate:
-                continue
-            mapped_list_id, mapped_scope = list_mapping.get(item.listLocalId or "", (org_default_list_id, "org"))
-            resolved_tags = _normalize_task_tags(state, current_user, None, item.tags)
-            scope_mode = "PERSONAL_ONLY" if mapped_scope == "personal" else "COLLAB_SHARED"
-            task_id = new_id("task")
-            state.db.execute(
-                """
-                INSERT INTO tasks(
-                    id, organization_id, title, description, creator_id, owner_id, due_date, duration_minutes, scope_mode,
-                    business_category, current_blocker, next_action, recent_decision, evidence_count, priority, list_id,
-                    progress_status, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?, 'todo', 'local_import', ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id,
-                    current_user.organizationId,
-                    title,
-                    item.description,
-                    current_user.id,
-                    current_user.id,
-                    item.dueDate,
-                    item.durationMinutes,
-                    scope_mode,
-                    item.priority,
-                    mapped_list_id,
-                    source_id,
-                    to_json([tag.name for tag in resolved_tags]),
-                    to_json([tag.id for tag in resolved_tags]),
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            state.db.execute(
-                """
-                INSERT INTO task_collaborators(
-                    task_id, user_id, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
-                ) VALUES(?, ?, 0, 1, 'accepted', NULL, ?, ?, ?)
-                """,
-                (task_id, current_user.id, timestamp, timestamp, timestamp),
-            )
-            imported_task_count += 1
-        tag_count_after = int(
-            state.db.scalar("SELECT COUNT(1) AS count FROM task_tag_library WHERE organization_id = ?", (current_user.organizationId,)) or 0
-        )
-        return StructuredImportResult(
-            importedTaskCount=imported_task_count,
-            importedListCount=imported_list_count,
-            importedTagCount=max(tag_count_after - tag_count_before, 0),
-            updatedAt=timestamp,
-        )
-
     @app.post("/api/v1/integrations/feishu/user-binding/sessions", response_model=FeishuBindingRelaySessionStatusRecord)
     def create_feishu_binding_relay_session(
         payload: FeishuBindingRelaySessionCreatePayload,
@@ -4576,6 +4285,115 @@ def create_app() -> FastAPI:
         )
         return [_employee_record(row) for row in rows]
 
+    # ── Org AI Config (encrypted, admin-write, member-read) ──
+
+    def _org_ai_encrypt(plain_text: str, org_id: str) -> tuple[str, str]:
+        """AES-256-GCM encrypt using org-scoped key derived from app secret + org_id."""
+        import base64
+        from hashlib import sha256
+        from os import urandom
+        key = sha256(f"{state.secret_key}:{org_id}:ai_config".encode()).digest()
+        nonce = urandom(12)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        cipher = AESGCM(key)
+        ct = cipher.encrypt(nonce, plain_text.encode("utf-8"), None)
+        return base64.b64encode(ct).decode(), base64.b64encode(nonce).decode()
+
+    def _org_ai_decrypt(encrypted_b64: str, nonce_b64: str, org_id: str) -> str:
+        import base64
+        from hashlib import sha256
+        if not encrypted_b64 or not nonce_b64:
+            return ""
+        key = sha256(f"{state.secret_key}:{org_id}:ai_config".encode()).digest()
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        cipher = AESGCM(key)
+        ct = base64.b64decode(encrypted_b64)
+        nonce = base64.b64decode(nonce_b64)
+        return cipher.decrypt(nonce, ct, None).decode("utf-8")
+
+    @app.get("/api/v1/settings/org-ai-config", response_model=OrgAiConfigRecord)
+    def get_org_ai_config(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgAiConfigRecord:
+        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
+        if not row:
+            return OrgAiConfigRecord(
+                orgId=current_user.organizationId,
+                aiProvider="mock",
+                aiModel="",
+                hasApiKey=False,
+                updatedAt=now_iso(),
+            )
+        return OrgAiConfigRecord(
+            orgId=str(row["org_id"]),
+            aiProvider=str(row["ai_provider"]),
+            aiModel=str(row["ai_model"]),
+            hasApiKey=bool(row["api_key_encrypted"]),
+            configuredBy=str(row["configured_by"]) if row["configured_by"] else None,
+            updatedAt=str(row["updated_at"]),
+        )
+
+    @app.post("/api/v1/settings/org-ai-config", response_model=OrgAiConfigRecord)
+    def update_org_ai_config(
+        payload: OrgAiConfigUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> OrgAiConfigRecord:
+        org_id = current_user.organizationId
+        timestamp = now_iso()
+        existing = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (org_id,))
+        encrypted_key = str(existing["api_key_encrypted"]) if existing else ""
+        encryption_nonce = str(existing["encryption_nonce"]) if existing else ""
+        if payload.clearApiKey:
+            encrypted_key = ""
+            encryption_nonce = ""
+        elif payload.apiKey and payload.apiKey.strip():
+            encrypted_key, encryption_nonce = _org_ai_encrypt(payload.apiKey.strip(), org_id)
+        state.db.execute(
+            """
+            INSERT INTO org_ai_config(org_id, ai_provider, ai_model, api_key_encrypted, encryption_nonce, configured_by, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(org_id) DO UPDATE SET
+                ai_provider = excluded.ai_provider,
+                ai_model = excluded.ai_model,
+                api_key_encrypted = excluded.api_key_encrypted,
+                encryption_nonce = excluded.encryption_nonce,
+                configured_by = excluded.configured_by,
+                updated_at = excluded.updated_at
+            """,
+            (org_id, payload.aiProvider, payload.aiModel or "", encrypted_key, encryption_nonce, current_user.id, timestamp),
+        )
+        return get_org_ai_config(current_user)
+
+    @app.get("/api/v1/settings/org-ai-config/secret", response_model=OrgAiConfigSecretRecord)
+    def get_org_ai_config_secret(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgAiConfigSecretRecord:
+        """Returns decrypted API key — only accessible to authenticated org members."""
+        row = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (current_user.organizationId,))
+        if not row or not row["api_key_encrypted"]:
+            return OrgAiConfigSecretRecord(
+                orgId=current_user.organizationId,
+                aiProvider="mock",
+                aiModel="",
+                apiKey="",
+                updatedAt=now_iso(),
+            )
+        try:
+            decrypted = _org_ai_decrypt(
+                str(row["api_key_encrypted"]),
+                str(row["encryption_nonce"]),
+                current_user.organizationId,
+            )
+        except Exception:
+            decrypted = ""
+        return OrgAiConfigSecretRecord(
+            orgId=str(row["org_id"]),
+            aiProvider=str(row["ai_provider"]),
+            aiModel=str(row["ai_model"]),
+            apiKey=decrypted,
+            updatedAt=str(row["updated_at"]),
+        )
+
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def get_org_model_profile(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
@@ -4619,6 +4437,21 @@ def create_app() -> FastAPI:
         )
         return [_event_line_record(state, row) for row in rows]
 
+    @app.get("/api/v1/clients", response_model=list[ClientSummaryRecord])
+    def list_clients(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[ClientSummaryRecord]:
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM clients
+            WHERE organization_id = ?
+            ORDER BY updated_at DESC, name COLLATE NOCASE ASC
+            """,
+            (current_user.organizationId,),
+        )
+        return [_client_summary_record(row) for row in rows]
+
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(
         payload: EventLineCreatePayload,
@@ -4631,15 +4464,19 @@ def create_app() -> FastAPI:
         owner_id = payload.ownerId or current_user.id
         participant_ids = list(dict.fromkeys([owner_id, *[item for item in payload.participantIds if item]]))
         department_name = None
+        client_name = None
         if payload.primaryDepartmentId:
             department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (payload.primaryDepartmentId,))
             department_name = str(department_row["name"]) if department_row else None
+        if payload.primaryClientId:
+            client_row = _client_row_by_id(state, payload.primaryClientId, current_user.organizationId)
+            client_name = str(client_row["name"]) if client_row and client_row["name"] else None
         state.db.execute(
             """
             INSERT INTO event_lines(
                 id, organization_id, name, kind, status, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id,
-                primary_client_id, primary_department_id, participant_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                primary_client_id, primary_client_name, primary_department_id, participant_ids_json, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
@@ -4657,6 +4494,7 @@ def create_app() -> FastAPI:
                 int(payload.evidenceCount or 0),
                 owner_id,
                 payload.primaryClientId,
+                client_name,
                 payload.primaryDepartmentId,
                 to_json(participant_ids),
                 timestamp,
@@ -4684,6 +4522,55 @@ def create_app() -> FastAPI:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         return _event_line_detail_record(state, row, current_user.id)
 
+    @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot", response_model=EventLineReportSnapshotRecord)
+    def get_event_line_report_snapshot(
+        event_line_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineReportSnapshotRecord:
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        event_line = _event_line_record(state, row)
+        activity_rows = state.db.fetchall(
+            "SELECT * FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at ASC",
+            (event_line_id,),
+        )
+        task_rows = state.db.fetchall(
+            "SELECT * FROM tasks WHERE event_line_id = ? AND organization_id = ? ORDER BY updated_at DESC",
+            (event_line_id, current_user.organizationId),
+        )
+        attachment_rows = state.db.fetchall(
+            "SELECT * FROM task_attachments WHERE event_line_id = ? AND organization_id = ? ORDER BY created_at ASC",
+            (event_line_id, current_user.organizationId),
+        )
+        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
+        participant_names = []
+        for uid in participant_ids:
+            user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
+            if user_row:
+                participant_names.append(str(user_row["full_name"]))
+        return EventLineReportSnapshotRecord(
+            eventLine=event_line,
+            activities=[_event_line_activity_record(state, item) for item in activity_rows],
+            tasks=[_task_record(state, item, current_user.id) for item in task_rows],
+            attachments=[
+                EventLineReportAttachmentRecord(
+                    id=str(att["id"]),
+                    taskId=str(att["task_id"]),
+                    title=str(att["title"]),
+                    kind=str(att["kind"]),
+                    mimeType=str(att["mime_type"]) if att["mime_type"] else None,
+                    sizeBytes=int(att["size_bytes"] or 0),
+                    downloadUrl=f"/api/public/task-attachments/{att['id']}",
+                    actorName=str(
+                        state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),))["full_name"]
+                    ) if att["created_by_user_id"] and state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),)) else None,
+                    createdAt=str(att["created_at"]),
+                )
+                for att in attachment_rows
+            ],
+            participantNames=participant_names,
+            snapshotAt=now_iso(),
+        )
+
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(
         event_line_id: str,
@@ -4707,13 +4594,16 @@ def create_app() -> FastAPI:
             "evidence_count": payload.evidenceCount if "evidenceCount" in payload.model_fields_set and payload.evidenceCount is not None else int(row["evidence_count"] or 0),
             "owner_id": payload.ownerId if "ownerId" in payload.model_fields_set else row["owner_id"],
             "primary_client_id": payload.primaryClientId if "primaryClientId" in payload.model_fields_set else row["primary_client_id"],
+            "primary_client_name": None,
             "primary_department_id": payload.primaryDepartmentId if "primaryDepartmentId" in payload.model_fields_set else row["primary_department_id"],
             "participant_ids_json": to_json(payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])),
         }
+        client_row = _client_row_by_id(state, merged["primary_client_id"], current_user.organizationId)
+        merged["primary_client_name"] = str(client_row["name"]) if client_row and client_row["name"] else None
         state.db.execute(
             """
             UPDATE event_lines
-            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, primary_client_id = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
+            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -4730,6 +4620,7 @@ def create_app() -> FastAPI:
                 merged["evidence_count"],
                 merged["owner_id"],
                 merged["primary_client_id"],
+                merged["primary_client_name"],
                 merged["primary_department_id"],
                 merged["participant_ids_json"],
                 now_iso(),
@@ -4996,73 +4887,24 @@ def create_app() -> FastAPI:
         payload: ConsultationKnowledgeRequestCreatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> ConsultationKnowledgeRequestRecord:
-        normalized_answer = payload.answer.strip()
-        if not normalized_answer:
-            raise HTTPException(status_code=400, detail="答案内容不能为空")
         if payload.taskId:
             task_row = _task_row_or_404(state, payload.taskId)
             if str(task_row["organization_id"]) != current_user.organizationId:
                 raise HTTPException(status_code=404, detail="Task not found")
         if payload.eventLineId:
             _event_line_row_or_404(state, payload.eventLineId, current_user.organizationId)
-
-        timestamp = now_iso()
-        answer_id = new_id("consult_answer")
-        request_id = new_id("consult_req")
-        state.db.execute(
-            """
-            INSERT INTO consultation_answers(
-                id, organization_id, author_user_id, client_id, client_name, task_id, event_line_id,
-                question, answer, source, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'mobile_consult', ?, ?)
-            """,
-            (
-                answer_id,
-                current_user.organizationId,
-                current_user.id,
-                payload.clientId,
-                payload.clientName.strip() if payload.clientName else None,
-                payload.taskId,
-                payload.eventLineId,
-                payload.question.strip(),
-                normalized_answer,
-                timestamp,
-                timestamp,
-            ),
-        )
-        state.db.execute(
-            """
-            INSERT INTO consultation_knowledge_requests(
-                id, answer_id, organization_id, target, status, requested_by_user_id, error_message,
-                local_document_id, local_document_path, completed_at, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, 'pending', ?, NULL, NULL, NULL, NULL, ?, ?)
-            """,
-            (
-                request_id,
-                answer_id,
-                current_user.organizationId,
-                payload.target,
-                current_user.id,
-                timestamp,
-                timestamp,
-            ),
-        )
-        _log_audit(
+        return _create_consultation_knowledge_request_internal(
             state,
-            "consultation.knowledge_request_created",
-            actor_user_id=current_user.id,
-            target_user_id=None,
-            detail={
-                "requestId": request_id,
-                "answerId": answer_id,
-                "target": payload.target,
-                "clientId": payload.clientId or "",
-                "taskId": payload.taskId or "",
-                "eventLineId": payload.eventLineId or "",
-            },
+            current_user=current_user,
+            target=payload.target,
+            question=payload.question,
+            answer=payload.answer,
+            client_id=payload.clientId,
+            client_name=payload.clientName,
+            task_id=payload.taskId,
+            event_line_id=payload.eventLineId,
+            source="mobile_consult",
         )
-        row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
-        return _consultation_knowledge_request_record(row)
 
     @app.post("/api/v1/consultation/knowledge-requests/{request_id}/status", response_model=ConsultationKnowledgeRequestRecord)
     def update_consultation_knowledge_request(
@@ -5110,6 +4952,194 @@ def create_app() -> FastAPI:
         )
         updated_row = _consultation_request_row_or_404(state, request_id, current_user.organizationId)
         return _consultation_knowledge_request_record(updated_row)
+
+    # ── Consultation Chat (real AI) ─────────────────
+
+    @app.post("/api/v1/consultation/chat", response_model=ConsultationChatResponse)
+    async def consultation_chat(
+        payload: ConsultationChatPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ConsultationChatResponse:
+        from app.smart_input import _qwen_api_key, DEFAULT_QWEN_MODEL
+
+        api_key = _qwen_api_key()
+        if not api_key:
+            raise HTTPException(status_code=503, detail="AI 服务暂不可用：未配置 Qwen API Key。")
+
+        # Build context from client/task/event-line info
+        context_parts: list[str] = []
+        if payload.clientName:
+            context_parts.append(f"当前客户：{payload.clientName}")
+        if payload.eventLineId:
+            try:
+                el_row = _event_line_row_or_404(state, payload.eventLineId, current_user.organizationId)
+                el_name = str(el_row["name"]) if el_row["name"] else ""
+                el_summary = str(el_row["summary"]) if el_row["summary"] else ""
+                el_blocker = str(el_row["current_blocker"]) if el_row["current_blocker"] else ""
+                el_next = str(el_row["next_step"]) if el_row["next_step"] else ""
+                if el_name:
+                    context_parts.append(f"事件线：{el_name}")
+                if el_summary:
+                    context_parts.append(f"事件线摘要：{el_summary}")
+                if el_blocker:
+                    context_parts.append(f"当前阻塞：{el_blocker}")
+                if el_next:
+                    context_parts.append(f"下一步：{el_next}")
+            except HTTPException:
+                pass
+        if payload.taskContext:
+            context_parts.append(f"用户当前任务上下文：{payload.taskContext}")
+
+        # Fetch recent consultation answers for this client as knowledge context
+        knowledge_context = ""
+        if payload.clientId:
+            recent_answers = state.db.fetchall(
+                """SELECT question, answer FROM consultation_answers
+                   WHERE organization_id = ? AND client_id = ?
+                   ORDER BY created_at DESC LIMIT 5""",
+                (current_user.organizationId, payload.clientId),
+            )
+            if recent_answers:
+                snippets = []
+                for row in recent_answers:
+                    q = str(row["question"]) if row["question"] else ""
+                    a = str(row["answer"]) if row["answer"] else ""
+                    if q and a:
+                        snippets.append(f"Q: {q[:200]}\nA: {a[:400]}")
+                if snippets:
+                    knowledge_context = "\n\n已有知识沉淀：\n" + "\n---\n".join(snippets[:3])
+
+        system_prompt = (
+            "你是益语智库的咨询助理。你帮助用户基于客户合作上下文回答问题、"
+            "准备会议要点、分析推进策略、梳理阻塞与下一步。\n"
+            "回答要简洁、结构化，用中文回复。如果上下文不足，坦诚说明并给出通用建议。\n"
+        )
+        if context_parts:
+            system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)
+        if knowledge_context:
+            system_prompt += knowledge_context
+
+        model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL))
+
+        import httpx
+        chat_payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": payload.message},
+            ],
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "max_tokens": 2000,
+            "stream": False,
+            "enable_thinking": False,
+        }
+        timeout = httpx.Timeout(timeout=None, connect=8.0, read=30.0, write=8.0, pool=8.0)
+        try:
+            response = await asyncio.to_thread(
+                _sync_qwen_chat, api_key, chat_payload, timeout
+            )
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=f"AI 回复失败：{error}") from error
+
+        return ConsultationChatResponse(reply=response, model=model_name)
+
+    @app.get("/api/public/smart-input-audio/{file_key}")
+    def get_public_smart_input_audio(file_key: str) -> FileResponse:
+        if not re.fullmatch(r"[0-9a-f]{32}\.[0-9A-Za-z]{1,8}", file_key):
+            raise HTTPException(status_code=404, detail="File not found")
+        audio_path = state.data_dir / "smart-input-audio" / file_key
+        if not audio_path.exists() or not audio_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        media_type = mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
+        return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
+
+    @app.get("/api/public/task-attachments/{attachment_id}")
+    def get_public_task_attachment(attachment_id: str) -> FileResponse:
+        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        attachment_path = state.data_dir / str(row["path"])
+        if not attachment_path.exists() or not attachment_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
+        return FileResponse(attachment_path, media_type=media_type, filename=attachment_path.name)
+
+    @app.post("/api/v1/mobile/smart-input/task-draft", response_model=SmartTaskDraftResponse)
+    async def create_mobile_smart_task_draft(
+        request: Request,
+        transcriptText: str | None = Form(default=None),
+        referenceDate: str | None = Form(default=None),
+        currentEventLineId: str | None = Form(default=None),
+        audio: UploadFile | None = File(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> SmartTaskDraftResponse:
+        transcript = (transcriptText or "").strip()
+        if not transcript:
+            if audio is None:
+                raise HTTPException(status_code=400, detail="请先输入或转写自然语言内容。")
+            audio_bytes = await audio.read()
+            file_name = safe_filename(audio.filename or f"smart-input-{uuid4().hex}.m4a")
+            extension = Path(file_name).suffix.lower() or ".m4a"
+            file_key = f"{uuid4().hex}{extension}"
+            audio_dir = state.data_dir / "smart-input-audio"
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            audio_path = audio_dir / file_key
+            audio_path.write_bytes(audio_bytes)
+            public_base_url = _resolve_public_base_url(request)
+            public_url = (
+                f"{public_base_url}/api/public/smart-input-audio/{file_key}"
+                if public_base_url
+                else None
+            )
+            try:
+                # Run file ASR in a worker thread so this request does not block the
+                # event loop from serving the public audio URL Doubao must fetch.
+                transcript = (
+                    await asyncio.to_thread(
+                        transcribe_audio_with_doubao,
+                        audio_bytes,
+                        file_name=file_name,
+                        mime_type=audio.content_type,
+                        public_url=public_url,
+                    )
+                ).strip()
+            except RuntimeError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            except Exception as error:
+                raise HTTPException(status_code=502, detail=f"语音转写失败：{error}") from error
+            finally:
+                try:
+                    audio_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if not transcript:
+                raise HTTPException(status_code=400, detail="语音已上传，但未能识别出有效文本。")
+
+        reference = None
+        if referenceDate:
+            try:
+                reference = datetime.fromisoformat(referenceDate.strip()).date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="referenceDate 格式无效，应为 YYYY-MM-DD。") from None
+
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM event_lines
+            WHERE organization_id = ?
+              AND status != 'archived'
+            ORDER BY updated_at DESC
+            """,
+            (current_user.organizationId,),
+        )
+        event_lines = [_event_line_record(state, row) for row in rows]
+        return build_smart_task_draft(
+            transcript,
+            event_lines,
+            reference_date=reference,
+            current_event_line_id=currentEventLineId,
+        )
 
     @app.get("/api/v1/employees/directory", response_model=list[EmployeeRecord])
     def list_employee_directory(
@@ -5534,15 +5564,14 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/task-tags", response_model=TaskTagLibraryResponse)
     def get_task_tags(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskTagLibraryResponse:
-        return TaskTagLibraryResponse(tags=[])
+        return TaskTagLibraryResponse(tags=_visible_task_tags(state, current_user))
 
     @app.post("/api/v1/task-tags", response_model=TaskTagRecord)
     def create_task_tag(
         payload: TaskTagMutationPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskTagRecord:
-        _ = payload, current_user
-        raise HTTPException(status_code=410, detail="任务标签功能已停用")
+        return _ensure_task_tag(state, current_user, payload.name, payload.scope, payload.color)
 
     @app.patch("/api/v1/task-tags/{tag_id}", response_model=TaskTagRecord)
     def update_task_tag(
@@ -5550,16 +5579,29 @@ def create_app() -> FastAPI:
         payload: TaskTagMutationPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskTagRecord:
-        _ = tag_id, payload, current_user
-        raise HTTPException(status_code=410, detail="任务标签功能已停用")
+        row = state.db.fetchone("SELECT * FROM task_tag_library WHERE id = ?", (tag_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Tag not found")
+        timestamp = now_iso()
+        archived_at = timestamp if payload.archived else None
+        state.db.execute(
+            "UPDATE task_tag_library SET name = ?, color = ?, scope = ?, archived_at = ?, updated_at = ? WHERE id = ?",
+            (payload.name, payload.color or str(row["color"]), payload.scope, archived_at, timestamp, tag_id),
+        )
+        updated = state.db.fetchone("SELECT * FROM task_tag_library WHERE id = ?", (tag_id,))
+        assert updated is not None
+        return _task_tag_record(updated)
 
     @app.delete("/api/v1/task-tags/{tag_id}")
     def delete_task_tag(
         tag_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict[str, bool]:
-        _ = tag_id, current_user
-        raise HTTPException(status_code=410, detail="任务标签功能已停用")
+        row = state.db.fetchone("SELECT * FROM task_tag_library WHERE id = ?", (tag_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Tag not found")
+        state.db.execute("DELETE FROM task_tag_library WHERE id = ?", (tag_id,))
+        return {"deleted": True}
 
     @app.get("/api/v1/tasks", response_model=TaskBoardResponse)
     def list_tasks(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskBoardResponse:
@@ -5585,11 +5627,12 @@ def create_app() -> FastAPI:
             """,
             (current_user.organizationId, current_user.id, current_user.id),
         )
+        all_tags = _visible_task_tags(state, current_user)
         return TaskBoardResponse(
             tasks=[_task_record(state, row, current_user.id) for row in task_rows],
             lists=[_task_list_record(row) for row in list_rows],
-            tags=[],
-            commonTags=[],
+            tags=all_tags,
+            commonTags=[tag.name for tag in all_tags if tag.scope == "org"],
         )
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
@@ -5613,12 +5656,13 @@ def create_app() -> FastAPI:
         requested_event_line_id = None if scope_mode == "PERSONAL_ONLY" else payload.eventLineId
         requested_project_module_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectModuleId
         requested_project_flow_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectFlowId
-        if requested_event_line_id:
-            _event_line_row_or_404(state, requested_event_line_id, current_user.organizationId)
+        event_line_row = _event_line_row_or_404(state, requested_event_line_id, current_user.organizationId) if requested_event_line_id else None
+        event_line_client_id = _event_line_primary_client_id(event_line_row)
+        if event_line_client_id:
+            requested_client_id = event_line_client_id
         timestamp = now_iso()
         task_id = new_id("task")
-        resolved_tags = _normalize_task_tags(state, current_user, payload.tagIds, payload.tags)
-        event_line_row = _event_line_row_or_404(state, requested_event_line_id, current_user.organizationId) if requested_event_line_id else None
+        resolved_tags: list[TaskTagRecord] = []
         (
             business_category,
             current_blocker,
@@ -5770,18 +5814,12 @@ def create_app() -> FastAPI:
             next_project_flow_id = payload.projectFlowId if "projectFlowId" in payload.model_fields_set else row["project_flow_id"]
         if next_event_line_id:
             event_line_row = _event_line_row_or_404(state, next_event_line_id, current_user.organizationId)
+            event_line_client_id = _event_line_primary_client_id(event_line_row)
+            if event_line_client_id:
+                next_client_id = event_line_client_id
         else:
             event_line_row = None
-        resolved_tags = (
-            _normalize_task_tags(state, current_user, payload.tagIds, payload.tags)
-            if payload.tagIds is not None or payload.tags is not None
-            else _normalize_task_tags(
-                state,
-                current_user,
-                [str(item) for item in from_json(row["tag_ids_json"], [])] if isinstance(from_json(row["tag_ids_json"], []), list) else [],
-                [str(item) for item in from_json(row["tags_json"], [])] if isinstance(from_json(row["tags_json"], []), list) else [],
-            )
-        )
+        resolved_tags: list[TaskTagRecord] = []
         (
             business_category,
             current_blocker,
@@ -6012,6 +6050,100 @@ def create_app() -> FastAPI:
         )
         return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
 
+    @app.post("/api/v1/tasks/{task_id}/attachments/{attachment_id}/transcribe-to-document", response_model=TaskAttachmentTranscriptionResponse)
+    def transcribe_task_attachment_to_document(
+        task_id: str,
+        attachment_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskAttachmentTranscriptionResponse:
+        task_row = _task_row_or_404(state, task_id)
+        _assert_task_edit_permission(state, current_user, task_row, True, False, False)
+        attachment_row = _task_attachment_row_or_404(state, attachment_id, task_id, current_user.organizationId)
+        mime_type = str(attachment_row["mime_type"] or "")
+        if not mime_type.startswith("audio/"):
+            raise HTTPException(status_code=400, detail="当前附件不是录音文件，无法转写。")
+
+        attachment_path = state.data_dir / str(attachment_row["path"])
+        if not attachment_path.exists() or not attachment_path.is_file():
+            raise HTTPException(status_code=404, detail="录音文件不存在，无法转写。")
+
+        public_base_url = os.getenv("YIYU_CLOUD_PUBLIC_BASE_URL", "").strip()
+        public_url = None
+        if public_base_url:
+            public_url = f"{public_base_url.rstrip('/')}/api/public/task-attachments/{attachment_id}"
+
+        try:
+            transcript = transcribe_audio_with_doubao(
+                attachment_path.read_bytes(),
+                file_name=attachment_path.name,
+                mime_type=mime_type,
+                public_url=public_url,
+            ).strip()
+        except RuntimeError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=f"录音转写失败：{error}") from error
+
+        if not transcript:
+            raise HTTPException(status_code=400, detail="录音已上传，但未识别出有效文本。")
+
+        event_line_id = str(attachment_row["event_line_id"]) if attachment_row["event_line_id"] else (str(task_row["event_line_id"]) if task_row["event_line_id"] else None)
+        client_id = str(attachment_row["client_id"]) if attachment_row["client_id"] else (str(task_row["client_id"]) if task_row["client_id"] else None)
+        client_name = str(task_row["client_name"]) if task_row["client_name"] else None
+        document_request = _create_consultation_knowledge_request_internal(
+            state,
+            current_user=current_user,
+            target="document_archive",
+            question=f"录音转写：{str(attachment_row['title'])}",
+            answer=transcript,
+            client_id=client_id,
+            client_name=client_name,
+            task_id=task_id,
+            event_line_id=event_line_id,
+            source="mobile_recording_transcript",
+        )
+        summary = transcript[:140].strip()
+        if len(transcript) > 140:
+            summary = f"{summary}..."
+        timestamp = now_iso()
+        state.db.execute(
+            "UPDATE task_attachments SET summary = ? WHERE id = ?",
+            (summary, attachment_id),
+        )
+        _record_activity(
+            state,
+            task_id,
+            current_user.id,
+            "attachment_transcribed",
+            {
+                "attachmentId": attachment_id,
+                "knowledgeRequestId": document_request.id,
+                "target": document_request.target,
+                "transcript": transcript,
+                "attachmentTitle": str(attachment_row["title"]) if attachment_row["title"] else None,
+            },
+        )
+        _record_event_line_activity(
+            state,
+            event_line_id,
+            "attachment",
+            attachment_id,
+            current_user.id,
+            "录音已转写",
+            f"{str(attachment_row['title'])} 已生成文档沉淀请求",
+            {
+                "attachmentId": attachment_id,
+                "knowledgeRequestId": document_request.id,
+                "target": document_request.target,
+                "updatedAt": timestamp,
+            },
+        )
+        return TaskAttachmentTranscriptionResponse(
+            attachmentId=attachment_id,
+            transcript=transcript,
+            documentRequest=document_request,
+        )
+
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/accept", response_model=TaskRecord)
     def accept_task(task_id: str, user_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
         if user_id != current_user.id:
@@ -6138,6 +6270,28 @@ def create_app() -> FastAPI:
         )
         _record_activity(state, task_id, current_user.id, "review_returned", {"reason": payload.reason.strip()})
         return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+
+    @app.post("/api/v1/tasks/{task_id}/note", response_model=TaskRecord)
+    def save_task_note(
+        task_id: str,
+        payload: TaskNotePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskRecord:
+        task_row = _task_row_or_404(state, task_id)
+        timestamp = now_iso()
+        existing = state.db.fetchone("SELECT id FROM task_notes WHERE task_id = ?", (task_id,))
+        if existing:
+            state.db.execute(
+                "UPDATE task_notes SET note = ?, user_id = ?, updated_at = ? WHERE task_id = ?",
+                (payload.note, current_user.id, timestamp, task_id),
+            )
+        else:
+            state.db.execute(
+                "INSERT INTO task_notes(id, organization_id, task_id, user_id, note, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid4()), current_user.organizationId, task_id, current_user.id, payload.note, timestamp, timestamp),
+            )
+        _record_activity(state, task_id, current_user.id, "note_updated", {"noteLength": len(payload.note)})
+        return _task_record(state, task_row, current_user.id)
 
     @app.get("/api/v1/tasks/{task_id}/activity", response_model=list[TaskActivityRecord])
     def task_activity(task_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> list[TaskActivityRecord]:

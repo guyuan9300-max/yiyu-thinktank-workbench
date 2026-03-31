@@ -87,6 +87,59 @@ PUBLIC_HOST=api.yiyu.love ./bootstrap-server.sh
 - **移动端当前策略**：默认使用 `https://api.yiyu.love`
 - **桌面端当前策略**：打包版默认使用 `https://api.yiyu.love`
 
+## 智能输入 / 语音转写配置
+
+2026-03-30 起，手机端后端链路已经拆成两类：
+
+- 智能输入：文字自然语言 -> 结构化任务草稿
+- 长录音/补充录音：录音文件 -> 豆包文件 ASR 转写 -> 文档沉淀请求
+
+对应云端接口：
+
+- `POST /api/v1/mobile/smart-input/task-draft`
+- `POST /api/v1/tasks/{task_id}/attachments/{attachment_id}/transcribe-to-document`
+
+如果要让长录音文件转写真正可用，线上 `.env` 至少要补这几项：
+
+```bash
+YIYU_CLOUD_PUBLIC_BASE_URL=http://101.126.34.232
+DOUBAO_FILE_ASR_APP_ID=your-file-asr-app-id
+DOUBAO_FILE_ASR_ACCESS_TOKEN=your-file-asr-access-token
+```
+
+如果后续要把“智能输入”改成真正的流式短语音识别，再补：
+
+```bash
+DOUBAO_STREAM_ASR_APP_ID=your-stream-asr-app-id
+DOUBAO_STREAM_ASR_ACCESS_TOKEN=your-stream-asr-access-token
+```
+
+可选增强：
+
+```bash
+YIYU_SMART_INPUT_MODEL=qwen3.5-plus
+DASHSCOPE_API_KEY=your-dashscope-key
+```
+
+说明：
+
+- `YIYU_CLOUD_PUBLIC_BASE_URL`
+  - 用于给豆包标准版 ASR 提供可回拉的临时音频 URL
+  - 如果实例对外域名已经可用，推荐填正式公网域名，例如 `https://api.yiyu.love`
+- `DOUBAO_FILE_ASR_*`
+  - 负责长录音/补充录音这类文件上传后的中文语音转写
+- `DOUBAO_STREAM_ASR_*`
+  - 预留给智能输入的短语音/流式识别
+- `DASHSCOPE_API_KEY`
+  - 可选；存在时会优先走 Qwen 结构化提取
+  - 没有时仍可用规则兜底生成草稿
+
+格式注意：
+
+- Expo 真机常见录音格式是 `m4a`
+- `m4a/aac` 会优先走豆包标准版识别，因此更依赖 `YIYU_CLOUD_PUBLIC_BASE_URL`
+- `wav/mp3/ogg` 这类格式可以直接走极速版 data-base64 接口
+
 ## 2026-03-30 可重复发布方式
 
 当前线上协作后端已经不建议继续手工 SSH 拼命令更新。
@@ -100,7 +153,8 @@ PUBLIC_HOST=api.yiyu.love ./bootstrap-server.sh
   - 最后自动做 smoke check
 - `scripts/smoke-cloud-backend-volcengine.sh`
   - 检查 `/health`
-  - 检查 `/api/v1/auth/health`
+  - 检查 `/openapi.json` 里是否已经包含智能输入路由
+  - 提醒是否已配置智能输入所需环境变量
 
 默认目标：
 
@@ -118,6 +172,12 @@ export YIYU_VOLCENGINE_SSH_KEY=/absolute/path/to/private_key
 
 ```bash
 ./scripts/deploy-cloud-backend-volcengine.sh
+```
+
+如果只想先检查线上接口，不发布代码：
+
+```bash
+./scripts/smoke-cloud-backend-volcengine.sh https://api.yiyu.love
 ```
 
 ## 当前 HTTPS 真实状态
