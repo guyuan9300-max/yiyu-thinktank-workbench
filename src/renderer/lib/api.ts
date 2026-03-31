@@ -32,6 +32,8 @@ import type {
   ClientWorkspaceSettings,
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
+  DeepDnaDraft,
+  DeepDnaRecord,
   DnaTerm,
   DemoDataReport,
   EmployeeRecord,
@@ -104,6 +106,8 @@ import type {
   DiagnosisEngineHealth,
   ExternalDiagnosisRequest,
   BettaFishSignal,
+  CoachCaseRecord,
+  CoachReminderRule,
   TopicCaptureBatchResult,
   TopicCandidate,
   TopicCandidateChatPayload,
@@ -119,6 +123,9 @@ import type {
   ReviewHistoryResponse,
   ReviewGovernanceSettings,
   ReviewGovernanceSettingsPayload,
+  RedeemOrgInvitationPayload,
+  OrgWritingNorm,
+  RunComparison,
   SupportRequestCreatePayload,
   SupportRequestResolvePayload,
   SupportRequestRecord,
@@ -1182,6 +1189,103 @@ export async function runAnalysis(payload: AnalysisRunPayload) {
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export async function getFundraisingDeepDnaLibrary() {
+  return request<DeepDnaRecord[]>('/api/v1/analysis-tools/fundraising/dna');
+}
+
+export async function upsertFundraisingDeepDna(payload: DeepDnaRecord) {
+  return request<DeepDnaRecord>('/api/v1/analysis-tools/fundraising/dna', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createFundraisingManualDna(payload: {
+  groupKey: 'platform_fundraising' | 'monthly_donor' | 'key_person';
+  label: string;
+  identitySummary: string;
+  corePreferencesText: string;
+  supportTriggersText: string;
+  redFlagsText: string;
+  evidencePreferencesText: string;
+  voiceStyleText: string;
+  commonQuestionsText: string;
+  authorizationStatus: 'public' | 'authorized_internal' | 'restricted';
+}) {
+  return request<DeepDnaRecord>('/api/v1/analysis-tools/fundraising/dna/manual', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function importFundraisingDna(payload: {
+  groupKey: 'platform_fundraising' | 'monthly_donor' | 'key_person';
+  label: string;
+  fileName: string;
+  filePath: string;
+  content: string;
+  authorizationStatus: 'public' | 'authorized_internal' | 'restricted';
+}) {
+  return request<DeepDnaRecord>('/api/v1/analysis-tools/fundraising/dna/import', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createFundraisingWebDnaDraft(payload: {
+  groupKey: 'platform_fundraising' | 'monthly_donor' | 'key_person';
+  label: string;
+  searchQuery: string;
+}) {
+  return request<DeepDnaDraft>('/api/v1/analysis-tools/fundraising/dna/web-drafts', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function publishFundraisingDna(id: string) {
+  return request<DeepDnaRecord>(`/api/v1/analysis-tools/fundraising/dna/${encodeURIComponent(id)}/publish`, {
+    method: 'POST',
+  });
+}
+
+export async function getFundraisingCases() {
+  return request<CoachCaseRecord[]>('/api/v1/analysis-tools/fundraising/cases');
+}
+
+export async function upsertFundraisingCase(payload: CoachCaseRecord) {
+  return request<CoachCaseRecord>('/api/v1/analysis-tools/fundraising/cases', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getFundraisingReminderRules() {
+  return request<CoachReminderRule[]>('/api/v1/analysis-tools/fundraising/reminders');
+}
+
+export async function upsertFundraisingReminderRule(payload: CoachReminderRule) {
+  return request<CoachReminderRule>('/api/v1/analysis-tools/fundraising/reminders', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getFundraisingWritingNorms() {
+  return request<OrgWritingNorm[]>('/api/v1/analysis-tools/fundraising/norms');
+}
+
+export async function upsertFundraisingWritingNorm(payload: OrgWritingNorm) {
+  return request<OrgWritingNorm>('/api/v1/analysis-tools/fundraising/norms', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getFundraisingRunComparison(runId: string) {
+  return request<RunComparison>(`/api/v1/analysis-tools/fundraising/runs/${encodeURIComponent(runId)}/comparison`);
 }
 
 export async function getHandbook() {

@@ -1380,6 +1380,7 @@ class TopicsSettingsPayload(BaseModel):
 class DiagnosisProfileRecord(BaseModel):
     id: str
     groupKey: Literal["platform_fundraising", "monthly_donor", "key_person"]
+    deepDnaId: str | None = None
     label: str
     fileName: str
     filePath: str
@@ -1416,6 +1417,119 @@ class FundraisingKnowledgeDocument(BaseModel):
     updatedAt: str
 
 
+class DeepDnaSourceRecord(BaseModel):
+    id: str
+    kind: Literal["manual", "import", "web"]
+    title: str
+    excerpt: str
+    sourceUrl: str | None = None
+    fileName: str | None = None
+    filePath: str | None = None
+    createdAt: str
+
+
+class DeepDnaRecord(BaseModel):
+    id: str
+    groupKey: Literal["platform_fundraising", "monthly_donor", "key_person"]
+    label: str
+    status: Literal["draft", "published"] = "published"
+    sourceKind: Literal["manual", "import", "web"] = "manual"
+    identitySummary: str = ""
+    corePreferences: list[str] = Field(default_factory=list)
+    supportTriggers: list[str] = Field(default_factory=list)
+    redFlags: list[str] = Field(default_factory=list)
+    evidencePreferences: list[str] = Field(default_factory=list)
+    voiceStyle: list[str] = Field(default_factory=list)
+    commonQuestions: list[str] = Field(default_factory=list)
+    sources: list[DeepDnaSourceRecord] = Field(default_factory=list)
+    confidenceScore: int = 60
+    confidenceLevel: Literal["low", "medium", "high"] = "medium"
+    authorizationStatus: Literal["public", "authorized_internal", "restricted"] = "public"
+    rawContent: str = ""
+    searchQuery: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class DeepDnaDraft(BaseModel):
+    id: str
+    groupKey: Literal["platform_fundraising", "monthly_donor", "key_person"]
+    label: str
+    searchQuery: str
+    draftRecord: DeepDnaRecord
+    previewSources: list[DeepDnaSourceRecord] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class CoachCaseRecord(BaseModel):
+    id: str
+    title: str
+    summary: str
+    whyEffective: str
+    takeaways: list[str] = Field(default_factory=list)
+    keyExcerpt: str
+    scenes: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    issueTypes: list[str] = Field(default_factory=list)
+    sourceType: Literal["system", "organization"] = "organization"
+    sourceLabel: str = ""
+    createdAt: str
+    updatedAt: str
+
+
+class CoachReminderRule(BaseModel):
+    id: str
+    title: str
+    modeIds: list[str] = Field(default_factory=list)
+    knowledgeKey: str
+    issuePattern: str
+    message: str
+    createdAt: str
+    updatedAt: str
+
+
+class OrgWritingNorm(BaseModel):
+    id: str
+    title: str
+    description: str = ""
+    instruction: str
+    modeIds: list[str] = Field(default_factory=list)
+    triggerKeywords: list[str] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class CoachCardRecord(BaseModel):
+    id: str
+    issueKey: str
+    insightTitle: str
+    issueWhat: str
+    whyImportant: str
+    knowledgePointTitle: str
+    knowledgePointBody: str
+    caseIds: list[str] = Field(default_factory=list)
+    selfRewriteHint: str
+    learningAction: str
+    referenceDraft: str | None = None
+
+
+class CoachPayload(BaseModel):
+    cards: list[CoachCardRecord] = Field(default_factory=list)
+    triggeredReminders: list[CoachReminderRule] = Field(default_factory=list)
+    appliedNorms: list[OrgWritingNorm] = Field(default_factory=list)
+
+
+class RunComparison(BaseModel):
+    currentRunId: str
+    previousRunId: str | None = None
+    resultChanges: list[str] = Field(default_factory=list)
+    learningChanges: list[str] = Field(default_factory=list)
+    resolvedIssues: list[str] = Field(default_factory=list)
+    newIssues: list[str] = Field(default_factory=list)
+    repeatedIssues: list[str] = Field(default_factory=list)
+
+
 class AnalysisWorkbenchSettingsRecord(BaseModel):
     enabledTemplateIds: list[str] = Field(default_factory=list)
     defaultTemplateId: str | None = None
@@ -1425,6 +1539,10 @@ class AnalysisWorkbenchSettingsRecord(BaseModel):
     diagnosisProfiles: list[DiagnosisProfileRecord] = Field(default_factory=list)
     organizationRiskDna: OrganizationRiskDnaDocument | None = None
     fundraisingKnowledgeLibrary: list[FundraisingKnowledgeDocument] = Field(default_factory=list)
+    deepDnaLibrary: list[DeepDnaRecord] = Field(default_factory=list)
+    coachCaseLibrary: list[CoachCaseRecord] = Field(default_factory=list)
+    coachReminderRules: list[CoachReminderRule] = Field(default_factory=list)
+    orgWritingNorms: list[OrgWritingNorm] = Field(default_factory=list)
     updatedAt: str
 
 
@@ -1437,6 +1555,10 @@ class AnalysisWorkbenchSettingsPayload(BaseModel):
     diagnosisProfiles: list[DiagnosisProfileRecord] | None = None
     organizationRiskDna: OrganizationRiskDnaDocument | None = None
     fundraisingKnowledgeLibrary: list[FundraisingKnowledgeDocument] | None = None
+    deepDnaLibrary: list[DeepDnaRecord] | None = None
+    coachCaseLibrary: list[CoachCaseRecord] | None = None
+    coachReminderRules: list[CoachReminderRule] | None = None
+    orgWritingNorms: list[OrgWritingNorm] | None = None
 
 
 class HandbookSettingsRecord(BaseModel):
@@ -3127,6 +3249,8 @@ class AnalysisRunRecord(BaseModel):
     title: str
     inputText: str
     output: AiStructuredResponse
+    parentRunId: str | None = None
+    coachPayload: CoachPayload | None = None
     createdAt: str
     status: Literal["success", "failed"]
 
@@ -3140,6 +3264,7 @@ class AnalysisRunPayload(BaseModel):
     templateId: str
     title: str
     inputText: str
+    parentRunId: str | None = None
 
 
 class HandbookEntryRecord(BaseModel):

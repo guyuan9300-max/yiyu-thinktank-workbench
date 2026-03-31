@@ -73,9 +73,12 @@ import type {
   ClientWorkspace,
   ClientWorkspaceSettings,
   CollabRepoStatus,
+  CoachCaseRecord,
+  CoachReminderRule,
   PullPreview,
   PushPreview,
   DepartmentOption,
+  DeepDnaRecord,
   DesktopAppInfo,
   EmployeeRecord,
   EvidenceItem,
@@ -95,6 +98,9 @@ import type {
   MentionCandidate,
   OrganizationDnaModule,
   Operator,
+  OrgInvitationRecord,
+  OrgMembershipSummary,
+  OrgWritingNorm,
   ProjectFlow,
   ProjectFlowPayload,
   ProjectModule,
@@ -168,6 +174,8 @@ import {
   getAuthState,
   getActivityLogs,
   getAnalysisTools,
+  getFundraisingCases,
+  getFundraisingRunComparison,
   cancelClientAnalysisRun,
   getDepartmentOptions,
   getClientKnowledgeStatus,
@@ -207,7 +215,10 @@ import {
   getDiagnosisEngineHealth,
   getCollabRepoStatus,
   generateClientDnaCandidates,
+  createFundraisingManualDna,
+  createFundraisingWebDnaDraft,
   generateEventLineClarificationDraft,
+  importFundraisingDna,
   importPaths,
   loadDemoData,
   login,
@@ -216,6 +227,7 @@ import {
   processPendingConsultationKnowledgeRequests,
   previewPullFromMain,
   previewPushToMain,
+  publishFundraisingDna,
   publishMeeting,
   rejectTask,
   rebuildAndInstallFromRepo,
@@ -253,6 +265,8 @@ import {
   updateOrganizationDnaModule,
   updateReviewGovernanceSettings,
   updateSystemAdminSettings,
+  upsertFundraisingReminderRule,
+  upsertFundraisingWritingNorm,
   updateAgentWeeklyPlan,
   updateTaskList,
   updateTaskSettings,
@@ -644,6 +658,10 @@ const DEFAULT_ANALYSIS_SETTINGS: AnalysisWorkbenchSettings = {
   diagnosisProfiles: [],
   organizationRiskDna: null,
   fundraisingKnowledgeLibrary: [],
+  deepDnaLibrary: [],
+  coachCaseLibrary: [],
+  coachReminderRules: [],
+  orgWritingNorms: [],
   updatedAt: '',
 };
 
@@ -713,6 +731,10 @@ function hydrateAnalysisSharedAssets(settings: AnalysisWorkbenchSettings): Analy
     diagnosisProfiles,
     organizationRiskDna,
     fundraisingKnowledgeLibrary,
+    deepDnaLibrary: settings.deepDnaLibrary || [],
+    coachCaseLibrary: settings.coachCaseLibrary || [],
+    coachReminderRules: settings.coachReminderRules || [],
+    orgWritingNorms: settings.orgWritingNorms || [],
   };
 }
 
@@ -3494,6 +3516,7 @@ export default function App() {
   const [clientWorkspaceSettingsState, setClientWorkspaceSettingsState] = useState<ClientWorkspaceSettings>(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
   const [topicsSettingsState, setTopicsSettingsState] = useState<TopicsSettings>(DEFAULT_TOPICS_SETTINGS);
   const [analysisSettingsState, setAnalysisSettingsState] = useState<AnalysisWorkbenchSettings>(DEFAULT_ANALYSIS_SETTINGS);
+  const [fundraisingCoachCasesState, setFundraisingCoachCasesState] = useState<CoachCaseRecord[]>([]);
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
   const [feishuBotSettingsState, setFeishuBotSettingsState] = useState<FeishuBotSettings>(DEFAULT_FEISHU_BOT_SETTINGS);
@@ -3620,9 +3643,21 @@ export default function App() {
     }
   }
 
+  function getDefaultCollabSelectedPaths(state: Exclude<CollabDialogState, null>) {
+    const shouldDefaultSkipRiskyOverlap =
+      (state.mode === 'push' && state.preview.status.behindCount > 0)
+      || (state.mode === 'pull' && state.preview.status.remoteChangeCount > 0);
+    if (!shouldDefaultSkipRiskyOverlap) {
+      return state.preview.files.map((file) => file.path);
+    }
+    return state.preview.files
+      .filter((file) => !file.risk || !['overlap', 'delete_replace'].includes(file.risk.kind))
+      .map((file) => file.path);
+  }
+
   function openCollabDialog(state: Exclude<CollabDialogState, null>) {
     setCollabDialogState(state);
-    setCollabSelectedPaths(state.preview.files.map((file) => file.path));
+    setCollabSelectedPaths(getDefaultCollabSelectedPaths(state));
     setCollabConfirmedRiskPaths([]);
     setCollabCommitMessage(state.preview.suggestedMessage);
     setCollabDialogError(null);
@@ -4031,9 +4066,13 @@ export default function App() {
   }
 
   async function loadAnalysisBlock() {
-    const response = await getAnalysisTools();
+    const [response, fundraisingCases] = await Promise.all([
+      getAnalysisTools(),
+      getFundraisingCases().catch(() => []),
+    ]);
     setAnalysisTemplates(response.templates);
     setAnalysisRuns(response.runs);
+    setFundraisingCoachCasesState(fundraisingCases);
   }
 
   async function loadHandbookBlock() {
@@ -12700,6 +12739,54 @@ export default function App() {
       flash('success', '已写入成长手册');
     };
 
+    const handleGetRunComparison = async (runId: string) => {
+      return await getFundraisingRunComparison(runId);
+    };
+
+    const handleSaveReminderRule = async (payload: {
+      title: string;
+      knowledgeKey: string;
+      issuePattern: string;
+      message: string;
+      modeIds: string[];
+    }) => {
+      const nextRule: CoachReminderRule = {
+        id: createUiId('coach-reminder'),
+        title: payload.title,
+        knowledgeKey: payload.knowledgeKey,
+        issuePattern: payload.issuePattern,
+        message: payload.message,
+        modeIds: payload.modeIds,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await upsertFundraisingReminderRule(nextRule);
+      await loadAnalysisSettingsBlock();
+      flash('success', '已加入个人提醒规则');
+    };
+
+    const handleSaveWritingNorm = async (payload: {
+      title: string;
+      description: string;
+      instruction: string;
+      modeIds: string[];
+      triggerKeywords: string[];
+    }) => {
+      const nextNorm: OrgWritingNorm = {
+        id: createUiId('coach-norm'),
+        title: payload.title,
+        description: payload.description,
+        instruction: payload.instruction,
+        modeIds: payload.modeIds,
+        triggerKeywords: payload.triggerKeywords,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await upsertFundraisingWritingNorm(nextNorm);
+      await loadAnalysisSettingsBlock();
+      flash('success', '已加入机构规范');
+    };
+
     return (
       <UnifiedWorkbenchStudio
         templates={enabledTemplates}
@@ -12707,14 +12794,21 @@ export default function App() {
         defaultTitlePrefix={analysisSettingsState.defaultTitlePrefix || '系统分析'}
         defaultHandbookTags={handbookSettingsState.defaultTags}
         diagnosisProfiles={analysisSettingsState.diagnosisProfiles}
+        deepDnaLibrary={analysisSettingsState.deepDnaLibrary}
         organizationRiskDna={analysisSettingsState.organizationRiskDna || null}
         fundraisingKnowledgeEntries={analysisSettingsState.fundraisingKnowledgeLibrary}
+        coachCases={fundraisingCoachCasesState}
+        coachReminderRules={analysisSettingsState.coachReminderRules}
+        orgWritingNorms={analysisSettingsState.orgWritingNorms}
         profileLibraryVersion={diagnosisProfileVersion}
         onRunAnalysis={handleRunAnalysis}
         onSaveLearningCard={handleSaveLearningCard}
         onGetDiagnosisEngineHealth={getDiagnosisEngineHealth}
         onRunBettafishDiagnosis={runBettafishDiagnosis}
         onOpenProfileSettings={openDiagnosisProfileSettings}
+        onGetRunComparison={handleGetRunComparison}
+        onSaveReminderRule={handleSaveReminderRule}
+        onSaveWritingNorm={handleSaveWritingNorm}
       />
     );
   };
@@ -13196,6 +13290,10 @@ export default function App() {
           diagnosisProfiles: analysisDraft.diagnosisProfiles,
           organizationRiskDna: analysisDraft.organizationRiskDna || null,
           fundraisingKnowledgeLibrary: analysisDraft.fundraisingKnowledgeLibrary,
+          deepDnaLibrary: analysisDraft.deepDnaLibrary,
+          coachCaseLibrary: analysisDraft.coachCaseLibrary,
+          coachReminderRules: analysisDraft.coachReminderRules,
+          orgWritingNorms: analysisDraft.orgWritingNorms,
         });
         const hydrated = hydrateAnalysisSharedAssets(next);
         setAnalysisSettingsState(hydrated);
@@ -13214,6 +13312,10 @@ export default function App() {
           diagnosisProfiles: patch.diagnosisProfiles,
           organizationRiskDna: patch.organizationRiskDna,
           fundraisingKnowledgeLibrary: patch.fundraisingKnowledgeLibrary,
+          deepDnaLibrary: patch.deepDnaLibrary,
+          coachCaseLibrary: patch.coachCaseLibrary,
+          coachReminderRules: patch.coachReminderRules,
+          orgWritingNorms: patch.orgWritingNorms,
         });
         const hydrated = hydrateAnalysisSharedAssets(next);
         setAnalysisSettingsState(hydrated);
@@ -13873,13 +13975,38 @@ export default function App() {
 
         <DiagnosisProfileSettingsPanel
           profiles={analysisDraft.diagnosisProfiles}
+          deepDnaLibrary={analysisDraft.deepDnaLibrary}
           focusGroup={analysisProfileFocus}
           focusLabel={analysisProfilePrefillLabel}
           onPickFile={selectFilesBridge}
           onReadFile={(targetPath) => window.yiyuWorkbench.readTextFile(targetPath)}
-          onSaveProfiles={async (profiles) => {
-            await persistAnalysisSharedAssets({ diagnosisProfiles: profiles });
-            flash('success', '画像库已保存为组织级共享资产');
+          onCreateManualRecord={async (payload) => {
+            const saved = await createFundraisingManualDna(payload);
+            const next = await loadAnalysisSettingsBlock();
+            setAnalysisDraft(next);
+            flash('success', '对象档案已保存');
+            return saved;
+          }}
+          onImportDocument={async (payload) => {
+            const saved = await importFundraisingDna(payload);
+            const next = await loadAnalysisSettingsBlock();
+            setAnalysisDraft(next);
+            flash('success', '对象档案已从文档导入');
+            return saved;
+          }}
+          onCreateWebDraft={async (payload) => {
+            const draft = await createFundraisingWebDnaDraft(payload);
+            const next = await loadAnalysisSettingsBlock();
+            setAnalysisDraft(next);
+            flash('success', '联网草稿已生成');
+            return draft;
+          }}
+          onPublishDraft={async (id) => {
+            const saved = await publishFundraisingDna(id);
+            const next = await loadAnalysisSettingsBlock();
+            setAnalysisDraft(next);
+            flash('success', '联网草稿已发布为对象档案');
+            return saved;
           }}
           disabled={!canEditBusinessSettings}
           onDataChange={() => setDiagnosisProfileVersion((prev) => prev + 1)}

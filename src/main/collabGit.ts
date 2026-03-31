@@ -952,15 +952,15 @@ function createLocalFileChanges(snapshot: RepoSnapshot) {
     let risk: CollabConflictRisk | null = null;
     if (entry.isUnmerged) {
       risk = createConflictRisk('unmerged', '这个文件当前已处于 Git 冲突态，需先手工确认。');
-    } else if (entry.type === 'renamed') {
-      risk = createConflictRisk('rename', '这个文件涉及重命名，覆盖 main 时要特别留意路径变化。');
-    } else if (hasBinaryExtension(entry.path)) {
-      risk = createConflictRisk('binary', '这个文件看起来是二进制资源，无法做细粒度合并。');
     } else if (remotePaths.has(entry.path) || (entry.previousPath && remotePaths.has(entry.previousPath))) {
       const remoteType = remoteTypeByPath.get(entry.path) || (entry.previousPath ? remoteTypeByPath.get(entry.previousPath) : null);
       risk = entry.type === 'deleted' || remoteType === 'deleted'
         ? createConflictRisk('delete_replace', '这个文件在远端 main 也有删除/替换动作，直接推送时很可能互相覆盖。')
         : createConflictRisk('overlap', '这个文件在远端 main 也发生了变化，推送时很可能覆盖对方版本。');
+    } else if (entry.type === 'renamed') {
+      risk = createConflictRisk('rename', '这个文件涉及重命名，覆盖 main 时要特别留意路径变化。');
+    } else if (hasBinaryExtension(entry.path)) {
+      risk = createConflictRisk('binary', '这个文件看起来是二进制资源，无法做细粒度合并。');
     }
     return {
       path: entry.path,
@@ -1036,6 +1036,28 @@ function validateRiskConfirmations(selectedPaths: string[], confirmedRiskPaths: 
       throw new Error(`请先确认高风险文件后再继续：${file.path}`);
     }
   }
+}
+
+async function discardLocalPath(repoPath: string, file: CollabFileChange) {
+  const targetPath = path.join(repoPath, file.path);
+  if (file.type === 'untracked' || file.type === 'added') {
+    await removePathsFromIndex(repoPath, [file.path]);
+    await fs.promises.rm(targetPath, { force: true, recursive: true }).catch(() => {
+      // Untracked files may already be gone; ignore.
+    });
+    return;
+  }
+  if (file.type === 'renamed') {
+    await removePathsFromIndex(repoPath, [file.path]);
+    await fs.promises.rm(targetPath, { force: true, recursive: true }).catch(() => {
+      // Renamed targets may already be gone; ignore.
+    });
+    if (file.previousPath) {
+      await checkoutPathFromRevision(repoPath, 'HEAD', file.previousPath);
+    }
+    return;
+  }
+  await checkoutPathFromRevision(repoPath, 'HEAD', file.path);
 }
 
 async function pushPartialStash(repoPath: string, targetPaths: string[], label: string) {
@@ -1157,9 +1179,19 @@ export async function commitAndPushToMain(
     throw new Error('请填写本次提交说明。');
   }
   const repoPath = preview.status.repoPath;
+  const selectedPathSet = new Set(selectedPaths);
+  const droppedConflictFiles = preview.files.filter((file) => (
+    !selectedPathSet.has(file.path)
+    && preview.status.behindCount > 0
+    && ['overlap', 'delete_replace'].includes(file.risk?.kind ?? '')
+  ));
+  const droppedConflictPaths = droppedConflictFiles.map((file) => file.path);
+  for (const file of droppedConflictFiles) {
+    await discardLocalPath(repoPath, file);
+  }
   const unselectedPaths = preview.files
     .map((file) => file.path)
-    .filter((targetPath) => !selectedPaths.includes(targetPath));
+    .filter((targetPath) => !selectedPathSet.has(targetPath) && !droppedConflictPaths.includes(targetPath));
   let hasStashedUnselected = false;
   if (unselectedPaths.length > 0) {
     hasStashedUnselected = await pushPartialStash(repoPath, unselectedPaths, 'codex-collab-unselected-before-push');
@@ -1169,6 +1201,9 @@ export async function commitAndPushToMain(
     await runGit(repoPath, ['commit', '-m', message]);
     if (preview.status.behindCount > 0) {
       await mergeOriginMainForPush(repoPath, selectedPaths, preview);
+    }
+    if (droppedConflictPaths.length > 0) {
+      await importSelectedSharedSettingsFromRepo(repoPath, appDbPath, droppedConflictPaths);
     }
     await runGit(repoPath, ['push', 'origin', 'main']);
   } catch (error) {

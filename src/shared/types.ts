@@ -2101,6 +2101,7 @@ export interface TopicsSettings {
 export interface DiagnosisProfileRecord {
   id: string;
   groupKey: 'platform_fundraising' | 'monthly_donor' | 'key_person';
+  deepDnaId?: string | null;
   label: string;
   fileName: string;
   filePath: string;
@@ -2137,6 +2138,119 @@ export interface FundraisingKnowledgeDocument {
   updatedAt: string;
 }
 
+export interface DeepDnaSourceRecord {
+  id: string;
+  kind: 'manual' | 'import' | 'web';
+  title: string;
+  excerpt: string;
+  sourceUrl?: string | null;
+  fileName?: string | null;
+  filePath?: string | null;
+  createdAt: string;
+}
+
+export interface DeepDnaRecord {
+  id: string;
+  groupKey: 'platform_fundraising' | 'monthly_donor' | 'key_person';
+  label: string;
+  status: 'draft' | 'published';
+  sourceKind: 'manual' | 'import' | 'web';
+  identitySummary: string;
+  corePreferences: string[];
+  supportTriggers: string[];
+  redFlags: string[];
+  evidencePreferences: string[];
+  voiceStyle: string[];
+  commonQuestions: string[];
+  sources: DeepDnaSourceRecord[];
+  confidenceScore: number;
+  confidenceLevel: 'low' | 'medium' | 'high';
+  authorizationStatus: 'public' | 'authorized_internal' | 'restricted';
+  rawContent: string;
+  searchQuery?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeepDnaDraft {
+  id: string;
+  groupKey: 'platform_fundraising' | 'monthly_donor' | 'key_person';
+  label: string;
+  searchQuery: string;
+  draftRecord: DeepDnaRecord;
+  previewSources: DeepDnaSourceRecord[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CoachCaseRecord {
+  id: string;
+  title: string;
+  summary: string;
+  whyEffective: string;
+  takeaways: string[];
+  keyExcerpt: string;
+  scenes: string[];
+  tags: string[];
+  issueTypes: string[];
+  sourceType: 'system' | 'organization';
+  sourceLabel: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CoachReminderRule {
+  id: string;
+  title: string;
+  modeIds: string[];
+  knowledgeKey: string;
+  issuePattern: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrgWritingNorm {
+  id: string;
+  title: string;
+  description: string;
+  instruction: string;
+  modeIds: string[];
+  triggerKeywords: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CoachCardRecord {
+  id: string;
+  issueKey: string;
+  insightTitle: string;
+  issueWhat: string;
+  whyImportant: string;
+  knowledgePointTitle: string;
+  knowledgePointBody: string;
+  caseIds: string[];
+  selfRewriteHint: string;
+  learningAction: string;
+  referenceDraft?: string | null;
+}
+
+export interface CoachPayload {
+  cards: CoachCardRecord[];
+  triggeredReminders: CoachReminderRule[];
+  appliedNorms: OrgWritingNorm[];
+}
+
+export interface RunComparison {
+  currentRunId: string;
+  previousRunId?: string | null;
+  resultChanges: string[];
+  learningChanges: string[];
+  resolvedIssues: string[];
+  newIssues: string[];
+  repeatedIssues: string[];
+}
+
 export interface AnalysisWorkbenchSettings {
   enabledTemplateIds: string[];
   defaultTemplateId?: string | null;
@@ -2146,6 +2260,10 @@ export interface AnalysisWorkbenchSettings {
   diagnosisProfiles: DiagnosisProfileRecord[];
   organizationRiskDna?: OrganizationRiskDnaDocument | null;
   fundraisingKnowledgeLibrary: FundraisingKnowledgeDocument[];
+  deepDnaLibrary: DeepDnaRecord[];
+  coachCaseLibrary: CoachCaseRecord[];
+  coachReminderRules: CoachReminderRule[];
+  orgWritingNorms: OrgWritingNorm[];
   updatedAt: string;
 }
 
@@ -2342,6 +2460,8 @@ export interface AnalysisRun {
   title: string;
   inputText: string;
   output: AiStructuredResponse;
+  parentRunId?: string | null;
+  coachPayload?: CoachPayload | null;
   createdAt: string;
   status: 'success' | 'failed';
 }
@@ -3238,6 +3358,10 @@ export interface AnalysisWorkbenchSettingsPayload {
   diagnosisProfiles?: DiagnosisProfileRecord[];
   organizationRiskDna?: OrganizationRiskDnaDocument | null;
   fundraisingKnowledgeLibrary?: FundraisingKnowledgeDocument[];
+  deepDnaLibrary?: DeepDnaRecord[];
+  coachCaseLibrary?: CoachCaseRecord[];
+  coachReminderRules?: CoachReminderRule[];
+  orgWritingNorms?: OrgWritingNorm[];
 }
 
 export interface HandbookSettingsPayload {
@@ -3334,6 +3458,7 @@ export interface AnalysisRunPayload {
   templateId: string;
   title: string;
   inputText: string;
+  parentRunId?: string | null;
 }
 
 export type DiagnosisScene = 'fundraising' | 'pr' | 'project';

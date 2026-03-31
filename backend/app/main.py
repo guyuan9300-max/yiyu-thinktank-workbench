@@ -39,6 +39,10 @@ from app.models import (
     AnalysisWorkbenchSettingsRecord,
     AnalysisTemplateRecord,
     AnalysisToolsResponse,
+    CoachCaseRecord,
+    CoachCardRecord,
+    CoachPayload,
+    CoachReminderRule,
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
@@ -81,6 +85,10 @@ from app.models import (
     DnaTermPayload,
     DocumentCardRecord,
     DocumentRecord,
+    DeepDnaDraft,
+    DeepDnaRecord,
+    DeepDnaSourceRecord,
+    DiagnosisProfileRecord,
     EvidenceItem,
     ExportAnswerPayload,
     FileReclassEventRecord,
@@ -169,6 +177,7 @@ from app.models import (
     OrgDepartmentRecord,
     OrgEmployeeBindingRecord,
     OrgModelProfileRecord,
+    OrgWritingNorm,
     OrgProfileRecord,
     OrgReportingLineRecord,
     OrgRoleTemplateRecord,
@@ -196,6 +205,7 @@ from app.models import (
     ReviewResponse,
     ReviewSimulationBundleRecord,
     RiskItem,
+    RunComparison,
     SessionUserRecord,
     SettingsResponse,
     SystemAdminSettingsPayload,
@@ -2526,6 +2536,441 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _default_topics_settings() -> TopicsSettingsRecord:
         return TopicsSettingsRecord(updatedAt=now_iso())
 
+    FUNDRAISING_MODE_GUIDES: dict[str, dict[str, object]] = {
+        "platform_fundraising": {
+            "learningTitle": "平台信任先于情绪推动",
+            "learningBody": "先让人相信这件事真实、可验证、与自己相关，再去推动情绪共鸣。",
+            "focusPoints": ["可信度与真实感", "情绪表达是否过度", "平台风险触发点", "热点与时机"],
+        },
+        "monthly_donor": {
+            "learningTitle": "月捐不是一次成交",
+            "learningBody": "长期关系型捐赠更看重持续价值、关系感和被看见的感觉，不是一次性冲动。",
+            "focusPoints": ["长期价值主张", "关系感与认同感", "续捐与留存风险", "陪伴感是否成立"],
+        },
+        "key_person": {
+            "learningTitle": "对的人先听到对的逻辑",
+            "learningBody": "关键对象更关注判断框架是否匹配、证据是否扎实、合作逻辑是否站得住。",
+            "focusPoints": ["对方关注点", "语言风格匹配", "证据与可信度", "合作逻辑"],
+        },
+    }
+
+    def _normalize_line(value: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"^\s*(?:[-*•]|[0-9]+[.、）)]|[一二三四五六七八九十]+[、）)])\s*", "", value or "")).strip()
+
+    def _unique_items(items: list[str], limit: int = 6) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = _normalize_line(item).rstrip("。；：")
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized)
+        return deduped[:limit]
+
+    def _split_structured_items(value: str, limit: int = 6) -> list[str]:
+        if not value.strip():
+            return []
+        normalized = value.replace("\r\n", "\n")
+        normalized = re.sub(r"([。；])", r"\1\n", normalized)
+        normalized = re.sub(r"\s+(?=\d+[.、）)])", "\n", normalized)
+        return _unique_items([segment for segment in re.split(r"\n+", normalized) if segment.strip()], limit=limit)
+
+    def _parse_markdownish_sections(content: str) -> dict[str, list[str]]:
+        sections: dict[str, list[str]] = {
+            "intro": [],
+            "identity": [],
+            "core": [],
+            "support": [],
+            "red": [],
+            "evidence": [],
+            "voice": [],
+            "questions": [],
+        }
+        current = "intro"
+        for raw_line in content.replace("\r\n", "\n").split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            heading = _normalize_line(re.sub(r"^#+\s*", "", line)).rstrip("：:")
+            if re.search(r"基础身份|身份摘要|对象概况|人物概况|对象简介", heading):
+                current = "identity"
+                continue
+            if re.search(r"核心偏好|看重什么|偏好|价值偏好", heading):
+                current = "core"
+                continue
+            if re.search(r"支持触发器|支持理由|触发器|打动点|信任触发", heading):
+                current = "support"
+                continue
+            if re.search(r"红线|反感点|风险触发|敏感点|雷区", heading):
+                current = "red"
+                continue
+            if re.search(r"证据偏好|证据要求|信任证据|证明材料", heading):
+                current = "evidence"
+                continue
+            if re.search(r"说话风格|语言风格|口吻|语气|表达偏好", heading):
+                current = "voice"
+                continue
+            if re.search(r"常问问题|常见问题|典型问题|疑问", heading):
+                current = "questions"
+                continue
+            sections[current].append(line)
+        return sections
+
+    def _extract_keywords(value: str) -> list[str]:
+        return _unique_items(re.findall(r"[\u4e00-\u9fa5A-Za-z0-9]{2,20}", value or ""), limit=12)
+
+    def _confidence_level_from_score(score: int) -> Literal["low", "medium", "high"]:
+        if score >= 80:
+            return "high"
+        if score >= 55:
+            return "medium"
+        return "low"
+
+    def _make_deep_dna_id(group_key: str, label: str) -> str:
+        normalized = re.sub(r"[^a-z0-9_\u4e00-\u9fa5-]", "", re.sub(r"\s+", "_", label.strip().lower()))[:32]
+        return f"dna:{group_key}:{normalized or uuid4().hex[:8]}"
+
+    def _build_deep_dna_from_text(
+        *,
+        group_key: Literal["platform_fundraising", "monthly_donor", "key_person"],
+        label: str,
+        content: str,
+        source_kind: Literal["manual", "import", "web"],
+        authorization_status: Literal["public", "authorized_internal", "restricted"] = "authorized_internal",
+        existing_id: str | None = None,
+        file_name: str | None = None,
+        file_path: str | None = None,
+        source_url: str | None = None,
+        search_query: str | None = None,
+        status: Literal["draft", "published"] = "published",
+        keep_created_at: str | None = None,
+    ) -> DeepDnaRecord:
+        sections = _parse_markdownish_sections(content)
+        lines = [_normalize_line(item) for item in content.replace("\r\n", "\n").split("\n") if _normalize_line(item)]
+        identity_summary = "；".join(_unique_items(sections["identity"] or sections["intro"], limit=2))
+        core_preferences = _unique_items(sections["core"] or [line for line in lines if re.search(r"看重|偏好|价值|信任", line)], limit=5)
+        support_triggers = _unique_items(sections["support"] or [line for line in lines if re.search(r"支持|打动|行动|愿意", line)], limit=5)
+        red_flags = _unique_items(sections["red"] or [line for line in lines if re.search(r"风险|反感|敏感|质疑|避免|雷区", line)], limit=5)
+        evidence_preferences = _unique_items(sections["evidence"] or [line for line in lines if re.search(r"证据|数据|预算|透明|证明", line)], limit=4)
+        voice_style = _unique_items(sections["voice"] or [line for line in lines if re.search(r"语气|风格|表达|措辞|口吻", line)], limit=4)
+        common_questions = _unique_items(sections["questions"] or [line for line in lines if line.endswith("？") or "为什么" in line or "如何" in line], limit=5)
+        coverage_score = sum(1 for bucket in [identity_summary, core_preferences, support_triggers, red_flags, evidence_preferences, voice_style, common_questions] if bucket)
+        confidence_score = min(96, 42 + coverage_score * 8 + min(len(lines), 16))
+        created_at = keep_created_at or now_iso()
+        return DeepDnaRecord(
+            id=existing_id or _make_deep_dna_id(group_key, label),
+            groupKey=group_key,
+            label=label.strip(),
+            status=status,
+            sourceKind=source_kind,
+            identitySummary=identity_summary or f"{label.strip()}对象档案已建立，建议继续补充核心偏好、证据偏好与常问问题。",
+            corePreferences=core_preferences,
+            supportTriggers=support_triggers,
+            redFlags=red_flags,
+            evidencePreferences=evidence_preferences,
+            voiceStyle=voice_style,
+            commonQuestions=common_questions,
+            sources=[
+                DeepDnaSourceRecord(
+                    id=new_id("dna_src"),
+                    kind=source_kind,
+                    title=file_name or label.strip(),
+                    excerpt="\n".join(lines[:8])[:420],
+                    sourceUrl=source_url,
+                    fileName=file_name,
+                    filePath=file_path,
+                    createdAt=created_at,
+                )
+            ],
+            confidenceScore=confidence_score,
+            confidenceLevel=_confidence_level_from_score(confidence_score),
+            authorizationStatus=authorization_status,
+            rawContent=content.strip(),
+            searchQuery=search_query,
+            createdAt=created_at,
+            updatedAt=now_iso(),
+        )
+
+    def _deep_dna_to_profile_record(record: DeepDnaRecord, existing: DiagnosisProfileRecord | None = None) -> DiagnosisProfileRecord:
+        file_name = existing.fileName if existing else f"{record.label}.md"
+        file_path = existing.filePath if existing else ""
+        return DiagnosisProfileRecord(
+            id=existing.id if existing else record.id,
+            groupKey=record.groupKey,
+            deepDnaId=record.id,
+            label=record.label,
+            fileName=file_name,
+            filePath=file_path,
+            markdownContent=record.rawContent,
+            summary=record.identitySummary,
+            corePreferences=record.corePreferences,
+            riskTriggers=record.redFlags,
+            tonePreference="；".join(record.voiceStyle) if record.voiceStyle else None,
+            updatedAt=record.updatedAt,
+        )
+
+    def _sync_diagnosis_profiles_with_deep_dna(settings: AnalysisWorkbenchSettingsRecord) -> AnalysisWorkbenchSettingsRecord:
+        published = [record for record in settings.deepDnaLibrary if record.status == "published"]
+        existing_by_deep_dna = {
+            profile.deepDnaId: profile
+            for profile in settings.diagnosisProfiles
+            if profile.deepDnaId
+        }
+        profiles_by_id = {profile.id: profile for profile in settings.diagnosisProfiles}
+        synced_profiles: list[DiagnosisProfileRecord] = []
+        seen_profile_ids: set[str] = set()
+        for record in published:
+            existing = existing_by_deep_dna.get(record.id) or profiles_by_id.get(record.id)
+            profile = _deep_dna_to_profile_record(record, existing=existing)
+            if profile.id in seen_profile_ids:
+                continue
+            synced_profiles.append(profile)
+            seen_profile_ids.add(profile.id)
+        legacy_profiles = [profile for profile in settings.diagnosisProfiles if not profile.deepDnaId and profile.id not in seen_profile_ids]
+        synced_profiles.extend(legacy_profiles)
+        return settings.model_copy(update={"diagnosisProfiles": synced_profiles})
+
+    def _seed_deep_dna_from_legacy_profiles(settings: AnalysisWorkbenchSettingsRecord) -> AnalysisWorkbenchSettingsRecord:
+        if settings.deepDnaLibrary:
+            return settings
+        if not settings.diagnosisProfiles:
+            return settings
+        migrated_records = [
+            _build_deep_dna_from_text(
+                group_key=profile.groupKey,
+                label=profile.label,
+                content=profile.markdownContent or profile.summary,
+                source_kind="import",
+                authorization_status="authorized_internal",
+                existing_id=profile.deepDnaId or profile.id,
+                file_name=profile.fileName,
+                file_path=profile.filePath,
+                status="published",
+                keep_created_at=profile.updatedAt,
+            ).model_copy(
+                update={
+                    "identitySummary": profile.summary,
+                    "corePreferences": profile.corePreferences,
+                    "redFlags": profile.riskTriggers,
+                    "voiceStyle": _unique_items((profile.tonePreference or "").split("；"), limit=4),
+                    "updatedAt": profile.updatedAt,
+                }
+            )
+            for profile in settings.diagnosisProfiles
+        ]
+        return settings.model_copy(update={"deepDnaLibrary": migrated_records})
+
+    def _system_coach_cases() -> list[CoachCaseRecord]:
+        timestamp = now_iso()
+        return [
+            CoachCaseRecord(
+                id="system_case_platform_budget",
+                title="平台筹款先给出预算与去向",
+                summary="平台公域更信任能快速看懂用途、金额和执行闭环的表达。",
+                whyEffective="先解决真实性与资金去向，再谈情绪，能显著降低公域疑虑。",
+                takeaways=["先写钱怎么花", "用一条具体事实建立真实感", "把行动号召放在证据之后"],
+                keyExcerpt="这笔捐款将直接用于 120 户家庭的应急粮包和 2 周配送，每一笔支出都会在页面持续公开。",
+                scenes=["平台筹款"],
+                tags=["可信度", "预算拆解", "透明度"],
+                issueTypes=["可信度不足", "预算不清"],
+                sourceType="system",
+                sourceLabel="系统内置案例",
+                createdAt=timestamp,
+                updatedAt=timestamp,
+            ),
+            CoachCaseRecord(
+                id="system_case_monthly_relationship",
+                title="月捐转化强调持续陪伴而非一次性刺激",
+                summary="月捐沟通更适合把关系、长期变化和反馈机制写实，而不是只做情绪冲刺。",
+                whyEffective="长期承诺要建立在可持续参与感上，不能只靠一次情绪高峰。",
+                takeaways=["说明长期价值", "给出陪伴反馈节奏", "降低一次性压迫感"],
+                keyExcerpt="每个月 30 元，会让一个家庭在整个学期都持续收到作业辅导和家长支持回访。",
+                scenes=["月捐人测试"],
+                tags=["长期价值", "留存", "陪伴感"],
+                issueTypes=["长期价值不清", "关系感不足"],
+                sourceType="system",
+                sourceLabel="系统内置案例",
+                createdAt=timestamp,
+                updatedAt=timestamp,
+            ),
+            CoachCaseRecord(
+                id="system_case_key_person_logic",
+                title="Key Person 提案先对齐判断框架",
+                summary="关键对象更愿意先看到合作逻辑、结果路径和机构能力，而不是先看情绪渲染。",
+                whyEffective="它先对齐了对方的判断框架，让后续案例和请求更容易被接受。",
+                takeaways=["先说合作逻辑", "补能力与证据", "请求要与对方角色匹配"],
+                keyExcerpt="我们希望与您共建的是一套可复制的学校支持机制，而不是一次性资助活动。",
+                scenes=["Key Person"],
+                tags=["合作逻辑", "提案", "证据链"],
+                issueTypes=["合作逻辑不清", "对象不匹配"],
+                sourceType="system",
+                sourceLabel="系统内置案例",
+                createdAt=timestamp,
+                updatedAt=timestamp,
+            ),
+        ]
+
+    def _extract_mode_from_input(title: str, input_text: str) -> Literal["platform_fundraising", "monthly_donor", "key_person", "incident_response", "preflight_release", "project_mechanism", "stakeholder_simulation", "methodology_review"] | None:
+        match = re.search(r"\[\[DIAGNOSIS_CONTEXT\]\](.*?)\[\[/DIAGNOSIS_CONTEXT\]\]", input_text, re.DOTALL)
+        if match:
+            block = match.group(1)
+            for line in block.splitlines():
+                line = line.strip()
+                if line.startswith("modeId="):
+                    mode_id = line.split("=", 1)[1].strip()
+                    if mode_id:
+                        return mode_id  # type: ignore[return-value]
+        haystack = f"{title}\n{input_text}"
+        if "月捐" in haystack:
+            return "monthly_donor"
+        if re.search(r"基金会|CSR|关键|捐赠人|提案", haystack):
+            return "key_person"
+        if re.search(r"平台|腾讯公益|抖音公益|公域", haystack):
+            return "platform_fundraising"
+        return None
+
+    def _match_coach_cases(
+        cases: list[CoachCaseRecord],
+        *,
+        mode_id: str,
+        issue_title: str,
+        issue_body: str,
+    ) -> list[CoachCaseRecord]:
+        issue_tokens = set(_extract_keywords(f"{issue_title} {issue_body}"))
+        matched: list[tuple[int, CoachCaseRecord]] = []
+        for case in cases:
+            score = 0
+            if not case.scenes or any(scene in {"平台筹款", "月捐人测试", "Key Person"} for scene in case.scenes):
+                if mode_id == "platform_fundraising" and any(scene in {"平台筹款"} for scene in case.scenes):
+                    score += 4
+                if mode_id == "monthly_donor" and any(scene in {"月捐人测试"} for scene in case.scenes):
+                    score += 4
+                if mode_id == "key_person" and any(scene in {"Key Person"} for scene in case.scenes):
+                    score += 4
+            for token in issue_tokens:
+                if token and any(token in field for field in [case.title, case.summary, " ".join(case.issueTypes), " ".join(case.tags)]):
+                    score += 2
+            if score > 0:
+                matched.append((score, case))
+        matched.sort(key=lambda item: item[0], reverse=True)
+        return [case for _, case in matched[:2]]
+
+    def _build_coach_payload(
+        *,
+        run_id: str,
+        output: AiStructuredResponse,
+        title: str,
+        input_text: str,
+        mode_id: str | None,
+        settings: AnalysisWorkbenchSettingsRecord,
+    ) -> CoachPayload:
+        if mode_id not in {"platform_fundraising", "monthly_donor", "key_person"}:
+            return CoachPayload()
+        guide = FUNDRAISING_MODE_GUIDES.get(mode_id, FUNDRAISING_MODE_GUIDES["platform_fundraising"])
+        judgment_items = _split_structured_items(output.judgment, limit=3)
+        action_items = _split_structured_items(output.actions, limit=4)
+        analysis_items = _split_structured_items(output.analysis, limit=4)
+        content_items = _split_structured_items(output.content, limit=3)
+        seeds = judgment_items + (action_items or analysis_items or content_items)
+        combined_cases = [*_system_coach_cases(), *settings.coachCaseLibrary]
+        cards: list[CoachCardRecord] = []
+        for index, seed in enumerate(_unique_items(seeds, limit=3)):
+            issue_title = seed[:24] + ("…" if len(seed) > 24 else "")
+            why_important = (analysis_items[index] if index < len(analysis_items) else output.analysis or output.judgment or seed).strip()
+            matched_knowledge = next(
+                (
+                    entry for entry in settings.fundraisingKnowledgeLibrary
+                    if any(token in f"{entry.title} {entry.summary} {' '.join(entry.tags)} {' '.join(entry.principles)} {' '.join(entry.riskSignals)}" for token in _extract_keywords(seed))
+                ),
+                None,
+            )
+            case_refs = _match_coach_cases(combined_cases, mode_id=mode_id, issue_title=issue_title, issue_body=why_important)
+            cards.append(
+                CoachCardRecord(
+                    id=f"{run_id}:coach:{index}",
+                    issueKey=_extract_keywords(seed)[0] if _extract_keywords(seed) else f"issue_{index + 1}",
+                    insightTitle=issue_title,
+                    issueWhat=seed,
+                    whyImportant=why_important,
+                    knowledgePointTitle=str(matched_knowledge.title if matched_knowledge else guide["learningTitle"]),
+                    knowledgePointBody=(matched_knowledge.principles[0] if matched_knowledge and matched_knowledge.principles else str(guide["learningBody"])),
+                    caseIds=[case.id for case in case_refs],
+                    selfRewriteHint=(action_items[index] if index < len(action_items) else seed),
+                    learningAction=f"按“{issue_title}”重写一版，再回看是否补上了{str(guide['focusPoints'][0]) if guide.get('focusPoints') else '核心判断'}。",
+                    referenceDraft=None,
+                )
+            )
+        text_haystack = f"{title}\n{input_text}\n{output.analysis}\n{output.actions}"
+        triggered_reminders = [
+            rule for rule in settings.coachReminderRules
+            if (not rule.modeIds or mode_id in rule.modeIds)
+            and (
+                rule.knowledgeKey in text_haystack
+                or rule.issuePattern in text_haystack
+                or any(rule.knowledgeKey in card.issueWhat or rule.issuePattern in card.issueWhat for card in cards)
+            )
+        ]
+        applied_norms = [
+            norm for norm in settings.orgWritingNorms
+            if (not norm.modeIds or mode_id in norm.modeIds)
+            and (
+                not norm.triggerKeywords
+                or any(keyword and keyword in text_haystack for keyword in norm.triggerKeywords)
+            )
+        ]
+        return CoachPayload(cards=cards, triggeredReminders=triggered_reminders[:3], appliedNorms=applied_norms[:3])
+
+    def _build_run_comparison(current_run: AnalysisRunRecord, previous_run: AnalysisRunRecord | None) -> RunComparison:
+        if not previous_run:
+            return RunComparison(
+                currentRunId=current_run.id,
+                previousRunId=None,
+                resultChanges=["当前还没有上一版可对比，后续从你自己改的一版开始会自动生成结构化对比。"],
+                learningChanges=["先完成一轮“我来试改”，下一版会显示新增学习点、已解决问题和重复犯错。"],
+            )
+        current_cards = current_run.coachPayload.cards if current_run.coachPayload else []
+        previous_cards = previous_run.coachPayload.cards if previous_run.coachPayload else []
+        current_titles = [card.insightTitle for card in current_cards] or _split_structured_items(current_run.output.actions or current_run.output.judgment, limit=3)
+        previous_titles = [card.insightTitle for card in previous_cards] or _split_structured_items(previous_run.output.actions or previous_run.output.judgment, limit=3)
+        current_set = set(current_titles)
+        previous_set = set(previous_titles)
+        resolved = [item for item in previous_titles if item not in current_set][:3]
+        new_issues = [item for item in current_titles if item not in previous_set][:3]
+        repeated = [item for item in current_titles if item in previous_set][:3]
+        current_learning = [card.knowledgePointTitle for card in current_cards if card.knowledgePointTitle]
+        previous_learning = [card.knowledgePointTitle for card in previous_cards if card.knowledgePointTitle]
+        result_changes: list[str] = []
+        learning_changes: list[str] = []
+        if resolved:
+            result_changes.append(f"已解决：{'；'.join(resolved)}")
+        if new_issues:
+            result_changes.append(f"新增问题：{'；'.join(new_issues)}")
+        if repeated:
+            result_changes.append(f"仍需继续盯住：{'；'.join(repeated)}")
+        new_learning = [item for item in current_learning if item not in set(previous_learning)][:3]
+        repeated_learning = [item for item in current_learning if item in set(previous_learning)][:3]
+        if new_learning:
+            learning_changes.append(f"新学到：{'；'.join(new_learning)}")
+        if repeated_learning:
+            learning_changes.append(f"还在反复练：{'；'.join(repeated_learning)}")
+        if not learning_changes:
+            learning_changes.append("学习重点整体与上一版接近，说明你正在反复打磨同一类核心问题。")
+        if not result_changes:
+            result_changes.append("本轮结构化结果与上一版较接近，建议继续在最重要的三条修改上做更明显的版本差异。")
+        return RunComparison(
+            currentRunId=current_run.id,
+            previousRunId=previous_run.id,
+            resultChanges=result_changes,
+            learningChanges=learning_changes,
+            resolvedIssues=resolved,
+            newIssues=new_issues,
+            repeatedIssues=repeated,
+        )
+
     def _default_analysis_workbench_settings() -> AnalysisWorkbenchSettingsRecord:
         template_ids = [str(row["id"]) for row in state.db.fetchall("SELECT id FROM analysis_templates ORDER BY created_at ASC")]
         return AnalysisWorkbenchSettingsRecord(
@@ -2826,11 +3271,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def get_analysis_workbench_settings() -> AnalysisWorkbenchSettingsRecord:
         current = _load_json_settings_record("settings.analysis_workbench", _default_analysis_workbench_settings, AnalysisWorkbenchSettingsRecord)
+        dirty = False
         if not current.enabledTemplateIds:
             template_ids = [str(row["id"]) for row in state.db.fetchall("SELECT id FROM analysis_templates ORDER BY created_at ASC")]
             current = current.model_copy(update={"enabledTemplateIds": template_ids, "defaultTemplateId": current.defaultTemplateId or (template_ids[0] if template_ids else None)})
+            dirty = True
+        migrated = _seed_deep_dna_from_legacy_profiles(current)
+        if migrated != current:
+            current = migrated
+            dirty = True
+        synced = _sync_diagnosis_profiles_with_deep_dna(current)
+        if synced != current:
+            current = synced
+            dirty = True
+        if dirty:
             _save_json_settings_record("settings.analysis_workbench", current)
         return current
+
+    def save_analysis_workbench_settings(record: AnalysisWorkbenchSettingsRecord) -> AnalysisWorkbenchSettingsRecord:
+        normalized = _sync_diagnosis_profiles_with_deep_dna(_seed_deep_dna_from_legacy_profiles(record))
+        _save_json_settings_record("settings.analysis_workbench", normalized)
+        return normalized
 
     def get_handbook_settings() -> HandbookSettingsRecord:
         return _load_json_settings_record("settings.handbook", _default_handbook_settings, HandbookSettingsRecord)
@@ -15190,7 +15651,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if default_template_id and default_template_id not in known_ids:
             raise HTTPException(status_code=400, detail="默认分析模板无效")
         next_record = AnalysisWorkbenchSettingsRecord(**next_payload)
-        _save_json_settings_record("settings.analysis_workbench", next_record)
+        next_record = save_analysis_workbench_settings(next_record)
         log_activity("settings.analysis_workbench.update", "settings", "analysis_workbench", payload.model_dump(exclude_none=True))
         return next_record
 
@@ -19242,6 +19703,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("topic.candidate.delete", "topic_candidate", candidate_id, {"title": str(row["title"])})
         return {"deleted": True}
 
+    def build_analysis_run_record(row) -> AnalysisRunRecord:
+        coach_payload_data = from_json(row["coach_payload_json"], {}) if "coach_payload_json" in row.keys() else {}
+        coach_payload = CoachPayload(**coach_payload_data) if coach_payload_data else None
+        return AnalysisRunRecord(
+            id=str(row["id"]),
+            templateId=str(row["template_id"]),
+            title=str(row["title"]),
+            inputText=str(row["input_text"]),
+            output=AiStructuredResponse(**from_json(row["output_json"], {})),
+            parentRunId=str(row["parent_run_id"]) if row["parent_run_id"] else None,
+            coachPayload=coach_payload,
+            createdAt=str(row["created_at"]),
+            status=str(row["status"]),  # type: ignore[arg-type]
+        )
+
+    def find_previous_analysis_run(run: AnalysisRunRecord) -> AnalysisRunRecord | None:
+        if run.parentRunId:
+            row = state.db.fetchone("SELECT * FROM analysis_runs WHERE id = ?", (run.parentRunId,))
+            if row:
+                return build_analysis_run_record(row)
+        row = state.db.fetchone(
+            "SELECT * FROM analysis_runs WHERE template_id = ? AND id != ? AND created_at < ? ORDER BY created_at DESC LIMIT 1",
+            (run.templateId, run.id, run.createdAt),
+        )
+        if row:
+            return build_analysis_run_record(row)
+        return None
+
     @app.get("/api/v1/analysis-tools", response_model=AnalysisToolsResponse)
     def list_analysis_tools() -> AnalysisToolsResponse:
         templates = [
@@ -19254,15 +19743,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for row in state.db.fetchall("SELECT * FROM analysis_templates ORDER BY created_at ASC")
         ]
         runs = [
-            AnalysisRunRecord(
-                id=str(row["id"]),
-                templateId=str(row["template_id"]),
-                title=str(row["title"]),
-                inputText=str(row["input_text"]),
-                output=AiStructuredResponse(**from_json(row["output_json"], {})),
-                createdAt=str(row["created_at"]),
-                status=str(row["status"]),  # type: ignore[arg-type]
-            )
+            build_analysis_run_record(row)
             for row in state.db.fetchall("SELECT * FROM analysis_runs ORDER BY created_at DESC")
         ]
         return AnalysisToolsResponse(templates=templates, runs=runs)
@@ -19275,7 +19756,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         analysis_settings = get_analysis_workbench_settings()
         if analysis_settings.enabledTemplateIds and payload.templateId not in analysis_settings.enabledTemplateIds:
             raise HTTPException(status_code=403, detail="当前模板已在系统设置中停用")
+        mode_id = _extract_mode_from_input(payload.title, payload.inputText)
+        active_norms = [
+            norm for norm in analysis_settings.orgWritingNorms
+            if mode_id in {"platform_fundraising", "monthly_donor", "key_person"}
+            and (not norm.modeIds or mode_id in norm.modeIds)
+            and (not norm.triggerKeywords or any(keyword and keyword in payload.inputText for keyword in norm.triggerKeywords))
+        ]
         org_context = build_organization_dna_context() if analysis_settings.useOrgDna else ""
+        norms_context = "\n".join(
+            f"- {norm.title}：{norm.instruction}"
+            for norm in active_norms[:4]
+        )
         output = state.ai.generate_structured(
             payload.inputText,
             f"你是咨询分析助手，请根据模板 {template['title']} 输出结构化结果。",
@@ -19284,18 +19776,253 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for item in [
                     f"模板说明：{template['description']}",
                     org_context,
+                    f"本轮写作规范：\n{norms_context}" if norms_context else "",
                 ]
                 if item
             ),
         )
         run_id = new_id("run")
         created_at = now_iso()
-        state.db.execute(
-            "INSERT INTO analysis_runs(id, template_id, title, input_text, output_json, status, created_at) VALUES(?, ?, ?, ?, ?, 'success', ?)",
-            (run_id, payload.templateId, payload.title, payload.inputText, to_json(output.model_dump()), created_at),
+        coach_payload = _build_coach_payload(
+            run_id=run_id,
+            output=output,
+            title=payload.title,
+            input_text=payload.inputText,
+            mode_id=mode_id,
+            settings=analysis_settings,
         )
-        log_activity("analysis.run", "analysis_run", run_id, {"templateId": payload.templateId, "title": payload.title})
-        return AnalysisRunRecord(id=run_id, templateId=payload.templateId, title=payload.title, inputText=payload.inputText, output=output, createdAt=created_at, status="success")
+        state.db.execute(
+            "INSERT INTO analysis_runs(id, template_id, title, input_text, output_json, parent_run_id, coach_payload_json, status, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 'success', ?)",
+            (
+                run_id,
+                payload.templateId,
+                payload.title,
+                payload.inputText,
+                to_json(output.model_dump()),
+                payload.parentRunId,
+                to_json(coach_payload.model_dump()),
+                created_at,
+            ),
+        )
+        log_activity(
+            "analysis.run",
+            "analysis_run",
+            run_id,
+            {"templateId": payload.templateId, "title": payload.title, "parentRunId": payload.parentRunId},
+        )
+        return AnalysisRunRecord(
+            id=run_id,
+            templateId=payload.templateId,
+            title=payload.title,
+            inputText=payload.inputText,
+            output=output,
+            parentRunId=payload.parentRunId,
+            coachPayload=coach_payload,
+            createdAt=created_at,
+            status="success",
+        )
+
+    @app.get("/api/v1/analysis-tools/fundraising/dna", response_model=list[DeepDnaRecord])
+    def list_fundraising_deep_dna() -> list[DeepDnaRecord]:
+        settings = get_analysis_workbench_settings()
+        return settings.deepDnaLibrary
+
+    @app.post("/api/v1/analysis-tools/fundraising/dna", response_model=DeepDnaRecord)
+    def upsert_fundraising_deep_dna(payload: DeepDnaRecord) -> DeepDnaRecord:
+        ensure_business_settings_editable()
+        settings = get_analysis_workbench_settings()
+        next_library = [item for item in settings.deepDnaLibrary if item.id != payload.id]
+        next_library.append(payload.model_copy(update={"updatedAt": now_iso()}))
+        next_settings = save_analysis_workbench_settings(settings.model_copy(update={"deepDnaLibrary": next_library, "updatedAt": now_iso()}))
+        saved = next(item for item in next_settings.deepDnaLibrary if item.id == payload.id)
+        log_activity("analysis.fundraising_dna.upsert", "analysis_settings", payload.id, {"groupKey": payload.groupKey, "label": payload.label})
+        return saved
+
+    @app.post("/api/v1/analysis-tools/fundraising/dna/manual", response_model=DeepDnaRecord)
+    def create_fundraising_manual_dna(payload: dict[str, object] = Body(...)) -> DeepDnaRecord:
+        ensure_business_settings_editable()
+        group_key = str(payload.get("groupKey") or "").strip()
+        label = str(payload.get("label") or "").strip()
+        if group_key not in {"platform_fundraising", "monthly_donor", "key_person"}:
+            raise HTTPException(status_code=400, detail="无效的 Deep DNA 分组。")
+        if not label:
+            raise HTTPException(status_code=400, detail="请先填写对象名称。")
+        content_blocks = [
+            f"# 基础身份\n{str(payload.get('identitySummary') or '').strip()}",
+            f"# 核心偏好\n{str(payload.get('corePreferencesText') or '').strip()}",
+            f"# 支持触发器\n{str(payload.get('supportTriggersText') or '').strip()}",
+            f"# 红线与反感点\n{str(payload.get('redFlagsText') or '').strip()}",
+            f"# 证据偏好\n{str(payload.get('evidencePreferencesText') or '').strip()}",
+            f"# 说话风格\n{str(payload.get('voiceStyleText') or '').strip()}",
+            f"# 常问问题\n{str(payload.get('commonQuestionsText') or '').strip()}",
+        ]
+        record = _build_deep_dna_from_text(
+            group_key=group_key,  # type: ignore[arg-type]
+            label=label,
+            content="\n\n".join(block for block in content_blocks if block.strip()),
+            source_kind="manual",
+            authorization_status=str(payload.get("authorizationStatus") or "authorized_internal"),  # type: ignore[arg-type]
+            status="published",
+        )
+        return upsert_fundraising_deep_dna(record)
+
+    @app.post("/api/v1/analysis-tools/fundraising/dna/import", response_model=DeepDnaRecord)
+    def import_fundraising_dna(payload: dict[str, object] = Body(...)) -> DeepDnaRecord:
+        ensure_business_settings_editable()
+        group_key = str(payload.get("groupKey") or "").strip()
+        label = str(payload.get("label") or "").strip()
+        content = str(payload.get("content") or "").strip()
+        if group_key not in {"platform_fundraising", "monthly_donor", "key_person"}:
+            raise HTTPException(status_code=400, detail="无效的 Deep DNA 分组。")
+        if not label or not content:
+            raise HTTPException(status_code=400, detail="导入对象档案时需要名称和文档内容。")
+        record = _build_deep_dna_from_text(
+            group_key=group_key,  # type: ignore[arg-type]
+            label=label,
+            content=content,
+            source_kind="import",
+            authorization_status=str(payload.get("authorizationStatus") or "authorized_internal"),  # type: ignore[arg-type]
+            file_name=str(payload.get("fileName") or "") or None,
+            file_path=str(payload.get("filePath") or "") or None,
+            status="published",
+        )
+        return upsert_fundraising_deep_dna(record)
+
+    @app.post("/api/v1/analysis-tools/fundraising/dna/web-drafts", response_model=DeepDnaDraft)
+    def create_fundraising_web_draft(payload: dict[str, object] = Body(...)) -> DeepDnaDraft:
+        ensure_business_settings_editable()
+        group_key = str(payload.get("groupKey") or "").strip()
+        label = str(payload.get("label") or "").strip()
+        search_query = str(payload.get("searchQuery") or label).strip()
+        if group_key not in {"platform_fundraising", "monthly_donor", "key_person"}:
+            raise HTTPException(status_code=400, detail="无效的 Deep DNA 分组。")
+        if not label or not search_query:
+            raise HTTPException(status_code=400, detail="请先填写对象名称和联网检索描述。")
+        hits = fetch_topic_candidates_from_web(
+            state.ai,
+            radar_title=label,
+            radar_prompt=search_query,
+            time_range="14_days",
+            max_items=3,
+        )
+        if not hits:
+            raise HTTPException(status_code=502, detail="这次联网没有抓到足够可用的公开资料，请换一个更具体的检索描述。")
+        source_records: list[DeepDnaSourceRecord] = []
+        content_parts: list[str] = []
+        for hit in hits[:3]:
+            excerpt = fetch_topic_source_excerpt(hit.source_url) or hit.summary
+            source_records.append(
+                DeepDnaSourceRecord(
+                    id=new_id("dna_src"),
+                    kind="web",
+                    title=hit.title,
+                    excerpt=excerpt[:420],
+                    sourceUrl=hit.source_url,
+                    createdAt=now_iso(),
+                )
+            )
+            content_parts.append(
+                "\n".join(
+                    [
+                        f"来源标题：{hit.title}",
+                        f"来源摘要：{hit.summary}",
+                        f"来源摘录：{excerpt[:1600]}",
+                    ]
+                )
+            )
+        draft_record = _build_deep_dna_from_text(
+            group_key=group_key,  # type: ignore[arg-type]
+            label=label,
+            content="\n\n".join(content_parts),
+            source_kind="web",
+            authorization_status="public",
+            search_query=search_query,
+            status="draft",
+        ).model_copy(update={"sources": source_records})
+        settings = get_analysis_workbench_settings()
+        next_library = [item for item in settings.deepDnaLibrary if item.id != draft_record.id]
+        next_library.append(draft_record)
+        save_analysis_workbench_settings(settings.model_copy(update={"deepDnaLibrary": next_library, "updatedAt": now_iso()}))
+        return DeepDnaDraft(
+            id=draft_record.id,
+            groupKey=draft_record.groupKey,
+            label=draft_record.label,
+            searchQuery=search_query,
+            draftRecord=draft_record,
+            previewSources=source_records,
+            createdAt=draft_record.createdAt,
+            updatedAt=draft_record.updatedAt,
+        )
+
+    @app.post("/api/v1/analysis-tools/fundraising/dna/{dna_id}/publish", response_model=DeepDnaRecord)
+    def publish_fundraising_dna(dna_id: str) -> DeepDnaRecord:
+        ensure_business_settings_editable()
+        settings = get_analysis_workbench_settings()
+        target = next((item for item in settings.deepDnaLibrary if item.id == dna_id), None)
+        if not target:
+            raise HTTPException(status_code=404, detail="Deep DNA 草稿不存在。")
+        published = target.model_copy(update={"status": "published", "updatedAt": now_iso()})
+        next_library = [item for item in settings.deepDnaLibrary if item.id != dna_id]
+        next_library.append(published)
+        next_settings = save_analysis_workbench_settings(settings.model_copy(update={"deepDnaLibrary": next_library, "updatedAt": now_iso()}))
+        saved = next(item for item in next_settings.deepDnaLibrary if item.id == dna_id)
+        log_activity("analysis.fundraising_dna.publish", "analysis_settings", dna_id, {"label": saved.label})
+        return saved
+
+    @app.get("/api/v1/analysis-tools/fundraising/cases", response_model=list[CoachCaseRecord])
+    def list_fundraising_cases() -> list[CoachCaseRecord]:
+        settings = get_analysis_workbench_settings()
+        return [*_system_coach_cases(), *settings.coachCaseLibrary]
+
+    @app.post("/api/v1/analysis-tools/fundraising/cases", response_model=CoachCaseRecord)
+    def upsert_fundraising_case(payload: CoachCaseRecord) -> CoachCaseRecord:
+        ensure_business_settings_editable()
+        settings = get_analysis_workbench_settings()
+        next_library = [item for item in settings.coachCaseLibrary if item.id != payload.id]
+        next_library.append(payload.model_copy(update={"sourceType": "organization", "updatedAt": now_iso()}))
+        next_settings = save_analysis_workbench_settings(settings.model_copy(update={"coachCaseLibrary": next_library, "updatedAt": now_iso()}))
+        saved = next(item for item in next_settings.coachCaseLibrary if item.id == payload.id)
+        log_activity("analysis.fundraising_case.upsert", "analysis_settings", saved.id, {"title": saved.title})
+        return saved
+
+    @app.get("/api/v1/analysis-tools/fundraising/reminders", response_model=list[CoachReminderRule])
+    def list_fundraising_reminders() -> list[CoachReminderRule]:
+        return get_analysis_workbench_settings().coachReminderRules
+
+    @app.post("/api/v1/analysis-tools/fundraising/reminders", response_model=CoachReminderRule)
+    def upsert_fundraising_reminder(payload: CoachReminderRule) -> CoachReminderRule:
+        ensure_business_settings_editable()
+        settings = get_analysis_workbench_settings()
+        next_library = [item for item in settings.coachReminderRules if item.id != payload.id]
+        next_library.append(payload.model_copy(update={"updatedAt": now_iso()}))
+        next_settings = save_analysis_workbench_settings(settings.model_copy(update={"coachReminderRules": next_library, "updatedAt": now_iso()}))
+        saved = next(item for item in next_settings.coachReminderRules if item.id == payload.id)
+        log_activity("analysis.fundraising_reminder.upsert", "analysis_settings", saved.id, {"title": saved.title})
+        return saved
+
+    @app.get("/api/v1/analysis-tools/fundraising/norms", response_model=list[OrgWritingNorm])
+    def list_fundraising_norms() -> list[OrgWritingNorm]:
+        return get_analysis_workbench_settings().orgWritingNorms
+
+    @app.post("/api/v1/analysis-tools/fundraising/norms", response_model=OrgWritingNorm)
+    def upsert_fundraising_norm(payload: OrgWritingNorm) -> OrgWritingNorm:
+        ensure_business_settings_editable()
+        settings = get_analysis_workbench_settings()
+        next_library = [item for item in settings.orgWritingNorms if item.id != payload.id]
+        next_library.append(payload.model_copy(update={"updatedAt": now_iso()}))
+        next_settings = save_analysis_workbench_settings(settings.model_copy(update={"orgWritingNorms": next_library, "updatedAt": now_iso()}))
+        saved = next(item for item in next_settings.orgWritingNorms if item.id == payload.id)
+        log_activity("analysis.fundraising_norm.upsert", "analysis_settings", saved.id, {"title": saved.title})
+        return saved
+
+    @app.get("/api/v1/analysis-tools/fundraising/runs/{run_id}/comparison", response_model=RunComparison)
+    def get_fundraising_run_comparison(run_id: str) -> RunComparison:
+        row = state.db.fetchone("SELECT * FROM analysis_runs WHERE id = ?", (run_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="分析记录不存在。")
+        current_run = build_analysis_run_record(row)
+        previous_run = find_previous_analysis_run(current_run)
+        return _build_run_comparison(current_run, previous_run)
 
     def build_handbook_entry_record(row) -> HandbookEntryRecord:
         client_id = str(row["client_id"]) if row["client_id"] else None
