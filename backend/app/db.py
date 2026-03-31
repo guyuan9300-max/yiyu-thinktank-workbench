@@ -1092,6 +1092,8 @@ class Database:
                     title TEXT NOT NULL,
                     input_text TEXT NOT NULL,
                     output_json TEXT NOT NULL,
+                    parent_run_id TEXT,
+                    coach_payload_json TEXT NOT NULL DEFAULT '{}',
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(template_id) REFERENCES analysis_templates(id) ON DELETE CASCADE
@@ -1381,6 +1383,8 @@ class Database:
             self._ensure_column("knowledge_documents", "human_folder_category", "TEXT")
             self._ensure_column("knowledge_documents", "reclassified_at", "TEXT")
             self._ensure_column("knowledge_documents", "reclass_reason", "TEXT")
+            self._ensure_column("analysis_runs", "parent_run_id", "TEXT")
+            self._ensure_column("analysis_runs", "coach_payload_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("handbook_entries", "source_object_type", "TEXT")
             self._ensure_column("handbook_entries", "source_object_id", "TEXT")
             self._ensure_column("handbook_entries", "source_title", "TEXT")

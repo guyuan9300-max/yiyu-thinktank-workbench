@@ -24,9 +24,15 @@ import type {
   AnalysisRunPayload,
   AnalysisTemplate,
   BettaFishSignal,
+  CoachCaseRecord,
+  CoachCardRecord,
+  CoachReminderRule,
+  DeepDnaRecord,
   DiagnosisEngineHealth,
   DiagnosisEngineMode,
   ExternalDiagnosisRequest,
+  OrgWritingNorm,
+  RunComparison,
 } from '../../../shared/types';
 import {
   type DiagnosisModeDefinition,
@@ -82,6 +88,7 @@ type WorkbenchInsight = {
   learningBody: string;
   basisSections: Array<'judgment' | 'analysis' | 'actions' | 'content'>;
   sourceTag?: string;
+  coachCard?: CoachCardRecord;
 };
 
 type ProfileContext = {
@@ -99,17 +106,24 @@ type UnifiedWorkbenchStudioProps = {
   defaultTitlePrefix: string;
   defaultHandbookTags?: string[];
   diagnosisProfiles: DiagnosisProfileRecord[];
+  deepDnaLibrary: DeepDnaRecord[];
   organizationRiskDna: OrganizationRiskDnaDocument | null;
   fundraisingKnowledgeEntries: FundraisingKnowledgeDocument[];
+  coachCases: CoachCaseRecord[];
+  coachReminderRules: CoachReminderRule[];
+  orgWritingNorms: OrgWritingNorm[];
   profileLibraryVersion?: number;
   onRunAnalysis: (payload: AnalysisRunPayload) => Promise<AnalysisRun>;
   onSaveLearningCard?: (payload: { title: string; summary: string; tags: string[] }) => Promise<void>;
   onGetDiagnosisEngineHealth: () => Promise<DiagnosisEngineHealth[]>;
   onRunBettafishDiagnosis: (payload: ExternalDiagnosisRequest) => Promise<BettaFishSignal>;
   onOpenProfileSettings?: (groupKey: DiagnosisProfileGroupKey, prefillLabel?: string) => void;
+  onGetRunComparison: (runId: string) => Promise<RunComparison>;
+  onSaveReminderRule: (payload: { title: string; knowledgeKey: string; issuePattern: string; message: string; modeIds: string[] }) => Promise<void>;
+  onSaveWritingNorm: (payload: { title: string; description: string; instruction: string; modeIds: string[]; triggerKeywords: string[] }) => Promise<void>;
 };
 
-type InspectorTab = 'basis' | 'learning' | 'mode';
+type InspectorTab = 'basis' | 'learning' | 'comparison' | 'mode';
 
 const COMPLETED_STORAGE_KEY = 'yiyu.unified_workbench.completed_by_run.v2';
 const SAVED_STORAGE_KEY = 'yiyu.unified_workbench.saved_learning.v1';
@@ -337,6 +351,31 @@ function deriveInsights(
   return deduped.slice(0, 6);
 }
 
+function deriveCoachInsights(
+  run: AnalysisRun,
+  mode: DiagnosisModeDefinition,
+  workspaceKey: DiagnosisWorkspaceKey,
+  bettafishSignal: BettaFishSignal | null,
+) {
+  if (workspaceKey !== 'fundraising' || !run.coachPayload?.cards.length) {
+    return deriveInsights(run, mode, workspaceKey, bettafishSignal);
+  }
+  return run.coachPayload.cards.map((card, index) => ({
+    id: `${run.id}:coach:${index}`,
+    badge: index === 0 ? '首要修正' : '教练建议',
+    kind: index === 0 || /风险|误读|反感|不清|不足/.test(`${card.issueWhat} ${card.whyImportant}`) ? 'critical' as const : 'learning' as const,
+    title: card.insightTitle,
+    body: card.issueWhat,
+    bullets: [card.selfRewriteHint, card.learningAction].filter(Boolean),
+    why: card.whyImportant,
+    learningTitle: card.knowledgePointTitle || mode.learningTitle,
+    learningBody: card.knowledgePointBody || mode.learningBody,
+    basisSections: ['judgment', 'analysis', 'actions'],
+    sourceTag: '教练卡',
+    coachCard: card,
+  }));
+}
+
 function scoreInsightPriority(insight: WorkbenchInsight, index: number) {
   let score = 100 - index * 4;
   if (insight.kind === 'critical') score += 120;
@@ -393,14 +432,21 @@ export function UnifiedWorkbenchStudio({
   defaultTitlePrefix,
   defaultHandbookTags = [],
   diagnosisProfiles,
+  deepDnaLibrary,
   organizationRiskDna,
   fundraisingKnowledgeEntries,
+  coachCases,
+  coachReminderRules,
+  orgWritingNorms,
   profileLibraryVersion = 0,
   onRunAnalysis,
   onSaveLearningCard,
   onGetDiagnosisEngineHealth,
   onRunBettafishDiagnosis,
   onOpenProfileSettings,
+  onGetRunComparison,
+  onSaveReminderRule,
+  onSaveWritingNorm,
 }: UnifiedWorkbenchStudioProps) {
   const initialWorkspace = useMemo(() => {
     if (!runs[0]) return DIAGNOSIS_WORKSPACES[0].key;
@@ -432,6 +478,13 @@ export function UnifiedWorkbenchStudio({
   const [profileSelection, setProfileSelection] = useState(() => readDiagnosisProfileSelection());
   const [isRunningBettafish, setIsRunningBettafish] = useState(false);
   const [runError, setRunError] = useState('');
+  const [comparisonByRun, setComparisonByRun] = useState<Record<string, RunComparison>>({});
+  const [isLoadingComparison, setIsLoadingComparison] = useState(false);
+  const [inlineRewriteInsightId, setInlineRewriteInsightId] = useState<string | null>(null);
+  const [inlineRewriteDraft, setInlineRewriteDraft] = useState('');
+  const [isSubmittingInlineRewrite, setIsSubmittingInlineRewrite] = useState(false);
+  const [referenceDraftByInsight, setReferenceDraftByInsight] = useState<Record<string, string>>({});
+  const [actionBusyKey, setActionBusyKey] = useState<string | null>(null);
   const [runDraft, setRunDraft] = useState({
     title: defaultTitlePrefix || '诊断记录',
     inputText: '',
@@ -481,6 +534,16 @@ export function UnifiedWorkbenchStudio({
   const selectedProfileForActiveMode = useMemo(
     () => (activeProfileGroup ? resolveSelectedDiagnosisProfile(diagnosisProfiles, profileSelection, activeProfileGroup) : null),
     [activeProfileGroup, diagnosisProfiles, profileSelection],
+  );
+  const selectedDeepDnaForActiveMode = useMemo(
+    () => (
+      activeProfileGroup
+        ? deepDnaLibrary.find((item) => item.id === (selectedProfileForActiveMode?.deepDnaId || selectedProfileForActiveMode?.id))
+          || deepDnaLibrary.find((item) => item.groupKey === activeProfileGroup && item.status === 'published')
+          || null
+        : null
+    ),
+    [activeProfileGroup, deepDnaLibrary, selectedProfileForActiveMode?.deepDnaId, selectedProfileForActiveMode?.id],
   );
 
   const activeTemplate = useMemo(
@@ -547,18 +610,35 @@ export function UnifiedWorkbenchStudio({
 
   const selectedRunTitle = selectedRun ? stripDiagnosisRunTitle(selectedRun.title) : '';
   const selectedRunInput = selectedRun ? stripDiagnosisInputText(selectedRun.inputText) : '';
-  const selectedProfileSummary = useMemo(
-    () => buildDiagnosisProfileSummary(activeWorkspaceKey === 'fundraising' ? selectedProfileForActiveMode : null),
-    [activeWorkspaceKey, selectedProfileForActiveMode],
-  );
+  const selectedProfileSummary = useMemo(() => {
+    if (activeWorkspaceKey !== 'fundraising') return undefined;
+    if (selectedDeepDnaForActiveMode) {
+      return {
+        corePreferences: [...selectedDeepDnaForActiveMode.corePreferences, ...selectedDeepDnaForActiveMode.supportTriggers].slice(0, 8),
+        riskTriggers: selectedDeepDnaForActiveMode.redFlags,
+        tonePreference: selectedDeepDnaForActiveMode.voiceStyle.join('；'),
+      };
+    }
+    return buildDiagnosisProfileSummary(selectedProfileForActiveMode);
+  }, [activeWorkspaceKey, selectedDeepDnaForActiveMode, selectedProfileForActiveMode]);
   const organizationRiskSummary = useMemo(
     () => buildOrganizationRiskDnaSummary(activeWorkspaceKey === 'fundraising' ? organizationRiskDna : null),
     [activeWorkspaceKey, organizationRiskDna],
   );
-  const selectedProfileContext = useMemo(
-    () => (activeWorkspaceKey === 'fundraising' ? buildProfileContext(selectedProfileForActiveMode) : null),
-    [activeWorkspaceKey, selectedProfileForActiveMode],
-  );
+  const selectedProfileContext = useMemo(() => {
+    if (activeWorkspaceKey !== 'fundraising') return null;
+    if (selectedDeepDnaForActiveMode) {
+      return {
+        key: selectedDeepDnaForActiveMode.id,
+        label: selectedDeepDnaForActiveMode.label,
+        summary: selectedDeepDnaForActiveMode.identitySummary,
+        corePreferences: [...selectedDeepDnaForActiveMode.corePreferences, ...selectedDeepDnaForActiveMode.supportTriggers].slice(0, 8),
+        riskTriggers: selectedDeepDnaForActiveMode.redFlags,
+        tonePreference: selectedDeepDnaForActiveMode.voiceStyle.join('；') || undefined,
+      };
+    }
+    return buildProfileContext(selectedProfileForActiveMode);
+  }, [activeWorkspaceKey, selectedDeepDnaForActiveMode, selectedProfileForActiveMode]);
   const organizationRiskContext = useMemo(
     () => (activeWorkspaceKey === 'fundraising' ? buildOrganizationRiskContext(organizationRiskDna) : null),
     [activeWorkspaceKey, organizationRiskDna],
@@ -617,7 +697,7 @@ export function UnifiedWorkbenchStudio({
   const activeBettafishSignal = currentSignalKey ? bettafishSignalsByRun[currentSignalKey] || null : null;
 
   const insights = useMemo(
-    () => (selectedRun ? deriveInsights(selectedRun, selectedMode, activeWorkspaceKey, activeBettafishSignal) : []),
+    () => (selectedRun ? deriveCoachInsights(selectedRun, selectedMode, activeWorkspaceKey, activeBettafishSignal) : []),
     [activeBettafishSignal, activeWorkspaceKey, selectedMode, selectedRun],
   );
 
@@ -674,6 +754,11 @@ export function UnifiedWorkbenchStudio({
     () => visibleInsights.find((item) => item.id === activeInsightId) || visibleInsights[0] || insights[0] || null,
     [activeInsightId, insights, visibleInsights],
   );
+  const activeCoachCases = useMemo(() => {
+    if (!activeInsight?.coachCard?.caseIds?.length) return [];
+    return coachCases.filter((entry) => activeInsight.coachCard?.caseIds.includes(entry.id));
+  }, [activeInsight?.coachCard?.caseIds, coachCases]);
+  const activeComparison = selectedRun ? comparisonByRun[selectedRun.id] || null : null;
   const relatedKnowledgeEntries = useMemo(() => {
     if (activeWorkspaceKey !== 'fundraising' || !activeInsight) return [];
     return matchFundraisingKnowledge(fundraisingKnowledgeEntries, {
@@ -692,6 +777,18 @@ export function UnifiedWorkbenchStudio({
     selectedMode.id,
     selectedProfileForActiveMode?.label,
   ]);
+
+  useEffect(() => {
+    if (!selectedRun || activeWorkspaceKey !== 'fundraising') return;
+    if (comparisonByRun[selectedRun.id]) return;
+    setIsLoadingComparison(true);
+    onGetRunComparison(selectedRun.id)
+      .then((comparison) => {
+        setComparisonByRun((prev) => ({ ...prev, [selectedRun.id]: comparison }));
+      })
+      .catch(() => undefined)
+      .finally(() => setIsLoadingComparison(false));
+  }, [activeWorkspaceKey, comparisonByRun, onGetRunComparison, selectedRun]);
 
   const summaryStats = useMemo(() => {
     const completedCount = insights.filter((item) => completedSet.has(item.id)).length;
@@ -783,9 +880,9 @@ export function UnifiedWorkbenchStudio({
   );
   const fundraisingJudgementCards = useMemo(
     () => activeWorkspaceKey === 'fundraising'
-      ? buildFundraisingJudgementCards(activeBettafishSignal, selectedRunInput, selectedProfileForActiveMode?.label || selectedMode.title)
+      ? buildFundraisingJudgementCards(activeBettafishSignal, selectedRunInput, selectedDeepDnaForActiveMode?.label || selectedProfileForActiveMode?.label || selectedMode.title)
       : [],
-    [activeBettafishSignal, activeWorkspaceKey, selectedMode.title, selectedProfileForActiveMode?.label, selectedRunInput],
+    [activeBettafishSignal, activeWorkspaceKey, selectedDeepDnaForActiveMode?.label, selectedMode.title, selectedProfileForActiveMode?.label, selectedRunInput],
   );
   const riskSentenceHighlights = useMemo(
     () => buildRiskSentenceHighlights(activeBettafishSignal, activeWorkspaceKey, selectedRunInput),
@@ -855,6 +952,7 @@ export function UnifiedWorkbenchStudio({
         templateId: activeTemplate.id,
         title: formatDiagnosisRunTitle(activeWorkspaceKey, selectedMode.id, `${selectedRunTitle} · 追问`),
         inputText: buildDiagnosisInputText(activeWorkspaceKey, selectedMode.id, context, effectiveProfileContext),
+        parentRunId: selectedRun.id,
       });
       setRunError('');
       setSelectedRunId(created.id);
@@ -919,6 +1017,88 @@ export function UnifiedWorkbenchStudio({
     } finally {
       setIsRunningBettafish(false);
     }
+  };
+
+  const startInlineRewrite = () => {
+    if (!selectedRun || !activeInsight) return;
+    setInlineRewriteInsightId(activeInsight.id);
+    setInlineRewriteDraft(selectedRunInput);
+  };
+
+  const submitInlineRewrite = async () => {
+    if (!selectedRun || !activeTemplate || !inlineRewriteDraft.trim()) return;
+    setIsSubmittingInlineRewrite(true);
+    try {
+      const context = [
+        `本次为基于上一版的改稿复诊。`,
+        `上一版标题：${selectedRunTitle}`,
+        `上一版结论：${selectedRun.output.content}`,
+        activeInsight?.coachCard ? `当前优先修正：${activeInsight.coachCard.issueWhat}` : '',
+      ].filter(Boolean).join('\n');
+      const created = await onRunAnalysis({
+        templateId: activeTemplate.id,
+        title: formatDiagnosisRunTitle(activeWorkspaceKey, activeMode.id, `${selectedRunTitle} · 试改`),
+        inputText: buildDiagnosisInputText(
+          activeWorkspaceKey,
+          activeMode.id,
+          `${context}\n\n改写后的内容：\n${inlineRewriteDraft.trim()}`,
+          effectiveProfileContext,
+        ),
+        parentRunId: selectedRun.id,
+      });
+      setSelectedRunId(created.id);
+      setActiveTab('pending');
+      setInlineRewriteInsightId(null);
+      setInlineRewriteDraft('');
+      setInspectorTab('comparison');
+      setRunError('');
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : '试改复诊失败');
+    } finally {
+      setIsSubmittingInlineRewrite(false);
+    }
+  };
+
+  const saveReminderRule = async () => {
+    if (!activeInsight) return;
+    setActionBusyKey('reminder');
+    try {
+      await onSaveReminderRule({
+        title: `${selectedMode.title} · ${activeInsight.title}`,
+        knowledgeKey: activeInsight.coachCard?.knowledgePointTitle || activeInsight.learningTitle,
+        issuePattern: activeInsight.coachCard?.issueKey || activeInsight.title,
+        message: `下次如果再次命中“${activeInsight.title}”，先检查：${activeInsight.bullets[0] || activeInsight.body}`,
+        modeIds: [selectedMode.id],
+      });
+    } finally {
+      setActionBusyKey(null);
+    }
+  };
+
+  const saveWritingNorm = async () => {
+    if (!activeInsight) return;
+    setActionBusyKey('norm');
+    try {
+      await onSaveWritingNorm({
+        title: `${selectedMode.title} · ${activeInsight.title}`,
+        description: activeInsight.why,
+        instruction: activeInsight.bullets[0] || activeInsight.body,
+        modeIds: [selectedMode.id],
+        triggerKeywords: [activeInsight.coachCard?.issueKey || activeInsight.title].filter(Boolean),
+      });
+    } finally {
+      setActionBusyKey(null);
+    }
+  };
+
+  const generateReferenceDraft = () => {
+    if (!activeInsight) return;
+    const draft = [
+      `先把最关键的问题说清：${activeInsight.coachCard?.issueWhat || activeInsight.body}`,
+      `然后按这个方向改：${activeInsight.coachCard?.selfRewriteHint || activeInsight.bullets[0] || '补足对象最关心的判断依据。'}`,
+      `最后补一个让人更容易接受的动作或证据：${activeInsight.coachCard?.learningAction || activeInsight.learningBody}`,
+    ].join('\n');
+    setReferenceDraftByInsight((prev) => ({ ...prev, [activeInsight.id]: draft }));
   };
 
   return (
@@ -1091,7 +1271,7 @@ export function UnifiedWorkbenchStudio({
                 const isActive = selectedRun?.id === run.id;
                 const runTemplate = getRunTemplate(run, templates, activeTemplate);
                 const runMode = inferDiagnosisMode(run, activeWorkspaceKey);
-                const runInsights = deriveInsights(run, runMode);
+                const runInsights = deriveCoachInsights(run, runMode, activeWorkspaceKey, null);
                 return (
                   <button
                     key={run.id}
@@ -1272,7 +1452,7 @@ export function UnifiedWorkbenchStudio({
                             </p>
                           </div>
                           <div className="rounded-[10px] bg-[#EEF2FF] px-3 py-2 text-[11px] font-semibold text-[#4A64D6]">
-                            {selectedProfileForActiveMode?.label || selectedMode.title}
+                            {selectedDeepDnaForActiveMode?.label || selectedProfileForActiveMode?.label || selectedMode.title}
                           </div>
                         </div>
                         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -1376,6 +1556,49 @@ export function UnifiedWorkbenchStudio({
                             </button>
                           );
                         })}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeWorkspaceKey === 'fundraising' && inlineRewriteInsightId === activeInsight?.id && (
+                    <div className="mt-6 rounded-[18px] border border-[#0A53CC]/12 bg-white p-5 shadow-[0_10px_30px_-24px_rgba(15,23,42,0.2)]">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0A53CC]">我来试改</div>
+                          <p className="mt-2 text-[13px] leading-7 text-black/58 font-medium">
+                            先自己改一版，再让系统按上一版对照复诊。新版会自动挂到当前 run 的下一版。
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInlineRewriteInsightId(null);
+                            setInlineRewriteDraft('');
+                          }}
+                          className="rounded-[10px] border border-black/[0.08] px-3 py-2 text-[12px] font-semibold text-black/55"
+                        >
+                          收起
+                        </button>
+                      </div>
+                      <textarea
+                        value={inlineRewriteDraft}
+                        onChange={(event) => setInlineRewriteDraft(event.target.value)}
+                        placeholder="在这里直接改你的新版本..."
+                        className="mt-4 min-h-[220px] w-full rounded-[18px] border border-black/[0.08] bg-[#F8F9FB] p-4 text-[14px] leading-7 text-black/82 outline-none focus:border-[#5B7BFE]/40 focus:bg-white"
+                      />
+                      <div className="mt-4 flex items-center justify-between gap-4">
+                        <div className="text-[12px] text-black/42">
+                          提交后会生成带上一版关系的新 run，并在右侧“对比”里显示结果变化和学习变化。
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void submitInlineRewrite()}
+                          disabled={!inlineRewriteDraft.trim() || isSubmittingInlineRewrite}
+                          className="inline-flex items-center gap-2 rounded-[10px] bg-[#0A53CC] px-5 py-3 text-[13px] font-semibold text-white shadow-[0_12px_24px_-14px_rgba(10,83,204,0.55)] disabled:opacity-60"
+                        >
+                          {isSubmittingInlineRewrite ? <Sparkles className="h-4 w-4 animate-pulse" /> : <PenTool className="h-4 w-4" />}
+                          提交试改并复诊
+                        </button>
                       </div>
                     </div>
                   )}
@@ -1558,6 +1781,7 @@ export function UnifiedWorkbenchStudio({
                   {[
                     { key: 'basis' as const, label: '依据' },
                     { key: 'learning' as const, label: '学习' },
+                    { key: 'comparison' as const, label: '对比' },
                     { key: 'mode' as const, label: '模式说明' },
                   ].map((tab) => (
                     <button
@@ -1617,63 +1841,214 @@ export function UnifiedWorkbenchStudio({
 
                 {inspectorTab === 'learning' && (
                   <div className="space-y-6">
-                    <div>
-                      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">你可以直接这样改</div>
-                      <div className="space-y-3">
-                        {activeInsight.bullets.map((bullet, index) => (
-                          <label key={`${activeInsight.id}-${index}`} className="group flex items-start gap-3 rounded-[12px] bg-black/[0.03] p-3 transition-colors hover:bg-black/[0.05]">
-                            <div className="mt-[2px] h-[16px] w-[16px] rounded-[4px] border-[1.5px] border-black/18 transition-colors group-hover:border-[#5B7BFE]" />
-                            <span className="text-[13px] leading-6 text-black/78 font-medium">{bullet}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">为什么要这样改</div>
-                      <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4 text-[13px] leading-7 text-black/62 font-medium">
-                        {activeInsight.why}
-                      </div>
-                    </div>
-
-                    <div className="rounded-[16px] border border-[#5B7BFE]/10 bg-gradient-to-br from-[#EAF2FF] to-[#F5F8FF] p-5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)]">
-                      <div className="flex items-center gap-2 text-[#0A53CC]">
-                        <Sparkles className="h-4 w-4" />
-                        <div className="text-[13px] font-bold tracking-tight">学习卡：{activeInsight.learningTitle}</div>
-                      </div>
-                      <p className="mt-3 text-[12.5px] leading-7 text-[#0A53CC]/85 font-medium">
-                        {activeInsight.learningBody}
-                      </p>
-                    </div>
-
-                    {relatedKnowledgeEntries.length > 0 && (
-                      <div>
-                        <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">相关知识</div>
-                        <div className="space-y-3">
-                          {relatedKnowledgeEntries.map((entry) => (
-                            <div key={entry.id} className="rounded-[14px] border border-black/[0.05] bg-white px-4 py-4 shadow-[0_8px_20px_-18px_rgba(15,23,42,0.2)]">
-                              <div className="flex items-center gap-2 text-[#0A53CC]">
-                                <BookOpenCheck className="h-4 w-4" />
-                                <div className="text-[13px] font-semibold tracking-tight text-black/88">{entry.title}</div>
-                              </div>
-                              <p className="mt-2 text-[12.5px] leading-7 text-black/62 font-medium">{entry.summary}</p>
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {[...entry.scenes, ...entry.tags].slice(0, 5).map((tag) => (
-                                  <span key={`${entry.id}:${tag}`} className="rounded-[8px] bg-black/[0.04] px-2 py-1 text-[10px] font-semibold text-black/45">
-                                    {tag}
-                                  </span>
-                                ))}
-                              </div>
-                              {entry.principles[0] && (
-                                <div className="mt-3 rounded-[12px] bg-[#F8F9FB] px-3 py-3 text-[12px] leading-6 text-black/62">
-                                  <span className="font-semibold text-black/75">关键原则：</span>
-                                  {entry.principles[0]}
-                                </div>
-                              )}
-                            </div>
-                          ))}
+                    {activeWorkspaceKey === 'fundraising' && activeInsight.coachCard ? (
+                      <>
+                        <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">问题是什么</div>
+                          <p className="mt-2 text-[13px] leading-7 text-black/72 font-medium">{activeInsight.coachCard.issueWhat}</p>
                         </div>
+
+                        <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">为什么重要</div>
+                          <p className="mt-2 text-[13px] leading-7 text-black/72 font-medium">{activeInsight.coachCard.whyImportant}</p>
+                        </div>
+
+                        <div className="rounded-[16px] border border-[#5B7BFE]/10 bg-gradient-to-br from-[#EAF2FF] to-[#F5F8FF] p-5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)]">
+                          <div className="flex items-center gap-2 text-[#0A53CC]">
+                            <Sparkles className="h-4 w-4" />
+                            <div className="text-[13px] font-bold tracking-tight">背后的知识点：{activeInsight.coachCard.knowledgePointTitle}</div>
+                          </div>
+                          <p className="mt-3 text-[12.5px] leading-7 text-[#0A53CC]/85 font-medium">
+                            {activeInsight.coachCard.knowledgePointBody}
+                          </p>
+                        </div>
+
+                        <div>
+                          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">参考好案例</div>
+                          <div className="space-y-3">
+                            {(activeCoachCases.length ? activeCoachCases : coachCases.slice(0, 1)).map((entry) => (
+                              <div key={entry.id} className="rounded-[14px] border border-black/[0.05] bg-white px-4 py-4 shadow-[0_8px_20px_-18px_rgba(15,23,42,0.2)]">
+                                <div className="flex items-center gap-2 text-[#0A53CC]">
+                                  <BookOpenCheck className="h-4 w-4" />
+                                  <div className="text-[13px] font-semibold tracking-tight text-black/88">{entry.title}</div>
+                                </div>
+                                <p className="mt-2 text-[12.5px] leading-7 text-black/62 font-medium">{entry.summary}</p>
+                                <div className="mt-3 rounded-[12px] bg-[#F8F9FB] px-3 py-3 text-[12px] leading-6 text-black/62">
+                                  <span className="font-semibold text-black/75">为什么有效：</span>
+                                  {entry.whyEffective}
+                                </div>
+                                <div className="mt-3 rounded-[12px] border border-[#E9EEF8] bg-[#FAFBFF] px-3 py-3 text-[12px] leading-6 text-black/62">
+                                  <span className="font-semibold text-black/75">关键片段：</span>
+                                  {entry.keyExcerpt}
+                                </div>
+                                {entry.takeaways[0] && (
+                                  <div className="mt-3 flex flex-wrap gap-1.5">
+                                    {entry.takeaways.slice(0, 4).map((item) => (
+                                      <span key={`${entry.id}:${item}`} className="rounded-[8px] bg-black/[0.04] px-2 py-1 text-[10px] font-semibold text-black/45">
+                                        {item}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">你自己怎么改</div>
+                          <div className="space-y-3">
+                            <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4 text-[13px] leading-7 text-black/72 font-medium">
+                              {activeInsight.coachCard.selfRewriteHint}
+                            </div>
+                            {referenceDraftByInsight[activeInsight.id] && (
+                              <div className="rounded-[14px] border border-[#CDE0FF] bg-[#F7FAFF] p-4 text-[13px] leading-7 text-[#24478F] font-medium whitespace-pre-wrap">
+                                {referenceDraftByInsight[activeInsight.id]}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={generateReferenceDraft}
+                              className="inline-flex items-center gap-2 rounded-[10px] border border-[#CDE0FF] bg-white px-4 py-2.5 text-[12px] font-semibold text-[#0A53CC]"
+                            >
+                              <Sparkles className="h-4 w-4" />
+                              生成参考稿
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">学会后的动作</div>
+                          <p className="mt-2 text-[13px] leading-7 text-black/72 font-medium">{activeInsight.coachCard.learningAction}</p>
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            <button type="button" onClick={() => setInspectorTab('basis')} className="rounded-[10px] border border-black/[0.08] px-3 py-2 text-[12px] font-semibold text-black/58">
+                              为什么更好
+                            </button>
+                            <button type="button" onClick={() => setInspectorTab('learning')} className="rounded-[10px] border border-black/[0.08] px-3 py-2 text-[12px] font-semibold text-black/58">
+                              看案例
+                            </button>
+                            <button type="button" onClick={() => startInlineRewrite()} className="rounded-[10px] border border-[#CDE0FF] bg-white px-3 py-2 text-[12px] font-semibold text-[#0A53CC]">
+                              我来试改
+                            </button>
+                            <button type="button" onClick={() => void saveReminderRule()} disabled={actionBusyKey === 'reminder'} className="rounded-[10px] border border-black/[0.08] px-3 py-2 text-[12px] font-semibold text-black/58 disabled:opacity-60">
+                              {actionBusyKey === 'reminder' ? '保存中...' : '下次提醒我'}
+                            </button>
+                            <button type="button" onClick={() => void saveWritingNorm()} disabled={actionBusyKey === 'norm'} className="rounded-[10px] border border-black/[0.08] px-3 py-2 text-[12px] font-semibold text-black/58 disabled:opacity-60">
+                              {actionBusyKey === 'norm' ? '保存中...' : '加入机构规范'}
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">你可以直接这样改</div>
+                          <div className="space-y-3">
+                            {activeInsight.bullets.map((bullet, index) => (
+                              <label key={`${activeInsight.id}-${index}`} className="group flex items-start gap-3 rounded-[12px] bg-black/[0.03] p-3 transition-colors hover:bg-black/[0.05]">
+                                <div className="mt-[2px] h-[16px] w-[16px] rounded-[4px] border-[1.5px] border-black/18 transition-colors group-hover:border-[#5B7BFE]" />
+                                <span className="text-[13px] leading-6 text-black/78 font-medium">{bullet}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">为什么要这样改</div>
+                          <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4 text-[13px] leading-7 text-black/62 font-medium">
+                            {activeInsight.why}
+                          </div>
+                        </div>
+
+                        <div className="rounded-[16px] border border-[#5B7BFE]/10 bg-gradient-to-br from-[#EAF2FF] to-[#F5F8FF] p-5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)]">
+                          <div className="flex items-center gap-2 text-[#0A53CC]">
+                            <Sparkles className="h-4 w-4" />
+                            <div className="text-[13px] font-bold tracking-tight">学习卡：{activeInsight.learningTitle}</div>
+                          </div>
+                          <p className="mt-3 text-[12.5px] leading-7 text-[#0A53CC]/85 font-medium">
+                            {activeInsight.learningBody}
+                          </p>
+                        </div>
+
+                        {relatedKnowledgeEntries.length > 0 && (
+                          <div>
+                            <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/35">相关知识</div>
+                            <div className="space-y-3">
+                              {relatedKnowledgeEntries.map((entry) => (
+                                <div key={entry.id} className="rounded-[14px] border border-black/[0.05] bg-white px-4 py-4 shadow-[0_8px_20px_-18px_rgba(15,23,42,0.2)]">
+                                  <div className="flex items-center gap-2 text-[#0A53CC]">
+                                    <BookOpenCheck className="h-4 w-4" />
+                                    <div className="text-[13px] font-semibold tracking-tight text-black/88">{entry.title}</div>
+                                  </div>
+                                  <p className="mt-2 text-[12.5px] leading-7 text-black/62 font-medium">{entry.summary}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {inspectorTab === 'comparison' && (
+                  <div className="space-y-4">
+                    {isLoadingComparison && !activeComparison ? (
+                      <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4 text-[13px] text-black/48">
+                        正在生成和上一版的结构化对比...
                       </div>
+                    ) : (
+                      <>
+                        <div className="grid gap-4 xl:grid-cols-2">
+                          <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">结果变化</div>
+                            <div className="mt-3 space-y-3">
+                              {(activeComparison?.resultChanges || ['当前还没有可显示的结果变化。']).map((item, index) => (
+                                <div key={`${item}-${index}`} className="rounded-[12px] bg-white px-3 py-3 text-[12.5px] leading-6 text-black/68">
+                                  {item}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="rounded-[14px] border border-black/[0.05] bg-[#F8F9FB] p-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">学习变化</div>
+                            <div className="mt-3 space-y-3">
+                              {(activeComparison?.learningChanges || ['当前还没有可显示的学习变化。']).map((item, index) => (
+                                <div key={`${item}-${index}`} className="rounded-[12px] bg-white px-3 py-3 text-[12.5px] leading-6 text-black/68">
+                                  {item}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-4 xl:grid-cols-3">
+                          <div className="rounded-[14px] border border-black/[0.05] bg-white px-4 py-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">已解决</div>
+                            <div className="mt-3 space-y-2">
+                              {(activeComparison?.resolvedIssues || []).length ? activeComparison?.resolvedIssues.map((item) => (
+                                <div key={item} className="rounded-[10px] bg-emerald-50 px-3 py-2 text-[12px] font-medium text-emerald-700">{item}</div>
+                              )) : <div className="text-[12px] text-black/38">还没有明确已解决项。</div>}
+                            </div>
+                          </div>
+                          <div className="rounded-[14px] border border-black/[0.05] bg-white px-4 py-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">新增问题</div>
+                            <div className="mt-3 space-y-2">
+                              {(activeComparison?.newIssues || []).length ? activeComparison?.newIssues.map((item) => (
+                                <div key={item} className="rounded-[10px] bg-rose-50 px-3 py-2 text-[12px] font-medium text-rose-700">{item}</div>
+                              )) : <div className="text-[12px] text-black/38">当前没有识别到新的高优先问题。</div>}
+                            </div>
+                          </div>
+                          <div className="rounded-[14px] border border-black/[0.05] bg-white px-4 py-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">重复犯错</div>
+                            <div className="mt-3 space-y-2">
+                              {(activeComparison?.repeatedIssues || []).length ? activeComparison?.repeatedIssues.map((item) => (
+                                <div key={item} className="rounded-[10px] bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-700">{item}</div>
+                              )) : <div className="text-[12px] text-black/38">暂未发现明显重复问题。</div>}
+                            </div>
+                          </div>
+                        </div>
+                      </>
                     )}
                   </div>
                 )}
@@ -1702,8 +2077,14 @@ export function UnifiedWorkbenchStudio({
                       <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-black/35">当前引擎与边界</div>
                       <p className="mt-2 text-[13px] leading-7 text-black/58">
                         当前模式正在使用 {activeTemplate ? getTemplateLabel(activeTemplate) : '未配置引擎'}。这轮已经能把诊断输出拆成建议与学习卡，
-                        但对象画像、案例库、预演模拟仍会在下一阶段继续补实算链路。
+                        但预测、热点、多模态输入仍会在下一阶段继续补实算链路。
                       </p>
+                      {activeWorkspaceKey === 'fundraising' && (
+                        <div className="mt-3 rounded-[12px] bg-[#F8F9FB] px-3 py-3 text-[12px] leading-6 text-black/62">
+                          <span className="font-semibold text-black/75">当前已接入：</span>
+                          Deep DNA {deepDnaLibrary.filter((item) => item.status === 'published').length} 份、案例 {coachCases.length} 条、提醒规则 {coachReminderRules.length} 条、机构规范 {orgWritingNorms.length} 条。
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1802,14 +2183,14 @@ export function UnifiedWorkbenchStudio({
                     <div>
                       <div className="text-[12px] font-semibold text-[#B86A12]">本次会附带对象画像</div>
                       <div className="mt-1 text-[12px] leading-6 text-[#8B5A12]">
-                        {selectedProfileForActiveMode
-                          ? `${activeProfileGroupDefinition.label}已选中 ${selectedProfileForActiveMode.label}，提交诊断和外部信号分析时都会附带这份判断摘要。`
+                        {selectedDeepDnaForActiveMode || selectedProfileForActiveMode
+                          ? `${activeProfileGroupDefinition.label}已选中 ${selectedDeepDnaForActiveMode?.label || selectedProfileForActiveMode?.label}，提交诊断和外部信号分析时都会附带这份判断摘要。`
                           : `还没有为${activeProfileGroupDefinition.label}上传可用文档。点右上角加号进入设置后，可上传 Markdown、DOCX、PDF 或 TXT。`}
                       </div>
                     </div>
-                    {selectedProfileForActiveMode && (
+                    {(selectedDeepDnaForActiveMode || selectedProfileForActiveMode) && (
                       <div className="rounded-[8px] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#B86A12]">
-                        {selectedProfileForActiveMode.fileName}
+                        {selectedDeepDnaForActiveMode?.sources[0]?.fileName || selectedProfileForActiveMode?.fileName || 'Deep DNA'}
                       </div>
                     )}
                   </div>
