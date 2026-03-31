@@ -3447,7 +3447,6 @@ export default function App() {
   const [collabBusyAction, setCollabBusyAction] = useState<'push' | 'pull' | 'rebuild' | null>(null);
   const [collabDialogState, setCollabDialogState] = useState<CollabDialogState>(null);
   const [collabSelectedPaths, setCollabSelectedPaths] = useState<string[]>([]);
-  const [collabConfirmedRiskPaths, setCollabConfirmedRiskPaths] = useState<string[]>([]);
   const [collabCommitMessage, setCollabCommitMessage] = useState('');
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const collabAutoSwitchTargetRef = useRef<string | null>(null);
@@ -3644,12 +3643,6 @@ export default function App() {
   }
 
   function getDefaultCollabSelectedPaths(state: Exclude<CollabDialogState, null>) {
-    const shouldDefaultSkipRiskyOverlap =
-      (state.mode === 'push' && state.preview.status.behindCount > 0)
-      || (state.mode === 'pull' && state.preview.status.remoteChangeCount > 0);
-    if (!shouldDefaultSkipRiskyOverlap) {
-      return state.preview.files.map((file) => file.path);
-    }
     return state.preview.files
       .filter((file) => !file.risk || !['overlap', 'delete_replace'].includes(file.risk.kind))
       .map((file) => file.path);
@@ -3658,7 +3651,6 @@ export default function App() {
   function openCollabDialog(state: Exclude<CollabDialogState, null>) {
     setCollabDialogState(state);
     setCollabSelectedPaths(getDefaultCollabSelectedPaths(state));
-    setCollabConfirmedRiskPaths([]);
     setCollabCommitMessage(state.preview.suggestedMessage);
     setCollabDialogError(null);
   }
@@ -3683,7 +3675,6 @@ export default function App() {
     setCollabRepoPath(nextRepoPath);
     setCollabDialogState(null);
     setCollabSelectedPaths([]);
-    setCollabConfirmedRiskPaths([]);
     setCollabCommitMessage('');
     setCollabDialogError(null);
     flash('success', '源码目录已绑定，后续协作按钮会围绕这个仓库工作。');
@@ -3727,14 +3718,6 @@ export default function App() {
     setCollabSelectedPaths((prev) => (
       prev.includes(targetPath) ? prev.filter((item) => item !== targetPath) : [...prev, targetPath]
     ));
-    setCollabConfirmedRiskPaths((prev) => prev.filter((item) => item !== targetPath));
-  }
-
-  function toggleCollabRisk(targetPath: string) {
-    setCollabDialogError(null);
-    setCollabConfirmedRiskPaths((prev) => (
-      prev.includes(targetPath) ? prev.filter((item) => item !== targetPath) : [...prev, targetPath]
-    ));
   }
 
   function toggleCollabEffectPaths(targetPaths: string[]) {
@@ -3751,7 +3734,6 @@ export default function App() {
       nextPaths.forEach((targetPath) => merged.add(targetPath));
       return Array.from(merged);
     });
-    setCollabConfirmedRiskPaths((prev) => prev.filter((targetPath) => !nextPaths.includes(targetPath)));
   }
 
   async function handleConfirmCollabAction() {
@@ -3769,7 +3751,7 @@ export default function App() {
         await commitAndPushToMain({
           repoPath,
           selectedPaths: collabSelectedPaths,
-          confirmedRiskPaths: collabConfirmedRiskPaths,
+          confirmedRiskPaths: [],
           message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
         });
         flash('success', '已提交并推送到 main。');
@@ -3777,14 +3759,13 @@ export default function App() {
         await pullSelectedFromMain({
           repoPath,
           selectedPaths: collabSelectedPaths,
-          confirmedRiskPaths: collabConfirmedRiskPaths,
+          confirmedRiskPaths: [],
           message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
         });
         flash('success', '已把勾选的 main 修改同步到本地源码。');
       }
       setCollabDialogState(null);
       setCollabSelectedPaths([]);
-      setCollabConfirmedRiskPaths([]);
       setCollabCommitMessage('');
       setCollabDialogError(null);
       await refreshCollabStatus(repoPath);
@@ -14584,7 +14565,6 @@ export default function App() {
         mode={collabDialogState?.mode || 'push'}
         preview={collabDialogState?.preview || null}
         selectedPaths={collabSelectedPaths}
-        confirmedRiskPaths={collabConfirmedRiskPaths}
         message={collabCommitMessage}
         errorMessage={collabDialogError}
         busy={collabBusyAction === 'push' || collabBusyAction === 'pull'}
@@ -14595,7 +14575,6 @@ export default function App() {
         }}
         onTogglePath={toggleCollabPath}
         onToggleEffectPaths={toggleCollabEffectPaths}
-        onToggleRisk={toggleCollabRisk}
         onMessageChange={handleCollabMessageChange}
         onConfirm={() => {
           void handleConfirmCollabAction();

@@ -1014,12 +1014,9 @@ async function getCommitSummaries(repoPath: string) {
     .filter(Boolean);
 }
 
-function validateSelectedPaths(selectedPaths: string[], allFiles: CollabFileChange[]) {
+function normalizeSelectedPaths(selectedPaths: string[], allFiles: CollabFileChange[]) {
   const allowedPaths = new Set(allFiles.map((file) => file.path));
   const normalizedSelectedPaths = Array.from(new Set(selectedPaths.map((item) => item.trim()).filter(Boolean)));
-  if (!normalizedSelectedPaths.length) {
-    throw new Error('请至少勾选一个文件。');
-  }
   for (const targetPath of normalizedSelectedPaths) {
     if (!allowedPaths.has(targetPath)) {
       throw new Error(`已勾选的文件不在当前预览列表中：${targetPath}`);
@@ -1028,14 +1025,12 @@ function validateSelectedPaths(selectedPaths: string[], allFiles: CollabFileChan
   return normalizedSelectedPaths;
 }
 
-function validateRiskConfirmations(selectedPaths: string[], confirmedRiskPaths: string[], allFiles: CollabFileChange[]) {
-  const confirmedSet = new Set(confirmedRiskPaths);
-  for (const file of allFiles) {
-    if (!selectedPaths.includes(file.path)) continue;
-    if (file.risk && !confirmedSet.has(file.path)) {
-      throw new Error(`请先确认高风险文件后再继续：${file.path}`);
-    }
+function collectStatusEntryPaths(entry: ParsedStatusEntry) {
+  const paths = [entry.path];
+  if (entry.previousPath && entry.previousPath !== entry.path) {
+    paths.push(entry.previousPath);
   }
+  return paths;
 }
 
 async function discardLocalPath(repoPath: string, file: CollabFileChange) {
@@ -1058,6 +1053,18 @@ async function discardLocalPath(repoPath: string, file: CollabFileChange) {
     return;
   }
   await checkoutPathFromRevision(repoPath, 'HEAD', file.path);
+}
+
+async function discardParsedStatusEntry(repoPath: string, entry: ParsedStatusEntry) {
+  await discardLocalPath(repoPath, {
+    path: entry.path,
+    previousPath: entry.previousPath || null,
+    type: entry.type,
+    groupKey: classifyChangeGroup(entry.path).key,
+    groupLabel: classifyChangeGroup(entry.path).label,
+    summary: formatChangeSummary(entry.type, entry.previousPath),
+    risk: null,
+  });
 }
 
 async function pushPartialStash(repoPath: string, targetPaths: string[], label: string) {
@@ -1172,10 +1179,9 @@ export async function commitAndPushToMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const selectedPaths = validateSelectedPaths(payload.selectedPaths, preview.files);
-  validateRiskConfirmations(selectedPaths, payload.confirmedRiskPaths, preview.files);
+  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files);
   const message = payload.message.trim();
-  if (!message) {
+  if (!message && selectedPaths.length > 0) {
     throw new Error('请填写本次提交说明。');
   }
   const repoPath = preview.status.repoPath;
@@ -1197,6 +1203,14 @@ export async function commitAndPushToMain(
     hasStashedUnselected = await pushPartialStash(repoPath, unselectedPaths, 'codex-collab-unselected-before-push');
   }
   try {
+    if (selectedPaths.length === 0) {
+      if (preview.status.behindCount > 0) {
+        await runGit(repoPath, ['merge', '--ff-only', 'origin/main']);
+      }
+      if (droppedConflictPaths.length > 0) {
+        await importSelectedSharedSettingsFromRepo(repoPath, appDbPath, droppedConflictPaths);
+      }
+    } else {
     await addPathsToIndex(repoPath, selectedPaths);
     await runGit(repoPath, ['commit', '-m', message]);
     if (preview.status.behindCount > 0) {
@@ -1206,9 +1220,10 @@ export async function commitAndPushToMain(
       await importSelectedSharedSettingsFromRepo(repoPath, appDbPath, droppedConflictPaths);
     }
     await runGit(repoPath, ['push', 'origin', 'main']);
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`提交已生成，但 push 到 main 失败：${detail}`);
+    throw new Error(selectedPaths.length > 0 ? `提交已生成，但 push 到 main 失败：${detail}` : `同步 main 状态失败：${detail}`);
   } finally {
     if (hasStashedUnselected) {
       await popLatestStash(repoPath).catch(() => {
@@ -1224,8 +1239,8 @@ export async function commitAndPushToMain(
   return {
     status,
     changedPaths: selectedPaths,
-    createdCommit: true,
-    commitMessage: message,
+    createdCommit: selectedPaths.length > 0,
+    commitMessage: selectedPaths.length > 0 ? message : undefined,
   };
 }
 
@@ -1244,10 +1259,11 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   else if (!snapshot.isValid) executionBlockReason = '当前目录不是有效 Git 仓库，请重新绑定源码目录。';
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
-  else if (snapshot.localChangeCount > 0) executionBlockReason = '当前还有未提交的本地改动。先处理掉本地改动，再决定是否从 main 覆盖回来。';
   else if (!files.length) executionBlockReason = 'main 当前已经是最新。';
   if (!executionBlockReason && snapshot.remoteChangeCount > 0) {
-    notice = `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你可以先看下面的软件效果，再决定要不要带到本地。`;
+    notice = snapshot.localChangeCount > 0
+      ? `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，可能覆盖这些改动的文件默认不会勾选。`
+      : `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你可以先看下面的软件效果，再决定要不要带到本地。`;
   }
   const commitSummaries = snapshot.repoPath ? await getCommitSummaries(snapshot.repoPath) : [];
   return {
@@ -1305,13 +1321,64 @@ export async function pullSelectedFromMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const selectedPaths = validateSelectedPaths(payload.selectedPaths, preview.files);
-  validateRiskConfirmations(selectedPaths, payload.confirmedRiskPaths, preview.files);
+  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files);
   const message = payload.message.trim();
-  if (!message) {
+  if (!message && selectedPaths.length > 0) {
     throw new Error('请填写本次同步说明。');
   }
   const repoPath = preview.status.repoPath;
+  if (selectedPaths.length === 0) {
+    const status = await getCollabRepoStatus({
+      repoPath,
+      suggestedCandidates,
+      appDbPath,
+    });
+    return {
+      status,
+      changedPaths: [],
+      createdCommit: false,
+    };
+  }
+  const snapshot = await collectRepoSnapshot({
+    repoPath,
+    suggestedCandidates,
+    appDbPath,
+    fetchRemote: true,
+  });
+  const selectedSet = new Set(selectedPaths);
+  const overwriteLocalEntryPaths = new Set<string>();
+  for (const file of preview.files) {
+    if (!selectedSet.has(file.path)) continue;
+    if (!file.risk || !['overlap', 'delete_replace'].includes(file.risk.kind)) continue;
+    for (const entry of snapshot.localEntries) {
+      const entryPaths = collectStatusEntryPaths(entry);
+      if (entryPaths.includes(file.path) || (file.previousPath && entryPaths.includes(file.previousPath))) {
+        collectStatusEntryPaths(entry).forEach((targetPath) => overwriteLocalEntryPaths.add(targetPath));
+      }
+    }
+  }
+  const preservedLocalPaths = new Set<string>();
+  for (const entry of snapshot.localEntries) {
+    for (const targetPath of collectStatusEntryPaths(entry)) {
+      if (!overwriteLocalEntryPaths.has(targetPath)) {
+        preservedLocalPaths.add(targetPath);
+      }
+    }
+  }
+  for (const entry of snapshot.localEntries) {
+    const entryPaths = collectStatusEntryPaths(entry);
+    if (entryPaths.some((targetPath) => overwriteLocalEntryPaths.has(targetPath))) {
+      await discardParsedStatusEntry(repoPath, entry);
+    }
+  }
+  let hasStashedPreservedLocalChanges = false;
+  if (preservedLocalPaths.size > 0) {
+    hasStashedPreservedLocalChanges = await pushPartialStash(
+      repoPath,
+      Array.from(preservedLocalPaths),
+      'codex-collab-preserved-local-before-pull',
+    );
+  }
   await runGit(repoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
   try {
     for (const file of preview.files) {
@@ -1330,6 +1397,12 @@ export async function pullSelectedFromMain(
   } catch (error) {
     await runGit(repoPath, ['merge', '--abort'], { allowNonZero: true });
     throw error;
+  } finally {
+    if (hasStashedPreservedLocalChanges) {
+      await popLatestStash(repoPath).catch(() => {
+        // Keep the synced result even if preserved local changes need manual attention.
+      });
+    }
   }
 
   const status = await getCollabRepoStatus({

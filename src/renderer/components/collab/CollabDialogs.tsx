@@ -19,14 +19,12 @@ type CollabPreviewDialogProps = {
   mode: PreviewMode;
   preview: PushPreview | PullPreview | null;
   selectedPaths: string[];
-  confirmedRiskPaths: string[];
   message: string;
   errorMessage?: string | null;
   busy: boolean;
   onClose: () => void;
   onTogglePath: (targetPath: string) => void;
   onToggleEffectPaths: (targetPaths: string[]) => void;
-  onToggleRisk: (targetPath: string) => void;
   onMessageChange: (nextValue: string) => void;
   onConfirm: () => void;
 };
@@ -77,21 +75,17 @@ export function CollabPreviewDialog({
   mode,
   preview,
   selectedPaths,
-  confirmedRiskPaths,
   message,
   errorMessage,
   busy,
   onClose,
   onTogglePath,
   onToggleEffectPaths,
-  onToggleRisk,
   onMessageChange,
   onConfirm,
 }: CollabPreviewDialogProps) {
   if (!open || !preview) return null;
   const selectedSet = new Set(selectedPaths);
-  const confirmedRiskSet = new Set(confirmedRiskPaths);
-  const unresolvedRiskCount = preview.files.filter((file) => selectedSet.has(file.path) && file.risk && !confirmedRiskSet.has(file.path)).length;
   const actionLabel = mode === 'push' ? '提交并推送我的修改' : '预览并同步最新版本';
   const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
   const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
@@ -102,7 +96,7 @@ export function CollabPreviewDialog({
       : mode === 'push'
         ? '确认推到 main'
         : '确认从 main 同步';
-  const confirmDisabled = busy || Boolean(preview.executionBlockReason) || selectedPaths.length === 0 || unresolvedRiskCount > 0;
+  const confirmDisabled = busy || Boolean(preview.executionBlockReason);
 
   return (
     <div className="fixed inset-0 z-[80] overflow-y-auto bg-black/30 px-4 py-8 backdrop-blur-sm">
@@ -287,7 +281,6 @@ export function CollabPreviewDialog({
                 <div className="space-y-3">
                   {preview.files.map((file) => {
                     const isSelected = selectedSet.has(file.path);
-                    const riskConfirmed = confirmedRiskSet.has(file.path);
                     const linkedEffects = preview.effects
                       .filter((effect) => effect.relatedPaths.includes(file.path))
                       .map((effect) => effect.title);
@@ -329,16 +322,9 @@ export function CollabPreviewDialog({
                                   <span>{file.risk.message}</span>
                                 </div>
                                 {isSelected && (
-                                  <label className="mt-3 flex items-center gap-2 text-[12px] font-semibold text-rose-800">
-                                    <input
-                                      type="checkbox"
-                                      checked={riskConfirmed}
-                                      disabled={busy}
-                                      onChange={() => onToggleRisk(file.path)}
-                                      className="h-4 w-4 rounded border-rose-200 text-rose-600 focus:ring-rose-500"
-                                    />
-                                    确认按当前按钮方向整体覆盖这个文件
-                                  </label>
+                                  <p className="mt-3 text-[12px] font-semibold text-rose-800">
+                                    当前如果继续执行，这个文件会按当前按钮方向整体取版本。
+                                  </p>
                                 )}
                               </div>
                             )}
@@ -396,7 +382,7 @@ export function CollabPreviewDialog({
                 </div>
                 <div className="flex items-start gap-2">
                   <AlertCircle size={15} className="mt-1 shrink-0 text-amber-500" />
-                  <span>高风险文件只有在你勾选“确认覆盖”后才会执行。</span>
+                  <span>高风险覆盖文件默认不会主动勾选；只有你主动勾选它，才会按当前按钮方向整体取版本。</span>
                 </div>
                 {mode === 'pull' && (
                   <div className="flex items-start gap-2">
@@ -412,7 +398,11 @@ export function CollabPreviewDialog({
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">确认执行</p>
                   <p className="mt-1 text-[12px] text-gray-500">
-                    {selectedPaths.length === 0 ? '至少纳入一组变化或一个文件后才能继续。' : `当前已纳入 ${selectedPaths.length} 个文件。`}
+                    {selectedPaths.length === 0
+                      ? mode === 'push'
+                        ? '当前没有勾选要推送的文件；继续后会保留这些未勾选改动，只处理 main 同步状态。'
+                        : '当前没有勾选要同步的文件；继续后会保留这些未勾选变化不动。'
+                      : `当前已纳入 ${selectedPaths.length} 个文件。`}
                   </p>
                 </div>
                 {mode === 'push' ? <UploadCloud size={18} className="text-[#5B7BFE]" /> : <Download size={18} className="text-[#5B7BFE]" />}
