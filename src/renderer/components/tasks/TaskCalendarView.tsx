@@ -8,7 +8,6 @@ import {
   Circle,
   Flag,
   FolderDot,
-  GripVertical,
   Plus,
   Search,
   UserRound,
@@ -367,6 +366,8 @@ export function TaskCalendarView({
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dragTargetDay, setDragTargetDay] = useState<number | null>(null);
   const [dragTargetMinute, setDragTargetMinute] = useState<number | null>(null);
+  const [expandedCalendarDays, setExpandedCalendarDays] = useState<Set<string>>(new Set());
+  const dragDropHandledRef = useRef(false);
   const [selectedDetailTaskId, setSelectedDetailTaskId] = useState<string | null>(null);
   const [selectedDetailContextPreview, setSelectedDetailContextPreview] = useState<TaskContextPreview | null>(null);
   const [resizingTaskId, setResizingTaskId] = useState<string | null>(null);
@@ -1018,6 +1019,11 @@ export function TaskCalendarView({
     await onRescheduleTask(task, nextDueDate, { preserveCalendarViewport: true });
   };
 
+  const resolveDraggedTaskId = (event: React.DragEvent) => {
+    const transferTaskId = event.dataTransfer.getData('text/plain').trim();
+    return transferTaskId || draggingTaskId || null;
+  };
+
   const handleMonthStackScroll = () => {
     syncVisibleMonthFromScroll();
   };
@@ -1274,12 +1280,12 @@ export function TaskCalendarView({
                 type="button"
                 role="switch"
                 aria-checked={showCollaborativeTasks}
-                aria-label={showCollaborativeTasks ? '显示协作任务' : '只看我的任务'}
+                aria-label={showCollaborativeTasks ? '隐藏个人任务' : '显示全部任务'}
                 onClick={onToggleCollaborativeTasks}
                 className="group relative flex items-center overflow-visible"
               >
                 <span className="pointer-events-none absolute left-0 top-1/2 -translate-x-[calc(100%+8px)] -translate-y-1/2 text-[11px] font-medium text-gray-400 whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100 group-active:opacity-100">
-                  {showCollaborativeTasks ? '显示协作任务' : '只看我的任务'}
+                  {showCollaborativeTasks ? '隐藏个人任务' : '显示全部任务'}
                 </span>
                 <span
                   className={`relative inline-flex h-6 w-10 items-center rounded-full transition-colors duration-200 ${
@@ -1406,7 +1412,8 @@ export function TaskCalendarView({
                           }
                         }}
                         onDragOver={(event) => {
-                          if (!draggingTaskId) return;
+                          const draggedTaskId = resolveDraggedTaskId(event);
+                          if (!draggedTaskId) return;
                           event.preventDefault();
                           if (dragTargetDay !== cellDate.getTime()) {
                             setDragTargetDay(cellDate.getTime());
@@ -1418,9 +1425,11 @@ export function TaskCalendarView({
                           }
                         }}
                         onDrop={(event) => {
-                          if (!draggingTaskId) return;
+                          const draggedTaskId = resolveDraggedTaskId(event);
+                          if (!draggedTaskId) return;
                           event.preventDefault();
-                          const droppedTask = visibleTasks.find((item) => item.id === draggingTaskId);
+                          const droppedTask = visibleTasks.find((item) => item.id === draggedTaskId);
+                          dragDropHandledRef.current = true;
                           setDragTargetDay(null);
                           setDraggingTaskId(null);
                           if (!droppedTask) return;
@@ -1430,7 +1439,7 @@ export function TaskCalendarView({
                         className={`relative min-h-[146px] rounded-none border-r border-b border-gray-100 bg-transparent p-2.5 text-left align-top outline-none transition-colors focus:outline-none focus-visible:outline-none cursor-pointer hover:bg-slate-50 ${
                           isActiveSelection ? 'bg-blue-50/40' : ''
                         } ${
-                          dragTargetDay === cellDate.getTime() ? 'bg-blue-50/70' : ''
+                          dragTargetDay === cellDate.getTime() ? 'bg-blue-100 ring-2 ring-inset ring-[#5B7BFE]/40' : ''
                         } ${
                           isInMonthCreateSelection ? 'bg-blue-50/75 ring-1 ring-inset ring-[#5B7BFE]/30' : ''
                         }`}
@@ -1472,12 +1481,26 @@ export function TaskCalendarView({
                           )}
 
                           <div className="mt-2.5 flex min-h-0 flex-1 flex-col gap-1">
-                            {dayTasks.slice(0, 4).map((task) => (
-                              <button
+                            {dayTasks.slice(0, expandedCalendarDays.has(formatDateInputValue(cellDate)) ? dayTasks.length : 4).map((task) => (
+                              <div
                                 key={task.id}
                                 data-no-month-range-drag="true"
-                                type="button"
-                                className={`relative block max-w-full truncate rounded-lg border px-2 py-1 text-[11px] font-semibold text-left leading-4 ${
+                                draggable
+                                onDragStart={(event) => {
+                                  event.stopPropagation();
+                                  event.dataTransfer.effectAllowed = 'move';
+                                  event.dataTransfer.setData('text/plain', task.id);
+                                  dragDropHandledRef.current = false;
+                                  setDraggingTaskId(task.id);
+                                }}
+                                onDragEnd={() => {
+                                  if (!dragDropHandledRef.current) {
+                                    setDraggingTaskId(null);
+                                    setDragTargetDay(null);
+                                  }
+                                  dragDropHandledRef.current = false;
+                                }}
+                                className={`relative block max-w-full truncate rounded-lg border px-2 py-1 text-[11px] font-semibold text-left leading-4 cursor-grab active:cursor-grabbing ${
                                   task.status === 'done' ? '' : 'shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
                                 } ${draggingTaskId === task.id ? 'opacity-50' : selectedDetailTaskId === task.id ? 'ring-2 ring-[#5B7BFE]/35' : ''}`}
                                 style={calendarChipStyle(task)}
@@ -1487,24 +1510,6 @@ export function TaskCalendarView({
                                   onOpenTaskEditor(task);
                                 }}
                               >
-                                <span
-                                  draggable
-                                  onDragStart={(event) => {
-                                    event.stopPropagation();
-                                    event.dataTransfer.effectAllowed = 'move';
-                                    event.dataTransfer.setData('text/plain', task.id);
-                                    setDraggingTaskId(task.id);
-                                  }}
-                                  onDragEnd={() => {
-                                    setDraggingTaskId(null);
-                                    setDragTargetDay(null);
-                                  }}
-                                  onClick={(event) => event.stopPropagation()}
-                                  className="absolute right-1 top-1/2 z-10 -translate-y-1/2 cursor-grab rounded-md border border-white/70 bg-white/90 p-0.5 text-gray-300 shadow-sm transition hover:text-[#5B7BFE] active:cursor-grabbing"
-                                  title="拖动调整日期"
-                                >
-                                  <GripVertical size={11} />
-                                </span>
                                 <button
                                   type="button"
                                   data-no-month-range-drag="true"
@@ -1523,12 +1528,33 @@ export function TaskCalendarView({
                                   {task.status === 'done' ? <Check size={10} strokeWidth={3} /> : null}
                                 </button>
                                 <span className="block truncate pl-5 pr-4">{task.title}</span>
-                              </button>
-                            ))}
-                            {overflowCount > 0 && (
-                              <div className="rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-500 text-left">
-                                + {overflowCount} 条更多
                               </div>
+                            ))}
+                            {overflowCount > 0 && !expandedCalendarDays.has(formatDateInputValue(cellDate)) && (
+                              <button
+                                type="button"
+                                data-no-month-range-drag="true"
+                                className="rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-500 text-left hover:bg-slate-200 transition-colors cursor-pointer"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setExpandedCalendarDays((prev) => { const next = new Set(prev); next.add(formatDateInputValue(cellDate)); return next; });
+                                }}
+                              >
+                                + {overflowCount} 条更多
+                              </button>
+                            )}
+                            {expandedCalendarDays.has(formatDateInputValue(cellDate)) && dayTasks.length > 4 && (
+                              <button
+                                type="button"
+                                data-no-month-range-drag="true"
+                                className="rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-500 text-left hover:bg-slate-200 transition-colors cursor-pointer"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setExpandedCalendarDays((prev) => { const next = new Set(prev); next.delete(formatDateInputValue(cellDate)); return next; });
+                                }}
+                              >
+                                收起
+                              </button>
                             )}
                             <button
                               type="button"
@@ -1573,10 +1599,28 @@ export function TaskCalendarView({
                   <div className="mt-2.5 max-h-[112px] overflow-y-auto pr-1">
                     <div className="flex flex-wrap gap-2">
                       {floatingUnscheduledTasks.map((task) => (
-                        <button
+                        <div
                           key={task.id}
-                          type="button"
-                          className={`group max-w-full rounded-2xl border px-3 py-2 text-left text-[11px] font-semibold transition ${
+                          role="button"
+                          tabIndex={0}
+                          draggable
+                          onDragStart={(event) => {
+                            event.stopPropagation();
+                            event.dataTransfer.effectAllowed = 'move';
+                            event.dataTransfer.setData('text/plain', task.id);
+                            dragDropHandledRef.current = false;
+                            setDraggingTaskId(task.id);
+                            setSelectedDetailTaskId(task.id);
+                          }}
+                          onDragEnd={() => {
+                            if (!dragDropHandledRef.current) {
+                              setDraggingTaskId(null);
+                              setDragTargetDay(null);
+                              setDragTargetMinute(null);
+                            }
+                            dragDropHandledRef.current = false;
+                          }}
+                          className={`group max-w-full rounded-2xl border px-3 py-2 text-left text-[11px] font-semibold transition cursor-grab active:cursor-grabbing ${
                             selectedDetailTaskId === task.id
                               ? 'border-[#5B7BFE] bg-blue-50 text-[#5B7BFE]'
                               : 'border-gray-200 bg-white text-gray-600 hover:border-blue-100 hover:text-[#5B7BFE]'
@@ -1586,31 +1630,11 @@ export function TaskCalendarView({
                         >
                           <div className="flex items-start justify-between gap-2">
                             <span className="block max-w-[220px] truncate leading-5">{task.title}</span>
-                            <span
-                              draggable
-                              onDragStart={(event) => {
-                                event.stopPropagation();
-                                event.dataTransfer.effectAllowed = 'move';
-                                event.dataTransfer.setData('text/plain', task.id);
-                                setDraggingTaskId(task.id);
-                                setSelectedDetailTaskId(task.id);
-                              }}
-                              onDragEnd={() => {
-                                setDraggingTaskId(null);
-                                setDragTargetDay(null);
-                                setDragTargetMinute(null);
-                              }}
-                              onClick={(event) => event.stopPropagation()}
-                              className="shrink-0 rounded-md border border-slate-200 bg-white/90 p-0.5 text-slate-400 opacity-0 shadow-sm transition group-hover:opacity-100 hover:text-[#5B7BFE]"
-                              title="拖动到下方时间轴"
-                            >
-                              <GripVertical size={12} />
-                            </span>
                           </div>
                           <span className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500 group-hover:bg-blue-50 group-hover:text-[#5B7BFE]">
                             {taskDateForCalendar(task).getMonth() + 1}-{taskDateForCalendar(task).getDate()}
                           </span>
-                        </button>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -1714,7 +1738,8 @@ export function TaskCalendarView({
                                 className={`transition-colors ${dragTargetDay === day.getTime() && dragTargetMinute === minute ? 'bg-blue-50/70' : 'bg-transparent'}`}
                                 style={{ height: `${DAY_TIMELINE_SLOT_HEIGHT}px` }}
                                 onDragOver={(event) => {
-                                  if (!draggingTaskId) return;
+                                  const draggedTaskId = resolveDraggedTaskId(event);
+                                  if (!draggedTaskId) return;
                                   event.preventDefault();
                                   if (dragTargetDay !== day.getTime()) setDragTargetDay(day.getTime());
                                   if (dragTargetMinute !== minute) setDragTargetMinute(minute);
@@ -1725,9 +1750,10 @@ export function TaskCalendarView({
                                   }
                                 }}
                                 onDrop={(event) => {
-                                  if (!draggingTaskId) return;
+                                  const draggedTaskId = resolveDraggedTaskId(event);
+                                  if (!draggedTaskId) return;
                                   event.preventDefault();
-                                  const droppedTask = page.tasks.find((task) => task.id === draggingTaskId) || visibleTasks.find((task) => task.id === draggingTaskId);
+                                  const droppedTask = page.tasks.find((task) => task.id === draggedTaskId) || visibleTasks.find((task) => task.id === draggedTaskId);
                                   if (!droppedTask) {
                                     setDragTargetMinute(null);
                                     setDragTargetDay(null);
@@ -1777,10 +1803,27 @@ export function TaskCalendarView({
                               const chipStyle = calendarChipStyle(task);
                               const isResizing = resizingTaskId === task.id;
                               return (
-                                <button
+                                <div
                                   key={task.id}
-                                  type="button"
-                                  className={`group absolute left-2 right-2 rounded-2xl border px-3 py-2 pb-5 text-left shadow-sm transition ${isResizing ? 'cursor-ns-resize ring-2 ring-[#5B7BFE]/40' : draggingTaskId === task.id ? 'opacity-50' : selectedDetailTaskId === task.id ? 'ring-2 ring-[#5B7BFE]/35' : ''}`}
+                                  role="button"
+                                  tabIndex={0}
+                                  draggable={!isResizing}
+                                  onDragStart={(event) => {
+                                    event.stopPropagation();
+                                    event.dataTransfer.effectAllowed = 'move';
+                                    event.dataTransfer.setData('text/plain', task.id);
+                                    dragDropHandledRef.current = false;
+                                    setDraggingTaskId(task.id);
+                                  }}
+                                  onDragEnd={() => {
+                                    if (!dragDropHandledRef.current) {
+                                      setDraggingTaskId(null);
+                                      setDragTargetDay(null);
+                                      setDragTargetMinute(null);
+                                    }
+                                    dragDropHandledRef.current = false;
+                                  }}
+                                  className={`group absolute left-2 right-2 rounded-2xl border px-3 py-2 pb-5 text-left shadow-sm transition cursor-grab active:cursor-grabbing ${isResizing ? 'cursor-ns-resize ring-2 ring-[#5B7BFE]/40' : draggingTaskId === task.id ? 'opacity-50' : selectedDetailTaskId === task.id ? 'ring-2 ring-[#5B7BFE]/35' : ''}`}
                                   style={{
                                     top: `${top + 2}px`,
                                     minHeight: `${height}px`,
@@ -1798,27 +1841,6 @@ export function TaskCalendarView({
                                     <span className="min-w-0 flex-1 text-[12px] font-bold leading-5 line-clamp-2">{task.title}</span>
                                     <div className="flex items-start gap-2">
                                       <span className="shrink-0 text-[10px] font-semibold opacity-80">{effectiveTimeLabel}</span>
-                                      {!isResizing && (
-                                        <span
-                                          draggable
-                                          onDragStart={(event) => {
-                                            event.stopPropagation();
-                                            event.dataTransfer.effectAllowed = 'move';
-                                            event.dataTransfer.setData('text/plain', task.id);
-                                            setDraggingTaskId(task.id);
-                                          }}
-                                          onDragEnd={() => {
-                                            setDraggingTaskId(null);
-                                            setDragTargetDay(null);
-                                            setDragTargetMinute(null);
-                                          }}
-                                          onClick={(event) => event.stopPropagation()}
-                                          className="shrink-0 rounded-md border border-white/70 bg-white/90 p-0.5 text-slate-400 opacity-0 shadow-sm transition group-hover:opacity-100 hover:text-[#5B7BFE]"
-                                          title="拖动到其他日期或时段"
-                                        >
-                                          <GripVertical size={12} />
-                                        </span>
-                                      )}
                                     </div>
                                   </div>
                                   <div className="mt-1 text-[10px] font-medium opacity-80">{statusLabel(task.status)}</div>
@@ -1835,7 +1857,7 @@ export function TaskCalendarView({
                                       <MoveVertical size={12} />
                                     </div>
                                   </div>
-                                </button>
+                                </div>
                               );
                             })}
                           </div>

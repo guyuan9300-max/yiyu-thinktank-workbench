@@ -271,8 +271,8 @@ FINANCE_TEMPLATE_NOISE_HINTS = (
     "询价单",
 )
 QDRANT_VECTOR_SIZE = 256
-MASTER_VECTOR_CANDIDATE_THRESHOLD = 0.16
-CHUNK_VECTOR_CANDIDATE_THRESHOLD = 0.18
+MASTER_VECTOR_CANDIDATE_THRESHOLD = 0.10
+CHUNK_VECTOR_CANDIDATE_THRESHOLD = 0.12
 _QDRANT_CLIENTS: dict[str, Any] = {}
 _EMBEDDING_MODE_SETTING = os.getenv("YIYU_EMBEDDING_MODE", "auto").strip().lower()
 _FASTEMBED_MODEL_NAME = os.getenv("YIYU_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip() or "BAAI/bge-small-zh-v1.5"
@@ -2545,6 +2545,38 @@ def ingest_document_knowledge(
         payload=surrogate_payload,
         timestamp=created_at,
     )
+
+    # --- Auto-enrich retrieval_summary via AI (if available) ---
+    if ai_service and hasattr(ai_service, "enrich_retrieval_summary"):
+        try:
+            enriched_summary = ai_service.enrich_retrieval_summary(
+                title=title,
+                overview_summary=str(surrogate_payload.get("overview_summary", "")),
+                distinct_findings=[str(f) for f in surrogate_payload.get("distinct_findings", [])],
+                document_role=str(surrogate_payload.get("document_role", "资料")),
+                folder_category=primary_category,
+            )
+            if enriched_summary:
+                surrogate_payload["retrieval_summary"] = enriched_summary
+                db.execute(
+                    "UPDATE knowledge_surrogates SET retrieval_summary = ? WHERE id = ?",
+                    (enriched_summary, f"sur_{doc_uid}"),
+                )
+                md_file = Path(surrogate_md_path)
+                if md_file.exists():
+                    import re as _re
+                    content = md_file.read_text(encoding="utf-8")
+                    content = _re.sub(
+                        r"(## retrieval_summary\n).*?(\n## )",
+                        rf"\g<1>{enriched_summary}\n\n\g<2>",
+                        content,
+                        count=1,
+                        flags=_re.DOTALL,
+                    )
+                    md_file.write_text(content, encoding="utf-8")
+        except Exception:
+            pass  # enrichment is best-effort; ingestion must not fail
+
     catalog_text = build_catalog_search_text(
         title=title,
         short_summary=short_summary,
@@ -3247,7 +3279,7 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         data_dir,
         client_id,
         prompt,
-        limit=96 if overview_mode else (72 if strategic_mode else 48),
+        limit=120 if overview_mode else (96 if strategic_mode else 72),
     )
 
     scored_docs: list[dict[str, Any]] = []
@@ -3671,3 +3703,118 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         matched_terms=matched_terms,
         failure_reason=None if citations else "no_grounded_citations",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Batch enrich surrogate retrieval_summary via AI
+# ---------------------------------------------------------------------------
+
+
+def batch_enrich_surrogates(
+    db: Database,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any,
+) -> dict[str, Any]:
+    """Rewrite all template-based retrieval_summary fields for a client's surrogates using AI.
+
+    Returns a summary dict with counts of enriched / skipped / failed surrogates.
+    """
+    rows = db.fetchall(
+        """
+        SELECT id, title, folder_category, surrogate_md_path,
+               overview_summary, retrieval_summary, document_role,
+               distinct_findings_json, source_type
+        FROM knowledge_surrogates
+        WHERE client_id = ? AND source_type = 'document'
+        ORDER BY updated_at DESC
+        """,
+        (client_id,),
+    )
+    enriched = 0
+    skipped = 0
+    failed = 0
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    for row in rows:
+        surrogate_id = str(row["id"])
+        title = str(row["title"])
+        overview = str(row["overview_summary"] or "")
+        document_role = str(row["document_role"] or "资料")
+        folder_category = str(row["folder_category"] or "其他资料")
+        md_path = str(row["surrogate_md_path"] or "")
+        findings_raw = from_json(row["distinct_findings_json"]) if row["distinct_findings_json"] else []
+        findings = [str(f) for f in findings_raw] if isinstance(findings_raw, list) else []
+
+        if not overview or len(overview.strip()) < 20:
+            skipped += 1
+            continue
+
+        new_summary = ai_service.enrich_retrieval_summary(
+            title=title,
+            overview_summary=overview,
+            distinct_findings=findings,
+            document_role=document_role,
+            folder_category=folder_category,
+        )
+        if not new_summary:
+            failed += 1
+            continue
+
+        # 1. Update DB record
+        db.execute(
+            "UPDATE knowledge_surrogates SET retrieval_summary = ?, updated_at = ? WHERE id = ?",
+            (new_summary, timestamp, surrogate_id),
+        )
+
+        # 2. Update .md file on disk
+        md_file = Path(md_path)
+        if md_file.exists():
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                import re as _re
+                content = _re.sub(
+                    r"(## retrieval_summary\n).*?(\n## )",
+                    rf"\g<1>{new_summary}\n\n\g<2>",
+                    content,
+                    count=1,
+                    flags=_re.DOTALL,
+                )
+                md_file.write_text(content, encoding="utf-8")
+            except Exception:
+                pass
+
+        # 3. Update master_index record + Qdrant vector
+        master_row = db.fetchone(
+            "SELECT id, searchable_text FROM knowledge_master_index WHERE surrogate_id = ?",
+            (surrogate_id,),
+        )
+        if master_row:
+            entry_id = str(master_row["id"])
+            new_searchable = f"{title}\n{new_summary}"
+            db.execute(
+                "UPDATE knowledge_master_index SET retrieval_summary = ?, searchable_text = ?, updated_at = ? WHERE id = ?",
+                (new_summary, new_searchable, timestamp, entry_id),
+            )
+            upsert_master_index_vector(
+                data_dir=data_dir,
+                client_id=client_id,
+                entry_id=entry_id,
+                title=title,
+                searchable_text=new_searchable,
+                source_path=None,
+                surrogate_md_path=md_path,
+                folder_category=folder_category,
+                document_role=document_role,
+            )
+
+        enriched += 1
+
+    return {
+        "clientId": client_id,
+        "total": len(rows),
+        "enriched": enriched,
+        "skipped": skipped,
+        "failed": failed,
+    }

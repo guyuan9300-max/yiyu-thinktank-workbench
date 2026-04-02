@@ -1375,7 +1375,6 @@ def _score_by_terms(query_terms: list[str], *haystacks: str, title_weight: float
 
 
 def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prompt: str) -> RetrievalBundle:
-    del data_dir
     query_terms = tokenize(prompt)
     if not query_terms and prompt.strip():
         query_terms = [prompt.strip().lower()]
@@ -1411,6 +1410,38 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
                     "category": category,
                 }
             )
+    # --- Vector recall from master_index (Qdrant) to boost semantic matches ---
+    try:
+        from app.services.knowledge_base import search_master_index_qdrant
+        qdrant_scores = search_master_index_qdrant(
+            data_dir, client_id, prompt,
+            limit=96 if strategic_mode else 72,
+        )
+        # Build a lookup from v2_document_id to scored_doc for boosting
+        v2_doc_id_to_idx: dict[str, int] = {}
+        for idx, item in enumerate(scored_docs):
+            v2_doc_id_to_idx[str(item["row"]["id"])] = idx
+
+        # Qdrant returns master_index entry_ids (midx_xxx), need to map back to v2_documents
+        if qdrant_scores:
+            master_rows = db.fetchall(
+                "SELECT id, surrogate_id, title FROM knowledge_master_index WHERE client_id = ?",
+                (client_id,),
+            )
+            for mrow in master_rows:
+                master_id = str(mrow["id"])
+                q_score = qdrant_scores.get(master_id, 0.0)
+                if q_score < 0.10:
+                    continue
+                # Find matching v2_document by title
+                m_title = str(mrow["title"]).lower()
+                for idx, item in enumerate(scored_docs):
+                    if str(item["title"]).lower() == m_title:
+                        scored_docs[idx]["score"] += q_score * 0.65
+                        break
+    except Exception:
+        pass  # vector recall is best-effort
+
     scored_docs.sort(key=lambda item: item["score"], reverse=True)
     top_docs = scored_docs[:120]
     if not top_docs:
@@ -1477,6 +1508,27 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         tuple(section_ids),
     )
     section_lookup = {str(item["row"]["id"]): item for item in top_sections}
+
+    # --- Vector recall for chunks (Qdrant) ---
+    v2_chunk_qdrant_scores: dict[str, float] = {}
+    try:
+        from app.services.knowledge_base import search_raw_chunks_qdrant
+        v2_doc_ids_for_chunks = list({str(item["row"]["v2_document_id"]) for item in top_sections})
+        # Map v2_document_id → knowledge_document_id for Qdrant lookup
+        if v2_doc_ids_for_chunks:
+            kd_rows = db.fetchall(
+                f"SELECT id, document_id FROM v2_documents WHERE id IN ({','.join('?' for _ in v2_doc_ids_for_chunks)})",
+                tuple(v2_doc_ids_for_chunks),
+            )
+            kd_ids = [str(r["document_id"]) for r in kd_rows if r["document_id"]]
+            if kd_ids:
+                v2_chunk_qdrant_scores = search_raw_chunks_qdrant(
+                    data_dir, client_id, prompt, kd_ids,
+                    limit=120 if strategic_mode else 80,
+                )
+    except Exception:
+        pass
+
     scored_chunks: list[dict[str, Any]] = []
     for row in chunk_rows:
         content = str(row["content"] or "")
@@ -1485,9 +1537,12 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
             continue
         score, matched = _score_by_terms(query_terms, content[:2800].lower(), title_weight=1.0)
         score += section_item["score"] * 0.42
+        # Add vector score for chunks
+        chunk_qdrant_score = v2_chunk_qdrant_scores.get(str(row["id"]), 0.0)
+        score += chunk_qdrant_score * 0.65
         if strategic_mode and any(term in content for term in ("战略", "治理", "路径", "风险", "业务")):
             score += 0.25
-        if matched or score > 0:
+        if matched or score > 0 or chunk_qdrant_score >= 0.12:
             scored_chunks.append(
                 {
                     "row": row,

@@ -216,6 +216,8 @@ from app.models import (
     TaskCollaboratorRecord,
     TaskCompletionReviewPayload,
     TaskContextPreviewRecord,
+    TaskSmartBriefRecord,
+    TaskSmartBriefActionItem,
     TaskListLibraryResponse,
     TaskListMutationPayload,
     TaskListRecord,
@@ -312,6 +314,7 @@ from app.services.agent_worklogs import (
 )
 from app.services.department_catalog import get_department_entry, list_department_catalog
 from app.services.knowledge_base import (
+    batch_enrich_surrogates,
     create_memory_surrogate_from_answer,
     ensure_source_tree_snapshot,
     ensure_client_workspace,
@@ -341,6 +344,7 @@ from app.services.knowledge_v2 import (
     stage_import_copy,
     tokenize,
 )
+from app.services.client_profile import backfill_all_clients, build_client_profile
 from app.services.memory_foundation import (
     answer_clarification_record,
     backfill_memory_foundation,
@@ -1694,8 +1698,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return MemorySecretStore()
 
     qwen_store = build_secret_store("com.yiyu.self-workbench.qwen")
+    doubao_store = build_secret_store("com.yiyu.self-workbench.doubao")
     feishu_secret_store = build_secret_store("com.yiyu.self-workbench.feishu")
-    ai = AiService(db, {"qwen": qwen_store})
+    ai = AiService(db, {"qwen": qwen_store, "doubao": doubao_store})
     backup_dir = resolved_data_dir / "backups"
     state = AppState(
         data_dir=resolved_data_dir,
@@ -2328,6 +2333,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             finish_knowledge_job(job_id, status="completed", processed_items=processed_items)
             maybe_enqueue_client_dna_generation_job(client_id)
+            # Auto-rebuild client profile blocks after import completes
+            if processed_items > 0:
+                try:
+                    build_client_profile(state.db, data_dir=state.data_dir, client_id=client_id, ai_service=state.ai)
+                except Exception:
+                    pass  # profile rebuild is best-effort
             return
         if job_type == "rebuild_client_knowledge":
             summary = backfill_knowledge_documents(
@@ -2350,6 +2361,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ensure_standard_client_folders(client_id)
             finish_knowledge_job(job_id, status="completed", processed_items=processed_items)
             maybe_enqueue_client_dna_generation_job(client_id)
+            # Auto-rebuild client profile blocks after knowledge rebuild
+            if processed_items > 0:
+                try:
+                    build_client_profile(state.db, data_dir=state.data_dir, client_id=client_id, ai_service=state.ai)
+                except Exception:
+                    pass
             return
         if job_type == "generate_client_dna_candidates":
             module_keys = payload.get("moduleKeys", [])
@@ -5232,22 +5249,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         content_type: str = "application/octet-stream",
         form_fields: dict[str, str] | None = None,
     ) -> object:
-        token = get_cloud_token()
-        if not token:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        headers = {"Authorization": f"Bearer {token}"}
-        files = {"file": (file_name, file_content, content_type)}
-        data = form_fields or {}
-        try:
-            response = httpx.post(
+        def _do_upload(token: str):
+            headers = {"Authorization": f"Bearer {token}"}
+            files = {"file": (file_name, file_content, content_type)}
+            data = form_fields or {}
+            return httpx.post(
                 f"{state.cloud_api_url}{path}",
                 headers=headers,
                 files=files,
                 data=data,
                 timeout=60.0,
             )
+
+        token = get_cloud_token()
+        if not token:
+            if get_cloud_refresh_token():
+                refresh_cloud_session()
+                token = get_cloud_token()
+            if not token:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+        try:
+            response = _do_upload(token)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Cloud upload unavailable: {exc}") from exc
+        if response.status_code == 401 and get_cloud_refresh_token():
+            refresh_cloud_session()
+            token = get_cloud_token()
+            if token:
+                try:
+                    response = _do_upload(token)
+                except httpx.HTTPError as exc:
+                    raise HTTPException(status_code=502, detail=f"Cloud upload unavailable: {exc}") from exc
         if response.status_code >= 400:
             try:
                 detail = response.json().get("detail", response.text) if response.content else response.text
@@ -11478,11 +11510,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             f"用户问题：{prompt}",
             f"当前对象：{client_name}",
             (
-                "请直接阅读下面的原始材料并回答问题。"
-                "不要把答案写成资料摘要、证据罗列或系统说明。"
-                "允许你基于多条材料共同指向的信号做高强度归纳、抽象和深层判断。"
-                "只有材料里不存在的具体事实、数字、人名、时间和身份，不要写成已被证实。"
-                "除非用户明确要求简短，否则请尽量讲透。"
+                "请像一位资深顾问那样，基于下面的原始材料回答问题。\n"
+                "【深度要求——最重要】\n"
+                "- 每个层次不能只给结论，必须用 2-4 段话展开讲为什么、具体怎么体现\n"
+                "- 对于业务介绍：说清做什么、为什么有价值、怎么做、未来方向\n"
+                "- 对于战略判断：说清从什么变到什么、为什么变、变的张力是什么\n"
+                "- 总字数不少于 1500 字，除非用户明确要求简短\n"
+                "- 最后要有升华收束，把具体信息提升到战略意义层面\n\n"
+                "【排版规则】\n"
+                "- 用「一、二、三」分层，并列要点用「- 」列表\n"
+                "- 只加粗完整判断句（如 **核心不是X而是Y**），不要只加粗单个关键词\n"
+                "- 列表项之后可以跟解释段落，不要为了格式整齐而牺牲深度\n"
+                "- 写完最后一个层次后，必须有总结收束\n\n"
+                "【事实底线】\n"
+                "- 允许基于多条材料的信号做高强度归纳和深层判断\n"
+                "- 只有材料里不存在的具体事实、数字、人名、时间和身份，不要写成已被证实"
             ),
         ]
         if memory_background_context:
@@ -14554,6 +14596,68 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Cloud attachment unavailable: {exc}") from exc
 
+    @app.get("/api/public/task-attachments/{attachment_id}/thumbnail")
+    def proxy_cloud_attachment_thumbnail(attachment_id: str) -> Response:
+        if not get_cloud_token():
+            raise HTTPException(status_code=404, detail="Not found")
+        try:
+            resp = httpx.get(
+                f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/thumbnail",
+                timeout=15.0,
+            )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=resp.status_code, detail="Not found")
+            return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/jpeg"))
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Thumbnail unavailable: {exc}") from exc
+
+    @app.get("/api/public/task-attachments/{attachment_id}/text-content")
+    def proxy_cloud_attachment_text(attachment_id: str) -> dict:
+        if not get_cloud_token():
+            raise HTTPException(status_code=404, detail="Not found")
+        try:
+            resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=resp.status_code, detail="Not found")
+            return resp.json()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Text content unavailable: {exc}") from exc
+
+    @app.get("/api/public/task-attachments/{attachment_id}/ocr-summary")
+    def proxy_cloud_attachment_ocr(attachment_id: str) -> dict:
+        if not get_cloud_token():
+            return {"title": "", "summary": "未登录", "unsupported": True}
+        try:
+            resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
+            if resp.status_code >= 400:
+                return {"title": "", "summary": "OCR 不可用"}
+            return resp.json()
+        except Exception:
+            return {"title": "", "summary": "OCR 不可用"}
+
+    @app.post("/api/v1/event-lines/{event_line_id}/attachments/download-zip")
+    def proxy_event_line_zip(event_line_id: str, payload: dict | None = None) -> Response:
+        if not get_cloud_token():
+            raise HTTPException(status_code=400, detail="需要登录云端")
+        token = get_cloud_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
+        try:
+            resp = httpx.post(
+                f"{state.cloud_api_url}/api/v1/event-lines/{event_line_id}/attachments/download-zip",
+                headers=headers,
+                json=payload or {},
+                timeout=60.0,
+            )
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=resp.status_code, detail="下载失败")
+            return Response(
+                content=resp.content,
+                media_type="application/zip",
+                headers={"Content-Disposition": resp.headers.get("content-disposition", 'attachment; filename="attachments.zip"')},
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Zip download unavailable: {exc}") from exc
+
     @app.get("/api/v1/system/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
         return build_health()
@@ -14922,6 +15026,455 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Task not found")
         return _build_task_context_preview(task)
 
+    def _build_smart_brief_for_task(task: TaskRecord) -> TaskSmartBriefRecord:
+        task_id = task.id
+        summary_parts: list[str] = []
+        source_labels: list[str] = []
+
+        if task.desc and task.desc.strip():
+            summary_parts.append(task.desc.strip()[:200])
+            source_labels.append("任务说明")
+
+        if task.clientId:
+            notebook_row = state.db.fetchone(
+                "SELECT organization_intro, collaboration_relationship FROM organization_notebook_snapshots WHERE client_id = ?",
+                (task.clientId,),
+            )
+            if notebook_row:
+                org_intro = str(notebook_row["organization_intro"] or "").strip()
+                collab = str(notebook_row["collaboration_relationship"] or "").strip()
+                if org_intro:
+                    summary_parts.append(org_intro[:120])
+                    source_labels.append("客户画像")
+                if collab:
+                    summary_parts.append(collab[:120])
+                    source_labels.append("合作关系")
+
+        if task.eventLineId:
+            el_row = state.db.fetchone("SELECT summary, intent FROM event_lines WHERE id = ?", (task.eventLineId,))
+            if el_row:
+                el_summary = str(el_row["summary"] or "").strip()
+                el_intent = str(el_row["intent"] or "").strip()
+                if el_summary:
+                    summary_parts.append(f"事件线进展：{el_summary[:100]}")
+                    source_labels.append("事件线")
+                elif el_intent:
+                    summary_parts.append(f"事件线目标：{el_intent[:100]}")
+                    source_labels.append("事件线")
+
+        attachment_rows = state.db.fetchall(
+            "SELECT title FROM task_attachments WHERE task_id = ? UNION ALL SELECT title FROM task_attachments_cloud WHERE task_id = ?",
+            (task_id, task_id),
+        )
+        if attachment_rows:
+            titles = [str(row["title"]) for row in attachment_rows[:3]]
+            summary_parts.append(f"已关联附件：{'、'.join(titles)}")
+            source_labels.append("附件")
+
+        review_row = state.db.fetchone(
+            "SELECT note, structured_note_json FROM weekly_review_task_entries WHERE task_id = ? ORDER BY reviewed_at DESC LIMIT 1",
+            (task_id,),
+        )
+        if review_row and review_row["note"]:
+            review_note = str(review_row["note"]).strip()[:120]
+            if review_note:
+                summary_parts.append(f"上次复盘：{review_note}")
+                source_labels.append("周复盘")
+
+        final_summary = "。".join(part.rstrip("。") for part in summary_parts if part)[:300]
+        if not final_summary:
+            final_summary = f"「{task.title}」— 暂无更多背景信息，可在任务说明中补充。"
+
+        action_items: list[TaskSmartBriefActionItem] = []
+
+        if task.eventLineId:
+            el_row = state.db.fetchone("SELECT next_step, current_blocker FROM event_lines WHERE id = ?", (task.eventLineId,))
+            if el_row:
+                next_step = str(el_row["next_step"] or "").strip()
+                if next_step:
+                    action_items.append(TaskSmartBriefActionItem(text=next_step, sourceLabel="事件线下一步"))
+                blocker = str(el_row["current_blocker"] or "").strip()
+                if blocker and len(action_items) < 5:
+                    action_items.append(TaskSmartBriefActionItem(text=f"解决阻塞：{blocker}", sourceLabel="事件线阻塞"))
+
+        if task.eventLineId:
+            snapshot_row = state.db.fetchone(
+                "SELECT clarification_needs_json FROM event_line_memory_snapshots WHERE event_line_id = ?",
+                (task.eventLineId,),
+            )
+            if snapshot_row and snapshot_row["clarification_needs_json"]:
+                needs = from_json(snapshot_row["clarification_needs_json"], [])
+                for need in needs[:3]:
+                    text = str(need).strip()
+                    if text and len(action_items) < 5:
+                        action_items.append(TaskSmartBriefActionItem(text=f"待补充：{text}", sourceLabel="待补信息"))
+
+        if review_row and review_row["structured_note_json"]:
+            structured = from_json(review_row["structured_note_json"], {})
+            next_action = str(structured.get("nextAction", "")).strip()
+            if next_action and len(action_items) < 5:
+                action_items.append(TaskSmartBriefActionItem(text=next_action, sourceLabel="复盘待办"))
+
+        return TaskSmartBriefRecord(
+            taskId=task_id,
+            summary=final_summary,
+            summarySourceLabels=list(dict.fromkeys(source_labels)),
+            actionItems=action_items,
+        )
+
+    # V1 角色映射：根据关键词自动建议内部责任人
+    ROLE_ROUTING_RULES: list[tuple[list[str], str]] = [
+        (["技术", "路径", "系统", "实现", "可行性", "成本", "接口", "模块", "产品蓝图", "架构", "开发", "试点", "数字化"], "佳维"),
+        (["策略", "理事会", "对外合作", "行业引领", "价值引导", "合作边界", "市场", "品牌", "战略", "定位", "成效表达", "判断", "沉淀", "案例卡"], "顾源源"),
+        (["跟进", "约时间", "沟通", "反馈", "催", "对接", "会务", "安排", "演示", "确认", "提醒", "材料", "档案", "拉群"], "乐乐"),
+    ]
+
+    def _route_internal_owner(text: str) -> str:
+        text_lower = text.lower()
+        scores: dict[str, int] = {}
+        for keywords, owner in ROLE_ROUTING_RULES:
+            count = sum(1 for kw in keywords if kw in text_lower)
+            if count > 0:
+                scores[owner] = scores.get(owner, 0) + count
+        if not scores:
+            return ""
+        return max(scores, key=scores.get)  # type: ignore[arg-type]
+
+    def _gather_task_context_bundle(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None) -> dict:
+        """Assemble all available context for a task into a single bundle."""
+        bundle: dict[str, object] = {"taskId": task_id, "title": title, "desc": desc}
+        source_labels: list[str] = []
+
+        if desc.strip():
+            source_labels.append("任务说明")
+
+        # 客户/项目背景
+        if client_id:
+            notebook_row = state.db.fetchone(
+                "SELECT organization_intro, collaboration_relationship FROM organization_notebook_snapshots WHERE client_id = ?",
+                (client_id,),
+            )
+            if notebook_row:
+                org_intro = str(notebook_row["organization_intro"] or "").strip()
+                collab = str(notebook_row["collaboration_relationship"] or "").strip()
+                if org_intro:
+                    bundle["clientIntro"] = org_intro[:300]
+                    source_labels.append("客户画像")
+                if collab:
+                    bundle["collaborationRelationship"] = collab[:300]
+                    source_labels.append("合作关系")
+            client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+            if client_row:
+                bundle["clientName"] = str(client_row["name"])
+
+        # 事件线上下文
+        if event_line_id:
+            el_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+            if el_row:
+                for field in ("name", "summary", "intent", "current_blocker", "recent_decision", "next_step", "stage"):
+                    val = str(el_row[field] or "").strip()
+                    if val:
+                        bundle[f"eventLine_{field}"] = val[:200]
+                source_labels.append("事件线")
+
+            snapshot_row = state.db.fetchone(
+                "SELECT current_work, current_blocker, recent_decision, next_step, clarification_needs_json FROM event_line_memory_snapshots WHERE event_line_id = ?",
+                (event_line_id,),
+            )
+            if snapshot_row:
+                for field in ("current_work", "current_blocker", "recent_decision", "next_step"):
+                    val = str(snapshot_row[field] or "").strip()
+                    if val:
+                        bundle[f"memory_{field}"] = val[:200]
+                needs = from_json(snapshot_row["clarification_needs_json"], [])
+                # 过滤掉原始字段名（如 current_blocker、next_step），只保留有实际中文内容的
+                raw_field_names = {"current_blocker", "recent_decision", "next_step", "current_work", "current_stage", "summary", "intent"}
+                filtered_needs = [str(n).strip() for n in needs if str(n).strip() and str(n).strip().lower() not in raw_field_names and len(str(n).strip()) > 4]
+                if filtered_needs:
+                    bundle["clarification_needs"] = filtered_needs[:5]
+                source_labels.append("事件线记忆")
+
+        # 附件 + 附件内容提取（本任务 + 同事件线其他任务的附件）
+        attachment_rows = state.db.fetchall(
+            "SELECT title, path, kind, document_id FROM task_attachments WHERE task_id = ? UNION ALL SELECT title, path, kind, document_id FROM task_attachments_cloud WHERE task_id = ?",
+            (task_id, task_id),
+        )
+        if not attachment_rows and event_line_id:
+            # 如果本任务没有附件，检查同事件线下其他任务的附件
+            attachment_rows = state.db.fetchall(
+                "SELECT title, path, kind, document_id FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?",
+                (event_line_id, event_line_id),
+            )
+        if attachment_rows:
+            bundle["attachments"] = [str(row["title"]) for row in attachment_rows[:5]]
+            source_labels.append("附件")
+
+            # 提取附件文本内容（纪要/合同/录音文字稿）
+            attachment_texts: list[str] = []
+            for att_row in attachment_rows[:3]:
+                doc_id = str(att_row["document_id"]) if att_row["document_id"] else None
+                att_path = str(att_row["path"] or "")
+                att_kind = str(att_row["kind"] or "")
+                att_title = str(att_row["title"] or "")
+
+                # 从 documents 表读 excerpt
+                if doc_id:
+                    doc_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (doc_id,))
+                    if doc_row and doc_row["excerpt"]:
+                        excerpt = str(doc_row["excerpt"]).strip()[:500]
+                        if excerpt:
+                            attachment_texts.append(f"【{att_title}】{excerpt}")
+                            continue
+
+                # 直接读 docx/md/txt 文件
+                if att_path and att_kind in ("docx", "md", "txt"):
+                    from pathlib import Path as _Path
+                    file_path = _Path(att_path)
+                    if not file_path.is_absolute():
+                        file_path = state.data_dir / att_path
+                    if file_path.exists():
+                        try:
+                            if att_kind == "docx":
+                                doc_obj = WordDocument(str(file_path))
+                                text = "\n".join(p.text for p in doc_obj.paragraphs[:30] if p.text.strip())[:500]
+                            else:
+                                text = file_path.read_text(encoding="utf-8", errors="ignore")[:500]
+                            if text.strip():
+                                attachment_texts.append(f"【{att_title}】{text.strip()}")
+                        except Exception:
+                            pass
+
+            if attachment_texts:
+                bundle["attachmentContents"] = attachment_texts
+                source_labels.append("附件内容")
+
+        # 周复盘
+        review_row = state.db.fetchone(
+            "SELECT note, structured_note_json FROM weekly_review_task_entries WHERE task_id = ? ORDER BY reviewed_at DESC LIMIT 1",
+            (task_id,),
+        )
+        if review_row and review_row["note"]:
+            bundle["reviewNote"] = str(review_row["note"]).strip()[:200]
+            source_labels.append("周复盘")
+            if review_row["structured_note_json"]:
+                structured = from_json(review_row["structured_note_json"], {})
+                for field in ("reflection", "successExperience", "nextAction", "completionStatus"):
+                    val = str(structured.get(field, "")).strip()
+                    if val:
+                        bundle[f"review_{field}"] = val[:150]
+
+        # 最近活动
+        if event_line_id:
+            activity_rows = state.db.fetchall(
+                "SELECT title, summary FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at DESC LIMIT 3",
+                (event_line_id,),
+            )
+            if activity_rows:
+                bundle["recentActivities"] = [f"{str(r['title'])}: {str(r['summary'])[:80]}" for r in activity_rows]
+
+        bundle["sourceLabels"] = list(dict.fromkeys(source_labels))
+        return bundle
+
+    def _build_smart_brief_from_hints(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None, frontend_attachment_titles: list[str] | None = None) -> TaskSmartBriefRecord:
+        bundle = _gather_task_context_bundle(task_id, title, desc, client_id, event_line_id)
+        source_labels = bundle.get("sourceLabels", [])
+
+        # 如果前端传来了附件标题但后端没找到，手动注入
+        if frontend_attachment_titles and not bundle.get("attachments"):
+            bundle["attachments"] = frontend_attachment_titles[:5]
+            if "附件" not in source_labels:
+                source_labels.append("附件")
+            bundle["sourceLabels"] = source_labels
+
+        # 触发规则：只有当有实质内容时才生成智能概要
+        has_attachments = bool(bundle.get("attachmentContents")) or bool(bundle.get("attachments"))
+        has_desc = bool(desc.strip())
+        has_review = bool(bundle.get("reviewNote"))
+        has_activities = bool(bundle.get("recentActivities"))
+        has_event_line_content = bool(bundle.get("eventLine_summary") or bundle.get("memory_current_work"))
+        if not has_attachments and not has_desc and not has_review and not (has_activities and has_event_line_content):
+            return TaskSmartBriefRecord(
+                taskId=task_id,
+                summary="",
+                summarySourceLabels=[],
+                actionItems=[],
+            )
+
+        # 直接调用豆包 API 生成（绕过 state.ai 的 provider 设置问题）
+        try:
+            from app.services.secrets import MacOSKeychainSecretStore
+            doubao_store = MacOSKeychainSecretStore(service_name="com.yiyu.self-workbench.doubao", account_name="default")
+            api_key = doubao_store.get_api_key()
+        except Exception:
+            api_key = ""
+        if api_key:
+            try:
+                context_text = "\n".join(f"【{k}】{v}" for k, v in bundle.items() if k not in ("taskId", "sourceLabels") and v)
+                prompt = (
+                    f"任务标题：{title}\n\n"
+                    f"以下是这条任务的所有上下文资料：\n{context_text}\n\n"
+                    f"请回答两个问题，严格返回 JSON：\n\n"
+                    f'{{"keyTopics": ["这次会议/任务谈的最重要的3-4件事，每件1-2句话"],'
+                    f'"nextActions": [{{"text": "接下来要推进的具体事项", "who": "负责人", "when": "时间"}}]}}\n\n'
+                    f"规则：\n"
+                    f"- keyTopics：从附件/会议纪要/任务说明中提取最重要的3-4个议题，每个用1-2句话概括\n"
+                    f"- nextActions：从资料中提取接下来要推进的事项。如果是对方要做的事，改写成「跟进XXX做YYY」。所有事项的主语必须是益语团队\n"
+                    f"- who 参考：策略/判断/成效→顾源源，跟进/对接/安排→乐乐，技术/系统/试点→佳维\n"
+                )
+                model = state.db.get_setting("ai_model", "ep-m-20260326120641-m4lf6")
+                resp = httpx.post(
+                    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": "你是益语智库的项目助手。只返回纯 JSON，不要 Markdown。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "max_tokens": 1500,
+                        "temperature": 0.3,
+                    },
+                    timeout=20.0,
+                )
+                if resp.status_code == 200:
+                    raw = resp.json()["choices"][0]["message"]["content"].strip()
+                    # 清理可能的 markdown 包装
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                    result = json.loads(raw)
+
+                    # 解析 keyTopics → 概要
+                    topics = result.get("keyTopics", [])
+                    if isinstance(topics, list) and topics:
+                        ai_summary = "\n".join(f"{'①②③④⑤'[i] if i < 5 else '•'} {str(t).strip()}" for i, t in enumerate(topics) if str(t).strip())
+                    else:
+                        ai_summary = ""
+
+                    # 解析 nextActions → 待办
+                    ai_actions = []
+                    for item in result.get("nextActions", []):
+                        if not isinstance(item, dict) or not item.get("text"):
+                            continue
+                        text = str(item["text"]).strip()
+                        who = str(item.get("who", "")).strip()
+                        when = str(item.get("when", "")).strip()
+                        if when:
+                            text = f"{text}（{when}）"
+                        internal_owner = who if who in ("顾源源", "乐乐", "佳维") else _route_internal_owner(text)
+                        ai_actions.append(TaskSmartBriefActionItem(
+                            text=text,
+                            sourceLabel="会议待办" if "跟进" not in text else "跟进对方",
+                            internalSuggestedOwner=internal_owner,
+                        ))
+
+                    if ai_summary:
+                        return TaskSmartBriefRecord(
+                            taskId=task_id,
+                            summary=ai_summary[:500],
+                            summarySourceLabels=list(source_labels) if isinstance(source_labels, list) else [],
+                            actionItems=ai_actions[:10],
+                        )
+            except Exception:
+                pass  # AI 失败时 fallback 到规则拼接
+
+        # Fallback: 规则拼接
+        summary_parts: list[str] = []
+        if desc.strip():
+            summary_parts.append(desc.strip()[:200])
+        if bundle.get("clientIntro"):
+            summary_parts.append(str(bundle["clientIntro"])[:120])
+        if bundle.get("collaborationRelationship"):
+            summary_parts.append(str(bundle["collaborationRelationship"])[:120])
+        if bundle.get("eventLine_summary"):
+            summary_parts.append(f"事件线进展：{str(bundle['eventLine_summary'])[:100]}")
+        elif bundle.get("eventLine_intent"):
+            summary_parts.append(f"事件线目标：{str(bundle['eventLine_intent'])[:100]}")
+        if bundle.get("attachments"):
+            summary_parts.append(f"已关联附件：{'、'.join(str(a) for a in bundle['attachments'][:3])}")
+        if bundle.get("reviewNote"):
+            summary_parts.append(f"上次复盘：{str(bundle['reviewNote'])[:120]}")
+
+        final_summary = "。".join(part.rstrip("。") for part in summary_parts if part)[:300]
+        if not final_summary:
+            final_summary = f"「{title}」— 暂无更多背景信息，可在任务说明中补充。"
+
+        action_items: list[TaskSmartBriefActionItem] = []
+        if bundle.get("eventLine_next_step"):
+            action_items.append(TaskSmartBriefActionItem(text=str(bundle["eventLine_next_step"]), sourceLabel="事件线下一步"))
+        if bundle.get("eventLine_current_blocker") and len(action_items) < 5:
+            action_items.append(TaskSmartBriefActionItem(text=f"解决阻塞：{bundle['eventLine_current_blocker']}", sourceLabel="事件线阻塞"))
+        for need in (bundle.get("clarification_needs") or [])[:3]:
+            if len(action_items) < 5:
+                action_items.append(TaskSmartBriefActionItem(text=f"待补充：{need}", sourceLabel="待补信息"))
+        if bundle.get("review_nextAction") and len(action_items) < 5:
+            action_items.append(TaskSmartBriefActionItem(text=str(bundle["review_nextAction"]), sourceLabel="复盘待办"))
+
+        return TaskSmartBriefRecord(
+            taskId=task_id,
+            summary=final_summary,
+            summarySourceLabels=list(source_labels) if isinstance(source_labels, list) else [],
+            actionItems=action_items,
+        )
+
+    @app.get("/api/v1/tasks/{task_id}/smart-brief", response_model=TaskSmartBriefRecord)
+    def get_task_smart_brief(task_id: str) -> TaskSmartBriefRecord:
+        if not get_cloud_token():
+            task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            if not task_row:
+                raise HTTPException(status_code=404, detail="Task not found")
+            task = fetch_tasks("t.id = ?", (task_id,))[0]
+        else:
+            task = fetch_cloud_task_by_id(task_id)
+        return _build_smart_brief_for_task(task)
+
+    @app.post("/api/v1/tasks/smart-briefs", response_model=list[TaskSmartBriefRecord])
+    def get_task_smart_briefs_batch(payload: dict) -> list[TaskSmartBriefRecord]:
+        items = payload.get("tasks", [])
+        if not items or not isinstance(items, list):
+            return []
+        results: list[TaskSmartBriefRecord] = []
+        for item in items[:30]:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            try:
+                attachment_titles = [str(t) for t in item.get("attachmentTitles", []) if t] if isinstance(item.get("attachmentTitles"), list) else []
+                results.append(_build_smart_brief_from_hints(
+                    task_id=str(item["id"]),
+                    title=str(item.get("title", "")),
+                    desc=str(item.get("desc", "")),
+                    client_id=str(item["clientId"]) if item.get("clientId") else None,
+                    event_line_id=str(item["eventLineId"]) if item.get("eventLineId") else None,
+                    frontend_attachment_titles=attachment_titles,
+                ))
+            except Exception:
+                pass
+        return results
+
+    @app.post("/api/v1/event-lines/{event_line_id}/attachments")
+    def upload_event_line_attachment(
+        event_line_id: str,
+        file: UploadFile = File(...),
+        title: str | None = Form(default=None),
+    ) -> dict:
+        if not get_cloud_token():
+            raise HTTPException(status_code=400, detail="需要登录云端才能上传事件线附件")
+        content = file.file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="上传内容为空")
+        try:
+            result = cloud_upload_file(
+                f"/api/v1/event-lines/{event_line_id}/attachments",
+                file_name=file.filename or "attachment",
+                file_content=content,
+                content_type=file.content_type or "application/octet-stream",
+                form_fields={"title": title or file.filename or "事件线附件"},
+            )
+            return result if isinstance(result, dict) else {}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"附件上传失败：{exc}") from exc
+
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot")
     def get_event_line_report_snapshot(event_line_id: str) -> dict:
         if not get_cloud_token():
@@ -14978,28 +15531,64 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 doc.add_paragraph(summary_text)
 
         attachments = draft.get("attachments", [])
+        expanded_ids = set(draft.get("expandedAttachmentIds", []))
         if attachments:
             doc.add_heading("附件清单", level=2)
-            table = doc.add_table(rows=1, cols=4)
-            table.style = "Table Grid"
-            header_cells = table.rows[0].cells
-            header_cells[0].text = "文件名"
-            header_cells[1].text = "类型"
-            header_cells[2].text = "大小"
-            header_cells[3].text = "上传时间"
             for att in attachments:
-                row = table.add_row()
-                row.cells[0].text = str(att.get("title", ""))
-                row.cells[1].text = str(att.get("kind", ""))
-                size_bytes = int(att.get("sizeBytes", 0))
-                if size_bytes < 1024:
-                    size_label = f"{size_bytes} B"
-                elif size_bytes < 1024 * 1024:
-                    size_label = f"{size_bytes // 1024} KB"
+                att_title = str(att.get("title", ""))
+                att_id = str(att.get("id", ""))
+                is_expanded = att_id in expanded_ids
+                mime = str(att.get("mimeType") or "").lower()
+                is_image = mime.startswith("image/") or att_title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+
+                is_doc = att_title.lower().endswith((".docx", ".md", ".txt"))
+
+                if is_expanded and is_image:
+                    doc.add_paragraph(f"📷 {att_title}").bold = True
+                    try:
+                        download_url = str(att.get("downloadUrl", ""))
+                        if download_url:
+                            img_resp = httpx.get(
+                                f"{state.cloud_api_url}{download_url}",
+                                timeout=15.0,
+                            )
+                            if img_resp.status_code == 200:
+                                from io import BytesIO as _BytesIO
+                                from docx.shared import Inches
+                                img_stream = _BytesIO(img_resp.content)
+                                doc.add_picture(img_stream, width=Inches(5.5))
+                    except Exception:
+                        doc.add_paragraph(f"（图片加载失败：{att_title}）")
+                elif is_expanded and is_doc:
+                    doc.add_paragraph(f"📄 {att_title}").bold = True
+                    try:
+                        text_resp = httpx.get(
+                            f"{state.cloud_api_url}/api/public/task-attachments/{att_id}/text-content",
+                            timeout=15.0,
+                        )
+                        if text_resp.status_code == 200:
+                            text_data = text_resp.json()
+                            doc_text = str(text_data.get("text", "")).strip()
+                            if doc_text:
+                                for para in doc_text.split("\n")[:50]:
+                                    if para.strip():
+                                        doc.add_paragraph(para.strip())
+                            else:
+                                doc.add_paragraph("（文档内容为空）")
+                        else:
+                            doc.add_paragraph(f"（文档内容提取失败）")
+                    except Exception:
+                        doc.add_paragraph(f"（文档内容提取失败：{att_title}）")
                 else:
-                    size_label = f"{size_bytes / (1024 * 1024):.1f} MB"
-                row.cells[2].text = size_label
-                row.cells[3].text = str(att.get("createdAt", ""))[:16].replace("T", " ")
+                    size_bytes = int(att.get("sizeBytes", 0))
+                    if size_bytes < 1024:
+                        size_label = f"{size_bytes} B"
+                    elif size_bytes < 1024 * 1024:
+                        size_label = f"{size_bytes // 1024} KB"
+                    else:
+                        size_label = f"{size_bytes / (1024 * 1024):.1f} MB"
+                    created = str(att.get("createdAt", ""))[:16].replace("T", " ")
+                    doc.add_paragraph(f"📎 {att_title}  （{att.get('kind', '')} · {size_label} · {created}）")
 
         from io import BytesIO
         buffer = BytesIO()
@@ -16856,22 +17445,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         latest_partial_content = ""
         latest_partial_structured: dict[str, object] | None = None
         grounded_system_instruction = (
-            "请直接基于给定的客户原始材料回答问题。"
-            "不要把答案写成证据罗列、材料摘要或系统说明。"
-            "不要预设固定格式、固定结构、固定段数或固定栏目。"
-            "由模型自己决定如何组织回答。"
-            "允许基于多条材料共同指向的信号做更高层的综合判断。"
-            "只有原始材料里没有出现过的具体事实、数字、人名、时间和身份，不要写成已被证实。"
+            "你是一位资深战略顾问。请基于给定的客户原始材料回答问题。\n"
+            "回答要有框架感——先建立分析视角，再逐层展开，最后升华收束。\n"
+            "不要把答案写成证据罗列、材料摘要或系统说明。\n"
+            "允许基于多条材料共同指向的信号做更高层的综合判断。\n"
+            "只有原始材料里没有出现过的具体事实、数字、人名、时间和身份，不要写成已被证实。\n\n"
+            "【深度要求——最重要】\n"
+            "- 每个层次不能只给结论，必须展开讲为什么和具体怎么体现\n"
+            "- 对于核心业务，要说清楚：做什么、为什么有价值、现在怎么做、未来方向\n"
+            "- 对于战略判断，要说清楚：从什么变成什么、为什么要变、变的过程中有什么张力\n"
+            "- 允许在一个层次下写 3-5 段话来充分展开，不要为了格式整齐而牺牲深度\n"
+            "- 总字数不少于 1500 字，除非用户明确要求简短\n\n"
+            "【排版规则】\n"
+            "1. 用「一、二、三、四」作为一级小标题，分成 4-6 个层次\n"
+            "2. 并列要点用「- 」列表，列表项后可以跟解释段落\n"
+            "3. 加粗规则：只加粗完整的判断句（如 **它的核心不是X而是Y**），不要只加粗单个关键词\n"
+            "4. 多用判断句：「不是X，而是Y」「核心在于」「关键区别是」\n"
+            "5. 每个小标题下至少 150 字，核心层次 300 字以上\n"
+            "6. 写完最后一个层次后，必须有 2-3 句总结收束全篇\n"
         )
         identity_sensitive_instruction = (
             grounded_system_instruction
             + "如果问题涉及创始人、负责人、理事长、秘书长等具体人物身份，只有在原始证据明确把人名与角色绑定时，才能下结论；否则只能说明当前证据不足以确认。"
         )
         grounded_fallback_instruction = (
-            "请只基于当前已经整理出的原始证据继续回答。"
-            "不要编造原始证据里没有的确定性事实。"
-            "除此之外，不要替自己预设固定格式、固定结构、固定段数或固定栏目。"
-            "不要停留在表层摘录；只要证据允许，就尽量把深层判断讲透。"
+            "请只基于当前已经整理出的原始证据继续回答。\n"
+            "不要编造原始证据里没有的确定性事实。\n"
+            "不要停留在表层摘录；只要证据允许，就尽量把深层判断讲透。\n"
+            "排版规则：用「一、二、三」分层，并列要点用「- 」列表，关键结论用 **加粗**，禁止全篇连续长段落。\n"
         )
 
         def load_preserved_partial() -> tuple[str, dict[str, object] | None]:
@@ -17472,6 +18073,71 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             },
         )
         return generated
+
+    @app.post("/api/v1/clients/{client_id}/knowledge/enrich-surrogates")
+    def enrich_surrogates(client_id: str) -> dict:
+        """Batch-enrich all document surrogates for a client with AI-generated retrieval summaries."""
+        result = batch_enrich_surrogates(
+            state.db,
+            data_dir=state.data_dir,
+            client_id=client_id,
+            ai_service=state.ai,
+        )
+        log_activity(
+            "knowledge.enrich_surrogates",
+            "client",
+            client_id,
+            result,
+        )
+        return result
+
+    @app.post("/api/v1/clients/{client_id}/knowledge/build-profile")
+    def build_profile(client_id: str) -> dict:
+        """Generate adaptive client profile blocks based on the client's actual data."""
+        result = build_client_profile(
+            state.db,
+            data_dir=state.data_dir,
+            client_id=client_id,
+            ai_service=state.ai,
+        )
+        log_activity(
+            "knowledge.build_profile",
+            "client",
+            client_id,
+            {"generated_count": len(result.get("generated", [])), "clientName": result.get("clientName")},
+        )
+        # Auto-sync to cloud ChromaDB
+        try:
+            from app.services.client_profile import _sync_to_cloud
+            _sync_to_cloud(state.db, client_id)
+        except Exception:
+            pass
+        return result
+
+    @app.post("/api/v1/clients/{client_id}/knowledge/sync-to-cloud")
+    def sync_to_cloud(client_id: str) -> dict:
+        """Sync desktop surrogates and profile blocks to cloud ChromaDB for mobile access."""
+        try:
+            from app.services.client_profile import _sync_to_cloud
+            return _sync_to_cloud(state.db, client_id)
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    @app.post("/api/v1/knowledge/backfill-all-clients")
+    def backfill_all(client_id: str = "") -> dict:
+        """One-time backfill: enrich surrogates + build profile blocks for all clients with existing data."""
+        result = backfill_all_clients(
+            state.db,
+            data_dir=state.data_dir,
+            ai_service=state.ai,
+        )
+        log_activity(
+            "knowledge.backfill_all_clients",
+            "system",
+            "all",
+            {"totalProcessed": result.get("totalProcessed", 0)},
+        )
+        return result
 
     @app.post("/api/v1/clients/{client_id}/knowledge/export-answer", response_model=ClientTextDocumentResponse)
     def export_answer(client_id: str, payload: ExportAnswerPayload) -> ClientTextDocumentResponse:

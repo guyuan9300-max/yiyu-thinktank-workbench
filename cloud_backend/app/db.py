@@ -794,6 +794,24 @@ class Database:
                     FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS event_line_attachments (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    event_line_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    path TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'event_line_attachment',
+                    mime_type TEXT,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    created_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS task_notes (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,

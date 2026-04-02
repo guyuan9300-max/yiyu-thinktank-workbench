@@ -85,7 +85,7 @@ PUBLIC_HOST=api.yiyu.love ./bootstrap-server.sh
   - **HTTP 兜底**：`http://101.126.34.232`
 - 根域名 `yiyu.love` 的现有站点未改动；只新增了子域名 `api.yiyu.love -> 101.126.34.232`
 - **移动端当前策略**：默认使用 `https://api.yiyu.love`
-- **桌面端当前策略**：打包版默认使用 `https://api.yiyu.love`
+- **桌面端当前策略**：打包版默认使用 `http://101.126.34.232`，仅在显式覆盖为可用地址时才改走其他入口；已知失效的 `api.yiyu.love` 不再作为桌面默认值
 
 ## 智能输入 / 语音转写配置
 

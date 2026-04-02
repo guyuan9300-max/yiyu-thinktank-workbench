@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import logging
 import mimetypes
 import os
 import re
@@ -15,6 +16,8 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
+
+logger = logging.getLogger(__name__)
 
 from app.department_catalog import get_department_entry, list_department_catalog
 from app.db import Database, from_json, to_json
@@ -3700,7 +3703,7 @@ def _team_report_for_manager(state: AppState, manager_user: SessionUser, week_la
         items = [_weekly_review_task_entry_from_row(row) for row in entry_rows]
         completed_count = sum(1 for item in items if item.taskSnapshot.status == "done")
         theme_counts = _note_theme_counts(items)
-        insights = [f"有成员提到“{item.note[:18]}”这类一线问题。" for item in items if item.note.strip()][:3]
+        insights = [f"有成员提到「{item.note[:18]}」这类一线问题。" for item in items if item.note.strip()][:3]
         summary = {
             "headline": "团队工作域信号已完成聚合。",
             "summary": f"本周纳入 {len(items)} 条任务复盘，其中已完成 {completed_count} 条，未完成 {len(items) - completed_count} 条；说明中提到问题 {theme_counts['problem']} 次、收获 {theme_counts['harvest']} 次、支持需求 {theme_counts['support']} 次。",
@@ -3745,7 +3748,7 @@ def _team_report_for_manager(state: AppState, manager_user: SessionUser, week_la
                 "优先补录关键任务的说明与阻力。",
                 "后续团队聚合统一切到任务级数据源。",
             ],
-            "anonymousInsights": [f"有成员在历史周报中提到“{note[:18]}”。" for note in legacy_notes[:3]],
+            "anonymousInsights": [f"有成员在历史周报中提到「{note[:18]}」。" for note in legacy_notes[:3]],
         }
     actions = [
         {"actionType": "meeting", "title": "安排团队优先级澄清会", "payload": {"scope": "team", "weekLabel": week_label}},
@@ -3775,7 +3778,7 @@ def _org_report_for_admin(state: AppState, admin_user: SessionUser, week_label: 
         items = [_weekly_review_task_entry_from_row(row) for row in rows]
         completed_count = sum(1 for item in items if item.taskSnapshot.status == "done")
         theme_counts = _note_theme_counts(items)
-        anonymous_insights = [f"有一线任务提到“{item.note[:20]}”这样的现场信息。" for item in items if item.note.strip()][:4]
+        anonymous_insights = [f"有一线任务提到「{item.note[:20]}」这样的现场信息。" for item in items if item.note.strip()][:4]
         summary = {
             "headline": "组织层工作域信号已完成聚合。",
             "summary": f"本周共纳入 {len(items)} 条工作任务复盘，其中已完成 {completed_count} 条；说明中提到问题 {theme_counts['problem']} 次、收获 {theme_counts['harvest']} 次、支持需求 {theme_counts['support']} 次，组织层可据此判断共性阻力与成长信号。",
@@ -3816,7 +3819,7 @@ def _org_report_for_admin(state: AppState, admin_user: SessionUser, week_label: 
                 "优先补录关键任务的阻力和收获。",
                 "将组织共性阻力转换为支持动作。",
             ],
-            "anonymousInsights": [f"有历史周报提到“{note[:20]}”这样的现场信息。" for note in legacy_notes[:4]],
+            "anonymousInsights": [f"有历史周报提到「{note[:20]}」这样的现场信息。" for note in legacy_notes[:4]],
         }
     actions = [
         {"actionType": "resource_request", "title": "评估组织级资源支持缺口", "payload": {"scope": "org", "weekLabel": week_label}},
@@ -3941,13 +3944,13 @@ def _backfill_task_org_links(
 
 
 def _sync_qwen_chat(api_key: str, payload: dict, timeout: object) -> str:
-    """Synchronous Qwen chat call, intended to be run via asyncio.to_thread."""
+    """Synchronous LLM chat call (Volcengine Ark / OpenAI-compatible), run via asyncio.to_thread."""
     import httpx
-    from app.smart_input import QWEN_BASE_URL
+    from app.smart_input import ARK_BASE_URL
 
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
-            f"{QWEN_BASE_URL}/chat/completions",
+            f"{ARK_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -3960,6 +3963,70 @@ def _sync_qwen_chat(api_key: str, payload: dict, timeout: object) -> str:
     if not text:
         return "抱歉，AI 未能生成有效回复，请稍后重试。"
     return text.strip()
+
+
+def _generate_recording_summary(
+    *,
+    transcript: str,
+    task_title: str,
+    client_name: str | None = None,
+    event_line_name: str | None = None,
+) -> str:
+    """Generate AI summary from recording transcript using Volcengine Ark."""
+    from app.smart_input import _qwen_api_key, ARK_BASE_URL, DEFAULT_LLM_MODEL
+
+    api_key = _qwen_api_key()
+    if not api_key or len(transcript.strip()) < 20:
+        # Fallback: first 140 chars
+        s = transcript[:140].strip()
+        return f"{s}..." if len(transcript) > 140 else s
+
+    context_parts = []
+    if task_title:
+        context_parts.append(f"任务：{task_title}")
+    if client_name:
+        context_parts.append(f"客户：{client_name}")
+    if event_line_name:
+        context_parts.append(f"事件线：{event_line_name}")
+    context = "\n".join(context_parts)
+
+    # Truncate very long transcripts to stay within model limits
+    max_transcript = 8000
+    truncated = transcript[:max_transcript] if len(transcript) > max_transcript else transcript
+
+    system_prompt = (
+        "你是录音摘要助理。根据录音转写文本，生成一段简洁的会议/沟通摘要。\n"
+        "要求：\n"
+        "1. 用200字以内概括核心内容\n"
+        "2. 列出关键决策点（如果有）\n"
+        "3. 列出待办事项（如果有）\n"
+        "4. 使用中文，语言简练专业\n"
+        "5. 不要重复转写原文，要提炼和总结\n"
+    )
+    if context:
+        system_prompt += f"\n上下文：\n{context}"
+
+    model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_LLM_MODEL))
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"录音转写文本：\n{truncated}"},
+        ],
+        "temperature": 0.3,
+        "top_p": 0.85,
+        "max_tokens": 600,
+        "stream": False,
+    }
+    try:
+        import httpx
+        timeout = httpx.Timeout(timeout=None, connect=8.0, read=30.0, write=8.0, pool=8.0)
+        summary = _sync_qwen_chat(api_key, payload, timeout)
+        return summary if summary else transcript[:140]
+    except Exception as exc:
+        logger.warning("AI summary generation failed, falling back: %s", exc)
+        s = transcript[:140].strip()
+        return f"{s}..." if len(transcript) > 140 else s
 
 
 def create_app() -> FastAPI:
@@ -4150,6 +4217,41 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/auth/me", response_model=SessionUser)
     def me(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> SessionUser:
         return current_user
+
+    @app.patch("/api/v1/auth/me")
+    def update_me(
+        payload: dict,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> SessionUser:
+        allowed_fields = {"fullName", "primaryRole"}
+        updates: list[str] = []
+        params: list[str] = []
+        if "fullName" in payload and payload["fullName"]:
+            updates.append("full_name = ?")
+            params.append(str(payload["fullName"]).strip())
+        if "primaryRole" in payload and payload["primaryRole"]:
+            updates.append("primary_role = ?")
+            params.append(str(payload["primaryRole"]).strip())
+        if not updates:
+            raise HTTPException(status_code=400, detail="没有可更新的字段。")
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(current_user.id)
+        state.db.execute(
+            f"UPDATE employee_accounts SET {', '.join(updates)} WHERE id = ?",
+            tuple(params),
+        )
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+        return SessionUser(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            email=str(row["email"]),
+            fullName=str(row["full_name"]),
+            primaryRole=str(row["primary_role"]),
+            accountStatus=str(row["account_status"]),
+        )
 
     @app.post("/api/v1/auth/logout")
     def logout(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)), authorization: str | None = Header(default=None)) -> dict[str, str]:
@@ -4538,8 +4640,13 @@ def create_app() -> FastAPI:
             (event_line_id, current_user.organizationId),
         )
         attachment_rows = state.db.fetchall(
-            "SELECT * FROM task_attachments WHERE event_line_id = ? AND organization_id = ? ORDER BY created_at ASC",
-            (event_line_id, current_user.organizationId),
+            """
+            SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id FROM task_attachments WHERE event_line_id = ? AND organization_id = ?
+            UNION ALL
+            SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ?
+            ORDER BY created_at ASC
+            """,
+            (event_line_id, current_user.organizationId, event_line_id, current_user.organizationId),
         )
         participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
         participant_names = []
@@ -4570,6 +4677,51 @@ def create_app() -> FastAPI:
             participantNames=participant_names,
             snapshotAt=now_iso(),
         )
+
+    @app.post("/api/v1/event-lines/{event_line_id}/attachments")
+    async def upload_event_line_attachment(
+        event_line_id: str,
+        file: UploadFile = File(...),
+        title: str | None = Form(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict:
+        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="上传内容为空")
+        resolved_title = (title or file.filename or "事件线附件").strip()
+        mime_type = str(file.content_type or "application/octet-stream")
+        upload_name = safe_filename(file.filename or f"{resolved_title}")
+        att_dir = state.data_dir / "event-line-attachments" / current_user.organizationId / event_line_id
+        att_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = safe_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{upload_name}")
+        att_path = att_dir / stored_name
+        att_path.write_bytes(content)
+        timestamp = now_iso()
+        attachment_id = new_id("elatt")
+        relative_path = str(att_path.relative_to(state.data_dir))
+        state.db.execute(
+            """
+            INSERT INTO event_line_attachments(
+                id, organization_id, event_line_id, title, summary, path, kind, source,
+                mime_type, size_bytes, created_by_user_id, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attachment_id, current_user.organizationId, event_line_id,
+                resolved_title, f"事件线附件：{resolved_title}",
+                relative_path, Path(stored_name).suffix.lower().lstrip(".") or "file",
+                "event_line_attachment", mime_type, len(content),
+                current_user.id, timestamp,
+            ),
+        )
+        _record_event_line_activity(
+            state, event_line_id, "attachment", attachment_id, current_user.id,
+            f"上传附件：{resolved_title}",
+            f"事件线附件已归档：{resolved_title}",
+            {"attachmentId": attachment_id, "mimeType": mime_type, "sizeBytes": len(content), "path": relative_path},
+        )
+        return {"id": attachment_id, "title": resolved_title, "downloadUrl": f"/api/public/task-attachments/{attachment_id}"}
 
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(
@@ -4964,7 +5116,7 @@ def create_app() -> FastAPI:
 
         api_key = _qwen_api_key()
         if not api_key:
-            raise HTTPException(status_code=503, detail="AI 服务暂不可用：未配置 Qwen API Key。")
+            raise HTTPException(status_code=503, detail="AI 服务暂不可用：未配置 API Key（请设置 ARK_API_KEY 环境变量）。")
 
         # Build context from client/task/event-line info
         context_parts: list[str] = []
@@ -4990,9 +5142,112 @@ def create_app() -> FastAPI:
         if payload.taskContext:
             context_parts.append(f"用户当前任务上下文：{payload.taskContext}")
 
-        # Fetch recent consultation answers for this client as knowledge context
+        # ── Desktop knowledge (DNA + surrogates) ──
+        dna_context = ""
+        resolved_desktop_client_id = payload.clientId
+        if payload.clientId or payload.clientName:
+            try:
+                import sqlite3 as _sqlite3
+                desktop_db_path = os.path.join(
+                    os.path.expanduser("~"),
+                    "Library", "Application Support", "YiyuThinkTankWorkbench", "app.db",
+                )
+                if os.path.exists(desktop_db_path):
+                    dconn = _sqlite3.connect(desktop_db_path)
+                    dconn.row_factory = _sqlite3.Row
+
+                    # Resolve desktop client_id: try direct match first, then fallback by name
+                    if payload.clientId:
+                        check = dconn.execute("SELECT id FROM clients WHERE id = ?", (payload.clientId,)).fetchone()
+                        if check:
+                            resolved_desktop_client_id = payload.clientId
+                        elif payload.clientName:
+                            name_match = dconn.execute(
+                                "SELECT id FROM clients WHERE name = ? OR alias = ? LIMIT 1",
+                                (payload.clientName, payload.clientName),
+                            ).fetchone()
+                            if name_match:
+                                resolved_desktop_client_id = str(name_match["id"])
+                    elif payload.clientName:
+                        name_match = dconn.execute(
+                            "SELECT id FROM clients WHERE name = ? OR alias = ? LIMIT 1",
+                            (payload.clientName, payload.clientName),
+                        ).fetchone()
+                        if name_match:
+                            resolved_desktop_client_id = str(name_match["id"])
+
+                    # Read DNA documents
+                    dna_parts: list[str] = []
+                    if resolved_desktop_client_id:
+                        dna_docs = dconn.execute(
+                            "SELECT module_key, title, summary, normalized_text FROM client_dna_documents WHERE client_id = ?",
+                            (resolved_desktop_client_id,),
+                        ).fetchall()
+                        for doc in dna_docs:
+                            text = str(doc["normalized_text"] or doc["summary"] or "")
+                            if text.startswith('{"prompt'):
+                                continue
+                            module = str(doc["module_key"] or "")
+                            title = str(doc["title"] or module)
+                            dna_parts.append(f"【{title}】\n{text[:2000]}")
+
+                    # Read surrogates (enriched summaries + profile blocks)
+                    surrogate_parts: list[str] = []
+                    if resolved_desktop_client_id:
+                        surrogates = dconn.execute(
+                            """SELECT title, overview_summary, retrieval_summary, document_role, source_type
+                               FROM knowledge_surrogates
+                               WHERE client_id = ? AND source_type = 'memory_answer'
+                               ORDER BY updated_at DESC LIMIT 10""",
+                            (resolved_desktop_client_id,),
+                        ).fetchall()
+                        for s in surrogates:
+                            s_title = str(s["title"] or "")
+                            s_overview = str(s["overview_summary"] or "")
+                            s_retrieval = str(s["retrieval_summary"] or "")
+                            if s_overview:
+                                surrogate_parts.append(f"【{s_title}】\n{s_overview[:1500]}")
+
+                    dconn.close()
+
+                    all_parts = surrogate_parts + dna_parts  # profile blocks first, then DNA
+                    if all_parts:
+                        dna_context = "\n\n客户知识档案：\n" + "\n---\n".join(all_parts)
+            except Exception as dna_err:
+                logger.warning("Desktop knowledge read failed: %s", dna_err)
+        logger.info("Desktop context for client %s (resolved: %s): %d chars", payload.clientId, resolved_desktop_client_id, len(dna_context))
+
+        # ── Vector knowledge retrieval (semantic search) ──
         knowledge_context = ""
-        if payload.clientId:
+        try:
+            from app.knowledge_store import query_knowledge
+            # Try with resolved desktop client_id first, then original payload clientId
+            search_client_id = resolved_desktop_client_id or payload.clientId
+            vector_snippets = await asyncio.to_thread(
+                query_knowledge,
+                organization_id=current_user.organizationId,
+                query=payload.message,
+                n_results=10,
+                client_id=search_client_id,
+            )
+            # If no results with resolved id, try without client_id filter
+            if not vector_snippets and search_client_id:
+                vector_snippets = await asyncio.to_thread(
+                    query_knowledge,
+                    organization_id=current_user.organizationId,
+                    query=payload.message,
+                    n_results=10,
+                    client_id=None,
+                )
+            if vector_snippets:
+                knowledge_context = "\n\n相关知识参考：\n" + "\n---\n".join(
+                    snippet[:1200] for snippet in vector_snippets[:10]
+                )
+        except Exception as vec_err:
+            logger.warning("Vector knowledge query failed: %s", vec_err)
+
+        # ── Fallback: recent consultation answers from DB ──
+        if not knowledge_context and payload.clientId:
             recent_answers = state.db.fetchall(
                 """SELECT question, answer FROM consultation_answers
                    WHERE organization_id = ? AND client_id = ?
@@ -5010,29 +5265,39 @@ def create_app() -> FastAPI:
                     knowledge_context = "\n\n已有知识沉淀：\n" + "\n---\n".join(snippets[:3])
 
         system_prompt = (
-            "你是益语智库的咨询助理。你帮助用户基于客户合作上下文回答问题、"
+            "你是益语智库的资深战略顾问。你帮助用户基于客户合作上下文回答问题、"
             "准备会议要点、分析推进策略、梳理阻塞与下一步。\n"
-            "回答要简洁、结构化，用中文回复。如果上下文不足，坦诚说明并给出通用建议。\n"
+            "如果系统提供了「相关知识参考」或「已有知识沉淀」或「客户知识档案」，必须优先使用这些内容作答；"
+            "当参考里已经包含与用户问题直接对应的结论时，直接提炼并复述该结论，不要泛化改写成空泛建议。\n"
+            "如果上下文不足，坦诚说明并给出通用建议。\n\n"
+            "【深度与排版要求】\n"
+            "- 每个要点不能只给结论，必须展开讲为什么\n"
+            "- 用「一、二、三」分层，并列要点用「- 」列表\n"
+            "- 关键结论用 **加粗**（加粗完整判断句，不要只加粗关键词）\n"
+            "- 多用判断句：「不是X，而是Y」「核心在于」\n"
         )
         if context_parts:
             system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)
+        if dna_context:
+            system_prompt += dna_context
         if knowledge_context:
             system_prompt += knowledge_context
 
         model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL))
 
         import httpx
+        terse_request = "只回答" in payload.message or len(payload.message.strip()) <= 40
         chat_payload = {
             "model": model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": payload.message},
             ],
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "max_tokens": 2000,
+            "temperature": 0.2 if knowledge_context else 0.5,
+            "top_p": 0.95,
+            "max_tokens": 400 if terse_request else 2400,
             "stream": False,
-            "enable_thinking": False,
+            "enable_thinking": True,
         }
         timeout = httpx.Timeout(timeout=None, connect=8.0, read=30.0, write=8.0, pool=8.0)
         try:
@@ -5041,6 +5306,23 @@ def create_app() -> FastAPI:
             )
         except Exception as error:
             raise HTTPException(status_code=502, detail=f"AI 回复失败：{error}") from error
+
+        # Auto-ingest Q&A into vector knowledge store (fire-and-forget)
+        async def _ingest_bg():
+            try:
+                from app.knowledge_store import ingest_consultation_answer
+                await asyncio.to_thread(
+                    ingest_consultation_answer,
+                    organization_id=current_user.organizationId,
+                    question=payload.message,
+                    answer=response,
+                    client_id=payload.clientId,
+                    client_name=payload.clientName,
+                    event_line_id=payload.eventLineId,
+                )
+            except Exception as ingest_err:
+                logger.warning("Knowledge ingest failed: %s", ingest_err)
+        asyncio.create_task(_ingest_bg())
 
         return ConsultationChatResponse(reply=response, model=model_name)
 
@@ -5058,12 +5340,166 @@ def create_app() -> FastAPI:
     def get_public_task_attachment(attachment_id: str) -> FileResponse:
         row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
         if row is None:
+            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
             raise HTTPException(status_code=404, detail="File not found")
         attachment_path = state.data_dir / str(row["path"])
         if not attachment_path.exists() or not attachment_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
         return FileResponse(attachment_path, media_type=media_type, filename=attachment_path.name)
+
+    @app.get("/api/public/task-attachments/{attachment_id}/thumbnail")
+    def get_attachment_thumbnail(attachment_id: str, max_width: int = 600) -> Response:
+        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        attachment_path = state.data_dir / str(row["path"])
+        if not attachment_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        mime = str(row["mime_type"] or "").lower()
+        if not mime.startswith("image/"):
+            raise HTTPException(status_code=404, detail="Not an image")
+        try:
+            from PIL import Image
+            from io import BytesIO
+            img = Image.open(attachment_path)
+            if img.width > max_width:
+                ratio = max_width / img.width
+                img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
+            buf = BytesIO()
+            out_format = "JPEG" if mime in ("image/jpeg", "image/jpg") else "PNG"
+            img.save(buf, format=out_format, quality=85)
+            buf.seek(0)
+            return Response(
+                content=buf.getvalue(),
+                media_type=f"image/{out_format.lower()}",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"缩略图生成失败: {exc}") from exc
+
+    @app.get("/api/public/task-attachments/{attachment_id}/text-content")
+    def get_attachment_text_content(attachment_id: str) -> dict:
+        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        attachment_path = state.data_dir / str(row["path"])
+        if not attachment_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        kind = str(row["kind"] or "").lower()
+        mime = str(row["mime_type"] or "").lower()
+        title = str(row["title"] or attachment_path.name)
+        try:
+            if kind == "docx" or title.lower().endswith(".docx"):
+                from docx import Document as _WordDoc
+                doc = _WordDoc(str(attachment_path))
+                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()][:100]
+                return {"title": title, "kind": "docx", "text": "\n".join(paragraphs), "paragraphCount": len(paragraphs)}
+            elif kind in ("md", "txt", "csv", "json") or mime.startswith("text/"):
+                text = attachment_path.read_text(encoding="utf-8", errors="ignore")[:5000]
+                return {"title": title, "kind": kind, "text": text, "paragraphCount": text.count("\n") + 1}
+            else:
+                return {"title": title, "kind": kind, "text": "", "paragraphCount": 0, "unsupported": True}
+        except Exception as exc:
+            return {"title": title, "kind": kind, "text": f"内容提取失败: {exc}", "paragraphCount": 0}
+
+    @app.get("/api/public/task-attachments/{attachment_id}/ocr-summary")
+    def get_attachment_ocr_summary(attachment_id: str) -> dict:
+        row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        mime = str(row["mime_type"] or "").lower()
+        if not mime.startswith("image/"):
+            return {"title": str(row["title"]), "summary": "", "unsupported": True}
+        attachment_path = state.data_dir / str(row["path"])
+        if not attachment_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        # Use Ark multimodal to OCR the image
+        import base64
+        ark_key = (
+            os.getenv("ARK_API_KEY", "").strip()
+            or os.getenv("VOLCENGINE_API_KEY", "").strip()
+        )
+        if not ark_key:
+            return {"title": str(row["title"]), "summary": "OCR 未配置 API Key", "unsupported": True}
+        try:
+            img_bytes = attachment_path.read_bytes()
+            img_b64 = base64.b64encode(img_bytes).decode()
+            resp = httpx.post(
+                "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                headers={"Authorization": f"Bearer {ark_key}", "Content-Type": "application/json"},
+                json={
+                    "model": os.getenv("YIYU_OCR_MODEL", "ep-m-20260326120641-m4lf6"),
+                    "messages": [
+                        {"role": "system", "content": "你是票据识别助手。请识别图片中的票据内容，用一行简要概括：类型、金额、日期、付款方/收款方（如果能识别的话）。只返回纯文本，不要 JSON。"},
+                        {"role": "user", "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+                            {"type": "text", "text": "请识别这张票据的内容"},
+                        ]},
+                    ],
+                    "max_tokens": 200,
+                },
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                summary = resp.json()["choices"][0]["message"]["content"].strip()
+                return {"title": str(row["title"]), "summary": summary}
+            return {"title": str(row["title"]), "summary": f"OCR 识别失败 (HTTP {resp.status_code})"}
+        except Exception as exc:
+            return {"title": str(row["title"]), "summary": f"OCR 识别失败: {exc}"}
+
+    @app.post("/api/v1/event-lines/{event_line_id}/attachments/download-zip")
+    def download_event_line_attachments_zip(
+        event_line_id: str,
+        payload: dict | None = None,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> Response:
+        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        attachment_ids = (payload or {}).get("attachmentIds")
+        if attachment_ids and isinstance(attachment_ids, list):
+            placeholders = ",".join("?" for _ in attachment_ids)
+            rows = state.db.fetchall(
+                f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND id IN ({placeholders}) UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? AND id IN ({placeholders}) ORDER BY id",
+                (event_line_id, *attachment_ids, event_line_id, *attachment_ids),
+            )
+        else:
+            rows = state.db.fetchall(
+                "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? ORDER BY id",
+                (event_line_id, event_line_id),
+            )
+        if not rows:
+            raise HTTPException(status_code=404, detail="没有可下载的附件")
+        import zipfile
+        from io import BytesIO
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            seen_names: dict[str, int] = {}
+            for row in rows:
+                file_path = state.data_dir / str(row["path"])
+                if not file_path.exists():
+                    continue
+                name = str(row["title"] or file_path.name)
+                if name in seen_names:
+                    seen_names[name] += 1
+                    stem, ext = (name.rsplit(".", 1) + [""])[:2]
+                    name = f"{stem}_{seen_names[name]}.{ext}" if ext else f"{stem}_{seen_names[name]}"
+                else:
+                    seen_names[name] = 0
+                zf.write(file_path, name)
+        buf.seek(0)
+        el_row = state.db.fetchone("SELECT name FROM event_lines WHERE id = ?", (event_line_id,))
+        zip_name = safe_filename(f"{str(el_row['name'])[:20]}_附件.zip") if el_row else "attachments.zip"
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        )
 
     @app.post("/api/v1/mobile/smart-input/task-draft", response_model=SmartTaskDraftResponse)
     async def create_mobile_smart_task_draft(
@@ -6102,9 +6538,22 @@ def create_app() -> FastAPI:
             event_line_id=event_line_id,
             source="mobile_recording_transcript",
         )
-        summary = transcript[:140].strip()
-        if len(transcript) > 140:
-            summary = f"{summary}..."
+        # AI-generated summary via Volcengine Ark (Doubao)
+        # Resolve event line name for AI summary context
+        _el_name_for_summary = ""
+        if event_line_id:
+            try:
+                _el_row = state.db.fetchone("SELECT name FROM event_lines WHERE id = ?", (event_line_id,))
+                if _el_row:
+                    _el_name_for_summary = str(_el_row["name"] or "")
+            except Exception:
+                pass
+        summary = _generate_recording_summary(
+            transcript=transcript,
+            task_title=str(task_row["title"]),
+            client_name=client_name,
+            event_line_name=_el_name_for_summary,
+        )
         timestamp = now_iso()
         state.db.execute(
             "UPDATE task_attachments SET summary = ? WHERE id = ?",

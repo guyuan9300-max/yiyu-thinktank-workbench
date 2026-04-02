@@ -12,13 +12,16 @@ from app.db import Database
 from app.models import AiStructuredResponse
 
 
-DEFAULT_PROVIDER = "mock"
+DEFAULT_PROVIDER = "doubao"
 DEFAULT_MODELS = {
     "mock": "mock-summarizer",
     "qwen": "qwen3.5-plus",
+    "doubao": "doubao-seed-1.6",
 }
 DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
 QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
+DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+PROVIDER_LABELS = {"qwen": "Qwen 3.5", "doubao": "豆包 Seed 1.6", "mock": "Mock"}
 
 
 @dataclass
@@ -88,12 +91,13 @@ class AiService:
         source = store.get_source_label() if store else "unavailable"
         fingerprint = store.get_api_key_fingerprint() if store else None
         api_key = store.get_api_key() if store else ""
+        label = PROVIDER_LABELS.get(provider, provider)
         if not api_key:
             return AiHealth(
                 provider=provider,
                 model=model,
                 ready=False,
-                detail="Qwen 3.5 未配置 API Key，当前只能切回 mock。",
+                detail=f"{label} 未配置 API Key，当前只能切回 mock。",
                 credential_source=source,
                 fingerprint=fingerprint,
             )
@@ -101,7 +105,7 @@ class AiService:
             provider=provider,
             model=model,
             ready=True,
-            detail="Qwen 3.5 凭证已配置，可用于结构化问答与分析。",
+            detail=f"{label} 凭证已配置，可用于结构化问答与分析。",
             credential_source=source,
             fingerprint=fingerprint,
         )
@@ -119,20 +123,20 @@ class AiService:
             provider=health.provider,
             model=health.model,
             ready=True,
-            detail="Qwen 3.5 联通测试成功。",
+            detail=f"{PROVIDER_LABELS.get(health.provider, health.provider)} 联通测试成功。",
             credential_source=health.credential_source,
             fingerprint=health.fingerprint,
         )
 
     def generate_structured(self, prompt: str, system_instruction: str, context_summary: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             return self._qwen_generate_structured_with_retry(prompt, system_instruction, context_summary)
         return self._mock_generate(prompt, context_summary)
 
     def generate_general_fallback(self, prompt: str, note: str = "", *, subject_name: str = "") -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 return self._qwen_generate_general_fallback(prompt, note, subject_name=subject_name)
             except Exception as error:
@@ -148,7 +152,7 @@ class AiService:
         on_partial: Callable[[dict[str, Any]], None] | None = None,
     ) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             if on_partial is not None:
                 opening = "正在围绕核心判断、关键张力和潜在风险整合原始证据，准备输出连续长文分析。"
                 on_partial(
@@ -211,7 +215,7 @@ class AiService:
             "少讲空泛趋势，少做宏大评论，不要写成长文分析。"
             "不要输出 JSON 或 Markdown 代码块。"
         )
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 text = self._qwen_generate(
                     prompt=f"用户问题：{prompt}\n\n当前情报背景：\n{compact_context}",
@@ -266,7 +270,7 @@ class AiService:
             f"可参考材料：\n{context_summary.strip()}\n\n"
             "请直接给出这个字段应填写的内容。"
         )
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 text = self._qwen_generate(
                     prompt=prompt,
@@ -362,7 +366,7 @@ class AiService:
             "请分别填写以下字段，并返回 JSON 对象：\n\n"
             + "\n\n".join(prompt_blocks)
         )
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 payload = self._qwen_generate(
                     prompt=prompt,
@@ -412,10 +416,22 @@ class AiService:
             "不要满足于字面摘录、材料摘要或安全概括。"
             "请主动做更高层的综合判断，讲清因果关系、结构性矛盾、关键张力、利益约束、风险与机会。"
             "允许把多条材料共同指向的信号组织成更高层的结论。"
-            "除非用户明确要求简短，否则请尽量展开。"
-            "你可以自由决定长度、结构、段落、小标题和结尾方式。"
-            "只有材料里没有出现过的具体事实、数字、人名、时间和身份，不要直接写成已被证实。"
-            "不要输出 JSON 或 Markdown 代码块。"
+            "只有材料里没有出现过的具体事实、数字、人名、时间和身份，不要直接写成已被证实。\n\n"
+            "【深度要求——最重要】\n"
+            "- 每个层次不能只给结论，必须展开讲 **为什么** 和 **具体怎么体现**\n"
+            "- 对于核心业务，要说清楚：做什么、为什么有价值、现在怎么做、未来方向\n"
+            "- 对于战略判断，要说清楚：从什么变成什么、为什么要变、变的过程中有什么张力\n"
+            "- 允许在一个层次下写 3-5 段话来充分展开，不要为了格式整齐而牺牲深度\n"
+            "- 总字数不少于 1500 字，除非用户明确要求简短\n\n"
+            "【排版规则】\n"
+            "1. 用「一、二、三、四」作为一级小标题，将回答分成 4-6 个层次\n"
+            "2. 并列要点用「- 」列表，列表项之后可以跟解释段落\n"
+            "3. 加粗规则：只加粗完整的判断句，不要加粗单个词或短语。\n"
+            "   正确示范：**它的核心工作不是替行业发声，而是把分散的经验组织成可复用的工具**\n"
+            "   错误示范：它的核心工作不是替**行业**发声（不要只加粗关键词）\n"
+            "4. 多用判断句式：「不是X，而是Y」「核心在于」「关键区别是」\n"
+            "5. 每个小标题下至少写 150 字，核心层次写 300 字以上\n"
+            "6. 写完最后一个层次后，必须有 2-3 句总结收束全篇\n"
         )
         errors: list[str] = []
         try:
@@ -439,7 +455,7 @@ class AiService:
                 system_instruction=base_instruction,
                 response_schema=None,
                 timeout_seconds=180.0,
-                max_tokens=7600,
+                max_tokens=12000,
                 temperature=0.48,
                 top_p=0.96,
                 enable_thinking=True,
@@ -467,15 +483,20 @@ class AiService:
         *,
         on_partial: Callable[[dict[str, Any]], None] | None = None,
     ) -> AiStructuredResponse:
-        focus_context = self._compact_context_summary(context_summary, max_chars=2800)
-        analysis_context = self._compact_context_summary(context_summary, max_chars=5200)
-        action_context = self._compact_context_summary(context_summary, max_chars=3200)
+        focus_context = self._compact_context_summary(context_summary, max_chars=6000)
+        analysis_context = self._compact_context_summary(context_summary, max_chars=12000)
+        action_context = self._compact_context_summary(context_summary, max_chars=6000)
         base_instruction = (
             f"{system_instruction}\n"
             "你现在要分阶段写成一版完整顾问回答。"
             "每个阶段都直接服务最终成文，不要解释系统过程，也不要输出技术细节。"
-            "不要使用 JSON 或 Markdown 代码块。"
-            "优先写得深、清楚、有判断。"
+            "优先写得深、清楚、有判断。\n"
+            "【排版规则——必须严格遵守】\n"
+            "1. 用「一、二、三」作为一级小标题分层\n"
+            "2. 并列要点用「- 」列表\n"
+            "3. 关键结论用 **加粗**\n"
+            "4. 禁止全篇连续长段落\n"
+            "5. 多用「不是X，而是Y」「核心在于」等判断句式\n"
         )
 
         def emit_partial(stage_label: str, progress: float, content: str, *, judgment: str = "", analysis: str = "", actions: str = "") -> None:
@@ -518,11 +539,11 @@ class AiService:
                         "这一阶段只负责把回答开头写出来。"
                     ),
                     response_schema=None,
-                    timeout_seconds=8.0,
-                    max_tokens=720,
+                    timeout_seconds=12.0,
+                    max_tokens=1200,
                     temperature=0.42,
                     top_p=0.96,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
             ).strip()
         except Exception as error:
@@ -553,11 +574,11 @@ class AiService:
                         "这一阶段只负责把主体内容写深、写透。"
                     ),
                     response_schema=None,
-                    timeout_seconds=14.0,
-                    max_tokens=1600,
+                    timeout_seconds=30.0,
+                    max_tokens=3200,
                     temperature=0.42,
                     top_p=0.95,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
             ).strip()
         except Exception as error:
@@ -615,11 +636,11 @@ class AiService:
                         "这一阶段只负责完成回答的结尾。"
                     ),
                     response_schema=None,
-                    timeout_seconds=8.0,
-                    max_tokens=560,
+                    timeout_seconds=14.0,
+                    max_tokens=1200,
                     temperature=0.38,
                     top_p=0.94,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
             ).strip()
         except Exception as error:
@@ -639,7 +660,7 @@ class AiService:
 
     def generate_compact_grounded_fallback(self, prompt: str, note: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 return self._qwen_generate_compact_grounded_fallback(prompt, note)
             except Exception as error:
@@ -648,7 +669,7 @@ class AiService:
 
     def generate_brief_grounded_rescue(self, prompt: str, note: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider == "qwen" and health.ready:
+        if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 return self._qwen_generate_brief_grounded_rescue(prompt, note)
             except Exception as error:
@@ -658,7 +679,7 @@ class AiService:
     def suggest_short_title(self, prompt: str) -> str:
         health = self.get_health()
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     prompt=f"请将以下追踪规则提炼为 3 到 6 个字的中文标签，只返回标签本身：{prompt}",
                     system_instruction="你是中文编辑，擅长压缩标题。",
@@ -695,7 +716,7 @@ class AiService:
             f"时间范围：{time_range}\n"
         )
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     query_prompt,
                     "你是检索词生成助手。只返回 JSON。",
@@ -762,7 +783,7 @@ class AiService:
             f"候选结果：\n{joined_entries}"
         )
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     screening_prompt,
                     "你是资讯情报筛选助手。只返回 JSON。",
@@ -812,7 +833,7 @@ class AiService:
             f"原始摘要：{cleaned_summary}\n"
         )
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是资讯翻译编辑助手。只返回 JSON。",
@@ -895,7 +916,7 @@ class AiService:
             f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:4200]}"
         )
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是资讯研判助手。只返回 JSON。",
@@ -1000,7 +1021,7 @@ class AiService:
             f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:3600]}"
         )
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是项目执行拆解助手。只返回 JSON。",
@@ -1045,7 +1066,7 @@ class AiService:
             f"所属模块：{module}\n"
         )
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(
                     prompt=prompt,
                     system_instruction="你是任务标签编辑助手。只返回 JSON。",
@@ -2133,7 +2154,7 @@ class AiService:
             },
         }
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(prompt, "你是知识底座加工助手。只返回 JSON。", schema, timeout_seconds=25.0)
                 if isinstance(result, dict):
                     return result
@@ -2171,13 +2192,184 @@ class AiService:
             },
         }
         try:
-            if health.provider == "qwen" and health.ready:
+            if health.provider in ("qwen", "doubao") and health.ready:
                 result = self._qwen_generate(prompt, "你是战略陪伴记忆整理助手。只返回 JSON。", schema, timeout_seconds=25.0)
                 if isinstance(result, dict):
                     return result
         except Exception:
             pass
         return fallback
+
+    def enrich_retrieval_summary(
+        self,
+        *,
+        title: str,
+        overview_summary: str,
+        distinct_findings: list[str],
+        document_role: str,
+        folder_category: str,
+    ) -> str | None:
+        """Rewrite a template-based retrieval_summary into a semantic, use-case oriented description."""
+        health = self.get_health()
+        findings_text = "\n".join(f"- {f}" for f in distinct_findings) if distinct_findings else "无"
+        prompt = (
+            "请为以下文档重写一段检索摘要（retrieval_summary），200字以内。\n"
+            "要求：\n"
+            "1. 描述这份文档能回答什么类型的问题，而不是描述它属于什么分类\n"
+            "2. 用具体的场景和关键词，不要用“相关的问题”这类泛化表述\n"
+            "3. 让向量嵌入能捕捉到这份文档的核心语义\n\n"
+            f"标题：{title}\n"
+            f"分类：{folder_category}\n"
+            f"角色：{document_role}\n"
+            f"概要：{overview_summary[:1200]}\n"
+            f"关键发现：\n{findings_text}\n\n"
+            "请直接输出检索摘要文本，不要包裹引号或其他格式。"
+        )
+        try:
+            if health.provider in ("qwen", "doubao") and health.ready:
+                result = self._qwen_generate(
+                    prompt,
+                    "你是知识检索优化助手。只输出检索摘要文本，不要加任何前缀或解释。",
+                    None,
+                    timeout_seconds=20.0,
+                    max_tokens=300,
+                )
+                if isinstance(result, str) and len(result.strip()) > 20:
+                    return result.strip()[:220]
+        except Exception:
+            pass
+        return None
+
+    def diagnose_profile_dimensions(
+        self,
+        *,
+        client_name: str,
+        client_type: str,
+        client_stage: str,
+        category_distribution: dict[str, int],
+        top_titles_per_category: dict[str, list[str]],
+        existing_memory_count: int,
+    ) -> dict[str, Any] | None:
+        """Analyze client data and recommend which profile blocks to generate."""
+        health = self.get_health()
+        dist_text = "\n".join(f"- {cat}: {count}份" for cat, count in category_distribution.items())
+        titles_text = "\n".join(
+            f"- {cat}: {', '.join(titles[:3])}"
+            for cat, titles in top_titles_per_category.items()
+            if titles
+        )
+        total_docs = sum(category_distribution.values())
+        prompt = (
+            "请根据以下客户资料盘点，判断应该生成哪些客户画像块。\n\n"
+            "规则：\n"
+            "1. 只建议有充分数据支撑的画像块，不要凭空生成\n"
+            "2. 每个块必须标注依据哪些分类的资料\n"
+            "3. 块数量根据资料丰富度自适应：\n"
+            f"   - 资料 < 10 份：最多 1-2 块\n"
+            f"   - 资料 10-50 份：最多 3-4 块\n"
+            f"   - 资料 > 50 份：最多 5-7 块\n"
+            "4. 可选的画像维度（根据数据决定，不是必选）：\n"
+            "   客户概览、核心业务与项目、战略定位与转型、治理与组织结构、"
+            "   财务与可持续性、品牌与对外传播、合作关系与生态位、关键风险与挑战\n\n"
+            f"客户名称：{client_name}\n"
+            f"客户类型：{client_type}\n"
+            f"当前阶段：{client_stage}\n"
+            f"文档总数：{total_docs}份\n"
+            f"分类分布：\n{dist_text}\n"
+            f"各分类代表性文档：\n{titles_text}\n"
+            f"已有记忆块：{existing_memory_count}条\n"
+        )
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "recommended_blocks": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "dimension": {"type": "STRING"},
+                            "reason": {"type": "STRING"},
+                            "source_categories": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            "priority": {"type": "INTEGER"},
+                        },
+                    },
+                },
+                "skipped_dimensions": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "dimension": {"type": "STRING"},
+                            "reason": {"type": "STRING"},
+                        },
+                    },
+                },
+            },
+        }
+        try:
+            if health.provider in ("qwen", "doubao") and health.ready:
+                result = self._qwen_generate(
+                    prompt,
+                    "你是客户知识架构师。只返回 JSON。",
+                    schema,
+                    timeout_seconds=30.0,
+                    max_tokens=1500,
+                )
+                if isinstance(result, dict):
+                    return result
+        except Exception:
+            pass
+        return None
+
+    def generate_profile_block(
+        self,
+        *,
+        client_name: str,
+        dimension: str,
+        aggregated_summaries: str,
+    ) -> dict[str, object] | None:
+        """Generate a single client profile block from aggregated surrogate summaries."""
+        health = self.get_health()
+        prompt = (
+            f"请基于以下 {client_name} 的「{dimension}」相关资料摘要，"
+            "生成一条可复用的客户画像记忆块。\n\n"
+            "要求：\n"
+            "- overview_summary：面向咨询场景的综合叙述（200-400字），不是文档摘录\n"
+            "- retrieval_summary：列出这个块能回答哪些类型的问题（200字以内）\n"
+            "- document_role：这个画像块的角色定位（一句话）\n"
+            "- core_questions：3-5个这个维度最关键的问题\n"
+            "- distinct_findings：从资料中提炼的关键结论（3-7条）\n"
+            "- entities：涉及的关键实体（组织、人物、项目等）\n"
+            "- time_markers：涉及的时间节点\n\n"
+            f"资料摘要：\n{aggregated_summaries[:4000]}\n"
+        )
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "overview_summary": {"type": "STRING"},
+                "retrieval_summary": {"type": "STRING"},
+                "document_role": {"type": "STRING"},
+                "core_questions": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "query_hints": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "distinct_findings": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "entities": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "time_markers": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+        }
+        try:
+            if health.provider in ("qwen", "doubao") and health.ready:
+                result = self._qwen_generate(
+                    prompt,
+                    "你是客户知识整理专家。只返回 JSON。",
+                    schema,
+                    timeout_seconds=30.0,
+                    max_tokens=2000,
+                )
+                if isinstance(result, dict):
+                    return result
+        except Exception:
+            pass
+        return None
 
     def generate_event_line_clarification_draft(
         self,
@@ -2455,6 +2647,21 @@ class AiService:
         pool_timeout = min(10.0, max(5.0, read_timeout / 2))
         return httpx.Timeout(timeout=None, connect=connect_timeout, read=read_timeout, write=write_timeout, pool=pool_timeout)
 
+    def _resolve_llm_config(self) -> tuple[str, str, str]:
+        """Returns (base_url, api_key, model) for the current provider."""
+        provider = self.current_provider()
+        if provider == "doubao":
+            store = self._store_for("doubao")
+            api_key = store.get_api_key() if store else ""
+            if not api_key:
+                raise RuntimeError("豆包 API Key 未配置。")
+            return DOUBAO_BASE_URL, api_key, self.current_model()
+        store = self._store_for("qwen")
+        api_key = store.get_api_key() if store else ""
+        if not api_key:
+            raise RuntimeError("Qwen API Key 未配置。")
+        return QWEN_BASE_URL, api_key, self.current_model()
+
     def _qwen_generate(
         self,
         prompt: str,
@@ -2467,11 +2674,7 @@ class AiService:
         top_p: float = 0.9,
         enable_thinking: bool = False,
     ) -> object:
-        store = self._store_for("qwen")
-        api_key = store.get_api_key() if store else ""
-        if not api_key:
-            raise RuntimeError("Qwen API Key 未配置。")
-        model = self.current_model()
+        base_url, api_key, model = self._resolve_llm_config()
         user_prompt = prompt
         if response_schema:
             user_prompt = (
@@ -2490,11 +2693,12 @@ class AiService:
             "top_p": top_p,
             "max_tokens": max_tokens,
             "stream": False,
-            "enable_thinking": enable_thinking,
         }
+        if enable_thinking:
+            payload["enable_thinking"] = True
         with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as client:
             response = client.post(
-                f"{QWEN_BASE_URL}/chat/completions",
+                f"{base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -2561,17 +2765,19 @@ class AiService:
                 "请直接输出一篇完整、自然、专业的中文回答。"
             ),
             system_instruction=(
-                "你是益语智库的资深战略顾问。请基于通用知识给出完整、专业的初步回答。"
-                "你面对的是一个希望迅速、全面了解这家公司的人，而不是系统管理员。"
-                "除非问题明确问益语智库、你们、顾问方或服务方式，否则默认回答对象是当前客户。"
-                "不要把益语智库、顾问机构、外部服务方的人名或业务介绍当成当前客户本身。"
-                "如果确实需要，只能用一句极轻的过渡说明本地背景没有直接覆盖这个问题，但不要反复展开这一点。"
-                "请减少寒暄和重复句，直接进入结论与分析。"
-                "不要使用 JSON 或 Markdown 代码块。"
-                "第一段必须明确提醒：以下不是基于当前客户原始资料的正式分析，而是通用背景下的初步判断。"
-                "回答可以使用自然标题、短段落和少量列表，但不要机械固定成 4 到 6 个栏目。"
-                "不要写成表格，也不要使用僵硬固定栏目名。"
-                "回答要像资深战略顾问的自然口头汇报转成文稿，而不是知识库说明。"
+                "你是益语智库的资深战略顾问。请基于通用知识给出完整、专业的初步回答。\n"
+                "你面对的是一个希望迅速、全面了解这家公司的人，而不是系统管理员。\n"
+                "除非问题明确问益语智库、你们、顾问方或服务方式，否则默认回答对象是当前客户。\n"
+                "不要把益语智库、顾问机构、外部服务方的人名或业务介绍当成当前客户本身。\n"
+                "如果确实需要，只能用一句极轻的过渡说明本地背景没有直接覆盖这个问题。\n"
+                "请减少寒暄和重复句，直接进入结论与分析。\n"
+                "第一段必须明确提醒：以下不是基于当前客户原始资料的正式分析，而是通用背景下的初步判断。\n\n"
+                "【排版规则——必须严格遵守】\n"
+                "1. 用「一、二、三、四」作为一级小标题分层\n"
+                "2. 并列要点用「- 」列表\n"
+                "3. 关键结论用 **双星号加粗**\n"
+                "4. 每段不超过 4 句话，禁止全篇连续长段落\n"
+                "5. 多用判断句：「不是X，而是Y」「核心在于」\n"
             ),
             response_schema=None,
             timeout_seconds=20.0,

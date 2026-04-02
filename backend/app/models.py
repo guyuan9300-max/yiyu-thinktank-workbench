@@ -16,7 +16,7 @@ TopicTaskOwnerMode = Literal["self", "empty"]
 TopicCandidateStatus = Literal["candidate", "tracking", "promoted", "archived"]
 TopicCandidateInsightStatus = Literal["pending", "ready", "failed"]
 MeetingStage = Literal["prepared", "ingested", "extracted", "resolved", "published"]
-AiProvider = Literal["mock", "qwen"]
+AiProvider = Literal["mock", "qwen", "doubao"]
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
 EmployeeRole = Literal["admin", "employee"]
 CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
@@ -2146,6 +2146,19 @@ class TaskContextPreviewRecord(BaseModel):
     publishState: Literal["local_preview", "publish_ready", "published_by_human", "published_by_robot", "stale"] = "local_preview"
     summaryChips: list[str] = Field(default_factory=list)
     readiness: Literal["low", "medium", "high"] = "low"
+
+
+class TaskSmartBriefActionItem(BaseModel):
+    text: str
+    sourceLabel: str = ""
+    internalSuggestedOwner: str = ""
+
+
+class TaskSmartBriefRecord(BaseModel):
+    taskId: str
+    summary: str
+    summarySourceLabels: list[str] = Field(default_factory=list)
+    actionItems: list[TaskSmartBriefActionItem] = Field(default_factory=list)
 
 
 class StrategicPermissionRecord(BaseModel):
