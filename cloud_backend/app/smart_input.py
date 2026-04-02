@@ -14,8 +14,13 @@ import httpx
 from app.models import EventLineRecord, SmartTaskDraftRecord, SmartTaskDraftResponse
 
 
-QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
-DEFAULT_QWEN_MODEL = "qwen3.5-plus"
+# ─── LLM provider: Volcengine Ark (火山方舟) ───────────────────────
+ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_LLM_MODEL = "ep-m-20260326120641-m4lf6"  # Doubao-Seed-1.6
+
+# Legacy aliases kept for grep-ability
+QWEN_BASE_URL = ARK_BASE_URL
+DEFAULT_QWEN_MODEL = DEFAULT_LLM_MODEL
 DOUBAO_STANDARD_SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
 DOUBAO_STANDARD_QUERY_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
 DOUBAO_STANDARD_RESOURCE_ID = "volc.seedasr.auc"
@@ -371,7 +376,7 @@ def _infer_action_summary(
 ) -> str | None:
     preferred = _clean_action_object(raw_title or "", client_name, event_line_name)
     if _looks_like_good_action_summary(preferred):
-        preferred_short = _truncate_compact_text(preferred, 14)
+        preferred_short = _truncate_compact_text(preferred, 20)
         if preferred_short:
             return preferred_short
 
@@ -414,9 +419,9 @@ def _compose_structured_title(
     fallback_title: str,
 ) -> str:
     parts: list[str] = []
-    client_label = _truncate_compact_text(client_name, 8)
+    client_label = _truncate_compact_text(client_name, 10)
     event_line_label = _summarize_event_line_label(event_line_name, client_name)
-    action_label = _truncate_compact_text(action_summary, 14)
+    action_label = _truncate_compact_text(action_summary, 20)
 
     if client_label:
         parts.append(client_label)
@@ -431,13 +436,13 @@ def _compose_structured_title(
         return _truncate_compact_text(fallback_title, 24) or fallback_title[:24]
 
     joined = "｜".join(parts)
-    if len(joined) <= 30:
+    if len(joined) <= 40:
         return joined
 
     compact_parts = [
-        _truncate_compact_text(client_label, 6),
-        _truncate_compact_text(event_line_label, 8),
-        _truncate_compact_text(action_label, 12),
+        _truncate_compact_text(client_label, 8),
+        _truncate_compact_text(event_line_label, 10),
+        _truncate_compact_text(action_label, 16),
     ]
     compact_joined = "｜".join([item for item in compact_parts if item])
     return compact_joined or (_truncate_compact_text(fallback_title, 24) or fallback_title[:24])
@@ -488,8 +493,11 @@ def _load_relaxed_json(raw: str) -> dict[str, Any]:
 
 
 def _qwen_api_key() -> str:
+    """Return the LLM API key. Checks Volcengine Ark keys first, then legacy Qwen keys."""
     return (
-        os.getenv("DASHSCOPE_API_KEY", "").strip()
+        os.getenv("ARK_API_KEY", "").strip()
+        or os.getenv("VOLCENGINE_API_KEY", "").strip()
+        or os.getenv("DASHSCOPE_API_KEY", "").strip()
         or os.getenv("QWEN_API_KEY", "").strip()
         or os.getenv("YIYU_QWEN_API_KEY", "").strip()
     )
@@ -711,10 +719,19 @@ def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | Non
         "required": ["intent", "tags"],
     }
     user_prompt = (
-        "请从以下中文口语中提取移动端任务/日程草稿。"
-        "如果是多天安排，请 startDate 用开始日期，endDate 用结束日期。"
-        "title 和 actionSummary 都必须是提炼后的短语，不要直接截取口语前缀；"
-        "不要把整段转写原文照搬进 title。"
+        "请从以下中文口语中提取移动端任务/日程草稿。\n"
+        "任务标题的命名结构必须是：「组织/客户名称 + 事件线/项目名 + 具体动作」，用竖线分隔。\n"
+        "例如：'华润万家｜Q4供应链优化｜提交方案初稿'、'日慈基金会｜品牌改造｜等高老师发时间规划'。\n"
+        "projectQuery 填口语中提到的组织/客户名称（如'日慈基金会'、'华润万家'）。\n"
+        "eventLineQuery 填口语中提到的项目/事件线关键词（如'品牌改造'、'供应链优化'）。\n"
+        "actionSummary 填具体要做的事（如'等高老师发时间规划'、'提交方案初稿'），不要截断。\n"
+        "description 必须填写！把口语内容整理成条理清晰的任务描述：\n"
+        "  - 提炼核心要做的事情\n"
+        "  - 列出关键人物、步骤、注意事项\n"
+        "  - 不要照搬原文，要用书面语重新组织\n"
+        "  - 如果有多个步骤，用编号列出\n"
+        "如果是多天安排，请 startDate 用开始日期，endDate 用结束日期。\n"
+        "不要把整段转写原文照搬进 title，要提炼结构化。\n"
         "只返回 JSON，不要解释。\n"
         f"参考日期：{reference_date.isoformat()}\n"
         f"口语内容：{transcript}"
@@ -740,7 +757,7 @@ def _qwen_extract(transcript: str, reference_date: date) -> dict[str, Any] | Non
     timeout = httpx.Timeout(timeout=None, connect=8.0, read=18.0, write=18.0, pool=8.0)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
-            f"{QWEN_BASE_URL}/chat/completions",
+            f"{ARK_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",

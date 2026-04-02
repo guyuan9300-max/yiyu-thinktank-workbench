@@ -91,6 +91,7 @@ import type {
   Task,
   TaskActivityRecord,
   TaskContextPreview,
+  TaskSmartBrief,
   TaskTag,
   TaskTagMutationPayload,
   TaskTagSuggestionPayload,
@@ -322,6 +323,17 @@ export async function getHealth() {
 
 export async function getTaskContextPreview(taskId: string) {
   return request<TaskContextPreview>(`/api/v1/tasks/${taskId}/context-preview`);
+}
+
+export async function getTaskSmartBrief(taskId: string) {
+  return request<TaskSmartBrief>(`/api/v1/tasks/${taskId}/smart-brief`);
+}
+
+export async function getTaskSmartBriefsBatch(taskHints: Array<{ id: string; title: string; desc?: string; clientId?: string | null; eventLineId?: string | null; attachmentTitles?: string[] }>) {
+  return request<TaskSmartBrief[]>('/api/v1/tasks/smart-briefs', {
+    method: 'POST',
+    body: JSON.stringify({ tasks: taskHints }),
+  });
 }
 
 export async function getAuthState() {

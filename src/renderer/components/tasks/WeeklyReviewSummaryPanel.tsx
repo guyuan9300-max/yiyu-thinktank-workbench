@@ -15,7 +15,6 @@ import { AgentWeeklyDigestPanel } from './AgentWeeklyDigestPanel';
 import { AgentExecutionPanel } from './AgentExecutionPanel';
 import { AgentWeeklyPlanPanel } from './AgentWeeklyPlanPanel';
 import { WeeklyReviewSimulationPanel } from './WeeklyReviewSimulationPanel';
-import type { EventLineGapActionPayload } from './WeeklyReviewTypes';
 
 type ViewLens = 'all' | 'personal' | 'department' | 'org';
 
@@ -33,7 +32,6 @@ type WeeklyReviewSummaryPanelProps = {
   onTriggerAction?: (action: ReviewActionCard, report: HierarchyReport) => Promise<ReviewActionExecutionResult | void> | ReviewActionExecutionResult | void;
   onOpenActionResult?: (result: ReviewActionExecutionResult, action: ReviewActionCard, report: HierarchyReport) => Promise<void> | void;
   onDrillTarget?: (target: ReviewDashboardCardTarget) => Promise<void> | void;
-  onResolveGapAction?: (payload: EventLineGapActionPayload) => void;
   viewerRole?: 'employee' | 'department_lead' | 'admin';
 };
 

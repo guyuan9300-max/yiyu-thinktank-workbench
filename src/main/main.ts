@@ -87,6 +87,8 @@ let backendRuntimeVenv = '';
 let cloudBackendRuntimeVenv = '';
 let ownsBackendProcess = false;
 let ownsCloudBackendProcess = false;
+let backendExitDetail: string | null = null;
+const backendRecentLogLines: string[] = [];
 const LOCAL_DEV_CLOUD_SEED_ENV = {
   YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD: process.env.YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD || 'Admin123!',
   YIYU_CLOUD_GUYUAN_PASSWORD: process.env.YIYU_CLOUD_GUYUAN_PASSWORD || 'Guyuan31',
@@ -99,6 +101,7 @@ const ownedDiagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, boolean>
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
 const legacyAppBasenames = new Set(['益语智库.app', '益语智库工作台.app']);
 const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+const DEPRECATED_PACKAGED_REMOTE_CLOUD_API_URLS = new Set(['https://api.yiyu.love', 'http://api.yiyu.love']);
 
 function normalizeHttpUrl(rawUrl?: string | null) {
   const trimmed = rawUrl?.trim();
@@ -107,11 +110,17 @@ function normalizeHttpUrl(rawUrl?: string | null) {
 }
 
 function remoteCloudBackendUrl() {
-  return (
+  const explicitUrl = (
     normalizeHttpUrl(process.env.YIYU_REMOTE_CLOUD_API_URL)
     || normalizeHttpUrl(process.env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL)
-    || (app.isPackaged ? DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL : null)
   );
+  if (!app.isPackaged) {
+    return explicitUrl;
+  }
+  if (explicitUrl && !DEPRECATED_PACKAGED_REMOTE_CLOUD_API_URLS.has(explicitUrl)) {
+    return explicitUrl;
+  }
+  return DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL;
 }
 
 function shouldUseRemoteCloudBackend() {
@@ -137,6 +146,15 @@ function logElectronInfo(message: string) {
 function logElectronError(message: string) {
   console.error(message);
   appendElectronLaunchLog('ERROR', message);
+}
+
+function rememberBackendLogLine(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  backendRecentLogLines.push(trimmed);
+  if (backendRecentLogLines.length > 40) {
+    backendRecentLogLines.splice(0, backendRecentLogLines.length - 40);
+  }
 }
 
 function getCollabSuggestedCandidates() {
@@ -1098,9 +1116,14 @@ function purgeSavedApplicationState() {
   }
 }
 
-function logBackend(pipe: NodeJS.ReadableStream, label: string) {
+function logBackend(pipe: NodeJS.ReadableStream, label: string, onLine?: (line: string) => void) {
   pipe.on('data', (chunk) => {
-    process.stdout.write(`[backend:${label}] ${chunk.toString()}`);
+    const text = chunk.toString();
+    process.stdout.write(`[backend:${label}] ${text}`);
+    if (!onLine) return;
+    for (const line of text.split(/\r?\n/)) {
+      onLine(line);
+    }
   });
 }
 
@@ -1120,14 +1143,18 @@ function startBackend() {
     },
   );
   ownsBackendProcess = true;
+  backendExitDetail = null;
+  backendRecentLogLines.length = 0;
 
-  logBackend(backendProcess.stdout, 'stdout');
-  logBackend(backendProcess.stderr, 'stderr');
+  logBackend(backendProcess.stdout, 'stdout', rememberBackendLogLine);
+  logBackend(backendProcess.stderr, 'stderr', rememberBackendLogLine);
   backendProcess.on('error', (error) => {
+    backendExitDetail = `后端子进程启动失败：${error.message}`;
     console.error(`后端服务启动失败: ${error.message}`);
   });
 
   backendProcess.on('exit', (code) => {
+    backendExitDetail = `后端服务已退出，退出码=${code ?? 'unknown'}`;
     backendProcess = null;
     ownsBackendProcess = false;
     console.error(`后端服务已退出，退出码=${code ?? 'unknown'}`);
@@ -1448,9 +1475,20 @@ async function loadRendererWithFallback(window: BrowserWindow) {
   return 'error';
 }
 
-async function waitForBackend(timeoutMs = 20000): Promise<void> {
+function buildBackendStartupError(prefix: string) {
+  const tail = backendRecentLogLines.slice(-10).join('\n');
+  if (tail) {
+    return `${prefix}\n\n最近日志：\n${tail}`;
+  }
+  return prefix;
+}
+
+async function waitForBackend(timeoutMs = 45000): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (backendExitDetail) {
+      throw new Error(buildBackendStartupError(backendExitDetail));
+    }
     try {
       await new Promise<void>((resolve, reject) => {
         const req = http.get(`${backendUrl()}/api/v1/system/health`, (res) => {
@@ -1482,7 +1520,7 @@ async function waitForBackend(timeoutMs = 20000): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }
-  throw new Error('后端服务启动超时');
+  throw new Error(buildBackendStartupError(`后端服务启动超时（>${Math.round(timeoutMs / 1000)} 秒）`));
 }
 
 async function waitForCloudBackend(timeoutMs = 20000): Promise<void> {
@@ -1672,10 +1710,28 @@ app.whenReady().then(async () => {
   }
   try {
     await waitForBackend();
-  } catch (error) {
-    dialog.showErrorBox('本地后端启动失败', error instanceof Error ? error.message : String(error));
-    app.quit();
-    return;
+  } catch (firstError) {
+    logElectronError(`[backend:start] first attempt failed: ${firstError instanceof Error ? firstError.message : String(firstError)}`);
+    if (!reuseExistingBackend) {
+      try {
+        await terminateManagedRuntimeProcess(backendRuntimeVenv);
+      } catch {
+        // Ignore cleanup failure and still retry once.
+      }
+      stopBackend();
+      startBackend();
+      try {
+        await waitForBackend(30000);
+      } catch (secondError) {
+        dialog.showErrorBox('本地后端启动失败', secondError instanceof Error ? secondError.message : String(secondError));
+        app.quit();
+        return;
+      }
+    } else {
+      dialog.showErrorBox('本地后端启动失败', firstError instanceof Error ? firstError.message : String(firstError));
+      app.quit();
+      return;
+    }
   }
   try {
     await createMainWindow();

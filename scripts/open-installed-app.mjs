@@ -10,11 +10,20 @@ const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const installedApp = path.join(os.homedir(), 'Applications', APP_NAME);
 const binaryPath = path.join(installedApp, 'Contents', 'MacOS', '益语智库自用平台');
 const rawElectronPattern = `${projectRoot}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \\.`;
+const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+
+function sanitizedLaunchEnv() {
+  const env = { ...process.env };
+  delete env.YIYU_REMOTE_CLOUD_API_URL;
+  env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL = DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL;
+  return env;
+}
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
     stdio: options.stdio ?? 'pipe',
     encoding: 'utf8',
+    env: options.env ?? sanitizedLaunchEnv(),
     ...options,
   });
 }
@@ -60,7 +69,7 @@ if (!fs.existsSync(binaryPath)) {
 const child = spawn('script', ['-q', '/dev/null', binaryPath], {
   detached: true,
   stdio: 'ignore',
-  env: { ...process.env },
+  env: sanitizedLaunchEnv(),
 });
 child.unref();
 console.log(`[open-installed-app] launched via script+binary (pid: ${child.pid})`);

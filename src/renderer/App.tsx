@@ -120,14 +120,15 @@ import type {
   Task,
   TaskAttachmentRecord,
   TaskContextPreview,
+  TaskSmartBrief,
   TaskList,
+  TaskMutationPayload,
   TaskProjectContext,
   TaskSettings,
   TaskScopeMode,
   TaskTag,
   TaskViewDefinition,
   TaskViewFilterSet,
-  TaskViewPreset,
   TopicCandidate,
   TopicsSettings,
   TopicRadar,
@@ -208,8 +209,9 @@ import {
   getTaskTagSuggestions,
   getTaskBoard,
   getTaskContextPreview,
+  getTaskSmartBrief,
+  getTaskSmartBriefsBatch,
   getTaskSettings,
-  getTaskViews,
   getTopics,
   getTopicsSettings,
   getDiagnosisEngineHealth,
@@ -295,7 +297,6 @@ import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationC
 import { AgentWeeklyPlanEditor } from './components/tasks/AgentWeeklyPlanEditor';
 import { ReviewHistoryPicker } from './components/tasks/ReviewHistoryPicker';
 import { TaskOrgContextPanel } from './components/tasks/TaskOrgContextPanel';
-import type { EventLineGapActionPayload } from './components/tasks/WeeklyReviewTypes';
 import { WeeklyReviewSummaryPanel } from './components/tasks/WeeklyReviewSummaryPanel';
 import { UnderstandingPanel } from './components/tasks/UnderstandingPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
@@ -358,7 +359,7 @@ import {
 } from './lib/fundraisingWorkbenchAssets';
 
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'unified_workbench' | 'growth_handbook' | 'settings';
-type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review';
+type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
 type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'analysis' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
 type ReviewFormState = {
@@ -454,26 +455,6 @@ type TaskEditorState = {
   collaborators: MentionCandidate[];
 };
 
-type TaskScopeSuggestionChip = {
-  key: 'client' | 'eventLine' | 'module' | 'flow';
-  label: string;
-  value: string;
-  reason: string;
-};
-
-type TaskScopeSuggestion = {
-  taskId: string;
-  title: string;
-  missingLabels: string[];
-  chips: TaskScopeSuggestionChip[];
-  payload: Partial<{
-    clientId: string;
-    eventLineId: string;
-    projectModuleId: string;
-    projectFlowId: string;
-  }>;
-};
-
 const TASK_TIME_PRESET_OPTIONS = ['09:00', '10:30', '14:00', '18:00', '20:00'] as const;
 const TASK_TIME_HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0'));
 const TASK_TIME_MINUTE_OPTIONS = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, '0'));
@@ -546,20 +527,33 @@ const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8
 const providerDefaultModels = {
   mock: 'mock-summarizer',
   qwen: 'qwen3.5-plus',
+  doubao: 'doubao-seed-1.6',
 } as const;
 
 const providerDisplayNames = {
   mock: '本地 Mock',
   qwen: 'Qwen 3.5',
+  doubao: '豆包 Seed 1.6（火山方舟）',
 } as const;
 
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
+const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
+const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
+
+function normalizeCollabRepoPathValue(rawPath: string) {
+  return rawPath.replace(/[\\/]+$/, '');
+}
 
 function normalizeInitialCollabRepoPath(storedPath: string | null) {
   if (!storedPath) return null;
-  if (storedPath.endsWith('/yiyu-thinktank-workbench-main-sync')) return storedPath;
-  if (storedPath.endsWith('/yiyu-thinktank-workbench')) return `${storedPath}-main-sync`;
-  return storedPath;
+  const normalized = normalizeCollabRepoPathValue(storedPath);
+  if (normalized.endsWith(`/${COLLAB_LEGACY_REPO_NAME}`)) {
+    return normalized.slice(0, -COLLAB_LEGACY_REPO_NAME.length) + COLLAB_PRIMARY_REPO_NAME;
+  }
+  if (normalized.endsWith('/workspace')) {
+    return `${normalized}/${COLLAB_PRIMARY_REPO_NAME}`;
+  }
+  return normalized;
 }
 
 const REQUIRED_BACKEND_FEATURES = [
@@ -2436,127 +2430,6 @@ function inferTaskProjectFlow(params: {
   return { projectFlowId: '', reason: `当前范围内共有 ${scopedFlows.length} 条流程，可手动选择。` };
 }
 
-function buildTaskScopeSuggestion(params: {
-  task: Task;
-  clients: ClientSummary[];
-  currentClientId?: string | null;
-  organizationName?: string | null;
-  eventLines: EventLine[];
-  projectStructure: ProjectStructureResponse;
-}) : TaskScopeSuggestion | null {
-  const payload: TaskScopeSuggestion['payload'] = {};
-  const chips: TaskScopeSuggestionChip[] = [];
-  const missingLabels: string[] = [];
-
-  const clientInference = !params.task.clientId
-    ? inferTaskClient({
-        title: params.task.title,
-        desc: params.task.desc,
-        clients: params.clients,
-        currentClientId: params.currentClientId,
-        organizationName: params.organizationName,
-      })
-    : null;
-  const resolvedClientId = params.task.clientId?.trim() || (clientInference && (clientInference.confidence === 'high' || clientInference.confidence === 'medium') ? clientInference.clientId : '');
-  const resolvedClient = resolvedClientId ? params.clients.find((item) => item.id === resolvedClientId) || null : null;
-
-  if (!params.task.clientId) {
-    missingLabels.push('项目');
-    if (resolvedClientId && resolvedClient) {
-      payload.clientId = resolvedClientId;
-      chips.push({
-        key: 'client',
-        label: '项目',
-        value: resolvedClient.name,
-        reason: clientInference?.reason || `建议先归到项目"${resolvedClient.name}"。`,
-      });
-    }
-  }
-
-  const eventLineInference = !params.task.eventLineId && resolvedClientId
-    ? inferTaskEventLine({
-        title: params.task.title,
-        desc: params.task.desc,
-        eventLines: params.eventLines,
-        currentClientId: resolvedClientId,
-      })
-    : null;
-  const resolvedEventLineId = params.task.eventLineId?.trim() || eventLineInference?.eventLineId || '';
-  const resolvedEventLine = resolvedEventLineId ? params.eventLines.find((item) => item.id === resolvedEventLineId) || null : null;
-
-  if (!params.task.eventLineId) {
-    missingLabels.push('事件线');
-    if (eventLineInference?.eventLineId && resolvedEventLine) {
-      payload.eventLineId = eventLineInference.eventLineId;
-      chips.push({
-        key: 'eventLine',
-        label: '事件线',
-        value: resolvedEventLine.name,
-        reason: eventLineInference.reason,
-      });
-    }
-  }
-
-  const moduleInference = !params.task.projectModuleId && resolvedClientId
-    ? inferTaskProjectModule({
-        title: params.task.title,
-        desc: params.task.desc,
-        modules: params.projectStructure.modules,
-        eventLine: resolvedEventLine,
-      })
-    : null;
-  const resolvedModuleId = params.task.projectModuleId?.trim() || moduleInference?.projectModuleId || '';
-  const resolvedModule = resolvedModuleId ? params.projectStructure.modules.find((item) => item.id === resolvedModuleId) || null : null;
-
-  if (!params.task.projectModuleId) {
-    missingLabels.push('模块');
-    if (moduleInference?.projectModuleId && resolvedModule) {
-      payload.projectModuleId = moduleInference.projectModuleId;
-      chips.push({
-        key: 'module',
-        label: '模块',
-        value: resolvedModule.name,
-        reason: moduleInference.reason,
-      });
-    }
-  }
-
-  const flowInference = !params.task.projectFlowId && resolvedClientId
-    ? inferTaskProjectFlow({
-        title: params.task.title,
-        desc: params.task.desc,
-        flows: params.projectStructure.flows,
-        selectedModuleId: resolvedModuleId,
-        eventLine: resolvedEventLine,
-      })
-    : null;
-  const resolvedFlowId = params.task.projectFlowId?.trim() || flowInference?.projectFlowId || '';
-  const resolvedFlow = resolvedFlowId ? params.projectStructure.flows.find((item) => item.id === resolvedFlowId) || null : null;
-
-  if (!params.task.projectFlowId) {
-    missingLabels.push('流程');
-    if (flowInference?.projectFlowId && resolvedFlow) {
-      payload.projectFlowId = flowInference.projectFlowId;
-      chips.push({
-        key: 'flow',
-        label: '流程',
-        value: resolvedFlow.name,
-        reason: flowInference.reason,
-      });
-    }
-  }
-
-  if (chips.length === 0) return null;
-
-  return {
-    taskId: params.task.id,
-    title: params.task.title,
-    missingLabels,
-    chips,
-    payload,
-  };
-}
-
 function labelTaskClientConfidence(confidence: 'none' | 'low' | 'medium' | 'high' | 'manual') {
   switch (confidence) {
     case 'high':
@@ -3225,6 +3098,10 @@ function isPrivateTask(task: Task) {
   return task.scopeMode === 'PERSONAL_ONLY' || task.tags.some((tag) => tag.scope === 'self');
 }
 
+function isLocalDraftTaskId(taskId?: string | null) {
+  return Boolean(taskId && taskId.startsWith('local-draft:'));
+}
+
 function createEmptyReviewForm(weekLabel = currentWeekLabel()): ReviewFormState {
   return {
     weekLabel,
@@ -3304,6 +3181,21 @@ function inferClientTextDocumentTitle(content: string) {
     return (line.split(/[。！？!?]/)[0] || line).trim().slice(0, 28);
   }
   return normalized.replace(/\s+/g, ' ').slice(0, 28);
+}
+
+function inferTaskArchiveDocumentTitle(params: {
+  taskTitle?: string | null;
+  clientName?: string | null;
+  eventLineName?: string | null;
+  content?: string | null;
+}) {
+  const taskTitle = (params.taskTitle || '').trim();
+  if (taskTitle) return taskTitle.slice(0, 48);
+  const eventLineName = (params.eventLineName || '').trim();
+  if (eventLineName) return eventLineName.slice(0, 48);
+  const clientName = (params.clientName || '').trim();
+  if (clientName) return `${clientName}补充材料`.slice(0, 48);
+  return inferClientTextDocumentTitle(params.content || '') || '任务补充材料';
 }
 
 type DroppedImportFile = File & { path?: string };
@@ -3628,12 +3520,19 @@ export default function App() {
   async function refreshCollabStatus(nextRepoPath = collabRepoPath) {
     setIsCollabStatusLoading(true);
     try {
-      const nextStatus = await getCollabRepoStatus(nextRepoPath);
-      setCollabStatus(nextStatus);
-      if (nextStatus.repoPath && nextStatus.repoPath !== nextRepoPath && nextStatus.isValid) {
-        setCollabRepoPath(nextStatus.repoPath);
+      const requestedRepoPath = normalizeInitialCollabRepoPath(nextRepoPath);
+      const nextStatus = await getCollabRepoStatus(requestedRepoPath);
+      const normalizedStatus: CollabRepoStatus = {
+        ...nextStatus,
+        repoPath: normalizeInitialCollabRepoPath(nextStatus.repoPath),
+        suggestedRepoPath: normalizeInitialCollabRepoPath(nextStatus.suggestedRepoPath || null),
+        workingRepoPath: normalizeInitialCollabRepoPath(nextStatus.workingRepoPath || null),
+      };
+      setCollabStatus(normalizedStatus);
+      if (normalizedStatus.repoPath && normalizedStatus.repoPath !== requestedRepoPath && normalizedStatus.isValid) {
+        setCollabRepoPath(normalizedStatus.repoPath);
       }
-      return nextStatus;
+      return normalizedStatus;
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '源码仓库状态加载失败');
       return null;
@@ -3670,7 +3569,7 @@ export default function App() {
       setCollabRepoPath(collabStatus.suggestedRepoPath);
       return collabStatus.suggestedRepoPath;
     }
-    const nextRepoPath = await selectCollabRepoBridge();
+    const nextRepoPath = normalizeInitialCollabRepoPath(await selectCollabRepoBridge());
     if (!nextRepoPath) return null;
     setCollabRepoPath(nextRepoPath);
     setCollabDialogState(null);
@@ -4473,6 +4372,13 @@ export default function App() {
   }, [isSidebarCollapsed]);
 
   useEffect(() => {
+    const normalizedRepoPath = normalizeInitialCollabRepoPath(collabRepoPath);
+    if (normalizedRepoPath !== collabRepoPath) {
+      setCollabRepoPath(normalizedRepoPath);
+    }
+  }, [collabRepoPath]);
+
+  useEffect(() => {
     if (collabRepoPath) {
       window.localStorage.setItem(COLLAB_REPO_PATH_STORAGE_KEY, collabRepoPath);
       return;
@@ -4485,15 +4391,17 @@ export default function App() {
   }, [collabRepoPath]);
 
   useEffect(() => {
-    const suggestedRepoPath = collabStatus?.suggestedRepoPath || null;
+    const suggestedRepoPath = normalizeInitialCollabRepoPath(collabStatus?.suggestedRepoPath || null);
     if (!suggestedRepoPath) return;
+    const normalizedCurrentRepoPath = normalizeInitialCollabRepoPath(collabRepoPath);
     const shouldSwitchToSuggested =
-      !collabRepoPath
-      || (collabStatus?.isConfigured && !collabStatus.isMainBranch && suggestedRepoPath !== collabRepoPath);
+      !normalizedCurrentRepoPath
+      || normalizedCurrentRepoPath !== collabRepoPath
+      || (collabStatus?.isConfigured && !collabStatus.isMainBranch && suggestedRepoPath !== normalizedCurrentRepoPath);
     if (!shouldSwitchToSuggested) return;
-    if (collabAutoSwitchTargetRef.current === suggestedRepoPath && collabRepoPath === suggestedRepoPath) return;
+    if (collabAutoSwitchTargetRef.current === suggestedRepoPath && normalizedCurrentRepoPath === suggestedRepoPath) return;
     collabAutoSwitchTargetRef.current = suggestedRepoPath;
-    const switchingFrom = collabRepoPath;
+    const switchingFrom = normalizedCurrentRepoPath;
     setCollabRepoPath(suggestedRepoPath);
     if (switchingFrom && switchingFrom !== suggestedRepoPath) {
       flash('info', '协作源码目录已切换到 main 基线仓库。');
@@ -4940,6 +4848,7 @@ export default function App() {
     };
     const [isTaskGroupOpen, setIsTaskGroupOpen] = useState(true);
     const [taskListFilter, setTaskListFilter] = useState<TaskListFilter>('all');
+    const [taskSearchQuery, setTaskSearchQuery] = useState('');
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     const [isDuePickerOpen, setIsDuePickerOpen] = useState(false);
     const [duePickerTab, setDuePickerTab] = useState<'date' | 'time'>('date');
@@ -4976,7 +4885,7 @@ export default function App() {
     });
     const [taskClientDnaCache, setTaskClientDnaCache] = useState<Record<string, ClientDnaModule[]>>({});
     const [projectStructureCache, setProjectStructureCache] = useState<Record<string, ProjectStructureResponse>>({});
-    const [pendingTaskAttachments, setPendingTaskAttachments] = useState<File[]>([]);
+    const [pendingTaskArchiveText, setPendingTaskArchiveText] = useState('');
     const [isTaskAttachmentBusy, setIsTaskAttachmentBusy] = useState(false);
     const [taskAttachmentUploadProgress, setTaskAttachmentUploadProgress] = useState<{
       currentFileName: string;
@@ -4992,6 +4901,7 @@ export default function App() {
       closeEditor?: boolean;
     } | null>(null);
     const [isSavingTask, setIsSavingTask] = useState(false);
+    const isTaskModalOpenRef = useRef(false);
     const [tagDraft, setTagDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
     const [mentionQuery, setMentionQuery] = useState('@');
     const [mentionOptions, setMentionOptions] = useState<MentionCandidate[]>([]);
@@ -5001,9 +4911,6 @@ export default function App() {
     const [isOwnerMenuOpen, setIsOwnerMenuOpen] = useState(false);
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
-    const [taskViewLibrary, setTaskViewLibrary] = useState<TaskViewDefinition[]>([]);
-    const [taskViewPresets, setTaskViewPresets] = useState<TaskViewPreset[]>([]);
-    const [selectedFormalTaskViewId, setSelectedFormalTaskViewId] = useState('');
     const [drillTaskViewOverride, setDrillTaskViewOverride] = useState<ReviewDashboardCardTarget | null>(null);
     const [activeReviewDrillTarget, setActiveReviewDrillTarget] = useState<ReviewDashboardDrillTargetResponse | null>(null);
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
@@ -5023,7 +4930,9 @@ export default function App() {
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [taskContextPreview, setTaskContextPreview] = useState<TaskContextPreview | null>(null);
     const [isTaskContextPreviewLoading, setIsTaskContextPreviewLoading] = useState(false);
+    const [taskSmartBriefs, setTaskSmartBriefs] = useState<Record<string, TaskSmartBrief>>({});
     const [selectedInboxIds, setSelectedInboxIds] = useState<string[]>([]);
+    const [transitioningInboxTaskIds, setTransitioningInboxTaskIds] = useState<string[]>([]);
     const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
     const [rejectingTaskIds, setRejectingTaskIds] = useState<string[]>([]);
     const [rejectReason, setRejectReason] = useState('');
@@ -5032,6 +4941,10 @@ export default function App() {
     const [savingReviewGroupId, setSavingReviewGroupId] = useState<string | null>(null);
     const [savedReviewGroupId, setSavedReviewGroupId] = useState<string | null>(null);
     const [reviewStatusChangingGroupId, setReviewStatusChangingGroupId] = useState<string | null>(null);
+
+    useEffect(() => {
+      isTaskModalOpenRef.current = isTaskModalOpen;
+    }, [isTaskModalOpen]);
 
     const resetTaskModalTransientState = () => {
       setIsDuePickerOpen(false);
@@ -5045,6 +4958,7 @@ export default function App() {
       setTaskAttachmentUploadProgress(null);
       setIsTaskAttachmentBusy(false);
       setIsSavingTask(false);
+      setPendingTaskArchiveText('');
     };
 
     const closeTaskModal = (reason: string) => {
@@ -5052,13 +4966,9 @@ export default function App() {
       resetTaskModalTransientState();
       setIsTaskModalOpen(false);
     };
-    const [showCalendarCollaborations, setShowCalendarCollaborations] = useState(false);
+    const [hidePersonalTasks, setHidePersonalTasks] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
     const [reviewForm, setReviewForm] = useState<ReviewFormState>(createEmptyReviewForm());
-    const taskAttachmentInputRef = useRef<HTMLInputElement | null>(null);
-    const [applyingScopeTaskIds, setApplyingScopeTaskIds] = useState<string[]>([]);
-    const [isApplyingAllScopeSuggestions, setIsApplyingAllScopeSuggestions] = useState(false);
-
     const syncReviewDirtyTaskIds = (next: Set<string>) => {
       reviewDirtyTaskIdsRef.current = next;
       setReviewDirtyTaskIds(Array.from(next));
@@ -5157,26 +5067,6 @@ export default function App() {
         cancelled = true;
       };
     }, []);
-
-    useEffect(() => {
-      let cancelled = false;
-      void getTaskViews()
-        .then((response) => {
-          if (cancelled) return;
-          setTaskViewLibrary(response.views || []);
-          setTaskViewPresets(response.presets || []);
-        })
-        .catch(() => undefined);
-      return () => {
-        cancelled = true;
-      };
-    }, []);
-
-    useEffect(() => {
-      if (!selectedFormalTaskViewId) return;
-      if (taskViewLibrary.some((item) => item.id === selectedFormalTaskViewId)) return;
-      setSelectedFormalTaskViewId('');
-    }, [selectedFormalTaskViewId, taskViewLibrary]);
 
     useEffect(() => {
       if (!isTaskModalOpen) {
@@ -5376,17 +5266,10 @@ export default function App() {
       return true;
     };
 
-    const pendingTasks = tasks.filter((task) => task.status === 'inbox');
+    const pendingTasks = tasks.filter((task) => task.status === 'inbox' && !transitioningInboxTaskIds.includes(task.id));
     const activeTaskListFilterLabel = TASK_LIST_FILTER_OPTIONS.find((item) => item.value === taskListFilter)?.label || '全部';
-    const selectedFormalTaskView = useMemo(
-      () => taskViewLibrary.find((item) => item.id === selectedFormalTaskViewId) || null,
-      [selectedFormalTaskViewId, taskViewLibrary],
-    );
     const activeFormalTaskView = useMemo(() => {
       if (drillTaskViewOverride?.targetType === 'task_view') {
-        if (selectedFormalTaskView && selectedFormalTaskView.id === drillTaskViewOverride.targetId) {
-          return selectedFormalTaskView;
-        }
         return {
           id: `drill-${drillTaskViewOverride.targetId}`,
           name: drillTaskViewOverride.targetLabel || '下钻视图',
@@ -5403,8 +5286,8 @@ export default function App() {
           updatedAt: new Date().toISOString(),
         } satisfies TaskViewDefinition;
       }
-      return selectedFormalTaskView;
-    }, [drillTaskViewOverride, selectedFormalTaskView]);
+      return null;
+    }, [drillTaskViewOverride]);
     const baseListTasks = tasks.filter((task) => task.status !== 'rejected' && task.status !== 'inbox');
     const taskBucketCounts = useMemo(
       () => ({
@@ -5425,12 +5308,26 @@ export default function App() {
       effectiveTaskSettings.listSortMode,
     );
     const listTasks = useMemo(() => {
-      if (!activeFormalTaskView) return rawListTasks;
-      return sortTasksByFormalView(
-        rawListTasks.filter((task) => taskMatchesFormalView(task, activeFormalTaskView)),
-        activeFormalTaskView,
-      );
-    }, [activeFormalTaskView, rawListTasks]);
+      let filtered = rawListTasks;
+      if (activeFormalTaskView) {
+        filtered = sortTasksByFormalView(
+          filtered.filter((task) => taskMatchesFormalView(task, activeFormalTaskView)),
+          activeFormalTaskView,
+        );
+      }
+      if (taskSearchQuery.trim()) {
+        const q = taskSearchQuery.trim().toLowerCase();
+        filtered = filtered.filter((task) =>
+          task.title.toLowerCase().includes(q)
+          || (task.desc || '').toLowerCase().includes(q)
+          || (task.clientName || '').toLowerCase().includes(q)
+          || (task.eventLineName || '').toLowerCase().includes(q)
+          || (task.ownerName || '').toLowerCase().includes(q)
+          || (task.note || '').toLowerCase().includes(q)
+        );
+      }
+      return filtered;
+    }, [activeFormalTaskView, rawListTasks, taskSearchQuery]);
     useEffect(() => {
       if (taskViewMode !== 'list') return;
       const pendingClientIds = Array.from(
@@ -5469,9 +5366,8 @@ export default function App() {
     }, [listTasks, projectStructureCache, taskViewMode, workspace?.client.id]);
     const baseCalendarTasks = tasks.filter((task) => {
       if (task.status === 'rejected') return false;
-      if (taskIsPrimaryForUser(task, currentSessionUser?.id)) return true;
-      if (!showCalendarCollaborations) return false;
-      return taskIsCollaborativeWatchForUser(task, currentSessionUser?.id);
+      if (hidePersonalTasks && task.scopeMode === 'PERSONAL_ONLY') return false;
+      return true;
     });
     const calendarTasks = useMemo(() => {
       if (!activeFormalTaskView) return baseCalendarTasks;
@@ -5509,72 +5405,12 @@ export default function App() {
     const workReviewGroups = buildReviewGroups(workReviewRows);
     const personalReviewGroups = buildReviewGroups(personalReviewRows);
     const activeReviewGroups = reviewScope === 'work' ? workReviewGroups : personalReviewGroups;
-    const eventLineGapTargets = useMemo(() => {
-      const next = new Map<string, { clientId: string; groupId: string; title: string }>();
-      workReviewGroups.forEach((group) => {
-        if (!group.eventLineId) return;
-        const linkedClientId = group.rows.find(({ task }) => task.clientId?.trim())?.task.clientId?.trim() || '';
-        next.set(group.eventLineId, {
-          clientId: linkedClientId,
-          groupId: group.id,
-          title: group.title,
-        });
-      });
-      return next;
-    }, [workReviewGroups]);
-
     useEffect(() => {
       if (!expandedReviewGroupId) return;
       if (!activeReviewGroups.some((group) => group.id === expandedReviewGroupId)) {
         setExpandedReviewGroupId(null);
       }
     }, [activeReviewGroups, expandedReviewGroupId]);
-
-    const handleResolveEventLineGapAction = async ({
-      eventLineId,
-      title,
-      actionType,
-      slotLabels,
-    }: EventLineGapActionPayload) => {
-      const slotText = slotLabels.slice(0, 3).join('、') || '关键信息';
-      const target = eventLineGapTargets.get(eventLineId);
-      if (actionType === 'clarify_now') {
-        const detail = await openEventLineDetail(eventLineId, { clarify: true });
-        if (detail) {
-          flash('info', `已打开"${detail.eventLine.name}"的事件线澄清，优先补：${slotText}`);
-          return;
-        }
-        setReviewScope('work');
-        if (target?.groupId) {
-          setExpandedReviewGroupId(target.groupId);
-        }
-        flash('info', `已定位到"${target?.title || title}"的复盘表单，优先澄清：${slotText}`);
-        return;
-      }
-
-      const matchedClientId =
-        target?.clientId
-        || clients.find((client) => [client.name, client.alias].some((value) => value.trim() && value.trim() === title.trim()))?.id
-        || '';
-      if (!matchedClientId) {
-        flash('error', `还没定位到"${title}"对应的项目，暂时不能直接跳去补资料。`);
-        return;
-      }
-
-      setActiveTab('client_workspace');
-      setClientWorkspaceSurfaceMode('setup');
-      setClientOverlayMode(null);
-      try {
-        if (matchedClientId !== currentClientId) {
-          setCurrentClientId(matchedClientId);
-          await refreshWorkspace(matchedClientId);
-        }
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '切换项目失败');
-        return;
-      }
-      flash('info', `已切到项目资料导入引导，优先补：${slotText}`);
-    };
 
     const ownerCollaborator = editingTask.collaborators[0];
     const collaboratorNames = editingTask.collaborators.map((item) => item.fullName);
@@ -5621,7 +5457,7 @@ export default function App() {
           ? projectStructureCache[editingTask.clientId] || { modules: [], flows: [] }
           : { modules: [], flows: [] });
     const taskProjectModuleOptions = activeProjectStructure.modules;
-    const taskProjectFlowOptions = activeProjectStructure.flows.filter((flow) => {
+    const taskProjectFlowOptions = activeProjectStructure.flows.filter((flow: ProjectFlow) => {
       if (!editingTask.projectModuleId) return true;
       return flow.moduleId === editingTask.projectModuleId;
     });
@@ -5643,19 +5479,6 @@ export default function App() {
         }, {}),
       [sortedEventLines],
     );
-    const formalTaskViewOptions = useMemo(
-      () =>
-        taskViewLibrary.map((view) => {
-          const preset = taskViewPresets.find((item) => item.viewId === view.id);
-          return {
-            id: view.id,
-            label: preset?.label || view.name,
-            description: preset?.description || view.description,
-          };
-        }),
-      [taskViewLibrary, taskViewPresets],
-    );
-    const activeFormalTaskViewOption = formalTaskViewOptions.find((item) => item.id === activeFormalTaskView?.id) || null;
     const taskEventLineOptions = useMemo(() => {
       if (!editingTask.clientId) return sortedEventLines;
       const scoped = sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === editingTask.clientId);
@@ -5665,7 +5488,7 @@ export default function App() {
       return selected ? [selected, ...scoped] : scoped;
     }, [editingTask.clientId, editingTask.eventLineId, sortedEventLines]);
     const editingTaskRecord = useMemo(
-      () => (editingTask.id ? tasks.find((item) => item.id === editingTask.id) || null : null),
+      () => (editingTask.id ? tasks.find((item: Task) => item.id === editingTask.id) || null : null),
       [editingTask.id, tasks],
     );
     const selectedEventLineSummary = sortedEventLines.find((item) => item.id === editingTask.eventLineId) || null;
@@ -5677,10 +5500,17 @@ export default function App() {
           projectFlowId: editingTask.projectFlowId,
           taskTitle: editingTask.title,
           taskDescription: editingTask.desc,
-          attachmentCount: (editingTaskRecord?.attachments?.length || 0) + pendingTaskAttachments.length,
+          attachmentCount: (editingTaskRecord?.attachments?.length || 0) + (pendingTaskArchiveText.trim() ? 1 : 0),
           attachmentTitles: [
-            ...((editingTaskRecord?.attachments || []).map((item) => item.title).filter(Boolean)),
-            ...pendingTaskAttachments.map((file) => file.name).filter(Boolean),
+            ...((editingTaskRecord?.attachments || []).map((item: TaskAttachmentRecord) => item.title).filter(Boolean)),
+            ...(pendingTaskArchiveText.trim()
+              ? [inferTaskArchiveDocumentTitle({
+                  taskTitle: editingTask.title,
+                  clientName: clients.find((item: ClientSummary) => item.id === editingTask.clientId)?.name || null,
+                  eventLineName: selectedEventLineSummary?.name || null,
+                  content: pendingTaskArchiveText,
+                })]
+              : []),
           ],
           eventLine: selectedEventLineSummary,
           clients,
@@ -5698,17 +5528,14 @@ export default function App() {
         editingTask.projectModuleId,
         editingTask.title,
         editingTaskRecord?.attachments?.length,
-        pendingTaskAttachments.length,
+        pendingTaskArchiveText,
         selectedEventLineSummary,
         workspace,
       ],
     );
-    const handleSelectFormalTaskView = (nextViewId: string) => {
-      setSelectedFormalTaskViewId(nextViewId);
+    const closeReviewDrillTarget = () => {
+      setActiveReviewDrillTarget(null);
       setDrillTaskViewOverride(null);
-      if (!nextViewId) {
-        setActiveReviewDrillTarget(null);
-      }
     };
     const handleReviewDashboardDrillTarget = async (target: ReviewDashboardCardTarget) => {
       setIsLoadingReviewDrillTarget(true);
@@ -5721,13 +5548,7 @@ export default function App() {
         });
         setActiveReviewDrillTarget(response);
         if (target.targetType === 'task_view') {
-          if (taskViewLibrary.some((item) => item.id === target.targetId)) {
-            setSelectedFormalTaskViewId(target.targetId);
-            setDrillTaskViewOverride(null);
-          } else {
-            setSelectedFormalTaskViewId('');
-            setDrillTaskViewOverride(target);
-          }
+          setDrillTaskViewOverride(target);
           setTaskViewMode('list');
         }
       } catch (error) {
@@ -5774,28 +5595,6 @@ export default function App() {
         cancelled = true;
       };
     }, [editingTask.id, editingTask.scopeMode, isTaskModalOpen]);
-    const visibleTaskScopeSuggestions = useMemo(() => {
-      return rawListTasks
-        .filter((task) => task.status !== 'done')
-        .map((task) => {
-          const structure = task.clientId && task.clientId === workspace?.client.id
-            ? {
-                modules: workspace?.projectModules || [],
-                flows: workspace?.projectFlows || [],
-              }
-            : (task.clientId ? projectStructureCache[task.clientId] || { modules: [], flows: [] } : { modules: [], flows: [] });
-          return buildTaskScopeSuggestion({
-            task,
-            clients,
-            currentClientId,
-            organizationName: organizationTaskName,
-            eventLines: sortedEventLines,
-            projectStructure: structure,
-          });
-        })
-        .filter((item): item is TaskScopeSuggestion => Boolean(item))
-        .slice(0, 6);
-    }, [clients, currentClientId, projectStructureCache, rawListTasks, sortedEventLines, workspace?.client.id, workspace?.projectFlows, workspace?.projectModules]);
     const eventLineScopeHint = editingTask.clientId
       ? selectedTaskClientLabel
         ? `系统会先在"${selectedTaskClientLabel}"项目下建议事件线。`
@@ -6051,33 +5850,135 @@ export default function App() {
       }
     };
 
+    const buildOptimisticTaskFromEditor = (
+      draft: TaskEditorState,
+      payload: TaskMutationPayload,
+      options: {
+        taskId: string;
+        listId: string;
+        listName: string;
+        listColor: string;
+        ownerId: string | null;
+        ownerName: string;
+        clientName?: string | null;
+        eventLineName?: string | null;
+        projectModuleName?: string | null;
+        projectFlowName?: string | null;
+      },
+      existingTask?: Task | null,
+    ): Task => {
+      const now = new Date().toISOString();
+      const optimisticCollaborators = draft.collaborators.map((item, index) => ({
+        userId: item.id,
+        fullName: item.fullName,
+        email: item.email,
+        orderIndex: index,
+        isOwner: item.id === options.ownerId,
+        inboxStatus: item.id === options.ownerId || item.isSelf ? 'accepted' as const : 'pending' as const,
+        returnReason: null,
+        handledAt: item.id === options.ownerId || item.isSelf ? now : null,
+      }));
+      const pendingCollaborationCount = optimisticCollaborators.filter((item) => item.inboxStatus === 'pending').length;
+      return {
+        ...(existingTask || {
+          status: 'doing' as const,
+          creatorId: currentSessionUser?.id || null,
+          creatorName: currentOperatorName,
+          sourceType: 'manual',
+          sourceId: null,
+          businessCategory: null,
+          currentBlocker: null,
+          nextAction: null,
+          recentDecision: null,
+          evidenceCount: 0,
+          tags: [],
+          note: null,
+          attachments: [],
+          collaborators: [],
+          collaborationSummary: {},
+          viewerInboxStatus: null,
+          orgContext: null,
+          projectContext: null,
+          memoryHints: [],
+          backgroundReadiness: null,
+          linkedFactsPreview: [],
+          createdAt: now,
+          updatedAt: now,
+        }),
+        id: options.taskId,
+        title: payload.title,
+        desc: payload.desc,
+        priority: payload.priority,
+        listId: options.listId,
+        listName: options.listName,
+        listColor: options.listColor,
+        ddl: payload.ddl,
+        dueDate: payload.dueDate ?? null,
+        durationMinutes: payload.durationMinutes,
+        scopeMode: payload.scopeMode,
+        clientId: payload.clientId ?? null,
+        clientName: options.clientName ?? existingTask?.clientName ?? null,
+        eventLineId: payload.eventLineId ?? null,
+        eventLineName: options.eventLineName ?? existingTask?.eventLineName ?? null,
+        projectModuleId: payload.projectModuleId ?? null,
+        projectModuleName: options.projectModuleName ?? existingTask?.projectModuleName ?? null,
+        projectFlowId: payload.projectFlowId ?? null,
+        projectFlowName: options.projectFlowName ?? existingTask?.projectFlowName ?? null,
+        ownerId: options.ownerId,
+        ownerName: options.ownerName,
+        collaborators: optimisticCollaborators,
+        collaborationSummary: pendingCollaborationCount > 0 ? { pending: pendingCollaborationCount } : {},
+        updatedAt: now,
+      };
+    };
+
+    const upsertLocalTask = (nextTask: Task, replaceId?: string | null) => {
+      setTasks((prev) => {
+        let matched = false;
+        const next = prev.map((item) => {
+          if (item.id === nextTask.id || (replaceId && item.id === replaceId)) {
+            matched = true;
+            return { ...item, ...nextTask };
+          }
+          return item;
+        });
+        return matched ? next : [nextTask, ...next];
+      });
+    };
+
     const uploadAttachmentsToTask = async (
       taskId: string,
       files: File[],
-      options: { clientId?: string | null; eventLineId?: string | null; taskTitle?: string | null },
+      options: { clientId?: string | null; eventLineId?: string | null; taskTitle?: string | null; showProgress?: boolean },
     ) => {
       if (files.length === 0) return;
-      setIsTaskAttachmentBusy(true);
-      setTaskAttachmentUploadProgress({
-        currentFileName: files[0]?.name || '附件',
-        uploadedFiles: 0,
-        totalFiles: files.length,
-        percent: 0,
-      });
+      const showProgress = options.showProgress !== false;
+      if (showProgress) {
+        setIsTaskAttachmentBusy(true);
+        setTaskAttachmentUploadProgress({
+          currentFileName: files[0]?.name || '附件',
+          uploadedFiles: 0,
+          totalFiles: files.length,
+          percent: 0,
+        });
+      }
       try {
         for (const [index, file] of files.entries()) {
-          setTaskAttachmentUploadProgress({
-            currentFileName: file.name,
-            uploadedFiles: index,
-            totalFiles: files.length,
-            percent: Math.max(0, Math.min(100, Math.round((index / files.length) * 100))),
-          });
+          if (showProgress) {
+            setTaskAttachmentUploadProgress({
+              currentFileName: file.name,
+              uploadedFiles: index,
+              totalFiles: files.length,
+              percent: Math.max(0, Math.min(100, Math.round((index / files.length) * 100))),
+            });
+          }
           await uploadTaskAttachment(taskId, {
             file,
             clientId: options.clientId || undefined,
             eventLineId: options.eventLineId || undefined,
             taskTitle: options.taskTitle || undefined,
             onProgress: (loaded, total) => {
+              if (!showProgress) return;
               const currentRatio = total > 0 ? loaded / total : 0;
               const overallPercent = ((index + currentRatio) / files.length) * 100;
               setTaskAttachmentUploadProgress({
@@ -6088,16 +5989,20 @@ export default function App() {
               });
             },
           });
-          setTaskAttachmentUploadProgress({
-            currentFileName: file.name,
-            uploadedFiles: index + 1,
-            totalFiles: files.length,
-            percent: Math.max(1, Math.min(100, Math.round(((index + 1) / files.length) * 100))),
-          });
+          if (showProgress) {
+            setTaskAttachmentUploadProgress({
+              currentFileName: file.name,
+              uploadedFiles: index + 1,
+              totalFiles: files.length,
+              percent: Math.max(1, Math.min(100, Math.round(((index + 1) / files.length) * 100))),
+            });
+          }
         }
       } finally {
-        setIsTaskAttachmentBusy(false);
-        setTaskAttachmentUploadProgress(null);
+        if (showProgress) {
+          setIsTaskAttachmentBusy(false);
+          setTaskAttachmentUploadProgress(null);
+        }
       }
     };
 
@@ -6106,16 +6011,16 @@ export default function App() {
         flash('error', '请填写任务标题');
         return;
       }
-      let ensuredOrgListId = '';
-      if (!isEditingTaskPersonal && orgTaskLists.length === 0) {
-        try {
-          const ensuredList = await ensureOrgTaskList();
-          ensuredOrgListId = ensuredList?.id || '';
-        } catch (error) {
-          flash('error', error instanceof Error ? `组织任务清单初始化失败：${error.message}` : '组织任务清单初始化失败');
-          return;
-        }
+      const archiveTextSnapshot = pendingTaskArchiveText.trim();
+      if (archiveTextSnapshot && editingTask.scopeMode === 'PERSONAL_ONLY') {
+        flash('error', '个人日程不会同步到客户工作台，请切回协作任务后再归档文字。');
+        return;
       }
+      if (archiveTextSnapshot && !editingTask.clientId) {
+        flash('error', '请先关联客户/项目，再把这段文字归档到客户工作台。');
+        return;
+      }
+      setIsSavingTask(true);
       const combinedDueDate = combineTaskDueDateTime(editingTask.dueDate, editingTask.dueTime);
       const resolvedDdl = combinedDueDate
         ? duePickerSummaryLabel
@@ -6130,134 +6035,134 @@ export default function App() {
         if (orgTaskLists.some((item) => item.id === editingTask.listId)) {
           return editingTask.listId;
         }
-        if (ensuredOrgListId) {
-          return ensuredOrgListId;
-        }
         return resolveDefaultListId('org') || editingTask.listId;
       })();
-      setIsSavingTask(true);
-      try {
-        const savedTask = editingTask.id
-          ? await updateTask(editingTask.id, {
-              scopeMode: editingTask.scopeMode,
-              title: editingTask.title.trim(),
-              desc: editingTask.desc.trim(),
-              priority: editingTask.priority,
-              listId: resolvedListId,
-              dueDate: combinedDueDate || null,
-              durationMinutes: editingTask.durationMinutes,
-              clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
-              eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
-              projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
-              projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
-              ddl: resolvedDdl,
-              ownerId: ownerCollaborator?.id || currentSessionUser?.id || null,
-              ownerName: ownerCollaborator?.fullName || currentOperatorName,
-              collaboratorIds: editingTask.collaborators.map((item) => item.id),
-              tagIds: [],
-            })
-          : await createTask({
-              scopeMode: editingTask.scopeMode,
-              title: editingTask.title.trim(),
-              desc: editingTask.desc.trim(),
-              priority: editingTask.priority,
-              listId: resolvedListId,
-              dueDate: combinedDueDate || null,
-              durationMinutes: editingTask.durationMinutes,
-              clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
-              eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
-              projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
-              projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
-              ddl: resolvedDdl,
-              ownerId: ownerCollaborator?.id || currentSessionUser?.id || null,
-              ownerName: ownerCollaborator?.fullName || currentOperatorName,
-              collaboratorIds: editingTask.collaborators.map((item) => item.id),
-              tagIds: [],
-            });
+      const ownerId = ownerCollaborator?.id || currentSessionUser?.id || null;
+      const ownerName = ownerCollaborator?.fullName || currentOperatorName;
+      const payload: TaskMutationPayload = {
+        scopeMode: editingTask.scopeMode,
+        title: editingTask.title.trim(),
+        desc: editingTask.desc.trim(),
+        priority: editingTask.priority,
+        listId: resolvedListId,
+        dueDate: combinedDueDate || null,
+        durationMinutes: editingTask.durationMinutes,
+        clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
+        eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
+        projectModuleId: isEditingTaskPersonal ? null : (editingTask.projectModuleId || null),
+        projectFlowId: isEditingTaskPersonal ? null : (editingTask.projectFlowId || null),
+        ddl: resolvedDdl,
+        ownerId,
+        ownerName,
+        collaboratorIds: editingTask.collaborators.map((item) => item.id),
+        tagIds: [],
+      };
+      const draftSnapshot: TaskEditorState = {
+        ...editingTask,
+        tagIds: [...editingTask.tagIds],
+        collaborators: editingTask.collaborators.map((item: MentionCandidate) => ({ ...item })),
+      };
+      const existingTaskSnapshot = editingTask.id ? tasks.find((item: Task) => item.id === editingTask.id) || null : null;
+      const resolvedList = activeTaskLists.find((item: TaskList) => item.id === resolvedListId)
+        || orgTaskLists.find((item: TaskList) => item.id === resolvedListId)
+        || personalTaskLists.find((item: TaskList) => item.id === resolvedListId)
+        || {
+          id: resolvedListId || 'list-local-draft',
+          name: isEditingTaskPersonal ? '个人日程' : '收集箱',
+          color: '#888681',
+        };
+      const optimisticTaskId = editingTask.id || `local-draft:${Date.now()}`;
+      const optimisticTask = buildOptimisticTaskFromEditor(draftSnapshot, payload, {
+        taskId: optimisticTaskId,
+        listId: resolvedList.id,
+        listName: resolvedList.name,
+        listColor: resolvedList.color,
+        ownerId,
+        ownerName,
+        clientName: clients.find((item: ClientSummary) => item.id === payload.clientId)?.name || existingTaskSnapshot?.clientName || null,
+        eventLineName: eventLines.find((item: EventLine) => item.id === payload.eventLineId)?.name || existingTaskSnapshot?.eventLineName || null,
+        projectModuleName: existingTaskSnapshot?.projectModuleName || null,
+        projectFlowName: existingTaskSnapshot?.projectFlowName || null,
+      }, existingTaskSnapshot);
 
-        if (!editingTask.id && savedTask?.id) {
-          setEditingTask((prev) => ({
-            ...prev,
-            id: savedTask.id,
-            clientId: savedTask.clientId || prev.clientId,
-            eventLineId: savedTask.eventLineId || prev.eventLineId,
-            projectModuleId: savedTask.projectModuleId || prev.projectModuleId,
-            projectFlowId: savedTask.projectFlowId || prev.projectFlowId,
-          }));
-        }
+      upsertLocalTask(optimisticTask, existingTaskSnapshot?.id || null);
+      if (taskCalendarDisplayMode !== 'week') {
+        focusCalendarOnTaskDate(payload.dueDate || combinedDueDate, payload.ddl);
+      }
+      closeTaskModal('save-started');
 
+      void (async () => {
         try {
-          if (!isEditingTaskPersonal && pendingTaskAttachments.length > 0 && savedTask?.id) {
-            await uploadAttachmentsToTask(savedTask.id, pendingTaskAttachments, {
-              clientId: savedTask.clientId || editingTask.clientId || null,
-              eventLineId: savedTask.eventLineId || editingTask.eventLineId || null,
-              taskTitle: savedTask.title || editingTask.title.trim(),
-            });
+          if (!isEditingTaskPersonal && orgTaskLists.length === 0) {
+            try {
+              await ensureOrgTaskList();
+            } catch {
+              // 组织清单创建失败不阻断保存
+            }
           }
-        } catch (error) {
-          await loadTaskBlock();
-          if ((savedTask?.eventLineId || editingTask.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || editingTask.eventLineId)) {
-            await openEventLineDetail(savedTask?.eventLineId || editingTask.eventLineId);
+          const savedTask = draftSnapshot.id
+            ? await updateTask(draftSnapshot.id, payload)
+            : await createTask(payload);
+          upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId);
+
+          if (!isEditingTaskPersonal && archiveTextSnapshot && (savedTask.clientId || draftSnapshot.clientId)) {
+            try {
+              const targetClientId = savedTask.clientId || draftSnapshot.clientId;
+              await createClientTextDocument(targetClientId, {
+                title: inferTaskArchiveDocumentTitle({
+                  taskTitle: savedTask.title || draftSnapshot.title,
+                  clientName: clients.find((item: ClientSummary) => item.id === targetClientId)?.name || null,
+                  eventLineName: eventLines.find((item: EventLine) => item.id === (savedTask.eventLineId || draftSnapshot.eventLineId))?.name || null,
+                  content: archiveTextSnapshot,
+                }),
+                content: archiveTextSnapshot,
+              });
+              if (currentClientId && currentClientId === targetClientId) {
+                await refreshWorkspace(targetClientId);
+              }
+            } catch (error) {
+              void loadTaskBlock();
+              if ((savedTask?.eventLineId || draftSnapshot.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || draftSnapshot.eventLineId)) {
+                void openEventLineDetail(savedTask?.eventLineId || draftSnapshot.eventLineId);
+              }
+              flash(
+                'error',
+                `${draftSnapshot.id ? '任务已更新' : '任务已创建'}，但文字归档失败：${
+                  error instanceof Error ? error.message : '请稍后重试'
+                }`,
+              );
+              return;
+            }
+          }
+
+          void loadTaskBlock();
+          if ((savedTask?.eventLineId || draftSnapshot.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || draftSnapshot.eventLineId)) {
+            void openEventLineDetail(savedTask?.eventLineId || draftSnapshot.eventLineId);
           }
           flash(
-            'error',
-            `${editingTask.id ? '任务已更新' : '任务已创建'}，但附件归档失败：${
-              error instanceof Error ? error.message : '请稍后重试'
-            }`,
+            'success',
+            archiveTextSnapshot
+              ? '任务已保存，文字已归档到客户工作台。'
+              : draftSnapshot.id
+                ? '任务已更新'
+                : '任务已创建',
           );
-          return;
+        } catch (error) {
+          if (draftSnapshot.id && existingTaskSnapshot) {
+            upsertLocalTask(existingTaskSnapshot, draftSnapshot.id);
+          } else {
+            setTasks((prev) => prev.filter((item) => item.id !== optimisticTaskId));
+          }
+          if (!isTaskModalOpenRef.current) {
+            const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
+            setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
+            setEditingTask(draftSnapshot);
+            setPendingTaskArchiveText(archiveTextSnapshot);
+            setIsTaskModalOpen(true);
+          }
+          flash('error', `${error instanceof Error ? error.message : (draftSnapshot.id ? '更新失败' : '创建失败')}。草稿已恢复，请检查后重试。`);
         }
-
-        await loadTaskBlock();
-        if ((savedTask?.eventLineId || editingTask.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || editingTask.eventLineId)) {
-          await openEventLineDetail(savedTask?.eventLineId || editingTask.eventLineId);
-        }
-        if (taskCalendarDisplayMode !== 'week') {
-          focusCalendarOnTaskDate(savedTask?.dueDate || combinedDueDate, savedTask?.ddl || resolvedDdl);
-        }
-        closeTaskModal('save-success');
-        resetTaskDraft();
-        flash('success', pendingTaskAttachments.length > 0 ? '任务和附件已归档' : editingTask.id ? '任务已更新' : '任务已创建');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : editingTask.id ? '更新失败' : '创建失败');
-      } finally {
-        setIsSavingTask(false);
-      }
-    };
-
-    const handleTaskAttachmentSelection = async (fileList: FileList | null) => {
-      const files = fileList ? Array.from(fileList) : [];
-      if (taskAttachmentInputRef.current) {
-        taskAttachmentInputRef.current.value = '';
-      }
-      if (files.length === 0) return;
-      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
-        flash('error', '个人日程附件不会进入项目文件库，请先切回协作任务。');
-        return;
-      }
-      if (!editingTask.clientId) {
-        flash('error', '请先关联客户/项目后再上传附件。');
-        return;
-      }
-      if (!editingTask.id) {
-        setPendingTaskAttachments((prev) => [...prev, ...files]);
-        flash('success', `已加入 ${files.length} 个待上传附件，保存任务后会自动归档到项目文件库。`);
-        return;
-      }
-      try {
-        await uploadAttachmentsToTask(editingTask.id, files, {
-          clientId: editingTask.clientId,
-          eventLineId: editingTask.eventLineId || null,
-          taskTitle: editingTask.title.trim(),
-        });
-        await loadTaskBlock();
-        if (activeEventLine?.eventLine.id && activeEventLine.eventLine.id === editingTask.eventLineId) {
-          await openEventLineDetail(activeEventLine.eventLine.id);
-        }
-        flash('success', `${files.length} 个附件已归档到项目文件库。`);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '附件上传失败');
-      }
+      })();
     };
 
     const requestDeleteTaskRecord = (
@@ -6277,24 +6182,24 @@ export default function App() {
       task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
       options?: { closeEditor?: boolean },
     ) => {
-      try {
-        await deleteTask(task.id);
-        await loadTaskBlock();
-        if (reviewDashboard?.weekLabel) {
-          await loadReviewBlock(reviewDashboard.weekLabel);
-        }
-        await refreshWorkspace(task.clientId || undefined);
-        if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) {
-          await openEventLineDetail(task.eventLineId);
-        }
-        if (options?.closeEditor || editingTask.id === task.id) {
-          closeTaskModal('delete-success');
-          resetTaskDraft();
-        }
-        flash('success', '任务已删除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除任务失败');
+      if (options?.closeEditor || editingTask.id === task.id) {
+        closeTaskModal('delete-started');
+        resetTaskDraft();
       }
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      flash('success', '任务已删除');
+      void (async () => {
+        try {
+          await deleteTask(task.id);
+          void loadTaskBlock();
+          if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
+          void refreshWorkspace(task.clientId || undefined);
+          if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
+        } catch {
+          void loadTaskBlock();
+          flash('error', '删除任务失败，已恢复');
+        }
+      })();
     };
 
     const confirmDeleteTaskRecord = async () => {
@@ -6663,13 +6568,17 @@ export default function App() {
       });
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
-      setPendingTaskAttachments([]);
+      setPendingTaskArchiveText('');
     };
 
     const openTaskEditor = (task?: Task, dueDate?: string, options?: { durationMinutes?: number }) => {
       if (!task) {
         resetTaskDraft(dueDate, options);
         setIsTaskModalOpen(true);
+        return;
+      }
+      if (isLocalDraftTaskId(task.id)) {
+        flash('info', '任务正在后台保存，稍等一下就会稳定出现在列表里。');
         return;
       }
       const resolvedDueDate = task.dueDate || dueDate || new Date().toISOString().slice(0, 10);
@@ -6714,7 +6623,7 @@ export default function App() {
       });
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
-      setPendingTaskAttachments([]);
+      setPendingTaskArchiveText('');
       setIsTaskModalOpen(true);
     };
 
@@ -6799,37 +6708,6 @@ export default function App() {
       };
     }, [activeTab, currentClientId, flash, growthContextJump, tasks]);
 
-    const applyTaskScopeSuggestion = async (suggestion: TaskScopeSuggestion) => {
-      if (Object.keys(suggestion.payload).length === 0) return;
-      setApplyingScopeTaskIds((prev) => (prev.includes(suggestion.taskId) ? prev : [...prev, suggestion.taskId]));
-      try {
-        await updateTask(suggestion.taskId, suggestion.payload);
-        await loadTaskBlock();
-        flash('success', `已为"${suggestion.title}"补齐建议归属。`);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '补齐任务归属失败');
-      } finally {
-        setApplyingScopeTaskIds((prev) => prev.filter((item) => item !== suggestion.taskId));
-      }
-    };
-
-    const applyAllVisibleTaskScopeSuggestions = async () => {
-      if (visibleTaskScopeSuggestions.length === 0) return;
-      setIsApplyingAllScopeSuggestions(true);
-      try {
-        for (const suggestion of visibleTaskScopeSuggestions) {
-          if (Object.keys(suggestion.payload).length === 0) continue;
-          await updateTask(suggestion.taskId, suggestion.payload);
-        }
-        await loadTaskBlock();
-        flash('success', `已批量补齐 ${visibleTaskScopeSuggestions.length} 条任务的建议归属。`);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '批量补齐任务归属失败');
-      } finally {
-        setIsApplyingAllScopeSuggestions(false);
-      }
-    };
-
     const handleCalendarShift = (monthDelta: number) => {
       const nextState = shiftCalendarMonth(taskCalendarDate, taskSelectedDate.getDate(), monthDelta);
       setTaskCalendarDate(nextState.calendarDate);
@@ -6890,9 +6768,19 @@ export default function App() {
     };
 
     const toggleTaskExpanded = (taskId: string) => {
+      const isCollapsing = expandedTaskIds.includes(taskId);
       setExpandedTaskIds((prev) =>
-        prev.includes(taskId) ? prev.filter((id) => id !== taskId) : [...prev, taskId],
+        isCollapsing ? prev.filter((id) => id !== taskId) : [...prev, taskId],
       );
+      if (!isCollapsing && !taskSmartBriefs[taskId]) {
+        const task = tasks.find((t) => t.id === taskId);
+        if (task) {
+          void getTaskSmartBriefsBatch([{ id: task.id, title: task.title, desc: task.desc || '', clientId: task.clientId, eventLineId: task.eventLineId, attachmentTitles: (task.attachments || []).map((a) => a.title) }])
+            .then((briefs) => {
+              if (briefs.length > 0) setTaskSmartBriefs((prev) => ({ ...prev, [briefs[0].taskId]: briefs[0] }));
+            }).catch(() => {});
+        }
+      }
     };
 
     const handleQuickCreateTask = async (title: string, dueDate: string) => {
@@ -6926,15 +6814,42 @@ export default function App() {
         ? combineTaskDueDateTime(nextParts.date, nextParts.time || currentParts.time)
         : combineTaskDueDateTime(nextDate, currentParts.time);
       const nextDueValue = nextDueDate || nextDate;
-      await updateTask(task.id, {
+      const nextDueLabel = formatTaskDueLabel(nextDueValue);
+      const previousTaskSnapshot = task;
+      const applyLocalTaskPatch = (nextTask: Task) => {
+        const nextTaskDueParts = splitTaskDueDateTime(nextTask.dueDate);
+        setTasks((prev) => prev.map((item) => (item.id === nextTask.id ? { ...item, ...nextTask } : item)));
+        setEditingTask((prev) => (prev.id === nextTask.id
+          ? {
+              ...prev,
+              dueDate: nextTaskDueParts.date || prev.dueDate,
+              dueTime: nextTaskDueParts.time || prev.dueTime,
+              ddl: nextTask.ddl || formatTaskDueLabel(nextTask.dueDate || nextDueValue),
+            }
+          : prev));
+      };
+
+      applyLocalTaskPatch({
+        ...task,
         dueDate: nextDueValue,
-        ddl: formatTaskDueLabel(nextDueValue),
+        ddl: nextDueLabel,
       });
-      await loadTaskBlock();
+
       if (!options?.preserveCalendarViewport) {
-        focusCalendarOnTaskDate(nextDueValue, formatTaskDueLabel(nextDueValue));
+        focusCalendarOnTaskDate(nextDueValue, nextDueLabel);
       }
-      flash('success', `任务已调整到 ${formatTaskDueLabel(nextDueValue)}。`);
+      try {
+        const updatedTask = await updateTask(task.id, {
+          dueDate: nextDueValue,
+          ddl: nextDueLabel,
+        });
+        applyLocalTaskPatch(updatedTask);
+        void loadTaskBlock();
+        flash('success', `任务已调整到 ${nextDueLabel}。`);
+      } catch (error) {
+        applyLocalTaskPatch(previousTaskSnapshot);
+        flash('error', error instanceof Error ? error.message : '任务调整失败');
+      }
     };
 
     const handleUpdateTaskDuration = async (task: Task, durationMinutes: number) => {
@@ -6986,6 +6901,9 @@ export default function App() {
       if (mode === 'review') {
         setGrowthContextJump(null);
         void loadReviewBlock(reviewDashboard?.currentReview?.weekLabel);
+      }
+      if (mode !== 'list') {
+        setDrillTaskViewOverride(null);
       }
       setTaskViewMode(mode);
     };
@@ -7042,10 +6960,27 @@ export default function App() {
     };
 
     const handleConfirmTasks = async (idsToConfirm: string[]) => {
-      await Promise.all(idsToConfirm.map((id) => confirmTask(id)));
-      setSelectedInboxIds([]);
-      await loadTaskBlock();
-      flash('success', '任务已进入进行中。');
+      const taskIds = Array.from(new Set(idsToConfirm)).filter(Boolean);
+      if (taskIds.length === 0) return;
+      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...taskIds])));
+      setSelectedInboxIds((prev) => prev.filter((id) => !taskIds.includes(id)));
+      const results = await Promise.allSettled(taskIds.map((id) => confirmTask(id)));
+      const failedIds = results.flatMap((result, index) => (result.status === 'rejected' ? [taskIds[index]] : []));
+      const succeededIds = taskIds.filter((id) => !failedIds.includes(id));
+      if (failedIds.length > 0) {
+        setTransitioningInboxTaskIds((prev) => prev.filter((id) => !failedIds.includes(id)));
+        const firstFailure = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined;
+        flash('error', firstFailure?.reason instanceof Error ? firstFailure.reason.message : '部分协作任务确认失败');
+      }
+      if (succeededIds.length > 0) {
+        try {
+          await loadTaskBlock();
+          flash('success', succeededIds.length === taskIds.length ? '任务已进入进行中。' : `已确认 ${succeededIds.length} 条任务。`);
+          setTransitioningInboxTaskIds((prev) => prev.filter((id) => !succeededIds.includes(id)));
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '任务列表刷新失败');
+        }
+      }
     };
 
     const confirmReject = async () => {
@@ -7053,13 +6988,34 @@ export default function App() {
         flash('error', '为了保证协作顺畅，请填写退回理由。');
         return;
       }
-      await Promise.all(rejectingTaskIds.map((id) => rejectTask(id, rejectReason.trim())));
-      setSelectedInboxIds([]);
       setIsRejectModalOpen(false);
+      const taskIds = Array.from(new Set(rejectingTaskIds)).filter(Boolean);
+      if (taskIds.length === 0) {
+        setRejectingTaskIds([]);
+        setRejectReason('');
+        return;
+      }
+      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...taskIds])));
+      setSelectedInboxIds((prev) => prev.filter((id) => !taskIds.includes(id)));
       setRejectingTaskIds([]);
       setRejectReason('');
-      await loadTaskBlock();
-      flash('success', '任务已退回。');
+      const results = await Promise.allSettled(taskIds.map((id) => rejectTask(id, rejectReason.trim())));
+      const failedIds = results.flatMap((result, index) => (result.status === 'rejected' ? [taskIds[index]] : []));
+      const succeededIds = taskIds.filter((id) => !failedIds.includes(id));
+      if (failedIds.length > 0) {
+        setTransitioningInboxTaskIds((prev) => prev.filter((id) => !failedIds.includes(id)));
+        const firstFailure = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined;
+        flash('error', firstFailure?.reason instanceof Error ? firstFailure.reason.message : '部分协作任务退回失败');
+      }
+      if (succeededIds.length > 0) {
+        try {
+          await loadTaskBlock();
+          flash('success', succeededIds.length === taskIds.length ? '任务已退回。' : `已退回 ${succeededIds.length} 条任务。`);
+          setTransitioningInboxTaskIds((prev) => prev.filter((id) => !succeededIds.includes(id)));
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '任务列表刷新失败');
+        }
+      }
     };
 
     const generateGlobalSummary = async () => {
@@ -7189,6 +7145,7 @@ export default function App() {
                 {[
                   { id: 'list', label: '任务列表' },
                   { id: 'calendar', label: '我的月历' },
+                  { id: 'event_lines', label: '事件线' },
                   { id: 'review', label: '周复盘' },
                 ].map((mode) => (
                   <button
@@ -7220,75 +7177,6 @@ export default function App() {
         <div ref={taskViewportRef} className="flex-1 min-w-0 overflow-y-auto scrollbar-hide">
           {taskViewMode === 'list' && (
             <div className="max-w-3xl">
-              {visibleTaskScopeSuggestions.length > 0 && !activeFormalTaskView && (
-                <div className="mb-4 rounded-[28px] border border-[#DDE6FF] bg-[#F7F9FF] p-4 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[12px] font-bold tracking-[0.16em] text-[#5B7BFE]">结构归属建议</p>
-                      <h3 className="mt-2 text-[18px] font-bold text-slate-900">请确认这条任务属于哪里</h3>
-                      <p className="mt-1 text-[12px] leading-6 text-slate-500">
-                        这里不是让你补长背景，而是确认这条任务应该挂到哪个项目、哪条事件线、哪个模块和流程。挂对之后，AI 才能读对上下文，后面的洞察和周判断才会更准。
-                      </p>
-                    </div>
-                    <Button
-                      primary
-                      className="px-4 py-2 rounded-2xl text-[12px]"
-                      onClick={() => void applyAllVisibleTaskScopeSuggestions()}
-                      disabled={isApplyingAllScopeSuggestions}
-                    >
-                      {isApplyingAllScopeSuggestions ? '应用中…' : `批量确认并应用 ${visibleTaskScopeSuggestions.length} 条`}
-                    </Button>
-                  </div>
-                  <div className="mt-4 space-y-3">
-                    {visibleTaskScopeSuggestions.map((suggestion) => (
-                      <div key={suggestion.taskId} className="rounded-2xl border border-white/80 bg-white px-4 py-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[14px] font-bold text-slate-900 truncate">{suggestion.title}</p>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              现在需要你确认：{suggestion.missingLabels.join('、')}
-                            </p>
-                            <p className="mt-1 text-[11px] text-slate-400">
-                              如果下面这些建议是对的，直接应用；如果不对，先打开任务再微调。
-                            </p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {suggestion.chips.map((chip) => (
-                                <span
-                                  key={`${suggestion.taskId}-${chip.key}`}
-                                  className="inline-flex items-center gap-1 rounded-full border border-[#DDE6FF] bg-[#F7F9FF] px-2.5 py-1 text-[11px] font-semibold text-[#4C63D2]"
-                                  title={chip.reason}
-                                >
-                                  <span className="text-slate-400">{chip.label}</span>
-                                  <span>{chip.value}</span>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              className="px-3 py-2 rounded-2xl text-[12px]"
-                              onClick={() => {
-                                const target = tasks.find((item) => item.id === suggestion.taskId);
-                                if (target) openTaskEditor(target);
-                              }}
-                            >
-                              打开任务确认
-                            </Button>
-                            <Button
-                              primary
-                              className="px-3 py-2 rounded-2xl text-[12px]"
-                              onClick={() => void applyTaskScopeSuggestion(suggestion)}
-                              disabled={applyingScopeTaskIds.includes(suggestion.taskId)}
-                            >
-                              {applyingScopeTaskIds.includes(suggestion.taskId) ? '应用中…' : '直接按这个建议挂上'}
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 cursor-pointer select-none group" onClick={() => setIsTaskGroupOpen(!isTaskGroupOpen)}>
@@ -7300,26 +7188,23 @@ export default function App() {
                       {listTasks.length}
                     </span>
                   </div>
-                  {activeFormalTaskViewOption?.description && (
-                    <p className="mt-1 pl-7 text-[11px] leading-5 text-gray-400">{activeFormalTaskViewOption.description}</p>
-                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>正式视图</span>
-                    <select
-                      value={selectedFormalTaskViewId}
-                      onChange={(event) => handleSelectFormalTaskView(event.target.value)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                    >
-                      <option value="">关闭</option>
-                      {formalTaskViewOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="flex items-center gap-1.5 rounded-2xl border border-gray-200 bg-white px-3 py-2">
+                    <Search size={14} className="text-gray-400 shrink-0" />
+                    <input
+                      type="text"
+                      value={taskSearchQuery}
+                      onChange={(e) => setTaskSearchQuery(e.target.value)}
+                      placeholder="搜索任务..."
+                      className="w-[120px] bg-transparent text-[12px] font-bold text-gray-800 outline-none placeholder:text-gray-400 placeholder:font-normal"
+                    />
+                    {taskSearchQuery && (
+                      <button type="button" onClick={() => setTaskSearchQuery('')} className="text-gray-300 hover:text-gray-500">
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
                   <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
                     <span>展示</span>
                     <select
@@ -7502,6 +7387,40 @@ export default function App() {
                                 <p className="mt-2 text-[12px] leading-6 text-gray-600 whitespace-pre-wrap">{task.desc}</p>
                               </div>
                             )}
+                            {task.attachments && task.attachments.length > 0 && (
+                              <div className="mb-3 flex flex-wrap gap-2">
+                                {task.attachments.map((att) => (
+                                  <span key={att.id} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600">
+                                    <Paperclip size={11} className="text-gray-400" />
+                                    {att.title}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {task.clientId && (
+                              <div className="mb-3">
+                                <label className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 bg-white px-3 py-2 text-[11px] font-medium text-gray-500 cursor-pointer transition hover:border-[#5B7BFE] hover:text-[#5B7BFE] hover:bg-blue-50/50">
+                                  <UploadCloud size={14} />
+                                  上传附件
+                                  <input
+                                    type="file"
+                                    multiple
+                                    className="hidden"
+                                    onChange={(event) => {
+                                      const files = event.target.files;
+                                      if (!files || files.length === 0) return;
+                                      void uploadAttachmentsToTask(
+                                        task.id,
+                                        Array.from(files),
+                                        { clientId: task.clientId, eventLineId: task.eventLineId, taskTitle: task.title },
+                                      ).then(() => loadTaskBlock());
+                                      event.target.value = '';
+                                    }}
+                                  />
+                                </label>
+                                <span className="ml-2 text-[10px] text-gray-400">附件将自动进入客户工作台</span>
+                              </div>
+                            )}
                             {task.status === 'doing' && task.orgContext && (
                               <div className="flex flex-wrap gap-2 mb-2">
                                 <Button
@@ -7539,13 +7458,71 @@ export default function App() {
                                 <p className="text-[12px] text-gray-400 italic">点击编辑可以为这条任务添加详细描述、背景说明或注意事项。</p>
                               </div>
                             )}
-                            <TaskOrgContextPanel
-                              task={task}
-                              compact
-                              viewerRole={currentSessionUser?.primaryRole}
-                              eventLine={task.eventLineId ? eventLineById[task.eventLineId] || null : null}
-                              contextPreview={taskContextPreview?.taskId === task.id ? taskContextPreview : null}
-                            />
+                            {!taskSmartBriefs[task.id] && (task.attachments?.length > 0 || task.desc) && (
+                              <div className="mb-3 rounded-2xl border border-gray-100 bg-gray-50/50 px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-[#5B7BFE]" />
+                                  <p className="text-[11px] text-gray-400">加载任务概要...</p>
+                                </div>
+                              </div>
+                            )}
+                            {taskSmartBriefs[task.id] && taskSmartBriefs[task.id].summary && (
+                              <div className="mb-3 space-y-3">
+                                <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-4 py-3">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">任务概要</p>
+                                    {taskSmartBriefs[task.id].summarySourceLabels.map((label) => (
+                                      <span key={label} className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">{label}</span>
+                                    ))}
+                                  </div>
+                                  <p className="text-[12px] leading-6 text-gray-600">{taskSmartBriefs[task.id].summary}</p>
+                                </div>
+                                {taskSmartBriefs[task.id].actionItems.length > 0 && (
+                                  <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
+                                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-2">下一步待办</p>
+                                    <div className="space-y-2">
+                                      {taskSmartBriefs[task.id].actionItems.map((item, idx) => (
+                                        <div key={idx} className="flex items-start gap-2">
+                                          <div className="flex-1 min-w-0">
+                                            <p className="text-[12px] text-gray-700">{item.text}</p>
+                                            <div className="flex items-center gap-2">
+                                              {item.sourceLabel && (
+                                                <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
+                                                  item.sourceLabel === '会议待办' ? 'bg-emerald-50 text-emerald-600' :
+                                                  item.sourceLabel === '跟进对方' ? 'bg-amber-50 text-amber-600' :
+                                                  item.sourceLabel === '系统建议' ? 'bg-blue-50 text-blue-600' :
+                                                  'bg-gray-100 text-gray-500'
+                                                }`}>{item.sourceLabel}</span>
+                                              )}
+                                              {item.internalSuggestedOwner && (
+                                                <span className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[9px] font-bold text-violet-600">→ {item.internalSuggestedOwner}</span>
+                                              )}
+                                            </div>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="shrink-0 rounded-lg border border-[#D7E0FF] bg-[#F8FAFF] px-2.5 py-1 text-[10px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              resetTaskDraft();
+                                              setEditingTask((prev) => ({
+                                                ...prev,
+                                                title: item.text,
+                                                clientId: task.clientId || '',
+                                                eventLineId: task.eventLineId || '',
+                                              }));
+                                              setIsTaskModalOpen(true);
+                                            }}
+                                          >
+                                            → 收件箱
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -7645,28 +7622,6 @@ export default function App() {
 
           {taskViewMode === 'calendar' && (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500 shadow-sm">
-                  <span>正式视图</span>
-                  <select
-                    value={selectedFormalTaskViewId}
-                    onChange={(event) => handleSelectFormalTaskView(event.target.value)}
-                    className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                  >
-                    <option value="">关闭</option>
-                    {formalTaskViewOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {activeFormalTaskViewOption?.description ? (
-                  <span className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-500 shadow-sm">
-                    {activeFormalTaskViewOption.description}
-                  </span>
-                ) : null}
-              </div>
               <TaskCalendarView
                 tasks={calendarTasks}
                 eventLinesById={eventLineById}
@@ -7691,8 +7646,8 @@ export default function App() {
                 onReturnTaskReview={handleReturnTaskReview}
                 taskDateForCalendar={taskDateForCalendar}
                 isTaskOverdue={isTaskOverdue}
-                showCollaborativeTasks={showCalendarCollaborations}
-                onToggleCollaborativeTasks={() => setShowCalendarCollaborations((prev) => !prev)}
+                showCollaborativeTasks={hidePersonalTasks}
+                onToggleCollaborativeTasks={() => setHidePersonalTasks((prev) => !prev)}
               />
             </div>
           )}
@@ -7710,6 +7665,52 @@ export default function App() {
               onShiftMonth={handleCalendarShift}
               onGoToToday={handleCalendarToday}
             />
+          )}
+
+          {taskViewMode === 'event_lines' && (
+            <div className="max-w-4xl mx-auto pb-10">
+              <div className="mb-6">
+                <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
+                <p className="text-[12px] text-gray-500 mt-1">所有人协作的项目时间线，不可篡改。点击任意事件线进入汇报预览。</p>
+              </div>
+              {eventLines.length === 0 && (
+                <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
+                  <p className="text-[13px] text-gray-400">还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。</p>
+                </div>
+              )}
+              <div className="space-y-3">
+                {eventLines.map((el) => {
+                  const taskCount = tasks.filter((t) => t.eventLineId === el.id).length;
+                  return (
+                    <button
+                      key={el.id}
+                      type="button"
+                      className="w-full rounded-2xl border border-gray-100 bg-white p-5 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md"
+                      onClick={() => setReportEventLineId(el.id)}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[15px] font-bold text-gray-900 truncate">{el.name}</p>
+                          {el.summary && (
+                            <p className="mt-1 text-[12px] leading-5 text-gray-500 line-clamp-2">{el.summary}</p>
+                          )}
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{el.status}</span>
+                            {el.stage && <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700">{el.stage}</span>}
+                            {el.primaryClientName && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{el.primaryClientName}</span>}
+                            <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
+                            {el.ownerName && <span className="rounded-full bg-blue-50 px-2.5 py-1 font-semibold text-blue-600">{el.ownerName}</span>}
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-[11px] text-gray-400">
+                          {el.updatedAt.slice(0, 10)}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           {taskViewMode === 'review' && (
@@ -7931,9 +7932,6 @@ export default function App() {
                       onTriggerAction={handleTriggerReviewAction}
                       onOpenActionResult={handleOpenReviewActionResult}
                       onDrillTarget={handleReviewDashboardDrillTarget}
-                      onResolveGapAction={(payload) => {
-                        void handleResolveEventLineGapAction(payload);
-                      }}
                       viewerRole={currentSessionUser?.primaryRole === 'admin' ? 'admin' : currentSessionUser?.isDepartmentLead ? 'department_lead' : 'employee'}
                     />
                   )}
@@ -7964,7 +7962,10 @@ export default function App() {
         </div>
 
         {activeReviewDrillTarget && (
-          <div className="fixed inset-0 z-[52] flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm">
+          <div
+            className="fixed inset-0 z-[52] flex items-center justify-center bg-black/30 p-4 backdrop-blur-sm"
+            onClick={closeReviewDrillTarget}
+          >
             <div
               className="w-full max-w-[920px] rounded-[28px] border border-gray-100 bg-white p-6 shadow-[0_20px_60px_rgba(0,0,0,0.15)]"
               onClick={(event) => event.stopPropagation()}
@@ -7989,7 +7990,7 @@ export default function App() {
                   <button
                     type="button"
                     className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                    onClick={() => setActiveReviewDrillTarget(null)}
+                    onClick={closeReviewDrillTarget}
                     aria-label="关闭判断下钻"
                   >
                     <X size={16} />
@@ -8577,68 +8578,61 @@ export default function App() {
                   />
 
                   <div className="mt-6 space-y-3">
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        if (isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy) return;
-                        taskAttachmentInputRef.current?.click();
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          if (isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy) return;
-                          taskAttachmentInputRef.current?.click();
+                    <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white p-4 transition focus-within:border-blue-400 focus-within:bg-blue-50/40">
+                      <div className="mb-3 flex items-center gap-2 text-gray-500">
+                        <PenTool size={18} className="text-gray-400" />
+                        <p className="text-sm font-medium">
+                          {isEditingTaskPersonal ? '个人日程不进入客户工作台' : '往里面贴文字'}
+                        </p>
+                      </div>
+                      <textarea
+                        value={pendingTaskArchiveText}
+                        onChange={(event) => setPendingTaskArchiveText(event.target.value)}
+                        disabled={isEditingTaskPersonal || isSavingTask}
+                        placeholder={
+                          isEditingTaskPersonal
+                            ? '切回协作任务后，可把补充文字归档到客户工作台'
+                            : '把纪要、背景说明、补充材料直接贴在这里，保存任务时会一起归档到当前项目的客户工作台'
                         }
-                      }}
-                      className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-gray-400 transition ${
-                        isEditingTaskPersonal || !editingTask.clientId || isTaskAttachmentBusy
-                          ? 'cursor-not-allowed border-gray-200 bg-gray-50'
-                          : 'cursor-pointer border-gray-200 hover:border-blue-400 hover:bg-blue-50'
-                      }`}
-                    >
-                      <Paperclip size={24} className="mb-2 text-gray-400" />
-                      <p className="text-sm font-medium text-gray-500">
+                        className={`min-h-[120px] w-full resize-none border-none bg-transparent text-[14px] leading-relaxed outline-none placeholder:text-gray-400 ${
+                          isEditingTaskPersonal || isSavingTask ? 'cursor-not-allowed text-gray-300' : 'text-gray-600'
+                        }`}
+                      />
+                      <p className="mt-2 text-xs text-gray-400">
                         {isEditingTaskPersonal
-                          ? '个人日程附件不进入项目库'
+                          ? '个人日程不会同步到客户工作台。'
                           : !editingTask.clientId
-                            ? '先选择组织/项目后再上传附件'
-                            : '点击或拖拽上传附件'}
+                            ? '可以先粘贴内容；保存前请先选择组织/项目，归档时会进入对应客户工作台。'
+                            : '保存并关联项目后，这段文字会自动归档到当前项目的客户工作台。'}
                       </p>
-                      <p className="mt-1 text-xs text-gray-400">保存并关联项目后将自动归档至项目文件库</p>
                     </div>
-                    <input
-                      ref={taskAttachmentInputRef}
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={(event) => {
-                        void handleTaskAttachmentSelection(event.target.files);
-                      }}
-                    />
-                    {pendingTaskAttachments.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {pendingTaskAttachments.map((file, index) => (
-                          <span
-                            key={`${file.name}-${file.size}-${index}`}
-                            className="inline-flex items-center gap-2 rounded-full border border-[#DDE6FF] bg-[#F7F9FF] px-3 py-1 text-[12px] text-slate-600"
-                          >
-                            <span className="max-w-[220px] truncate">{file.name}</span>
-                            <button
-                              type="button"
-                              className="text-slate-400 hover:text-slate-700"
-                              onClick={() =>
-                                setPendingTaskAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index))
-                              }
-                            >
-                              <X size={12} />
-                            </button>
-                          </span>
-                        ))}
+                    {pendingTaskArchiveText.trim() && (
+                      <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#DDE6FF] bg-[#F7F9FF] px-4 py-3 text-[12px] text-slate-600">
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-700">
+                            {inferTaskArchiveDocumentTitle({
+                              taskTitle: editingTask.title,
+                              clientName: clients.find((item: ClientSummary) => item.id === editingTask.clientId)?.name || null,
+                              eventLineName: selectedEventLineSummary?.name || null,
+                              content: pendingTaskArchiveText,
+                            })}
+                          </p>
+                          <p className="mt-1 text-[11px] text-slate-400">
+                            已暂存 {pendingTaskArchiveText.trim().length} 个字，保存任务后会自动归档
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 text-slate-400 hover:text-slate-700"
+                          onClick={() => setPendingTaskArchiveText('')}
+                        >
+                          <X size={14} />
+                        </button>
                       </div>
                     )}
                     {editingTaskRecord?.attachments?.length ? (
                       <div className="flex flex-wrap gap-2">
-                        {editingTaskRecord.attachments.map((attachment) => (
+                        {editingTaskRecord.attachments.map((attachment: TaskAttachmentRecord) => (
                           <span
                             key={attachment.id}
                             className="inline-flex max-w-[280px] items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-[12px] text-slate-600"
@@ -10864,6 +10858,11 @@ export default function App() {
       });
       await new Promise<void>((resolve) => {
         window.requestAnimationFrame(() => {
+          // Force scroll to bottom so thinking panel is visible immediately
+          const container = chatContainerRef.current;
+          if (container) {
+            container.scrollTop = container.scrollHeight;
+          }
           window.setTimeout(resolve, 32);
         });
       });
@@ -10879,6 +10878,10 @@ export default function App() {
           setActiveMessageId(started.assistantMessage.id);
           setActiveAnalysisRun(started.analysisRun);
           setIsStartingMessage(false);
+        });
+        window.requestAnimationFrame(() => {
+          const container = chatContainerRef.current;
+          if (container) container.scrollTop = container.scrollHeight;
         });
         startMessageAbortControllerRef.current = null;
         beginAnalysisRunPolling(started.analysisRun.id, currentClientId);
@@ -13162,24 +13165,24 @@ export default function App() {
       task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
       options?: { closeEditor?: boolean },
     ) => {
-      try {
-        await deleteTask(task.id);
-        await loadTaskBlock();
-        if (reviewDashboard?.weekLabel) {
-          await loadReviewBlock(reviewDashboard.weekLabel);
-        }
-        await refreshWorkspace(task.clientId || undefined);
-        if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) {
-          await openEventLineDetail(task.eventLineId);
-        }
-        if (options?.closeEditor || editingTask.id === task.id) {
-          closeTaskModal('delete-success');
-          resetTaskDraft();
-        }
-        flash('success', '任务已删除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除任务失败');
+      if (options?.closeEditor || editingTask.id === task.id) {
+        closeTaskModal('delete-started');
+        resetTaskDraft();
       }
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      flash('success', '任务已删除');
+      void (async () => {
+        try {
+          await deleteTask(task.id);
+          void loadTaskBlock();
+          if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
+          void refreshWorkspace(task.clientId || undefined);
+          if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
+        } catch {
+          void loadTaskBlock();
+          flash('error', '删除任务失败，已恢复');
+        }
+      })();
     };
 
     const confirmDeleteTaskRecord = async () => {
@@ -13585,6 +13588,7 @@ export default function App() {
             >
               <option value="mock">mock（联调模式）</option>
               <option value="qwen">Qwen 3.5</option>
+              <option value="doubao">豆包 Seed 1.6（火山方舟）</option>
             </select>
             <input value={draft.aiModel} onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))} placeholder="模型名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
             <input type="password" value={draft.apiKey} onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))} placeholder="API Key（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
@@ -14460,7 +14464,13 @@ export default function App() {
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
       <div className="min-h-screen bg-[#F9FAFB] flex font-sans overflow-hidden text-gray-800 antialiased selection:bg-blue-100 selection:text-[#5B7BFE]">
-      <aside className={`w-[60px] ${isSidebarCollapsed ? 'md:w-[88px]' : 'md:w-[240px]'} bg-white border-r border-gray-100 flex flex-col fixed top-[22px] h-[calc(100vh-22px)] z-20 shrink-0 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.02)] transition-[width] duration-300`}>
+      <aside
+        className={`w-[60px] ${isSidebarCollapsed ? 'md:w-[88px]' : 'md:w-[240px]'} bg-white border-r border-gray-100 flex flex-col fixed z-20 shrink-0 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.02)] transition-[width] duration-300`}
+        style={{
+          top: 'var(--window-drag-strip-height)',
+          height: 'calc(100vh - var(--window-drag-strip-height))',
+        }}
+      >
         <div className={`px-4 py-6 md:py-7 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-6'}`}>
           <div className={`flex items-center gap-3 md:gap-4 justify-center ${isSidebarCollapsed ? 'md:justify-center' : 'md:justify-start'}`}>
             <BrandLogoMark logoDataUrl={systemAdminSettingsState.brandLogoDataUrl || null} className={`w-8 h-8 ${isSidebarCollapsed ? 'md:w-10 md:h-10' : 'md:w-11 md:h-11'}`} />
@@ -14551,7 +14561,13 @@ export default function App() {
         </div>
       </aside>
 
-      <main className={`flex-1 ml-[60px] ${isSidebarCollapsed ? 'md:ml-[88px]' : 'md:ml-[240px]'} mt-[22px] h-[calc(100vh-22px)] bg-[#F9FAFB] flex flex-col relative overflow-hidden transition-[margin-left] duration-300`}>
+      <main
+        className={`flex-1 ml-[60px] ${isSidebarCollapsed ? 'md:ml-[88px]' : 'md:ml-[240px]'} bg-[#F9FAFB] flex flex-col relative overflow-hidden transition-[margin-left] duration-300`}
+        style={{
+          marginTop: 'var(--window-drag-strip-height)',
+          height: 'calc(100vh - var(--window-drag-strip-height))',
+        }}
+      >
         {backendCompatibilityError && (
           <div className="absolute top-4 left-4 z-50 max-w-[460px] px-4 py-3 rounded-2xl text-[12px] font-bold shadow-sm bg-rose-50 text-rose-600 border border-rose-200">
             {backendCompatibilityError}

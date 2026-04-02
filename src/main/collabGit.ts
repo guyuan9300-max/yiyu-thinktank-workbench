@@ -47,6 +47,8 @@ type RepoSnapshot = {
   repoPath: string | null;
   repoName: string | null;
   suggestedRepoPath: string | null;
+  gitRepoPath: string | null;
+  scopeRelativePath: string | null;
   isConfigured: boolean;
   isValid: boolean;
   branch: string | null;
@@ -67,6 +69,12 @@ type RepoOptions = {
   suggestedCandidates: string[];
   fetchRemote?: boolean;
   appDbPath?: string | null;
+};
+
+type RepoWorkContext = {
+  repoPath: string;
+  gitRepoPath: string;
+  scopeRelativePath: string | null;
 };
 
 type SharedSettingsTarget = {
@@ -168,6 +176,21 @@ const IGNORABLE_LOCAL_STATUS_PATHS = new Set([
 const IGNORABLE_LOCAL_STATUS_PREFIXES = [
   'mobile/',
 ];
+
+const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
+const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
+
+function normalizeCollabRepoBindingPath(targetPath: string) {
+  const normalized = path.resolve(targetPath).replace(/[\\/]+$/, '');
+  const legacySuffix = `${path.sep}${COLLAB_LEGACY_REPO_NAME}`;
+  if (normalized.endsWith(legacySuffix)) {
+    return normalized.slice(0, -COLLAB_LEGACY_REPO_NAME.length) + COLLAB_PRIMARY_REPO_NAME;
+  }
+  if (path.basename(normalized) === 'workspace') {
+    return path.join(normalized, COLLAB_PRIMARY_REPO_NAME);
+  }
+  return normalized;
+}
 
 function formatSyncedJson(value: Record<string, unknown>) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -301,18 +324,87 @@ function labelSharedSettingKey(settingKey: string) {
   return SHARED_SETTING_LABELS[settingKey] || settingKey;
 }
 
-async function readGitObject(repoPath: string, revision: string, targetPath: string) {
-  const result = await runGit(repoPath, ['show', `${revision}:${targetPath}`], { allowNonZero: true });
+async function readGitObject(context: RepoWorkContext, revision: string, targetPath: string) {
+  const gitTargetPath = toScopedGitPath(context.scopeRelativePath, targetPath);
+  const result = await runGit(context.gitRepoPath, ['show', `${revision}:${gitTargetPath}`], { allowNonZero: true });
   if (result.exitCode !== 0) return null;
   return result.stdout;
 }
 
-async function readWorkingTreeText(repoPath: string, targetPath: string) {
-  return fs.promises.readFile(path.join(repoPath, targetPath), 'utf8').catch(() => null);
+async function readWorkingTreeText(context: RepoWorkContext, targetPath: string) {
+  return fs.promises.readFile(path.join(context.repoPath, targetPath), 'utf8').catch(() => null);
 }
 
 function normalizeRepoPath(targetPath: string) {
-  return path.resolve(targetPath);
+  return normalizeCollabRepoBindingPath(targetPath);
+}
+
+function normalizeRelativePath(targetPath: string) {
+  return targetPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+function computeScopeRelativePath(gitRepoPath: string, repoPath: string) {
+  const relativePath = normalizeRelativePath(path.relative(gitRepoPath, repoPath));
+  return relativePath && relativePath !== '.' ? relativePath : null;
+}
+
+function toScopedGitPath(scopeRelativePath: string | null, targetPath: string) {
+  const normalizedTargetPath = normalizeRelativePath(targetPath);
+  if (!scopeRelativePath) return normalizedTargetPath;
+  return normalizedTargetPath ? `${scopeRelativePath}/${normalizedTargetPath}` : scopeRelativePath;
+}
+
+function stripScopePrefix(targetPath: string, scopeRelativePath: string | null) {
+  const normalizedTargetPath = normalizeRelativePath(targetPath);
+  if (!scopeRelativePath) return normalizedTargetPath;
+  if (normalizedTargetPath === scopeRelativePath) return '';
+  const prefix = `${scopeRelativePath}/`;
+  if (!normalizedTargetPath.startsWith(prefix)) return null;
+  return normalizedTargetPath.slice(prefix.length);
+}
+
+function mapStatusEntryToScope(entry: ParsedStatusEntry, scopeRelativePath: string | null): ParsedStatusEntry | null {
+  const scopedPath = stripScopePrefix(entry.path, scopeRelativePath);
+  const scopedPreviousPath = entry.previousPath ? stripScopePrefix(entry.previousPath, scopeRelativePath) : null;
+  if (scopedPath === null) {
+    if (entry.type === 'renamed' && scopedPreviousPath) {
+      return {
+        ...entry,
+        path: scopedPreviousPath,
+        previousPath: scopedPreviousPath,
+      };
+    }
+    return null;
+  }
+  return {
+    ...entry,
+    path: scopedPath,
+    previousPath: scopedPreviousPath,
+  };
+}
+
+function mapDiffEntryToScope(entry: ParsedDiffEntry, scopeRelativePath: string | null): ParsedDiffEntry | null {
+  const scopedPath = stripScopePrefix(entry.path, scopeRelativePath);
+  const scopedPreviousPath = entry.previousPath ? stripScopePrefix(entry.previousPath, scopeRelativePath) : null;
+  if (scopedPath === null) {
+    if (entry.type === 'renamed' && scopedPreviousPath) {
+      return {
+        ...entry,
+        path: scopedPreviousPath,
+        previousPath: scopedPreviousPath,
+      };
+    }
+    return null;
+  }
+  return {
+    ...entry,
+    path: scopedPath,
+    previousPath: scopedPreviousPath,
+  };
+}
+
+function createRepoWorkContext(repoPath: string, gitRepoPath: string, scopeRelativePath: string | null): RepoWorkContext {
+  return { repoPath, gitRepoPath, scopeRelativePath };
 }
 
 function parseFileChangeTypeFromStatus(x: string, y: string, remainder: string): CollabFileChangeType {
@@ -619,17 +711,17 @@ function addEffectDetail(effectMap: Map<string, EffectDraft>, nextDraft: ReturnT
 
 async function buildSharedSettingsEffect(
   mode: 'push' | 'pull',
-  repoPath: string,
+  context: RepoWorkContext,
   files: CollabFileChange[],
 ) {
   const target = SHARED_SETTINGS_TARGETS[0];
   const matchedFiles = files.filter((file) => file.path === target.repoRelativePath);
   if (!matchedFiles.length) return null;
   const beforeRevision = mode === 'push' ? 'origin/main' : 'HEAD';
-  const beforeRecord = parseSharedSettingsContent(await readGitObject(repoPath, beforeRevision, target.repoRelativePath)) || target.defaultValue();
+  const beforeRecord = parseSharedSettingsContent(await readGitObject(context, beforeRevision, target.repoRelativePath)) || target.defaultValue();
   const afterRecord = mode === 'push'
-    ? (parseSharedSettingsContent(await readWorkingTreeText(repoPath, target.repoRelativePath)) || target.defaultValue())
-    : (parseSharedSettingsContent(await readGitObject(repoPath, 'origin/main', target.repoRelativePath)) || target.defaultValue());
+    ? (parseSharedSettingsContent(await readWorkingTreeText(context, target.repoRelativePath)) || target.defaultValue())
+    : (parseSharedSettingsContent(await readGitObject(context, 'origin/main', target.repoRelativePath)) || target.defaultValue());
   const changedKeys = Array.from(new Set([
     ...Object.keys(beforeRecord),
     ...Object.keys(afterRecord),
@@ -661,9 +753,10 @@ async function buildEffectPreviews(
   snapshot: RepoSnapshot,
   files: CollabFileChange[],
 ) {
-  if (!snapshot.repoPath) return [];
+  if (!snapshot.repoPath || !snapshot.gitRepoPath) return [];
+  const context = createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath);
   const effectMap = new Map<string, EffectDraft>();
-  const sharedEffect = await buildSharedSettingsEffect(mode, snapshot.repoPath, files);
+  const sharedEffect = await buildSharedSettingsEffect(mode, context, files);
   if (sharedEffect) effectMap.set(sharedEffect.id, sharedEffect);
   for (const file of files) {
     const normalized = file.path.replace(/\\/g, '/');
@@ -801,7 +894,7 @@ export async function findSuggestedCollabRepoPath(candidates: string[]) {
     if (seen.has(normalized)) continue;
     seen.add(normalized);
     const repoRoot = await resolveGitRepoTopLevel(normalized);
-    if (repoRoot) return repoRoot;
+    if (repoRoot) return normalized;
   }
   return null;
 }
@@ -836,6 +929,8 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       repoPath: null,
       repoName: null,
       suggestedRepoPath,
+      gitRepoPath: null,
+      scopeRelativePath: null,
       isConfigured: false,
       isValid: false,
       branch: null,
@@ -857,6 +952,8 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       repoPath,
       repoName: path.basename(repoPath),
       suggestedRepoPath,
+      gitRepoPath: null,
+      scopeRelativePath: null,
       isConfigured: true,
       isValid: false,
       branch: null,
@@ -872,27 +969,37 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       statusText: '当前目录不是有效 Git 仓库。',
     };
   }
+  const scopeRelativePath = computeScopeRelativePath(repoRoot, repoPath);
+  const gitContext = createRepoWorkContext(repoPath, repoRoot, scopeRelativePath);
 
-  await exportSharedSettingsToRepo(repoRoot, options.appDbPath);
+  await exportSharedSettingsToRepo(repoPath, options.appDbPath);
 
   if (options.fetchRemote) {
-    await runGit(repoRoot, ['fetch', 'origin'], { allowNonZero: true });
+    await runGit(gitContext.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
   }
 
-  const statusResult = await runGit(repoRoot, ['status', '--porcelain=v1', '--branch']);
+  const scopedGitArgs = scopeRelativePath ? ['--', scopeRelativePath] : [];
+  const statusResult = await runGit(gitContext.gitRepoPath, ['status', '--porcelain=v1', '--branch', ...scopedGitArgs]);
   const { branchHeader, parsedEntries } = parseStatusEntries(statusResult.stdout);
-  const expandedLocalEntries = await expandUntrackedDirectoryEntries(repoRoot, parsedEntries);
-  const collabVisibleLocalEntries = expandedLocalEntries.filter((entry) => !isIgnorableLocalStatusPath(entry.path));
+  const expandedLocalEntries = await expandUntrackedDirectoryEntries(gitContext.gitRepoPath, parsedEntries);
+  const scopedLocalEntries = expandedLocalEntries
+    .map((entry) => mapStatusEntryToScope(entry, gitContext.scopeRelativePath))
+    .filter((entry): entry is ParsedStatusEntry => Boolean(entry));
+  const collabVisibleLocalEntries = scopedLocalEntries.filter((entry) => !isIgnorableLocalStatusPath(entry.path));
   const { branch, aheadCount, behindCount } = parseBranchHeader(branchHeader);
-  const remoteDiffResult = await runGit(repoRoot, ['diff', '--name-status', '--find-renames=50%', 'HEAD..origin/main'], {
+  const remoteDiffResult = await runGit(gitContext.gitRepoPath, ['diff', '--name-status', '--find-renames=50%', 'HEAD..origin/main', ...scopedGitArgs], {
     allowNonZero: true,
   });
-  const localBranchDiffResult = await runGit(repoRoot, ['diff', '--name-status', '--find-renames=50%', 'origin/main...HEAD'], {
+  const localBranchDiffResult = await runGit(gitContext.gitRepoPath, ['diff', '--name-status', '--find-renames=50%', 'origin/main...HEAD', ...scopedGitArgs], {
     allowNonZero: true,
   });
-  const remoteEntries = parseDiffEntries(remoteDiffResult.stdout);
-  const localBranchEntries = parseDiffEntries(localBranchDiffResult.stdout);
-  const hasUnmergedPaths = parsedEntries.some((entry) => entry.isUnmerged);
+  const remoteEntries = parseDiffEntries(remoteDiffResult.stdout)
+    .map((entry) => mapDiffEntryToScope(entry, gitContext.scopeRelativePath))
+    .filter((entry): entry is ParsedDiffEntry => Boolean(entry));
+  const localBranchEntries = parseDiffEntries(localBranchDiffResult.stdout)
+    .map((entry) => mapDiffEntryToScope(entry, gitContext.scopeRelativePath))
+    .filter((entry): entry is ParsedDiffEntry => Boolean(entry));
+  const hasUnmergedPaths = scopedLocalEntries.some((entry) => entry.isUnmerged);
   const snapshotBase = {
     isConfigured: true,
     isValid: true,
@@ -904,9 +1011,11 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
     localChangeCount: collabVisibleLocalEntries.length,
   };
   return {
-    repoPath: repoRoot,
-    repoName: path.basename(repoRoot),
+    repoPath,
+    repoName: path.basename(repoPath),
     suggestedRepoPath,
+    gitRepoPath: gitContext.gitRepoPath,
+    scopeRelativePath: gitContext.scopeRelativePath,
     ...snapshotBase,
     localEntries: collabVisibleLocalEntries,
     remoteEntries,
@@ -921,6 +1030,9 @@ function snapshotToStatus(snapshot: RepoSnapshot): CollabRepoStatus {
     repoPath: snapshot.repoPath,
     repoName: snapshot.repoName,
     suggestedRepoPath: snapshot.suggestedRepoPath,
+    workingRepoPath: snapshot.gitRepoPath,
+    workingBranch: snapshot.branch,
+    workingChangeCount: snapshot.localChangeCount,
     isConfigured: snapshot.isConfigured,
     isValid: snapshot.isValid,
     branch: snapshot.branch,
@@ -1006,8 +1118,9 @@ function createRemoteFileChanges(snapshot: RepoSnapshot) {
   });
 }
 
-async function getCommitSummaries(repoPath: string) {
-  const logResult = await runGit(repoPath, ['log', '--format=%h %s', 'HEAD..origin/main'], { allowNonZero: true });
+async function getCommitSummaries(context: RepoWorkContext) {
+  const scopedGitArgs = context.scopeRelativePath ? ['--', context.scopeRelativePath] : [];
+  const logResult = await runGit(context.gitRepoPath, ['log', '--format=%h %s', 'HEAD..origin/main', ...scopedGitArgs], { allowNonZero: true });
   return logResult.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -1033,30 +1146,30 @@ function collectStatusEntryPaths(entry: ParsedStatusEntry) {
   return paths;
 }
 
-async function discardLocalPath(repoPath: string, file: CollabFileChange) {
-  const targetPath = path.join(repoPath, file.path);
+async function discardLocalPath(context: RepoWorkContext, file: CollabFileChange) {
+  const targetPath = path.join(context.repoPath, file.path);
   if (file.type === 'untracked' || file.type === 'added') {
-    await removePathsFromIndex(repoPath, [file.path]);
+    await removePathsFromIndex(context, [file.path]);
     await fs.promises.rm(targetPath, { force: true, recursive: true }).catch(() => {
       // Untracked files may already be gone; ignore.
     });
     return;
   }
   if (file.type === 'renamed') {
-    await removePathsFromIndex(repoPath, [file.path]);
+    await removePathsFromIndex(context, [file.path]);
     await fs.promises.rm(targetPath, { force: true, recursive: true }).catch(() => {
       // Renamed targets may already be gone; ignore.
     });
     if (file.previousPath) {
-      await checkoutPathFromRevision(repoPath, 'HEAD', file.previousPath);
+      await checkoutPathFromRevision(context, 'HEAD', file.previousPath);
     }
     return;
   }
-  await checkoutPathFromRevision(repoPath, 'HEAD', file.path);
+  await checkoutPathFromRevision(context, 'HEAD', file.path);
 }
 
-async function discardParsedStatusEntry(repoPath: string, entry: ParsedStatusEntry) {
-  await discardLocalPath(repoPath, {
+async function discardParsedStatusEntry(context: RepoWorkContext, entry: ParsedStatusEntry) {
+  await discardLocalPath(context, {
     path: entry.path,
     previousPath: entry.previousPath || null,
     type: entry.type,
@@ -1067,51 +1180,54 @@ async function discardParsedStatusEntry(repoPath: string, entry: ParsedStatusEnt
   });
 }
 
-async function pushPartialStash(repoPath: string, targetPaths: string[], label: string) {
+async function pushPartialStash(context: RepoWorkContext, targetPaths: string[], label: string) {
   if (!targetPaths.length) return false;
-  const before = await runGit(repoPath, ['stash', 'list'], { allowNonZero: true });
-  await runGit(repoPath, ['stash', 'push', '-u', '-m', label, '--', ...targetPaths], { allowNonZero: true });
-  const after = await runGit(repoPath, ['stash', 'list'], { allowNonZero: true });
+  const gitTargetPaths = targetPaths.map((targetPath) => toScopedGitPath(context.scopeRelativePath, targetPath));
+  const before = await runGit(context.gitRepoPath, ['stash', 'list'], { allowNonZero: true });
+  await runGit(context.gitRepoPath, ['stash', 'push', '-u', '-m', label, '--', ...gitTargetPaths], { allowNonZero: true });
+  const after = await runGit(context.gitRepoPath, ['stash', 'list'], { allowNonZero: true });
   return before.stdout !== after.stdout;
 }
 
-async function popLatestStash(repoPath: string) {
-  await runGit(repoPath, ['stash', 'pop'], { allowNonZero: true });
+async function popLatestStash(context: RepoWorkContext) {
+  await runGit(context.gitRepoPath, ['stash', 'pop'], { allowNonZero: true });
 }
 
-async function addPathsToIndex(repoPath: string, targetPaths: string[]) {
-  await runGit(repoPath, ['add', '--sparse', '-A', '--', ...targetPaths]);
+async function addPathsToIndex(context: RepoWorkContext, targetPaths: string[]) {
+  const gitTargetPaths = targetPaths.map((targetPath) => toScopedGitPath(context.scopeRelativePath, targetPath));
+  await runGit(context.gitRepoPath, ['add', '--sparse', '-A', '--', ...gitTargetPaths]);
 }
 
-async function removePathsFromIndex(repoPath: string, targetPaths: string[]) {
-  await runGit(repoPath, ['rm', '--sparse', '-f', '--ignore-unmatch', '--', ...targetPaths], { allowNonZero: true });
+async function removePathsFromIndex(context: RepoWorkContext, targetPaths: string[]) {
+  const gitTargetPaths = targetPaths.map((targetPath) => toScopedGitPath(context.scopeRelativePath, targetPath));
+  await runGit(context.gitRepoPath, ['rm', '--sparse', '-f', '--ignore-unmatch', '--', ...gitTargetPaths], { allowNonZero: true });
 }
 
-async function checkoutPathFromRevision(repoPath: string, revision: 'HEAD' | 'origin/main', targetPath: string) {
-  await runGit(repoPath, ['checkout', '--ignore-skip-worktree-bits', revision, '--', targetPath], { allowNonZero: true });
+async function checkoutPathFromRevision(context: RepoWorkContext, revision: 'HEAD' | 'origin/main', targetPath: string) {
+  await runGit(context.gitRepoPath, ['checkout', '--ignore-skip-worktree-bits', revision, '--', toScopedGitPath(context.scopeRelativePath, targetPath)], { allowNonZero: true });
 }
 
-async function checkoutOursPath(repoPath: string, targetPath: string) {
-  await runGit(repoPath, ['checkout', '--ignore-skip-worktree-bits', '--ours', '--', targetPath], { allowNonZero: true });
+async function checkoutOursPath(context: RepoWorkContext, targetPath: string) {
+  await runGit(context.gitRepoPath, ['checkout', '--ignore-skip-worktree-bits', '--ours', '--', toScopedGitPath(context.scopeRelativePath, targetPath)], { allowNonZero: true });
 }
 
-async function mergeOriginMainForPush(repoPath: string, selectedPaths: string[], preview: PushPreview) {
+async function mergeOriginMainForPush(context: RepoWorkContext, selectedPaths: string[], preview: PushPreview) {
   const selectedSet = new Set(selectedPaths);
-  await runGit(repoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
+  await runGit(context.gitRepoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
   try {
     for (const file of preview.files) {
       if (!selectedSet.has(file.path) || !file.risk) continue;
       if (file.type === 'deleted') {
-        await removePathsFromIndex(repoPath, [file.path]);
+        await removePathsFromIndex(context, [file.path]);
         continue;
       }
-      await checkoutOursPath(repoPath, file.path);
-      await addPathsToIndex(repoPath, [file.path]);
+      await checkoutOursPath(context, file.path);
+      await addPathsToIndex(context, [file.path]);
       if (file.type === 'renamed' && file.previousPath && file.previousPath !== file.path) {
-        await removePathsFromIndex(repoPath, [file.previousPath]);
+        await removePathsFromIndex(context, [file.previousPath]);
       }
     }
-    const unresolved = await runGit(repoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
+    const unresolved = await runGit(context.gitRepoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
     const unresolvedPaths = unresolved.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -1120,9 +1236,9 @@ async function mergeOriginMainForPush(repoPath: string, selectedPaths: string[],
       throw new Error(`仍有未解决的冲突：${unresolvedPaths.join('、')}`);
     }
     const mergeMessage = 'sync: 合并 origin/main 后继续推送选中的本地修改';
-    await runGit(repoPath, ['commit', '-m', mergeMessage]);
+    await runGit(context.gitRepoPath, ['commit', '-m', mergeMessage]);
   } catch (error) {
-    await runGit(repoPath, ['merge', '--abort'], { allowNonZero: true });
+    await runGit(context.gitRepoPath, ['merge', '--abort'], { allowNonZero: true });
     throw error;
   }
 }
@@ -1185,6 +1301,9 @@ export async function commitAndPushToMain(
     throw new Error('请填写本次提交说明。');
   }
   const repoPath = preview.status.repoPath;
+  const gitRepoPath = preview.status.workingRepoPath || repoPath;
+  const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
+  const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
   const selectedPathSet = new Set(selectedPaths);
   const droppedConflictFiles = preview.files.filter((file) => (
     !selectedPathSet.has(file.path)
@@ -1193,40 +1312,40 @@ export async function commitAndPushToMain(
   ));
   const droppedConflictPaths = droppedConflictFiles.map((file) => file.path);
   for (const file of droppedConflictFiles) {
-    await discardLocalPath(repoPath, file);
+    await discardLocalPath(context, file);
   }
   const unselectedPaths = preview.files
     .map((file) => file.path)
     .filter((targetPath) => !selectedPathSet.has(targetPath) && !droppedConflictPaths.includes(targetPath));
   let hasStashedUnselected = false;
   if (unselectedPaths.length > 0) {
-    hasStashedUnselected = await pushPartialStash(repoPath, unselectedPaths, 'codex-collab-unselected-before-push');
+    hasStashedUnselected = await pushPartialStash(context, unselectedPaths, 'codex-collab-unselected-before-push');
   }
   try {
     if (selectedPaths.length === 0) {
       if (preview.status.behindCount > 0) {
-        await runGit(repoPath, ['merge', '--ff-only', 'origin/main']);
+        await runGit(context.gitRepoPath, ['merge', '--ff-only', 'origin/main']);
       }
       if (droppedConflictPaths.length > 0) {
-        await importSelectedSharedSettingsFromRepo(repoPath, appDbPath, droppedConflictPaths);
+        await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
       }
     } else {
-    await addPathsToIndex(repoPath, selectedPaths);
-    await runGit(repoPath, ['commit', '-m', message]);
+    await addPathsToIndex(context, selectedPaths);
+    await runGit(context.gitRepoPath, ['commit', '-m', message]);
     if (preview.status.behindCount > 0) {
-      await mergeOriginMainForPush(repoPath, selectedPaths, preview);
+      await mergeOriginMainForPush(context, selectedPaths, preview);
     }
     if (droppedConflictPaths.length > 0) {
-      await importSelectedSharedSettingsFromRepo(repoPath, appDbPath, droppedConflictPaths);
+      await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
     }
-    await runGit(repoPath, ['push', 'origin', 'main']);
+    await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(selectedPaths.length > 0 ? `提交已生成，但 push 到 main 失败：${detail}` : `同步 main 状态失败：${detail}`);
   } finally {
     if (hasStashedUnselected) {
-      await popLatestStash(repoPath).catch(() => {
+      await popLatestStash(context).catch(() => {
         // Keep the push result even if local leftover changes fail to pop back cleanly.
       });
     }
@@ -1265,7 +1384,9 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
       ? `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，可能覆盖这些改动的文件默认不会勾选。`
       : `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你可以先看下面的软件效果，再决定要不要带到本地。`;
   }
-  const commitSummaries = snapshot.repoPath ? await getCommitSummaries(snapshot.repoPath) : [];
+  const commitSummaries = snapshot.repoPath && snapshot.gitRepoPath
+    ? await getCommitSummaries(createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath))
+    : [];
   return {
     status,
     suggestedMessage: buildSuggestedMessage('pull', groups),
@@ -1278,31 +1399,31 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   };
 }
 
-async function resolvePullChoice(repoPath: string, file: CollabFileChange, takeRemote: boolean) {
+async function resolvePullChoice(context: RepoWorkContext, file: CollabFileChange, takeRemote: boolean) {
   if (takeRemote) {
     if (file.type === 'deleted') {
-      await removePathsFromIndex(repoPath, [file.path]);
+      await removePathsFromIndex(context, [file.path]);
       return;
     }
-    await checkoutPathFromRevision(repoPath, 'origin/main', file.path);
+    await checkoutPathFromRevision(context, 'origin/main', file.path);
     if (file.type === 'renamed' && file.previousPath && file.previousPath !== file.path) {
-      await removePathsFromIndex(repoPath, [file.previousPath]);
+      await removePathsFromIndex(context, [file.previousPath]);
     }
     return;
   }
 
   if (file.type === 'added') {
-    await removePathsFromIndex(repoPath, [file.path]);
+    await removePathsFromIndex(context, [file.path]);
     return;
   }
   if (file.type === 'renamed') {
-    await removePathsFromIndex(repoPath, [file.path]);
+    await removePathsFromIndex(context, [file.path]);
     if (file.previousPath) {
-      await checkoutPathFromRevision(repoPath, 'HEAD', file.previousPath);
+      await checkoutPathFromRevision(context, 'HEAD', file.previousPath);
     }
     return;
   }
-  await checkoutPathFromRevision(repoPath, 'HEAD', file.path);
+  await checkoutPathFromRevision(context, 'HEAD', file.path);
 }
 
 export async function pullSelectedFromMain(
@@ -1327,6 +1448,9 @@ export async function pullSelectedFromMain(
     throw new Error('请填写本次同步说明。');
   }
   const repoPath = preview.status.repoPath;
+  const gitRepoPath = preview.status.workingRepoPath || repoPath;
+  const scopeRelativePath = computeScopeRelativePath(gitRepoPath, repoPath);
+  const context = createRepoWorkContext(repoPath, gitRepoPath, scopeRelativePath);
   if (selectedPaths.length === 0) {
     const status = await getCollabRepoStatus({
       repoPath,
@@ -1368,23 +1492,23 @@ export async function pullSelectedFromMain(
   for (const entry of snapshot.localEntries) {
     const entryPaths = collectStatusEntryPaths(entry);
     if (entryPaths.some((targetPath) => overwriteLocalEntryPaths.has(targetPath))) {
-      await discardParsedStatusEntry(repoPath, entry);
+      await discardParsedStatusEntry(context, entry);
     }
   }
   let hasStashedPreservedLocalChanges = false;
   if (preservedLocalPaths.size > 0) {
     hasStashedPreservedLocalChanges = await pushPartialStash(
-      repoPath,
+      context,
       Array.from(preservedLocalPaths),
       'codex-collab-preserved-local-before-pull',
     );
   }
-  await runGit(repoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
+  await runGit(context.gitRepoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
   try {
     for (const file of preview.files) {
-      await resolvePullChoice(repoPath, file, selectedPaths.includes(file.path));
+      await resolvePullChoice(context, file, selectedPaths.includes(file.path));
     }
-    const unresolved = await runGit(repoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
+    const unresolved = await runGit(context.gitRepoPath, ['diff', '--name-only', '--diff-filter=U'], { allowNonZero: true });
     const unresolvedPaths = unresolved.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -1392,14 +1516,14 @@ export async function pullSelectedFromMain(
     if (unresolvedPaths.length > 0) {
       throw new Error(`仍有未解决的冲突：${unresolvedPaths.join('、')}`);
     }
-    await importSelectedSharedSettingsFromRepo(repoPath, appDbPath, selectedPaths);
-    await runGit(repoPath, ['commit', '-m', message]);
+    await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, selectedPaths);
+    await runGit(context.gitRepoPath, ['commit', '-m', message]);
   } catch (error) {
-    await runGit(repoPath, ['merge', '--abort'], { allowNonZero: true });
+    await runGit(context.gitRepoPath, ['merge', '--abort'], { allowNonZero: true });
     throw error;
   } finally {
     if (hasStashedPreservedLocalChanges) {
-      await popLatestStash(repoPath).catch(() => {
+      await popLatestStash(context).catch(() => {
         // Keep the synced result even if preserved local changes need manual attention.
       });
     }

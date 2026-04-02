@@ -14,7 +14,7 @@ export type TopicTaskOwnerMode = 'self' | 'empty';
 export type TopicCandidateStatus = 'candidate' | 'tracking' | 'promoted' | 'archived';
 export type TopicCandidateInsightStatus = 'pending' | 'ready' | 'failed';
 export type MeetingStage = 'prepared' | 'ingested' | 'extracted' | 'resolved' | 'published';
-export type AiProvider = 'mock' | 'qwen';
+export type AiProvider = 'mock' | 'qwen' | 'doubao';
 export type AccountStatus = 'pending' | 'approved' | 'rejected' | 'disabled';
 export type EmployeeRole = 'admin' | 'employee';
 export type CollaboratorInboxStatus = 'pending' | 'accepted' | 'returned';
@@ -966,6 +966,19 @@ export interface EventLineDetail {
   memorySnapshot?: EventLineMemorySnapshot | null;
   predictionReadiness?: number | null;
   clarificationNeeds?: string[];
+}
+
+export interface TaskSmartBriefActionItem {
+  text: string;
+  sourceLabel: string;
+  internalSuggestedOwner?: string;
+}
+
+export interface TaskSmartBrief {
+  taskId: string;
+  summary: string;
+  summarySourceLabels: string[];
+  actionItems: TaskSmartBriefActionItem[];
 }
 
 export interface EventLineReportAttachment {
