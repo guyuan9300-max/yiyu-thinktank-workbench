@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
   CheckSquare,
@@ -168,6 +168,7 @@ import {
   deleteTask,
   deleteTaskList,
   deleteTaskTag,
+  deleteEventLine,
   disableEmployee,
   extractMeeting,
   getAnalysisWorkbenchSettings,
@@ -251,6 +252,7 @@ import {
   updateEmployeeRole,
   updateEmployeeDepartment,
   addEventLineNote,
+  adoptTaskSmartBriefAction,
   updateEventLine,
   updateFeishuBotSettings,
   clearFeishuUserBinding,
@@ -525,15 +527,11 @@ function FeishuMeetingGlyph({ className = '' }: { className?: string }) {
 
 const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#06B6D4'];
 const providerDefaultModels = {
-  mock: 'mock-summarizer',
-  qwen: 'qwen3.5-plus',
-  doubao: 'doubao-seed-1.6',
+  doubao: 'doubao-seed-2-0-pro-260215',
 } as const;
 
 const providerDisplayNames = {
-  mock: '本地 Mock',
-  qwen: 'Qwen 3.5',
-  doubao: '豆包 Seed 1.6（火山方舟）',
+  doubao: '豆包 Seed 2.0 Pro（火山方舟）',
 } as const;
 
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
@@ -3343,6 +3341,7 @@ export default function App() {
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const collabAutoSwitchTargetRef = useRef<string | null>(null);
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('calendar');
+  const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<'__current__' | '__all__' | string>('__current__');
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
     const [taskSelectedDay, setTaskSelectedDay] = useState(initialTodayState.selectedDay);
     const [taskCalendarDisplayMode, setTaskCalendarDisplayMode] = useState<'month' | 'week'>('month');
@@ -4893,6 +4892,11 @@ export default function App() {
       totalFiles: number;
       percent: number;
     } | null>(null);
+    const [pendingSmartBriefDraftSource, setPendingSmartBriefDraftSource] = useState<{
+      sourceTaskId: string;
+      actionKey: string;
+      actionText: string;
+    } | null>(null);
     const [pendingTaskDelete, setPendingTaskDelete] = useState<{
       id: string;
       title: string;
@@ -4911,6 +4915,7 @@ export default function App() {
     const [isOwnerMenuOpen, setIsOwnerMenuOpen] = useState(false);
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
+    const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
     const [drillTaskViewOverride, setDrillTaskViewOverride] = useState<ReviewDashboardCardTarget | null>(null);
     const [activeReviewDrillTarget, setActiveReviewDrillTarget] = useState<ReviewDashboardDrillTargetResponse | null>(null);
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
@@ -4928,6 +4933,9 @@ export default function App() {
     const [isGeneratingTaskEventLineClarification, setIsGeneratingTaskEventLineClarification] = useState(false);
     const [isSavingTaskEventLineClarification, setIsSavingTaskEventLineClarification] = useState(false);
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
+    const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
+    const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
+    const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
     const [taskContextPreview, setTaskContextPreview] = useState<TaskContextPreview | null>(null);
     const [isTaskContextPreviewLoading, setIsTaskContextPreviewLoading] = useState(false);
     const [taskSmartBriefs, setTaskSmartBriefs] = useState<Record<string, TaskSmartBrief>>({});
@@ -4959,6 +4967,7 @@ export default function App() {
       setIsTaskAttachmentBusy(false);
       setIsSavingTask(false);
       setPendingTaskArchiveText('');
+      setPendingSmartBriefDraftSource(null);
     };
 
     const closeTaskModal = (reason: string) => {
@@ -5056,17 +5065,26 @@ export default function App() {
       };
     }, [editingTask.clientId, isTaskModalOpen, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
 
-    useEffect(() => {
-      let cancelled = false;
-      void getEventLines()
-        .then((records) => {
-          if (!cancelled) setEventLines(records);
-        })
-        .catch(() => undefined);
-      return () => {
-        cancelled = true;
-      };
+    const loadEventLines = useCallback(async () => {
+      try {
+        const records = await getEventLines();
+        setEventLines(records);
+        setEventLinesLoadError(null);
+      } catch (error) {
+        console.warn('[event-lines] load failed', error);
+        setEventLinesLoadError(error instanceof Error ? error.message : '事件线加载失败');
+      }
     }, []);
+
+    useEffect(() => {
+      if (!authState.authenticated) return;
+      void loadEventLines();
+    }, [authState.authenticated, loadEventLines]);
+
+    useEffect(() => {
+      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !authState.authenticated) return;
+      void loadEventLines();
+    }, [activeTab, authState.authenticated, loadEventLines, taskViewMode]);
 
     useEffect(() => {
       if (!isTaskModalOpen) {
@@ -5471,6 +5489,30 @@ export default function App() {
         }),
       [eventLines],
     );
+    const eventLineProjectOptions = useMemo(() => {
+      const seen = new Set<string>();
+      const options: Array<{ id: string; label: string }> = [];
+      sortedEventLines.forEach((item) => {
+        const clientId = (item.primaryClientId || '').trim();
+        if (!clientId || seen.has(clientId)) return;
+        seen.add(clientId);
+        const label =
+          item.primaryClientName?.trim()
+          || clients.find((client) => client.id === clientId)?.name
+          || '未命名项目';
+        options.push({ id: clientId, label });
+      });
+      options.sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
+      return options;
+    }, [clients, sortedEventLines]);
+    const resolvedEventLineProjectFilterId =
+      eventLineProjectFilterId === '__current__'
+        ? (currentClientId || '__all__')
+        : eventLineProjectFilterId;
+    const filteredEventLines = useMemo(() => {
+      if (resolvedEventLineProjectFilterId === '__all__') return sortedEventLines;
+      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === resolvedEventLineProjectFilterId);
+    }, [resolvedEventLineProjectFilterId, sortedEventLines]);
     const eventLineById = useMemo(
       () =>
         sortedEventLines.reduce<Record<string, EventLine>>((acc, item) => {
@@ -5850,6 +5892,121 @@ export default function App() {
       }
     };
 
+    const handleEditEventLineFromTask = () => {
+      if (!selectedEventLineSummary) return;
+      void openEventLineDetail(selectedEventLineSummary.id);
+    };
+
+    const handleDeleteEventLine = async (targetEventLine: EventLine) => {
+      if (isDeletingEventLine) return;
+      const lineName = targetEventLine.name || '未命名事件线';
+      if (!window.confirm(`确认移除事件线“${lineName}”？如果这条线已有任务或证据，将自动归档；如果没有依赖，将直接删除。`)) {
+        return;
+      }
+      setIsDeletingEventLine(true);
+      try {
+        const result = await deleteEventLine(targetEventLine.id);
+        await loadEventLines();
+        if (editingTask.eventLineId === targetEventLine.id) {
+          const nextReason = result.status === 'archived'
+            ? `事件线已归档：${lineName}。`
+            : `事件线已删除：${lineName}。`;
+          setEditingTask((prev) => ({
+            ...prev,
+            eventLineId: '',
+            eventLineTouched: true,
+            eventLineReason: nextReason,
+          }));
+        }
+        if (activeEventLine?.eventLine.id === targetEventLine.id) {
+          setActiveEventLine(null);
+        }
+        flash('success', result.status === 'archived' ? '事件线已归档' : '事件线已删除');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '事件线删除失败');
+      } finally {
+        setIsDeletingEventLine(false);
+      }
+    };
+    const handleDeleteEventLineFromTask = async () => {
+      if (!selectedEventLineSummary) return;
+      await handleDeleteEventLine(selectedEventLineSummary);
+    };
+
+    const handleCreateProjectModuleFromTask = async () => {
+      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
+        flash('error', '个人日程不进入任务模块。');
+        return;
+      }
+      if (!editingTask.clientId) {
+        flash('error', '请先选择客户/项目，再创建任务模块。');
+        return;
+      }
+      if (isCreatingTaskProjectModule) return;
+      const name = window.prompt('输入任务模块名称', '');
+      if (!name || !name.trim()) return;
+      setIsCreatingTaskProjectModule(true);
+      try {
+        const created = await createProjectModule(editingTask.clientId, {
+          name: name.trim(),
+        });
+        const structure = await getClientProjectStructure(editingTask.clientId);
+        setProjectStructureCache((prev) => ({ ...prev, [editingTask.clientId!]: structure }));
+        setEditingTask((prev) => ({
+          ...prev,
+          projectModuleId: created.id,
+          projectModuleTouched: true,
+          projectModuleReason: `已新建模块：${created.name}。`,
+          projectFlowId: '',
+          projectFlowTouched: false,
+          projectFlowReason: '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+        }));
+        flash('success', '任务模块已创建');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '任务模块创建失败');
+      } finally {
+        setIsCreatingTaskProjectModule(false);
+      }
+    };
+
+    const handleCreateProjectFlowFromTask = async () => {
+      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
+        flash('error', '个人日程不进入标准流程。');
+        return;
+      }
+      if (!editingTask.clientId) {
+        flash('error', '请先选择客户/项目。');
+        return;
+      }
+      if (!editingTask.projectModuleId) {
+        flash('error', '请先选择任务模块，再创建流程。');
+        return;
+      }
+      if (isCreatingTaskProjectFlow) return;
+      const name = window.prompt('输入流程名称', '');
+      if (!name || !name.trim()) return;
+      setIsCreatingTaskProjectFlow(true);
+      try {
+        const created = await createProjectFlow(editingTask.clientId, {
+          moduleId: editingTask.projectModuleId,
+          name: name.trim(),
+        });
+        const structure = await getClientProjectStructure(editingTask.clientId);
+        setProjectStructureCache((prev) => ({ ...prev, [editingTask.clientId!]: structure }));
+        setEditingTask((prev) => ({
+          ...prev,
+          projectFlowId: created.id,
+          projectFlowTouched: true,
+          projectFlowReason: `已新建流程：${created.name}。`,
+        }));
+        flash('success', '流程已创建');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '流程创建失败');
+      } finally {
+        setIsCreatingTaskProjectFlow(false);
+      }
+    };
+
     const buildOptimisticTaskFromEditor = (
       draft: TaskEditorState,
       payload: TaskMutationPayload,
@@ -6012,6 +6169,9 @@ export default function App() {
         return;
       }
       const archiveTextSnapshot = pendingTaskArchiveText.trim();
+      const smartBriefSourceSnapshot = pendingSmartBriefDraftSource
+        ? { ...pendingSmartBriefDraftSource }
+        : null;
       if (archiveTextSnapshot && editingTask.scopeMode === 'PERSONAL_ONLY') {
         flash('error', '个人日程不会同步到客户工作台，请切回协作任务后再归档文字。');
         return;
@@ -6105,6 +6265,28 @@ export default function App() {
             : await createTask(payload);
           upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId);
 
+          if (!draftSnapshot.id && smartBriefSourceSnapshot?.sourceTaskId && smartBriefSourceSnapshot.actionKey) {
+            setTaskSmartBriefs((prev) => {
+              const sourceBrief = prev[smartBriefSourceSnapshot.sourceTaskId];
+              if (!sourceBrief) return prev;
+              return {
+                ...prev,
+                [smartBriefSourceSnapshot.sourceTaskId]: {
+                  ...sourceBrief,
+                  actionItems: sourceBrief.actionItems.filter((item) => item.actionKey !== smartBriefSourceSnapshot.actionKey),
+                },
+              };
+            });
+            try {
+              await adoptTaskSmartBriefAction(smartBriefSourceSnapshot.sourceTaskId, smartBriefSourceSnapshot.actionKey, {
+                createdTaskId: savedTask.id,
+                actionText: smartBriefSourceSnapshot.actionText,
+              });
+            } catch (error) {
+              console.warn('[smart-brief] failed to mark action adopted', error);
+            }
+          }
+
           if (!isEditingTaskPersonal && archiveTextSnapshot && (savedTask.clientId || draftSnapshot.clientId)) {
             try {
               const targetClientId = savedTask.clientId || draftSnapshot.clientId;
@@ -6158,6 +6340,7 @@ export default function App() {
             setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
             setEditingTask(draftSnapshot);
             setPendingTaskArchiveText(archiveTextSnapshot);
+            setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
             setIsTaskModalOpen(true);
           }
           flash('error', `${error instanceof Error ? error.message : (draftSnapshot.id ? '更新失败' : '创建失败')}。草稿已恢复，请检查后重试。`);
@@ -7482,7 +7665,7 @@ export default function App() {
                                     <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-2">下一步待办</p>
                                     <div className="space-y-2">
                                       {taskSmartBriefs[task.id].actionItems.map((item, idx) => (
-                                        <div key={idx} className="flex items-start gap-2">
+                                        <div key={item.actionKey || `${task.id}-brief-action-${idx}`} className="flex items-start gap-2">
                                           <div className="flex-1 min-w-0">
                                             <p className="text-[12px] text-gray-700">{item.text}</p>
                                             <div className="flex items-center gap-2">
@@ -7498,6 +7681,13 @@ export default function App() {
                                                 <span className="rounded-full bg-violet-50 px-1.5 py-0.5 text-[9px] font-bold text-violet-600">→ {item.internalSuggestedOwner}</span>
                                               )}
                                             </div>
+                                            {(item.dueHint || item.deliverable) && (
+                                              <p className="mt-1 text-[10px] text-gray-400">
+                                                {item.dueHint ? `时间：${item.dueHint}` : ''}
+                                                {item.dueHint && item.deliverable ? ' · ' : ''}
+                                                {item.deliverable ? `交付：${item.deliverable}` : ''}
+                                              </p>
+                                            )}
                                           </div>
                                           <button
                                             type="button"
@@ -7505,16 +7695,22 @@ export default function App() {
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               resetTaskDraft();
+                                              setPendingSmartBriefDraftSource({
+                                                sourceTaskId: task.id,
+                                                actionKey: item.actionKey || `${task.id}:${idx}`,
+                                                actionText: item.text,
+                                              });
                                               setEditingTask((prev) => ({
                                                 ...prev,
-                                                title: item.text,
+                                                title: item.taskTitleSuggestion || item.text,
+                                                desc: item.taskDescriptionSuggestion || prev.desc,
                                                 clientId: task.clientId || '',
                                                 eventLineId: task.eventLineId || '',
                                               }));
                                               setIsTaskModalOpen(true);
                                             }}
                                           >
-                                            → 收件箱
+                                            生成任务
                                           </button>
                                         </div>
                                       ))}
@@ -7669,27 +7865,62 @@ export default function App() {
 
           {taskViewMode === 'event_lines' && (
             <div className="max-w-4xl mx-auto pb-10">
-              <div className="mb-6">
-                <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
-                <p className="text-[12px] text-gray-500 mt-1">所有人协作的项目时间线，不可篡改。点击任意事件线进入汇报预览。</p>
+              <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
+                  <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
+                </div>
+                <div className="w-full max-w-[260px]">
+                  <label className="mb-1 block text-[11px] font-bold text-gray-400">项目筛选</label>
+                  <select
+                    value={eventLineProjectFilterId}
+                    onChange={(event) => setEventLineProjectFilterId(event.target.value)}
+                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
+                  >
+                    {currentClientId && (
+                      <option value="__current__">当前项目（{currentClient?.name || '未选择'}）</option>
+                    )}
+                    <option value="__all__">全部项目</option>
+                    {eventLineProjectOptions
+                      .filter((option) => !(currentClientId && option.id === currentClientId))
+                      .map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              {eventLines.length === 0 && (
+              {filteredEventLines.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
-                  <p className="text-[13px] text-gray-400">还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。</p>
+                  <p className="text-[13px] text-gray-400">
+                    {eventLinesLoadError || (resolvedEventLineProjectFilterId === '__all__'
+                      ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
+                      : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
+                  </p>
+                  {eventLinesLoadError && (
+                    <button
+                      type="button"
+                      className="mt-4 inline-flex items-center rounded-full bg-[#EEF3FF] px-4 py-2 text-[12px] font-semibold text-[#5B7BFE] transition hover:bg-[#E2EAFF]"
+                      onClick={() => { void loadEventLines(); }}
+                    >
+                      重试加载
+                    </button>
+                  )}
                 </div>
               )}
               <div className="space-y-3">
-                {eventLines.map((el) => {
+                {filteredEventLines.map((el) => {
                   const taskCount = tasks.filter((t) => t.eventLineId === el.id).length;
                   return (
-                    <button
+                    <div
                       key={el.id}
-                      type="button"
                       className="w-full rounded-2xl border border-gray-100 bg-white p-5 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md"
-                      onClick={() => setReportEventLineId(el.id)}
                     >
                       <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0 flex-1">
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 text-left"
+                          onClick={() => setReportEventLineId(el.id)}
+                        >
                           <p className="text-[15px] font-bold text-gray-900 truncate">{el.name}</p>
                           {el.summary && (
                             <p className="mt-1 text-[12px] leading-5 text-gray-500 line-clamp-2">{el.summary}</p>
@@ -7701,12 +7932,29 @@ export default function App() {
                             <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
                             {el.ownerName && <span className="rounded-full bg-blue-50 px-2.5 py-1 font-semibold text-blue-600">{el.ownerName}</span>}
                           </div>
-                        </div>
-                        <div className="shrink-0 text-[11px] text-gray-400">
-                          {el.updatedAt.slice(0, 10)}
+                        </button>
+                        <div className="shrink-0 flex items-start gap-2">
+                          <div className="pt-1 text-[11px] text-gray-400">
+                            {el.updatedAt.slice(0, 10)}
+                          </div>
+                          <button
+                            type="button"
+                            className="rounded-xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
+                            onClick={() => void openEventLineDetail(el.id)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
+                            onClick={() => void handleDeleteEventLine(el)}
+                            disabled={isDeletingEventLine}
+                          >
+                            删除
+                          </button>
                         </div>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -8138,10 +8386,11 @@ export default function App() {
 
         {activeEventLine && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-md animate-in fade-in"
+            className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto bg-black/38 px-4 py-6 backdrop-blur-md animate-in fade-in md:px-6 md:py-10"
+            onClick={() => setActiveEventLine(null)}
           >
             <div
-              className="w-full max-w-[720px] rounded-[28px] border border-gray-100 bg-white p-6 shadow-[0_20px_60px_rgba(0,0,0,0.15)]"
+              className="w-full max-w-[1120px] max-h-[calc(100vh-48px)] overflow-y-auto rounded-[28px] border border-gray-100 bg-white p-6 shadow-[0_24px_72px_rgba(0,0,0,0.2)] md:p-7"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start gap-4">
@@ -8405,15 +8654,13 @@ export default function App() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(draft),
                   });
-                  if (!response.ok) throw new Error('导出失败');
-                  const blob = await response.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `${draft.eventLineName || '事件线汇报'}.docx`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  flash('success', 'Word 文档已导出');
+                  if (!response.ok) throw new Error(`导出失败 (${response.status})`);
+                  const result = await response.json();
+                  if (!result.filePath) throw new Error('后端未返回文件路径');
+                  const saved = await window.yiyuWorkbench?.saveFileAs(result.filePath, result.fileName);
+                  if (saved) {
+                    flash('success', `Word 文档已导出到 ${saved}`);
+                  }
                 } catch (err) {
                   flash('error', err instanceof Error ? err.message : '导出 Word 失败');
                 }
@@ -8861,7 +9108,7 @@ export default function App() {
                       </TaskPropertyRow>
 
                       <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
-                        <div className="flex w-full items-center gap-2">
+                        <div className="w-full space-y-1.5">
                           <select
                             value={editingTask.eventLineId}
                             onChange={(event) =>
@@ -8886,14 +9133,32 @@ export default function App() {
                               </option>
                             ))}
                           </select>
-                          <button
-                            type="button"
-                            onClick={() => void handleCreateEventLineFromTask()}
-                            disabled={!editingTask.title.trim() || !editingTask.clientId || isEditingTaskPersonal}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            新建
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={handleEditEventLineFromTask}
+                              disabled={!editingTask.eventLineId || isEditingTaskPersonal}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteEventLineFromTask()}
+                              disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {isDeletingEventLine ? '...' : '删除'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCreateEventLineFromTask()}
+                              disabled={!editingTask.title.trim() || !editingTask.clientId || isEditingTaskPersonal}
+                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              新建
+                            </button>
+                          </div>
                         </div>
                       </TaskPropertyRow>
                     </div>
@@ -8907,57 +9172,77 @@ export default function App() {
 
                     <div className="space-y-3">
                       <TaskPropertyRow icon={<Layout size={16} />} label="任务模块">
-                        <select
-                          value={editingTask.projectModuleId}
-                          onChange={(event) =>
-                            setEditingTask((prev) => ({
-                              ...prev,
-                              projectModuleId: event.target.value,
-                              projectModuleTouched: true,
-                              projectModuleReason: event.target.value
-                                ? `已挂到模块：${taskProjectModuleOptions.find((item) => item.id === event.target.value)?.name || '已选择模块'}。`
-                                : (prev.clientId ? '请选择任务模块，帮助后续复盘落到项目结构。' : '可选：把任务挂到项目下的具体任务模块。'),
-                            }))
-                          }
-                          disabled={isEditingTaskPersonal || !editingTask.clientId}
-                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                        >
-                          <option value="">
-                            {isEditingTaskPersonal ? '个人日程不进入任务模块' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : '可选：选择任务模块')}
-                          </option>
-                          {taskProjectModuleOptions.map((module) => (
-                            <option key={module.id} value={module.id}>
-                              {module.name}
+                        <div className="flex w-full items-center gap-2">
+                          <select
+                            value={editingTask.projectModuleId}
+                            onChange={(event) =>
+                              setEditingTask((prev) => ({
+                                ...prev,
+                                projectModuleId: event.target.value,
+                                projectModuleTouched: true,
+                                projectModuleReason: event.target.value
+                                  ? `已挂到模块：${taskProjectModuleOptions.find((item) => item.id === event.target.value)?.name || '已选择模块'}。`
+                                  : (prev.clientId ? '请选择任务模块，帮助后续复盘落到项目结构。' : '可选：把任务挂到项目下的具体任务模块。'),
+                              }))
+                            }
+                            disabled={isEditingTaskPersonal || !editingTask.clientId}
+                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                          >
+                            <option value="">
+                              {isEditingTaskPersonal ? '个人日程不进入任务模块' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : '可选：选择任务模块')}
                             </option>
-                          ))}
-                        </select>
+                            {taskProjectModuleOptions.map((module) => (
+                              <option key={module.id} value={module.id}>
+                                {module.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => void handleCreateProjectModuleFromTask()}
+                            disabled={isEditingTaskPersonal || !editingTask.clientId || isCreatingTaskProjectModule}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isCreatingTaskProjectModule ? '处理中' : '新建'}
+                          </button>
+                        </div>
                       </TaskPropertyRow>
 
                       <TaskPropertyRow icon={<GitMerge size={16} />} label="标准流程">
-                        <select
-                          value={editingTask.projectFlowId}
-                          onChange={(event) =>
-                            setEditingTask((prev) => ({
-                              ...prev,
-                              projectFlowId: event.target.value,
-                              projectFlowTouched: true,
-                              projectFlowReason: event.target.value
-                                ? `已挂到流程：${taskProjectFlowOptions.find((item) => item.id === event.target.value)?.name || '已选择流程'}。`
-                                : (prev.projectModuleId ? '当前未选择具体流程。' : (prev.clientId ? '请先选择任务模块，再选择流程。' : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。')),
-                            }))
-                          }
-                          disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId}
-                          className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                        >
-                          <option value="">
-                            {isEditingTaskPersonal ? '个人日程不进入标准流程' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : !editingTask.projectModuleId ? '请先选择任务模块' : '可选：选择流程')}
-                          </option>
-                          {taskProjectFlowOptions.map((flow) => (
-                            <option key={flow.id} value={flow.id}>
-                              {flow.name}
+                        <div className="flex w-full items-center gap-2">
+                          <select
+                            value={editingTask.projectFlowId}
+                            onChange={(event) =>
+                              setEditingTask((prev) => ({
+                                ...prev,
+                                projectFlowId: event.target.value,
+                                projectFlowTouched: true,
+                                projectFlowReason: event.target.value
+                                  ? `已挂到流程：${taskProjectFlowOptions.find((item) => item.id === event.target.value)?.name || '已选择流程'}。`
+                                  : (prev.projectModuleId ? '当前未选择具体流程。' : (prev.clientId ? '请先选择任务模块，再选择流程。' : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。')),
+                              }))
+                            }
+                            disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId}
+                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                          >
+                            <option value="">
+                              {isEditingTaskPersonal ? '个人日程不进入标准流程' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : !editingTask.projectModuleId ? '请先选择任务模块' : '可选：选择流程')}
                             </option>
-                          ))}
-                        </select>
+                            {taskProjectFlowOptions.map((flow) => (
+                              <option key={flow.id} value={flow.id}>
+                                {flow.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => void handleCreateProjectFlowFromTask()}
+                            disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId || isCreatingTaskProjectFlow}
+                            className="rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isCreatingTaskProjectFlow ? '处理中' : '新建'}
+                          </button>
+                        </div>
                       </TaskPropertyRow>
                     </div>
                   </div>
@@ -12802,7 +13087,7 @@ export default function App() {
     const [draft, setDraft] = useState({
       currentOperatorId: settingsState?.currentOperatorId || '',
       aiProvider: settingsState?.aiProvider || 'mock',
-      aiModel: settingsState?.aiModel || providerDefaultModels.mock,
+      aiModel: settingsState?.aiModel || providerDefaultModels.doubao,
       apiKey: '',
     });
     const [taskSettingsDraft, setTaskSettingsDraft] = useState(effectiveTaskSettings);
@@ -13508,16 +13793,33 @@ export default function App() {
       }
     };
 
-    const sectionItems: Array<{ key: SettingsSectionKey; label: string; icon: typeof Settings; helper: string }> = [
-      { key: 'overview', label: '总览', icon: Settings, helper: '当前账号、AI 与系统状态' },
-      { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
-      { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认规则、清单与标签' },
-      { key: 'client_workspace', label: '客户工作台', icon: Briefcase, helper: '聊天、会议、目标默认规则' },
-      { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取、解析与转任务规则' },
-      { key: 'analysis', label: '测试工作台', icon: LayoutTemplate, helper: '模板启用与运行规则' },
-      { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则与默认标签' },
-      { key: 'system_admin', label: '组织搭建中心', icon: ShieldAlert, helper: 'CEO 起盘、部门接力与权限运维' },
+    const sectionGroups: Array<{ group: string; items: Array<{ key: SettingsSectionKey; label: string; icon: typeof Settings; helper: string }> }> = [
+      {
+        group: '账户与服务',
+        items: [
+          { key: 'overview', label: '账户与 AI', icon: Settings, helper: '登录信息、AI 模型、飞书绑定' },
+        ],
+      },
+      {
+        group: '组织管理',
+        items: [
+          { key: 'system_admin', label: '组织与权限', icon: ShieldAlert, helper: '部门、角色、员工、权限、备份' },
+          { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
+        ],
+      },
+      {
+        group: '功能设置',
+        items: [
+          { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认清单、复盘规则' },
+          { key: 'client_workspace', label: '客户工作台', icon: Briefcase, helper: '聊天、会议、目标' },
+          { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取与转任务' },
+          { key: 'analysis', label: '分析工作台', icon: LayoutTemplate, helper: '模板与诊断' },
+          { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
+        ],
+      },
     ];
+    // Flatten for backward compatibility
+    const sectionItems = sectionGroups.flatMap((g) => g.items);
 
     const orgSectionMeta: Record<Extract<SettingsSectionKey, 'org_overview' | 'org_departments' | 'org_people' | 'org_rules'>, { tab: OrgModelTab }> = {
       org_overview: {
@@ -13586,9 +13888,7 @@ export default function App() {
               className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
               disabled={!canManageSensitiveSettings}
             >
-              <option value="mock">mock（联调模式）</option>
-              <option value="qwen">Qwen 3.5</option>
-              <option value="doubao">豆包 Seed 1.6（火山方舟）</option>
+              <option value="doubao">豆包 Seed 2.0 Pro（火山方舟）</option>
             </select>
             <input value={draft.aiModel} onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))} placeholder="模型名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
             <input type="password" value={draft.apiKey} onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))} placeholder="API Key（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
@@ -13720,6 +14020,7 @@ export default function App() {
               <option value="inbox">默认打开：协作收件箱</option>
               <option value="list">默认打开：清单列表</option>
               <option value="calendar">默认打开：我的月历</option>
+              <option value="event_lines">默认打开：事件线</option>
               <option value="review">默认打开：周复盘</option>
             </select>
             <select value={taskSettingsDraft.listSortMode} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, listSortMode: event.target.value as TaskSettings['listSortMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
@@ -13811,10 +14112,6 @@ export default function App() {
             </div>
           </div>
 
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <h2 className="text-[16px] font-bold text-gray-900">任务标签</h2>
-            <p className="text-[12px] text-gray-500 mt-1">该功能已停用，不再在任务新增、任务列表、月历和周复盘中使用。</p>
-          </div>
         </div>
       </div>
     );
@@ -14346,38 +14643,46 @@ export default function App() {
                   {settingsSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
                 </button>
               </div>
-              <div className="space-y-2">
-                {sectionItems
-                  .filter((section) => currentSessionUser?.primaryRole === 'admin' || !section.key.startsWith('org_'))
-                  .map((section) => {
-                    const Icon = section.icon;
-                    const isActive = settingsSection === section.key;
-                    return (
-                      <button
-                        key={section.key}
-                        type="button"
-                        title={settingsSidebarCollapsed ? section.label : undefined}
-                        onClick={() => {
-                          setSettingsSection(section.key);
-                          if (section.key !== 'analysis') {
-                            setAnalysisProfileFocus(null);
-                            setAnalysisProfilePrefillLabel('');
-                          }
-                        }}
-                        className={`w-full rounded-2xl border transition-all ${settingsSidebarCollapsed ? 'px-0 py-3 text-center' : 'px-4 py-3 text-left'} ${isActive ? 'border-blue-200 bg-blue-50/60 text-[#335CFF]' : 'border-transparent hover:border-gray-100 hover:bg-gray-50 text-gray-700'}`}
-                      >
-                        <div className={`flex ${settingsSidebarCollapsed ? 'justify-center' : 'items-center gap-3'}`}>
-                          <Icon size={16} />
-                          {!settingsSidebarCollapsed && (
-                            <div className="min-w-0">
-                              <p className="text-[13px] font-bold">{section.label}</p>
-                              <p className="mt-1 text-[11px] text-gray-500">{section.helper}</p>
-                            </div>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
+              <div className="space-y-4">
+                {sectionGroups.map((group) => {
+                  const visibleItems = group.items.filter((section) => currentSessionUser?.primaryRole === 'admin' || !['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'].includes(section.key));
+                  if (visibleItems.length === 0) return null;
+                  return (
+                    <div key={group.group}>
+                      {!settingsSidebarCollapsed && (
+                        <p className="mb-1.5 px-4 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{group.group}</p>
+                      )}
+                      <div className="space-y-1">
+                        {visibleItems.map((section) => {
+                          const Icon = section.icon;
+                          const isActive = settingsSection === section.key;
+                          return (
+                            <button
+                              key={section.key}
+                              type="button"
+                              title={settingsSidebarCollapsed ? section.label : undefined}
+                              onClick={() => {
+                                setSettingsSection(section.key);
+                                if (section.key !== 'analysis') {
+                                  setAnalysisProfileFocus(null);
+                                  setAnalysisProfilePrefillLabel('');
+                                }
+                              }}
+                              className={`w-full rounded-2xl border transition-all ${settingsSidebarCollapsed ? 'px-0 py-2.5 text-center' : 'px-4 py-2.5 text-left'} ${isActive ? 'border-blue-200 bg-blue-50/60 text-[#335CFF]' : 'border-transparent hover:border-gray-100 hover:bg-gray-50 text-gray-700'}`}
+                            >
+                              <div className={`flex ${settingsSidebarCollapsed ? 'justify-center' : 'items-center gap-3'}`}>
+                                <Icon size={15} />
+                                {!settingsSidebarCollapsed && (
+                                  <p className="text-[12px] font-bold">{section.label}</p>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="min-w-0">{renderSectionContent()}</div>

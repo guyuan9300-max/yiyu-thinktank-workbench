@@ -2152,6 +2152,12 @@ class TaskSmartBriefActionItem(BaseModel):
     text: str
     sourceLabel: str = ""
     internalSuggestedOwner: str = ""
+    actionKind: str = ""
+    dueHint: str = ""
+    deliverable: str = ""
+    actionKey: str = ""
+    taskTitleSuggestion: str = ""
+    taskDescriptionSuggestion: str = ""
 
 
 class TaskSmartBriefRecord(BaseModel):

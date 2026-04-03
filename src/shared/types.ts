@@ -972,6 +972,12 @@ export interface TaskSmartBriefActionItem {
   text: string;
   sourceLabel: string;
   internalSuggestedOwner?: string;
+  actionKind?: string;
+  dueHint?: string;
+  deliverable?: string;
+  actionKey?: string;
+  taskTitleSuggestion?: string;
+  taskDescriptionSuggestion?: string;
 }
 
 export interface TaskSmartBrief {
