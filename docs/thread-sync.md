@@ -1,5 +1,28 @@
 # Thread Sync
 
+## 2026-04-03 客户工作台回答产物按钮收口
+- 线程目标：收口客户工作台中“建立向量 / 导出文件”两个按钮偶发看起来没反应的问题，并确认导出 Word 的真实归档行为。
+- 已读文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/lib/api.ts`
+  - `backend/app/main.py`
+  - `backend/app/services/knowledge_base.py`
+- 发现的问题：
+  - `建立向量` 后端链路本身是通的，但前端之前只弹一条成功提示，不会自动打开生成的机读 Markdown，用户会误以为没反应。
+  - `导出文件` 的后端链路存在真实错误：回答证据摘录里含有 XML 不兼容控制字符时，`python-docx` 在写“证据来源”段落会直接抛异常，导致接口返回 500。
+  - 前端两个按钮都没有显示“处理中”状态，慢一点时体感像没开始。
+- 最小改动范围：
+  - 只收口回答产物生成链
+  - 不扩 UI 范围，不改其他客户工作台逻辑
+- 已做代码修改：
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx`
+- 当前实现：
+  - `export_answer_to_docx(...)` 新增 DOCX/XML 安全文本清洗，导出 Word 时会自动剔除控制字符，避免因单条证据摘录炸掉整份导出。
+  - `建立向量` 成功后会自动尝试打开生成的机读 Markdown；如果系统没能直接打开，也会明确提示已归档到当前项目。
+  - `导出文件` 成功后会自动尝试打开生成的 Word；如果系统没能直接打开，也会明确提示已归档到当前项目。
+  - 两个按钮在执行中会显示 `建立中… / 导出中…`，避免像没反应。
+
 ## 2026-03-25 Session 003 日志与放行收口
 - 线程目标：把虚拟项目组 Session 001–003 的讨论记录整理成连续可读版本，并把 Session 003 的状态从“规格收敛中”推进到“实现前放行”。
 - 已读文件：
@@ -7036,3 +7059,4 @@
 - 2026-03-30：把火山云协作后端发布链收成了仓库脚本。新增 `cloud_backend/requirements.deploy.txt`、`scripts/deploy-cloud-backend-volcengine.sh`、`scripts/smoke-cloud-backend-volcengine.sh`；本地 now 可以一键把 `cloud_backend/app`、`pyproject.toml`、`uv.lock` 和依赖清单同步到 `/opt/yiyu/cloud-backend`，刷新远端 `.venv`，重启 `yiyu-cloud-backend.service`，最后自动做 `/health` smoke check。对应说明已补到 `deploy/volcengine/cloud-backend/README.md`。
 - 2026-03-30：正式域名 HTTPS 已打通。通过阿里云 DNS 只新增了子域名 `api.yiyu.love -> 101.126.34.232`，没有改动根域名 `yiyu.love` 和 `www` 的现有站点解析；随后在火山云 ECS 上为 `api.yiyu.love` 增加了 nginx 80/443 server block，使用 `acme.sh + Let's Encrypt` 申请并安装证书，当前公网健康检查已通过：[https://api.yiyu.love/health](https://api.yiyu.love/health)。
 - 2026-03-30：双端默认入口已开始收口到正式子域名。`src/main/main.ts` 新增打包版远端协作默认值 `https://api.yiyu.love`，`mobile/lib/api.ts` 和手机端设置页默认示例地址也改成了 `https://api.yiyu.love`；`scripts/smoke-cloud-backend-volcengine.sh` 默认健康检查地址同步切到了正式 HTTPS 子域名。
+- 2026-04-03：彻查“打开的是旧版本且没有数据”的根因。发现真正被拉起的是 `yiyu-thinktank-workbench-main-sync/dist/mac-arm64/益语智库自用平台.app` 这份旧构建，而 `~/Applications/益语智库自用平台.app` 当时只是约 40M 的残包，缺少 `Contents/Frameworks`，根本不能启动。已修复 `scripts/install-mac-app.mjs`：安装后强制校验 `Info.plist`、`PkgInfo`、`Frameworks`、`Electron Framework.framework` 和 Helper 数量，杜绝残包被误判为安装成功；随后重新把完整 308M 安装包复制到 `~/Applications/益语智库自用平台.app` 并验签通过。为防止旧 Dock/旧快捷方式继续打开旧构建，已将 `yiyu-thinktank-workbench-main-sync/dist/mac-arm64/益语智库自用平台.app` 移走并替换为指向 `~/Applications/益语智库自用平台.app` 的软链接。重新启动后确认当前实际运行路径已变成 `~/Applications/益语智库自用平台.app`。

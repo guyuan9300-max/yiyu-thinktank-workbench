@@ -4852,13 +4852,12 @@ def create_app() -> FastAPI:
     ) -> dict:
         _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         counts = _event_line_dependency_counts(state, event_line_id, current_user.organizationId)
-        has_dependencies = any(value > 0 for value in counts.values())
-        if has_dependencies:
-            state.db.execute(
-                "UPDATE event_lines SET status = 'archived', updated_at = ? WHERE id = ? AND organization_id = ?",
-                (now_iso(), event_line_id, current_user.organizationId),
-            )
-            return {"status": "archived", "counts": counts}
+        # Unlink tasks: set their event_line_id to NULL so they become "no event line"
+        state.db.execute(
+            "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ? AND organization_id = ?",
+            (now_iso(), event_line_id, current_user.organizationId),
+        )
+        # Delete the event line (CASCADE will clean up activities, attachments, etc.)
         state.db.execute(
             "DELETE FROM event_lines WHERE id = ? AND organization_id = ?",
             (event_line_id, current_user.organizationId),
@@ -5398,12 +5397,14 @@ def create_app() -> FastAPI:
             )
             system_prompt += role_boundary
             system_prompt += (
-                "\n\n【回答风格】\n"
+                "\n\n【回答风格——必须严格遵守】\n"
                 "- 先给结论，再给关键论据，不要铺垫\n"
-                "- 简单问题简短回答（3-5 句），复杂问题分层展开但不超过 800 字\n"
-                "- 用户没追问就不要主动展开所有维度\n"
-                "- 用「一、二、三」分层，并列要点用「- 」列表\n"
-                "- 关键结论用 **加粗**\n"
+                "- **严禁长段落**：任何一段文字不得超过 3 句话。超过 3 句必须换段（插入空行）\n"
+                "- **编号必须独立成段**：凡出现「第一」「第二」「第三」「首先」「其次」「最后」等序号词，"
+                "每个序号点必须另起一段，序号点之间用空行分隔，绝对不能把多个序号点写在同一段里\n"
+                "- 多层结构用「一、二、三」做大标题，每层下用「- 」列要点\n"
+                "- 关键结论用 **加粗**（加粗完整判断句，不要只加粗关键词）\n"
+                "- 根据问题复杂度自由决定总长度，但必须保持短段落、多分层的排版节奏\n"
             )
             if context_parts:
                 system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)

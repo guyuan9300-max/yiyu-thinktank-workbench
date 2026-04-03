@@ -5908,6 +5908,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def build_cloud_event_line(payload: dict[str, object]) -> EventLineRecord:
         client_id = str(payload.get("primaryClientId")) if payload.get("primaryClientId") else None
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
+        cloud_client_name = str(payload.get("primaryClientName")).strip() if payload.get("primaryClientName") else None
         return EventLineRecord(
             id=str(payload.get("id", "")),
             name=str(payload.get("name", "")),
@@ -5924,7 +5925,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ownerId=str(payload.get("ownerId")) if payload.get("ownerId") else None,
             ownerName=str(payload.get("ownerName")) if payload.get("ownerName") else None,
             primaryClientId=client_id,
-            primaryClientName=str(client_row["name"]) if client_row else None,
+            primaryClientName=(str(client_row["name"]) if client_row else None) or cloud_client_name,
             primaryDepartmentId=str(payload.get("primaryDepartmentId")) if payload.get("primaryDepartmentId") else None,
             primaryDepartmentName=str(payload.get("primaryDepartmentName")) if payload.get("primaryDepartmentName") else None,
             participantIds=[str(item) for item in payload.get("participantIds", [])] if isinstance(payload.get("participantIds"), list) else [],
@@ -9106,6 +9107,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
         return "\n".join(lines).strip() + "\n"
 
+    _DOCX_UNSAFE_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+    def _sanitize_docx_text(value: str | None) -> str:
+        normalized = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        return _DOCX_UNSAFE_CHAR_PATTERN.sub("", normalized)
+
     def register_generated_workspace_document(
         client_id: str,
         *,
@@ -9190,27 +9197,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         target_path = target_dir / f"{timestamp}_{safe_filename(message.content[:18] or '战略陪伴沉淀')}.docx"
         document = WordDocument()
         document.add_heading("战略陪伴沉淀", level=1)
-        document.add_paragraph(f"客户：{build_client_summary(client_id).name}")
-        document.add_paragraph(f"生成时间：{now_iso()}")
+        document.add_paragraph(_sanitize_docx_text(f"客户：{build_client_summary(client_id).name}"))
+        document.add_paragraph(_sanitize_docx_text(f"生成时间：{now_iso()}"))
         document.add_paragraph("")
         document.add_heading("回答摘要", level=2)
-        document.add_paragraph(message.content)
+        document.add_paragraph(_sanitize_docx_text(message.content))
         if message.structuredData:
             document.add_heading("核心判断", level=2)
-            document.add_paragraph(message.structuredData.judgment)
+            document.add_paragraph(_sanitize_docx_text(message.structuredData.judgment))
             document.add_heading("结构化分析", level=2)
-            document.add_paragraph(message.structuredData.analysis)
+            document.add_paragraph(_sanitize_docx_text(message.structuredData.analysis))
             document.add_heading("建议动作", level=2)
-            document.add_paragraph(message.structuredData.actions)
+            document.add_paragraph(_sanitize_docx_text(message.structuredData.actions))
             document.add_heading("关键时间线", level=2)
-            document.add_paragraph(message.structuredData.timeline)
+            document.add_paragraph(_sanitize_docx_text(message.structuredData.timeline))
         if message.evidence:
             document.add_heading("证据来源", level=2)
             for item in message.evidence:
+                safe_title = _sanitize_docx_text(item.title) or "未命名证据"
+                safe_label = _sanitize_docx_text(item.sectionLabel or item.sourceType or "证据")
+                safe_excerpt = _sanitize_docx_text(item.excerpt)
                 paragraph = document.add_paragraph(style="List Bullet")
-                paragraph.add_run(item.title).bold = True
-                paragraph.add_run(f" | {item.sectionLabel or item.sourceType or '证据'}")
-                document.add_paragraph(item.excerpt)
+                paragraph.add_run(safe_title).bold = True
+                paragraph.add_run(f" | {safe_label}")
+                if safe_excerpt:
+                    document.add_paragraph(safe_excerpt)
         document.save(target_path)
         return target_path
 
@@ -16081,21 +16092,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.delete("/api/v1/event-lines/{event_line_id}")
     def delete_event_line(event_line_id: str) -> dict:
         if get_cloud_token():
-            response = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
-            if isinstance(response, dict):
-                return response
-            return {"status": "deleted"}
+            try:
+                response = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
+                if isinstance(response, dict):
+                    return response
+                return {"status": "deleted"}
+            except HTTPException as exc:
+                # Cloud may not support DELETE yet (405); fall through to local delete
+                if exc.status_code != 405:
+                    raise
         row = state.db.fetchone("SELECT id, name, status FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
         counts = _event_line_dependency_counts(event_line_id)
-        has_dependencies = any(value > 0 for value in counts.values())
-        if has_dependencies:
-            state.db.execute(
-                "UPDATE event_lines SET status = 'archived', updated_at = ? WHERE id = ?",
-                (now_iso(), event_line_id),
-            )
-            return {"status": "archived", "counts": counts}
+        # Unlink tasks: set their event_line_id to NULL so they become "no event line"
+        state.db.execute(
+            "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?",
+            (now_iso(), event_line_id),
+        )
+        # Delete the event line (CASCADE will clean up activities, attachments, etc.)
         state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
         return {"status": "deleted", "counts": counts}
 

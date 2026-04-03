@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const APP_NAME = '益语智库自用平台.app';
+const APP_BASENAME = APP_NAME.replace(/\.app$/, '');
 const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const sourceApp = process.argv[2]
   ? path.resolve(process.argv[2])
@@ -13,6 +14,7 @@ const sourceApp = process.argv[2]
 const userApplicationsDir = path.join(os.homedir(), 'Applications');
 const targetApp = path.join(userApplicationsDir, APP_NAME);
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+const stagingApp = path.join(userApplicationsDir, `.${APP_BASENAME}.installing-${timestamp}.app`);
 const backupRoot = path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'install-backups');
 const backupApp = path.join(backupRoot, `益语智库自用平台.old-${timestamp}.app`);
 const legacyCandidates = [
@@ -59,7 +61,7 @@ function stopRunningApp() {
   info('stopping running app instances before install');
   runQuiet('osascript', ['-e', 'tell application "益语智库自用平台" to quit']);
   runQuiet('pkill', ['-x', '益语智库自用平台']);
-  runQuiet('pkill', ['-f', `${targetApp}/Contents/MacOS/${APP_NAME.replace(/\\.app$/, '')}`]);
+  runQuiet('pkill', ['-f', `${targetApp}/Contents/MacOS/${APP_BASENAME}`]);
   const waitResult = spawnSync(
     'bash',
     ['-lc', 'for _ in {1..30}; do pgrep -x "益语智库自用平台" >/dev/null || exit 0; sleep 0.2; done; exit 0'],
@@ -75,6 +77,40 @@ function pickRendererEntry(assetDir) {
   return files[0] || null;
 }
 
+function verifyInstalledBundle(targetPath, sourcePath) {
+  const requiredPaths = [
+    path.join(targetPath, 'Contents', 'Info.plist'),
+    path.join(targetPath, 'Contents', 'PkgInfo'),
+    path.join(targetPath, 'Contents', 'Frameworks'),
+    path.join(targetPath, 'Contents', 'Frameworks', 'Electron Framework.framework'),
+    path.join(targetPath, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Electron Framework'),
+    path.join(targetPath, 'Contents', 'Frameworks', `${APP_BASENAME} Helper.app`),
+  ];
+
+  for (const requiredPath of requiredPaths) {
+    if (!fs.existsSync(requiredPath)) {
+      fail(`installed app bundle is incomplete, missing: ${requiredPath}`);
+    }
+  }
+
+  const sourceFrameworksDir = path.join(sourcePath, 'Contents', 'Frameworks');
+  const targetFrameworksDir = path.join(targetPath, 'Contents', 'Frameworks');
+  const sourceFrameworkEntries = fs.readdirSync(sourceFrameworksDir).sort();
+  const targetFrameworkEntries = fs.readdirSync(targetFrameworksDir).sort();
+  if (sourceFrameworkEntries.length !== targetFrameworkEntries.length) {
+    fail(
+      `installed app framework count mismatch: source=${sourceFrameworkEntries.length} target=${targetFrameworkEntries.length}`,
+    );
+  }
+}
+
+function safeRemove(targetPath) {
+  if (!fs.existsSync(targetPath)) {
+    return;
+  }
+  fs.rmSync(targetPath, { recursive: true, force: true });
+}
+
 if (!fs.existsSync(sourceApp)) {
   fail(`source app not found: ${sourceApp}`);
 }
@@ -84,17 +120,15 @@ fs.mkdirSync(backupRoot, { recursive: true });
 
 stopRunningApp();
 
-if (fs.existsSync(targetApp)) {
-  info(`existing app detected, backing up to: ${backupApp}`);
-  fs.renameSync(targetApp, backupApp);
-}
+safeRemove(stagingApp);
 
-info(`installing ${sourceApp} -> ${targetApp}`);
-runOrFail('ditto', [sourceApp, targetApp]);
-stabilizeInstalledApp(targetApp);
+info(`installing ${sourceApp} -> ${stagingApp}`);
+runOrFail('ditto', [sourceApp, stagingApp]);
+stabilizeInstalledApp(stagingApp);
+verifyInstalledBundle(stagingApp, sourceApp);
 
 const sourceRendererAssetDir = path.join(sourceApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
-const targetRendererAssetDir = path.join(targetApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
+const targetRendererAssetDir = path.join(stagingApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
 const sourceEntry = pickRendererEntry(sourceRendererAssetDir);
 const targetEntry = pickRendererEntry(targetRendererAssetDir);
 if (!sourceEntry || !targetEntry) {
@@ -104,6 +138,14 @@ if (sourceEntry !== targetEntry) {
   fail(`installed app renderer asset mismatch: source=${sourceEntry} target=${targetEntry}`);
 }
 info(`verified installed renderer asset: ${targetEntry}`);
+
+if (fs.existsSync(targetApp)) {
+  info(`existing app detected, backing up to: ${backupApp}`);
+  fs.renameSync(targetApp, backupApp);
+}
+
+info(`promoting verified app into place: ${stagingApp} -> ${targetApp}`);
+fs.renameSync(stagingApp, targetApp);
 
 const legacyHits = legacyCandidates.filter((targetPath) => fs.existsSync(targetPath));
 if (legacyHits.length > 0) {

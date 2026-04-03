@@ -54,6 +54,7 @@ import {
 } from 'lucide-react';
 
 import type {
+  AiProvider,
   AgentWorklog,
   AgentWeeklyDigest,
   AgentWeeklyPlanPayload,
@@ -399,6 +400,16 @@ type EventLineClarificationState = EventLineClarificationDraftResult & {
   transcript: string;
 };
 
+type TaskEventLineCreateDraftState = {
+  name: string;
+  stage: string;
+  summary: string;
+  intent: string;
+  currentBlocker: string;
+  nextStep: string;
+  recentDecision: string;
+};
+
 type CollabDialogState =
   | {
       mode: 'push';
@@ -423,6 +434,18 @@ function buildEventLineClarificationDraft(
     recentDecision: eventLine?.recentDecision || '',
     missingInfo: [],
     confidence: 'medium',
+  };
+}
+
+function buildTaskEventLineCreateDraft(): TaskEventLineCreateDraftState {
+  return {
+    name: '',
+    stage: '本周推进',
+    summary: '',
+    intent: '',
+    currentBlocker: '',
+    nextStep: '',
+    recentDecision: '',
   };
 }
 
@@ -527,14 +550,19 @@ function FeishuMeetingGlyph({ className = '' }: { className?: string }) {
 
 const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#06B6D4'];
 const providerDefaultModels = {
+  mock: 'mock-summarizer',
+  qwen: 'qwen3.5-plus',
   doubao: 'doubao-seed-2-0-pro-260215',
 } as const;
 
 const providerDisplayNames = {
+  mock: '本地 Mock',
+  qwen: 'Qwen 3.5',
   doubao: '豆包 Seed 2.0 Pro（火山方舟）',
 } as const;
 
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
+const EVENT_LINE_PROJECT_FILTER_STORAGE_KEY = 'yiyu-event-line-project-filter';
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
 const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
 
@@ -3341,7 +3369,12 @@ export default function App() {
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const collabAutoSwitchTargetRef = useRef<string | null>(null);
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('calendar');
-  const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<'__current__' | '__all__' | string>('__current__');
+  const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
+    if (typeof window === 'undefined') return '__all__';
+    return window.localStorage.getItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY) || '__all__';
+  });
+  const [isEventLineProjectMenuOpen, setIsEventLineProjectMenuOpen] = useState(false);
+  const eventLineProjectMenuRef = useRef<HTMLDivElement | null>(null);
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
     const [taskSelectedDay, setTaskSelectedDay] = useState(initialTodayState.selectedDay);
     const [taskCalendarDisplayMode, setTaskCalendarDisplayMode] = useState<'month' | 'week'>('month');
@@ -4932,6 +4965,8 @@ export default function App() {
     const [isTaskEventLineClarifyMode, setIsTaskEventLineClarifyMode] = useState(false);
     const [isGeneratingTaskEventLineClarification, setIsGeneratingTaskEventLineClarification] = useState(false);
     const [isSavingTaskEventLineClarification, setIsSavingTaskEventLineClarification] = useState(false);
+    const [isTaskEventLineCreateOpen, setIsTaskEventLineCreateOpen] = useState(false);
+    const [taskEventLineCreateDraft, setTaskEventLineCreateDraft] = useState<TaskEventLineCreateDraftState>(buildTaskEventLineCreateDraft());
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
@@ -4968,6 +5003,8 @@ export default function App() {
       setIsSavingTask(false);
       setPendingTaskArchiveText('');
       setPendingSmartBriefDraftSource(null);
+      setIsTaskEventLineCreateOpen(false);
+      setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
     };
 
     const closeTaskModal = (reason: string) => {
@@ -5505,14 +5542,18 @@ export default function App() {
       options.sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
       return options;
     }, [clients, sortedEventLines]);
-    const resolvedEventLineProjectFilterId =
-      eventLineProjectFilterId === '__current__'
-        ? (currentClientId || '__all__')
-        : eventLineProjectFilterId;
     const filteredEventLines = useMemo(() => {
-      if (resolvedEventLineProjectFilterId === '__all__') return sortedEventLines;
-      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === resolvedEventLineProjectFilterId);
-    }, [resolvedEventLineProjectFilterId, sortedEventLines]);
+      if (eventLineProjectFilterId === '__all__') return sortedEventLines;
+      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === eventLineProjectFilterId);
+    }, [eventLineProjectFilterId, sortedEventLines]);
+    useEffect(() => {
+      if (typeof window === 'undefined') return;
+      if (eventLineProjectFilterId === '__all__') {
+        window.localStorage.removeItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY);
+        return;
+      }
+      window.localStorage.setItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY, eventLineProjectFilterId);
+    }, [eventLineProjectFilterId]);
     const eventLineById = useMemo(
       () =>
         sortedEventLines.reduce<Record<string, EventLine>>((acc, item) => {
@@ -5860,19 +5901,40 @@ export default function App() {
         flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
         return;
       }
-      if (!editingTask.title.trim()) {
-        flash('error', '请先填写任务标题，再从任务新建事件线。');
+      if (!editingTask.clientId) {
+        flash('error', '请先选择客户/项目，再新建事件线。');
+        return;
+      }
+      setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+      setIsTaskEventLineCreateOpen(true);
+    };
+
+    const handleSubmitTaskEventLineCreate = async () => {
+      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
+        flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
+        return;
+      }
+      if (!editingTask.clientId) {
+        flash('error', '请先选择客户/项目，再新建事件线。');
+        return;
+      }
+      const name = taskEventLineCreateDraft.name.trim();
+      if (!name) {
+        flash('error', '请先输入事件线名称。');
         return;
       }
       setIsCreatingEventLine(true);
       try {
         const created = await createEventLine({
-          name: editingTask.title.trim(),
+          name,
           kind: editingTask.clientId ? 'project_line' : 'custom',
           status: 'active',
-          stage: '本周推进',
-          summary: editingTask.desc.trim() || null,
-          intent: editingTask.desc.trim() || null,
+          stage: taskEventLineCreateDraft.stage.trim() || '本周推进',
+          summary: taskEventLineCreateDraft.summary.trim() || null,
+          intent: taskEventLineCreateDraft.intent.trim() || null,
+          currentBlocker: taskEventLineCreateDraft.currentBlocker.trim() || null,
+          nextStep: taskEventLineCreateDraft.nextStep.trim() || null,
+          recentDecision: taskEventLineCreateDraft.recentDecision.trim() || null,
           ownerId: currentSessionUser?.id || null,
           primaryClientId: editingTask.clientId || null,
           participantIds: editingTask.collaborators.map((item) => item.id),
@@ -5884,6 +5946,8 @@ export default function App() {
           eventLineTouched: true,
           eventLineReason: `已从当前任务创建事件线：${created.name}。如需补充阶段、阻塞或关键决策，可点右侧"查看事件线"。`,
         }));
+        setIsTaskEventLineCreateOpen(false);
+        setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
         flash('success', '事件线已创建，并已挂到当前任务。当前会继续停留在任务编辑页。');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线创建失败');
@@ -7870,29 +7934,26 @@ export default function App() {
                   <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                   <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
                 </div>
-                <div className="w-full max-w-[260px]">
+                <div ref={eventLineProjectMenuRef} className="window-no-drag relative w-full max-w-[260px]">
                   <label className="mb-1 block text-[11px] font-bold text-gray-400">项目筛选</label>
-                  <select
-                    value={eventLineProjectFilterId}
-                    onChange={(event) => setEventLineProjectFilterId(event.target.value)}
-                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
+                  <button
+                    type="button"
+                    onClick={() => setIsEventLineProjectMenuOpen((current) => !current)}
+                    className="flex w-full items-center justify-between rounded-2xl border border-gray-200 bg-white px-4 py-3 text-left text-[13px] font-bold text-gray-700 outline-none transition hover:border-[#C9D5FF] focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
                   >
-                    {currentClientId && (
-                      <option value="__current__">当前项目（{currentClient?.name || '未选择'}）</option>
-                    )}
-                    <option value="__all__">全部项目</option>
-                    {eventLineProjectOptions
-                      .filter((option) => !(currentClientId && option.id === currentClientId))
-                      .map((option) => (
-                      <option key={option.id} value={option.id}>{option.label}</option>
-                    ))}
-                  </select>
+                    <span>
+                      {eventLineProjectFilterId === '__all__'
+                        ? '全部项目'
+                        : eventLineProjectOptions.find((opt) => opt.id === eventLineProjectFilterId)?.label || '未命名项目'}
+                    </span>
+                    <ChevronDown size={16} className={`text-gray-400 transition ${isEventLineProjectMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
                 </div>
               </div>
               {filteredEventLines.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
                   <p className="text-[13px] text-gray-400">
-                    {eventLinesLoadError || (resolvedEventLineProjectFilterId === '__all__'
+                    {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
                       ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
                       : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
                   </p>
@@ -7958,6 +8019,65 @@ export default function App() {
                   );
                 })}
               </div>
+              {isEventLineProjectMenuOpen && (
+                <div
+                  className="fixed inset-0 z-[96] flex items-start justify-center bg-black/10 px-4 py-24 backdrop-blur-[1px]"
+                  onClick={() => setIsEventLineProjectMenuOpen(false)}
+                >
+                  <div
+                    className="window-no-drag w-full max-w-[360px] overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.18)]"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+                      <div>
+                        <p className="text-[14px] font-bold text-gray-900">选择项目</p>
+                        <p className="mt-1 text-[12px] text-gray-500">筛选该客户 / 项目下的事件线</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsEventLineProjectMenuOpen(false)}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 text-gray-400 transition hover:border-gray-300 hover:text-gray-600"
+                        aria-label="关闭项目筛选"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                    <div className="max-h-[420px] overflow-y-auto p-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEventLineProjectFilterId('__all__');
+                          setIsEventLineProjectMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center rounded-2xl px-4 py-3 text-left text-[13px] font-semibold transition ${
+                          eventLineProjectFilterId === '__all__'
+                            ? 'bg-[#EEF3FF] text-[#5B7BFE]'
+                            : 'text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        全部项目
+                      </button>
+                      {eventLineProjectOptions.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            setEventLineProjectFilterId(opt.id);
+                            setIsEventLineProjectMenuOpen(false);
+                          }}
+                          className={`mt-2 flex w-full items-center rounded-2xl px-4 py-3 text-left text-[13px] font-semibold transition ${
+                            eventLineProjectFilterId === opt.id
+                              ? 'bg-[#EEF3FF] text-[#5B7BFE]'
+                              : 'text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -8384,262 +8504,322 @@ export default function App() {
           </div>
         )}
 
-        {activeEventLine && (
+        {isTaskModalOpen && isTaskEventLineCreateOpen && (
           <div
-            className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto bg-black/38 px-4 py-6 backdrop-blur-md animate-in fade-in md:px-6 md:py-10"
-            onClick={() => setActiveEventLine(null)}
+            className="fixed inset-0 z-[95] flex items-center justify-center bg-black/25 px-4 py-6 backdrop-blur-sm"
+            onClick={() => {
+              if (isCreatingEventLine) return;
+              setIsTaskEventLineCreateOpen(false);
+              setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+            }}
           >
             <div
-              className="w-full max-w-[1120px] max-h-[calc(100vh-48px)] overflow-y-auto rounded-[28px] border border-gray-100 bg-white p-6 shadow-[0_24px_72px_rgba(0,0,0,0.2)] md:p-7"
+              className="w-full max-w-[640px] rounded-[24px] border border-gray-100 bg-white p-6 shadow-[0_24px_72px_rgba(0,0,0,0.18)]"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-start gap-4">
-                <button
-                  type="button"
-                  className="mt-1 rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={() => setActiveEventLine(null)}
-                  aria-label="关闭事件线详情"
-                >
-                  <X size={16} />
-                </button>
-                <div className="flex-1">
-                  <p className="text-[12px] font-bold tracking-[0.12em] text-[#5B7BFE]">EVENT LINE</p>
-                  <h3 className="mt-2 text-[20px] font-bold text-gray-900">{activeEventLine.eventLine.name}</h3>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[12px] font-bold tracking-[0.12em] text-[#5B7BFE]">NEW EVENT LINE</p>
+                  <h3 className="mt-2 text-[22px] font-bold text-gray-900">新建事件线</h3>
                   <p className="mt-2 text-[13px] leading-6 text-gray-500">
-                    {activeEventLine.eventLine.summary || '这条事件线会把相关任务、会议、支持请求和关键过程痕迹串起来，作为 AI 的工作记忆线。'}
+                    事件线名称用来描述一条持续推进的主线，不需要等于当前任务标题。先起一个更稳定的线名，后面再继续挂任务。
                   </p>
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 flex items-center gap-2 rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-4 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
-                  onClick={() => { setReportEventLineId(activeEventLine.eventLine.id); setActiveEventLine(null); }}
+                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
+                  onClick={() => {
+                    if (isCreatingEventLine) return;
+                    setIsTaskEventLineCreateOpen(false);
+                    setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+                  }}
+                  aria-label="关闭新建事件线"
                 >
-                  <FileBadge size={14} />
-                  汇报预览
+                  <X size={16} />
                 </button>
               </div>
 
-              <div className="mt-5 flex flex-wrap gap-2 text-[12px] font-bold">
-                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-600">#{activeEventLine.eventLine.id}</span>
-                <span className="rounded-full bg-blue-50 px-3 py-1.5 text-[#33449a]">{activeEventLine.eventLine.kind}</span>
-                <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{activeEventLine.eventLine.status}</span>
-                {activeEventLine.eventLine.primaryClientName && (
-                  <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">{activeEventLine.eventLine.primaryClientName}</span>
+              <div className="mt-4 flex flex-wrap gap-2 text-[12px] font-bold">
+                {editingTask.clientId && (
+                  <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">
+                    {taskClientOptions.find((item) => item.id === editingTask.clientId)?.name || '已选择项目'}
+                  </span>
                 )}
-                {activeEventLine.eventLine.stage && (
-                  <span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-700">{activeEventLine.eventLine.stage}</span>
+                {editingTask.title.trim() && (
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-600">
+                    当前任务：{editingTask.title.trim()}
+                  </span>
                 )}
               </div>
 
               <div className="mt-5 space-y-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">这条线想推进什么</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.intent || '待补充'}</p>
-                    </div>
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">当前阻塞</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.currentBlocker || '待补充'}</p>
-                    </div>
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">下一步</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.nextStep || '待补充'}</p>
-                    </div>
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">最近关键决策</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.recentDecision || '待补充'}</p>
-                    </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-bold text-gray-500">事件线名称</label>
+                  <input
+                    value={taskEventLineCreateDraft.name}
+                    onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, name: event.target.value }))}
+                    placeholder="输入事件线名称"
+                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[15px] font-semibold text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                    autoFocus
+                  />
+                  <p className="mt-2 text-[11px] text-gray-400">建议写成一条可持续推进的线名，例如“日慈教师赋能成效表达收束”或“CFFC 工作坊合作推进”。</p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-[12px] font-bold text-gray-500">当前阶段</label>
+                    <input
+                      value={taskEventLineCreateDraft.stage}
+                      onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, stage: event.target.value }))}
+                      placeholder="例如：本周推进"
+                      className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[14px] text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                    />
                   </div>
-
-                  <div className="rounded-3xl border border-blue-100 bg-blue-50/40 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[12px] font-bold text-[#33449a]">快速澄清</p>
-                        <p className="mt-1 text-[12px] leading-5 text-[#5c6ba1]">
-                          优先补清楚当前事项、阻塞、下一步和最近关键决策，任务 AI 洞察会先读这一层。
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded-2xl border border-[#D7E0FF] bg-white px-4 py-2 text-[12px] font-bold text-[#33449a] transition hover:bg-[#F8FAFF]"
-                        onClick={() => setIsEventLineClarifyMode((prev) => !prev)}
-                      >
-                        {isEventLineClarifyMode ? '收起澄清' : '快速澄清'}
-                      </button>
-                    </div>
-
-                    {isEventLineClarifyMode && (
-                      <EventLineClarificationComposer
-                        transcript={eventLineClarificationDraft.transcript}
-                        onTranscriptChange={(value) => setEventLineClarificationDraft((prev) => ({ ...prev, transcript: value }))}
-                        draft={eventLineClarificationDraft}
-                        onDraftChange={(patch) => setEventLineClarificationDraft((prev) => ({ ...prev, ...patch }))}
-                        onGenerate={() => void handleGenerateEventLineClarification()}
-                        onCancel={() => {
-                          setEventLineClarificationDraft(buildEventLineClarificationDraft(activeEventLine.eventLine));
-                          setIsEventLineClarifyMode(false);
-                        }}
-                        onSave={() => void handleSaveEventLineClarification()}
-                        isGenerating={isGeneratingEventLineClarification}
-                        isSaving={isSavingEventLineClarification}
-                      />
-                    )}
+                  <div>
+                    <label className="mb-2 block text-[12px] font-bold text-gray-500">这条线想推进什么</label>
+                    <input
+                      value={taskEventLineCreateDraft.intent}
+                      onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, intent: event.target.value }))}
+                      placeholder="可选：写一句这条线想推进什么"
+                      className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[14px] text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                    />
                   </div>
                 </div>
 
-              {activeEventLine.eventLine.primaryClientId && (
-                <div className="mt-5 rounded-3xl border border-indigo-100 bg-indigo-50/30 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[12px] font-bold text-indigo-700">合作背景与上下文</p>
-                      <p className="mt-1 text-[11px] leading-5 text-indigo-500/80">补充客户战略画像和合作关系，让 AI 能从背景理解这条线的意义。</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="shrink-0 rounded-2xl border border-indigo-200 bg-white px-4 py-2 text-[12px] font-bold text-indigo-700 transition hover:bg-indigo-50"
-                      onClick={() => {
-                        setActiveEventLine(null);
-                        const clientId = activeEventLine.eventLine.primaryClientId;
-                        if (clientId) {
-                          setCurrentClientId(clientId);
-                          setActiveTab('client_workspace');
-                        }
-                      }}
-                    >
-                      前往客户工作台补充
-                    </button>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-[10px] font-bold text-indigo-700">客户：{activeEventLine.eventLine.primaryClientName || '未关联'}</span>
-                    <span className="rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-bold text-violet-700">可补：行业、规模、需求痛点</span>
-                    <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold text-[#33449a]">可补：合作关系、战略价值</span>
-                  </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-bold text-gray-500">补充说明</label>
+                  <textarea
+                    value={taskEventLineCreateDraft.summary}
+                    onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, summary: event.target.value }))}
+                    placeholder="可选：补一句背景说明，后面查看事件线时会直接看到。"
+                    className="min-h-[96px] w-full resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[14px] leading-6 text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                  />
                 </div>
-              )}
+              </div>
 
-              {!activeEventLine.eventLine.primaryClientId && (
-                <div className="mt-5 rounded-3xl border border-dashed border-amber-200 bg-amber-50/30 p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <p className="text-[12px] font-bold text-amber-700">这条事件线还没有关联客户</p>
-                      <p className="mt-1 text-[11px] leading-5 text-amber-600/80">关联客户后，系统才能调用客户背景和合作关系来理解这条线的战略意义。</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-                <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[12px] font-bold text-gray-500">关联任务</p>
-                    <span className="text-[11px] text-gray-400">{activeEventLine.tasks.length} 条</span>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {activeEventLine.tasks.length === 0 && (
-                      <p className="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-3 text-[12px] text-gray-400">这条事件线下还没有挂到具体任务。</p>
-                    )}
-                    {activeEventLine.tasks.slice(0, 6).map((task) => (
-                      <button
-                        key={task.id}
-                        type="button"
-                        className="w-full rounded-2xl border border-white bg-white px-4 py-3 text-left transition hover:border-[#D7E0FF] hover:bg-[#F8FAFF]"
-                        onClick={() => {
-                          setActiveEventLine(null);
-                          openTaskEditor(task);
-                        }}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-[13px] font-semibold text-gray-800">{task.title}</p>
-                            <p className="mt-1 text-[11px] text-gray-500">{task.ownerName}{task.dueDate ? ` · ${formatTaskDueLabel(task.dueDate)}` : ''}</p>
-                          </div>
-                          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600">{task.status}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[12px] font-bold text-gray-500">最近事件</p>
-                    <span className="text-[11px] text-gray-400">{activeEventLine.activities.length} 条</span>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {activeEventLine.activities.length === 0 && (
-                      <p className="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-3 text-[12px] text-gray-400">还没有沉淀过程痕迹。</p>
-                    )}
-                    {activeEventLine.activities.slice(0, 8).map((activity) => (
-                      <div key={activity.id} className="rounded-2xl border border-white bg-white px-4 py-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[12px] font-semibold text-gray-800">{activity.title}</p>
-                            <p className="mt-1 text-[11px] leading-5 text-gray-500">{activity.summary}</p>
-                          </div>
-                          <span className="shrink-0 text-[10px] text-gray-400">{activity.happenedAt.slice(5, 16).replace('T', ' ')}</span>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Manual note input */}
-                    <div className="mt-3 flex gap-2">
-                      <input
-                        type="text"
-                        value={eventLineNoteText}
-                        onChange={(e) => setEventLineNoteText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && eventLineNoteText.trim() && !isSavingEventLineNote) {
-                            void (async () => {
-                              setIsSavingEventLineNote(true);
-                              try {
-                                await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
-                                setEventLineNoteText('');
-                                const refreshed = await getEventLine(activeEventLine.eventLine.id);
-                                setActiveEventLine(refreshed);
-                                flash('success', '备注已添加');
-                              } catch (err) {
-                                flash('error', err instanceof Error ? err.message : '添加备注失败');
-                              } finally {
-                                setIsSavingEventLineNote(false);
-                              }
-                            })();
-                          }
-                        }}
-                        placeholder="记录一条观察、决策或进展..."
-                        className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-2.5 text-[12px] outline-none transition focus:border-[#5B7BFE] focus:ring-1 focus:ring-[#5B7BFE]/20"
-                        disabled={isSavingEventLineNote}
-                      />
-                      <button
-                        type="button"
-                        disabled={!eventLineNoteText.trim() || isSavingEventLineNote}
-                        onClick={() => {
-                          if (!eventLineNoteText.trim()) return;
-                          void (async () => {
-                            setIsSavingEventLineNote(true);
-                            try {
-                              await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
-                              setEventLineNoteText('');
-                              const refreshed = await getEventLine(activeEventLine.eventLine.id);
-                              setActiveEventLine(refreshed);
-                              flash('success', '备注已添加');
-                            } catch (err) {
-                              flash('error', err instanceof Error ? err.message : '添加备注失败');
-                            } finally {
-                              setIsSavingEventLineNote(false);
-                            }
-                          })();
-                        }}
-                        className="shrink-0 rounded-2xl bg-[#5B7BFE] px-4 py-2.5 text-[12px] font-bold text-white transition hover:bg-[#4a6ae8] disabled:opacity-40"
-                      >
-                        {isSavingEventLineNote ? '...' : '添加'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
+              <div className="mt-6 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  className="rounded-2xl px-4 py-2 text-[13px] font-medium text-gray-500 transition hover:bg-gray-100"
+                  onClick={() => {
+                    if (isCreatingEventLine) return;
+                    setIsTaskEventLineCreateOpen(false);
+                    setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="rounded-2xl bg-[#5B7BFE] px-5 py-2.5 text-[13px] font-bold text-white transition hover:bg-[#4a6ae8] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => void handleSubmitTaskEventLineCreate()}
+                  disabled={isCreatingEventLine || !taskEventLineCreateDraft.name.trim()}
+                >
+                  {isCreatingEventLine ? '创建中...' : '创建并关联'}
+                </button>
               </div>
             </div>
           </div>
         )}
+
+        {activeEventLine && (() => {
+          const el = activeEventLine.eventLine;
+          const elTasks = activeEventLine.tasks;
+          const elActivities = activeEventLine.activities;
+          const sourceTypeLabels: Record<string, { label: string; color: string }> = {
+            task_activity: { label: '任务', color: 'bg-blue-100 text-blue-600' },
+            meeting: { label: '会议', color: 'bg-cyan-100 text-cyan-600' },
+            support_request: { label: '支持', color: 'bg-pink-100 text-pink-600' },
+            review: { label: '复核', color: 'bg-purple-100 text-purple-600' },
+            attachment: { label: '附件', color: 'bg-orange-100 text-orange-600' },
+            manual_note: { label: '备注', color: 'bg-green-100 text-green-600' },
+          };
+          return (
+          <div
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 backdrop-blur-sm px-4 py-6 animate-in fade-in"
+            onClick={() => setActiveEventLine(null)}
+          >
+            <div
+              className="w-[640px] max-h-[85vh] bg-white rounded-[24px] shadow-xl flex flex-col overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {/* --- FIXED TOP --- */}
+              <div className="flex-shrink-0 px-8 pt-7 pb-6 border-b border-gray-200/80">
+                {/* Top row */}
+                <div className="flex justify-between items-center mb-1">
+                  <button type="button" onClick={() => setActiveEventLine(null)} className="text-gray-400 hover:text-gray-700 transition-colors">
+                    <X size={20} />
+                  </button>
+                  <button
+                    type="button"
+                    className="bg-blue-600 hover:bg-blue-700 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                    onClick={() => { setReportEventLineId(el.id); setActiveEventLine(null); }}
+                  >
+                    <FileBadge size={14} />
+                    汇报预览
+                  </button>
+                </div>
+
+                {/* Event line name */}
+                <h1 className="text-[22px] font-bold text-black truncate py-1 mb-4">{el.name}</h1>
+                <div className="h-px bg-gray-100 mb-4" />
+
+                {/* Basic info grid */}
+                <div className="bg-[#F8F9FB] rounded-2xl py-4 px-5 grid grid-cols-4 gap-4 mb-5">
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">客户</span>
+                    <span className="text-[13px] text-purple-600 font-medium">{el.primaryClientName || '未关联'}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">创建于</span>
+                    <span className="text-[13px] text-gray-700">{el.createdAt.slice(0, 10)}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">最近更新</span>
+                    <span className="text-[13px] text-gray-700">{el.updatedAt.slice(5, 16).replace('T', ' ')}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">关联</span>
+                    <span className="text-[13px] text-gray-700"><span className="font-bold">{elTasks.length}</span> 条任务 · <span className="font-bold">{el.evidenceCount}</span> 个附件</span>
+                  </div>
+                </div>
+
+                {/* Participants */}
+                <div className="mb-5">
+                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-3">参与人</h3>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {el.ownerName && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-[12px] font-medium">{el.ownerName.charAt(0)}</div>
+                        <span className="text-[13px] text-gray-800">{el.ownerName}</span>
+                        <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded">负责人</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Description */}
+                <div>
+                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-2">事件线描述</h3>
+                  <p className="text-[13px] leading-[22px] text-gray-600">
+                    {el.summary || '暂无描述。可在编辑事件线时添加。'}
+                  </p>
+                </div>
+              </div>
+
+              {/* --- SCROLLABLE BOTTOM --- */}
+              <div className="flex-1 overflow-y-auto px-8 pt-6 pb-10">
+                {/* Linked tasks */}
+                <div className="mb-8">
+                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-3">
+                    关联任务 <span className="lowercase">({elTasks.length} 条)</span>
+                  </h3>
+                  {elTasks.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-400">这条事件线下还没有挂到具体任务。</p>
+                  )}
+                  <div className="flex flex-col gap-2">
+                    {elTasks.slice(0, 6).map((task) => (
+                      <button
+                        key={task.id}
+                        type="button"
+                        className="flex items-start gap-3 p-2 -mx-2 hover:bg-[#F5F6F8] rounded-xl text-left transition-colors"
+                        onClick={() => { setActiveEventLine(null); openTaskEditor(task); }}
+                      >
+                        <span className="mt-0.5 text-gray-400">
+                          {task.status === 'done'
+                            ? <CheckSquare size={16} className="text-blue-500" />
+                            : <Square size={16} />}
+                        </span>
+                        <div className="flex flex-col gap-1 min-w-0">
+                          <span className={`text-[14px] truncate ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{task.title}</span>
+                          <span className="text-[11px] text-gray-400">{task.ownerName}{task.dueDate ? ` · ${formatTaskDueLabel(task.dueDate)}` : ''}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Recent events */}
+                <div className="mb-6">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium">最近事件</h3>
+                    <span className="text-[11px] text-gray-400">共 {elActivities.length} 条</span>
+                  </div>
+                  {elActivities.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-400">还没有沉淀过程痕迹。</p>
+                  )}
+                  <div className="flex flex-col gap-1">
+                    {elActivities.slice(0, 8).map((activity) => {
+                      const st = sourceTypeLabels[activity.sourceType] || { label: activity.sourceType, color: 'bg-gray-100 text-gray-600' };
+                      return (
+                        <div key={activity.id} className="flex items-start py-1.5 hover:bg-gray-50 rounded -mx-2 px-2 transition-colors">
+                          <span className="text-[11px] text-gray-400 w-[90px] flex-shrink-0 pt-px">{activity.happenedAt.slice(5, 16).replace('T', ' ')}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 ${st.color}`}>{st.label}</span>
+                          <span className="text-[13px] text-gray-700 truncate ml-2">{activity.title}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Manual note input */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={eventLineNoteText}
+                    onChange={(e) => setEventLineNoteText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && eventLineNoteText.trim() && !isSavingEventLineNote) {
+                        void (async () => {
+                          setIsSavingEventLineNote(true);
+                          try {
+                            await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
+                            setEventLineNoteText('');
+                            const refreshed = await getEventLine(activeEventLine.eventLine.id);
+                            setActiveEventLine(refreshed);
+                            flash('success', '备注已添加');
+                          } catch (err) {
+                            flash('error', err instanceof Error ? err.message : '添加备注失败');
+                          } finally {
+                            setIsSavingEventLineNote(false);
+                          }
+                        })();
+                      }
+                    }}
+                    placeholder="记录一条观察、决策或进展..."
+                    className="flex-1 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-[12px] outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                    disabled={isSavingEventLineNote}
+                  />
+                  <button
+                    type="button"
+                    disabled={!eventLineNoteText.trim() || isSavingEventLineNote}
+                    onClick={() => {
+                      if (!eventLineNoteText.trim()) return;
+                      void (async () => {
+                        setIsSavingEventLineNote(true);
+                        try {
+                          await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
+                          setEventLineNoteText('');
+                          const refreshed = await getEventLine(activeEventLine.eventLine.id);
+                          setActiveEventLine(refreshed);
+                          flash('success', '备注已添加');
+                        } catch (err) {
+                          flash('error', err instanceof Error ? err.message : '添加备注失败');
+                        } finally {
+                          setIsSavingEventLineNote(false);
+                        }
+                      })();
+                    }}
+                    className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-[12px] font-bold text-white transition hover:bg-blue-700 disabled:opacity-40"
+                  >
+                    {isSavingEventLineNote ? '...' : '添加'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          );
+        })()}
 
         {reportEventLineId && (
           <EventLineReportPanel
@@ -9153,7 +9333,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => void handleCreateEventLineFromTask()}
-                              disabled={!editingTask.title.trim() || !editingTask.clientId || isEditingTaskPersonal}
+                              disabled={!editingTask.clientId || isEditingTaskPersonal || isCreatingEventLine}
                               className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               新建
@@ -9713,6 +9893,7 @@ export default function App() {
     const [inputValue, setInputValue] = useState('');
     const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
     const [clientImportDropZone, setClientImportDropZone] = useState<'buffer' | 'composer' | null>(null);
+    const [answerActionState, setAnswerActionState] = useState<Record<string, 'vectorize' | 'export'>>({});
     const [isTemplateFilling, setIsTemplateFilling] = useState(false);
     const [templateFillDialog, setTemplateFillDialog] = useState<TemplateFillDialogState | null>(null);
     const [isClientModalOpen, setIsClientModalOpen] = useState(false);
@@ -10371,7 +10552,7 @@ export default function App() {
     }, [currentClientId, workspace?.knowledgeStatus?.lastJobStatus]);
 
     const filteredClients = clients.filter((client) => !searchQuery.trim() || `${client.name}${client.alias}${client.domain}`.includes(searchQuery.trim()));
-    const currentThreadId = workspace?.threads?.[0]?.id || activeAnalysisRun?.threadId || null;
+    const currentThreadId = activeAnalysisRun?.threadId || workspace?.threads?.[0]?.id || null;
     const visibleThreadAnalysisRun =
       visibleActiveAnalysisRun && visibleActiveAnalysisRun.threadId === currentThreadId ? visibleActiveAnalysisRun : null;
     const activeAssistantMessageId = visibleThreadAnalysisRun?.assistantMessageId || null;
@@ -10526,17 +10707,27 @@ export default function App() {
     }, [latestChatMessageId, thinkingPanelVisible]);
 
     const aiStatus = useMemo(() => {
-      if (health?.ai.provider === 'qwen' && health.ai.ready) {
+      if (!health?.ai.provider) {
         return {
-          label: 'Qwen 已连接',
+          label: 'AI 状态加载中',
+          className: 'text-gray-600 bg-gray-50 border-gray-200 hover:bg-gray-100',
+          dotClassName: 'bg-gray-400',
+          subtitle: '正在读取当前模型',
+        };
+      }
+      const provider = health.ai.provider as AiProvider;
+      const providerLabel = providerDisplayNames[provider] || provider;
+      if (provider !== 'mock' && health.ai.ready) {
+        return {
+          label: `${providerLabel} 已连接`,
           className: 'text-emerald-600 bg-emerald-50 border-emerald-100 hover:bg-emerald-100',
           dotClassName: 'bg-emerald-500',
           subtitle: health.ai.model,
         };
       }
-      if (health?.ai.provider === 'qwen' && !health.ai.ready) {
+      if (provider !== 'mock' && !health.ai.ready) {
         return {
-          label: 'Qwen 未配置',
+          label: `${providerLabel} 未配置`,
           className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
           dotClassName: 'bg-amber-500',
           subtitle: '当前回退 mock',
@@ -11291,25 +11482,40 @@ export default function App() {
     };
 
     const handleVectorizeAnswer = async (messageId: string) => {
-      if (!currentClientId) return;
+      if (!currentClientId || answerActionState[messageId]) return;
       try {
+        setAnswerActionState((prev) => ({ ...prev, [messageId]: 'vectorize' }));
         const result = await vectorizeAnswer(currentClientId, messageId);
         await refreshWorkspace(currentClientId);
-        flash('success', `已生成机读文档：${result.fileName}`);
+        const opened = await openPathBridge(result.path).catch(() => false);
+        flash('success', opened ? `已生成并打开机读文档：${result.fileName}` : `已生成机读文档，并已归档到当前项目：${result.fileName}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '建立向量失败');
+      } finally {
+        setAnswerActionState((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
       }
     };
 
     const handleExportAnswer = async (messageId: string) => {
-      if (!currentClientId) return;
+      if (!currentClientId || answerActionState[messageId]) return;
       try {
+        setAnswerActionState((prev) => ({ ...prev, [messageId]: 'export' }));
         const result = await exportAnswer(currentClientId, messageId);
-        flash('success', `已生成 Word 文件：${result.fileName}`);
-        void openPathBridge(result.path);
         await refreshWorkspace(currentClientId);
+        const opened = await openPathBridge(result.path).catch(() => false);
+        flash('success', opened ? `已生成、归档并打开 Word 文件：${result.fileName}` : `已生成并归档 Word 文件：${result.fileName}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '导出文件失败');
+      } finally {
+        setAnswerActionState((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
       }
     };
 
@@ -11815,23 +12021,23 @@ export default function App() {
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={msg.answerMode === 'system_failure'}
+                                      disabled={msg.answerMode === 'system_failure' || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void handleVectorizeAnswer(msg.id);
                                       }}
                                     >
-                                      <Sparkles size={14} /> 建立向量
+                                      <Sparkles size={14} /> {answerActionState[msg.id] === 'vectorize' ? '建立中…' : '建立向量'}
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={msg.answerMode === 'system_failure'}
+                                      disabled={msg.answerMode === 'system_failure' || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void handleExportAnswer(msg.id);
                                       }}
                                     >
-                                      <Download size={14} /> 导出文件
+                                      <Download size={14} /> {answerActionState[msg.id] === 'export' ? '导出中…' : '导出文件'}
                                     </button>
                                     {msg.answerMode === 'system_failure' && msg.requestPrompt && (
                                       <button
@@ -13498,7 +13704,7 @@ export default function App() {
     const handleSaveAiSettings = async () => {
       try {
         await updateSettings({
-          aiProvider: draft.aiProvider as 'mock' | 'qwen',
+          aiProvider: draft.aiProvider as AiProvider,
           aiModel: draft.aiModel,
           apiKey: draft.apiKey.trim() || undefined,
         });
