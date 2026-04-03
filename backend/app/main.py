@@ -6018,10 +6018,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ]
         combined_activities = remote_activities + attachment_activities
         combined_activities.sort(key=lambda item: (item.happenedAt, item.id), reverse=True)
+        memory_response = get_event_line_memory_response(state.db, event_line.id) if event_line.id else EventLineMemoryResponse(
+            eventLineId="",
+            lineName="",
+            eventLineMemorySnapshot=None,
+            clarificationNeeds=[],
+        )
         return EventLineDetailRecord(
             eventLine=event_line,
             tasks=[build_cloud_task(item, {}) for item in tasks_payload if isinstance(item, dict)] if isinstance(tasks_payload, list) else [],
             activities=combined_activities,
+            memorySnapshot=memory_response.eventLineMemorySnapshot,
+            predictionReadiness=memory_response.eventLineMemorySnapshot.predictionReadiness if memory_response.eventLineMemorySnapshot else None,
+            clarificationNeeds=memory_response.clarificationNeeds,
         )
 
     def build_event_line_detail(row) -> EventLineDetailRecord:
@@ -12939,7 +12948,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (normalized_event_line_id,))
         if not row:
             return None
-        detail = build_event_line_detail(row)
+        detail: EventLineDetailRecord
+        if get_cloud_token():
+            try:
+                payload = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
+                detail = build_cloud_event_line_detail(payload) if isinstance(payload, dict) else build_event_line_detail(row)
+            except HTTPException:
+                detail = build_event_line_detail(row)
+        else:
+            detail = build_event_line_detail(row)
         snapshot = detail.memorySnapshot
         notebook = (
             get_client_notebook_response(state.db, detail.eventLine.primaryClientId).organizationNotebookSnapshot
@@ -15027,99 +15044,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return _build_task_context_preview(task)
 
     def _build_smart_brief_for_task(task: TaskRecord) -> TaskSmartBriefRecord:
-        task_id = task.id
-        summary_parts: list[str] = []
-        source_labels: list[str] = []
-
-        if task.desc and task.desc.strip():
-            summary_parts.append(task.desc.strip()[:200])
-            source_labels.append("任务说明")
-
-        if task.clientId:
-            notebook_row = state.db.fetchone(
-                "SELECT organization_intro, collaboration_relationship FROM organization_notebook_snapshots WHERE client_id = ?",
-                (task.clientId,),
-            )
-            if notebook_row:
-                org_intro = str(notebook_row["organization_intro"] or "").strip()
-                collab = str(notebook_row["collaboration_relationship"] or "").strip()
-                if org_intro:
-                    summary_parts.append(org_intro[:120])
-                    source_labels.append("客户画像")
-                if collab:
-                    summary_parts.append(collab[:120])
-                    source_labels.append("合作关系")
-
-        if task.eventLineId:
-            el_row = state.db.fetchone("SELECT summary, intent FROM event_lines WHERE id = ?", (task.eventLineId,))
-            if el_row:
-                el_summary = str(el_row["summary"] or "").strip()
-                el_intent = str(el_row["intent"] or "").strip()
-                if el_summary:
-                    summary_parts.append(f"事件线进展：{el_summary[:100]}")
-                    source_labels.append("事件线")
-                elif el_intent:
-                    summary_parts.append(f"事件线目标：{el_intent[:100]}")
-                    source_labels.append("事件线")
-
-        attachment_rows = state.db.fetchall(
-            "SELECT title FROM task_attachments WHERE task_id = ? UNION ALL SELECT title FROM task_attachments_cloud WHERE task_id = ?",
-            (task_id, task_id),
-        )
-        if attachment_rows:
-            titles = [str(row["title"]) for row in attachment_rows[:3]]
-            summary_parts.append(f"已关联附件：{'、'.join(titles)}")
-            source_labels.append("附件")
-
-        review_row = state.db.fetchone(
-            "SELECT note, structured_note_json FROM weekly_review_task_entries WHERE task_id = ? ORDER BY reviewed_at DESC LIMIT 1",
-            (task_id,),
-        )
-        if review_row and review_row["note"]:
-            review_note = str(review_row["note"]).strip()[:120]
-            if review_note:
-                summary_parts.append(f"上次复盘：{review_note}")
-                source_labels.append("周复盘")
-
-        final_summary = "。".join(part.rstrip("。") for part in summary_parts if part)[:300]
-        if not final_summary:
-            final_summary = f"「{task.title}」— 暂无更多背景信息，可在任务说明中补充。"
-
-        action_items: list[TaskSmartBriefActionItem] = []
-
-        if task.eventLineId:
-            el_row = state.db.fetchone("SELECT next_step, current_blocker FROM event_lines WHERE id = ?", (task.eventLineId,))
-            if el_row:
-                next_step = str(el_row["next_step"] or "").strip()
-                if next_step:
-                    action_items.append(TaskSmartBriefActionItem(text=next_step, sourceLabel="事件线下一步"))
-                blocker = str(el_row["current_blocker"] or "").strip()
-                if blocker and len(action_items) < 5:
-                    action_items.append(TaskSmartBriefActionItem(text=f"解决阻塞：{blocker}", sourceLabel="事件线阻塞"))
-
-        if task.eventLineId:
-            snapshot_row = state.db.fetchone(
-                "SELECT clarification_needs_json FROM event_line_memory_snapshots WHERE event_line_id = ?",
-                (task.eventLineId,),
-            )
-            if snapshot_row and snapshot_row["clarification_needs_json"]:
-                needs = from_json(snapshot_row["clarification_needs_json"], [])
-                for need in needs[:3]:
-                    text = str(need).strip()
-                    if text and len(action_items) < 5:
-                        action_items.append(TaskSmartBriefActionItem(text=f"待补充：{text}", sourceLabel="待补信息"))
-
-        if review_row and review_row["structured_note_json"]:
-            structured = from_json(review_row["structured_note_json"], {})
-            next_action = str(structured.get("nextAction", "")).strip()
-            if next_action and len(action_items) < 5:
-                action_items.append(TaskSmartBriefActionItem(text=next_action, sourceLabel="复盘待办"))
-
-        return TaskSmartBriefRecord(
-            taskId=task_id,
-            summary=final_summary,
-            summarySourceLabels=list(dict.fromkeys(source_labels)),
-            actionItems=action_items,
+        attachment_titles = [item.title for item in task.attachments[:6] if item.title]
+        return _build_smart_brief_from_hints(
+            task_id=task.id,
+            title=task.title,
+            desc=task.desc or "",
+            client_id=task.clientId,
+            event_line_id=task.eventLineId,
+            frontend_attachment_titles=attachment_titles,
         )
 
     # V1 角色映射：根据关键词自动建议内部责任人
@@ -15139,6 +15071,423 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not scores:
             return ""
         return max(scores, key=scores.get)  # type: ignore[arg-type]
+
+    def _clean_task_brief_text(value: str, limit: int = 180) -> str:
+        text = str(value or "").replace("\u3000", " ").replace("\t", " ").strip()
+        text = re.sub(r"[ \xa0]+", " ", text)
+        text = re.sub(r"\n{2,}", "\n", text)
+        text = text.strip(" ，,。；;：:\n")
+        if limit > 0 and len(text) > limit:
+            text = text[: max(1, limit - 1)].rstrip(" ，,。；;：:") + "…"
+        return text
+
+    def _split_task_brief_action_lines(raw: str) -> list[str]:
+        if not raw:
+            return []
+        normalized = str(raw or "")
+        normalized = re.sub(r"[•●▪◦■□◆◇★☆]", "\n", normalized)
+        normalized = normalized.replace("；", "\n").replace(";", "\n")
+        normalized = normalized.replace("。", "\n")
+        candidates: list[str] = []
+        for line in re.split(r"[\r\n]+", normalized):
+            cleaned = re.sub(r"^\s*[\-\u2022]?\s*", "", line)
+            cleaned = re.sub(r"^\s*(?:第?[一二三四五六七八九十0-9]+[、.)）]|[0-9]+\.)\s*", "", cleaned)
+            cleaned = _clean_task_brief_text(cleaned, limit=120)
+            if len(cleaned) < 4:
+                continue
+            candidates.append(cleaned)
+        return list(dict.fromkeys(candidates))
+
+    def _compose_task_brief_summary_point(kind: str, point: str) -> str:
+        cleaned = _clean_task_brief_text(point, limit=110)
+        if not cleaned:
+            return ""
+        if kind == "progress":
+            return cleaned
+        if kind == "value":
+            return cleaned
+        if kind == "blocker":
+            return cleaned
+        return cleaned
+
+    def _convert_external_action_to_followup(text: str, client_name: str | None) -> str:
+        target = _clean_task_brief_text(client_name or "客户", limit=20) or "客户"
+        cleaned = _clean_task_brief_text(text, limit=100)
+        if not cleaned:
+            return f"跟进{target}后续事项"
+        cleaned = cleaned.removeprefix("请").removeprefix("继续").strip()
+        if target and cleaned.startswith(target):
+            cleaned = cleaned[len(target):].strip()
+        cleaned = cleaned.lstrip("，,：: ")
+        if cleaned.startswith("跟进"):
+            return cleaned
+        return _clean_task_brief_text(f"跟进{target}{cleaned}", limit=120)
+
+    def _infer_due_hint_from_text(text: str) -> str:
+        cleaned = str(text or "")
+        for pattern in (
+            r"(4月中下旬)",
+            r"([0-9]+天内)",
+            r"(一周内)",
+            r"(本周内)",
+            r"(近期)",
+            r"(下次沟通前)",
+            r"(下轮对接前)",
+            r"(下轮沟通前)",
+        ):
+            matched = re.search(pattern, cleaned)
+            if matched:
+                return matched.group(1)
+        if any(keyword in cleaned for keyword in ("安排", "确认", "约", "跟进")):
+            return "下次沟通前"
+        if any(keyword in cleaned for keyword in ("框架", "建议", "案例卡", "判断")):
+            return "一周内"
+        return ""
+
+    def _infer_deliverable_from_text(text: str) -> str:
+        cleaned = str(text or "")
+        if "框架" in cleaned:
+            matched = re.search(r"([^，。；\n]*框架(?:\s*V[0-9]+)?)", cleaned)
+            if matched:
+                return _clean_task_brief_text(matched.group(1), limit=40)
+            return "成效表达框架 V1"
+        if "建议" in cleaned:
+            return "建议单"
+        if "案例卡" in cleaned:
+            return "内部案例卡"
+        if "判断" in cleaned:
+            return "一页判断摘要"
+        if "卡点" in cleaned:
+            return "本轮运行问题清单"
+        if "确认" in cleaned:
+            return "确认结论"
+        return ""
+
+    def _extract_task_brief_sections_from_attachments(attachment_texts: list[str]) -> dict[str, str]:
+        section_aliases: dict[str, list[str]] = {
+            "当前进展": ["当前进展", "项目进展", "目前进展", "现阶段"],
+            "项目价值": ["项目价值", "价值判断", "为什么重要", "意义"],
+            "主要卡点": ["主要卡点", "当前阻碍", "核心卡点", "数字化摩擦", "主要问题"],
+            "下一阶段计划": ["下一阶段计划", "下一步计划", "后续计划", "下一步"],
+            "会后分工": ["会后分工", "后续分工", "行动建议", "待办", "下一步代办"],
+        }
+        sections: dict[str, str] = {key: "" for key in section_aliases}
+        if not attachment_texts:
+            return sections
+        lines: list[str] = []
+        for raw in attachment_texts:
+            content = str(raw or "")
+            if content.startswith("【"):
+                content = re.sub(r"^【[^】]+】", "", content)
+            lines.extend([segment.strip() for segment in re.split(r"[\r\n]+", content) if segment.strip()])
+        for index, line in enumerate(lines):
+            for section_name, aliases in section_aliases.items():
+                if sections[section_name]:
+                    continue
+                matched_alias = next((alias for alias in aliases if alias in line), None)
+                if not matched_alias:
+                    continue
+                if line.startswith(matched_alias) or f"{matched_alias}：" in line or f"{matched_alias}:" in line:
+                    remainder = line.split(matched_alias, 1)[-1].lstrip("：: ")
+                else:
+                    remainder = ""
+                if not remainder and index + 1 < len(lines):
+                    remainder = lines[index + 1]
+                sections[section_name] = _clean_task_brief_text(remainder, limit=220)
+        return sections
+
+    def _build_task_brief_prompt_context(bundle: dict[str, object], title: str, desc: str) -> tuple[str, dict[str, str]]:
+        context_blocks = [f"任务标题：{_clean_task_brief_text(title, limit=80)}"]
+        if desc.strip():
+            context_blocks.append(f"任务说明：{_clean_task_brief_text(desc, limit=260)}")
+        client_name = _clean_task_brief_text(str(bundle.get("clientName") or ""), limit=40)
+        if client_name:
+            context_blocks.append(f"客户：{client_name}")
+        client_intro = _clean_task_brief_text(str(bundle.get("clientIntro") or ""), limit=180)
+        if client_intro:
+            context_blocks.append(f"客户画像：{client_intro}")
+        collaboration_relationship = _clean_task_brief_text(str(bundle.get("collaborationRelationship") or ""), limit=180)
+        if collaboration_relationship:
+            context_blocks.append(f"合作关系：{collaboration_relationship}")
+        event_line_name = _clean_task_brief_text(str(bundle.get("eventLine_name") or ""), limit=60)
+        if event_line_name:
+            context_blocks.append(f"事件线：{event_line_name}")
+        event_summary = _clean_task_brief_text(
+            str(bundle.get("eventLine_summary") or bundle.get("memory_current_work") or ""),
+            limit=180,
+        )
+        if event_summary:
+            context_blocks.append(f"事件线当前状态：{event_summary}")
+        review_note = _clean_task_brief_text(str(bundle.get("reviewNote") or ""), limit=180)
+        if review_note:
+            context_blocks.append(f"任务复盘：{review_note}")
+        attachment_texts = [str(item) for item in (bundle.get("attachmentContents") or []) if str(item).strip()]
+        sections = _extract_task_brief_sections_from_attachments(attachment_texts)
+        if attachment_texts:
+            context_blocks.append("纪要/附件内容：")
+            for snippet in attachment_texts[:2]:
+                context_blocks.append(_clean_task_brief_text(snippet, limit=360))
+        return "\n".join(context_blocks), sections
+
+    def _current_task_brief_actor_id() -> str:
+        session_user = get_cached_session_user()
+        if session_user and session_user.id:
+            return f"user:{session_user.id}"
+        try:
+            row = current_operator_row()
+            if row and row["id"]:
+                return f"operator:{row['id']}"
+        except Exception:
+            pass
+        return "operator:default"
+
+    def _build_task_brief_action_key(task_id: str, source_label: str, text: str) -> str:
+        normalized = re.sub(r"\s+", "", f"{task_id}|{source_label}|{text}".strip())
+        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+    def _list_adopted_task_brief_action_keys(task_id: str, actor_id: str) -> set[str]:
+        rows = state.db.fetchall(
+            "SELECT action_key FROM task_smart_brief_action_adoptions WHERE source_task_id = ? AND adopted_by_user_id = ?",
+            (task_id, actor_id),
+        )
+        return {str(row["action_key"]) for row in rows if row and row["action_key"]}
+
+    def _record_task_brief_action_adoption(source_task_id: str, action_key: str, actor_id: str, created_task_id: str, action_text: str) -> None:
+        state.db.execute(
+            """
+            INSERT OR REPLACE INTO task_smart_brief_action_adoptions(
+                source_task_id, action_key, adopted_by_user_id, created_task_id, action_text, adopted_at
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_task_id,
+                action_key,
+                actor_id,
+                created_task_id,
+                action_text,
+                now_iso(),
+            ),
+        )
+
+    def _extract_task_brief_project_hint(bundle: dict[str, object], title: str, action_text: str) -> str:
+        client_name = str(bundle.get("clientName") or "").strip()
+        candidates = [
+            str(bundle.get("eventLine_name") or ""),
+            title,
+            action_text,
+            str(bundle.get("eventLine_summary") or ""),
+        ]
+        keyword_priority = ("教师赋能", "鸿鹄计划", "数字化", "工作坊", "成效表达", "技术共创", "社群", "品牌", "录音边界")
+        combined = " ".join(candidates)
+        for keyword in keyword_priority:
+            if keyword in combined:
+                return keyword
+        for raw in candidates:
+            cleaned = str(raw or "").strip()
+            if not cleaned:
+                continue
+            if client_name:
+                cleaned = cleaned.replace(client_name, "")
+                cleaned = cleaned.replace(client_name.replace("基金会", ""), "")
+            cleaned = re.sub(r"Q[1-4]|一季度|二季度|三季度|四季度|复盘|项目复盘|讨论|跟进|任务|安排|计划|方案|会后|会议纪要", " ", cleaned)
+            cleaned = re.sub(r"[（(].*?[)）]", " ", cleaned)
+            cleaned = _clean_task_brief_text(cleaned, limit=14)
+            if len(cleaned) >= 2:
+                return cleaned
+        return ""
+
+    def _extract_task_brief_action_core(action_text: str, client_name: str | None) -> str:
+        cleaned = str(action_text or "").strip()
+        if client_name:
+            cleaned = cleaned.replace(client_name, "")
+            cleaned = cleaned.replace(client_name.replace("基金会", ""), "")
+        cleaned = re.sub(r"^跟进", "", cleaned)
+        cleaned = re.sub(r"^(继续推进|继续|进一步|请|安排|梳理|设计|把)", "", cleaned)
+        cleaned = cleaned.strip(" ，,：:。")
+        keyword_priority = ("录音边界确认", "卡点整理", "成效表达框架V1", "成效表达框架", "数字化试点建议", "阶段判断建议", "内部案例卡", "技术共创对接", "社群路径细化", "演示与对接会安排")
+        for keyword in keyword_priority:
+            if keyword in cleaned:
+                return keyword
+        return _clean_task_brief_text(cleaned, limit=14)
+
+    def _build_task_brief_title_suggestion(bundle: dict[str, object], source_task_title: str, action_text: str) -> str:
+        client_name = _clean_task_brief_text(str(bundle.get("clientName") or ""), limit=12)
+        project_hint = _extract_task_brief_project_hint(bundle, source_task_title, action_text)
+        action_core = _extract_task_brief_action_core(action_text, client_name)
+        segments: list[str] = []
+        for part in (client_name, project_hint, action_core):
+            part = _clean_task_brief_text(part, limit=16)
+            if not part:
+                continue
+            if segments and part in "".join(segments):
+                continue
+            segments.append(part)
+        title = "".join(segments) or _clean_task_brief_text(action_text, limit=22) or _clean_task_brief_text(source_task_title, limit=22)
+        return _clean_task_brief_text(title, limit=24)
+
+    def _build_task_brief_description_suggestion(
+        source_task_title: str,
+        bundle: dict[str, object],
+        summary_points: list[str],
+        action_text: str,
+        source_label: str,
+        due_hint: str,
+        deliverable: str,
+        internal_owner: str,
+    ) -> str:
+        client_name = _clean_task_brief_text(str(bundle.get("clientName") or ""), limit=30) or "该客户"
+        event_line_name = _clean_task_brief_text(str(bundle.get("eventLine_name") or ""), limit=40)
+        source_sentence = f"这条任务来自《{_clean_task_brief_text(source_task_title, limit=40)}》里的{source_label or '下一步代办'}。"
+        if event_line_name:
+            source_sentence += f"当前关联事件线为“{event_line_name}”。"
+        summary_sentence = " ".join([_clean_task_brief_text(point, limit=60) for point in summary_points if point])[:130]
+        if summary_sentence:
+            summary_sentence = f"结合现有任务说明、会议纪要和事件线信息，这条线目前的关键判断是：{summary_sentence}。"
+        else:
+            summary_sentence = ""
+        action_sentence = f"这次需要推进的具体事项是：{_clean_task_brief_text(action_text, limit=80)}。"
+        deliverable_sentence = ""
+        if deliverable and due_hint:
+            deliverable_sentence = f"请在{due_hint}前尽量拿到“{_clean_task_brief_text(deliverable, limit=40)}”这一结果。"
+        elif deliverable:
+            deliverable_sentence = f"请优先收束为“{_clean_task_brief_text(deliverable, limit=40)}”这一交付物。"
+        elif due_hint:
+            deliverable_sentence = f"建议时点是{due_hint}，避免只停留在沟通层面。"
+        coordination_sentence = f"如果需要协作，默认先与{internal_owner}对齐。" if internal_owner else ""
+        body = (
+            f"{source_sentence}{client_name}当前正在推进相关工作。"
+            f"{summary_sentence}{action_sentence}{deliverable_sentence}{coordination_sentence}"
+            "处理时请先确认当前背景、边界和已有资料，再决定需要跟进客户、内部收束还是补充下一轮判断。"
+        )
+        return _clean_task_brief_text(body, limit=280)
+
+    def _finalize_task_brief_action_items(
+        task_id: str,
+        source_task_title: str,
+        bundle: dict[str, object],
+        summary_points: list[str],
+        action_items: list[TaskSmartBriefActionItem],
+    ) -> list[TaskSmartBriefActionItem]:
+        actor_id = _current_task_brief_actor_id()
+        adopted_keys = _list_adopted_task_brief_action_keys(task_id, actor_id)
+        finalized: list[TaskSmartBriefActionItem] = []
+        seen: set[str] = set()
+        for item in action_items:
+            action_text = _clean_task_brief_text(item.text, limit=120)
+            if not action_text:
+                continue
+            source_label = item.sourceLabel or "系统建议"
+            action_key = item.actionKey or _build_task_brief_action_key(task_id, source_label, action_text)
+            if action_key in adopted_keys or action_key in seen:
+                continue
+            seen.add(action_key)
+            finalized.append(
+                TaskSmartBriefActionItem(
+                    text=action_text,
+                    sourceLabel=source_label,
+                    internalSuggestedOwner=item.internalSuggestedOwner or _route_internal_owner(action_text),
+                    actionKind=item.actionKind or ("meeting_explicit" if source_label == "会议待办" else "follow_up_external" if source_label == "跟进对方" else "system_inferred"),
+                    dueHint=item.dueHint or _infer_due_hint_from_text(action_text),
+                    deliverable=item.deliverable or _infer_deliverable_from_text(action_text),
+                    actionKey=action_key,
+                    taskTitleSuggestion=item.taskTitleSuggestion or _build_task_brief_title_suggestion(bundle, source_task_title, action_text),
+                    taskDescriptionSuggestion=item.taskDescriptionSuggestion or _build_task_brief_description_suggestion(
+                        source_task_title=source_task_title,
+                        bundle=bundle,
+                        summary_points=summary_points,
+                        action_text=action_text,
+                        source_label=source_label,
+                        due_hint=item.dueHint or _infer_due_hint_from_text(action_text),
+                        deliverable=item.deliverable or _infer_deliverable_from_text(action_text),
+                        internal_owner=item.internalSuggestedOwner or _route_internal_owner(action_text),
+                    ),
+                )
+            )
+        return finalized[:8]
+
+    def _build_structured_task_brief_fallback(
+        task_id: str,
+        title: str,
+        bundle: dict[str, object],
+        source_labels: list[str],
+        sections: dict[str, str],
+    ) -> TaskSmartBriefRecord:
+        summary_points: list[str] = []
+        progress = sections.get("当前进展") or str(bundle.get("eventLine_summary") or bundle.get("memory_current_work") or bundle.get("desc") or "").strip()
+        value = sections.get("项目价值") or str(bundle.get("collaborationRelationship") or bundle.get("clientIntro") or "").strip()
+        blockers = sections.get("主要卡点") or str(bundle.get("eventLine_current_blocker") or bundle.get("memory_current_blocker") or bundle.get("review_reflection") or "").strip()
+        for kind, point in (("progress", progress), ("value", value), ("blocker", blockers)):
+            cleaned = _compose_task_brief_summary_point(kind, point)
+            if cleaned:
+                summary_points.append(cleaned)
+        while len(summary_points) < 3:
+            summary_points.append("待继续补充这条任务的关键判断。")
+        final_summary = "\n".join(f"{index + 1}. {point}" for index, point in enumerate(summary_points[:3]))
+
+        client_name = str(bundle.get("clientName") or "").strip()
+        action_items: list[TaskSmartBriefActionItem] = []
+        explicit_candidates = _split_task_brief_action_lines(sections.get("会后分工", "")) or _split_task_brief_action_lines(sections.get("下一阶段计划", ""))
+        for item in explicit_candidates[:4]:
+            normalized_text = item
+            source_label = "会议待办"
+            lowered = normalized_text.lower()
+            internal_markers = ("益语", "我们", "梳理", "设计", "安排", "沉淀", "内部")
+            if client_name and client_name in normalized_text:
+                normalized_text = _convert_external_action_to_followup(normalized_text, client_name)
+                source_label = "跟进对方"
+            elif any(marker in lowered for marker in ("日慈", "对方", "客户")):
+                normalized_text = _convert_external_action_to_followup(normalized_text, client_name or "客户")
+                source_label = "跟进对方"
+            elif not any(marker in normalized_text for marker in internal_markers):
+                normalized_text = _convert_external_action_to_followup(normalized_text, client_name)
+                source_label = "跟进对方"
+            owner = "乐乐" if source_label == "跟进对方" else _route_internal_owner(normalized_text)
+            due_hint = _infer_due_hint_from_text(item)
+            if not due_hint:
+                due_hint = "下次沟通前" if source_label == "跟进对方" else "近期"
+            action_items.append(
+                TaskSmartBriefActionItem(
+                    text=normalized_text,
+                    sourceLabel=source_label,
+                    internalSuggestedOwner=owner,
+                    actionKind="follow_up_external" if source_label == "跟进对方" else "meeting_explicit",
+                    dueHint=due_hint,
+                    deliverable=_infer_deliverable_from_text(item),
+                )
+            )
+
+        inferred_candidates: list[str] = []
+        blockers_text = sections.get("主要卡点", "")
+        value_text = sections.get("项目价值", "")
+        if blockers_text and ("数字化" in blockers_text or "飞书" in blockers_text or "表单" in blockers_text):
+            inferred_candidates.append("梳理教师赋能数字化试点模块建议")
+        if value_text and ("资方" in value_text or "公众" in value_text or "价值" in value_text or "成效" in blockers_text):
+            inferred_candidates.append("设计教师赋能项目成效表达框架 V1")
+        if value_text:
+            inferred_candidates.append("梳理教师赋能项目的阶段判断与长期方向建议")
+            inferred_candidates.append("把教师赋能项目沉淀为益语内部案例卡")
+        for item in inferred_candidates:
+            if len(action_items) >= 7:
+                break
+            if any(existing.text.startswith(item) for existing in action_items):
+                continue
+            action_items.append(
+                TaskSmartBriefActionItem(
+                    text=item,
+                    sourceLabel="系统建议",
+                    internalSuggestedOwner=_route_internal_owner(item),
+                    actionKind="system_inferred",
+                    dueHint=_infer_due_hint_from_text(item),
+                    deliverable=_infer_deliverable_from_text(item),
+                )
+            )
+
+        return TaskSmartBriefRecord(
+            taskId=task_id,
+            summary=final_summary[:900],
+            summarySourceLabels=list(dict.fromkeys(source_labels)),
+            actionItems=_finalize_task_brief_action_items(task_id, title, bundle, summary_points[:3], action_items),
+        )
 
     def _gather_task_context_bundle(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None) -> dict:
         """Assemble all available context for a task into a single bundle."""
@@ -15217,32 +15566,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 att_kind = str(att_row["kind"] or "")
                 att_title = str(att_row["title"] or "")
 
-                # 从 documents 表读 excerpt
+                extracted_text = _read_attachment_text_for_brief(att_path, att_kind, att_title) if att_path and att_kind in ("docx", "md", "txt") else ""
+                if extracted_text.strip():
+                    attachment_texts.append(f"【{att_title}】{extracted_text.strip()}")
+                    continue
+
+                # 从 documents 表读 excerpt 作为兜底
                 if doc_id:
                     doc_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (doc_id,))
                     if doc_row and doc_row["excerpt"]:
-                        excerpt = str(doc_row["excerpt"]).strip()[:500]
+                        excerpt = str(doc_row["excerpt"]).strip()[:900]
                         if excerpt:
                             attachment_texts.append(f"【{att_title}】{excerpt}")
-                            continue
-
-                # 直接读 docx/md/txt 文件
-                if att_path and att_kind in ("docx", "md", "txt"):
-                    from pathlib import Path as _Path
-                    file_path = _Path(att_path)
-                    if not file_path.is_absolute():
-                        file_path = state.data_dir / att_path
-                    if file_path.exists():
-                        try:
-                            if att_kind == "docx":
-                                doc_obj = WordDocument(str(file_path))
-                                text = "\n".join(p.text for p in doc_obj.paragraphs[:30] if p.text.strip())[:500]
-                            else:
-                                text = file_path.read_text(encoding="utf-8", errors="ignore")[:500]
-                            if text.strip():
-                                attachment_texts.append(f"【{att_title}】{text.strip()}")
-                        except Exception:
-                            pass
 
             if attachment_texts:
                 bundle["attachmentContents"] = attachment_texts
@@ -15300,6 +15635,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 actionItems=[],
             )
 
+        prompt_context, attachment_sections = _build_task_brief_prompt_context(bundle, title, desc)
+
         # 直接调用豆包 API 生成（绕过 state.ai 的 provider 设置问题）
         try:
             from app.services.secrets import MacOSKeychainSecretStore
@@ -15309,111 +15646,118 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             api_key = ""
         if api_key:
             try:
-                context_text = "\n".join(f"【{k}】{v}" for k, v in bundle.items() if k not in ("taskId", "sourceLabels") and v)
                 prompt = (
-                    f"任务标题：{title}\n\n"
-                    f"以下是这条任务的所有上下文资料：\n{context_text}\n\n"
-                    f"请回答两个问题，严格返回 JSON：\n\n"
-                    f'{{"keyTopics": ["这次会议/任务谈的最重要的3-4件事，每件1-2句话"],'
-                    f'"nextActions": [{{"text": "接下来要推进的具体事项", "who": "负责人", "when": "时间"}}]}}\n\n'
+                    f"以下是这条任务最关键的上下文资料：\n{prompt_context}\n\n"
+                    f"请回答两个问题，严格返回 JSON，不要输出任何额外文字：\n\n"
+                    f'{{"summaryPoints": ["第1点：当前进展","第2点：项目价值","第3点：主要卡点"],'
+                    f'"nextActions": [{{"title": "任务标题", "sourceType": "meeting_explicit|follow_up_external|system_inferred", "who": "负责人", "when": "时间提示", "deliverable": "预期交付物"}}]}}\n\n'
                     f"规则：\n"
-                    f"- keyTopics：从附件/会议纪要/任务说明中提取最重要的3-4个议题，每个用1-2句话概括\n"
-                    f"- nextActions：从资料中提取接下来要推进的事项。如果是对方要做的事，改写成「跟进XXX做YYY」。所有事项的主语必须是益语团队\n"
+                    f"- summaryPoints 必须严格返回 3 条，顺序固定为：当前进展、项目价值、主要卡点\n"
+                    f"- 每条 1-2 句，不要写空话，不要重复任务标题\n"
+                    f"- 优先依据会议纪要，再用任务说明、客户背景、合作关系补足，不要被无关背景带偏\n"
+                    f"- nextActions 先抽会议里明确说出的后续事项，再补系统建议补建的内部代办\n"
+                    f"- 如果会议里说的是对方要做的事，不要照抄，统一改写成「跟进 + 对方事项 + 我方想拿到的结果」\n"
+                    f"- sourceType 只能是：meeting_explicit、follow_up_external、system_inferred\n"
                     f"- who 参考：策略/判断/成效→顾源源，跟进/对接/安排→乐乐，技术/系统/试点→佳维\n"
+                    f"- deliverable 尽量写清楚，如果资料里没有就留空字符串\n"
                 )
-                model = state.db.get_setting("ai_model", "ep-m-20260326120641-m4lf6")
-                resp = httpx.post(
-                    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": "你是益语智库的项目助手。只返回纯 JSON，不要 Markdown。"},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "max_tokens": 1500,
-                        "temperature": 0.3,
-                    },
-                    timeout=20.0,
-                )
-                if resp.status_code == 200:
-                    raw = resp.json()["choices"][0]["message"]["content"].strip()
-                    # 清理可能的 markdown 包装
-                    if raw.startswith("```"):
-                        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                    result = json.loads(raw)
+                model = state.db.get_setting("ai_model", "doubao-seed-2-0-pro-260215")
+                result: dict[str, object] | None = None
+                last_error: Exception | None = None
+                for timeout_seconds in (10.0, 16.0):
+                    try:
+                        resp = httpx.post(
+                            "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                            json={
+                                "model": model,
+                                "messages": [
+                                    {"role": "system", "content": "你是益语智库的项目助手。只返回纯 JSON，不要 Markdown，不要解释过程。"},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                "max_tokens": 3000,
+                                "temperature": 0.5,
+                            },
+                            timeout=timeout_seconds,
+                        )
+                        if resp.status_code != 200:
+                            raise RuntimeError(f"doubao status={resp.status_code} body={resp.text[:300]}")
+                        raw = resp.json()["choices"][0]["message"]["content"].strip()
+                        if raw.startswith("```"):
+                            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                        try:
+                            result = json.loads(raw)
+                        except Exception:
+                            match = re.search(r"\{.*\}", raw, re.S)
+                            if not match:
+                                raise
+                            result = json.loads(match.group(0))
+                        break
+                    except Exception as error:
+                        last_error = error
+                        continue
 
-                    # 解析 keyTopics → 概要
-                    topics = result.get("keyTopics", [])
-                    if isinstance(topics, list) and topics:
-                        ai_summary = "\n".join(f"{'①②③④⑤'[i] if i < 5 else '•'} {str(t).strip()}" for i, t in enumerate(topics) if str(t).strip())
-                    else:
-                        ai_summary = ""
+                if result:
+                    summary_points = result.get("summaryPoints", [])
+                    if not isinstance(summary_points, list):
+                        summary_points = result.get("keyTopics", [])
+                    normalized_points = [str(item).strip() for item in summary_points if str(item).strip()][:3]
+                    ai_summary = "\n".join(
+                        f"{index + 1}. {point}"
+                        for index, point in enumerate(normalized_points)
+                    )
 
-                    # 解析 nextActions → 待办
-                    ai_actions = []
+                    ai_actions: list[TaskSmartBriefActionItem] = []
                     for item in result.get("nextActions", []):
-                        if not isinstance(item, dict) or not item.get("text"):
+                        if not isinstance(item, dict):
                             continue
-                        text = str(item["text"]).strip()
+                        title_text = str(item.get("title") or item.get("text") or "").strip()
+                        if not title_text:
+                            continue
+                        source_type = str(item.get("sourceType") or "").strip()
                         who = str(item.get("who", "")).strip()
                         when = str(item.get("when", "")).strip()
-                        if when:
-                            text = f"{text}（{when}）"
-                        internal_owner = who if who in ("顾源源", "乐乐", "佳维") else _route_internal_owner(text)
-                        ai_actions.append(TaskSmartBriefActionItem(
-                            text=text,
-                            sourceLabel="会议待办" if "跟进" not in text else "跟进对方",
-                            internalSuggestedOwner=internal_owner,
-                        ))
+                        deliverable = str(item.get("deliverable", "")).strip()
+                        source_label = (
+                            "会议待办" if source_type == "meeting_explicit"
+                            else "跟进对方" if source_type == "follow_up_external"
+                            else "系统建议"
+                        )
+                        action_text = title_text
+                        internal_owner = who if who in ("顾源源", "乐乐", "佳维") else _route_internal_owner(action_text)
+                        due_hint = when or _infer_due_hint_from_text(action_text)
+                        if not due_hint:
+                            due_hint = "下次沟通前" if source_label == "跟进对方" else "近期" if source_label == "会议待办" else ""
+                        ai_actions.append(
+                            TaskSmartBriefActionItem(
+                                text=action_text,
+                                sourceLabel=source_label,
+                                internalSuggestedOwner=internal_owner,
+                                actionKind=source_type or ("meeting_explicit" if source_label == "会议待办" else "follow_up_external" if source_label == "跟进对方" else "system_inferred"),
+                                dueHint=due_hint,
+                                deliverable=deliverable or _infer_deliverable_from_text(action_text),
+                            )
+                        )
 
                     if ai_summary:
+                        deduped_labels = list(dict.fromkeys((list(source_labels) if isinstance(source_labels, list) else []) + ["AI"]))
                         return TaskSmartBriefRecord(
                             taskId=task_id,
-                            summary=ai_summary[:500],
-                            summarySourceLabels=list(source_labels) if isinstance(source_labels, list) else [],
-                            actionItems=ai_actions[:10],
+                            summary=ai_summary[:900],
+                            summarySourceLabels=deduped_labels,
+                            actionItems=_finalize_task_brief_action_items(task_id, title, bundle, normalized_points[:3], ai_actions),
                         )
+                if last_error:
+                    print(f"[task-smart-brief] AI generation fallback for {task_id}: {last_error}")
             except Exception:
                 pass  # AI 失败时 fallback 到规则拼接
 
-        # Fallback: 规则拼接
-        summary_parts: list[str] = []
-        if desc.strip():
-            summary_parts.append(desc.strip()[:200])
-        if bundle.get("clientIntro"):
-            summary_parts.append(str(bundle["clientIntro"])[:120])
-        if bundle.get("collaborationRelationship"):
-            summary_parts.append(str(bundle["collaborationRelationship"])[:120])
-        if bundle.get("eventLine_summary"):
-            summary_parts.append(f"事件线进展：{str(bundle['eventLine_summary'])[:100]}")
-        elif bundle.get("eventLine_intent"):
-            summary_parts.append(f"事件线目标：{str(bundle['eventLine_intent'])[:100]}")
-        if bundle.get("attachments"):
-            summary_parts.append(f"已关联附件：{'、'.join(str(a) for a in bundle['attachments'][:3])}")
-        if bundle.get("reviewNote"):
-            summary_parts.append(f"上次复盘：{str(bundle['reviewNote'])[:120]}")
-
-        final_summary = "。".join(part.rstrip("。") for part in summary_parts if part)[:300]
-        if not final_summary:
-            final_summary = f"「{title}」— 暂无更多背景信息，可在任务说明中补充。"
-
-        action_items: list[TaskSmartBriefActionItem] = []
-        if bundle.get("eventLine_next_step"):
-            action_items.append(TaskSmartBriefActionItem(text=str(bundle["eventLine_next_step"]), sourceLabel="事件线下一步"))
-        if bundle.get("eventLine_current_blocker") and len(action_items) < 5:
-            action_items.append(TaskSmartBriefActionItem(text=f"解决阻塞：{bundle['eventLine_current_blocker']}", sourceLabel="事件线阻塞"))
-        for need in (bundle.get("clarification_needs") or [])[:3]:
-            if len(action_items) < 5:
-                action_items.append(TaskSmartBriefActionItem(text=f"待补充：{need}", sourceLabel="待补信息"))
-        if bundle.get("review_nextAction") and len(action_items) < 5:
-            action_items.append(TaskSmartBriefActionItem(text=str(bundle["review_nextAction"]), sourceLabel="复盘待办"))
-
-        return TaskSmartBriefRecord(
-            taskId=task_id,
-            summary=final_summary,
-            summarySourceLabels=list(source_labels) if isinstance(source_labels, list) else [],
-            actionItems=action_items,
+        return _build_structured_task_brief_fallback(
+            task_id=task_id,
+            title=title,
+            bundle=bundle,
+            source_labels=list(source_labels) if isinstance(source_labels, list) else [],
+            sections=attachment_sections,
         )
 
     @app.get("/api/v1/tasks/{task_id}/smart-brief", response_model=TaskSmartBriefRecord)
@@ -15450,6 +15794,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 pass
         return results
 
+    @app.post("/api/v1/tasks/{task_id}/smart-brief-actions/{action_key}/adopt")
+    def adopt_task_smart_brief_action(task_id: str, action_key: str, payload: dict | None = Body(default=None)) -> dict:
+        payload = payload or {}
+        created_task_id = str(payload.get("createdTaskId") or "").strip()
+        action_text = str(payload.get("actionText") or "").strip()
+        if not created_task_id:
+            raise HTTPException(status_code=400, detail="createdTaskId is required")
+        actor_id = _current_task_brief_actor_id()
+        _record_task_brief_action_adoption(task_id, action_key, actor_id, created_task_id, action_text)
+        return {"ok": True, "taskId": task_id, "actionKey": action_key, "createdTaskId": created_task_id}
+
     @app.post("/api/v1/event-lines/{event_line_id}/attachments")
     def upload_event_line_attachment(
         event_line_id: str,
@@ -15485,7 +15840,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return payload
 
     @app.post("/api/v1/event-lines/{event_line_id}/export-word")
-    def export_event_line_word(event_line_id: str, draft: dict) -> Response:
+    def export_event_line_word(event_line_id: str, draft: dict = Body(...)) -> dict:
         doc = WordDocument()
 
         event_line_name = str(draft.get("eventLineName", "事件线汇报"))
@@ -15590,16 +15945,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     created = str(att.get("createdAt", ""))[:16].replace("T", " ")
                     doc.add_paragraph(f"📎 {att_title}  （{att.get('kind', '')} · {size_label} · {created}）")
 
-        from io import BytesIO
-        buffer = BytesIO()
-        doc.save(buffer)
-        buffer.seek(0)
+        import tempfile
         safe_name = safe_filename(f"{event_line_name[:30]}_汇报.docx")
-        return Response(
-            content=buffer.getvalue(),
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-        )
+        tmp_dir = os.path.join(tempfile.gettempdir(), "yiyu_exports")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_path = os.path.join(tmp_dir, safe_name)
+        doc.save(tmp_path)
+        return {"filePath": tmp_path, "fileName": safe_name}
 
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(event_line_id: str, payload: EventLineUpdatePayload) -> EventLineRecord:
@@ -15709,6 +16061,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if merged["primary_client_id"]:
             get_client_memory_status(state.db, str(merged["primary_client_id"]))
         return build_event_line(updated_row)
+
+    def _event_line_dependency_counts(event_line_id: str) -> dict[str, int]:
+        task_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM tasks WHERE event_line_id = ?", (event_line_id,))
+        activity_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
+        attachment_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
+        memory_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_memory_snapshots WHERE event_line_id = ?", (event_line_id,))
+        weekly_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_weekly_snapshots WHERE event_line_id = ?", (event_line_id,))
+        approval_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_approval_nodes WHERE event_line_id = ?", (event_line_id,))
+        return {
+            "tasks": int(task_count["cnt"] if task_count else 0),
+            "activities": int(activity_count["cnt"] if activity_count else 0),
+            "attachments": int(attachment_count["cnt"] if attachment_count else 0),
+            "memorySnapshots": int(memory_count["cnt"] if memory_count else 0),
+            "weeklySnapshots": int(weekly_count["cnt"] if weekly_count else 0),
+            "approvalNodes": int(approval_count["cnt"] if approval_count else 0),
+        }
+
+    @app.delete("/api/v1/event-lines/{event_line_id}")
+    def delete_event_line(event_line_id: str) -> dict:
+        if get_cloud_token():
+            response = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
+            if isinstance(response, dict):
+                return response
+            return {"status": "deleted"}
+        row = state.db.fetchone("SELECT id, name, status FROM event_lines WHERE id = ?", (event_line_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        counts = _event_line_dependency_counts(event_line_id)
+        has_dependencies = any(value > 0 for value in counts.values())
+        if has_dependencies:
+            state.db.execute(
+                "UPDATE event_lines SET status = 'archived', updated_at = ? WHERE id = ?",
+                (now_iso(), event_line_id),
+            )
+            return {"status": "archived", "counts": counts}
+        state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
+        return {"status": "deleted", "counts": counts}
 
     @app.post("/api/v1/event-lines/{event_line_id}/notes")
     def add_event_line_note(event_line_id: str, payload: dict = Body(...)) -> dict:

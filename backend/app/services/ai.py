@@ -16,12 +16,12 @@ DEFAULT_PROVIDER = "doubao"
 DEFAULT_MODELS = {
     "mock": "mock-summarizer",
     "qwen": "qwen3.5-plus",
-    "doubao": "doubao-seed-1.6",
+    "doubao": "doubao-seed-2-0-pro-260215",
 }
 DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
 QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-PROVIDER_LABELS = {"qwen": "Qwen 3.5", "doubao": "豆包 Seed 1.6", "mock": "Mock"}
+PROVIDER_LABELS = {"qwen": "Qwen 3.5", "doubao": "豆包 Seed 2.0 Pro", "mock": "Mock"}
 
 
 @dataclass
@@ -205,12 +205,11 @@ class AiService:
         context_summary: str,
     ) -> AiStructuredResponse:
         health = self.get_health()
-        compact_context = self._compact_context_summary(context_summary, max_chars=1600)
+        compact_context = self._compact_context_summary(context_summary, max_chars=8000)
         quick_instruction = (
             f"{system_instruction}\n"
-            "这是资讯情报站里的追问，不是长文写作。"
-            "请先直接回答用户最关心的问题，再补 1 到 2 层解释。"
-            "默认控制在 220 到 420 字内，最多 3 小段。"
+            "请先直接回答用户最关心的问题，再展开解释。"
+            "根据问题复杂度自由决定回答长度。"
             "优先讲清楚：它解决什么问题、对谁有用、为什么值得关心、落地会卡在哪。"
             "少讲空泛趋势，少做宏大评论，不要写成长文分析。"
             "不要输出 JSON 或 Markdown 代码块。"
@@ -222,10 +221,10 @@ class AiService:
                     system_instruction=quick_instruction,
                     response_schema=None,
                     timeout_seconds=16.0,
-                    max_tokens=1100,
-                    temperature=0.35,
+                    max_tokens=3000,
+                    temperature=0.5,
                     top_p=0.9,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
                 return self._structured_from_plain_answer(str(text))
             except Exception as error:
@@ -483,9 +482,9 @@ class AiService:
         *,
         on_partial: Callable[[dict[str, Any]], None] | None = None,
     ) -> AiStructuredResponse:
-        focus_context = self._compact_context_summary(context_summary, max_chars=6000)
-        analysis_context = self._compact_context_summary(context_summary, max_chars=12000)
-        action_context = self._compact_context_summary(context_summary, max_chars=6000)
+        focus_context = self._compact_context_summary(context_summary, max_chars=20000)
+        analysis_context = self._compact_context_summary(context_summary, max_chars=40000)
+        action_context = self._compact_context_summary(context_summary, max_chars=20000)
         base_instruction = (
             f"{system_instruction}\n"
             "你现在要分阶段写成一版完整顾问回答。"
@@ -2606,7 +2605,7 @@ class AiService:
         context_summary: str,
         *,
         timeout_seconds: float = 60.0,
-        max_tokens: int = 2200,
+        max_tokens: int = 3500,
     ) -> AiStructuredResponse:
         payload = self._qwen_generate(
             prompt=f"问题：{prompt}\n\n上下文：{context_summary}",
@@ -2668,9 +2667,9 @@ class AiService:
         system_instruction: str,
         response_schema: dict | None,
         timeout_seconds: float = 60.0,
-        max_tokens: int = 2200,
+        max_tokens: int = 3500,
         *,
-        temperature: float = 0.25,
+        temperature: float = 0.45,
         top_p: float = 0.9,
         enable_thinking: bool = False,
     ) -> object:

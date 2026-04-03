@@ -24,6 +24,27 @@ _chroma_collection = None
 CHROMA_COLLECTION_NAME = "yiyu_knowledge"
 
 
+def desktop_app_db_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    explicit = os.getenv("YIYU_DESKTOP_APP_DB_PATH", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+
+    suffix = Path("Library") / "Application Support" / "YiyuThinkTankWorkbench" / "app.db"
+    for base in (Path.home(), Path("/home/yiyu"), Path("/var/lib/yiyu-cloud")):
+        candidate = base / suffix
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def find_desktop_app_db_path() -> Path | None:
+    for candidate in desktop_app_db_candidates():
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _data_dir() -> Path:
     base = os.getenv(
         "YIYU_CLOUD_DATA_DIR",
@@ -106,7 +127,7 @@ def query_knowledge(
     *,
     organization_id: str,
     query: str,
-    n_results: int = 5,
+    n_results: int = 15,
     client_id: str | None = None,
 ) -> list[str]:
     """Retrieve relevant knowledge snippets by semantic similarity.
@@ -131,7 +152,7 @@ def query_knowledge(
 
         results = collection.query(
             query_texts=[query],
-            n_results=min(n_results, 10),
+            n_results=min(n_results, 25),
             where=where_filter,
         )
         documents = results.get("documents", [[]])[0]
@@ -209,19 +230,15 @@ def sync_desktop_surrogates_to_cloud(
     Reads from the desktop app.db and vector_store directory, then upserts
     the AI-enriched retrieval_summary + overview_summary into ChromaDB.
     """
-    import os
     import sqlite3 as _sqlite3
 
-    desktop_db_path = os.path.join(
-        os.path.expanduser("~"),
-        "Library", "Application Support", "YiyuThinkTankWorkbench", "app.db",
-    )
-    if not os.path.exists(desktop_db_path):
+    desktop_db_path = find_desktop_app_db_path()
+    if desktop_db_path is None:
         return {"synced": 0, "error": "desktop db not found"}
 
     synced = 0
     try:
-        conn = _sqlite3.connect(desktop_db_path)
+        conn = _sqlite3.connect(str(desktop_db_path))
         conn.row_factory = _sqlite3.Row
         rows = conn.execute(
             """

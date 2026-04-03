@@ -127,24 +127,44 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
   const [expandedAttachments, setExpandedAttachments] = useState<Set<string>>(new Set());
 
   /* Fetch immutable snapshot from cloud */
-  const loadSnapshot = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const loadSnapshot = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const data = await getEventLineReportSnapshot(eventLineId);
       setSnapshot(data);
-      setDraft({
-        eventLineName: data.eventLine.name,
-        summary: data.eventLine.summary || '',
-        activities: data.activities.map((a: EventLineActivity) => ({ ...a })),
-        attachments: [...data.attachments],
-        participantNames: [...data.participantNames],
-        snapshotAt: data.snapshotAt,
+      setDraft((prev) => {
+        // Preserve user edits during silent refresh
+        const prevEditMap = new Map<string, { editedTitle?: string; editedSummary?: string }>();
+        if (options?.silent && prev) {
+          for (const a of prev.activities) {
+            if (a.editedTitle || a.editedSummary) {
+              prevEditMap.set(a.id, { editedTitle: a.editedTitle, editedSummary: a.editedSummary });
+            }
+          }
+        }
+        return {
+          eventLineName: prev?.eventLineName ?? data.eventLine.name,
+          summary: prev?.summary ?? data.eventLine.summary ?? '',
+          activities: data.activities.map((a: EventLineActivity) => ({
+            ...a,
+            ...(prevEditMap.get(a.id) || {}),
+          })),
+          attachments: [...data.attachments],
+          participantNames: [...data.participantNames],
+          snapshotAt: data.snapshotAt,
+        };
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载事件线快照失败');
+      if (!options?.silent) {
+        setError(err instanceof Error ? err.message : '加载事件线快照失败');
+      }
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }, [eventLineId]);
 
@@ -281,18 +301,20 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(exportDraft),
                   });
-                  if (!response.ok) throw new Error('导出失败');
-                  setExportProgress({ stage: '下载文件...', detail: '文档已生成，正在下载到本地' });
-                  const blob = await response.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `${draft.eventLineName || '事件线汇报'}.docx`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  setExportProgress(null);
-                } catch {
-                  setExportProgress(null);
+                  if (!response.ok) throw new Error(`导出失败 (${response.status})`);
+                  const result = await response.json();
+                  if (!result.filePath) throw new Error('后端未返回文件路径');
+                  setExportProgress({ stage: '保存文件...', detail: '文档已生成，请选择保存位置' });
+                  const saved = await window.yiyuWorkbench?.saveFileAs(result.filePath, result.fileName);
+                  if (saved) {
+                    setExportProgress({ stage: '导出成功', detail: `已保存到 ${saved}` });
+                    setTimeout(() => setExportProgress(null), 2000);
+                  } else {
+                    setExportProgress(null);
+                  }
+                } catch (err) {
+                  setExportProgress({ stage: '导出失败', detail: err instanceof Error ? err.message : '未知错误' });
+                  setTimeout(() => setExportProgress(null), 3000);
                 }
               })();
             }}
@@ -484,7 +506,7 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                                     } else {
                                       setTimeout(() => setUploadProgressByActivity((prev) => { const next = { ...prev }; delete next[actId]; return next; }), 5000);
                                     }
-                                    void loadSnapshot();
+                                    void loadSnapshot({ silent: true });
                                   })();
                                   event.target.value = '';
                                 }}

@@ -1149,6 +1149,37 @@ def _event_line_detail_record(state: AppState, row, viewer_id: str | None = None
     )
 
 
+def _event_line_dependency_counts(state: AppState, event_line_id: str, organization_id: str) -> dict[str, int]:
+    task_count = state.db.fetchone(
+        "SELECT COUNT(1) AS cnt FROM tasks WHERE event_line_id = ? AND organization_id = ?",
+        (event_line_id, organization_id),
+    )
+    activity_count = state.db.fetchone(
+        """
+        SELECT COUNT(1) AS cnt
+        FROM event_line_activities ela
+        JOIN event_lines el ON el.id = ela.event_line_id
+        WHERE ela.event_line_id = ? AND el.organization_id = ?
+        """,
+        (event_line_id, organization_id),
+    )
+    attachment_count = {"cnt": 0}
+    if _has_event_line_attachments_table():
+        attachment_count = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS cnt
+            FROM event_line_attachments
+            WHERE event_line_id = ? AND organization_id = ?
+            """,
+            (event_line_id, organization_id),
+        ) or {"cnt": 0}
+    return {
+        "tasks": int(task_count["cnt"] if task_count else 0),
+        "activities": int(activity_count["cnt"] if activity_count else 0),
+        "attachments": int(attachment_count["cnt"] if attachment_count else 0),
+    }
+
+
 def _get_org_model_profile(state: AppState, organization_id: str) -> OrgModelProfileRecord:
     organization = _org_profile_record(state, organization_id)
     departments = _list_org_departments(state, organization_id)
@@ -3995,12 +4026,12 @@ def _generate_recording_summary(
     truncated = transcript[:max_transcript] if len(transcript) > max_transcript else transcript
 
     system_prompt = (
-        "你是录音摘要助理。根据录音转写文本，生成一段简洁的会议/沟通摘要。\n"
+        "你是录音摘要助理。根据录音转写文本，生成会议/沟通摘要。\n"
         "要求：\n"
-        "1. 用200字以内概括核心内容\n"
+        "1. 概括核心内容，根据内容复杂度自由决定长度\n"
         "2. 列出关键决策点（如果有）\n"
-        "3. 列出待办事项（如果有）\n"
-        "4. 使用中文，语言简练专业\n"
+        "3. 列出待办事项和负责人（如果有）\n"
+        "4. 使用中文\n"
         "5. 不要重复转写原文，要提炼和总结\n"
     )
     if context:
@@ -4013,14 +4044,15 @@ def _generate_recording_summary(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"录音转写文本：\n{truncated}"},
         ],
-        "temperature": 0.3,
-        "top_p": 0.85,
-        "max_tokens": 600,
+        "temperature": 0.5,
+        "top_p": 0.9,
+        "max_tokens": 2000,
         "stream": False,
     }
     try:
         import httpx
-        timeout = httpx.Timeout(timeout=None, connect=8.0, read=30.0, write=8.0, pool=8.0)
+        read_timeout = 60.0 if (has_client_knowledge and intro_request) else 30.0
+        timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
         summary = _sync_qwen_chat(api_key, payload, timeout)
         return summary if summary else transcript[:140]
     except Exception as exc:
@@ -4624,6 +4656,12 @@ def create_app() -> FastAPI:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         return _event_line_detail_record(state, row, current_user.id)
 
+    def _has_event_line_attachments_table() -> bool:
+        row = state.db.fetchone(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_line_attachments'"
+        )
+        return row is not None
+
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot", response_model=EventLineReportSnapshotRecord)
     def get_event_line_report_snapshot(
         event_line_id: str,
@@ -4639,15 +4677,26 @@ def create_app() -> FastAPI:
             "SELECT * FROM tasks WHERE event_line_id = ? AND organization_id = ? ORDER BY updated_at DESC",
             (event_line_id, current_user.organizationId),
         )
-        attachment_rows = state.db.fetchall(
-            """
-            SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id FROM task_attachments WHERE event_line_id = ? AND organization_id = ?
-            UNION ALL
-            SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ?
-            ORDER BY created_at ASC
-            """,
-            (event_line_id, current_user.organizationId, event_line_id, current_user.organizationId),
-        )
+        if _has_event_line_attachments_table():
+            attachment_rows = state.db.fetchall(
+                """
+                SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id FROM task_attachments WHERE event_line_id = ? AND organization_id = ?
+                UNION ALL
+                SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ?
+                ORDER BY created_at ASC
+                """,
+                (event_line_id, current_user.organizationId, event_line_id, current_user.organizationId),
+            )
+        else:
+            attachment_rows = state.db.fetchall(
+                """
+                SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id
+                FROM task_attachments
+                WHERE event_line_id = ? AND organization_id = ?
+                ORDER BY created_at ASC
+                """,
+                (event_line_id, current_user.organizationId),
+            )
         participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
         participant_names = []
         for uid in participant_ids:
@@ -4795,6 +4844,26 @@ def create_app() -> FastAPI:
         )
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         return _event_line_record(state, row)
+
+    @app.delete("/api/v1/event-lines/{event_line_id}")
+    def delete_event_line(
+        event_line_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict:
+        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        counts = _event_line_dependency_counts(state, event_line_id, current_user.organizationId)
+        has_dependencies = any(value > 0 for value in counts.values())
+        if has_dependencies:
+            state.db.execute(
+                "UPDATE event_lines SET status = 'archived', updated_at = ? WHERE id = ? AND organization_id = ?",
+                (now_iso(), event_line_id, current_user.organizationId),
+            )
+            return {"status": "archived", "counts": counts}
+        state.db.execute(
+            "DELETE FROM event_lines WHERE id = ? AND organization_id = ?",
+            (event_line_id, current_user.organizationId),
+        )
+        return {"status": "deleted", "counts": counts}
 
     @app.get("/api/v1/tasks/{task_id}/plan-link", response_model=TaskPlanLinkRecord | None)
     def get_task_plan_link(
@@ -5144,16 +5213,17 @@ def create_app() -> FastAPI:
 
         # ── Desktop knowledge (DNA + surrogates) ──
         dna_context = ""
+        dna_doc_map: dict[str, str] = {}
+        surrogate_overviews: list[str] = []
         resolved_desktop_client_id = payload.clientId
         if payload.clientId or payload.clientName:
             try:
                 import sqlite3 as _sqlite3
-                desktop_db_path = os.path.join(
-                    os.path.expanduser("~"),
-                    "Library", "Application Support", "YiyuThinkTankWorkbench", "app.db",
-                )
-                if os.path.exists(desktop_db_path):
-                    dconn = _sqlite3.connect(desktop_db_path)
+                from app.knowledge_store import find_desktop_app_db_path
+
+                desktop_db_path = find_desktop_app_db_path()
+                if desktop_db_path is not None:
+                    dconn = _sqlite3.connect(str(desktop_db_path))
                     dconn.row_factory = _sqlite3.Row
 
                     # Resolve desktop client_id: try direct match first, then fallback by name
@@ -5189,6 +5259,8 @@ def create_app() -> FastAPI:
                                 continue
                             module = str(doc["module_key"] or "")
                             title = str(doc["title"] or module)
+                            if module:
+                                dna_doc_map[module] = text
                             dna_parts.append(f"【{title}】\n{text[:2000]}")
 
                     # Read surrogates (enriched summaries + profile blocks)
@@ -5206,6 +5278,7 @@ def create_app() -> FastAPI:
                             s_overview = str(s["overview_summary"] or "")
                             s_retrieval = str(s["retrieval_summary"] or "")
                             if s_overview:
+                                surrogate_overviews.append(s_overview)
                                 surrogate_parts.append(f"【{s_title}】\n{s_overview[:1500]}")
 
                     dconn.close()
@@ -5227,7 +5300,7 @@ def create_app() -> FastAPI:
                 query_knowledge,
                 organization_id=current_user.organizationId,
                 query=payload.message,
-                n_results=10,
+                n_results=20,
                 client_id=search_client_id,
             )
             # If no results with resolved id, try without client_id filter
@@ -5236,7 +5309,7 @@ def create_app() -> FastAPI:
                     query_knowledge,
                     organization_id=current_user.organizationId,
                     query=payload.message,
-                    n_results=10,
+                    n_results=20,
                     client_id=None,
                 )
             if vector_snippets:
@@ -5264,42 +5337,100 @@ def create_app() -> FastAPI:
                 if snippets:
                     knowledge_context = "\n\n已有知识沉淀：\n" + "\n---\n".join(snippets[:3])
 
-        system_prompt = (
-            "你是益语智库的资深战略顾问。你帮助用户基于客户合作上下文回答问题、"
-            "准备会议要点、分析推进策略、梳理阻塞与下一步。\n"
-            "如果系统提供了「相关知识参考」或「已有知识沉淀」或「客户知识档案」，必须优先使用这些内容作答；"
-            "当参考里已经包含与用户问题直接对应的结论时，直接提炼并复述该结论，不要泛化改写成空泛建议。\n"
-            "如果上下文不足，坦诚说明并给出通用建议。\n\n"
-            "【深度与排版要求】\n"
-            "- 每个要点不能只给结论，必须展开讲为什么\n"
-            "- 用「一、二、三」分层，并列要点用「- 」列表\n"
-            "- 关键结论用 **加粗**（加粗完整判断句，不要只加粗关键词）\n"
-            "- 多用判断句：「不是X，而是Y」「核心在于」\n"
+        normalized_message = payload.message.strip()
+        intro_request = any(
+            keyword in normalized_message
+            for keyword in ("介绍", "简介", "是谁", "做什么", "背景", "全称")
         )
-        if context_parts:
-            system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)
-        if dna_context:
-            system_prompt += dna_context
-        if knowledge_context:
-            system_prompt += knowledge_context
+        has_client_knowledge = bool(dna_context.strip())
+        intro_context = ""
+        if has_client_knowledge and intro_request:
+            intro_parts: list[str] = []
+            if surrogate_overviews:
+                intro_parts.append(f"【战略陪伴记忆】\n{surrogate_overviews[0][:900]}")
+            for module_key, title in (
+                ("organization_intro", "组织介绍"),
+                ("business_intro", "项目与业务介绍"),
+                ("market_intro", "市场背景介绍"),
+                ("team_intro", "团队介绍"),
+            ):
+                text = dna_doc_map.get(module_key, "").strip()
+                if text:
+                    limit = 1400 if module_key in {"organization_intro", "business_intro"} else 900
+                    intro_parts.append(f"【{title}】\n{text[:limit]}")
+            if intro_parts:
+                intro_context = "\n\n客户知识档案：\n" + "\n---\n".join(intro_parts)
 
         model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL))
 
         import httpx
-        terse_request = "只回答" in payload.message or len(payload.message.strip()) <= 40
+        terse_request = "只回答" in payload.message or len(normalized_message) <= 40
+        # Role boundary: prevent confusing consultant team with client team
+        role_boundary = (
+            "\n\n【角色边界 — 严格遵守】\n"
+            "- 益语智库是顾问方/服务方，顾源源是益语智库的创始人。\n"
+            "- 当前客户是合作对象，不是益语智库的一部分。\n"
+            "- 除非用户明确问益语智库、你们、顾问方、服务方式，否则回答对象默认是当前客户。\n"
+            "- 绝对不要把益语智库的人名（如顾源源）、益语智库的业务介绍当成客户本身的信息。\n"
+            "- 如果资料中出现益语智库团队成员参与客户工作的描述，要明确区分：谁是顾问方的人，谁是客户方的人。\n"
+        )
+
+        if has_client_knowledge and intro_request:
+            system_prompt = (
+                "你是益语智库的资深战略顾问。下面是客户的知识档案。"
+                "你必须严格依据这些资料直接回答，禁止说\"缺乏信息\"\"上下文不足\"\"无法介绍\"。\n"
+                "请简要介绍这个客户，默认按三段回答：它是谁、它做什么、当前战略重点。\n"
+                "优先综合组织介绍、项目与业务介绍、市场背景介绍、团队介绍和战略陪伴记忆，不要只摘抄一句原文。"
+            )
+            system_prompt += role_boundary
+            if context_parts:
+                system_prompt += "\n\n当前上下文：\n" + "\n".join(context_parts)
+            system_prompt += intro_context or dna_context
+            user_prompt = normalized_message
+        else:
+            system_prompt = (
+                "你是益语智库的资深战略顾问。你帮助用户基于客户合作上下文回答问题、"
+                "准备会议要点、分析推进策略、梳理阻塞与下一步。\n"
+                "如果系统提供了「相关知识参考」或「已有知识沉淀」或「客户知识档案」，必须优先使用这些内容作答；"
+                "当参考里已经包含与用户问题直接对应的结论时，直接提炼并复述该结论，不要泛化改写成空泛建议。\n"
+                "如果上下文不足，坦诚说明并给出通用建议。\n"
+                "【矛盾处理】如果不同文档或不同时期的资料之间存在矛盾（如方向调整、目标变更），请以最新日期的资料为准，并标注「注意：此观点与早期资料有所不同，以最新结论为准」。"
+            )
+            system_prompt += role_boundary
+            system_prompt += (
+                "\n\n【回答风格】\n"
+                "- 先给结论，再给关键论据，不要铺垫\n"
+                "- 简单问题简短回答（3-5 句），复杂问题分层展开但不超过 800 字\n"
+                "- 用户没追问就不要主动展开所有维度\n"
+                "- 用「一、二、三」分层，并列要点用「- 」列表\n"
+                "- 关键结论用 **加粗**\n"
+            )
+            if context_parts:
+                system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)
+            if dna_context:
+                system_prompt += dna_context
+                system_prompt += (
+                    "\n\n【回答强约束】\n"
+                    '- 系统已经提供了客户知识档案，禁止回答"缺乏信息""上下文不足""无法介绍"。\n'
+                    "- 必须先提炼客户知识档案里的结论，再组织成回答，不能忽略档案内容。\n"
+                )
+            if knowledge_context:
+                system_prompt += knowledge_context
+            user_prompt = normalized_message
         chat_payload = {
             "model": model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": payload.message},
+                {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.2 if knowledge_context else 0.5,
+            "temperature": 0.5,
             "top_p": 0.95,
-            "max_tokens": 400 if terse_request else 2400,
+            "max_tokens": 2000 if (has_client_knowledge and intro_request) else (600 if terse_request else 2500),
             "stream": False,
             "enable_thinking": True,
         }
-        timeout = httpx.Timeout(timeout=None, connect=8.0, read=30.0, write=8.0, pool=8.0)
+        read_timeout = 60.0 if (has_client_knowledge and intro_request) else 30.0
+        timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
         try:
             response = await asyncio.to_thread(
                 _sync_qwen_chat, api_key, chat_payload, timeout
@@ -5339,7 +5470,7 @@ def create_app() -> FastAPI:
     @app.get("/api/public/task-attachments/{attachment_id}")
     def get_public_task_attachment(attachment_id: str) -> FileResponse:
         row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
+        if row is None and _has_event_line_attachments_table():
             row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
@@ -5352,7 +5483,7 @@ def create_app() -> FastAPI:
     @app.get("/api/public/task-attachments/{attachment_id}/thumbnail")
     def get_attachment_thumbnail(attachment_id: str, max_width: int = 600) -> Response:
         row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
+        if row is None and _has_event_line_attachments_table():
             row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
@@ -5383,7 +5514,7 @@ def create_app() -> FastAPI:
     @app.get("/api/public/task-attachments/{attachment_id}/text-content")
     def get_attachment_text_content(attachment_id: str) -> dict:
         row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
+        if row is None and _has_event_line_attachments_table():
             row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
@@ -5410,7 +5541,7 @@ def create_app() -> FastAPI:
     @app.get("/api/public/task-attachments/{attachment_id}/ocr-summary")
     def get_attachment_ocr_summary(attachment_id: str) -> dict:
         row = state.db.fetchone("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
+        if row is None and _has_event_line_attachments_table():
             row = state.db.fetchone("SELECT * FROM event_line_attachments WHERE id = ?", (attachment_id,))
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
@@ -5462,17 +5593,30 @@ def create_app() -> FastAPI:
     ) -> Response:
         _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         attachment_ids = (payload or {}).get("attachmentIds")
+        has_event_line_attachments = _has_event_line_attachments_table()
         if attachment_ids and isinstance(attachment_ids, list):
             placeholders = ",".join("?" for _ in attachment_ids)
-            rows = state.db.fetchall(
-                f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND id IN ({placeholders}) UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? AND id IN ({placeholders}) ORDER BY id",
-                (event_line_id, *attachment_ids, event_line_id, *attachment_ids),
-            )
+            if has_event_line_attachments:
+                rows = state.db.fetchall(
+                    f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND id IN ({placeholders}) UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? AND id IN ({placeholders}) ORDER BY id",
+                    (event_line_id, *attachment_ids, event_line_id, *attachment_ids),
+                )
+            else:
+                rows = state.db.fetchall(
+                    f"SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? AND id IN ({placeholders}) ORDER BY id",
+                    (event_line_id, *attachment_ids),
+                )
         else:
-            rows = state.db.fetchall(
-                "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? ORDER BY id",
-                (event_line_id, event_line_id),
-            )
+            if has_event_line_attachments:
+                rows = state.db.fetchall(
+                    "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT id, title, path, mime_type, size_bytes FROM event_line_attachments WHERE event_line_id = ? ORDER BY id",
+                    (event_line_id, event_line_id),
+                )
+            else:
+                rows = state.db.fetchall(
+                    "SELECT id, title, path, mime_type, size_bytes FROM task_attachments WHERE event_line_id = ? ORDER BY id",
+                    (event_line_id,),
+                )
         if not rows:
             raise HTTPException(status_code=404, detail="没有可下载的附件")
         import zipfile

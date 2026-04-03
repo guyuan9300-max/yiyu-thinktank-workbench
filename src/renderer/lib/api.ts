@@ -336,6 +336,16 @@ export async function getTaskSmartBriefsBatch(taskHints: Array<{ id: string; tit
   });
 }
 
+export async function adoptTaskSmartBriefAction(taskId: string, actionKey: string, payload: { createdTaskId: string; actionText?: string }) {
+  return request<{ ok: boolean; taskId: string; actionKey: string; createdTaskId: string }>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}/smart-brief-actions/${encodeURIComponent(actionKey)}/adopt`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export async function getAuthState() {
   return request<AuthState>('/api/v1/auth/me');
 }
@@ -1006,6 +1016,12 @@ export async function updateEventLine(id: string, payload: Partial<EventLineMuta
   return request<EventLine>(`/api/v1/event-lines/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEventLine(id: string) {
+  return request<{ status: string; counts?: Record<string, number> }>(`/api/v1/event-lines/${id}`, {
+    method: 'DELETE',
   });
 }
 

@@ -1009,6 +1009,16 @@ class Database:
                     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS task_smart_brief_action_adoptions (
+                    source_task_id TEXT NOT NULL,
+                    action_key TEXT NOT NULL,
+                    adopted_by_user_id TEXT NOT NULL DEFAULT '',
+                    created_task_id TEXT NOT NULL,
+                    action_text TEXT NOT NULL DEFAULT '',
+                    adopted_at TEXT NOT NULL,
+                    PRIMARY KEY (source_task_id, action_key, adopted_by_user_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS agent_weekly_plan_overrides (
                     id TEXT PRIMARY KEY,
                     week_label TEXT NOT NULL,

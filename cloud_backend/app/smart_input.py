@@ -806,6 +806,7 @@ def _match_event_line(
     title: str | None,
     project_query: str | None,
     event_line_query: str | None,
+    raw_transcript: str | None = None,
 ) -> EventLineRecord | None:
     best: EventLineRecord | None = None
     best_score = 0
@@ -814,6 +815,13 @@ def _match_event_line(
         _normalize_search_text(project_query or ""),
         _normalize_search_text(title or ""),
     ]
+    # Also match against fragments from the raw voice transcript.
+    # This catches client/project names that AI may have dropped from the title.
+    if raw_transcript:
+        for fragment in _split_search_fragments(raw_transcript):
+            normalized = _normalize_search_text(fragment)
+            if len(normalized) >= 2 and normalized not in search_terms:
+                search_terms.append(normalized)
     for event_line in event_lines:
         score = 0
         if current_event_line_id and event_line.id == current_event_line_id:
@@ -876,6 +884,7 @@ def build_smart_task_draft(
         title=raw_title,
         project_query=project_query,
         event_line_query=event_line_query,
+        raw_transcript=transcript,
     )
 
     client_name = derive_project_label(matched_event_line) if matched_event_line else None

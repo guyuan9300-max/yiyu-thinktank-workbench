@@ -1871,51 +1871,57 @@ def build_chunks(text: str, fallback_excerpt: str) -> list[dict[str, Any]]:
     content = text.strip() or fallback_excerpt.strip()
     if not content:
         return []
+    CHUNK_MAX = 1200  # 每个切片最大字符数（从 480 提升到 1200）
+    CHUNK_SPLIT = 800  # 切片触发阈值（从 280 提升到 800）
+    OVERLAP_CHARS = 120  # 切片重叠字符数（新增）
     lines = [line.strip() for line in content.splitlines()]
     chunks: list[dict[str, Any]] = []
     section_label = "概览"
     buffer = ""
     chunk_index = 0
+    prev_tail = ""  # 上一个切片的尾部，用于 overlap
     for line in lines:
         if not line:
             continue
         if re.match(r"^#{1,6}\s*", line):
             if buffer.strip():
-                text_block = buffer.strip()
+                text_block = (prev_tail + " " + buffer).strip() if prev_tail else buffer.strip()
                 chunks.append(
                     {
                         "chunk_index": chunk_index,
                         "section_label": section_label,
-                        "content": text_block[:480],
+                        "content": text_block[:CHUNK_MAX],
                         "token_count": len(tokenize(text_block)),
                     }
                 )
+                prev_tail = buffer.strip()[-OVERLAP_CHARS:] if len(buffer.strip()) > OVERLAP_CHARS else ""
                 chunk_index += 1
                 buffer = ""
             section_label = re.sub(r"^#{1,6}\s*", "", line).strip() or section_label
             continue
         candidate = f"{buffer} {line}".strip()
-        if len(candidate) > 280 and buffer.strip():
-            text_block = buffer.strip()
+        if len(candidate) > CHUNK_SPLIT and buffer.strip():
+            text_block = (prev_tail + " " + buffer).strip() if prev_tail else buffer.strip()
             chunks.append(
                 {
                     "chunk_index": chunk_index,
                     "section_label": section_label,
-                    "content": text_block[:480],
+                    "content": text_block[:CHUNK_MAX],
                     "token_count": len(tokenize(text_block)),
                 }
             )
+            prev_tail = buffer.strip()[-OVERLAP_CHARS:] if len(buffer.strip()) > OVERLAP_CHARS else ""
             chunk_index += 1
             buffer = line
         else:
             buffer = candidate
     if buffer.strip():
-        text_block = buffer.strip()
+        text_block = (prev_tail + " " + buffer).strip() if prev_tail else buffer.strip()
         chunks.append(
             {
                 "chunk_index": chunk_index,
                 "section_label": section_label,
-                "content": text_block[:480],
+                "content": text_block[:CHUNK_MAX],
                 "token_count": len(tokenize(text_block)),
             }
         )
@@ -1924,7 +1930,7 @@ def build_chunks(text: str, fallback_excerpt: str) -> list[dict[str, Any]]:
             {
                 "chunk_index": 0,
                 "section_label": "概览",
-                "content": content[:480],
+                "content": content[:CHUNK_MAX],
                 "token_count": len(tokenize(content)),
             }
         )
@@ -3256,6 +3262,33 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
     intro_mode = is_intro_profile_query(prompt)
     finance_mode = is_finance_query(prompt)
     finance_statement_mode = is_finance_statement_query(prompt)
+
+    # 方案B: 全文档摘要预筛 — 把所有文档摘要列表注入检索上下文
+    # 这不是额外的 AI 调用，而是把摘要列表作为额外的检索信号
+    all_doc_summaries = db.fetchall(
+        """
+        SELECT dc.title, dc.summary_200, dc.one_line_summary, kd.updated_at
+        FROM document_cards dc
+        JOIN knowledge_documents kd ON kd.id = dc.knowledge_document_id
+        WHERE kd.client_id = ?
+        ORDER BY kd.updated_at DESC
+        """,
+        (client_id,),
+    )
+    # 把摘要注入 tokens 用于匹配增强 — 确保全局覆盖
+    summary_boost_terms: list[str] = []
+    for doc_row in all_doc_summaries[:60]:
+        title = str(doc_row["title"] or "").lower()
+        summary = str(doc_row["summary_200"] or doc_row["one_line_summary"] or "").lower()
+        # 如果问题关键词出现在文档标题或摘要中，加入 boost
+        for token in tokens:
+            if token in title or token in summary:
+                title_terms = tokenize(str(doc_row["title"] or ""))
+                summary_boost_terms.extend(title_terms[:3])
+                break
+    if summary_boost_terms:
+        tokens = list(dict.fromkeys(tokens + summary_boost_terms))
+
     preferred_categories = infer_query_categories(prompt, tokens)
     coverage_terms = build_coverage_terms(prompt, tokens, preferred_categories)
 
@@ -3331,7 +3364,21 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
             + qdrant_score * 0.65,
             4,
         )
-        total_score = round(total_score + overview_adjustment + finance_adjustment, 4)
+        # 时效性加权：近30天的文档加分
+        recency_bonus = 0.0
+        try:
+            from datetime import datetime, timedelta
+            doc_updated = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00").split("+")[0])
+            days_ago = (datetime.now() - doc_updated).days
+            if days_ago <= 7:
+                recency_bonus = 0.10
+            elif days_ago <= 30:
+                recency_bonus = 0.06
+            elif days_ago <= 90:
+                recency_bonus = 0.03
+        except Exception:
+            pass
+        total_score = round(total_score + overview_adjustment + finance_adjustment + recency_bonus, 4)
         is_candidate = bool(matched_terms) or title_bonus > 0 or fts_score > 0 or qdrant_score >= MASTER_VECTOR_CANDIDATE_THRESHOLD
         scored_docs.append(
             {
@@ -3393,7 +3440,7 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
     candidate_docs = diversify_candidate_documents(
         positive_candidates,
         preferred_categories=preferred_categories,
-        limit=48 if overview_mode else (40 if strategic_mode else 32),
+        limit=60 if overview_mode else (50 if strategic_mode else 40),
         strategic_mode=strategic_mode,
         overview_mode=overview_mode,
         finance_mode=finance_mode,
@@ -3568,7 +3615,7 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         limit=56 if overview_mode else (44 if strategic_mode else 32),
         key_builder=lambda item: f"{item.get('knowledge_document_id')}::{item.get('section_label') or ''}::{normalize_text(str(item.get('excerpt', '')))[:96]}",
     )
-    citation_limit = 20 if overview_mode else (18 if strategic_mode else 14)
+    citation_limit = 35 if overview_mode else (30 if strategic_mode else 25)
     drillthrough_used = bool(top_chunk_matches)
     selected_matches: list[dict[str, Any]] = []
     doc_chunk_counts: dict[str, int] = {}
