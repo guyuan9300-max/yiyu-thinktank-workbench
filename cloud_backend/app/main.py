@@ -43,6 +43,8 @@ from app.models import (
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
     FeishuBindingRelaySessionStatusRecord,
+    AdminResetPasswordPayload,
+    ChangePasswordPayload,
     LoginPayload,
     ManagementSignalCardRecord,
     MentionCandidate,
@@ -4289,6 +4291,23 @@ def create_app() -> FastAPI:
             accountStatus=str(row["account_status"]),
         )
 
+    @app.post("/api/v1/auth/change-password")
+    def change_password(
+        payload: ChangePasswordPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, str]:
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if not verify_password(payload.currentPassword, str(row["password_hash"])):
+            raise HTTPException(status_code=400, detail="当前密码不正确")
+        state.db.execute(
+            "UPDATE employee_accounts SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (hash_password(payload.newPassword), now_iso(), current_user.id),
+        )
+        _log_audit(state, "change_password", actor_user_id=current_user.id, target_user_id=current_user.id, detail={})
+        return {"message": "密码修改成功"}
+
     @app.post("/api/v1/auth/logout")
     def logout(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)), authorization: str | None = Header(default=None)) -> dict[str, str]:
         token = authorization.split(" ", 1)[1]
@@ -5889,6 +5908,20 @@ def create_app() -> FastAPI:
         )
         _log_audit(state, "disable_employee", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
         return _employee_record(_get_user_or_404(state, employee_id))
+
+    @app.post("/api/v1/admin/employees/{employee_id}/reset-password")
+    def admin_reset_password(
+        employee_id: str,
+        payload: AdminResetPasswordPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> dict[str, str]:
+        _get_user_or_404(state, employee_id)
+        state.db.execute(
+            "UPDATE employee_accounts SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (hash_password(payload.newPassword), now_iso(), employee_id),
+        )
+        _log_audit(state, "admin_reset_password", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
+        return {"message": "密码已重置"}
 
     @app.patch("/api/v1/admin/employees/{employee_id}/role", response_model=EmployeeRecord)
     def update_employee_role(

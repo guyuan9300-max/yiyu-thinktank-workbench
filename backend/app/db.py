@@ -1328,6 +1328,14 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS task_understanding_cache (
+                    task_id TEXT PRIMARY KEY,
+                    snapshot_json TEXT NOT NULL,
+                    task_hash TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS client_strategic_profiles (
                     client_id TEXT PRIMARY KEY,
                     industry TEXT NOT NULL DEFAULT '',

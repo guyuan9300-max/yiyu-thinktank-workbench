@@ -1735,6 +1735,23 @@ class WeeklyReviewEventLineContextRecord(BaseModel):
     primaryClientName: str | None = None
 
 
+class EventLineProjectFilterOptionRecord(BaseModel):
+    id: str
+    label: str
+    kind: str = "client"
+    lineCount: int = 0
+
+
+class EventLineSourceStatusRecord(BaseModel):
+    mode: str = "cloud_only"
+    cloudAvailable: bool = False
+    organizationId: str | None = None
+    organizationName: str | None = None
+    cloudApiUrl: str | None = None
+    detail: str | None = None
+    projectOptions: list[EventLineProjectFilterOptionRecord] = []
+
+
 class EventLineRecord(BaseModel):
     id: str
     name: str

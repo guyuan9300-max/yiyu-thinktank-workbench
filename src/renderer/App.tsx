@@ -24,6 +24,7 @@ import {
   ExternalLink,
   Clock,
   ShieldAlert,
+  BrainCircuit,
   Zap,
   LayoutTemplate,
   Target,
@@ -144,7 +145,9 @@ import {
 } from '../shared/calendar';
 import { buildDepartmentInviteCode, parseDepartmentInviteCode } from '../shared/departmentInvite';
 import {
+  adminResetPassword,
   approveTaskReview,
+  changePassword,
   completeTaskWithReview,
   confirmTask,
   clearDemoData,
@@ -213,6 +216,7 @@ import {
   getTaskTagSuggestions,
   getTaskBoard,
   getTaskContextPreview,
+  getTaskUnderstanding,
   getTaskSmartBrief,
   getTaskSmartBriefsBatch,
   getTaskSettings,
@@ -294,7 +298,7 @@ import EventLineReportPanel from './components/tasks/EventLineReportPanel';
 import type { ReportDraft } from './components/tasks/EventLineReportPanel';
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
-import { StrategicAccompanimentShell } from './components/strategic_accompaniment/StrategicAccompanimentShell';
+import { SystemLogPanel } from './components/settings/SystemLogPanel';
 import { StrategicBrainView, type ThoughtTaskPayload } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { TaskCalendarView } from './components/tasks/TaskCalendarView';
@@ -353,7 +357,7 @@ type ImportFeedback = {
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
-type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
+type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -3433,6 +3437,7 @@ export default function App() {
 
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
+  const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
@@ -3970,6 +3975,8 @@ export default function App() {
             run: () => (nextAuth.user?.primaryRole === 'admin' ? loadReviewGovernanceSettingsBlock() : Promise.resolve()),
           },
         ];
+        let completedCount = 0;
+        const totalCount = backgroundLoaders.length;
         const failedBackgroundBlocks = (
           await Promise.all(
             backgroundLoaders.map(async ({ name, run }) => {
@@ -3980,10 +3987,14 @@ export default function App() {
               } catch (error) {
                 console.error(`[bootstrap] ${name} failed`, error);
                 return name;
+              } finally {
+                completedCount += 1;
+                setLoadingSubProgress(Math.round((completedCount / totalCount) * 100));
               }
             }),
           )
         ).filter((item): item is string => Boolean(item));
+        setLoadingSubProgress(0);
         if (nextAuth.user?.primaryRole !== 'admin') {
           setAgentWorklogs([]);
           setAgentWeeklyDigests([]);
@@ -4384,6 +4395,7 @@ export default function App() {
       email,
       fullName: '',
       password: '',
+      confirmPassword: '',
       departmentId: '',
       jobTitle: '',
       managerName: '',
@@ -4395,6 +4407,7 @@ export default function App() {
     const [form, setForm] = useState(() => createEmptyRegisterForm());
     const [rememberMe, setRememberMe] = useState(true);
     const [departmentInviteCode, setDepartmentInviteCode] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [message, setMessage] = useState(authState.message || '');
     const inviteDepartment = useMemo(() => {
@@ -4525,11 +4538,17 @@ export default function App() {
               {mode === 'login' && (
                 <>
                   <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                    记住我的登录状态
-                    <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
-                  </label>
+                  <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                  <div className="flex gap-3">
+                    <label className="flex-1 flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                      记住我的登录状态
+                      <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+                    </label>
+                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                      显示密码
+                      <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
+                    </label>
+                  </div>
                 </>
               )}
               {mode === 'register' && (
@@ -4579,8 +4598,22 @@ export default function App() {
                         <p className="mt-1 text-[12px] text-gray-500">部门由邀请码决定。你现在只需要补全自己的身份和岗位信息。</p>
                       </div>
                       <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <div>
+                        <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
+                      </div>
+                      <div>
+                        <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+                      </div>
+                      <div>
+                        <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+                      </div>
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                        显示密码
+                        <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
+                      </label>
                       <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="我的岗位，例如：咨询顾问 / 内容运营" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                       <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属上级（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                       <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前主要负责什么，或最近一段时间的重点（可选）" className="min-h-[96px] w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
@@ -4592,7 +4625,19 @@ export default function App() {
                   )}
                 </>
               )}
-              {message && <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">{message}</div>}
+              {message && (() => {
+                const isSuccess = message.includes('已提交') || message.includes('成功');
+                const isPending = message.includes('等待管理员审核') || message.includes('待审核');
+                const isRejected = message.includes('未通过审核') || message.includes('停用');
+                const style = isSuccess
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : isPending
+                  ? 'border-blue-200 bg-blue-50 text-blue-800'
+                  : isRejected
+                  ? 'border-red-200 bg-red-50 text-red-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800';
+                return <div className={`rounded-2xl border px-4 py-3 text-[13px] ${style}`}>{message}</div>;
+              })()}
               {mode === 'login' ? (
                 <Button
                   primary
@@ -4618,7 +4663,7 @@ export default function App() {
                   primary
                   className="w-full py-3 text-[14px]"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !form.password.trim() || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
+                  disabled={submitting || !form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) || form.password.length < 8 || form.password !== form.confirmPassword || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
                 >
                   {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
                   提交注册
@@ -4861,6 +4906,8 @@ export default function App() {
       closeEditor?: boolean;
     } | null>(null);
     const [isSavingTask, setIsSavingTask] = useState(false);
+    const [taskUnderstanding, setTaskUnderstanding] = useState<import('./lib/api').TaskUnderstandingSnapshot | null>(null);
+    const [isLoadingUnderstanding, setIsLoadingUnderstanding] = useState(false);
     const isTaskModalOpenRef = useRef(false);
     const [tagDraft, setTagDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
     const [mentionQuery, setMentionQuery] = useState('@');
@@ -4922,6 +4969,19 @@ export default function App() {
     useEffect(() => {
       isTaskModalOpenRef.current = isTaskModalOpen;
     }, [isTaskModalOpen]);
+
+    // Load understanding when editing an existing task
+    useEffect(() => {
+      if (!isTaskModalOpen || !editingTask.id) {
+        setTaskUnderstanding(null);
+        return;
+      }
+      setIsLoadingUnderstanding(true);
+      getTaskUnderstanding(editingTask.id)
+        .then(setTaskUnderstanding)
+        .catch(() => setTaskUnderstanding(null))
+        .finally(() => setIsLoadingUnderstanding(false));
+    }, [isTaskModalOpen, editingTask.id]);
 
     const resetTaskModalTransientState = () => {
       setIsDuePickerOpen(false);
@@ -7111,7 +7171,6 @@ export default function App() {
           ddl: nextDueLabel,
         });
         applyLocalTaskPatch(updatedTask);
-        void loadTaskBlock();
         flash('success', `任务已调整到 ${nextDueLabel}。`);
       } catch (error) {
         applyLocalTaskPatch(previousTaskSnapshot);
@@ -9239,6 +9298,32 @@ export default function App() {
                     placeholder="添加任务描述，背景、目的、预期结果..."
                     className="min-h-[220px] w-full flex-1 resize-none border-none text-[15px] leading-relaxed text-gray-600 outline-none placeholder:text-gray-400"
                   />
+
+                  {/* 系统理解面板 */}
+                  {editingTask.id && (
+                    <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/20 p-4">
+                      <div className="mb-3 flex items-center gap-2">
+                        <div className="flex h-5 w-5 items-center justify-center rounded bg-blue-100">
+                          <BrainCircuit size={12} className="text-blue-600" />
+                        </div>
+                        <span className="text-[12px] font-bold text-blue-700">系统理解</span>
+                        {isLoadingUnderstanding && (
+                          <span className="text-[11px] text-slate-400 animate-pulse">正在分析...</span>
+                        )}
+                      </div>
+                      {taskUnderstanding ? (
+                        <UnderstandingPanel snapshot={taskUnderstanding as any} />
+                      ) : isLoadingUnderstanding ? (
+                        <div className="space-y-2">
+                          <div className="h-4 w-3/4 animate-pulse rounded bg-blue-100/50" />
+                          <div className="h-4 w-1/2 animate-pulse rounded bg-blue-100/50" />
+                          <div className="h-4 w-2/3 animate-pulse rounded bg-blue-100/50" />
+                        </div>
+                      ) : (
+                        <p className="text-[12px] text-slate-400">暂无法生成理解（新任务保存后可用）</p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="mt-6 space-y-3">
                     <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white p-4 transition focus-within:border-blue-400 focus-within:bg-blue-50/40">
@@ -14234,6 +14319,12 @@ export default function App() {
           { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
         ],
       },
+      {
+        group: '运维与排查',
+        items: [
+          { key: 'system_logs', label: '系统日志', icon: Activity, helper: '运行日志、错误排查、导出' },
+        ],
+      },
     ];
     // Flatten for backward compatibility
     const sectionItems = sectionGroups.flatMap((g) => g.items);
@@ -14251,6 +14342,56 @@ export default function App() {
       org_rules: {
         tab: 'rules',
       },
+    };
+
+    const ChangePasswordCard = ({ flash: flashMsg }: { flash: (type: 'success' | 'error', msg: string) => void }) => {
+      const [pwForm, setPwForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      const [pwSubmitting, setPwSubmitting] = useState(false);
+      const [pwError, setPwError] = useState('');
+      const [pwShowPassword, setPwShowPassword] = useState(false);
+      const newPwValid = pwForm.newPassword.length >= 8;
+      const confirmMatch = pwForm.newPassword === pwForm.confirmPassword;
+      const canSubmit = pwForm.currentPassword.trim() && newPwValid && confirmMatch && !pwSubmitting;
+      const handleChangePw = async () => {
+        setPwError('');
+        setPwSubmitting(true);
+        try {
+          await changePassword({ currentPassword: pwForm.currentPassword, newPassword: pwForm.newPassword });
+          flashMsg('success', '密码修改成功');
+          setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+        } catch (error) {
+          setPwError(error instanceof Error ? error.message : '密码修改失败');
+        } finally {
+          setPwSubmitting(false);
+        }
+      };
+      const pwInputType = pwShowPassword ? 'text' : 'password';
+      return (
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+          <div>
+            <h2 className="text-[16px] font-bold text-gray-900">修改密码</h2>
+            <p className="text-[12px] text-gray-500 mt-1">修改当前账号的登录密码。新密码至少 8 位。</p>
+          </div>
+          <input type={pwInputType} value={pwForm.currentPassword} onChange={(e) => setPwForm((p) => ({ ...p, currentPassword: e.target.value }))} placeholder="当前密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+          <div>
+            <input type={pwInputType} value={pwForm.newPassword} onChange={(e) => setPwForm((p) => ({ ...p, newPassword: e.target.value }))} placeholder="新密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+            {pwForm.newPassword && !newPwValid && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+          </div>
+          <div>
+            <input type={pwInputType} value={pwForm.confirmPassword} onChange={(e) => setPwForm((p) => ({ ...p, confirmPassword: e.target.value }))} placeholder="确认新密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+            {pwForm.confirmPassword && !confirmMatch && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+          </div>
+          <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
+            <input type="checkbox" checked={pwShowPassword} onChange={(e) => setPwShowPassword(e.target.checked)} />
+            显示密码
+          </label>
+          {pwError && <p className="text-[13px] text-red-600 bg-red-50 border border-red-100 rounded-2xl px-4 py-3">{pwError}</p>}
+          <Button primary onClick={() => void handleChangePw()} disabled={!canSubmit}>
+            {pwSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+            确认修改密码
+          </Button>
+        </div>
+      );
     };
 
     const renderOverviewSection = () => (
@@ -14312,6 +14453,8 @@ export default function App() {
             {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
           </div>
         </div>
+
+        <ChangePasswordCard flash={flash} />
 
         <FeishuAccountBindingPanel
           binding={feishuUserBindingState}
@@ -14718,9 +14861,151 @@ export default function App() {
       </div>
     );
 
+    const EmployeeReviewPanel = () => {
+      const pendingList = employeeReviews.filter((e) => e.accountStatus === 'pending');
+      const rejectedList = employeeReviews.filter((e) => e.accountStatus === 'rejected');
+      const disabledList = employeeReviews.filter((e) => e.accountStatus === 'disabled');
+      const [busyId, setBusyId] = useState<string | null>(null);
+      const [rejectingId, setRejectingId] = useState<string | null>(null);
+      const [rejectReason, setRejectReason] = useState('');
+      const [resetPwId, setResetPwId] = useState<string | null>(null);
+      const [resetPwValue, setResetPwValue] = useState('');
+
+      const handleApprove = async (id: string) => {
+        setBusyId(id);
+        try {
+          await approveEmployee(id, { role: 'employee' });
+          flash('success', '已批准该员工注册');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+      const handleReject = async (id: string) => {
+        setBusyId(id);
+        try {
+          await rejectEmployeeReview(id, { reason: rejectReason || '账号未通过审核，请联系管理员。' });
+          flash('success', '已驳回该注册申请');
+          setRejectingId(null);
+          setRejectReason('');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+      const handleDisable = async (id: string) => {
+        if (!window.confirm('确定要停用该账号吗？')) return;
+        setBusyId(id);
+        try {
+          await disableEmployee(id);
+          flash('success', '已停用该账号');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+      const handleResetPw = async (id: string) => {
+        if (resetPwValue.length < 8) { flash('error', '新密码至少 8 位'); return; }
+        setBusyId(id);
+        try {
+          await adminResetPassword(id, { newPassword: resetPwValue });
+          flash('success', '密码已重置');
+          setResetPwId(null);
+          setResetPwValue('');
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => (
+        <div key={employee.id} className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[13px] font-bold text-gray-900 truncate">{employee.fullName}</p>
+            <p className="text-[12px] text-gray-500 truncate">{employee.email}{employee.departmentName ? ` · ${employee.departmentName}` : ''}{employee.jobTitle ? ` · ${employee.jobTitle}` : ''}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>
+        </div>
+      );
+
+      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0) return null;
+
+      return (
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+          <div>
+            <h2 className="text-[16px] font-bold text-gray-900">员工账号审核</h2>
+            <p className="text-[12px] text-gray-500 mt-1">审批注册申请、驳回、停用或重置密码。</p>
+          </div>
+          {pendingList.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-amber-600 uppercase tracking-widest">待审核 ({pendingList.length})</p>
+              {pendingList.map((employee) => renderEmployeeRow(employee, (
+                <>
+                  <button type="button" disabled={busyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[12px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">批准</button>
+                  {rejectingId === employee.id ? (
+                    <div className="flex items-center gap-1">
+                      <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="驳回原因（可选）" className="w-40 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
+                      <button type="button" disabled={busyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">确认驳回</button>
+                      <button type="button" onClick={() => { setRejectingId(null); setRejectReason(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setRejectingId(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100">驳回</button>
+                  )}
+                </>
+              )))}
+            </div>
+          )}
+          {rejectedList.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-red-500 uppercase tracking-widest">已驳回 ({rejectedList.length})</p>
+              {rejectedList.map((employee) => renderEmployeeRow(employee, (
+                <span className="text-[12px] text-red-400">{employee.rejectedReason || '未通过'}</span>
+              )))}
+            </div>
+          )}
+          {disabledList.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-gray-400 uppercase tracking-widest">已停用 ({disabledList.length})</p>
+              {disabledList.map((employee) => renderEmployeeRow(employee, (
+                <span className="text-[12px] text-gray-400">已停用</span>
+              )))}
+            </div>
+          )}
+          {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-gray-500 uppercase tracking-widest">在职员工管理</p>
+              {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').map((employee) => renderEmployeeRow(employee, (
+                <>
+                  {resetPwId === employee.id ? (
+                    <div className="flex items-center gap-1">
+                      <input type="password" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="新密码（≥8位）" className="w-36 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
+                      <button type="button" disabled={busyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
+                      <button type="button" onClick={() => { setResetPwId(null); setResetPwValue(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setResetPwId(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100">重置密码</button>
+                  )}
+                  <button type="button" disabled={busyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-red-500 hover:bg-red-50 disabled:opacity-50">停用</button>
+                </>
+              )))}
+            </div>
+          )}
+        </div>
+      );
+    };
+
     const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => (
       <div className="space-y-6">
         {currentSessionUser?.primaryRole === 'admin' && (
+          <>
+          <EmployeeReviewPanel />
           <OrganizationSetupCenter
             value={orgModelDraft}
             organizationDnaModules={organizationDnaModules}
@@ -14734,13 +15019,14 @@ export default function App() {
             onSave={(nextDraft) => handleSaveOrgModel(nextDraft)}
             onOpenSection={(section) => setSettingsSection(section)}
           />
+          </>
         )}
 
       </div>
     );
 
     const renderSectionContent = () => {
-      if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks'].includes(settingsSection)) {
+      if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks', 'system_logs'].includes(settingsSection)) {
         return (
           <div className="bg-white border border-gray-100 rounded-3xl p-8 shadow-sm text-[13px] text-gray-500 flex items-center gap-3">
             <RefreshCw size={16} className="animate-spin" />
@@ -14771,6 +15057,14 @@ export default function App() {
           return renderSystemAdminSection(orgSectionMeta.org_people.tab);
         case 'org_rules':
           return renderSystemAdminSection(orgSectionMeta.org_rules.tab);
+        case 'system_logs':
+          return (
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+              <h2 className="text-[16px] font-bold text-gray-900 mb-1">系统日志</h2>
+              <p className="text-[12px] text-gray-500 mb-5">记录所有 API 请求、错误和业务操作。导出后交给 Claude Code 或 Codex 即可快速定位问题。</p>
+              <SystemLogPanel />
+            </div>
+          );
         default:
           return null;
       }
@@ -14783,7 +15077,10 @@ export default function App() {
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">系统设置</h1>
             <p className="text-[12px] text-gray-500 mt-1">把整个软件的默认规则、权限边界和组织级知识底座收口到一个设置中心。</p>
           </div>
-          <Button onClick={() => { void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败')); }}>
+          <Button onClick={() => {
+            if (!window.confirm('确定要退出登录吗？')) return;
+            void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+          }}>
             <ShieldAlert size={16} /> 退出登录
           </Button>
         </div>
@@ -14902,15 +15199,101 @@ export default function App() {
     settings: <SettingsView />,
   };
 
+  const [splashMessageTick, setSplashMessageTick] = useState(0);
+  useEffect(() => {
+    if (!loading) return;
+    const timer = window.setInterval(() => setSplashMessageTick((t) => t + 1), 3000);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
   if (loading) {
+    const VALUE_MESSAGES = [
+      '让每一天的工作都留下痕迹，变成成长',
+      '任务、客户、会议、复盘——一个界面掌控全局',
+      '本地优先，断网也能正常工作',
+      'AI 不是替代你，是陪你一起想、一起做',
+      '从经验到方法，从方法到可复用的组织资产',
+      '每一次推进都被记住，每一个判断都有依据',
+      '不只是管理工具，是你的成长搭档',
+    ];
+    const PHASE_PROGRESS: Record<string, number> = {
+      '正在初始化桌面界面…': 5,
+      '正在连接本地后端…': 12,
+      '正在恢复登录状态…': 20,
+      '正在读取系统设置…': 30,
+      '正在载入核心模块数据…': 45,
+      '正在载入客户工作区…': 70,
+      '正在读取员工与组织数据…': 85,
+      '正在切换到登录态…': 90,
+      '启动完成': 100,
+    };
+    const baseProgress = PHASE_PROGRESS[loadingPhase] ?? (loadingPhase.includes('受阻') ? 0 : 50);
+    const progressPercent = loadingPhase === '正在载入核心模块数据…'
+      ? 45 + Math.round(loadingSubProgress * 0.25)
+      : baseProgress;
+    const valueIndex = splashMessageTick % VALUE_MESSAGES.length;
+    const isError = loadingPhase.includes('受阻');
     return (
-      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
-        <div className="flex flex-col items-center gap-3 text-center text-gray-500">
-          <div className="flex items-center justify-center gap-3">
-            <RefreshCw size={18} className="animate-spin" />
-            <span>正在加载益语智库自用平台...</span>
+      <div
+        className="min-h-screen flex flex-col items-center justify-center px-6 relative overflow-hidden select-none"
+        style={{ background: 'linear-gradient(160deg, #1E293B 0%, #334155 30%, #F8FAFC 100%)' }}
+      >
+        <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+          {[...Array(6)].map((_, i) => (
+            <div
+              key={i}
+              className="absolute rounded-full opacity-[0.07]"
+              style={{
+                width: `${60 + i * 40}px`,
+                height: `${60 + i * 40}px`,
+                background: 'radial-gradient(circle, #5B7BFE 0%, transparent 70%)',
+                left: `${10 + i * 15}%`,
+                top: `${20 + (i % 3) * 25}%`,
+                animation: `splash-float ${6 + i * 2}s ease-in-out infinite alternate`,
+                animationDelay: `${i * 0.8}s`,
+              }}
+            />
+          ))}
+        </div>
+        <style>{`
+          @keyframes splash-float { 0% { transform: translateY(0) scale(1); } 100% { transform: translateY(-20px) scale(1.1); } }
+          @keyframes splash-breathe { 0%,100% { opacity:.9; transform:scale(1); } 50% { opacity:1; transform:scale(1.04); } }
+          @keyframes splash-fade-up { 0% { opacity:0; transform:translateY(12px); } 100% { opacity:1; transform:translateY(0); } }
+          @keyframes splash-glow { 0%,100% { box-shadow:0 0 8px rgba(91,123,254,.3); } 50% { box-shadow:0 0 16px rgba(91,123,254,.6); } }
+        `}</style>
+
+        <div className="flex flex-col items-center gap-5 z-10" style={{ animation: 'splash-breathe 3s ease-in-out infinite' }}>
+          <div className="w-20 h-20 rounded-2xl bg-white/95 shadow-lg flex items-center justify-center backdrop-blur-sm">
+            <BrandLogoMark logoDataUrl={systemAdminSettingsState?.brandLogoDataUrl || null} className="w-14 h-14" />
           </div>
-          <p className="text-[12px] text-gray-400">{loadingPhase}</p>
+          <div className="text-center">
+            <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>
+            <p className="mt-1 text-[13px] text-white/50 tracking-widest">YIYU THINKTANK WORKBENCH</p>
+          </div>
+        </div>
+
+        <div className="mt-10 h-[48px] flex items-center justify-center z-10">
+          <p
+            key={valueIndex}
+            className="text-[16px] text-white/80 text-center font-light tracking-wide leading-relaxed"
+            style={{ animation: 'splash-fade-up 0.6s ease-out both' }}
+          >
+            {isError ? loadingPhase : VALUE_MESSAGES[valueIndex]}
+          </p>
+        </div>
+
+        <div className="mt-8 w-[280px] z-10">
+          <div className="h-[3px] rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700 ease-out"
+              style={{
+                width: `${progressPercent}%`,
+                background: isError ? 'linear-gradient(90deg,#EF4444,#F87171)' : 'linear-gradient(90deg,#5B7BFE,#818CF8)',
+                animation: isError ? 'none' : 'splash-glow 2s ease-in-out infinite',
+              }}
+            />
+          </div>
+          <p className="mt-3 text-[11px] text-white/30 text-center">{loadingPhase}</p>
         </div>
       </div>
     );
@@ -15006,6 +15389,7 @@ export default function App() {
               <button
                 className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
                 onClick={() => {
+                  if (!window.confirm('确定要退出登录吗？')) return;
                   void logout()
                     .then(async () => {
                       setAuthState({ authenticated: false });

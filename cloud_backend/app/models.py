@@ -61,6 +61,15 @@ class LoginPayload(BaseModel):
     password: str
 
 
+class ChangePasswordPayload(BaseModel):
+    currentPassword: str = Field(min_length=1)
+    newPassword: str = Field(min_length=8)
+
+
+class AdminResetPasswordPayload(BaseModel):
+    newPassword: str = Field(min_length=8)
+
+
 class RefreshPayload(BaseModel):
     refreshToken: str = Field(min_length=1)
 

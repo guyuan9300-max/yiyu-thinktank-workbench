@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from app.services.system_logger import SystemLogger as _SystemLogger
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
@@ -295,6 +297,8 @@ from app.models import (
     WeeklyReviewEventLineContextRecord,
     WeeklyReviewPayload,
     WeeklyReviewTaskEntryRecord,
+    WeeklyReviewTaskSnapshotRecord,
+    UnderstandingSnapshotV1Record,
     WeeklyReviewRecord,
     WeeklyReviewTaskStructuredNoteRecord,
     TrendSignalRecord,
@@ -620,6 +624,7 @@ class AppState:
     volatile_cloud_session_user_json: str = ""
     cloud_session_persistent: bool = False
     consultation_knowledge_sync_running: bool = False
+    system_logger: _SystemLogger | None = None
 
 
 _runtime_state: AppState | None = None
@@ -1718,6 +1723,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         chat_answer_executor=ThreadPoolExecutor(max_workers=2),
         template_fill_executor=ThreadPoolExecutor(max_workers=1),
     )
+    state.system_logger = _SystemLogger(resolved_data_dir / "logs")
+    state.system_logger.info("system", f"后端启动: data_dir={resolved_data_dir}")
+
     seed_defaults(state)
     if state.db.get_setting("demo_data_loaded", "0") != "1":
         clear_demo_dataset(state)
@@ -1739,6 +1747,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if rejection_reason:
             return JSONResponse(status_code=403, content={"detail": rejection_reason})
         return await call_next(request)
+
+    @app.middleware("http")
+    async def _request_logging_middleware(request: Request, call_next):
+        if not state.system_logger:
+            return await call_next(request)
+        path = request.url.path
+        method = request.method
+        # Skip logging for high-frequency/static endpoints
+        if path.startswith("/api/public/") or path in ("/", "/favicon.ico"):
+            return await call_next(request)
+        start = time.perf_counter()
+        error_msg = None
+        error_tb = None
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        except Exception as exc:
+            error_msg = str(exc)
+            error_tb = traceback.format_exc()
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1000
+            user = ""
+            try:
+                session_user = get_cached_session_user()
+                if session_user:
+                    user = session_user.fullName
+            except Exception:
+                pass
+            state.system_logger.api_request(
+                method=method,
+                path=path,
+                status=status_code,
+                duration_ms=duration_ms,
+                user=user,
+                error_msg=error_msg,
+                error_traceback=error_tb,
+            )
 
     @app.on_event("startup")
     def _startup_worker() -> None:
@@ -1958,6 +2006,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (new_id("log"), actor_name, action, entity_type, entity_id, to_json(detail), now_iso()),
         )
+        if state.system_logger:
+            state.system_logger.activity(action, entity_type, entity_id, actor_name, detail)
 
     def append_knowledge_job_event(job_id: str, level: str, message: str, detail: dict[str, object] | None = None) -> None:
         state.db.execute(
@@ -2343,6 +2393,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     build_client_profile(state.db, data_dir=state.data_dir, client_id=client_id, ai_service=state.ai)
                 except Exception:
                     pass  # profile rebuild is best-effort
+                try:
+                    from app.services.memory_foundation import backfill_document_knowledge_to_memory
+                    backfill_document_knowledge_to_memory(state.db)
+                    refresh_organization_notebook_snapshot(state.db, client_id)
+                except Exception:
+                    pass
             return
         if job_type == "rebuild_client_knowledge":
             summary = backfill_knowledge_documents(
@@ -12607,6 +12663,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=timestamp,
             ai_service=state.ai,
         )
+        Thread(target=_precompute_task_understanding, args=(created_task.id,), daemon=True).start()
         return created_task
 
     def extract_meeting_content(text: str) -> tuple[list[str], list[str], list[tuple[str, str, float]], list[tuple[str, str]], list[tuple[str, list[str]]]]:
@@ -14736,7 +14793,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         # Check if it's time to dream (memory consolidation)
                         if should_dream(state.data_dir):
                             import threading as _dream_thr
-                            _dream_thr.Thread(target=run_dream_cycle, args=(state.data_dir,), daemon=True).start()
+                            _dream_thr.Thread(target=run_dream_cycle, args=(state.data_dir,), kwargs={"db": state.db}, daemon=True).start()
                     except Exception:
                         pass
             work_analysis = work_analysis.model_copy(
@@ -15187,6 +15244,65 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_health() -> HealthResponse:
         return build_health()
 
+    # ── 自修复系统 ──────────────────────────────────────────
+
+    from app.services.self_heal import SelfHealEngine
+
+    _heal_engine: SelfHealEngine | None = None
+
+    def _get_heal_engine() -> SelfHealEngine:
+        nonlocal _heal_engine
+        if _heal_engine is None:
+            _heal_engine = SelfHealEngine(state.db, state.data_dir, state.ai)
+        return _heal_engine
+
+    @app.get("/api/v1/system/health-check")
+    def system_health_check() -> dict:
+        engine = _get_heal_engine()
+        probes = engine.run_health_check()
+        healthy_count = sum(1 for p in probes if p["healthy"])
+        sick_count = len(probes) - healthy_count
+        return {
+            "timestamp": now_iso(),
+            "totalProbes": len(probes),
+            "healthy": healthy_count,
+            "sick": sick_count,
+            "probes": probes,
+        }
+
+    @app.post("/api/v1/system/self-heal")
+    def system_self_heal(remedy_id: str | None = None) -> dict:
+        engine = _get_heal_engine()
+        if remedy_id:
+            record = engine.heal(remedy_id=remedy_id, diagnosis="手动触发")
+            return {"mode": "manual", "records": [asdict(record)]}
+        records = engine.auto_heal()
+        return {
+            "mode": "auto",
+            "records": [asdict(r) for r in records],
+            "healed": sum(1 for r in records if r.status == "healed"),
+            "failed": sum(1 for r in records if r.status == "failed"),
+            "skipped": sum(1 for r in records if r.status == "skipped"),
+        }
+
+    @app.post("/api/v1/system/diagnose")
+    def system_diagnose(error_logs: list[str] = Body(default=[])) -> dict:
+        engine = _get_heal_engine()
+        logs = error_logs
+        if not logs:
+            rows = state.db.fetchall(
+                "SELECT action, detail_json, created_at FROM activity_logs WHERE action LIKE '%.error%' ORDER BY created_at DESC LIMIT 20"
+            )
+            logs = [f"[{row['created_at']}] {row['action']}: {row['detail_json']}" for row in rows]
+        if not logs:
+            return {"matched": False, "reason": "无错误日志可分析"}
+        return engine.diagnose_with_ai(logs)
+
+    @app.get("/api/v1/system/heal-log")
+    def system_heal_log(limit: int = 50) -> dict:
+        engine = _get_heal_engine()
+        return {"records": engine.get_heal_log(limit)}
+
     def _sync_org_ai_config_from_cloud() -> None:
         """Pull org-level AI config from cloud and apply locally (background, non-blocking)."""
         try:
@@ -15264,6 +15380,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_refresh_token(refresh_token, persist=payload.rememberMe)
         log_activity("auth.login", "session", user.id, {"email": user.email})
         return AuthStateResponse(authenticated=True, user=user)
+
+    @app.post("/api/v1/auth/change-password")
+    def auth_change_password(payload: dict) -> dict:
+        response = cloud_request("POST", "/api/v1/auth/change-password", json_body=payload)
+        return response if isinstance(response, dict) else {"message": "密码修改成功"}
 
     @app.post("/api/v1/auth/logout", response_model=AuthStateResponse)
     def auth_logout() -> AuthStateResponse:
@@ -15519,6 +15640,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return bundle
 
     _context_preview_cache: dict[str, tuple[float, object]] = {}
+
+    # ── Task Understanding (预处理+缓存架构) ──────
+
+    def _build_task_understanding_record(task: "TaskRecord") -> UnderstandingSnapshotV1Record:
+        from app.services.understanding_builder import build_understanding_basic
+        snapshot = WeeklyReviewTaskSnapshotRecord(
+            title=task.title, status=task.status, dueDate=task.dueDate,
+            createdAt=task.createdAt, ownerId=None, ownerName=None,
+            clientId=task.clientId, clientName=task.clientName,
+            eventLineId=task.eventLineId, eventLineName=task.eventLineName,
+            tags=task.tags, listName=task.listName or "", listColor=task.listColor or "",
+            orgContext=task.orgContext, projectContext=task.projectContext,
+        )
+        entry = WeeklyReviewTaskEntryRecord(
+            id=f"understanding_{task.id}", reviewId=None, taskId=task.id,
+            weekLabel="", contentDomain="work", note=task.desc or "",
+            taskSnapshot=snapshot,
+        )
+        return build_understanding_basic(ai=state.ai, task_entry=entry, org_dna_modules=list_organization_dna_modules())
+
+    def _task_content_hash(task: "TaskRecord") -> str:
+        content = f"{task.title}|{task.desc or ''}|{task.status}|{task.clientId or ''}|{task.eventLineId or ''}"
+        return hashlib.md5(content.encode()).hexdigest()[:12]
+
+    def _precompute_task_understanding(task_id: str) -> None:
+        """后台线程：生成理解并写入缓存。"""
+        try:
+            task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
+            if not task:
+                return
+            content_hash = _task_content_hash(task)
+            cached = state.db.fetchone("SELECT task_hash FROM task_understanding_cache WHERE task_id = ?", (task_id,))
+            if cached and str(cached["task_hash"]) == content_hash:
+                return
+            result = _build_task_understanding_record(task)
+            ts = now_iso()
+            state.db.execute(
+                """INSERT INTO task_understanding_cache(task_id, snapshot_json, task_hash, created_at, updated_at)
+                   VALUES(?, ?, ?, ?, ?)
+                   ON CONFLICT(task_id) DO UPDATE SET snapshot_json=excluded.snapshot_json, task_hash=excluded.task_hash, updated_at=excluded.updated_at""",
+                (task_id, to_json(result.model_dump()), content_hash, ts, ts),
+            )
+            if state.system_logger:
+                state.system_logger.info("understanding", f"预处理完成: {task.title[:40]}", task_id=task_id, confidence=result.confidence)
+        except Exception as exc:
+            if state.system_logger:
+                state.system_logger.error("understanding", f"预处理失败: {task_id}", error=str(exc))
+
+    @app.get("/api/v1/tasks/{task_id}/understanding")
+    def get_task_understanding(task_id: str) -> dict:
+        cached = state.db.fetchone("SELECT snapshot_json FROM task_understanding_cache WHERE task_id = ?", (task_id,))
+        if cached and cached["snapshot_json"]:
+            return from_json(cached["snapshot_json"], {})
+        # 无缓存 → 后台排队，先返回占位
+        Thread(target=_precompute_task_understanding, args=(task_id,), daemon=True).start()
+        return {
+            "whatIsThis": "系统正在学习这个任务，请稍后刷新。",
+            "whyItMatters": "", "progressNow": "", "unknowns": "",
+            "knownFacts": [], "confidence": 0, "sourceBreakdown": [],
+            "coverage": 0, "optionalAdvice": None, "_pending": True,
+        }
 
     @app.get("/api/v1/tasks/{task_id}/context-preview", response_model=TaskContextPreviewRecord)
     def get_task_context_preview(task_id: str) -> TaskContextPreviewRecord:
@@ -17356,6 +17538,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid employee payload")
         return EmployeeRecord(**response)
 
+    @app.post("/api/v1/admin/employees/{employee_id}/reset-password")
+    def admin_reset_password(employee_id: str, payload: dict) -> dict:
+        response = cloud_request("POST", f"/api/v1/admin/employees/{employee_id}/reset-password", json_body=payload)
+        return response if isinstance(response, dict) else {"message": "密码已重置"}
+
     @app.patch("/api/v1/admin/employees/{employee_id}/role", response_model=EmployeeRecord)
     def patch_employee_role(employee_id: str, payload: EmployeeRolePayload) -> EmployeeRecord:
         response = cloud_request("PATCH", f"/api/v1/admin/employees/{employee_id}/role", json_body=payload.model_dump())
@@ -17395,6 +17582,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for row in state.db.fetchall("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 30")
         ]
+
+    # ── System Log Endpoints ───────────────────────────────────────
+    @app.get("/api/v1/logs")
+    def get_system_logs(
+        startDate: str | None = Query(default=None),
+        endDate: str | None = Query(default=None),
+        level: str | None = Query(default=None),
+        source: str | None = Query(default=None),
+        keyword: str | None = Query(default=None),
+        limit: int = Query(default=500, le=5000),
+    ) -> dict:
+        if not state.system_logger:
+            return {"entries": [], "dates": [], "total": 0}
+        entries = state.system_logger.query(
+            start_date=startDate, end_date=endDate, level=level,
+            source=source, keyword=keyword, limit=limit,
+        )
+        dates = state.system_logger.list_log_dates()
+        return {"entries": entries, "dates": dates, "total": len(entries)}
+
+    @app.get("/api/v1/logs/export")
+    def export_system_logs(
+        startDate: str | None = Query(default=None),
+        endDate: str | None = Query(default=None),
+        level: str | None = Query(default=None),
+        keyword: str | None = Query(default=None),
+    ) -> Response:
+        if not state.system_logger:
+            return Response(content="# 无日志数据", media_type="text/markdown")
+        md = state.system_logger.export_markdown(
+            start_date=startDate, end_date=endDate, level=level, keyword=keyword,
+        )
+        date_label = startDate or "today"
+        return Response(
+            content=md,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="yiyu-logs-{date_label}.md"'},
+        )
+
+    @app.get("/api/v1/logs/dates")
+    def get_log_dates() -> list[str]:
+        if not state.system_logger:
+            return []
+        return state.system_logger.list_log_dates()
 
     @app.get("/api/v1/tasks/agent-worklogs", response_model=AgentWorklogResponse)
     def get_agent_worklogs(month: str | None = Query(default=None)) -> AgentWorklogResponse:
@@ -18018,7 +18249,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/memory/backfill", response_model=MemoryBackfillResultRecord)
     def backfill_memory_foundation_route() -> MemoryBackfillResultRecord:
-        return backfill_memory_foundation(state.db)
+        # 先把文档知识灌入记忆
+        from app.services.memory_foundation import backfill_document_knowledge_to_memory
+        doc_stats = backfill_document_knowledge_to_memory(state.db)
+        if state.system_logger:
+            state.system_logger.info("memory", f"文档知识回流完成: {doc_stats}")
+        # 再执行原有的记忆回填
+        result = backfill_memory_foundation(state.db)
+        return result
+
+    @app.post("/api/v1/memory/backfill-documents")
+    def backfill_document_knowledge_route() -> dict:
+        """单独触发文档知识→记忆回流。"""
+        from app.services.memory_foundation import backfill_document_knowledge_to_memory
+        stats = backfill_document_knowledge_to_memory(state.db)
+        # 回流完后刷新所有客户的 notebook
+        clients = state.db.fetchall("SELECT id FROM clients")
+        refreshed = 0
+        for client in clients:
+            try:
+                refresh_organization_notebook_snapshot(state.db, str(client["id"]))
+                refreshed += 1
+            except Exception:
+                pass
+        stats["notebooks_refreshed"] = refreshed
+        if state.system_logger:
+            state.system_logger.info("memory", f"文档知识回流+notebook刷新: {stats}")
+        return stats
 
     @app.post("/api/v1/clarifications", response_model=ClarificationRecord)
     def create_clarification(payload: ClarificationCreatePayload) -> ClarificationRecord:
@@ -19665,6 +19922,144 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             deliveryTarget=delivery_target,
         )
 
+    # ── 飞书同步引擎 ──────────────────────────────────────────
+
+    from app.services.feishu_sync import (
+        FeishuSyncState,
+        list_minutes,
+        get_minute_detail,
+        get_minute_transcript,
+        parse_minute_to_meeting_notes,
+        create_task as feishu_create_task,
+        send_interactive_card,
+        build_weekly_review_card,
+        build_badge_unlock_card,
+        build_task_overdue_card,
+    )
+
+    _feishu_sync: FeishuSyncState | None = None
+
+    def _get_feishu_sync() -> FeishuSyncState:
+        nonlocal _feishu_sync
+        if _feishu_sync is None:
+            _feishu_sync = FeishuSyncState(state.db, state.feishu_secret_store)
+        return _feishu_sync
+
+    @app.get("/api/v1/feishu/status")
+    def feishu_sync_status() -> dict:
+        sync = _get_feishu_sync()
+        configured = sync.is_configured()
+        user_id, _ = resolve_growth_actor()
+        binding = sync.get_user_binding(user_id)
+        return {
+            "configured": configured,
+            "userBound": binding is not None,
+            "userName": binding.get("name") if binding else None,
+            "modules": {"minutes": configured, "tasks": configured, "calendar": configured, "messages": configured},
+        }
+
+    @app.get("/api/v1/feishu/minutes")
+    def feishu_list_minutes(days: int = 30) -> dict:
+        sync = _get_feishu_sync()
+        user_id, _ = resolve_growth_actor()
+        binding = sync.get_user_binding(user_id)
+        if not binding:
+            raise HTTPException(status_code=400, detail="请先绑定飞书账号")
+        token = (binding.get("accessToken") or binding.get("access_token")) or sync.get_tenant_token()
+        import time as _time
+        end_t = int(_time.time())
+        start_t = end_t - days * 86400
+        try:
+            result = list_minutes(user_access_token=token, start_time=start_t, end_time=end_t)
+            items = result.get("data", {}).get("minutes") or result.get("data", {}).get("items") or []
+            return {"minutes": items, "total": len(items)}
+        except Exception as exc:
+            return {"minutes": [], "total": 0, "error": str(exc), "hint": "妙记 API 需要用户身份 token，请确认飞书授权了妙记权限"}
+
+    @app.post("/api/v1/feishu/minutes/{minute_token}/import")
+    def feishu_import_minute(minute_token: str, client_id: str = "") -> dict:
+        sync = _get_feishu_sync()
+        user_id, user_name = resolve_growth_actor()
+        binding = sync.get_user_binding(user_id)
+        token = (binding or {}).get("accessToken") or (binding or {}).get("access_token") or sync.get_tenant_token()
+        detail = get_minute_detail(user_access_token=token, minute_token=minute_token)
+        paragraphs = get_minute_transcript(user_access_token=token, minute_token=minute_token)
+        parsed = parse_minute_to_meeting_notes(detail, paragraphs)
+        meeting_id = new_id("meeting")
+        state.db.execute(
+            "INSERT INTO meetings(id, client_id, title, transcript_text, notes, stage, source_type, source_id, created_at, updated_at) VALUES(?,?,?,?,?,'ingested','feishu_minutes',?,?,?)",
+            (meeting_id, client_id or None, parsed["title"], parsed["transcript"], parsed["aiSummary"], minute_token, now_iso(), now_iso()),
+        )
+        created_tasks: list[str] = []
+        for todo in parsed.get("aiTodoItems", []):
+            content = todo.get("content", "").strip()
+            if content:
+                task_id = new_id("task")
+                state.db.execute(
+                    "INSERT INTO tasks(id, title, status, priority, list_id, source_type, source_id, owner_name, created_at, updated_at) VALUES(?,?,'todo','normal',?,'meeting',?,?,?,?)",
+                    (task_id, content, _default_task_list_id(), meeting_id, todo.get("owner", user_name), now_iso(), now_iso()),
+                )
+                created_tasks.append(content)
+        log_activity("feishu.minutes.import", "meeting", meeting_id, {"minuteToken": minute_token, "title": parsed["title"], "taskCount": len(created_tasks)})
+        return {"meetingId": meeting_id, "title": parsed["title"], "speakers": parsed["speakers"], "transcriptLength": len(parsed["transcript"]), "createdTasks": created_tasks}
+
+    @app.post("/api/v1/feishu/tasks/push")
+    def feishu_push_task(task_id: str = "") -> dict:
+        sync = _get_feishu_sync()
+        if not sync.is_configured():
+            raise HTTPException(status_code=400, detail="飞书应用未配置，请先设置 App ID 和 App Secret")
+        token = sync.get_tenant_token()
+        row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        title = str(row["title"] or "")
+        due_date = str(row["due_date"] or "")
+        due_ts = None
+        if due_date:
+            try:
+                due_ts = int(datetime.fromisoformat(due_date.replace("Z", "+00:00")).timestamp())
+            except Exception:
+                pass
+        result = feishu_create_task(tenant_access_token=token, summary=title, description=str(row["description"] or ""), due_timestamp=due_ts)
+        feishu_task = result.get("data", {}).get("task", {})
+        feishu_guid = str(feishu_task.get("guid") or feishu_task.get("id") or "")
+        if feishu_guid:
+            state.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (f"feishu_task_link:{task_id}", feishu_guid))
+            state.db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (f"feishu_task_reverse:{feishu_guid}", task_id))
+        log_activity("feishu.task.push", "task", task_id, {"feishuGuid": feishu_guid})
+        return {"taskId": task_id, "feishuGuid": feishu_guid, "title": title}
+
+    @app.post("/api/v1/feishu/notify/weekly-review")
+    def feishu_notify_weekly_review(week_label: str = "") -> dict:
+        sync = _get_feishu_sync()
+        if not sync.is_configured():
+            raise HTTPException(status_code=400, detail="飞书应用未配置")
+        token = sync.get_tenant_token()
+        receive_id_type, receive_id = sync.get_receiver_config()
+        if not receive_id:
+            raise HTTPException(status_code=400, detail="飞书接收方未配置")
+        row = state.db.fetchone("SELECT * FROM weekly_reviews WHERE week_label = ? ORDER BY updated_at DESC LIMIT 1", (week_label,))
+        if not row:
+            raise HTTPException(status_code=404, detail="未找到该周复盘")
+        summary = str(row["summary"] or row["work_free_note"] or "")
+        card = build_weekly_review_card(week_label=week_label, headline=summary[:100] or "本周复盘", highlights=[l.strip() for l in summary.split("\n") if l.strip()][:3], blockers=[], next_focus="")
+        send_interactive_card(tenant_access_token=token, receive_id_type=receive_id_type, receive_id=receive_id, card=card)
+        return {"sent": True, "weekLabel": week_label}
+
+    @app.post("/api/v1/feishu/notify/badge-unlock")
+    def feishu_notify_badge(badge_name: str, badge_desc: str = "", category: str = "", xp: int = 0) -> dict:
+        sync = _get_feishu_sync()
+        if not sync.is_configured():
+            raise HTTPException(status_code=400, detail="飞书应用未配置")
+        token = sync.get_tenant_token()
+        receive_id_type, receive_id = sync.get_receiver_config()
+        if not receive_id:
+            raise HTTPException(status_code=400, detail="飞书接收方未配置")
+        _, user_name = resolve_growth_actor()
+        card = build_badge_unlock_card(badge_name=badge_name, badge_description=badge_desc, category_name=category, xp=xp, user_name=user_name)
+        send_interactive_card(tenant_access_token=token, receive_id_type=receive_id_type, receive_id=receive_id, card=card)
+        return {"sent": True, "badgeName": badge_name}
+
     @app.get("/api/v1/clients/{client_id}/meetings/{meeting_id}", response_model=MeetingDetail)
     def get_meeting_detail(client_id: str, meeting_id: str) -> MeetingDetail:
         meeting = build_meeting_detail(meeting_id)
@@ -20390,6 +20785,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=now_iso(),
             ai_service=state.ai,
         )
+        Thread(target=_precompute_task_understanding, args=(task_id,), daemon=True).start()
+        _cloud_task_board_cache["data"] = None
         return updated_task
 
     @app.delete("/api/v1/tasks/{task_id}")

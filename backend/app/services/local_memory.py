@@ -351,37 +351,157 @@ def record_memory_operation(data_dir: str | Path) -> None:
         pass
 
 
-def run_dream_cycle(data_dir: str | Path, ai_service: Any = None) -> dict[str, int]:
+def run_dream_cycle(data_dir: str | Path, ai_service: Any = None, db: Any = None) -> dict[str, int]:
     """
-    Memory consolidation cycle — "dreaming".
-    Phase 1: Orient — read current index
-    Phase 2: Collect — find all memory files and their sizes
-    Phase 3: Integrate — detect stale/contradictory memories (if AI available)
-    Phase 4: Trim — enforce size limits, update index
-    Returns stats dict.
+    记忆整理周期 — "做梦"。
+
+    借鉴 Claude Code AutoDream 的做法：
+    - 不重读原始文档（成本太高）
+    - 用定向搜索从已有记忆中找信号
+    - 合并重复、解决矛盾、升级认知
+
+    Phase 1: Orient — 扫描所有记忆文件
+    Phase 2: Cross-pollinate — 从周记忆中提取关键判断，写回 project_memory
+    Phase 3: DB sync — 把本地文件中的关键判断同步到 memory_facts
+    Phase 4: Trim — 裁剪超长文件
+    Phase 5: Index — 更新索引
     """
     root = memory_root(data_dir)
-    stats = {"files_scanned": 0, "files_trimmed": 0, "index_updated": False}
+    stats = {
+        "files_scanned": 0, "files_trimmed": 0, "index_updated": False,
+        "cross_pollinated": 0, "facts_synced": 0,
+    }
 
-    # Phase 1: Orient
     all_memory_files: list[Path] = list(root.glob("**/*.md"))
     stats["files_scanned"] = len(all_memory_files)
 
-    # Phase 2 & 3: Collect and check sizes
+    # ── Phase 2: Cross-pollinate — 从周记忆提取信号写回项目记忆 ──
+    weekly_dir = root / "weekly"
+    if weekly_dir.exists():
+        # 找最新的周记忆
+        weekly_files = sorted(weekly_dir.glob("*.md"), reverse=True)
+        for wf in weekly_files[:2]:  # 只处理最近 2 周
+            weekly_content = wf.read_text(encoding="utf-8")
+            if len(weekly_content) < 100:
+                continue
+
+            # 定向搜索：提取"需要关注"、"卡点汇总"、"下周提示"部分
+            signals: dict[str, list[str]] = {"关注": [], "卡点": [], "提示": []}
+            current_section = ""
+            for line in weekly_content.split("\n"):
+                stripped = line.strip()
+                if "需要关注" in stripped or "风险" in stripped:
+                    current_section = "关注"
+                elif "卡点" in stripped or "阻塞" in stripped:
+                    current_section = "卡点"
+                elif "下周" in stripped or "提示" in stripped:
+                    current_section = "提示"
+                elif "正常推进" in stripped or "## " in stripped:
+                    current_section = ""
+                elif current_section and stripped.startswith("•"):
+                    signals[current_section].append(stripped.lstrip("• ").strip())
+
+            # 把信号写回对应的项目记忆
+            proj_root = root / "projects"
+            if proj_root.exists():
+                for cid_dir in proj_root.iterdir():
+                    if not cid_dir.is_dir() or cid_dir.name in ("general", "."):
+                        continue
+                    pm_path = cid_dir / "project_memory.md"
+                    if not pm_path.exists():
+                        continue
+                    pm_content = pm_path.read_text(encoding="utf-8")
+                    # 检查该项目名是否出现在周记忆的信号中
+                    client_signals = []
+                    for section, items in signals.items():
+                        for item in items:
+                            # 简单匹配：如果信号中包含项目文件夹对应的客户关键词
+                            if cid_dir.name in weekly_content and any(kw in item for kw in _extract_keywords_from_path(pm_content)):
+                                client_signals.append(f"[{section}] {item}")
+
+                    if client_signals and "## 做梦整理" not in pm_content:
+                        # 追加到项目记忆末尾
+                        week_label = wf.stem
+                        addition = f"\n\n## 做梦整理（{week_label}）\n" + "\n".join(f"- {s}" for s in client_signals[:5])
+                        pm_path.write_text(pm_content + addition, encoding="utf-8")
+                        stats["cross_pollinated"] += 1
+
+    # ── Phase 3: DB sync — 把周记忆的关键判断写入 memory_facts ──
+    if db is not None and weekly_dir.exists():
+        weekly_files = sorted(weekly_dir.glob("*.md"), reverse=True)
+        for wf in weekly_files[:1]:  # 只处理最新一周
+            weekly_content = wf.read_text(encoding="utf-8")
+            week_label = wf.stem
+
+            # 提取结构化段落
+            sections_to_sync = {
+                "weekly_attention": "",  # 需要关注
+                "weekly_blockers": "",   # 卡点汇总
+                "weekly_next": "",       # 下周提示
+            }
+            current_key = ""
+            current_lines: list[str] = []
+            for line in weekly_content.split("\n"):
+                stripped = line.strip()
+                if "需要关注" in stripped:
+                    if current_key and current_lines:
+                        sections_to_sync[current_key] = "\n".join(current_lines)
+                    current_key = "weekly_attention"
+                    current_lines = []
+                elif "卡点" in stripped:
+                    if current_key and current_lines:
+                        sections_to_sync[current_key] = "\n".join(current_lines)
+                    current_key = "weekly_blockers"
+                    current_lines = []
+                elif "下周" in stripped:
+                    if current_key and current_lines:
+                        sections_to_sync[current_key] = "\n".join(current_lines)
+                    current_key = "weekly_next"
+                    current_lines = []
+                elif stripped.startswith("##") or stripped.startswith("【正常推进"):
+                    if current_key and current_lines:
+                        sections_to_sync[current_key] = "\n".join(current_lines)
+                    current_key = ""
+                    current_lines = []
+                elif current_key and stripped:
+                    current_lines.append(stripped)
+            if current_key and current_lines:
+                sections_to_sync[current_key] = "\n".join(current_lines)
+
+            # 写入 memory_facts（用 product scope 代表组织级记忆）
+            from app.services.memory_foundation import upsert_memory_fact
+            for fact_key, fact_value in sections_to_sync.items():
+                if fact_value.strip():
+                    try:
+                        upsert_memory_fact(
+                            db,
+                            scope_type="product",
+                            scope_id="org_weekly",
+                            fact_key=f"{fact_key}:{week_label}",
+                            fact_value=fact_value[:800],
+                            source_type="dream_cycle",
+                            source_id=f"weekly/{week_label}",
+                            confidence=0.8,
+                            freshness=0.9,
+                        )
+                        stats["facts_synced"] += 1
+                    except Exception:
+                        pass
+
+    # ── Phase 4: Trim — 裁剪超长文件 ──
     SIZE_LIMITS = {
-        "org_memory.md": 3000,
-        "project_memory.md": 2000,
-        "MEMORY_INDEX.md": 5000,  # Index can be longer
+        "org_memory.md": 4000,
+        "project_memory.md": 3000,
+        "MEMORY_INDEX.md": 5000,
     }
-    DEFAULT_LIMIT = 1500  # Event line memories and weekly snapshots
+    DEFAULT_LIMIT = 2000
 
     for mf in all_memory_files:
         if mf.name.startswith("."):
             continue
         limit = SIZE_LIMITS.get(mf.name, DEFAULT_LIMIT)
         content = mf.read_text(encoding="utf-8")
-        if len(content) > limit * 1.5:  # Only trim if significantly over
-            # Simple trim: keep frontmatter + first N chars
+        if len(content) > limit * 1.5:
             if "---" in content:
                 parts = content.split("---", 2)
                 if len(parts) >= 3:
@@ -392,7 +512,7 @@ def run_dream_cycle(data_dir: str | Path, ai_service: Any = None) -> dict[str, i
                         mf.write_text(f"{frontmatter}\n\n{body}\n", encoding="utf-8")
                         stats["files_trimmed"] += 1
 
-    # Phase 4: Update index
+    # ── Phase 5: Update index ──
     try:
         update_memory_index(data_dir)
         stats["index_updated"] = True
@@ -412,6 +532,22 @@ def run_dream_cycle(data_dir: str | Path, ai_service: Any = None) -> dict[str, i
 
     logger.info("[local-memory] dream cycle complete: %s", stats)
     return stats
+
+
+def _extract_keywords_from_path(content: str) -> list[str]:
+    """从项目记忆内容中提取关键词用于匹配。"""
+    keywords = []
+    for line in content.split("\n")[:10]:
+        stripped = line.strip()
+        if stripped.startswith("project:") or stripped.startswith("event_line:"):
+            val = stripped.split(":", 1)[1].strip()
+            if val:
+                keywords.append(val)
+                # 也加入短名
+                for part in val.split():
+                    if len(part) >= 2:
+                        keywords.append(part)
+    return keywords[:10] if keywords else ["_no_match_"]
 
 
 # ── Aggregate reader for AI context ──

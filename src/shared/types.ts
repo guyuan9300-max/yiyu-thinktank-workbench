@@ -3288,6 +3288,15 @@ export interface EmployeeRejectPayload {
   reason: string;
 }
 
+export interface ChangePasswordPayload {
+  currentPassword: string;
+  newPassword: string;
+}
+
+export interface AdminResetPasswordPayload {
+  newPassword: string;
+}
+
 export interface TaskTagSuggestionPayload {
   title: string;
   desc: string;
