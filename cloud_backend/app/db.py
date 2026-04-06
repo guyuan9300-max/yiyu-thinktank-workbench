@@ -755,6 +755,9 @@ class Database:
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("event_lines", "primary_client_name", "TEXT")
+            self._ensure_column("event_lines", "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
+            self._ensure_column("event_lines", "closed_at", "TEXT")
+            self._ensure_column("event_lines", "closed_by_user_id", "TEXT")
             self.conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS task_attachments (

@@ -3,12 +3,30 @@ set -euo pipefail
 
 BASE_URL="${1:-http://101.126.34.232}"
 
+retry_curl() {
+  local path="$1"
+  local attempts="${2:-8}"
+  local delay="${3:-2}"
+  local i
+  for ((i=1; i<=attempts; i++)); do
+    if curl -fsS "${BASE_URL%/}${path}" >/tmp/yiyu-cloud-smoke.out 2>/tmp/yiyu-cloud-smoke.err; then
+      cat /tmp/yiyu-cloud-smoke.out
+      return 0
+    fi
+    if [[ $i -lt $attempts ]]; then
+      sleep "${delay}"
+    fi
+  done
+  cat /tmp/yiyu-cloud-smoke.err >&2 || true
+  return 1
+}
+
 echo "=== health ==="
-curl -fsS "${BASE_URL%/}/health"
+retry_curl "/health"
 echo
 
 echo "=== smart-input route ==="
-OPENAPI_JSON="$(curl -fsS "${BASE_URL%/}/openapi.json")"
+OPENAPI_JSON="$(retry_curl "/openapi.json")"
 if grep -q '"/api/v1/mobile/smart-input/task-draft"' <<<"${OPENAPI_JSON}"; then
   echo "smart-input route present"
 else

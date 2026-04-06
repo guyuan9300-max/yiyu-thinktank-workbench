@@ -921,12 +921,14 @@ export interface TaskProjectContext {
 
 export type EventLineKind = 'project_line' | 'issue_line' | 'coordination_line' | 'case_line' | 'custom';
 export type EventLineStatus = 'active' | 'blocked' | 'paused' | 'done' | 'archived';
+export type EventLineVisibilityScope = 'private' | 'project_public';
 
 export interface EventLine {
   id: string;
   name: string;
   kind: EventLineKind;
   status: EventLineStatus;
+  visibilityScope: EventLineVisibilityScope;
   businessCategory?: string | null;
   stage?: string | null;
   summary?: string | null;
@@ -942,6 +944,8 @@ export interface EventLine {
   primaryDepartmentId?: string | null;
   primaryDepartmentName?: string | null;
   participantIds: string[];
+  closedAt?: string | null;
+  closedByUserId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -957,6 +961,7 @@ export interface EventLineActivity {
   title: string;
   summary: string;
   metadata?: Record<string, unknown>;
+  isKey?: boolean;
 }
 
 export interface EventLineDetail {
@@ -1084,6 +1089,7 @@ export interface ProjectModule {
   ownerName?: string | null;
   deliverables: string[];
   keywords: string[];
+  templateTasksJson?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2493,6 +2499,8 @@ export interface HandbookEntry {
   sourceType: string;
   clientName?: string | null;
   clientId?: string | null;
+  authorUserId?: string | null;
+  authorUserName?: string | null;
   sourceObjectType?: string | null;
   sourceObjectId?: string | null;
   sourceTitle?: string | null;
@@ -3333,6 +3341,7 @@ export interface ProjectModulePayload {
   ownerName?: string | null;
   deliverables?: string[];
   keywords?: string[];
+  templateTasksJson?: string | null;
 }
 
 export interface ProjectFlowPayload {
@@ -3697,8 +3706,6 @@ declare global {
       openExternalUrl(targetUrl: string): Promise<boolean>;
       revealInFinder(targetPath: string): Promise<boolean>;
       saveFileAs(sourcePath: string, suggestedName?: string): Promise<string | null>;
-      getDiagnosisEngineHealth(): Promise<DiagnosisEngineHealth[]>;
-      runBettafishDiagnosis(payload: ExternalDiagnosisRequest): Promise<BettaFishSignal>;
     };
   }
 }

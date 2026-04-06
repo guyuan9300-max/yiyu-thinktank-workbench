@@ -168,10 +168,12 @@ from app.models import (
     EventLineCreatePayload,
     EventLineDetailRecord,
     EventLineJudgmentRecord,
+    EventLineProjectFilterOptionRecord,
     EventLineOpportunityCardRecord,
     EventLineMemoryResponse,
     EventLineRecord,
     EventLineRiskCardRecord,
+    EventLineSourceStatusRecord,
     EventLineUpdatePayload,
     OperatorRecord,
     OrgDepartmentRecord,
@@ -381,6 +383,7 @@ from app.services.template_fill import (
 from app.services.topic_capture import fetch_topic_candidates_from_web, fetch_topic_source_excerpt
 from app.services.review_analysis import _dedupe_texts, _story_evidence_refs, build_weekly_review_analysis
 from app.services.review_narrative import build_weekly_overview_draft
+from app.services.local_memory import gather_project_context_for_ai, read_project_memory, write_project_memory, write_event_line_memory, write_weekly_memory, should_dream, run_dream_cycle
 from app.services.review_rollup import build_employee_review_report, build_executive_review_rollup
 from app.services.review_simulation import build_review_simulation_bundle
 from app.services.feishu import (
@@ -1170,8 +1173,8 @@ def _sync_task_attachment_scope(
             db.execute(
                 """
                 INSERT INTO event_line_activities(
-                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id("ela"),
@@ -1184,6 +1187,7 @@ def _sync_task_attachment_scope(
                     activity.title,
                     activity.summary,
                     to_json(activity.metadata),
+                    int(activity.isKey),
                     activity.happenedAt,
                 ),
             )
@@ -4404,6 +4408,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ownerName=str(row["owner_name"]) if row["owner_name"] else None,
             deliverables=_parse_json_list(row["deliverables_json"]),
             keywords=_parse_json_list(row["keywords_json"]),
+            templateTasksJson=str(row["template_tasks_json"]) if row["template_tasks_json"] else None,
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -4782,6 +4787,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "SELECT id, primary_client_id FROM event_lines WHERE id = ?",
             (normalized_event_line_id,),
         )
+        if not event_line_row and get_cloud_token():
+            # Event line exists on cloud but not locally — sync it
+            try:
+                cloud_el = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
+                if isinstance(cloud_el, dict) and cloud_el.get("id"):
+                    state.db.execute(
+                        """INSERT OR IGNORE INTO event_lines(id, name, kind, status, primary_client_id, primary_client_name, owner_id, owner_name, created_at, updated_at)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            str(cloud_el["id"]),
+                            str(cloud_el.get("name", "")),
+                            str(cloud_el.get("kind", "custom")),
+                            str(cloud_el.get("status", "active")),
+                            str(cloud_el.get("primaryClientId") or ""),
+                            str(cloud_el.get("primaryClientName") or ""),
+                            str(cloud_el.get("ownerId") or ""),
+                            str(cloud_el.get("ownerName") or ""),
+                            str(cloud_el.get("createdAt", "")),
+                            str(cloud_el.get("updatedAt", "")),
+                        ),
+                    )
+                    event_line_row = state.db.fetchone(
+                        "SELECT id, primary_client_id FROM event_lines WHERE id = ?",
+                        (normalized_event_line_id,),
+                    )
+            except Exception:
+                pass
         if not event_line_row:
             raise HTTPException(status_code=400, detail="任务绑定的事件线无效")
         event_line_client_id = (
@@ -5205,7 +5237,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 f"{state.cloud_api_url}{path}",
                 json=json_body,
                 headers=headers,
-                timeout=20.0,
+                timeout=60.0,
             )
 
         token = get_cloud_token()
@@ -5217,8 +5249,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=401, detail="Not authenticated")
         try:
             response = perform_request(token)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+        except httpx.HTTPError:
+            # Retry once on connection/timeout error
+            import time
+            time.sleep(1)
+            try:
+                response = perform_request(token)
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
         if response.status_code == 401 and not allow_unauthenticated and get_cloud_refresh_token():
             refresh_cloud_session()
             token = get_cloud_token()
@@ -5486,6 +5524,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             actorName=None,
             title=f"上传附件：{attachment.title}",
             summary=f"任务附件已进入项目资料库：{attachment.title}",
+            isKey=True,
             metadata={
                 "taskId": attachment.taskId,
                 "documentId": attachment.documentId,
@@ -5772,7 +5811,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
 
+    _cloud_task_board_cache: dict[str, object] = {"data": None, "ts": 0.0}
+
+    def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
+        """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
+        cloud_task_map = {t.id: t for t in board.tasks}
+        merged_tasks = []
+        changed = False
+
+        # For each cloud task, check if local has more attachments
+        for task in board.tasks:
+            local_atts = fetch_task_attachments(task.id, cloud=True)
+            if len(local_atts) > len(task.attachments):
+                merged_tasks.append(task.model_copy(update={"attachments": local_atts}))
+                changed = True
+            else:
+                merged_tasks.append(task)
+
+        # Only merge LOCAL tasks created in the last 7 days (avoid resurrecting old seed/deleted data)
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=7)).isoformat()[:19]
+        local_rows = state.db.fetchall(
+            "SELECT id FROM tasks WHERE id NOT LIKE 'agent_%' AND id NOT LIKE 'task_seed_%' AND created_at > ?",
+            (cutoff,),
+        )
+        for row in local_rows:
+            local_id = str(row["id"])
+            if local_id not in cloud_task_map:
+                try:
+                    local_tasks = fetch_tasks("t.id = ?", (local_id,))
+                    if local_tasks:
+                        merged_tasks.append(local_tasks[0])
+                        changed = True
+                except Exception:
+                    pass
+
+        if changed:
+            return TaskBoardResponse(tasks=merged_tasks, lists=board.lists, tags=board.tags, commonTags=board.commonTags)
+        return board
+
     def cloud_task_board() -> TaskBoardResponse:
+        import time
+        now = time.time()
+        if _cloud_task_board_cache["data"] is not None and now - _cloud_task_board_cache["ts"] < 30:
+            return _merge_local_tasks_into(_cloud_task_board_cache["data"])  # type: ignore[arg-type]
         payload = cloud_request("GET", "/api/v1/tasks")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid task board payload")
@@ -5793,7 +5875,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         tasks = [build_cloud_task(item, lists_by_id) for item in payload.get("tasks", []) if isinstance(item, dict)]
         cloud_tags = [build_cloud_task_tag(item) for item in payload.get("tags", []) if isinstance(item, dict)]
         cloud_common_tags = [str(item) for item in payload.get("commonTags", []) if isinstance(item, str)]
-        return TaskBoardResponse(tasks=tasks, lists=lists, tags=cloud_tags, commonTags=cloud_common_tags)
+        result = TaskBoardResponse(tasks=tasks, lists=lists, tags=cloud_tags, commonTags=cloud_common_tags)
+        result = _merge_local_tasks_into(result)
+        _cloud_task_board_cache["data"] = result
+        _cloud_task_board_cache["ts"] = now
+        return result
 
     def fetch_cloud_task_by_id(task_id: str) -> TaskRecord:
         board = cloud_task_board()
@@ -5914,6 +6000,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             name=str(payload.get("name", "")),
             kind=str(payload.get("kind", "custom")),  # type: ignore[arg-type]
             status=str(payload.get("status", "active")),  # type: ignore[arg-type]
+            visibilityScope=str(payload.get("visibilityScope", "project_public")),  # type: ignore[arg-type]
             businessCategory=str(payload.get("businessCategory")) if payload.get("businessCategory") else None,
             stage=str(payload.get("stage")) if payload.get("stage") else None,
             summary=str(payload.get("summary")) if payload.get("summary") else None,
@@ -5925,20 +6012,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ownerId=str(payload.get("ownerId")) if payload.get("ownerId") else None,
             ownerName=str(payload.get("ownerName")) if payload.get("ownerName") else None,
             primaryClientId=client_id,
-            primaryClientName=(str(client_row["name"]) if client_row else None) or cloud_client_name,
+            primaryClientName=cloud_client_name or (str(client_row["name"]) if client_row else None),
             primaryDepartmentId=str(payload.get("primaryDepartmentId")) if payload.get("primaryDepartmentId") else None,
             primaryDepartmentName=str(payload.get("primaryDepartmentName")) if payload.get("primaryDepartmentName") else None,
             participantIds=[str(item) for item in payload.get("participantIds", [])] if isinstance(payload.get("participantIds"), list) else [],
+            closedAt=str(payload.get("closedAt")) if payload.get("closedAt") else None,
+            closedByUserId=str(payload.get("closedByUserId")) if payload.get("closedByUserId") else None,
             createdAt=str(payload.get("createdAt", now_iso())),
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
 
+    def _compute_activity_is_key(source_type: str, metadata: object) -> bool:
+        """Determine if an event-line activity is a key action (shown by default) or a system trace.
+        Key events: task created, manual note, attachment upload.
+        System traces: status changes, field updates, meetings, reviews, support requests."""
+        if source_type in ("manual_note", "attachment"):
+            return True
+        if source_type == "task_activity" and isinstance(metadata, dict):
+            if metadata.get("eventType") == "created":
+                return True
+        return False
+
     def build_cloud_event_line_activity(payload: dict[str, object]) -> EventLineActivityRecord:
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        source_type = str(payload.get("sourceType", "manual_note"))
+        is_key = payload.get("isKey")
+        if is_key is None:
+            is_key = _compute_activity_is_key(source_type, metadata)
         return EventLineActivityRecord(
             id=str(payload.get("id", "")),
             eventLineId=str(payload.get("eventLineId", "")),
-            sourceType=str(payload.get("sourceType", "manual_note")),  # type: ignore[arg-type]
+            sourceType=source_type,  # type: ignore[arg-type]
             sourceId=str(payload.get("sourceId", "")),
             happenedAt=str(payload.get("happenedAt", now_iso())),
             actorId=str(payload.get("actorId")) if payload.get("actorId") else None,
@@ -5946,6 +6050,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             title=str(payload.get("title", "")),
             summary=str(payload.get("summary", "")),
             metadata=metadata,
+            isKey=bool(is_key),
         )
 
     def build_event_line(row) -> EventLineRecord:
@@ -5957,6 +6062,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             name=str(row["name"]),
             kind=str(row["kind"]),  # type: ignore[arg-type]
             status=str(row["status"]),  # type: ignore[arg-type]
+            visibilityScope=str(row["visibility_scope"]) if row["visibility_scope"] else "project_public",  # type: ignore[arg-type]
             businessCategory=str(row["business_category"]) if row["business_category"] else None,
             stage=str(row["stage"]) if row["stage"] else None,
             summary=str(row["summary"]) if row["summary"] else None,
@@ -5972,6 +6078,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
             primaryDepartmentName=str(row["primary_department_name"]) if row["primary_department_name"] else None,
             participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
+            closedAt=str(row["closed_at"]) if row["closed_at"] else None,
+            closedByUserId=str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -5989,6 +6097,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             title=str(row["title"]),
             summary=str(row["summary"]),
             metadata=metadata if isinstance(metadata, dict) else {},
+            isKey=bool(row["is_key"]) if "is_key" in row.keys() else False,
         )
 
     def build_cloud_event_line_detail(payload: dict[str, object]) -> EventLineDetailRecord:
@@ -6053,6 +6162,149 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             memorySnapshot=memory_response.eventLineMemorySnapshot,
             predictionReadiness=memory_response.eventLineMemorySnapshot.predictionReadiness if memory_response.eventLineMemorySnapshot else None,
             clarificationNeeds=memory_response.clarificationNeeds,
+        )
+
+    def _cloud_event_line_unavailable_status(
+        detail: str,
+        *,
+        organization_id: str | None = None,
+        organization_name: str | None = None,
+    ) -> EventLineSourceStatusRecord:
+        return EventLineSourceStatusRecord(
+            mode="cloud_only",
+            cloudAvailable=False,
+            organizationId=organization_id,
+            organizationName=organization_name,
+            cloudApiUrl=state.cloud_api_url,
+            detail=detail,
+            projectOptions=[
+                EventLineProjectFilterOptionRecord(
+                    id="__orphan__",
+                    label="未归档项目",
+                    kind="orphan",
+                    lineCount=0,
+                )
+            ],
+        )
+
+    def _cached_event_line_organization_context() -> tuple[str | None, str | None]:
+        session_user = get_cached_session_user()
+        organization_id = session_user.organizationId if session_user else None
+        organization_name = None
+        if organization_id:
+            local_org_row = state.db.fetchone(
+                "SELECT name FROM org_profiles WHERE organization_id = ?",
+                (organization_id,),
+            )
+            if local_org_row and local_org_row["name"]:
+                organization_name = str(local_org_row["name"])
+        return organization_id, organization_name
+
+    def _require_cloud_event_line_session() -> SessionUserRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=503, detail="请先连接云端协作后再使用事件线")
+        try:
+            return require_session_user()
+        except HTTPException as exc:
+            if exc.status_code in {401, 403}:
+                raise HTTPException(status_code=503, detail="请先连接云端协作后再使用事件线") from exc
+            if exc.status_code in {502, 503, 504}:
+                raise HTTPException(status_code=503, detail="云端不可用，当前无法查看或操作事件线") from exc
+            raise
+
+    def _fetch_cloud_event_lines_payload() -> list[dict[str, object]]:
+        response = cloud_request("GET", "/api/v1/event-lines")
+        if not isinstance(response, list):
+            raise HTTPException(status_code=502, detail="Invalid event line payload")
+        return [item for item in response if isinstance(item, dict)]
+
+    def _fetch_cloud_clients_payload() -> list[dict[str, object]]:
+        response = cloud_request("GET", "/api/v1/clients")
+        if not isinstance(response, list):
+            raise HTTPException(status_code=502, detail="Invalid client payload")
+        return [item for item in response if isinstance(item, dict)]
+
+    def _build_event_line_source_status() -> EventLineSourceStatusRecord:
+        cached_org_id, cached_org_name = _cached_event_line_organization_context()
+        try:
+            session_user = _require_cloud_event_line_session()
+        except HTTPException as exc:
+            return _cloud_event_line_unavailable_status(
+                str(exc.detail) if exc.detail else "云端不可用，当前无法查看或操作事件线",
+                organization_id=cached_org_id,
+                organization_name=cached_org_name,
+            )
+
+        organization_id = session_user.organizationId
+        organization_name = cached_org_name
+        try:
+            org_profile_payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
+            if isinstance(org_profile_payload, dict):
+                organization_payload = org_profile_payload.get("organization")
+                if isinstance(organization_payload, dict) and organization_payload.get("name"):
+                    organization_name = str(organization_payload.get("name")).strip() or organization_name
+        except HTTPException:
+            pass
+
+        try:
+            event_lines_payload = _fetch_cloud_event_lines_payload()
+            clients_payload = _fetch_cloud_clients_payload()
+        except HTTPException as exc:
+            return _cloud_event_line_unavailable_status(
+                str(exc.detail) if exc.detail else "云端不可用，当前无法查看或操作事件线",
+                organization_id=organization_id,
+                organization_name=organization_name,
+            )
+
+        client_name_by_id: dict[str, str] = {}
+        for item in clients_payload:
+            client_id = str(item.get("id") or "").strip()
+            if not client_id:
+                continue
+            client_label = str(item.get("name") or "").strip() or "未命名项目"
+            client_name_by_id[client_id] = client_label
+
+        project_counts: dict[str, int] = {}
+        project_labels: dict[str, str] = {}
+        orphan_count = 0
+        for item in event_lines_payload:
+            client_id = str(item.get("primaryClientId") or "").strip()
+            cloud_label = str(item.get("primaryClientName") or "").strip() or "未命名项目"
+            if not client_id:
+                orphan_count += 1
+                continue
+            if client_id not in client_name_by_id:
+                orphan_count += 1
+                continue
+            project_counts[client_id] = project_counts.get(client_id, 0) + 1
+            project_labels[client_id] = client_name_by_id.get(client_id) or cloud_label
+
+        project_options = [
+            EventLineProjectFilterOptionRecord(
+                id=client_id,
+                label=project_labels[client_id],
+                kind="client",
+                lineCount=line_count,
+            )
+            for client_id, line_count in project_counts.items()
+        ]
+        project_options.sort(key=lambda item: item.label)
+        project_options.append(
+            EventLineProjectFilterOptionRecord(
+                id="__orphan__",
+                label="未归档项目",
+                kind="orphan",
+                lineCount=orphan_count,
+            )
+        )
+        return EventLineSourceStatusRecord(
+            mode="cloud_only",
+            cloudAvailable=True,
+            organizationId=organization_id,
+            organizationName=organization_name,
+            cloudApiUrl=state.cloud_api_url,
+            detail="当前页面直接操作云端事件线数据",
+            projectOptions=project_options,
         )
 
     def fetch_tasks(where_clause: str = "", params: tuple = ()) -> list[TaskRecord]:
@@ -12267,6 +12519,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 task=created_task,
                 source_type="task_context_candidate",
                 created_at=now_iso(),
+                ai_service=state.ai,
             )
             return created_task
         timestamp = now_iso()
@@ -12318,8 +12571,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO event_line_activities(
-                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json
-                ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?)
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key
+                ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?, 1)
                 """,
                     (
                         new_id("ela"),
@@ -12327,8 +12580,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     task_id,
                     timestamp,
                     payload.ownerName or "",
-                    "新增任务",
-                    f"创建任务：{payload.title}",
+                    f"新增任务：{payload.title}",
+                    (payload.desc or "").strip() or f"创建任务：{payload.title}",
                     to_json({"eventType": "created"}),
                 ),
             )
@@ -12352,6 +12605,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task=created_task,
             source_type="task_context_candidate",
             created_at=timestamp,
+            ai_service=state.ai,
         )
         return created_task
 
@@ -14411,6 +14665,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             response.workItems,
             target_week,
         )
+        weekly_overview = ""
+        weekly_focus_lines: list[str] = []
+        weekly_next_focus: list[str] = []
         if work_analysis is not None and response.workItems:
             narrative_modules = build_review_context_modules(response.workItems, list_organization_dna_modules())
             narrative_analyses = _narratives_from_event_line_judgments(work_analysis)
@@ -14428,6 +14685,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if cached_overview is not None:
                 weekly_overview, weekly_focus_lines, weekly_next_focus = cached_overview
             else:
+                # Collect attachment texts from local cache (populated when user previews event lines)
+                review_attachment_texts: list[str] = []
+                cache_dir = _att_cache_dir()
+                for text_cache_file in sorted(cache_dir.glob("*.text.json"))[:10]:
+                    try:
+                        td = json.loads(text_cache_file.read_bytes())
+                        t = str(td.get("text", "")).strip()
+                        title = str(td.get("title", "")).strip()
+                        if t and len(t) > 100 and "提取失败" not in t and "No module" not in t:
+                            review_attachment_texts.append(f"【{title}】\n{t}")
+                    except Exception:
+                        continue
+                # Gather local project memory for AI context (fast — reads local files only)
+                try:
+                    client_ids = list({item.taskSnapshot.clientId for item in response.workItems if item.taskSnapshot.clientId})
+                    el_ids = list({item.taskSnapshot.eventLineId for item in response.workItems if item.taskSnapshot.eventLineId})
+                    local_memory = gather_project_context_for_ai(state.data_dir, client_ids, el_ids)
+                except Exception:
+                    local_memory = ""
                 weekly_overview, weekly_focus_lines, weekly_next_focus = build_weekly_overview_draft(
                     ai=state.ai,
                     week_label=target_week,
@@ -14437,14 +14713,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     fallback_overview=work_analysis.weeklyOverview,
                     fallback_focus_lines=work_analysis.weeklyFocusLines,
                     fallback_next_focus=work_analysis.weeklyNextFocus,
+                    attachment_texts=review_attachment_texts,
+                    local_memory_context=local_memory,
                 )
-                _save_cached_weekly_overview(
-                    week_label=target_week,
-                    fingerprint=fingerprint,
-                    overview=weekly_overview,
-                    focus_lines=weekly_focus_lines,
-                    next_focus=weekly_next_focus,
-                )
+                # Only cache AI-generated content (contains structured sections), never cache fallback
+                if "\u3010" in weekly_overview:
+                    _save_cached_weekly_overview(
+                        week_label=target_week,
+                        fingerprint=fingerprint,
+                        overview=weekly_overview,
+                        focus_lines=weekly_focus_lines,
+                        next_focus=weekly_next_focus,
+                    )
+                    # Auto-update weekly memory snapshot + extract quotes from overview
+                    try:
+                        write_weekly_memory(state.data_dir, target_week, weekly_overview)
+                        # Extract golden quotes from weekly overview (cross-project insights)
+                        from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
+                        overview_quotes = extract_quotes_from_text(state.ai, weekly_overview, "周复盘概览")
+                        if overview_quotes:
+                            save_pending_quotes(state.db, overview_quotes)
+                        # Check if it's time to dream (memory consolidation)
+                        if should_dream(state.data_dir):
+                            import threading as _dream_thr
+                            _dream_thr.Thread(target=run_dream_cycle, args=(state.data_dir,), daemon=True).start()
+                    except Exception:
+                        pass
             work_analysis = work_analysis.model_copy(
                 update={
                     "narrativeAnalyses": narrative_analyses,
@@ -14463,7 +14757,130 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 org_model_profile=org_model_profile,
                 viewer_role=viewer_role,
             )
+        # Override selfReport with AI-generated structured overview if available
+        if self_report is not None and work_analysis is not None and weekly_overview and "【" in weekly_overview:
+            # Extract headline (first line before any 【 section)
+            overview_lines = weekly_overview.strip().split("\n")
+            ai_headline = overview_lines[0].strip() if overview_lines else ""
+            self_report = self_report.model_copy(
+                update={
+                    "headline": ai_headline or self_report.headline,
+                    "summary": weekly_overview,
+                    "focusAreas": weekly_focus_lines or self_report.focusAreas,
+                    "suggestedActions": weekly_next_focus or self_report.suggestedActions,
+                }
+            )
         executive_org_report, department_reports, simulation_bundle = build_executive_review_overlay(target_week)
+        # Override executiveOrgReport with AI overview too
+        if executive_org_report is not None and work_analysis is not None and weekly_overview and "【" in weekly_overview:
+            overview_lines = weekly_overview.strip().split("\n")
+            ai_headline = overview_lines[0].strip() if overview_lines else ""
+            executive_org_report = executive_org_report.model_copy(
+                update={
+                    "headline": ai_headline or executive_org_report.headline,
+                    "summary": weekly_overview,
+                    "suggestedActions": weekly_next_focus or executive_org_report.suggestedActions,
+                }
+            )
+        # Async: write review notes to memory using LOCAL event line data (cloud returns null)
+        if response.workItems:
+            import threading as _mem_thr
+            def _bg_write_review_memory():
+                try:
+                    # Build local event line → client mapping from DB
+                    el_rows = state.db.fetchall("SELECT id, name, primary_client_id, primary_client_name FROM event_lines")
+                    el_map = {str(r["id"]): r for r in el_rows}
+
+                    # Group notes by client (using local mapping)
+                    by_client: dict[str, tuple[str, list[tuple[str, str]]]] = {}  # cid → (cname, [(title, note)])
+
+                    for item in response.workItems:
+                        note = (item.note or "").strip()
+                        if not note:
+                            continue
+                        snap = item.taskSnapshot
+                        title = snap.title
+
+                        # Try to find the right client from local event line data
+                        el_id = snap.eventLineId or ""
+                        cid = snap.clientId or ""
+                        cname = snap.clientName or ""
+
+                        # If cloud didn't provide eventLineId, try matching by:
+                        # 1. Client name in task title (e.g. "日慈" in "日慈笑雨Q1...")
+                        # 2. Event line name substring in task title
+                        if not el_id:
+                            for eid, erow in el_map.items():
+                                el_name = str(erow["name"])
+                                client_name_local = str(erow["primary_client_name"] or "")
+                                # Match by client name or its first 2 chars (e.g. "日慈" from "日慈基金会")
+                                client_short = client_name_local[:2] if len(client_name_local) >= 2 else ""
+                                if client_name_local and len(client_name_local) >= 2 and (client_name_local in title or (client_short and client_short in title)):
+                                    el_id = eid
+                                    if not cid:
+                                        cid = str(erow["primary_client_id"] or "")
+                                        cname = client_name_local
+                                    break
+                                # Match by event line name first 2-4 chars as substring
+                                el_short = el_name[:4] if len(el_name) >= 4 else el_name[:2]
+                                if el_short and len(el_short) >= 2 and el_short in title:
+                                    el_id = eid
+                                    if not cid:
+                                        cid = str(erow["primary_client_id"] or "")
+                                        cname = str(erow["primary_client_name"] or "")
+                                    break
+
+                        # If still no client, try keyword matching against client names
+                        if not cid:
+                            client_rows = state.db.fetchall("SELECT id, name FROM clients")
+                            for cr in client_rows:
+                                cn = str(cr["name"])
+                                if cn and len(cn) >= 2 and cn in title:
+                                    cid = str(cr["id"])
+                                    cname = cn
+                                    break
+
+                        # Use event line's client as fallback
+                        if not cid and el_id and el_id in el_map:
+                            erow = el_map[el_id]
+                            cid = str(erow["primary_client_id"] or "")
+                            cname = str(erow["primary_client_name"] or "")
+
+                        if not cid:
+                            cid = "general"
+                            cname = "通用"
+
+                        by_client.setdefault(cid, (cname, []))[1].append((title, note))
+
+                        # Write event line memory if we found an event line
+                        if el_id and el_id in el_map:
+                            erow = el_map[el_id]
+                            el_cid = str(erow["primary_client_id"] or cid)
+                            el_cname = str(erow["primary_client_name"] or cname)
+                            el_name = str(erow["name"])
+                            write_event_line_memory(
+                                state.data_dir, el_cid, el_id, el_name, el_cname,
+                                f"## {el_name}\n\n### 本周复盘：{title}\n{note}",
+                            )
+
+                    # Write per-client project memory
+                    for cid, (cname, notes) in by_client.items():
+                        content = f"## {target_week} 复盘记录\n\n" + "\n\n".join(
+                            f"### {t}\n{n}" for t, n in notes
+                        )
+                        write_project_memory(state.data_dir, cid, cname, content)
+
+                    # Extract golden quotes from all review notes
+                    from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
+                    all_review_text = "\n\n".join(f"【{t}】{n}" for t, n in all_notes if len(n) > 30)
+                    if all_review_text:
+                        quotes = extract_quotes_from_text(state.ai, all_review_text, "周复盘")
+                        if quotes:
+                            save_pending_quotes(state.db, quotes)
+                except Exception:
+                    pass
+            _mem_thr.Thread(target=_bg_write_review_memory, daemon=True).start()
+
         if session_user is None:
             return response.model_copy(
                 update={
@@ -14600,8 +15017,48 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return augment_review_response(base_response, target_week)
 
+    # ── Attachment local cache ──
+    def _att_cache_dir() -> Path:
+        d = Path(state.data_dir) / "cache" / "event-line-attachments"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _att_cache_path(attachment_id: str, suffix: str = "") -> Path:
+        """Return cache file path. suffix examples: '', '.thumb', '.text.json', '.ocr.json'"""
+        safe_id = attachment_id.replace("/", "_").replace("..", "_")
+        return _att_cache_dir() / f"{safe_id}{suffix}"
+
+    def _att_cache_read(attachment_id: str, suffix: str = "") -> bytes | None:
+        p = _att_cache_path(attachment_id, suffix)
+        if p.exists() and p.stat().st_size > 0:
+            return p.read_bytes()
+        return None
+
+    def _att_cache_write(attachment_id: str, data: bytes, suffix: str = "") -> None:
+        p = _att_cache_path(attachment_id, suffix)
+        p.write_bytes(data)
+
     @app.get("/api/public/task-attachments/{attachment_id}")
     def proxy_cloud_task_attachment(attachment_id: str) -> Response:
+        # Check local cache first
+        cached = _att_cache_read(attachment_id)
+        if cached:
+            # Guess content type from cached metadata
+            meta_path = _att_cache_path(attachment_id, ".meta")
+            ct = "application/octet-stream"
+            cd = ""
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text())
+                    ct = meta.get("content_type", ct)
+                    cd = meta.get("content_disposition", "")
+                except Exception:
+                    pass
+            headers = {}
+            if cd:
+                headers["Content-Disposition"] = cd
+            return Response(content=cached, media_type=ct, headers=headers)
+
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Attachment not found")
         try:
@@ -14617,6 +15074,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=resp.status_code, detail="Attachment not found")
             content_type = resp.headers.get("content-type", "application/octet-stream")
             content_disposition = resp.headers.get("content-disposition", "")
+            # Write to cache
+            _att_cache_write(attachment_id, resp.content)
+            _att_cache_write(attachment_id, json.dumps({"content_type": content_type, "content_disposition": content_disposition}).encode(), suffix=".meta")
             response_headers = {}
             if content_disposition:
                 response_headers["Content-Disposition"] = content_disposition
@@ -14626,6 +15086,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/public/task-attachments/{attachment_id}/thumbnail")
     def proxy_cloud_attachment_thumbnail(attachment_id: str) -> Response:
+        cached = _att_cache_read(attachment_id, ".thumb")
+        if cached:
+            return Response(content=cached, media_type="image/jpeg")
+
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Not found")
         try:
@@ -14635,31 +15099,64 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Not found")
+            _att_cache_write(attachment_id, resp.content, suffix=".thumb")
             return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/jpeg"))
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Thumbnail unavailable: {exc}") from exc
 
     @app.get("/api/public/task-attachments/{attachment_id}/text-content")
     def proxy_cloud_attachment_text(attachment_id: str) -> dict:
+        cached = _att_cache_read(attachment_id, ".text.json")
+        if cached:
+            try:
+                data = json.loads(cached)
+                # Only serve cache if it was a successful extraction
+                text = str(data.get("text", ""))
+                if text and "提取失败" not in text and "No module" not in text:
+                    return data
+            except Exception:
+                pass
+
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Not found")
         try:
             resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Not found")
-            return resp.json()
+            result = resp.json()
+            # Cache successful extractions
+            text = str(result.get("text", ""))
+            if text and "提取失败" not in text and "No module" not in text:
+                _att_cache_write(attachment_id, json.dumps(result, ensure_ascii=False).encode("utf-8"), suffix=".text.json")
+            return result
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Text content unavailable: {exc}") from exc
 
     @app.get("/api/public/task-attachments/{attachment_id}/ocr-summary")
     def proxy_cloud_attachment_ocr(attachment_id: str) -> dict:
+        def _is_good_ocr(data: dict) -> bool:
+            s = str(data.get("summary", ""))
+            return bool(s) and not data.get("unsupported") and "识别失败" not in s and "不可用" not in s and "未登录" not in s
+
+        cached = _att_cache_read(attachment_id, ".ocr.json")
+        if cached:
+            try:
+                data = json.loads(cached)
+                if _is_good_ocr(data):
+                    return data
+            except Exception:
+                pass
+
         if not get_cloud_token():
             return {"title": "", "summary": "未登录", "unsupported": True}
         try:
             resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
             if resp.status_code >= 400:
                 return {"title": "", "summary": "OCR 不可用"}
-            return resp.json()
+            result = resp.json()
+            if _is_good_ocr(result):
+                _att_cache_write(attachment_id, json.dumps(result, ensure_ascii=False).encode("utf-8"), suffix=".ocr.json")
+            return result
         except Exception:
             return {"title": "", "summary": "OCR 不可用"}
 
@@ -14891,56 +15388,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/event-lines", response_model=list[EventLineRecord])
     def list_event_lines() -> list[EventLineRecord]:
         if get_cloud_token():
-            response = cloud_request("GET", "/api/v1/event-lines")
-            if not isinstance(response, list):
-                raise HTTPException(status_code=502, detail="Invalid event line payload")
-            return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
+            try:
+                response = cloud_request("GET", "/api/v1/event-lines")
+                if not isinstance(response, list):
+                    raise HTTPException(status_code=502, detail="Invalid event line payload")
+                return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
+            except HTTPException:
+                pass
         rows = state.db.fetchall(
             """
             SELECT *
             FROM event_lines
-            ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'blocked' THEN 1 WHEN 'paused' THEN 2 WHEN 'done' THEN 3 ELSE 4 END,
-                     updated_at DESC
-            """,
+            ORDER BY updated_at DESC, created_at DESC
+            """
         )
         return [build_event_line(row) for row in rows]
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(payload: EventLineCreatePayload) -> EventLineRecord:
         if get_cloud_token():
-            response = cloud_request("POST", "/api/v1/event-lines", json_body=payload.model_dump())
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid event line payload")
-            return build_cloud_event_line(response)
-        owner_row = state.db.fetchone(
-            "SELECT full_name, email FROM employee_accounts WHERE id = ?",
-            (payload.ownerId,),
-        ) if payload.ownerId else None
-        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (payload.primaryClientId,)) if payload.primaryClientId else None
-        department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (payload.primaryDepartmentId,)) if payload.primaryDepartmentId else None
-        owner_name = (
-            str(owner_row["full_name"])
-            if owner_row and owner_row["full_name"]
-            else str(owner_row["email"])
-            if owner_row and owner_row["email"]
-            else current_operator_name()
-        )
+            try:
+                response = cloud_request("POST", "/api/v1/event-lines", json_body=payload.model_dump())
+                if not isinstance(response, dict):
+                    raise HTTPException(status_code=502, detail="Invalid event line payload")
+                return build_cloud_event_line(response)
+            except HTTPException:
+                pass
         timestamp = now_iso()
         event_line_id = new_id("eline")
-        participant_ids = list(dict.fromkeys([item for item in (payload.participantIds or []) if item]))
+        client_id = str(payload.primaryClientId).strip() if payload.primaryClientId else None
+        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, name, kind, status, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id, owner_name,
-                primary_client_id, primary_client_name, primary_department_id, primary_department_name,
-                participant_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker,
+                recent_decision, next_step, evidence_count, owner_id, owner_name, primary_client_id,
+                primary_client_name, primary_department_id, primary_department_name, participant_ids_json,
+                created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
                 payload.name.strip(),
                 payload.kind,
                 payload.status,
+                payload.visibilityScope,
                 payload.businessCategory,
                 payload.stage,
                 payload.summary,
@@ -14948,51 +15440,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.currentBlocker,
                 payload.recentDecision,
                 payload.nextStep,
-                int(payload.evidenceCount or 0),
+                payload.evidenceCount,
                 payload.ownerId,
-                owner_name,
-                payload.primaryClientId,
+                current_operator_name(),
+                client_id,
                 str(client_row["name"]) if client_row else None,
                 payload.primaryDepartmentId,
-                str(department_row["name"]) if department_row else None,
-                to_json(participant_ids),
+                None,
+                to_json(payload.participantIds),
                 timestamp,
-                timestamp,
-            ),
-        )
-        state.db.execute(
-            """
-            INSERT INTO event_line_activities(
-                id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-            ) VALUES(?, ?, 'manual_note', ?, ?, NULL, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_id("ela"),
-                event_line_id,
-                event_line_id,
-                timestamp,
-                current_operator_name(),
-                "创建事件线",
-                f"创建事件线：{payload.name.strip()}",
-                to_json({"kind": payload.kind, "status": payload.status}),
                 timestamp,
             ),
         )
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=500, detail="Event line creation failed")
-        refresh_event_line_memory_snapshot(state.db, event_line_id)
-        if payload.primaryClientId:
-            get_client_memory_status(state.db, payload.primaryClientId)
         return build_event_line(row)
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
         if get_cloud_token():
-            response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid event line detail payload")
-            return build_cloud_event_line_detail(response)
+            try:
+                response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+                if not isinstance(response, dict):
+                    raise HTTPException(status_code=502, detail="Invalid event line detail payload")
+                return build_cloud_event_line_detail(response)
+            except HTTPException:
+                pass
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
@@ -15044,15 +15518,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Event line context bundle not found")
         return bundle
 
+    _context_preview_cache: dict[str, tuple[float, object]] = {}
+
     @app.get("/api/v1/tasks/{task_id}/context-preview", response_model=TaskContextPreviewRecord)
     def get_task_context_preview(task_id: str) -> TaskContextPreviewRecord:
+        import time as _time
+        cached = _context_preview_cache.get(task_id)
+        if cached and _time.time() - cached[0] < 300:
+            return cached[1]  # type: ignore[return-value]
         if get_cloud_token():
             task = fetch_cloud_task_by_id(task_id)
         else:
             task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
             if task is None:
                 raise HTTPException(status_code=404, detail="Task not found")
-        return _build_task_context_preview(task)
+        result = _build_task_context_preview(task)
+        _context_preview_cache[task_id] = (_time.time(), result)
+        return result
 
     def _build_smart_brief_for_task(task: TaskRecord) -> TaskSmartBriefRecord:
         attachment_titles = [item.title for item in task.attachments[:6] if item.title]
@@ -15556,33 +16038,63 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # 附件 + 附件内容提取（本任务 + 同事件线其他任务的附件）
         attachment_rows = state.db.fetchall(
-            "SELECT title, path, kind, document_id FROM task_attachments WHERE task_id = ? UNION ALL SELECT title, path, kind, document_id FROM task_attachments_cloud WHERE task_id = ?",
+            "SELECT id, title, path, kind, document_id FROM task_attachments WHERE task_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE task_id = ?",
             (task_id, task_id),
         )
         if not attachment_rows and event_line_id:
             # 如果本任务没有附件，检查同事件线下其他任务的附件
             attachment_rows = state.db.fetchall(
-                "SELECT title, path, kind, document_id FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?",
+                "SELECT id, title, path, kind, document_id FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?",
                 (event_line_id, event_line_id),
             )
         if attachment_rows:
             bundle["attachments"] = [str(row["title"]) for row in attachment_rows[:5]]
             source_labels.append("附件")
 
-            # 提取附件文本内容（纪要/合同/录音文字稿）
+            # 提取附件文本内容（优先本地缓存，然后本地文件，最后 documents 表）
             attachment_texts: list[str] = []
             for att_row in attachment_rows[:3]:
                 doc_id = str(att_row["document_id"]) if att_row["document_id"] else None
                 att_path = str(att_row["path"] or "")
                 att_kind = str(att_row["kind"] or "")
                 att_title = str(att_row["title"] or "")
+                att_id = str(att_row["id"]) if "id" in att_row.keys() else ""
 
-                extracted_text = _read_attachment_text_for_brief(att_path, att_kind, att_title) if att_path and att_kind in ("docx", "md", "txt") else ""
-                if extracted_text.strip():
-                    attachment_texts.append(f"【{att_title}】{extracted_text.strip()}")
+                # 1. Try local attachment cache first (fastest — milliseconds)
+                cached_text = ""
+                if att_id:
+                    cached_bytes = _att_cache_read(att_id, ".text.json")
+                    if cached_bytes:
+                        try:
+                            td = json.loads(cached_bytes)
+                            t = str(td.get("text", "")).strip()
+                            if t and "提取失败" not in t and "No module" not in t:
+                                cached_text = t
+                        except Exception:
+                            pass
+                if cached_text:
+                    attachment_texts.append(f"【{att_title}】{cached_text}")
                     continue
 
-                # 从 documents 表读 excerpt 作为兜底
+                # 2. Try reading local file directly
+                if att_path and att_kind in ("docx", "md", "txt"):
+                    try:
+                        file_path = Path(att_path)
+                        if file_path.exists():
+                            if att_kind in ("md", "txt"):
+                                local_text = file_path.read_text(encoding="utf-8", errors="ignore").strip()
+                            elif att_kind in ("docx", "doc"):
+                                from docx import Document as _DocxDoc
+                                local_text = "\n".join(p.text for p in _DocxDoc(str(file_path)).paragraphs if p.text.strip())
+                            else:
+                                local_text = ""
+                            if local_text:
+                                attachment_texts.append(f"【{att_title}】{local_text}")
+                                continue
+                    except Exception:
+                        pass
+
+                # 3. Fall back to documents table excerpt
                 if doc_id:
                     doc_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (doc_id,))
                     if doc_row and doc_row["excerpt"]:
@@ -15622,6 +16134,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return bundle
 
     def _build_smart_brief_from_hints(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None, frontend_attachment_titles: list[str] | None = None) -> TaskSmartBriefRecord:
+        # Check cache first — smart brief is expensive (calls AI API ~10-16s)
+        cache_key = f"smart_brief_cache::{task_id}"
+        cached_raw = state.db.get_setting(cache_key, "")
+        if cached_raw:
+            try:
+                cached = json.loads(cached_raw)
+                if isinstance(cached, dict) and cached.get("summary"):
+                    return TaskSmartBriefRecord(**cached)
+            except Exception:
+                pass
+
+        result = _build_smart_brief_uncached(task_id, title, desc, client_id, event_line_id, frontend_attachment_titles)
+        # Cache the result if it has meaningful content
+        if result.summary:
+            try:
+                state.db.set_setting(cache_key, json.dumps(result.model_dump(), ensure_ascii=False, default=str))
+            except Exception:
+                pass
+        return result
+
+    def _build_smart_brief_uncached(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None, frontend_attachment_titles: list[str] | None = None) -> TaskSmartBriefRecord:
         bundle = _gather_task_context_bundle(task_id, title, desc, client_id, event_line_id)
         source_labels = bundle.get("sourceLabels", [])
 
@@ -15773,14 +16306,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/tasks/{task_id}/smart-brief", response_model=TaskSmartBriefRecord)
     def get_task_smart_brief(task_id: str) -> TaskSmartBriefRecord:
-        if not get_cloud_token():
-            task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-            if not task_row:
-                raise HTTPException(status_code=404, detail="Task not found")
-            task = fetch_tasks("t.id = ?", (task_id,))[0]
-        else:
-            task = fetch_cloud_task_by_id(task_id)
-        return _build_smart_brief_for_task(task)
+        try:
+            if not get_cloud_token():
+                task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+                if not task_row:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                task = fetch_tasks("t.id = ?", (task_id,))[0]
+            else:
+                task = fetch_cloud_task_by_id(task_id)
+            return _build_smart_brief_for_task(task)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # Return empty brief instead of 500
+            return TaskSmartBriefRecord(taskId=task_id, summary="", summarySourceLabels=[], actionItems=[])
 
     @app.post("/api/v1/tasks/smart-briefs", response_model=list[TaskSmartBriefRecord])
     def get_task_smart_briefs_batch(payload: dict) -> list[TaskSmartBriefRecord]:
@@ -15801,8 +16340,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     event_line_id=str(item["eventLineId"]) if item.get("eventLineId") else None,
                     frontend_attachment_titles=attachment_titles,
                 ))
-            except Exception:
-                pass
+            except Exception as brief_exc:
+                # Log the error and return empty brief
+                import traceback
+                try:
+                    Path(state.data_dir).joinpath("smart_brief_error.log").write_text(
+                        f"task_id={item.get('id')}\n{traceback.format_exc()}", encoding="utf-8"
+                    )
+                except Exception:
+                    pass
+                results.append(TaskSmartBriefRecord(
+                    taskId=str(item.get("id", "")),
+                    summary="",
+                    summarySourceLabels=[],
+                    actionItems=[],
+                ))
         return results
 
     @app.post("/api/v1/tasks/{task_id}/smart-brief-actions/{action_key}/adopt")
@@ -15852,109 +16404,513 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/export-word")
     def export_event_line_word(event_line_id: str, draft: dict = Body(...)) -> dict:
+        from docx.shared import Pt, Cm, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+
         doc = WordDocument()
+
+        # ── Page setup ──
+        section = doc.sections[0]
+        section.page_width = Cm(21)
+        section.page_height = Cm(29.7)
+        section.top_margin = Cm(2.5)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
 
         event_line_name = str(draft.get("eventLineName", "事件线汇报"))
         summary = str(draft.get("summary", ""))
         participants = draft.get("participantNames", [])
         snapshot_at = str(draft.get("snapshotAt", now_iso()))
 
-        doc.add_heading(event_line_name, level=1)
-        if summary:
-            doc.add_paragraph(summary)
-        meta_parts = [f"导出时间：{snapshot_at[:16].replace('T', ' ')}"]
-        if participants:
-            meta_parts.append(f"参与者：{', '.join(str(name) for name in participants)}")
-        doc.add_paragraph(" | ".join(meta_parts)).style = doc.styles["Subtitle"]
+        # ── Gather cover data ──
+        el_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        client_name = ""
+        owner_name = ""
+        stage = ""
+        created_at = ""
+        if el_row:
+            client_name = str(el_row["primary_client_name"] or "")
+            owner_name = str(el_row["owner_name"] or "")
+            stage = str(el_row["stage"] or "")
+            created_at = str(el_row["created_at"] or "")[:10]
 
-        doc.add_heading("事件时间线", level=2)
         activities = draft.get("activities", [])
         visible_activities = [a for a in activities if not a.get("hidden")]
-        if not visible_activities:
-            doc.add_paragraph("（无活动记录）")
-        for activity in visible_activities:
+        attachments = draft.get("attachments", [])
+        tasks = draft.get("tasks", [])
+
+        # Count by source type
+        source_counts: dict[str, int] = {}
+        for a in activities:
+            st = str(a.get("sourceType", ""))
+            source_counts[st] = source_counts.get(st, 0) + 1
+
+        source_labels_cn = {
+            "task_activity": "任务动态",
+            "meeting": "会议纪要",
+            "support_request": "支持请求",
+            "review": "复核审批",
+            "attachment": "文档附件",
+            "manual_note": "工作备注",
+        }
+        category_parts = [f"{source_labels_cn.get(k, k)} {v}" for k, v in source_counts.items() if v > 0]
+
+        export_date = snapshot_at[:10]
+        start_date = created_at or export_date
+        # Days span
+        try:
+            from datetime import datetime as _dt
+            d1 = _dt.fromisoformat(start_date)
+            d2 = _dt.fromisoformat(export_date)
+            days_span = max((d2 - d1).days, 1)
+        except Exception:
+            days_span = 0
+
+        brand_color = RGBColor(0x5B, 0x7B, 0xFE)
+        dark_color = RGBColor(0x1A, 0x1A, 0x1A)
+        mid_gray = RGBColor(0x6B, 0x72, 0x80)
+        light_gray = RGBColor(0x9C, 0xA3, 0xAF)
+
+        # ══════════════════════════════════════════════
+        #  COVER PAGE
+        # ══════════════════════════════════════════════
+
+        # ── Top line: 益语智库 · 事件线汇报 ──
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = p.add_run("益语智库")
+        run.font.size = Pt(11)
+        run.font.color.rgb = brand_color
+        run.font.bold = True
+        run = p.add_run("  ·  事件线汇报")
+        run.font.size = Pt(11)
+        run.font.color.rgb = light_gray
+
+        # ── Brand color thin line ──
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(4)
+        p.paragraph_format.space_after = Pt(0)
+        pPr = p._p.get_or_add_pPr()
+        pBdr = pPr.makeelement(qn("w:pBdr"), {})
+        bottom = pBdr.makeelement(qn("w:bottom"), {
+            qn("w:val"): "single",
+            qn("w:sz"): "4",
+            qn("w:space"): "1",
+            qn("w:color"): "5B7BFE",
+        })
+        pBdr.append(bottom)
+        pPr.append(pBdr)
+
+        # ── Spacer ──
+        for _ in range(3):
+            sp = doc.add_paragraph()
+            sp.paragraph_format.space_before = Pt(0)
+            sp.paragraph_format.space_after = Pt(0)
+            sp.add_run(" ").font.size = Pt(6)
+
+        # ── Client name ──
+        if client_name:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_after = Pt(4)
+            run = p.add_run(client_name)
+            run.font.size = Pt(12)
+            run.font.color.rgb = mid_gray
+
+        # ── Main title ──
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p.paragraph_format.space_before = Pt(4)
+        p.paragraph_format.space_after = Pt(8)
+        run = p.add_run(event_line_name)
+        run.font.size = Pt(36)
+        run.font.bold = True
+        run.font.color.rgb = dark_color
+
+        # ── Stage badge ──
+        if stage:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_after = Pt(12)
+            run = p.add_run(f"  {stage}  ")
+            run.font.size = Pt(10)
+            run.font.bold = True
+            run.font.color.rgb = brand_color
+            # Use shading as badge background
+            shd = run._r.get_or_add_rPr().makeelement(qn("w:shd"), {
+                qn("w:val"): "clear",
+                qn("w:color"): "auto",
+                qn("w:fill"): "E8EEFF",
+            })
+            run._r.get_or_add_rPr().append(shd)
+
+        # ── Summary (max 3 lines) ──
+        if summary:
+            lines = summary.strip().split("\n")[:3]
+            display_summary = "\n".join(lines)
+            if len(summary.strip().split("\n")) > 3:
+                display_summary += "……"
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.space_after = Pt(20)
+            run = p.add_run(display_summary[:200])
+            run.font.size = Pt(12)
+            run.font.color.rgb = mid_gray
+
+        # ── Spacer before stats ──
+        for _ in range(2):
+            sp = doc.add_paragraph()
+            sp.paragraph_format.space_before = Pt(0)
+            sp.paragraph_format.space_after = Pt(0)
+            sp.add_run(" ").font.size = Pt(6)
+
+        # ── Thin line before stats ──
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(12)
+        pPr = p._p.get_or_add_pPr()
+        pBdr = pPr.makeelement(qn("w:pBdr"), {})
+        top_line = pBdr.makeelement(qn("w:top"), {
+            qn("w:val"): "single",
+            qn("w:sz"): "4",
+            qn("w:space"): "1",
+            qn("w:color"): "5B7BFE",
+        })
+        pBdr.append(top_line)
+        pPr.append(pBdr)
+
+        # ── Stats row — 4 columns table ──
+        stat_items = [
+            (str(len(activities)), "事件"),
+            (str(len(tasks)), "任务"),
+            (str(len(attachments)), "附件"),
+            (f"{days_span}" if days_span else "—", "天"),
+        ]
+        stats_table = doc.add_table(rows=2, cols=4)
+        stats_table.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for i, (num, label) in enumerate(stat_items):
+            # Number row
+            cell = stats_table.cell(0, i)
+            cell.text = ""
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(num)
+            run.font.size = Pt(28)
+            run.font.bold = True
+            run.font.color.rgb = dark_color
+            # Label row
+            cell = stats_table.cell(1, i)
+            cell.text = ""
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(label)
+            run.font.size = Pt(10)
+            run.font.color.rgb = light_gray
+        # Style: remove borders, add light background
+        for row in stats_table.rows:
+            for cell in row.cells:
+                tc = cell._tc
+                tcPr = tc.get_or_add_tcPr()
+                # Light blue background
+                shd = tcPr.makeelement(qn("w:shd"), {
+                    qn("w:val"): "clear",
+                    qn("w:color"): "auto",
+                    qn("w:fill"): "F0F3FF",
+                })
+                tcPr.append(shd)
+                # Remove borders
+                tcBorders = tcPr.makeelement(qn("w:tcBorders"), {})
+                for edge in ("top", "left", "bottom", "right"):
+                    border = tcBorders.makeelement(qn(f"w:{edge}"), {
+                        qn("w:val"): "none", qn("w:sz"): "0", qn("w:space"): "0", qn("w:color"): "auto",
+                    })
+                    tcBorders.append(border)
+                tcPr.append(tcBorders)
+
+        # ── Category breakdown ──
+        if category_parts:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(8)
+            run = p.add_run(" · ".join(category_parts))
+            run.font.size = Pt(9)
+            run.font.color.rgb = light_gray
+
+        # ── Spacer before bottom ──
+        for _ in range(4):
+            sp = doc.add_paragraph()
+            sp.paragraph_format.space_before = Pt(0)
+            sp.paragraph_format.space_after = Pt(0)
+            sp.add_run(" ").font.size = Pt(6)
+
+        # ── Bottom info bar ──
+        bottom_parts = []
+        if owner_name:
+            bottom_parts.append(f"负责人：{owner_name}")
+        bottom_parts.append(f"时间跨度：{start_date} — {export_date}")
+        bottom_parts.append(f"导出日期：{export_date}")
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_after = Pt(16)
+        run = p.add_run("  |  ".join(bottom_parts))
+        run.font.size = Pt(9)
+        run.font.color.rgb = light_gray
+
+        # ── Bottom brand ──
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run("— 益语智库 —")
+        run.font.size = Pt(10)
+        run.font.color.rgb = brand_color
+        run.font.bold = True
+
+        # ── Page break after cover ──
+        doc.add_page_break()
+
+        # ══════════════════════════════════════════════
+        #  CONTENT PAGES — mirrors the preview exactly
+        # ══════════════════════════════════════════════
+
+        from io import BytesIO as _BytesIO
+
+        source_labels_word = {
+            "task_activity": "任务",
+            "meeting": "会议",
+            "support_request": "支持请求",
+            "review": "复核",
+            "attachment": "附件",
+            "manual_note": "备注",
+        }
+
+        def _file_type_label(filename: str) -> str:
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            return {"doc": "Word", "docx": "Word", "xls": "Excel", "xlsx": "Excel",
+                    "ppt": "PPT", "pptx": "PPT", "pdf": "PDF", "txt": "TXT", "md": "TXT",
+                    "jpg": "JPG", "jpeg": "JPEG", "png": "PNG", "gif": "GIF", "webp": "WEBP"}.get(ext, ext.upper() or "文件")
+
+        def _size_label(size_bytes: int) -> str:
+            if size_bytes < 1024:
+                return f"{size_bytes} B"
+            if size_bytes < 1024 * 1024:
+                return f"{size_bytes // 1024} KB"
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+        def _styled_para(text: str, size: int = 11, bold: bool = False, color: RGBColor = dark_color,
+                         space_before: int = 0, space_after: int = 4, align: int | None = None):
+            p = doc.add_paragraph()
+            if align is not None:
+                p.alignment = align
+            p.paragraph_format.space_before = Pt(space_before)
+            p.paragraph_format.space_after = Pt(space_after)
+            run = p.add_run(text)
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.color.rgb = color
+            return p
+
+        def _add_thin_border_para():
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(6)
+            pPr = p._p.get_or_add_pPr()
+            pBdr = pPr.makeelement(qn("w:pBdr"), {})
+            b = pBdr.makeelement(qn("w:bottom"), {
+                qn("w:val"): "single", qn("w:sz"): "2", qn("w:space"): "1", qn("w:color"): "E5E7EB",
+            })
+            pBdr.append(b)
+            pPr.append(pBdr)
+
+        # Read preview display state
+        show_system = bool(draft.get("showSystemTraces", False))
+        docs_expanded_ids = set(draft.get("docsExpandedActivityIds", []))
+        images_expanded_ids = set(draft.get("imagesExpandedActivityIds", []))
+
+        # Build task lookup
+        task_map: dict[str, dict] = {}
+        for t in tasks:
+            tid = str(t.get("id", ""))
+            if tid:
+                task_map[tid] = t
+
+        # Build attachment lookup by activity (same logic as frontend)
+        att_by_activity: dict[str, list[dict]] = {}
+        for att in attachments:
+            att_task_id = str(att.get("taskId", ""))
+            matched_activity_id = ""
+            for a in activities:
+                meta = a.get("metadata") or {}
+                if isinstance(meta, dict):
+                    if meta.get("taskId") and str(meta["taskId"]) == att_task_id:
+                        matched_activity_id = str(a.get("id", ""))
+                        break
+                    if meta.get("attachmentId") and str(meta["attachmentId"]) == str(att.get("id", "")):
+                        matched_activity_id = str(a.get("id", ""))
+                        break
+                if a.get("sourceType") == "attachment" and str(a.get("sourceId", "")) == str(att.get("id", "")):
+                    matched_activity_id = str(a.get("id", ""))
+                    break
+            if matched_activity_id:
+                att_by_activity.setdefault(matched_activity_id, []).append(att)
+
+        # ── Content header ──
+        _styled_para(event_line_name, size=20, bold=True, space_before=0, space_after=8)
+        if summary:
+            _styled_para(summary, size=11, color=mid_gray, space_after=4)
+        meta_parts_str = f"导出时间：{snapshot_at[:16].replace('T', ' ')}"
+        if participants:
+            meta_parts_str += f"  |  参与者：{', '.join(str(n) for n in participants)}"
+        _styled_para(meta_parts_str, size=9, color=light_gray, space_after=12)
+
+        # Determine which activities to show (matching preview filter)
+        def _is_key(act: dict) -> bool:
+            if act.get("isKey") is not None:
+                return bool(act["isKey"])
+            st = str(act.get("sourceType", ""))
+            if st in ("manual_note", "attachment"):
+                return True
+            if st == "task_activity":
+                meta = act.get("metadata") or {}
+                if isinstance(meta, dict) and meta.get("eventType") == "created":
+                    return True
+            return False
+
+        display_activities = [a for a in activities if not a.get("hidden") and (show_system or _is_key(a))]
+
+        if not display_activities:
+            _styled_para("（无活动记录）", size=11, color=light_gray)
+
+        for activity in display_activities:
+            activity_id = str(activity.get("id", ""))
             title = str(activity.get("editedTitle") or activity.get("title", ""))
             summary_text = str(activity.get("editedSummary") or activity.get("summary", ""))
             happened_at = str(activity.get("happenedAt", ""))[:16].replace("T", " ")
             actor = str(activity.get("actorName", ""))
             source_type = str(activity.get("sourceType", ""))
-            source_labels = {
-                "task_activity": "任务",
-                "meeting": "会议",
-                "support_request": "支持请求",
-                "review": "复核",
-                "attachment": "附件",
-                "manual_note": "备注",
-            }
-            label = source_labels.get(source_type, source_type)
-            heading = f"[{happened_at}] [{label}] {title}"
+            label = source_labels_word.get(source_type, source_type)
+
+            # ── Activity title (bold) ──
+            _styled_para(title, size=12, bold=True, space_before=10, space_after=2)
+
+            # ── Type badge + time + actor ──
+            meta_line = f"[{label}]  {happened_at}"
             if actor:
-                heading += f"（{actor}）"
-            p = doc.add_paragraph()
-            run = p.add_run(heading)
-            run.bold = True
+                meta_line += f"  — {actor}"
+            _styled_para(meta_line, size=9, color=light_gray, space_after=4)
+
+            # ── Summary ──
             if summary_text:
-                doc.add_paragraph(summary_text)
+                _styled_para(summary_text, size=10, color=mid_gray, space_after=4)
 
-        attachments = draft.get("attachments", [])
-        expanded_ids = set(draft.get("expandedAttachmentIds", []))
-        if attachments:
-            doc.add_heading("附件清单", level=2)
-            for att in attachments:
-                att_title = str(att.get("title", ""))
-                att_id = str(att.get("id", ""))
-                is_expanded = att_id in expanded_ids
-                mime = str(att.get("mimeType") or "").lower()
-                is_image = mime.startswith("image/") or att_title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+            # ── Task detail (if linked) ──
+            task_id = activity.get("sourceId", "") if source_type == "task_activity" else ""
+            if not task_id:
+                meta = activity.get("metadata") or {}
+                if isinstance(meta, dict):
+                    task_id = str(meta.get("taskId", ""))
+            linked_task = task_map.get(task_id) if task_id else None
+            if linked_task:
+                task_desc = str(linked_task.get("desc") or linked_task.get("description") or "")
+                if task_desc:
+                    # Shaded box for task detail
+                    p = doc.add_paragraph()
+                    p.paragraph_format.space_before = Pt(2)
+                    p.paragraph_format.space_after = Pt(2)
+                    # Indent to visually distinguish
+                    p.paragraph_format.left_indent = Cm(0.5)
+                    run = p.add_run(str(linked_task.get("title", "")))
+                    run.font.size = Pt(10)
+                    run.font.bold = True
+                    run.font.color.rgb = mid_gray
+                    shd = run._r.get_or_add_rPr().makeelement(qn("w:shd"), {
+                        qn("w:val"): "clear", qn("w:color"): "auto", qn("w:fill"): "F8FAFC",
+                    })
+                    run._r.get_or_add_rPr().append(shd)
+                    p2 = doc.add_paragraph()
+                    p2.paragraph_format.space_before = Pt(0)
+                    p2.paragraph_format.space_after = Pt(6)
+                    p2.paragraph_format.left_indent = Cm(0.5)
+                    run2 = p2.add_run(task_desc[:500])
+                    run2.font.size = Pt(9)
+                    run2.font.color.rgb = light_gray
 
-                is_doc = att_title.lower().endswith((".docx", ".md", ".txt"))
+            # ── Attachments for this activity ──
+            activity_atts = att_by_activity.get(activity_id, [])
+            is_docs_expanded = activity_id in docs_expanded_ids
+            is_images_expanded = activity_id in images_expanded_ids
 
-                if is_expanded and is_image:
-                    doc.add_paragraph(f"📷 {att_title}").bold = True
-                    try:
-                        download_url = str(att.get("downloadUrl", ""))
-                        if download_url:
-                            img_resp = httpx.get(
-                                f"{state.cloud_api_url}{download_url}",
+            if activity_atts:
+                for att in activity_atts:
+                    att_title = str(att.get("title", ""))
+                    att_id = str(att.get("id", ""))
+                    mime = str(att.get("mimeType") or "").lower()
+                    is_image = mime.startswith("image/") or att_title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+                    is_doc_file = att_title.lower().endswith((".docx", ".doc", ".md", ".txt", ".pdf", ".xlsx", ".xls", ".pptx", ".ppt"))
+                    download_url = str(att.get("downloadUrl", ""))
+
+                    if is_image and is_images_expanded:
+                        # Show image inline (like preview expanded)
+                        try:
+                            if download_url:
+                                img_resp = httpx.get(f"{state.cloud_api_url}{download_url}", timeout=15.0)
+                                if img_resp.status_code == 200:
+                                    img_stream = _BytesIO(img_resp.content)
+                                    doc.add_picture(img_stream, width=Inches(4.5))
+                                    _styled_para(att_title, size=9, color=light_gray, space_after=6)
+                        except Exception:
+                            _styled_para(f"（图片加载失败：{att_title}）", size=9, color=light_gray)
+
+                    elif is_doc_file and is_docs_expanded:
+                        # Show file card with summary (like preview expanded DocContentViewer)
+                        type_label = _file_type_label(att_title)
+                        size_str = _size_label(int(att.get("sizeBytes", 0)))
+                        p = doc.add_paragraph()
+                        p.paragraph_format.space_before = Pt(4)
+                        p.paragraph_format.space_after = Pt(2)
+                        run = p.add_run(f"[{type_label}]  ")
+                        run.font.size = Pt(9)
+                        run.font.bold = True
+                        run.font.color.rgb = brand_color
+                        run = p.add_run(f"{att_title}  ({size_str})")
+                        run.font.size = Pt(10)
+                        run.font.color.rgb = dark_color
+
+                        # Fetch document summary
+                        try:
+                            text_resp = httpx.get(
+                                f"{state.cloud_api_url}/api/public/task-attachments/{att_id}/text-content",
                                 timeout=15.0,
                             )
-                            if img_resp.status_code == 200:
-                                from io import BytesIO as _BytesIO
-                                from docx.shared import Inches
-                                img_stream = _BytesIO(img_resp.content)
-                                doc.add_picture(img_stream, width=Inches(5.5))
-                    except Exception:
-                        doc.add_paragraph(f"（图片加载失败：{att_title}）")
-                elif is_expanded and is_doc:
-                    doc.add_paragraph(f"📄 {att_title}").bold = True
-                    try:
-                        text_resp = httpx.get(
-                            f"{state.cloud_api_url}/api/public/task-attachments/{att_id}/text-content",
-                            timeout=15.0,
-                        )
-                        if text_resp.status_code == 200:
-                            text_data = text_resp.json()
-                            doc_text = str(text_data.get("text", "")).strip()
+                            doc_text = ""
+                            if text_resp.status_code == 200:
+                                text_data = text_resp.json()
+                                raw = str(text_data.get("text", "")).strip()
+                                if raw and "提取失败" not in raw and "No module" not in raw:
+                                    doc_text = raw
                             if doc_text:
-                                for para in doc_text.split("\n")[:50]:
-                                    if para.strip():
-                                        doc.add_paragraph(para.strip())
+                                _styled_para(doc_text, size=9, color=mid_gray, space_after=6)
                             else:
-                                doc.add_paragraph("（文档内容为空）")
-                        else:
-                            doc.add_paragraph(f"（文档内容提取失败）")
-                    except Exception:
-                        doc.add_paragraph(f"（文档内容提取失败：{att_title}）")
-                else:
-                    size_bytes = int(att.get("sizeBytes", 0))
-                    if size_bytes < 1024:
-                        size_label = f"{size_bytes} B"
-                    elif size_bytes < 1024 * 1024:
-                        size_label = f"{size_bytes // 1024} KB"
+                                _styled_para("（暂无文档摘要）", size=9, color=light_gray, space_after=6)
+                        except Exception:
+                            _styled_para("（文档摘要加载失败）", size=9, color=light_gray, space_after=6)
+
                     else:
-                        size_label = f"{size_bytes / (1024 * 1024):.1f} MB"
-                    created = str(att.get("createdAt", ""))[:16].replace("T", " ")
-                    doc.add_paragraph(f"📎 {att_title}  （{att.get('kind', '')} · {size_label} · {created}）")
+                        # Collapsed — just show file type + full name (like preview)
+                        type_label = _file_type_label(att_title)
+                        p = doc.add_paragraph()
+                        p.paragraph_format.space_before = Pt(1)
+                        p.paragraph_format.space_after = Pt(1)
+                        run = p.add_run(f"[{type_label}] ")
+                        run.font.size = Pt(9)
+                        run.font.bold = True
+                        run.font.color.rgb = brand_color
+                        run = p.add_run(att_title)
+                        run.font.size = Pt(9)
+                        run.font.color.rgb = mid_gray
+
+            # ── Separator between activities ──
+            _add_thin_border_para()
 
         import tempfile
         safe_name = safe_filename(f"{event_line_name[:30]}_汇报.docx")
@@ -15967,110 +16923,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(event_line_id: str, payload: EventLineUpdatePayload) -> EventLineRecord:
         if get_cloud_token():
-            response = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body=payload.model_dump(exclude_unset=True))
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid event line payload")
-            return build_cloud_event_line(response)
+            try:
+                response = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body=payload.model_dump(exclude_unset=True))
+                if not isinstance(response, dict):
+                    raise HTTPException(status_code=502, detail="Invalid event line payload")
+                return build_cloud_event_line(response)
+            except HTTPException:
+                pass
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
-        next_owner_id = payload.ownerId if "ownerId" in payload.model_fields_set else (str(row["owner_id"]) if row["owner_id"] else None)
-        owner_row = state.db.fetchone(
-            "SELECT full_name, email FROM employee_accounts WHERE id = ?",
-            (next_owner_id,),
-        ) if next_owner_id else None
-        next_client_id = payload.primaryClientId if "primaryClientId" in payload.model_fields_set else (str(row["primary_client_id"]) if row["primary_client_id"] else None)
+        updates = payload.model_dump(exclude_unset=True)
+        next_client_id = str(updates.get("primaryClientId")).strip() if updates.get("primaryClientId") else (str(row["primary_client_id"]) if row["primary_client_id"] else None)
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (next_client_id,)) if next_client_id else None
-        next_department_id = payload.primaryDepartmentId if "primaryDepartmentId" in payload.model_fields_set else (str(row["primary_department_id"]) if row["primary_department_id"] else None)
-        department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (next_department_id,)) if next_department_id else None
-        merged = {
-            "name": payload.name.strip() if payload.name is not None else str(row["name"]),
-            "kind": payload.kind or str(row["kind"]),
-            "status": payload.status or str(row["status"]),
-            "business_category": payload.businessCategory if "businessCategory" in payload.model_fields_set else row["business_category"],
-            "stage": payload.stage if "stage" in payload.model_fields_set else row["stage"],
-            "summary": payload.summary if "summary" in payload.model_fields_set else row["summary"],
-            "intent": payload.intent if "intent" in payload.model_fields_set else row["intent"],
-            "current_blocker": payload.currentBlocker if "currentBlocker" in payload.model_fields_set else row["current_blocker"],
-            "recent_decision": payload.recentDecision if "recentDecision" in payload.model_fields_set else row["recent_decision"],
-            "next_step": payload.nextStep if "nextStep" in payload.model_fields_set else row["next_step"],
-            "evidence_count": payload.evidenceCount if "evidenceCount" in payload.model_fields_set and payload.evidenceCount is not None else int(row["evidence_count"] or 0),
-            "owner_id": next_owner_id,
-            "owner_name": (
-                str(owner_row["full_name"])
-                if owner_row and owner_row["full_name"]
-                else str(owner_row["email"])
-                if owner_row and owner_row["email"]
-                else (str(row["owner_name"]) if row["owner_name"] else current_operator_name())
-            ),
-            "primary_client_id": next_client_id,
-            "primary_client_name": str(client_row["name"]) if client_row else (str(row["primary_client_name"]) if row["primary_client_name"] else None),
-            "primary_department_id": next_department_id,
-            "primary_department_name": str(department_row["name"]) if department_row else (str(row["primary_department_name"]) if row["primary_department_name"] else None),
-            "participant_ids_json": to_json(payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])),
-            "updated_at": now_iso(),
-        }
+        participant_ids = updates.get("participantIds")
         state.db.execute(
             """
             UPDATE event_lines
-            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, owner_name = ?,
-                primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, primary_department_name = ?, participant_ids_json = ?, updated_at = ?
+            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?,
+                current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, owner_name = ?,
+                primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, primary_department_name = ?,
+                participant_ids_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
-                merged["name"],
-                merged["kind"],
-                merged["status"],
-                merged["business_category"],
-                merged["stage"],
-                merged["summary"],
-                merged["intent"],
-                merged["current_blocker"],
-                merged["recent_decision"],
-                merged["next_step"],
-                merged["evidence_count"],
-                merged["owner_id"],
-                merged["owner_name"],
-                merged["primary_client_id"],
-                merged["primary_client_name"],
-                merged["primary_department_id"],
-                merged["primary_department_name"],
-                merged["participant_ids_json"],
-                merged["updated_at"],
+                updates.get("name", row["name"]),
+                updates.get("kind", row["kind"]),
+                updates.get("status", row["status"]),
+                updates.get("businessCategory", row["business_category"]),
+                updates.get("stage", row["stage"]),
+                updates.get("summary", row["summary"]),
+                updates.get("intent", row["intent"]),
+                updates.get("currentBlocker", row["current_blocker"]),
+                updates.get("recentDecision", row["recent_decision"]),
+                updates.get("nextStep", row["next_step"]),
+                updates.get("evidenceCount", row["evidence_count"]),
+                updates.get("ownerId", row["owner_id"]),
+                updates.get("ownerName", row["owner_name"]),
+                next_client_id,
+                str(client_row["name"]) if client_row else (updates.get("primaryClientName", row["primary_client_name"])),
+                updates.get("primaryDepartmentId", row["primary_department_id"]),
+                updates.get("primaryDepartmentName", row["primary_department_name"]),
+                to_json(participant_ids if participant_ids is not None else from_json(row["participant_ids_json"], [])),
+                now_iso(),
                 event_line_id,
-            ),
-        )
-        state.db.execute(
-            """
-            INSERT INTO event_line_activities(
-                id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-            ) VALUES(?, ?, 'manual_note', ?, ?, NULL, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_id("ela"),
-                event_line_id,
-                event_line_id,
-                merged["updated_at"],
-                current_operator_name(),
-                "更新事件线",
-                f"更新事件线：{merged['name']}",
-                to_json(
-                    {
-                        "status": merged["status"],
-                        "stage": merged["stage"],
-                        "currentBlocker": merged["current_blocker"],
-                        "recentDecision": merged["recent_decision"],
-                    }
-                ),
-                merged["updated_at"],
             ),
         )
         updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not updated_row:
             raise HTTPException(status_code=500, detail="Event line update failed")
-        refresh_event_line_memory_snapshot(state.db, event_line_id)
-        if merged["primary_client_id"]:
-            get_client_memory_status(state.db, str(merged["primary_client_id"]))
         return build_event_line(updated_row)
 
     def _event_line_dependency_counts(event_line_id: str) -> dict[str, int]:
@@ -16089,62 +16990,143 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "approvalNodes": int(approval_count["cnt"] if approval_count else 0),
         }
 
-    @app.delete("/api/v1/event-lines/{event_line_id}")
-    def delete_event_line(event_line_id: str) -> dict:
+    @app.post("/api/v1/event-lines/{event_line_id}/close")
+    def close_event_line(event_line_id: str) -> dict:
+        cloud_result: dict | None = None
         if get_cloud_token():
+            # Try dedicated /close first; if 404/405, fall back to PATCH status=archived
             try:
-                response = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
-                if isinstance(response, dict):
-                    return response
-                return {"status": "deleted"}
+                resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/close")
+                if isinstance(resp, dict):
+                    cloud_result = resp
             except HTTPException as exc:
-                # Cloud may not support DELETE yet (405); fall through to local delete
-                if exc.status_code != 405:
+                if exc.status_code not in (404, 405):
                     raise
-        row = state.db.fetchone("SELECT id, name, status FROM event_lines WHERE id = ?", (event_line_id,))
+                # Fallback: use PATCH to set status=archived
+                try:
+                    resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
+                    if isinstance(resp, dict):
+                        cloud_result = {"status": "archived"}
+                except HTTPException:
+                    pass
+        # Always sync local copy
+        row = state.db.fetchone("SELECT id, status FROM event_lines WHERE id = ?", (event_line_id,))
+        if row and str(row["status"]) not in ("done", "archived"):
+            timestamp = now_iso()
+            state.db.execute(
+                "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ?",
+                (timestamp, current_operator_name(), timestamp, event_line_id),
+            )
+        if cloud_result:
+            return cloud_result
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
-        counts = _event_line_dependency_counts(event_line_id)
-        # Unlink tasks: set their event_line_id to NULL so they become "no event line"
-        state.db.execute(
-            "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?",
-            (now_iso(), event_line_id),
-        )
-        # Delete the event line (CASCADE will clean up activities, attachments, etc.)
-        state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
-        return {"status": "deleted", "counts": counts}
+        return {"status": "archived"}
+
+    @app.post("/api/v1/event-lines/{event_line_id}/reopen")
+    def reopen_event_line(event_line_id: str) -> dict:
+        cloud_result: dict | None = None
+        if get_cloud_token():
+            # Try dedicated /reopen first; if 404/405, fall back to PATCH status=active
+            try:
+                resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/reopen")
+                if isinstance(resp, dict):
+                    cloud_result = resp
+            except HTTPException as exc:
+                if exc.status_code not in (404, 405):
+                    raise
+                try:
+                    resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "active"})
+                    if isinstance(resp, dict):
+                        cloud_result = {"status": "active"}
+                except HTTPException:
+                    pass
+        # Always sync local copy
+        row = state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,))
+        if row:
+            timestamp = now_iso()
+            state.db.execute(
+                "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ? WHERE id = ?",
+                (timestamp, event_line_id),
+            )
+        if cloud_result:
+            return cloud_result
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        return {"status": "active"}
+
+    @app.delete("/api/v1/event-lines/{event_line_id}")
+    def delete_event_line(event_line_id: str) -> dict:
+        cloud_deleted = False
+        if get_cloud_token():
+            # Try real DELETE first; if cloud returns 405 (not supported), fall back to PATCH archived
+            for attempt_method in ("DELETE", "PATCH_ARCHIVED"):
+                try:
+                    if attempt_method == "DELETE":
+                        resp = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
+                    else:
+                        resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
+                    cloud_deleted = True
+                    break
+                except HTTPException as exc:
+                    if exc.status_code == 403:
+                        raise
+                    if exc.status_code == 405 and attempt_method == "DELETE":
+                        continue  # try PATCH fallback
+                    break  # 404 or other — cloud doesn't have it
+        # Always clean local copy
+        row = state.db.fetchone("SELECT id, visibility_scope FROM event_lines WHERE id = ?", (event_line_id,))
+        if row and not cloud_deleted:
+            # Local-only fallback: only admin can delete
+            if not current_session_is_admin():
+                raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
+            task_count = int(state.db.scalar("SELECT COUNT(1) FROM tasks WHERE event_line_id = ?", (event_line_id,)) or 0)
+            if task_count > 0:
+                raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
+        if row:
+            state.db.execute("UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?", (now_iso(), event_line_id))
+            state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
+            state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
+            state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
+        if not row and not cloud_deleted:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        return {"status": "deleted"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/notes")
     def add_event_line_note(event_line_id: str, payload: dict = Body(...)) -> dict:
-        """Add a manual observation/note to an event line."""
         note_text = str(payload.get("text", "")).strip()
         if not note_text:
             raise HTTPException(status_code=400, detail="Note text is required")
-        el_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
-        if not el_row:
+        row = state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,))
+        if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
-        note_ts = now_iso()
-        note_id = new_id("ela")
+        activity_id = new_id("ela")
+        timestamp = now_iso()
         state.db.execute(
             """
             INSERT INTO event_line_activities(
-                id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-            ) VALUES(?, ?, 'manual_note', ?, ?, NULL, ?, ?, ?, ?, ?)
+                id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+            ) VALUES(?, ?, 'manual_note', ?, ?, NULL, ?, ?, ?, ?, 1, ?)
             """,
             (
-                note_id,
+                activity_id,
                 event_line_id,
-                note_id,
-                note_ts,
+                activity_id,
+                timestamp,
                 current_operator_name(),
-                "手动备注",
-                note_text[:500],
-                to_json({"kind": "user_note"}),
-                note_ts,
+                "补充备注",
+                note_text,
+                to_json({}),
+                timestamp,
             ),
         )
         log_activity("event_line.note", "event_line", event_line_id, {"noteLength": len(note_text)})
-        return {"id": note_id, "eventLineId": event_line_id, "text": note_text[:500], "createdAt": note_ts}
+        return {
+            "id": activity_id,
+            "eventLineId": event_line_id,
+            "text": note_text[:500],
+            "createdAt": timestamp,
+        }
 
     @app.get("/api/v1/task-views", response_model=TaskViewsResponse)
     def list_task_views() -> TaskViewsResponse:
@@ -16336,8 +17318,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.db.execute(
                     """
                     INSERT INTO event_line_activities(
-                        id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-                    ) VALUES(?, ?, 'support_request', ?, ?, NULL, ?, ?, ?, ?, ?)
+                        id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+                    ) VALUES(?, ?, 'support_request', ?, ?, NULL, ?, ?, ?, ?, 1, ?)
                     """,
                     (
                         new_id("ela"),
@@ -17257,8 +18239,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO project_modules(
-                id, client_id, name, alias, goal, description, owner_name, deliverables_json, keywords_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, client_id, name, alias, goal, description, owner_name, deliverables_json, keywords_json, template_tasks_json, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 module_id,
@@ -17270,6 +18252,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 owner_name,
                 to_json(deliverables),
                 to_json(keywords),
+                payload.templateTasksJson if hasattr(payload, 'templateTasksJson') and payload.templateTasksJson else None,
                 timestamp,
                 timestamp,
             ),
@@ -17319,6 +18302,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail="任务模块更新失败")
         log_activity("project.module.update", "project_module", module_id, {"clientId": client_id, "name": merged["name"]})
         return _project_module_record(updated)
+
+    @app.delete("/api/v1/clients/{client_id}/project-modules/{module_id}")
+    def delete_client_project_module(client_id: str, module_id: str) -> dict:
+        row = state.db.fetchone("SELECT * FROM project_modules WHERE id = ? AND client_id = ?", (module_id, client_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="任务模块不存在")
+        state.db.execute("DELETE FROM project_flows WHERE module_id = ? AND client_id = ?", (module_id, client_id))
+        state.db.execute("DELETE FROM project_modules WHERE id = ?", (module_id,))
+        log_activity("project.module.delete", "project_module", module_id, {"clientId": client_id, "name": str(row["name"])})
+        return {"status": "deleted"}
 
     @app.get("/api/v1/clients/{client_id}/project-flows/{flow_id}", response_model=ProjectFlowDetailRecord)
     def get_client_project_flow_detail(client_id: str, flow_id: str) -> ProjectFlowDetailRecord:
@@ -18794,8 +19787,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO event_line_activities(
-                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-                ) VALUES(?, ?, 'meeting', ?, ?, NULL, ?, ?, ?, ?, ?)
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+                ) VALUES(?, ?, 'meeting', ?, ?, NULL, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     new_id("ela"),
@@ -19108,7 +20101,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_manual_task(payload: TaskPayload) -> TaskRecord:
-        return create_task(payload)
+        local_task = create_task(payload)
+        # Sync to cloud in background if connected
+        if get_cloud_token():
+            import threading as _sync_thr
+            def _bg_sync_task_to_cloud():
+                try:
+                    cloud_payload = {
+                        "title": local_task.title,
+                        "description": local_task.desc,
+                        "status": local_task.status,
+                        "priority": local_task.priority,
+                        "dueDate": local_task.dueDate,
+                        "durationMinutes": local_task.durationMinutes,
+                        "ownerName": local_task.ownerName,
+                        "clientId": local_task.clientId,
+                        "eventLineId": local_task.eventLineId,
+                        "scopeMode": local_task.scopeMode,
+                        "sourceType": "manual",
+                    }
+                    cloud_request("POST", "/api/v1/tasks", json_body=cloud_payload)
+                    # Invalidate task board cache so next load shows the new task
+                    _cloud_task_board_cache["data"] = None
+                except Exception:
+                    pass
+            _sync_thr.Thread(target=_bg_sync_task_to_cloud, daemon=True).start()
+        return local_task
 
     @app.patch("/api/v1/tasks/{task_id}", response_model=TaskRecord)
     def update_task(task_id: str, payload: TaskUpdatePayload) -> TaskRecord:
@@ -19253,8 +20271,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     state.db.execute(
                         """
                         INSERT INTO event_line_activities(
-                            id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json
-                        ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?)
+                            id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key
+                        ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?, 0)
                         """,
                         (
                             new_id("ela"),
@@ -19268,23 +20286,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         ),
                     )
                 else:
-                    state.db.execute(
-                        """
-                        INSERT INTO event_line_activities(
-                            id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json
-                        ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?)
-                        """,
-                        (
-                            new_id("ela"),
-                            merged["event_line_id"],
-                            task_id,
-                            merged["updated_at"],
-                            merged["owner_name"],
-                            "任务更新",
-                            f"更新任务：{merged['title']}",
-                            to_json({"eventType": "updated"}),
-                        ),
-                    )
+                    # Detect meaningful field changes and only record those with informational value
+                    change_parts: list[str] = []
+                    change_meta: dict[str, object] = {"eventType": "updated", "changes": []}
+                    old_owner = str(row["owner_name"] or "")
+                    new_owner = str(merged["owner_name"] or "")
+                    if old_owner != new_owner and new_owner:
+                        change_parts.append(f"负责人变更：{old_owner or '未指定'} → {new_owner}")
+                        change_meta["changes"].append("owner")  # type: ignore[union-attr]
+                    old_due = str(row["due_date"] or "")
+                    new_due = str(merged["due_date"] or "")
+                    if old_due != new_due:
+                        change_parts.append(f"截止日期变更：{old_due or '未设定'} → {new_due or '已取消'}")
+                        change_meta["changes"].append("due_date")  # type: ignore[union-attr]
+                    old_title = str(row["title"] or "")
+                    new_title = str(merged["title"] or "")
+                    if old_title != new_title:
+                        change_parts.append(f"标题变更：{old_title} → {new_title}")
+                        change_meta["changes"].append("title")  # type: ignore[union-attr]
+                    # Only write activity if there are meaningful changes
+                    if change_parts:
+                        ela_title = "、".join(c.split("：")[0] for c in change_parts)
+                        ela_summary = "；".join(change_parts)
+                        is_key = 1 if "owner" in change_meta.get("changes", []) or "due_date" in change_meta.get("changes", []) else 0  # type: ignore[operator]
+                        state.db.execute(
+                            """
+                            INSERT INTO event_line_activities(
+                                id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key
+                            ) VALUES(?, ?, 'task_activity', ?, ?, NULL, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                new_id("ela"),
+                                merged["event_line_id"],
+                                task_id,
+                                merged["updated_at"],
+                                merged["owner_name"],
+                                ela_title,
+                                ela_summary,
+                                to_json(change_meta),
+                                is_key,
+                            ),
+                        )
             log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
             updated_task = fetch_tasks("t.id = ?", (task_id,))[0]
             record_task_writeback(
@@ -19305,6 +20347,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 task=updated_task,
                 source_type="task_context_candidate",
                 created_at=str(merged["updated_at"]),
+                ai_service=state.ai,
             )
             return updated_task
         cloud_status_map = {"todo": "todo", "doing": "doing", "done": "done", "inbox": "inbox", "rejected": "rejected"}
@@ -19345,6 +20388,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task=updated_task,
             source_type="task_context_candidate",
             created_at=now_iso(),
+            ai_service=state.ai,
         )
         return updated_task
 
@@ -19377,7 +20421,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if client_id:
                 refresh_organization_notebook_snapshot(state.db, client_id)
             return {"deleted": True}
-        cloud_request("DELETE", f"/api/v1/tasks/{task_id}")
+        # Cloud mode: try cloud delete, also clean up local data
+        try:
+            cloud_request("DELETE", f"/api/v1/tasks/{task_id}")
+        except HTTPException:
+            pass  # Cloud task may not exist (local-only) — still clean up locally
+        # Clean up local data regardless
+        state.db.execute("DELETE FROM task_attachments_cloud WHERE task_id = ?", (task_id,))
+        state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?", (task_id,))
+        state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (task_id,))
+        state.db.execute("DELETE FROM growth_signal_events WHERE task_id = ?", (task_id,))
+        state.db.execute("DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,))
+        _cloud_task_board_cache["data"] = None  # Invalidate cache
         log_activity("task.delete", "task", task_id, {})
         return {"deleted": True}
 
@@ -19391,14 +20447,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> TaskRecord:
         local_task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
         is_cloud_task = local_task_row is None
-        if is_cloud_task and not get_cloud_token():
-            raise HTTPException(status_code=404, detail="Task not found")
+        # Allow offline upload — attachments are stored locally regardless of cloud status
 
         resolved_client_id = (
             str(local_task_row["client_id"]) if local_task_row and local_task_row["client_id"] else clientId
         )
+        # Try to get clientId from event line if task doesn't have one
         if not resolved_client_id:
-            raise HTTPException(status_code=400, detail="请先关联客户/项目后再上传附件。")
+            el_id = str(local_task_row["event_line_id"]) if local_task_row and local_task_row["event_line_id"] else eventLineId
+            if el_id:
+                el_row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (el_id,))
+                if el_row and el_row["primary_client_id"]:
+                    resolved_client_id = str(el_row["primary_client_id"])
+        # Fall back to organization's default client
+        if not resolved_client_id:
+            org_client = state.db.fetchone("SELECT id FROM clients ORDER BY name LIMIT 1")
+            if org_client:
+                resolved_client_id = str(org_client["id"])
         build_client_summary(resolved_client_id)
         ensure_standard_client_folders(resolved_client_id)
 
@@ -19503,8 +20568,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO event_line_activities(
-                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, created_at
-                ) VALUES(?, ?, 'attachment', ?, ?, NULL, ?, ?, ?, ?, ?)
+                    id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+                ) VALUES(?, ?, 'attachment', ?, ?, NULL, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     new_id("ela"),
@@ -19566,7 +20631,82 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     pass  # 云端上传失败不阻断本地流程
 
             threading.Thread(target=_bg_upload, daemon=True).start()
-        task_after_upload = fetch_tasks("t.id = ?", (task_id,))[0] if not is_cloud_task else fetch_cloud_task_by_id(task_id)
+
+        # Async preprocess: extract text from attachment and write to event line memory
+        att_kind = str(document_row["kind"])
+        if att_kind in ("docx", "doc", "md", "txt", "pdf") and resolved_event_line_id:
+            import threading as _thr
+
+            def _bg_preprocess_attachment():
+                try:
+                    from app.services.local_memory import write_event_line_memory, read_event_line_memory
+                    # Read file text
+                    att_path = Path(str(document_row["path"]))
+                    text = ""
+                    if att_path.exists() and att_kind in ("md", "txt"):
+                        text = att_path.read_text(encoding="utf-8", errors="ignore")
+                    elif att_path.exists() and att_kind in ("docx", "doc"):
+                        try:
+                            from docx import Document as _DocxDoc
+                            doc = _DocxDoc(str(att_path))
+                            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                        except Exception:
+                            pass
+                    if not text or len(text) < 50:
+                        return
+                    # Cache text-content locally
+                    _att_cache_write(attachment_id, json.dumps({"title": str(document_row["title"]), "text": text, "kind": att_kind}, ensure_ascii=False).encode("utf-8"), suffix=".text.json")
+                    # AI summarize if available
+                    health = state.ai.get_health()
+                    if health.provider != "mock" and health.ready:
+                        summary = state.ai._qwen_generate(
+                            prompt=f"以下是一份工作文档（{document_row['title']}）的全文，请提炼出：1）核心议题 2）关键决策 3）下一步行动 4）主要风险或卡点。用简洁的要点格式输出。\n\n{text[:8000]}",
+                            system_instruction="你是组织工作文档摘要助手。只输出结构化要点，不要输出原文。",
+                            response_schema={"type": "object", "properties": {"topics": {"type": "string"}, "decisions": {"type": "string"}, "nextSteps": {"type": "string"}, "risks": {"type": "string"}}, "required": ["topics", "decisions", "nextSteps", "risks"]},
+                            timeout_seconds=30.0,
+                            max_tokens=800,
+                            temperature=0.3,
+                            top_p=0.9,
+                            enable_thinking=False,
+                        )
+                        if isinstance(summary, dict):
+                            el_row = state.db.fetchone("SELECT name, primary_client_name FROM event_lines WHERE id = ?", (resolved_event_line_id,))
+                            el_name = str(el_row["name"]) if el_row else resolved_event_line_id
+                            client_name = str(el_row["primary_client_name"]) if el_row else resolved_client_id
+                            # Read existing memory and append
+                            existing = read_event_line_memory(state.data_dir, resolved_client_id, resolved_event_line_id)
+                            new_section = f"\n## 附件摘要：{document_row['title']}\n"
+                            if summary.get("topics"):
+                                new_section += f"**核心议题：** {summary['topics']}\n"
+                            if summary.get("decisions"):
+                                new_section += f"**关键决策：** {summary['decisions']}\n"
+                            if summary.get("nextSteps"):
+                                new_section += f"**下一步：** {summary['nextSteps']}\n"
+                            if summary.get("risks"):
+                                new_section += f"**风险/卡点：** {summary['risks']}\n"
+                            content_to_write = (existing + new_section) if existing else f"## {el_name}\n{new_section}"
+                            write_event_line_memory(state.data_dir, resolved_client_id, resolved_event_line_id, el_name, client_name, content_to_write)
+                    # Extract golden quotes from attachment text
+                    from app.services.local_memory import extract_quotes_from_text, save_pending_quotes
+                    quotes = extract_quotes_from_text(state.ai, text, f"附件：{document_row['title']}")
+                    if quotes:
+                        save_pending_quotes(state.db, quotes)
+                except Exception:
+                    pass  # 预处理失败不影响主流程
+
+            _thr.Thread(target=_bg_preprocess_attachment, daemon=True).start()
+
+        # Invalidate task board cache
+        _cloud_task_board_cache["data"] = None
+        # Always rebuild task from local data first (local-first principle)
+        if is_cloud_task:
+            task_after_upload = fetch_cloud_task_by_id(task_id)
+            # Ensure local attachments are included even if cloud hasn't synced yet
+            local_atts = fetch_task_attachments(task_id, cloud=True)
+            if len(local_atts) > len(task_after_upload.attachments):
+                task_after_upload = task_after_upload.model_copy(update={"attachments": local_atts})
+        else:
+            task_after_upload = fetch_tasks("t.id = ?", (task_id,))[0]
         growth_user_id, growth_user_name = resolve_growth_actor()
         ingest_task_growth_candidate(
             state.db,
@@ -19575,6 +20715,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task=task_after_upload,
             source_type="task_attachment_candidate",
             created_at=timestamp,
+            ai_service=state.ai,
         )
         return task_after_upload
 
@@ -19764,7 +20905,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 str(response_payload.get("currentReview", {}).get("id", "review")),
                 {"weekLabel": payload.weekLabel, "personalExcludedFromAggregation": True},
             )
-            response = augment_review_response(ReviewResponse(**response_payload), payload.weekLabel)
+            try:
+                parsed_response = ReviewResponse(**response_payload)
+                response = augment_review_response(parsed_response, payload.weekLabel)
+            except Exception as augment_exc:
+                import traceback
+                err_detail = traceback.format_exc()
+                # Write error to file for debugging
+                try:
+                    Path(state.data_dir).joinpath("augment_error.log").write_text(err_detail, encoding="utf-8")
+                except Exception:
+                    pass
+                # Try returning raw response without augmentation
+                try:
+                    response = ReviewResponse(**response_payload)
+                except Exception:
+                    raise HTTPException(status_code=500, detail=f"Review parse failed: {augment_exc}") from augment_exc
             if response.currentReview:
                 user_id, user_name = resolve_growth_actor()
                 ingest_review_growth(
@@ -19908,6 +21064,62 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 created_at=created_at,
             )
             response = local_review_dashboard(payload.weekLabel)
+
+        # Async: write review notes to project/event-line memory
+        if reviewed_work_items:
+            import threading as _thr
+
+            def _bg_update_memory_from_review():
+                try:
+                    from app.services.local_memory import write_project_memory, write_event_line_memory
+                    # Collect all review notes (regardless of clientId — cloud often returns null)
+                    all_notes: list[tuple[str, str]] = []  # (title, note)
+                    for item in reviewed_work_items:
+                        note_text = item.note.strip()
+                        if not note_text:
+                            continue
+                        snap = item.taskSnapshot
+                        all_notes.append((snap.title, note_text))
+                        # Write event line memory if available
+                        if snap.eventLineId:
+                            el_cid = snap.clientId or "general"
+                            el_name = snap.eventLineName or snap.eventLineId
+                            el_cname = snap.clientName or ""
+                            el_content = f"## {el_name}\n\n### 本周复盘：{snap.title}\n{note_text}"
+                            write_event_line_memory(state.data_dir, el_cid, snap.eventLineId, el_name, el_cname, el_content)
+                    # Write all notes as a general project memory (use "general" if no clientId)
+                    if all_notes:
+                        # Try to find a client from local event lines
+                        default_cid = "general"
+                        default_cname = "通用项目"
+                        for item in reviewed_work_items:
+                            if item.taskSnapshot.clientId:
+                                default_cid = item.taskSnapshot.clientId
+                                default_cname = item.taskSnapshot.clientName or default_cid
+                                break
+                        # Also check local event lines for client info
+                        if default_cid == "general":
+                            for item in reviewed_work_items:
+                                elc = item.taskSnapshot.eventLineContext
+                                if elc and elc.primaryClientId:
+                                    default_cid = elc.primaryClientId
+                                    default_cname = elc.primaryClientName or default_cid
+                                    break
+                        # Still no client? Use first available from local DB
+                        if default_cid == "general":
+                            first_client = state.db.fetchone("SELECT id, name FROM clients ORDER BY name LIMIT 1")
+                            if first_client:
+                                default_cid = str(first_client["id"])
+                                default_cname = str(first_client["name"])
+                        content = f"## {payload.weekLabel} 复盘记录\n\n" + "\n\n".join(
+                            f"### {title}\n{note}" for title, note in all_notes
+                        )
+                        write_project_memory(state.data_dir, default_cid, default_cname, content)
+                except Exception:
+                    pass
+
+            _thr.Thread(target=_bg_update_memory_from_review, daemon=True).start()
+
         return response
 
     def build_topic_candidate(row) -> TopicCandidateRecord:
@@ -21126,6 +22338,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "statusLabel": "",
                 }
             )
+        author_name = str(row["author_user_name"]) if "author_user_name" in row.keys() and row["author_user_name"] else None
+        author_id = str(row["author_user_id"]) if "author_user_id" in row.keys() and row["author_user_id"] else None
         return HandbookEntryRecord(
             id=str(row["id"]),
             title=str(row["title"]),
@@ -21134,6 +22348,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             sourceType=str(row["source_type"]),
             clientId=client_id,
             clientName=client_name,
+            authorUserId=author_id,
+            authorUserName=author_name,
             sourceObjectType=str(row["source_object_type"]) if row["source_object_type"] else None,
             sourceObjectId=str(row["source_object_id"]) if row["source_object_id"] else None,
             sourceTitle=str(row["source_title"]) if row["source_title"] else None,
@@ -21326,6 +22542,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if payload.sourceType == "analysis" and not handbook_settings.allowAnalysisSource:
             raise HTTPException(status_code=403, detail="当前系统设置禁止从分析结论沉淀进入成长手册")
         resolved_tags = payload.tags or handbook_settings.defaultTags
+
+        # ── AI insight quote refinement ────────────────────────────
+        refined_title = payload.title
+        refined_summary = payload.summary
+        try:
+            if state.ai is not None:
+                result = state.ai.distill_growth_insight_quote(
+                    task_title=payload.title,
+                    task_desc=payload.summary or "",
+                    client_name=payload.clientId or "",
+                    event_line_name=payload.eventLineName or "",
+                    context_summary=payload.contextSummary or "",
+                    evidence_refs=payload.evidenceRefs or [],
+                )
+                if result.get("quote"):
+                    refined_title = result["quote"]
+                    # Keep original title in summary for reference
+                    if not refined_summary or refined_summary == payload.title:
+                        refined_summary = payload.title
+        except Exception:
+            pass  # Non-critical
+
         entry_id = new_id("handbook")
         created_at = now_iso()
         state.db.execute(
@@ -21339,8 +22577,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 entry_id,
-                payload.title,
-                payload.summary,
+                refined_title,
+                refined_summary,
                 to_json(resolved_tags),
                 payload.sourceType,
                 payload.clientId,
@@ -21384,6 +22622,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ingest_handbook_codification(state.db, user_id=user_id, user_name=user_name, entry=entry, created_at=entry.createdAt)
         log_activity("handbook.create", "handbook_entry", entry.id, payload.model_dump())
         return entry
+
+    @app.post("/api/v1/growth/enrich-insights")
+    def enrich_growth_insights() -> dict:
+        """Backfill AI-distilled insight quotes for existing pending captures and handbook entries."""
+        if state.ai is None:
+            return {"enriched_captures": 0, "enriched_entries": 0, "error": "AI service not available"}
+        user_id, _user_name = resolve_growth_actor()
+        enriched_captures = 0
+        enriched_entries = 0
+
+        # 1. Enrich pending captures that lack insightQuote
+        rows = state.db.fetchall(
+            """
+            SELECT id, context_json, raw_text
+            FROM growth_signal_events
+            WHERE user_id = ?
+              AND source_type IN ('task_context_candidate', 'task_attachment_candidate')
+            ORDER BY created_at DESC
+            LIMIT 30
+            """,
+            (user_id,),
+        )
+        for row in rows:
+            context = from_json(row["context_json"], {})
+            if not isinstance(context, dict) or context.get("insightQuote"):
+                continue
+            try:
+                result = state.ai.distill_growth_insight_quote(
+                    task_title=str(context.get("taskTitle") or ""),
+                    task_desc=str(context.get("taskDesc") or ""),
+                    client_name=str(context.get("clientName") or ""),
+                    event_line_name=str(context.get("eventLineName") or ""),
+                    blocker=str(context.get("currentBlocker") or ""),
+                    next_action=str(context.get("nextAction") or ""),
+                    recent_decision=str(context.get("recentDecision") or ""),
+                    context_summary=str(context.get("contextSummary") or ""),
+                    evidence_refs=[str(ref) for ref in (context.get("evidenceRefs") or []) if ref],
+                )
+                if result.get("quote"):
+                    context["insightQuote"] = result["quote"]
+                    if result.get("sourceLabel"):
+                        context["insightSourceLabel"] = result["sourceLabel"]
+                    state.db.execute(
+                        "UPDATE growth_signal_events SET context_json = ? WHERE id = ?",
+                        (to_json(context), str(row["id"])),
+                    )
+                    enriched_captures += 1
+            except Exception:
+                continue
+
+        # 2. Enrich handbook entries whose title looks like a raw task title (>80 chars or no insight pattern)
+        entry_rows = state.db.fetchall(
+            "SELECT id, title, summary, context_summary FROM handbook_entries ORDER BY created_at DESC LIMIT 30"
+        )
+        for entry_row in entry_rows:
+            title = str(entry_row["title"] or "")
+            # Skip entries that already look like refined quotes (short, no verb-heavy task patterns)
+            if len(title) <= 80 and not any(kw in title for kw in ["完成", "推进", "创建", "更新", "处理", "提交"]):
+                continue
+            try:
+                result = state.ai.distill_growth_insight_quote(
+                    task_title=title,
+                    task_desc=str(entry_row["summary"] or ""),
+                    context_summary=str(entry_row["context_summary"] or ""),
+                )
+                if result.get("quote") and result["quote"] != title:
+                    state.db.execute(
+                        "UPDATE handbook_entries SET title = ?, summary = CASE WHEN summary = '' OR summary IS NULL THEN ? ELSE summary END WHERE id = ?",
+                        (result["quote"], title, str(entry_row["id"])),
+                    )
+                    enriched_entries += 1
+            except Exception:
+                continue
+
+        return {"enriched_captures": enriched_captures, "enriched_entries": enriched_entries}
 
     @app.post("/api/v1/growth/handbook/{entry_id}/mark-reused", response_model=GrowthValidationActionResponse)
     def mark_growth_handbook_reused(entry_id: str, payload: GrowthValidationPayload) -> GrowthValidationActionResponse:

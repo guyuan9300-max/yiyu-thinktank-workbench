@@ -115,18 +115,29 @@ VALIDATION_STATE_ORDER: dict[GrowthValidationState, int] = {
     "institutionalized": 3,
 }
 
-RANK_DIVISIONS = ("III", "II", "I")
+RANK_DIVISIONS = ("一阶", "二阶", "三阶", "四阶", "五阶")
 
 RANK_TIERS = [
-    {"key": "bronze", "name": "倔强青铜", "min_xp": 0, "show_division": True},
-    {"key": "silver", "name": "秩序白银", "min_xp": 120, "show_division": True},
-    {"key": "gold", "name": "荣耀黄金", "min_xp": 260, "show_division": True},
-    {"key": "platinum", "name": "尊贵铂金", "min_xp": 460, "show_division": True},
-    {"key": "diamond", "name": "永恒钻石", "min_xp": 720, "show_division": True},
-    {"key": "star", "name": "至尊星耀", "min_xp": 1040, "show_division": True},
-    {"key": "king", "name": "最强王者", "min_xp": 1420, "show_division": True},
-    {"key": "glory", "name": "荣耀王者", "min_xp": 1900, "show_division": True},
-    {"key": "legend", "name": "传奇王者", "min_xp": 2600, "show_division": False},
+    {"key": "t01_starter", "name": "启程见习者", "min_xp": 0, "show_division": True},
+    {"key": "t02_task_apprentice", "name": "任务学徒", "min_xp": 50, "show_division": True},
+    {"key": "t03_rhythm_walker", "name": "节奏行者", "min_xp": 120, "show_division": True},
+    {"key": "t04_collab_branch", "name": "协作新枝", "min_xp": 210, "show_division": True},
+    {"key": "t05_review_lighter", "name": "复盘点灯人", "min_xp": 320, "show_division": True},
+    {"key": "t06_client_walker", "name": "客户随行者", "min_xp": 450, "show_division": True},
+    {"key": "t07_thread_weaver", "name": "线索编织者", "min_xp": 600, "show_division": True},
+    {"key": "t08_delivery_pusher", "name": "交付推进者", "min_xp": 780, "show_division": True},
+    {"key": "t09_judgment_smith", "name": "判断工匠", "min_xp": 980, "show_division": True},
+    {"key": "t10_solution_forger", "name": "方案锻造者", "min_xp": 1200, "show_division": True},
+    {"key": "t11_system_builder", "name": "系统搭手", "min_xp": 1450, "show_division": True},
+    {"key": "t12_dept_pivot", "name": "部门支点", "min_xp": 1730, "show_division": True},
+    {"key": "t13_project_navigator", "name": "项目领航者", "min_xp": 2040, "show_division": True},
+    {"key": "t14_org_pathfinder", "name": "组织通路者", "min_xp": 2380, "show_division": True},
+    {"key": "t15_growth_advisor", "name": "增长参谋", "min_xp": 2750, "show_division": True},
+    {"key": "t16_strategic_partner", "name": "战略合伙人", "min_xp": 3150, "show_division": True},
+    {"key": "t17_framework_architect", "name": "体系构造者", "min_xp": 3600, "show_division": True},
+    {"key": "t18_network_hub", "name": "网络中枢者", "min_xp": 4100, "show_division": True},
+    {"key": "t19_interface_bridge", "name": "界面引桥者", "min_xp": 4650, "show_division": True},
+    {"key": "t20_symbiosis_designer", "name": "共生设计师", "min_xp": 5250, "show_division": True},
 ]
 
 CONTRIBUTION_TAG_CONFIG: dict[GrowthContributionTag, dict[str, object]] = {
@@ -727,7 +738,7 @@ def _build_rank_record(total_xp: int) -> GrowthRankRecord:
     if bool(current_tier["show_division"]):
         bucket = min(len(RANK_DIVISIONS) - 1, int(progress * len(RANK_DIVISIONS)))
         division = RANK_DIVISIONS[max(0, bucket)]
-    full_label = f"{current_tier['name']} {division}" if division else str(current_tier["name"])
+    full_label = f"{current_tier['name']}\u00b7{division}" if division else str(current_tier["name"])
     xp_to_next = max(0, int(next_tier["min_xp"]) - total_xp) if next_tier else 0
     return GrowthRankRecord(
         key=str(current_tier["key"]),
@@ -1085,6 +1096,7 @@ def ingest_task_growth_candidate(
     task: TaskRecord,
     source_type: str = "task_context_candidate",
     created_at: str | None = None,
+    ai_service: object | None = None,
 ) -> None:
     ensure_growth_catalog(db, created_at)
     timestamp = created_at or _now_iso()
@@ -1106,6 +1118,28 @@ def ingest_task_growth_candidate(
     meaningful = bool(task.eventLineId or task.projectContext or task.clientId or task.currentBlocker or task.nextAction or task.recentDecision or (task.evidenceCount or 0) > 0 or task.attachments)
     if not meaningful or not raw_text:
         return
+
+    # ── AI insight quote distillation ──────────────────────────
+    if ai_service is not None:
+        try:
+            result = ai_service.distill_growth_insight_quote(
+                task_title=task.title,
+                task_desc=task.desc or "",
+                client_name=_as_str(context.get("clientName")) or "",
+                event_line_name=_as_str(context.get("eventLineName")) or "",
+                blocker=_as_str(task.currentBlocker) or "",
+                next_action=_as_str(task.nextAction) or "",
+                recent_decision=_as_str(task.recentDecision) or "",
+                context_summary=_as_str(context.get("contextSummary")) or "",
+                evidence_refs=_safe_context_list(context, "evidenceRefs"),
+            )
+            if result.get("quote"):
+                context["insightQuote"] = result["quote"]
+            if result.get("sourceLabel"):
+                context["insightSourceLabel"] = result["sourceLabel"]
+        except Exception:
+            pass  # Non-critical: fall back to raw title/summary
+
     _upsert_signal(
         db,
         user_id=user_id,
@@ -2522,16 +2556,26 @@ def _build_pending_capture_record(row) -> GrowthPendingCaptureRecord | None:
     context = from_json(row["context_json"], {})
     if not isinstance(context, dict):
         return None
-    title = _safe_context_value(context, "taskTitle") or _safe_context_value(context, "sourceLabel") or str(row["source_id"])
-    if not title:
+    # Prefer AI-distilled insight quote if available
+    insight_quote = _safe_context_value(context, "insightQuote")
+    raw_title = _safe_context_value(context, "taskTitle") or _safe_context_value(context, "sourceLabel") or str(row["source_id"])
+    if not raw_title and not insight_quote:
         return None
+    # If we have an AI-distilled quote, use it as title (the display text);
+    # keep raw_title available via summary for source context
+    if insight_quote:
+        title = insight_quote
+        summary = _safe_context_value(context, "insightSourceLabel") or _safe_context_value(context, "contextSummary") or ""
+    else:
+        title = raw_title
+        summary = _safe_context_value(context, "contextSummary") or ""
     return GrowthPendingCaptureRecord(
         id=str(row["id"]),
         sourceType=str(row["source_type"]),
         sourceId=str(row["source_id"]),
         status=str(row["capture_status"] or "open"),  # type: ignore[arg-type]
         title=title,
-        summary=_safe_context_value(context, "contextSummary") or "",
+        summary=summary,
         clientId=_safe_context_value(context, "clientId"),
         clientName=_safe_context_value(context, "clientName"),
         eventLineId=_safe_context_value(context, "eventLineId"),
@@ -2587,17 +2631,29 @@ def update_pending_capture_state(
         FROM growth_signal_events
         WHERE user_id = ?
           AND id = ?
-          AND source_type IN ('task_context_candidate', 'task_attachment_candidate')
+          AND source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')
         """,
         (user_id, capture_id),
     )
+    # Fallback: try with the cloud session user_id if operator ID didn't match
+    if not row:
+        row = db.fetchone(
+            """
+            SELECT id
+            FROM growth_signal_events
+            WHERE id = ?
+              AND source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')
+            """,
+            (capture_id,),
+        )
     if not row:
         return None
     existing = db.fetchone(
-        "SELECT id FROM growth_capture_states WHERE user_id = ? AND signal_id = ?",
-        (user_id, capture_id),
+        "SELECT id, user_id FROM growth_capture_states WHERE signal_id = ?",
+        (capture_id,),
     )
     normalized_reason = reason.strip()
+    actual_user_id = str(existing["user_id"]) if existing else user_id
     if existing:
         db.execute(
             """
@@ -2606,9 +2662,9 @@ def update_pending_capture_state(
                 reason = ?,
                 promoted_handbook_entry_id = ?,
                 updated_at = ?
-            WHERE user_id = ? AND signal_id = ?
+            WHERE signal_id = ?
             """,
-            (status, normalized_reason, handbook_entry_id, timestamp, user_id, capture_id),
+            (status, normalized_reason, handbook_entry_id, timestamp, capture_id),
         )
     else:
         db.execute(
@@ -2635,7 +2691,7 @@ def _list_pending_captures(db: Database, user_id: str, *, limit: int = 6) -> lis
         LEFT JOIN growth_evidence_records e ON e.signal_id = s.id
         LEFT JOIN growth_capture_states cs
             ON cs.signal_id = s.id AND cs.user_id = s.user_id
-        WHERE s.user_id = ? AND e.id IS NULL AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate')
+        WHERE s.user_id = ? AND e.id IS NULL AND s.source_type IN ('task_context_candidate', 'task_attachment_candidate', 'review_insight_pending')
           AND COALESCE(cs.status, 'open') = 'open'
         ORDER BY s.created_at DESC
         LIMIT ?

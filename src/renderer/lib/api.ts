@@ -104,9 +104,6 @@ import type {
   TopicsSettingsPayload,
   HandbookSettings,
   HandbookSettingsPayload,
-  DiagnosisEngineHealth,
-  ExternalDiagnosisRequest,
-  BettaFishSignal,
   CoachCaseRecord,
   CoachReminderRule,
   TopicCaptureBatchResult,
@@ -206,8 +203,6 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
     },
     revealInFinder: async () => notAvailable('在 Finder 中显示'),
     saveFileAs: async () => notAvailable('另存为'),
-    getDiagnosisEngineHealth: async () => [],
-    runBettafishDiagnosis: async () => notAvailable('外部诊断引擎'),
   };
 }
 
@@ -671,6 +666,12 @@ export async function updateProjectModule(clientId: string, moduleId: string, pa
   });
 }
 
+export async function deleteProjectModule(clientId: string, moduleId: string) {
+  return request<{ status: string }>(`/api/v1/clients/${clientId}/project-modules/${moduleId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function getProjectFlowDetail(clientId: string, flowId: string) {
   return request<ProjectFlowDetail>(`/api/v1/clients/${clientId}/project-flows/${flowId}`);
 }
@@ -1016,6 +1017,18 @@ export async function updateEventLine(id: string, payload: Partial<EventLineMuta
   return request<EventLine>(`/api/v1/event-lines/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function closeEventLine(id: string) {
+  return request<{ status: string }>(`/api/v1/event-lines/${id}/close`, {
+    method: 'POST',
+  });
+}
+
+export async function reopenEventLine(id: string) {
+  return request<{ status: string }>(`/api/v1/event-lines/${id}/reopen`, {
+    method: 'POST',
   });
 }
 
@@ -1379,13 +1392,6 @@ export async function updateGrowthPendingCapture(id: string, payload: GrowthPend
   });
 }
 
-export async function getDiagnosisEngineHealth() {
-  return window.yiyuWorkbench.getDiagnosisEngineHealth() as Promise<DiagnosisEngineHealth[]>;
-}
-
-export async function runBettafishDiagnosis(payload: ExternalDiagnosisRequest) {
-  return window.yiyuWorkbench.runBettafishDiagnosis(payload) as Promise<BettaFishSignal>;
-}
 
 export async function selectCollabRepo() {
   return window.yiyuWorkbench.selectCollabRepo() as Promise<string | null>;

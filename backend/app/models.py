@@ -954,6 +954,7 @@ class ProjectModuleRecord(BaseModel):
     ownerName: str | None = None
     deliverables: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    templateTasksJson: str | None = None
     createdAt: str
     updatedAt: str
 
@@ -1296,6 +1297,7 @@ class ProjectModulePayload(BaseModel):
     ownerName: str | None = None
     deliverables: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    templateTasksJson: str | None = None
 
 
 class ProjectFlowPayload(BaseModel):
@@ -1738,6 +1740,7 @@ class EventLineRecord(BaseModel):
     name: str
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
     status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
+    visibilityScope: Literal["private", "project_public"] = "project_public"
     businessCategory: str | None = None
     stage: str | None = None
     summary: str | None = None
@@ -1753,6 +1756,8 @@ class EventLineRecord(BaseModel):
     primaryDepartmentId: str | None = None
     primaryDepartmentName: str | None = None
     participantIds: list[str] = Field(default_factory=list)
+    closedAt: str | None = None
+    closedByUserId: str | None = None
     createdAt: str
     updatedAt: str
 
@@ -1768,6 +1773,7 @@ class EventLineActivityRecord(BaseModel):
     title: str
     summary: str
     metadata: dict[str, object] = Field(default_factory=dict)
+    isKey: bool = False
 
 
 class EventLineDetailRecord(BaseModel):
@@ -1808,6 +1814,7 @@ class EventLineCreatePayload(BaseModel):
     name: str = Field(min_length=1)
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
     status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
+    visibilityScope: Literal["private", "project_public"] = "project_public"
     businessCategory: str | None = None
     stage: str | None = None
     summary: str | None = None
@@ -3294,6 +3301,8 @@ class HandbookEntryRecord(BaseModel):
     sourceType: str
     clientId: str | None = None
     clientName: str | None = None
+    authorUserId: str | None = None
+    authorUserName: str | None = None
     sourceObjectType: str | None = None
     sourceObjectId: str | None = None
     sourceTitle: str | None = None

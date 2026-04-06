@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   X,
   Download,
@@ -16,8 +16,9 @@ import type {
   EventLineReportSnapshot,
   EventLineReportAttachment,
   EventLineActivity,
+  Task,
 } from '../../../shared/types.js';
-import { getEventLineReportSnapshot } from '../../lib/api.js';
+import { getEventLineReportSnapshot, updateEventLine } from '../../lib/api.js';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -37,6 +38,7 @@ type ReportDraft = {
   summary: string;
   activities: EditableActivity[];
   attachments: EventLineReportAttachment[];
+  tasks: Task[];
   participantNames: string[];
   snapshotAt: string;
 };
@@ -54,6 +56,16 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   manual_note: '备注',
 };
 
+/** Key events: task created, manual note (review content), attachment upload.
+ *  Uses backend-computed `isKey` flag; falls back to heuristic for older data. */
+function isKeyActivity(activity: { sourceType: string; title: string; summary: string; isKey?: boolean; metadata?: Record<string, unknown> }): boolean {
+  if (activity.isKey !== undefined) return activity.isKey;
+  // Fallback for activities without backend isKey flag
+  if (['manual_note', 'attachment'].includes(activity.sourceType)) return true;
+  if (activity.sourceType === 'task_activity' && activity.metadata?.eventType === 'created') return true;
+  return false;
+}
+
 function formatTs(iso: string) {
   if (!iso) return '';
   return iso.slice(0, 16).replace('T', ' ');
@@ -69,31 +81,130 @@ function fileSizeLabel(bytes: number) {
 /*  DocContentViewer — loads and displays document text content         */
 /* ------------------------------------------------------------------ */
 
+/** Map file extension to a display label + color for the file-type badge */
+function fileTypeBadge(filename: string): { label: string; color: string; bg: string } {
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  switch (ext) {
+    case 'doc': case 'docx': return { label: 'Word', color: '#2B579A', bg: '#E8EEF7' };
+    case 'xls': case 'xlsx': return { label: 'Excel', color: '#217346', bg: '#E2F0E8' };
+    case 'ppt': case 'pptx': return { label: 'PPT', color: '#D24726', bg: '#FCEAE5' };
+    case 'pdf': return { label: 'PDF', color: '#B30B00', bg: '#FDE8E7' };
+    case 'txt': case 'md': return { label: 'TXT', color: '#6B7280', bg: '#F3F4F6' };
+    case 'jpg': case 'jpeg': case 'png': case 'gif': case 'webp': return { label: ext.toUpperCase(), color: '#7C3AED', bg: '#EDE9FE' };
+    default: return { label: ext.toUpperCase() || '文件', color: '#6B7280', bg: '#F3F4F6' };
+  }
+}
+
 function DocContentViewer({ att, backendBaseUrl }: { att: EventLineReportAttachment; backendBaseUrl: string }) {
-  const [text, setText] = useState<string | null>(null);
+  const [summary, setSummary] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const badge = fileTypeBadge(att.title);
 
   useEffect(() => {
+    // Try text-content first, fall back to ocr-summary
     void fetch(`${backendBaseUrl}/api/public/task-attachments/${att.id}/text-content`)
       .then((r) => r.json())
       .then((data: { text?: string; unsupported?: boolean }) => {
-        setText(data.unsupported ? '此文件类型暂不支持内容预览' : (data.text || '（无内容）'));
+        const text = (data.text || '').trim();
+        if (text && !text.includes('提取失败') && !text.includes('No module') && !data.unsupported) {
+          setSummary(text);
+        } else {
+          // Fall back to ocr-summary
+          return fetch(`${backendBaseUrl}/api/public/task-attachments/${att.id}/ocr-summary`)
+            .then((r2) => r2.json())
+            .then((ocr: { summary?: string; unsupported?: boolean }) => {
+              if (ocr.summary && !ocr.unsupported) {
+                setSummary(ocr.summary);
+              } else {
+                setSummary(null);
+              }
+            });
+        }
       })
-      .catch(() => setText('内容加载失败'))
+      .catch(() => setSummary(null))
       .finally(() => setLoading(false));
   }, [att.id, backendBaseUrl]);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50/50 px-3 py-2">
-      <p className="text-[11px] font-semibold text-gray-700">{att.title}</p>
-      {loading ? (
-        <div className="mt-1 flex items-center gap-1">
-          <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#5B7BFE]" />
-          <span className="text-[10px] text-gray-400">加载中...</span>
+    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+      {/* File header — icon badge + filename, looks like a file preview */}
+      <div className="flex items-center gap-2.5 px-3 py-2.5 bg-gray-50/80 border-b border-gray-100">
+        <div
+          className="flex-shrink-0 flex items-center justify-center rounded-lg w-9 h-9 text-[10px] font-bold"
+          style={{ backgroundColor: badge.bg, color: badge.color }}
+        >
+          {badge.label}
         </div>
-      ) : (
-        <pre className="mt-1 max-h-[300px] overflow-y-auto whitespace-pre-wrap text-[11px] leading-5 text-gray-600">{text}</pre>
-      )}
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] font-medium text-gray-800 truncate">{att.title}</p>
+          <p className="text-[10px] text-gray-400">{fileSizeLabel(att.sizeBytes)}</p>
+        </div>
+        <a
+          href={`${backendBaseUrl}${att.downloadUrl}`}
+          download={att.title}
+          className="flex-shrink-0 rounded p-1 text-gray-400 hover:text-[#5B7BFE] hover:bg-gray-100 transition"
+          title="下载文件"
+        >
+          <Download size={14} />
+        </a>
+      </div>
+      {/* AI summary */}
+      <div className="px-3 py-2">
+        {loading ? (
+          <div className="flex items-center gap-1.5">
+            <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#5B7BFE]" />
+            <span className="text-[10px] text-gray-400">正在提取文档摘要…</span>
+          </div>
+        ) : summary ? (
+          <pre className="max-h-[600px] overflow-y-auto whitespace-pre-wrap text-[11px] leading-5 text-gray-500">{summary}</pre>
+        ) : (
+          <p className="text-[10px] text-gray-300">暂无文档摘要</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  ImageWithOcr — image preview with OCR summary below                */
+/* ------------------------------------------------------------------ */
+
+function ImageWithOcr({ att, backendBaseUrl }: { att: EventLineReportAttachment; backendBaseUrl: string }) {
+  const [ocrText, setOcrText] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void fetch(`${backendBaseUrl}/api/public/task-attachments/${att.id}/ocr-summary`)
+      .then((r) => r.json())
+      .then((data: { summary?: string; unsupported?: boolean }) => {
+        if (data.summary && !data.unsupported) {
+          setOcrText(data.summary);
+        } else {
+          setOcrText(null);
+        }
+      })
+      .catch(() => setOcrText(null))
+      .finally(() => setLoading(false));
+  }, [att.id, backendBaseUrl]);
+
+  return (
+    <div className="rounded-xl border border-gray-200 overflow-hidden bg-gray-50">
+      <img
+        src={`${backendBaseUrl}${att.downloadUrl}`}
+        alt={att.title}
+        className="w-full object-contain max-h-[300px]"
+      />
+      <div className="px-2 py-1.5">
+        <p className="text-[10px] text-gray-500 truncate">{att.title}</p>
+        {loading ? (
+          <div className="mt-1 flex items-center gap-1">
+            <div className="h-2 w-2 animate-spin rounded-full border border-gray-300 border-t-[#5B7BFE]" />
+            <span className="text-[9px] text-gray-400">识别中…</span>
+          </div>
+        ) : ocrText ? (
+          <p className="mt-1 text-[10px] leading-4 text-gray-400">{ocrText}</p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -122,6 +233,7 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
   /* Per-activity toggle: which activities have docs expanded / images expanded */
   const [docsExpandedActivities, setDocsExpandedActivities] = useState<Set<string>>(new Set());
   const [imagesExpandedActivities, setImagesExpandedActivities] = useState<Set<string>>(new Set());
+  const [showSystemTraces, setShowSystemTraces] = useState(false);
 
   /* Track which attachments are expanded (legacy, kept for export) */
   const [expandedAttachments, setExpandedAttachments] = useState<Set<string>>(new Set());
@@ -153,6 +265,7 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             ...(prevEditMap.get(a.id) || {}),
           })),
           attachments: [...data.attachments],
+          tasks: [...(data.tasks || [])],
           participantNames: [...data.participantNames],
           snapshotAt: data.snapshotAt,
         };
@@ -193,6 +306,13 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
     return map;
   }, [draft]);
 
+  /* Build task lookup map: taskId → Task for displaying task details in activities */
+  const taskMap = useMemo(() => {
+    const m = new Map<string, Task>();
+    if (draft) for (const t of (draft.tasks || [])) m.set(t.id, t);
+    return m;
+  }, [draft]);
+
   /* Edit handlers — only modify the local draft */
   const updateActivityField = useCallback(
     (activityId: string, field: 'editedTitle' | 'editedSummary', value: string) => {
@@ -227,6 +347,20 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
   }, []);
 
   const visibleActivities = useMemo(() => (draft?.activities ?? []).filter((a) => !a.hidden), [draft]);
+
+  /* Auto-save summary with debounce */
+  const summaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveSummary = useCallback(
+    (newSummary: string) => {
+      if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
+      summaryTimerRef.current = setTimeout(() => {
+        void updateEventLine(eventLineId, { summary: newSummary } as Parameters<typeof updateEventLine>[1]).catch(() => {});
+      }, 800);
+    },
+    [eventLineId],
+  );
+  // Cleanup timer on unmount
+  useEffect(() => () => { if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current); }, []);
 
   /* ---------------------------------------------------------------- */
   /*  Render                                                           */
@@ -272,18 +406,17 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
           </button>
           <div className="flex-1 min-w-0">
             <p className="text-[12px] font-bold tracking-[0.12em] text-[#5B7BFE]">事件线汇报</p>
-            <input
-              className="mt-1 w-full bg-transparent text-[20px] font-bold text-gray-900 outline-none placeholder:text-gray-300"
-              value={draft.eventLineName}
-              onChange={(e) => setDraft((prev) => prev ? { ...prev, eventLineName: e.target.value } : prev)}
-              placeholder="事件线名称"
-            />
+            <h2 className="mt-1 text-[20px] font-bold text-gray-900">{draft.eventLineName}</h2>
             <textarea
-              className="mt-2 w-full resize-none bg-transparent text-[13px] leading-6 text-gray-500 outline-none placeholder:text-gray-300"
-              rows={2}
+              className="mt-2 w-full resize-none rounded-lg border border-transparent bg-transparent px-0 text-[13px] leading-6 text-gray-500 transition hover:border-gray-200 focus:border-[#5B7BFE] focus:bg-white focus:px-2 focus:py-1 focus:outline-none"
+              rows={Math.max(2, (draft.summary || '').split('\n').length)}
+              placeholder="点击编辑事件线说明…"
               value={draft.summary}
-              onChange={(e) => setDraft((prev) => prev ? { ...prev, summary: e.target.value } : prev)}
-              placeholder="摘要说明"
+              onChange={(e) => {
+                const val = e.target.value;
+                setDraft((prev) => prev ? { ...prev, summary: val } : prev);
+                saveSummary(val);
+              }}
             />
           </div>
           <button
@@ -291,7 +424,13 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             disabled={!!exportProgress}
             className={`shrink-0 flex items-center gap-2 rounded-2xl px-5 py-2.5 text-[12px] font-bold text-white transition ${exportProgress ? 'bg-blue-400' : 'bg-[#5B7BFE] hover:bg-[#4a6ae8]'}`}
             onClick={() => {
-              const exportDraft = { ...draft, expandedAttachmentIds: Array.from(expandedAttachments) };
+              const exportDraft = {
+                ...draft,
+                expandedAttachmentIds: Array.from(expandedAttachments),
+                docsExpandedActivityIds: Array.from(docsExpandedActivities),
+                imagesExpandedActivityIds: Array.from(imagesExpandedActivities),
+                showSystemTraces,
+              };
               setExportProgress({ stage: '准备导出...', detail: '正在整理事件线数据' });
               void (async () => {
                 try {
@@ -340,9 +479,6 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
               <Users size={11} /> {draft.participantNames.join('、')}
             </span>
           )}
-          <span className="ml-auto flex items-center gap-1 text-gray-400">
-            <Clock size={11} /> 快照于 {formatTs(draft.snapshotAt)}
-          </span>
         </div>
 
         {/* ── Export progress overlay ── */}
@@ -360,25 +496,32 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {/* ── Timeline ── */}
           <div>
-            <div className="flex items-center justify-between">
-              <p className="text-[12px] font-bold text-gray-500">完整时间线</p>
-              <p className="text-[11px] text-gray-400">
-                {visibleActivities.length} / {draft.activities.length} 条
-                {draft.activities.length !== visibleActivities.length && (
-                  <button
-                    type="button"
-                    className="ml-2 text-[#5B7BFE] hover:underline"
-                    onClick={() => setDraft((prev) => prev ? { ...prev, activities: prev.activities.map((a) => ({ ...a, hidden: false })) } : prev)}
-                  >
-                    全部显示
-                  </button>
-                )}
-              </p>
-            </div>
+            {(() => {
+              const keyCount = draft.activities.filter((a) => isKeyActivity(a)).length;
+              const traceCount = draft.activities.length - keyCount;
+              return (
+                <div className="flex items-center justify-between">
+                  <p className="text-[12px] font-bold text-gray-500">
+                    {showSystemTraces ? '全部活动' : '关键活动'}
+                  </p>
+                  <div className="flex items-center gap-3 text-[11px]">
+                    <span className="text-gray-400">{showSystemTraces ? draft.activities.length : keyCount} 条</span>
+                    {traceCount > 0 && (
+                      <button
+                        type="button"
+                        className="text-[#5B7BFE] hover:underline"
+                        onClick={() => setShowSystemTraces((prev) => !prev)}
+                      >
+                        {showSystemTraces ? '只看关键活动' : `显示全部（含 ${traceCount} 条系统痕迹）`}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="mt-3 space-y-1">
-              {draft.activities.map((activity) => {
-                const isHidden = activity.hidden;
+              {draft.activities.filter((a) => showSystemTraces || isKeyActivity(a)).map((activity) => {
                 const activityAtts = attachmentsByActivity.get(activity.id) || [];
                 const imageAtts = activityAtts.filter((a) => (a.mimeType || '').startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(a.title));
                 const docAtts = activityAtts.filter((a) => !((a.mimeType || '').startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(a.title)));
@@ -389,35 +532,41 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                 return (
                   <div
                     key={activity.id}
-                    className={`group rounded-2xl border px-4 py-3 transition ${
-                      isHidden
-                        ? 'border-dashed border-gray-200 bg-gray-50/50 opacity-50'
-                        : 'border-gray-100 bg-white hover:border-gray-200'
-                    }`}
+                    className="group rounded-2xl border border-gray-100 bg-white px-4 py-3 transition hover:border-gray-200"
                   >
-                    <div className="flex items-start gap-3">
-                      <div className="w-[110px] shrink-0 pt-0.5">
-                        <p className="text-[11px] text-gray-400">{formatTs(activity.happenedAt)}</p>
-                        <span className="mt-1 inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
-                          {SOURCE_TYPE_LABELS[activity.sourceType] || activity.sourceType}
-                        </span>
+                    <div className="space-y-1.5">
+                      <div>
+                        <p className="text-[14px] font-bold text-gray-900">{activity.title}</p>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px]">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">
+                            {SOURCE_TYPE_LABELS[activity.sourceType] || activity.sourceType}
+                          </span>
+                          <span className="text-gray-400">{formatTs(activity.happenedAt)}</span>
+                          {activity.actorName && (
+                            <span className="text-gray-400">— {activity.actorName}</span>
+                          )}
+                        </div>
                       </div>
-
+                      {activity.summary && (
+                        <p className="text-[12px] leading-5 text-gray-500 whitespace-pre-wrap">{activity.summary}</p>
+                      )}
+                      {/* ── 关联任务详情 ── */}
+                      {(() => {
+                        const taskId = activity.sourceType === 'task_activity'
+                          ? activity.sourceId
+                          : (activity.metadata?.taskId as string | undefined);
+                        const task = taskId ? taskMap.get(taskId) : undefined;
+                        // Cloud returns "description", local uses "desc"
+                        const taskDesc = task?.desc || (task as Record<string, unknown> | undefined)?.description as string | undefined;
+                        if (!task || !taskDesc) return null;
+                        return (
+                          <div className="mt-1 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                            <p className="text-[11px] font-medium text-slate-500">{task.title}</p>
+                            <p className="mt-0.5 text-[11px] leading-4 text-slate-400 whitespace-pre-wrap">{taskDesc}</p>
+                          </div>
+                        );
+                      })()}
                       <div className="flex-1 min-w-0">
-                        <input
-                          className="w-full bg-transparent text-[13px] font-semibold text-gray-800 outline-none placeholder:text-gray-300"
-                          value={activity.editedTitle ?? activity.title}
-                          onChange={(e) => updateActivityField(activity.id, 'editedTitle', e.target.value)}
-                        />
-                        <textarea
-                          className="mt-1 w-full resize-none bg-transparent text-[12px] leading-5 text-gray-500 outline-none placeholder:text-gray-300"
-                          rows={1}
-                          value={activity.editedSummary ?? activity.summary}
-                          onChange={(e) => updateActivityField(activity.id, 'editedSummary', e.target.value)}
-                        />
-                        {activity.actorName && (
-                          <p className="mt-1 text-[10px] text-gray-400">— {activity.actorName}</p>
-                        )}
 
                         {/* 4 icon buttons — always visible on every activity */}
                           <div className="mt-2 flex items-center gap-1">
@@ -446,72 +595,16 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                               className={`rounded p-1 transition ${hasAtts ? 'text-gray-400 hover:text-[#5B7BFE] hover:bg-gray-100' : 'text-gray-200 cursor-default'}`}
                               onClick={() => {
                                 if (!hasAtts) return;
-                                void fetch(`${backendBaseUrl}/api/v1/event-lines/${eventLineId}/attachments/download-zip`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ attachmentIds: activityAtts.map((a) => a.id) }),
-                                }).then(async (resp) => {
-                                  if (!resp.ok) return;
-                                  const blob = await resp.blob();
-                                  const url = URL.createObjectURL(blob);
-                                  const a = document.createElement('a');
-                                  a.href = url;
-                                  a.download = `附件_${(activity.editedTitle ?? activity.title).slice(0, 15)}.zip`;
-                                  a.click();
-                                  URL.revokeObjectURL(url);
-                                });
+                                for (const att of activityAtts) {
+                                  const link = document.createElement('a');
+                                  link.href = `${backendBaseUrl}${att.downloadUrl}`;
+                                  link.download = att.title;
+                                  link.click();
+                                }
                               }}
                             >
                               <Download size={12} />
                             </button>
-                            <label
-                              title="上传附件"
-                              className="rounded p-1 text-gray-400 transition hover:text-[#5B7BFE] hover:bg-gray-100 cursor-pointer"
-                            >
-                              <Upload size={12} />
-                              <input
-                                type="file"
-                                multiple
-                                className="hidden"
-                                onChange={(event) => {
-                                  const files = event.target.files;
-                                  if (!files || files.length === 0) return;
-                                  const fileList = Array.from(files);
-                                  const actId = activity.id;
-                                  void (async () => {
-                                    let hasError = false;
-                                    for (let i = 0; i < fileList.length; i++) {
-                                      const file = fileList[i];
-                                      setUploadProgressByActivity((prev) => ({ ...prev, [actId]: { current: i + 1, total: fileList.length, fileName: file.name } }));
-                                      const formData = new FormData();
-                                      formData.append('file', file);
-                                      formData.append('title', file.name);
-                                      try {
-                                        const resp = await fetch(`${backendBaseUrl}/api/v1/event-lines/${eventLineId}/attachments`, {
-                                          method: 'POST',
-                                          body: formData,
-                                        });
-                                        if (!resp.ok) {
-                                          const err = await resp.json().catch(() => ({}));
-                                          hasError = true;
-                                          setUploadProgressByActivity((prev) => ({ ...prev, [actId]: { current: i + 1, total: fileList.length, fileName: file.name, error: err.detail || '上传失败' } }));
-                                        }
-                                      } catch {
-                                        hasError = true;
-                                        setUploadProgressByActivity((prev) => ({ ...prev, [actId]: { current: i + 1, total: fileList.length, fileName: file.name, error: '网络错误' } }));
-                                      }
-                                    }
-                                    if (!hasError) {
-                                      setUploadProgressByActivity((prev) => { const next = { ...prev }; delete next[actId]; return next; });
-                                    } else {
-                                      setTimeout(() => setUploadProgressByActivity((prev) => { const next = { ...prev }; delete next[actId]; return next; }), 5000);
-                                    }
-                                    void loadSnapshot({ silent: true });
-                                  })();
-                                  event.target.value = '';
-                                }}
-                              />
-                            </label>
                             {hasAtts && <span className="text-[9px] text-gray-300 ml-0.5">{activityAtts.length}</span>}
                           </div>
 
@@ -533,21 +626,21 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                           </div>
                         )}
 
-                        {/* 附件文件名列表（始终显示） */}
-                        {hasAtts && (
+                        {/* 附件文件名列表 — 折叠时显示完整文件名 */}
+                        {hasAtts && !isDocsExpanded && !isImagesExpanded && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
                             {activityAtts.map((att) => {
-                              const isImg = (att.mimeType || '').startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(att.title);
+                              const badge = fileTypeBadge(att.title);
                               return (
                                 <a
                                   key={att.id}
                                   href={`${backendBaseUrl}${att.downloadUrl}`}
                                   download={att.title}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] text-gray-600 transition hover:border-[#C9D6FF] hover:text-[#5B7BFE]"
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] text-gray-600 transition hover:border-[#C9D6FF] hover:text-[#5B7BFE]"
                                   title={`${att.title} · ${fileSizeLabel(att.sizeBytes)}`}
                                 >
-                                  {isImg ? <Image size={10} /> : <FileText size={10} />}
-                                  {att.title.length > 20 ? `${att.title.slice(0, 18)}…` : att.title}
+                                  <span className="rounded px-1 py-0.5 text-[8px] font-bold" style={{ backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span>
+                                  {att.title}
                                 </a>
                               );
                             })}
@@ -563,30 +656,16 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                           </div>
                         )}
 
-                        {/* 展开的图片 — 排版显示 */}
+                        {/* 展开的图片 — 排版显示 + OCR 摘要 */}
                         {isImagesExpanded && imageAtts.length > 0 && (
                           <div className="mt-2 grid grid-cols-2 gap-2">
                             {imageAtts.map((att) => (
-                              <div key={att.id} className="rounded-xl border border-gray-200 overflow-hidden bg-gray-50">
-                                <img
-                                  src={`${backendBaseUrl}${att.downloadUrl}`}
-                                  alt={att.title}
-                                  className="w-full object-contain max-h-[300px]"
-                                />
-                                <p className="px-2 py-1 text-[10px] text-gray-500 truncate">{att.title}</p>
-                              </div>
+                              <ImageWithOcr key={att.id} att={att} backendBaseUrl={backendBaseUrl} />
                             ))}
                           </div>
                         )}
                       </div>
 
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-lg px-2 py-1 text-[10px] text-gray-400 opacity-0 transition group-hover:opacity-100 hover:bg-gray-100 hover:text-gray-600"
-                        onClick={() => toggleActivityHidden(activity.id)}
-                      >
-                        {isHidden ? '显示' : '隐藏'}
-                      </button>
                     </div>
                   </div>
                 );

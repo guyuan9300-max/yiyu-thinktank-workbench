@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>成长中心 Preview v2</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', 'Hiragino Sans GB', sans-serif; background: #F9FAFB; color: #374151; -webkit-font-smoothing: antialiased; }
+  .root { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Header */
+  .header { background: #fff; border-bottom: 1px solid #F3F4F6; padding: 20px 24px 0; flex-shrink: 0; }
+  .header-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+  .page-title { font-size: 18px; font-weight: 600; color: #0f172a; letter-spacing: -0.3px; }
+  .page-subtitle { font-size: 11px; color: #94a3b8; font-weight: 500; margin-top: 3px; }
+  .xp-area { display: flex; align-items: center; gap: 12px; }
+  .rank-chip { display: flex; align-items: center; gap: 8px; background: #EEF3FF; border: 1px solid #D6E1FF; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #334155; }
+  .rank-chip svg { width: 14px; height: 14px; color: #335CFE; }
+  .xp-num { font-size: 14px; font-weight: 600; color: #1e293b; letter-spacing: -0.3px; text-align: right; }
+  .xp-label { font-size: 11px; color: #94a3b8; font-weight: 400; }
+  .xp-week { font-size: 11px; font-weight: 600; color: #10b981; text-align: right; }
+
+  /* Tab pills */
+  .tab-bar { display: inline-flex; gap: 4px; background: #f1f5f9; border-radius: 16px; padding: 4px; }
+  .tab-btn { background: none; border: none; cursor: pointer; padding: 6px 16px; font-size: 13px; font-weight: 500; border-radius: 16px; color: #64748b; transition: all 0.2s; }
+  .tab-btn:hover { color: #334155; }
+  .tab-btn.active { background: #fff; color: #5B7BFE; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+
+  /* Content */
+  .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .content-inner { max-width: 860px; margin: 0 auto; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* Cards */
+  .card { background: #fff; border: 1px solid #f3f4f6; border-radius: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .card-inner { background: #fff; border: 1px solid #f3f4f6; border-radius: 22px; }
+  .section-header { display: flex; align-items: flex-end; justify-content: space-between; padding: 0 4px; margin-bottom: 12px; }
+  .section-title { font-size: 16px; font-weight: 600; color: #1e293b; }
+  .section-hint { font-size: 11px; font-weight: 500; letter-spacing: 0.3px; color: #94a3b8; }
+
+  /* Icon token — small circle with SVG inside */
+  .icon-token { display: flex; align-items: center; justify-content: center; border-radius: 999px; flex-shrink: 0; }
+  .icon-token.sm { width: 20px; height: 20px; }
+  .icon-token.md { width: 28px; height: 28px; }
+  .icon-token.lg { width: 40px; height: 40px; }
+  .icon-token.xl { width: 56px; height: 56px; }
+  .icon-token.brand { background: #EEF3FF; }
+  .icon-token.brand-border { background: #EEF3FF; border: 1px solid #D6E1FF; }
+  .icon-token.gray { background: #f1f5f9; }
+
+  /* Badge token with SVG ring */
+  .badge-token { position: relative; display: flex; align-items: center; justify-content: center; }
+  .badge-outer { position: absolute; inset: 0; border-radius: 999px; border: 1px solid; }
+  .badge-center { position: relative; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid; }
+  .badge-svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+
+  /* Insight cards */
+  .insight-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .insight-card { padding: 20px; }
+  .insight-quote { font-size: 13px; color: #1e293b; line-height: 1.9; }
+  .insight-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+  .insight-author { display: flex; align-items: center; gap: 8px; }
+  .author-name { font-size: 11px; font-weight: 500; color: #64748b; }
+  .source-tag { background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 999px; padding: 2px 8px; font-size: 10px; color: #94a3b8; font-weight: 500; letter-spacing: 0.2px; }
+  .like-btn { display: flex; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; font-size: 11px; color: #D1D5DB; transition: color 0.2s; }
+  .like-btn:hover { color: #5B7BFE; }
+  .like-btn.liked { color: #5B7BFE; }
+
+  /* AI section */
+  .ai-section { border-radius: 24px; background: radial-gradient(circle at top left, rgba(51,92,254,0.06), transparent 40%), linear-gradient(180deg, #fff 0%, #fafbff 100%); border: 1px solid #DDE6FF; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-top: 24px; }
+  .ai-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; border: 1px solid #D6E1FF; background: #fff; padding: 4px 12px; font-size: 12px; font-weight: 500; color: #335CFE; box-shadow: 0 1px 2px rgba(0,0,0,0.04); margin-bottom: 16px; }
+  .pending-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .btn-brand { display: inline-flex; align-items: center; gap: 6px; background: #335CFE; color: #fff; border: none; border-radius: 999px; padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
+  .btn-brand:hover { background: #2C50E0; }
+  .btn-ghost { background: none; border: 1px solid #e2e8f0; color: #64748b; border-radius: 999px; padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
+  .btn-ghost:hover { background: #f8fafc; }
+
+  /* Stats grid */
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat-card { border-radius: 22px; border: 1px solid #f3f4f6; background: #fff; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .stat-label { font-size: 12px; font-weight: 500; color: #94a3b8; }
+  .stat-value { font-size: 24px; font-weight: 600; color: #0f172a; margin-top: 8px; letter-spacing: -0.5px; }
+
+  /* Template cards */
+  .template-list { display: flex; flex-direction: column; gap: 8px; }
+  .template-header { width: 100%; padding: 16px 20px; text-align: left; display: flex; align-items: center; gap: 16px; background: none; border: none; cursor: pointer; transition: background 0.2s; }
+  .template-header:hover { background: rgba(248,250,252,0.5); }
+  .template-info { flex: 1; min-width: 0; }
+  .template-top { display: flex; align-items: center; justify-content: space-between; }
+  .template-name { font-size: 13px; font-weight: 600; color: #1e293b; }
+  .template-calls { font-size: 12px; font-weight: 600; color: #335CFE; flex-shrink: 0; margin-left: 12px; }
+  .template-bottom { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .template-meta { font-size: 11px; font-weight: 500; color: #94a3b8; }
+  .progress-track { flex: 1; height: 3px; background: #f1f5f9; border-radius: 999px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 999px; }
+  .template-detail { padding: 0 20px 16px; }
+  .template-detail-inner { background: #f8fafc; border-radius: 18px; padding: 16px; }
+  .step-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+  .step-num { font-size: 11px; font-weight: 600; color: #cbd5e1; width: 20px; text-align: right; }
+  .step-text { font-size: 12px; font-weight: 500; color: #64748b; }
+  .chevron { color: #cbd5e1; font-size: 12px; flex-shrink: 0; }
+
+  /* XP Overview hero */
+  .xp-hero { border-radius: 28px; border: 1px solid #DDE6FF; background: radial-gradient(circle at top left, rgba(51,92,254,0.08), transparent 34%), linear-gradient(180deg, #fff 0%, #fafbff 100%); padding: 24px; box-shadow: 0 24px 70px rgba(15,23,42,0.04); }
+  .xp-hero-top { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .xp-hero-rank { font-size: 16px; font-weight: 600; color: #0f172a; letter-spacing: -0.3px; }
+  .xp-hero-num { font-size: 24px; font-weight: 600; color: #0f172a; letter-spacing: -0.5px; }
+  .xp-hero-badge { display: inline-flex; align-items: center; gap: 4px; background: #ecfdf5; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; color: #059669; }
+  .xp-breakdown { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 20px; }
+  .xp-break-card { border-radius: 22px; border: 1px solid rgba(255,255,255,0.8); background: rgba(255,255,255,0.88); padding: 16px; box-shadow: 0 18px 40px rgba(148,163,184,0.08); backdrop-filter: blur(8px); }
+  .xp-break-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .xp-break-label { font-size: 10px; font-weight: 500; color: #94a3b8; }
+  .xp-break-val { font-size: 20px; font-weight: 600; color: #0f172a; letter-spacing: -0.3px; }
+
+  /* Badge grid */
+  .badge-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .badge-cell { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 4px; cursor: pointer; transition: transform 0.2s; }
+  .badge-cell:hover { transform: scale(1.03); }
+  .badge-name { font-size: 11px; font-weight: 500; text-align: center; line-height: 1.3; max-width: 80px; }
+  .badge-name.lit { color: #334155; }
+  .badge-name.prog { color: #64748b; }
+  .badge-name.lock { color: #cbd5e1; }
+  .badge-sub { font-size: 10px; font-weight: 600; }
+
+  /* Leaderboard */
+  .rank-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 4px; }
+  .rank-header-left { display: flex; align-items: center; gap: 8px; }
+  .rank-toggle { display: flex; background: #f1f5f9; border-radius: 999px; padding: 2px; }
+  .rank-toggle-btn { padding: 6px 12px; font-size: 11px; font-weight: 500; border: none; cursor: pointer; border-radius: 999px; background: none; color: #94a3b8; transition: all 0.2s; }
+  .rank-toggle-btn.active { background: #fff; color: #334155; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  .rank-list { padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .rank-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 16px; }
+  .rank-row.top3 { background: rgba(248,250,252,0.7); }
+  .rank-num { font-size: 14px; font-weight: 600; width: 24px; text-align: center; flex-shrink: 0; }
+  .rank-name-text { font-size: 13px; font-weight: 500; color: #334155; width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank-xp { font-size: 12px; font-weight: 600; color: #64748b; width: 64px; text-align: right; flex-shrink: 0; }
+  .rank-bar { flex: 1; height: 3px; background: #f1f5f9; border-radius: 999px; overflow: hidden; margin-left: 8px; }
+  .rank-bar-fill { height: 100%; border-radius: 999px; }
+
+  /* MVP */
+  .mvp { margin-top: 12px; border-radius: 22px; background: rgba(254,243,199,0.6); border: 1px solid #fde68a; padding: 16px 20px; }
+  .mvp-top { display: flex; align-items: center; gap: 8px; }
+  .mvp-title { font-size: 12px; font-weight: 600; color: #92400e; }
+  .mvp-desc { font-size: 11px; color: rgba(146,64,14,0.7); margin-top: 4px; margin-left: 24px; }
+
+  .mt-24 { margin-top: 24px; }
+  .space-y > * + * { margin-top: 24px; }
+
+  /* Ability growth tab */
+  .radar-card { display: flex; flex-direction: column; align-items: center; gap: 32px; padding: 24px; }
+  @media (min-width: 768px) { .radar-card { flex-direction: row; } }
+  .radar-legend { display: flex; align-items: center; gap: 16px; font-size: 11px; font-weight: 500; color: #94a3b8; margin-top: 4px; }
+  .radar-legend-dot { width: 8px; height: 8px; border-radius: 999px; margin-right: 6px; display: inline-block; }
+  .ability-list { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .ability-row-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .ability-row-left { display: flex; align-items: center; gap: 8px; }
+  .ability-icon-box { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; }
+  .ability-name { font-size: 13px; font-weight: 600; color: #1e293b; }
+  .ability-stage { border-radius: 6px; border: 1px solid #f1f5f9; background: #f8fafc; padding: 1px 6px; font-size: 9px; font-weight: 500; letter-spacing: 1px; color: #94a3b8; text-transform: uppercase; }
+  .ability-xp { font-size: 12px; font-weight: 600; color: #335CFE; }
+  .ability-delta { font-size: 10px; font-weight: 500; color: #10b981; margin-left: 6px; }
+  .ability-bar { height: 6px; background: #f8fafc; border-radius: 999px; overflow: hidden; }
+  .ability-bar-fill { height: 100%; background: #5B7BFE; border-radius: 999px; }
+  .ability-evidence { font-size: 10px; font-weight: 500; color: #94a3b8; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Timeline */
+  .timeline-entry { display: flex; gap: 16px; }
+  .timeline-line { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+  .timeline-dot { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 999px; flex-shrink: 0; }
+  .timeline-tail { width: 1px; flex: 1; background: #f1f5f9; margin: 4px 0; }
+  .timeline-content { flex: 1; padding-bottom: 20px; }
+  .timeline-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .timeline-title { font-size: 13px; font-weight: 500; color: #1e293b; line-height: 1.4; }
+  .timeline-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .timeline-tag { border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 500; letter-spacing: 0.2px; }
+  .timeline-tag.special { background: #fff7ed; color: #ea580c; }
+  .timeline-tag.normal { background: #f1f5f9; color: #64748b; }
+  .timeline-xp { font-size: 13px; font-weight: 600; letter-spacing: -0.3px; flex-shrink: 0; }
+  .timeline-time { font-size: 10px; font-weight: 500; color: #94a3b8; margin-top: 2px; text-align: right; }
+
+  /* Gap card */
+  .gap-card { padding: 20px; }
+  .gap-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .gap-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .gap-icon-box { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 14px; flex-shrink: 0; }
+  .gap-name { font-size: 13px; font-weight: 600; color: #0f172a; }
+  .gap-source { font-size: 11px; font-weight: 500; color: #94a3b8; margin-top: 2px; }
+  .gap-score { font-size: 14px; font-weight: 600; color: #335CFE; }
+  .gap-range { font-size: 10px; font-weight: 500; letter-spacing: 1px; color: #94a3b8; }
+  .gap-reason { margin-top: 12px; font-size: 12px; line-height: 1.7; color: #64748b; }
+  .no-gap { border-radius: 24px; background: rgba(236,253,245,0.4); border: 1px solid #a7f3d0; padding: 16px 20px; }
+  .no-gap-title { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: #047857; }
+  .no-gap-desc { font-size: 11px; color: rgba(4,120,87,0.7); margin-top: 4px; margin-left: 24px; }
+
+  /* SVG icon helper — inline SVG icons that look like lucide */
+  .icon-svg { display: inline-block; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div class="root" id="app">
+  <div class="header">
+    <div class="header-top">
+      <div>
+        <div class="page-title">成长中心</div>
+        <div class="page-subtitle">把工作经验变成组织资产</div>
+      </div>
+      <div class="xp-area">
+        <div class="rank-chip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#335CFE" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M14.5 17.5L3 6V3h3l11.5 11.5"/><path d="M13 19l6-6"/><path d="M16 16l4 4"/><path d="M19 21l2-2"/><path d="m14.5 6.5 1-1"/><path d="M21 3h-3l-5 5"/></svg>
+          黄金 III
+        </div>
+        <div>
+          <div class="xp-num">1,523 <span class="xp-label">XP</span></div>
+          <div class="xp-week">+152</div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('experience')">经验墙</button>
+      <button class="tab-btn" onclick="switchTab('ability')">能力成长</button>
+      <button class="tab-btn" onclick="switchTab('contribution')">组织贡献</button>
+      <button class="tab-btn" onclick="switchTab('badges')">徽章与排行</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="content-inner">
+
+      <!-- ═══ Tab 1: 经验墙 ═══ -->
+      <div class="tab-panel active" id="panel-experience">
+        <div class="section-header">
+          <div class="section-title">组织经验墙</div>
+          <span class="section-hint">来自全团队的工作智慧</span>
+        </div>
+        <div class="insight-grid" id="insight-grid">
+        </div>
+        <div class="ai-section">
+          <div class="ai-chip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>
+            AI 为你提炼了 2 条经验
+          </div>
+          <div id="pending-cards"></div>
+        </div>
+      </div>
+
+      <!-- ═══ Tab 2: 能力成长 ═══ -->
+      <div class="tab-panel" id="panel-ability">
+        <div class="space-y">
+
+          <!-- Radar + Ability List -->
+          <div class="card radar-card">
+            <div style="flex-shrink:0">
+              <svg width="240" height="240" viewBox="0 0 240 240" id="radar-svg"></svg>
+              <div class="radar-legend" style="justify-content:center;margin-top:12px">
+                <span><span class="radar-legend-dot" style="background:#5B7BFE"></span>当前</span>
+                <span><span class="radar-legend-dot" style="background:#cbd5e1"></span>上期</span>
+                <span><span class="radar-legend-dot" style="background:#f59e0b"></span>要求</span>
+              </div>
+            </div>
+            <div class="ability-list" id="ability-list"></div>
+          </div>
+
+          <!-- Timeline -->
+          <div>
+            <div class="section-header">
+              <div class="section-title">成长时间线</div>
+              <span class="section-hint">近期能力变化</span>
+            </div>
+            <div class="card" style="padding:20px" id="timeline-list"></div>
+          </div>
+
+          <!-- Gap Cards -->
+          <div>
+            <div class="section-header">
+              <div class="section-title">能力缺口</div>
+              <span class="section-hint">需要重点突破的方向</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px" id="gap-grid"></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ═══ Tab 3: 组织贡献 ═══ -->
+      <div class="tab-panel" id="panel-contribution">
+        <div class="space-y">
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">我创建的模板</div><div class="stat-value">3</div></div>
+            <div class="stat-card"><div class="stat-label">被调用次数</div><div class="stat-value">12</div></div>
+            <div class="stat-card"><div class="stat-label">累计贡献 XP</div><div class="stat-value">+108</div></div>
+            <div class="stat-card"><div class="stat-label">本月</div><div class="stat-value">+52</div></div>
+          </div>
+          <div>
+            <div class="section-header">
+              <div class="section-title">工作模板</div>
+              <span class="section-hint">被团队复用的标准流程</span>
+            </div>
+            <div class="template-list" id="template-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ Tab 3: 徽章与排行 ═══ -->
+      <div class="tab-panel" id="panel-badges">
+        <div class="space-y">
+          <div class="xp-hero">
+            <div class="xp-hero-top">
+              <div class="icon-token xl brand-border">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#335CFE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M14.5 17.5L3 6V3h3l11.5 11.5"/><path d="M13 19l6-6"/><path d="M16 16l4 4"/><path d="M19 21l2-2"/><path d="m14.5 6.5 1-1"/><path d="M21 3h-3l-5 5"/></svg>
+              </div>
+              <div>
+                <div class="xp-hero-rank">黄金 III</div>
+                <div class="xp-hero-num">1,523 <span class="xp-label">XP</span></div>
+              </div>
+              <div style="margin-left:auto">
+                <div class="xp-hero-badge">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+                  +152 本周
+                </div>
+              </div>
+            </div>
+            <div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+                <span style="font-size:11px;font-weight:500;color:#94a3b8">距铂金 I 还需 277 XP</span>
+                <span style="font-size:11px;font-weight:500;color:#94a3b8">85%</span>
+              </div>
+              <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:85%;background:#5B7BFE"></div></div>
+            </div>
+            <div class="xp-breakdown" id="xp-breakdown"></div>
+          </div>
+
+          <div>
+            <div class="section-header">
+              <div class="section-title">我的徽章</div>
+              <span class="section-hint">已点亮 4/10</span>
+            </div>
+            <div class="card" style="padding:20px">
+              <div class="badge-grid" id="badge-grid"></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="rank-header">
+              <div class="rank-header-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+                <div class="section-title" style="margin-bottom:0">组织排行榜</div>
+              </div>
+              <div class="rank-toggle">
+                <button class="rank-toggle-btn active">总榜</button>
+                <button class="rank-toggle-btn">本周</button>
+              </div>
+            </div>
+            <div class="card rank-list" id="rank-list"></div>
+            <div class="mvp">
+              <div class="mvp-top">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#b45309" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"/></svg>
+                <div class="mvp-title">本周 MVP：顾源源（+152 XP）</div>
+              </div>
+              <div class="mvp-desc">创建 2 个工作模板，推送 3 条经验墙金句</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// SVG icons (lucide-style)
+const ICONS = {
+  sparkles: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>',
+  layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m6.08 9.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/><path d="m6.08 14.5-3.5 1.6a1 1 0 0 0 0 1.81l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83l-3.5-1.59"/></svg>',
+  lightbulb: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>',
+  rocket: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>',
+  arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
+  pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><path d="M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"/><path d="m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"/><path d="m2.3 2.3 7.286 7.286"/><circle cx="11" cy="11" r="2"/></svg>',
+  heart: '<svg viewBox="0 0 24 24" fill="FILL" stroke="COLOR" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="W" height="H"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+};
+
+function icon(name, w, h, color) {
+  return (ICONS[name] || '').replace(/width="W"/g, 'width="'+w+'"').replace(/height="H"/g, 'height="'+h+'"').replace('stroke="currentColor"', 'stroke="'+(color||'currentColor')+'"');
+}
+
+// Build insight cards
+const INSIGHTS = [
+  { q: '让客户先交完整方案再提问题，比直接帮改方案更有效——陪伴的核心是不代偿。', author: '顾源源', ai: false, src: '日慈战略陪伴 · W14', likes: 3, liked: false },
+  { q: '数字化理解快的客户，效率瓶颈往往不在技术而在项目设计。', author: '大周', ai: true, src: '数字化复盘 · W14', likes: 5, liked: true },
+  { q: '月捐人流失率最高的阶段不是首月，而是第三个月——这是承诺感消退的临界点。', author: '庆华', ai: true, src: '月捐分析 · W13', likes: 7, liked: false },
+  { q: '组织内部培训如果只讲方法不讲为什么，三个月后执行率会掉到 20% 以下。', author: '顾源源', ai: false, src: '内部管理 · W13', likes: 2, liked: false },
+  { q: '合作方的节奏感比能力更重要，节奏对不上的合作最终都会变成消耗。', author: '佳乐', ai: false, src: '合作方管理 · W12', likes: 4, liked: false },
+  { q: '公益项目设计中最常见的错误是把活动当成了成果，活动是手段不是目的。', author: '大周', ai: true, src: '项目设计复盘 · W12', likes: 6, liked: true },
+];
+
+const grid = document.getElementById('insight-grid');
+const col1 = document.createElement('div'); col1.style.cssText = 'display:flex;flex-direction:column;gap:12px';
+const col2 = document.createElement('div'); col2.style.cssText = 'display:flex;flex-direction:column;gap:12px';
+INSIGHTS.forEach((ins, i) => {
+  const avatarIcon = ins.ai
+    ? '<div class="icon-token sm brand">' + icon('sparkles', 10, 10, '#335CFE') + '</div>'
+    : '<div class="icon-token sm gray">' + icon('users', 10, 10, '#64748b') + '</div>';
+  const heartSvg = ICONS.heart.replace('FILL', ins.liked ? '#5B7BFE' : 'none').replace('COLOR', ins.liked ? '#5B7BFE' : '#D1D5DB');
+  const html = `<div class="card insight-card">
+    <div class="insight-quote">"${ins.q}"</div>
+    <div class="insight-meta">
+      <div class="insight-author">${avatarIcon}<span class="author-name">${ins.author}</span><span class="source-tag">${ins.src}</span></div>
+      <button class="like-btn${ins.liked ? ' liked' : ''}">${heartSvg} ${ins.likes}</button>
+    </div>
+  </div>`;
+  (i % 2 === 0 ? col1 : col2).insertAdjacentHTML('beforeend', html);
+});
+grid.appendChild(col1);
+grid.appendChild(col2);
+
+// Pending cards
+const PENDING = [
+  { q: '客户的抗拒往往不是对方案的否定，而是对变化的恐惧——先处理情绪再处理问题。', src: '日慈复盘 · W14' },
+  { q: '周报的价值不在记录做了什么，而在沉淀出哪些判断值得复用。', src: '内部管理 · W14' },
+];
+const pendingEl = document.getElementById('pending-cards');
+PENDING.forEach(p => {
+  pendingEl.insertAdjacentHTML('beforeend', `<div class="card-inner" style="padding:20px;margin-bottom:12px">
+    <div class="insight-quote">"${p.q}"</div>
+    <div style="margin-top:8px;font-size:11px;font-weight:500;color:#94a3b8">来源：${p.src}</div>
+    <div class="pending-actions">
+      <button class="btn-brand">${icon('arrow', 12, 12, '#fff')} 推上经验墙</button>
+      <button class="btn-ghost">跳过</button>
+    </div>
+  </div>`);
+});
+
+// Templates
+const TEMPLATES = [
+  { name: '战略陪伴全流程', ic: 'target', steps: ['客户背景调研','首次诊断会议','诊断报告输出','季度复盘','战略方案迭代','结项评估'], calls: 4, xp: 48 },
+  { name: '月捐人深度运营', ic: 'users', steps: ['捐赠人画像分析','沟通策略制定','个性化内容生成','反馈追踪'], calls: 2, xp: 24 },
+  { name: '项目结项评估', ic: 'shield', steps: ['数据收集','指标计算','报告生成','复盘会议'], calls: 6, xp: 36 },
+];
+const tplList = document.getElementById('template-list');
+TEMPLATES.forEach(t => {
+  const stepsHtml = t.steps.map((s,i) => `<div class="step-row"><span class="step-num">${i+1}.</span><span class="step-text">${s}</span></div>`).join('');
+  tplList.insertAdjacentHTML('beforeend', `<div class="card" style="overflow:hidden">
+    <button class="template-header" onclick="toggleTpl(this)">
+      <div class="icon-token lg brand">${icon(t.ic, 20, 20, '#335CFE')}</div>
+      <div class="template-info">
+        <div class="template-top"><span class="template-name">${t.name}</span><span class="template-calls">调用 ${t.calls} 次</span></div>
+        <div class="template-bottom"><span class="template-meta">${t.steps.length} 个步骤 · +${t.xp} XP</span><div class="progress-track"><div class="progress-fill" style="width:${Math.min(100,t.calls/10*100)}%;background:rgba(91,123,254,0.4)"></div></div></div>
+      </div>
+      <span class="chevron">▾</span>
+    </button>
+    <div class="template-detail" style="display:none"><div class="template-detail-inner">${stepsHtml}</div></div>
+  </div>`);
+});
+
+// XP breakdown
+const XP_ITEMS = [
+  { label: '模板贡献', val: 56, ic: 'layers' },
+  { label: '经验墙', val: 30, ic: 'lightbulb' },
+  { label: '流程调用', val: 36, ic: 'arrow' },
+  { label: '执行质量', val: 30, ic: 'shield' },
+];
+const xpEl = document.getElementById('xp-breakdown');
+XP_ITEMS.forEach(x => {
+  xpEl.insertAdjacentHTML('beforeend', `<div class="xp-break-card">
+    <div class="xp-break-top">${icon(x.ic, 14, 14, '#335CFE')}<span class="xp-break-label">${x.label}</span></div>
+    <div class="xp-break-val">${x.val}</div>
+  </div>`);
+});
+
+// Badges with SVG token rings
+const BADGES = [
+  { name:'战略陪伴达人', ic:'target', status:'lit', stars:'★★★☆☆', sub:'' },
+  { name:'经验传承者', ic:'lightbulb', status:'prog', stars:'', sub:'60%' },
+  { name:'模板建筑师', ic:'layers', status:'lit', stars:'★★☆☆☆', sub:'' },
+  { name:'首次客户诊断', ic:'rocket', status:'lit', stars:'', sub:'已达成' },
+  { name:'首个模板被复用', ic:'arrow', status:'lit', stars:'', sub:'已达成' },
+  { name:'复盘先锋', ic:'pen', status:'prog', stars:'', sub:'75%' },
+  { name:'???', ic:'lock', status:'lock', stars:'', sub:'' },
+  { name:'???', ic:'lock', status:'lock', stars:'', sub:'' },
+  { name:'???', ic:'lock', status:'lock', stars:'', sub:'' },
+  { name:'???', ic:'lock', status:'lock', stars:'', sub:'' },
+];
+
+function badgeTokenHTML(b) {
+  const d = 84, r = 31, sw = 4;
+  const circ = 2 * Math.PI * r;
+  const pct = b.status === 'lit' ? 100 : b.status === 'prog' ? parseInt(b.sub) || 50 : 0;
+  const off = circ - (circ * pct / 100);
+  const pal = b.status === 'lit'
+    ? { ring:'#335CFE', glow:'drop-shadow(0 16px 40px rgba(51,92,254,0.18))', outer:'linear-gradient(180deg,rgba(246,249,255,0.98),rgba(225,233,255,0.98))', center:'linear-gradient(180deg,rgba(83,121,255,0.98),rgba(44,78,233,0.98))', iconColor:'#fff', border:'rgba(113,144,255,0.26)' }
+    : b.status === 'prog'
+    ? { ring:'#8FA4FF', glow:'drop-shadow(0 8px 20px rgba(143,164,255,0.08))', outer:'linear-gradient(180deg,#fff,rgba(243,246,253,1))', center:'linear-gradient(180deg,#fff,rgba(243,246,253,1))', iconColor:'#5B7BFE', border:'rgba(203,213,225,0.8)' }
+    : { ring:'#D5DCE8', glow:'none', outer:'linear-gradient(180deg,#fff,rgba(245,247,250,1))', center:'linear-gradient(180deg,#fff,rgba(245,247,250,1))', iconColor:'#94a3b8', border:'rgba(226,232,240,0.9)' };
+
+  return `<div style="position:relative;width:${d}px;height:${d}px;filter:${pal.glow}">
+    <div style="position:absolute;inset:0;border-radius:999px;border:1px solid ${pal.border};background:${pal.outer}"></div>
+    <svg style="position:absolute;inset:0;transform:rotate(-90deg)" viewBox="0 0 ${d} ${d}">
+      <circle cx="${d/2}" cy="${d/2}" r="${r}" fill="none" stroke="rgba(226,232,240,0.66)" stroke-width="${sw}"/>
+      <circle cx="${d/2}" cy="${d/2}" r="${r}" fill="none" stroke="${pal.ring}" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${off}"/>
+    </svg>
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:56px;height:56px;border-radius:999px;border:1px solid ${pal.border};background:${pal.center};display:flex;align-items:center;justify-content:center">
+      ${icon(b.ic, 24, 24, pal.iconColor)}
+    </div>
+  </div>`;
+}
+
+const badgeEl = document.getElementById('badge-grid');
+BADGES.forEach(b => {
+  const nameClass = b.status === 'lit' ? 'lit' : b.status === 'prog' ? 'prog' : 'lock';
+  let subHtml = '';
+  if (b.stars) subHtml = `<div style="font-size:10px;color:#f59e0b;letter-spacing:1px">${b.stars}</div>`;
+  else if (b.sub === '已达成') subHtml = `<span style="display:inline-block;background:#ecfdf5;border-radius:999px;padding:2px 8px;font-size:9px;font-weight:600;color:#059669">已达成</span>`;
+  else if (b.sub) subHtml = `<span class="badge-sub" style="color:#5B7BFE">${b.sub}</span>`;
+  badgeEl.insertAdjacentHTML('beforeend', `<div class="badge-cell">${badgeTokenHTML(b)}<span class="badge-name ${nameClass}">${b.name}</span>${subHtml}</div>`);
+});
+
+// Leaderboard
+const RANKS = [
+  { rank:1, name:'大周', ai:true, xp:2847 },
+  { rank:2, name:'顾源源', ai:false, xp:1523 },
+  { rank:3, name:'庆华', ai:true, xp:1201 },
+  { rank:4, name:'花花', ai:true, xp:876 },
+  { rank:5, name:'罗茜茜', ai:true, xp:654 },
+  { rank:6, name:'佳乐', ai:false, xp:340 },
+];
+const rankEl = document.getElementById('rank-list');
+RANKS.forEach(r => {
+  const mc = r.rank===1?'#F59E0B':r.rank===2?'#5B7BFE':r.rank===3?'#D97706':'#D1D5DB';
+  const avatarClass = r.ai ? 'brand' : 'gray';
+  const avatarIcon = r.ai ? icon('sparkles',14,14,'#335CFE') : icon('users',14,14,'#64748b');
+  const pct = (r.xp / 2847 * 100).toFixed(0);
+  rankEl.insertAdjacentHTML('beforeend', `<div class="rank-row${r.rank<=3?' top3':''}">
+    <span class="rank-num" style="color:${mc}">${r.rank}</span>
+    <div class="icon-token md ${avatarClass}">${avatarIcon}</div>
+    <span class="rank-name-text">${r.name}</span>
+    <span class="rank-xp">${r.xp.toLocaleString()}</span>
+    <div class="rank-bar"><div class="rank-bar-fill" style="width:${pct}%;background:${mc}"></div></div>
+  </div>`);
+});
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  const tabs = { experience:0, ability:1, contribution:2, badges:3 };
+  document.querySelectorAll('.tab-btn')[tabs[tab]].classList.add('active');
+  document.getElementById('panel-' + tab).classList.add('active');
+}
+
+/* ═══ Ability Growth Tab Data & Rendering ═══ */
+const ABILITIES = [
+  { key:'exec',    label:'推进执行', current:78, prev:65, required:85, xp:320, weekly:42, stage:'精进', icon:'rocket',    color:'#5B7BFE', bg:'rgba(91,123,254,0.1)', evidence:'本周完成3个客户项目交付' },
+  { key:'collab',  label:'协作',     current:72, prev:60, required:70, xp:280, weekly:28, stage:'成长', icon:'users',     color:'#5B7BFE', bg:'rgba(91,123,254,0.1)', evidence:'跨部门协调2个项目' },
+  { key:'analyze', label:'分析判断', current:55, prev:50, required:75, xp:180, weekly:15, stage:'入门', icon:'brain',     color:'#64748b', bg:'rgba(241,245,249,1)',   evidence:'完成客户需求分析报告' },
+  { key:'insight', label:'洞察',     current:62, prev:58, required:70, xp:210, weekly:20, stage:'成长', icon:'eye',       color:'#10b981', bg:'rgba(16,185,129,0.08)', evidence:'发现市场机会点3个' },
+  { key:'risk',    label:'风险识别', current:45, prev:40, required:65, xp:120, weekly:10, stage:'入门', icon:'shield',    color:'#f97316', bg:'rgba(249,115,22,0.08)', evidence:'识别项目风险并预警' },
+  { key:'write',   label:'写作表达', current:70, prev:62, required:80, xp:260, weekly:35, stage:'精进', icon:'pen-tool',  color:'#5B7BFE', bg:'rgba(91,123,254,0.1)', evidence:'撰写客户提案获好评' },
+];
+
+const ABILITY_ICONS = {
+  'rocket':   (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 4 0 4 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-4 0-4"/></svg>`,
+  'users':    (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+  'brain':    (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/></svg>`,
+  'eye':      (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>`,
+  'shield':   (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>`,
+  'pen-tool': (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"/><path d="m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"/><path d="m2.3 2.3 7.286 7.286"/><circle cx="11" cy="11" r="2"/></svg>`,
+  'zap':      (s,c) => `<svg viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>`,
+};
+
+/* Hexagonal radar chart */
+(function renderRadar() {
+  const svg = document.getElementById('radar-svg');
+  const cx=120, cy=120, R=95;
+  const angles = ABILITIES.map((_,i) => (Math.PI*2*i/6) - Math.PI/2);
+  function hexPt(angle, r) { return [cx + r*Math.cos(angle), cy + r*Math.sin(angle)]; }
+  function hexPoly(r) { return angles.map(a => hexPt(a,r).join(',')).join(' '); }
+
+  // Grid lines
+  let g = '';
+  [0.2,0.4,0.6,0.8,1.0].forEach(s => {
+    g += `<polygon points="${hexPoly(R*s)}" fill="none" stroke="#f1f5f9" stroke-width="1"/>`;
+  });
+  // Axis lines
+  angles.forEach(a => {
+    const [ex,ey] = hexPt(a, R);
+    g += `<line x1="${cx}" y1="${cy}" x2="${ex}" y2="${ey}" stroke="#f1f5f9" stroke-width="1"/>`;
+  });
+
+  // Previous polygon (gray dashed)
+  const prevPts = ABILITIES.map((ab,i) => hexPt(angles[i], R*ab.prev/100).join(',')).join(' ');
+  g += `<polygon points="${prevPts}" fill="rgba(203,213,225,0.12)" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+
+  // Required polygon (amber dashed)
+  const reqPts = ABILITIES.map((ab,i) => hexPt(angles[i], R*ab.required/100).join(',')).join(' ');
+  g += `<polygon points="${reqPts}" fill="none" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="3 3"/>`;
+
+  // Current polygon (blue filled)
+  const curPts = ABILITIES.map((ab,i) => hexPt(angles[i], R*ab.current/100).join(',')).join(' ');
+  g += `<polygon points="${curPts}" fill="rgba(91,123,254,0.15)" stroke="#5B7BFE" stroke-width="2"/>`;
+
+  // Dots on current
+  ABILITIES.forEach((ab,i) => {
+    const [dx,dy] = hexPt(angles[i], R*ab.current/100);
+    g += `<circle cx="${dx}" cy="${dy}" r="4" fill="#5B7BFE" stroke="#fff" stroke-width="2"/>`;
+  });
+
+  // Labels
+  ABILITIES.forEach((ab,i) => {
+    const [lx,ly] = hexPt(angles[i], R+18);
+    const anchor = lx < cx-10 ? 'end' : lx > cx+10 ? 'start' : 'middle';
+    g += `<text x="${lx}" y="${ly}" text-anchor="${anchor}" dominant-baseline="central" font-size="11" font-weight="500" fill="#64748b">${ab.label}</text>`;
+    g += `<text x="${lx}" y="${ly+13}" text-anchor="${anchor}" dominant-baseline="central" font-size="10" font-weight="600" fill="#5B7BFE">${ab.current}</text>`;
+  });
+
+  svg.innerHTML = g;
+})();
+
+/* Ability list */
+(function renderAbilityList() {
+  const el = document.getElementById('ability-list');
+  el.innerHTML = ABILITIES.map(ab => {
+    const ic = ABILITY_ICONS[ab.icon] ? ABILITY_ICONS[ab.icon](14, ab.color) : '';
+    const pct = Math.min(ab.current, 100);
+    return `<div>
+      <div class="ability-row-top">
+        <div class="ability-row-left">
+          <div class="ability-icon-box" style="background:${ab.bg}">${ic}</div>
+          <span class="ability-name">${ab.label}</span>
+          <span class="ability-stage">${ab.stage}</span>
+        </div>
+        <div style="text-align:right">
+          <span class="ability-xp">${ab.xp} XP</span>
+          <span class="ability-delta">+${ab.weekly}</span>
+        </div>
+      </div>
+      <div class="ability-bar"><div class="ability-bar-fill" style="width:${pct}%"></div></div>
+      <div class="ability-evidence">${ab.evidence}</div>
+    </div>`;
+  }).join('');
+})();
+
+/* Timeline */
+(function renderTimeline() {
+  const ENTRIES = [
+    { ability:'exec',    label:'推进执行', delta:'+18 XP', title:'完成「华鑫物流」年度战略方案交付', client:'华鑫物流', summary:'独立完成从需求分析到方案交付的全流程', time:'2天前', special:true },
+    { ability:'write',   label:'写作表达', delta:'+12 XP', title:'撰写「明远科技」提案获得客户认可', client:'明远科技', summary:'提案结构清晰，数据分析到位', time:'3天前', special:false },
+    { ability:'collab',  label:'协作',     delta:'+8 XP',  title:'协调跨部门完成「天域集团」项目复盘', client:'天域集团', summary:'组织3个部门完成项目复盘会议', time:'5天前', special:false },
+    { ability:'insight', label:'洞察',     delta:'+15 XP', title:'发现「中原实业」潜在业务拓展机会', client:'中原实业', summary:'通过数据分析发现客户未被满足的需求', time:'1周前', special:true },
+  ];
+  const el = document.getElementById('timeline-list');
+  el.innerHTML = ENTRIES.map((e,i) => {
+    const ab = ABILITIES.find(a => a.key===e.ability);
+    const ic = ab && ABILITY_ICONS[ab.icon] ? ABILITY_ICONS[ab.icon](14, ab.color) : '';
+    const bg = ab ? ab.bg : '#f1f5f9';
+    const isLast = i === ENTRIES.length - 1;
+    return `<div class="timeline-entry">
+      <div class="timeline-line">
+        <div class="timeline-dot" style="background:${bg}">${ic}</div>
+        ${isLast ? '' : '<div class="timeline-tail"></div>'}
+      </div>
+      <div class="timeline-content">
+        <div class="timeline-top">
+          <div>
+            <div class="timeline-title">${e.title}</div>
+            <div class="timeline-tags">
+              <span class="timeline-tag ${e.special?'special':'normal'}">${e.delta}</span>
+              <span class="timeline-tag normal">${e.label}</span>
+              <span class="timeline-tag normal">${e.client}</span>
+            </div>
+          </div>
+          <span style="font-size:11px;color:#94a3b8;white-space:nowrap;flex-shrink:0">${e.time}</span>
+        </div>
+        <div style="font-size:12px;color:#64748b;margin-top:6px;line-height:1.6">${e.summary}</div>
+      </div>
+    </div>`;
+  }).join('');
+})();
+
+/* Gap cards */
+(function renderGaps() {
+  const GAPS = [
+    { ability:'risk',    label:'风险识别', current:45, required:65, gap:20, reason:'项目风险预判能力不足，需要更多实战经验', source:'华鑫物流项目' },
+    { ability:'analyze', label:'分析判断', current:55, required:75, gap:20, reason:'数据分析深度不足，需加强结构化分析能力', source:'季度能力评估' },
+    { ability:'write',   label:'写作表达', current:70, required:80, gap:10, reason:'方案撰写质量需进一步提升', source:'明远科技提案' },
+  ];
+  const el = document.getElementById('gap-grid');
+  el.innerHTML = GAPS.map(g => {
+    const ab = ABILITIES.find(a => a.key===g.ability);
+    const ic = ab && ABILITY_ICONS[ab.icon] ? ABILITY_ICONS[ab.icon](16, ab.color) : '';
+    const bg = ab ? ab.bg : '#f1f5f9';
+    const pct = Math.round(g.current / g.required * 100);
+    return `<div class="card" style="padding:20px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div class="ability-icon-box" style="background:${bg}">${ic}</div>
+        <div>
+          <div style="font-size:13px;font-weight:600;color:#1e293b">${g.label}</div>
+          <div style="font-size:11px;color:#94a3b8">${g.current} → ${g.required} (差 ${g.gap})</div>
+        </div>
+      </div>
+      <div class="ability-bar" style="margin-bottom:8px"><div class="ability-bar-fill" style="width:${pct}%;background:#f97316"></div></div>
+      <div style="font-size:11px;color:#64748b;line-height:1.6;margin-bottom:8px">${g.reason}</div>
+      <div style="font-size:10px;color:#94a3b8">来源: ${g.source}</div>
+    </div>`;
+  }).join('');
+})();
+
+function toggleTpl(btn) {
+  const detail = btn.nextElementSibling;
+  const chevron = btn.querySelector('.chevron');
+  if (detail.style.display === 'none') { detail.style.display = 'block'; chevron.textContent = '▴'; }
+  else { detail.style.display = 'none'; chevron.textContent = '▾'; }
+}
+</script>
+</body>
+</html>

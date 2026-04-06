@@ -73,11 +73,21 @@ function stopRunningApp() {
 }
 
 function pickRendererEntry(assetDir) {
-  const files = fs.readdirSync(assetDir).filter((name) => /^index-.*\.js$/.test(name)).sort();
-  return files[0] || null;
+  const files = fs.readdirSync(assetDir).filter((name) => /^(main|index)-.*\.js$/.test(name)).sort();
+  const preferred = files.find((name) => /^main-.*\.js$/.test(name));
+  return preferred || files[0] || null;
 }
 
-function verifyInstalledBundle(targetPath, sourcePath) {
+function snapshotSourceBundle(sourcePath) {
+  const sourceFrameworksDir = path.join(sourcePath, 'Contents', 'Frameworks');
+  const sourceRendererAssetDir = path.join(sourcePath, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
+  return {
+    frameworkEntries: fs.existsSync(sourceFrameworksDir) ? fs.readdirSync(sourceFrameworksDir).sort() : null,
+    rendererEntry: fs.existsSync(sourceRendererAssetDir) ? pickRendererEntry(sourceRendererAssetDir) : null,
+  };
+}
+
+function verifyInstalledBundle(targetPath, sourceSnapshot) {
   const requiredPaths = [
     path.join(targetPath, 'Contents', 'Info.plist'),
     path.join(targetPath, 'Contents', 'PkgInfo'),
@@ -93,13 +103,11 @@ function verifyInstalledBundle(targetPath, sourcePath) {
     }
   }
 
-  const sourceFrameworksDir = path.join(sourcePath, 'Contents', 'Frameworks');
   const targetFrameworksDir = path.join(targetPath, 'Contents', 'Frameworks');
-  const sourceFrameworkEntries = fs.readdirSync(sourceFrameworksDir).sort();
   const targetFrameworkEntries = fs.readdirSync(targetFrameworksDir).sort();
-  if (sourceFrameworkEntries.length !== targetFrameworkEntries.length) {
+  if (sourceSnapshot.frameworkEntries && sourceSnapshot.frameworkEntries.length !== targetFrameworkEntries.length) {
     fail(
-      `installed app framework count mismatch: source=${sourceFrameworkEntries.length} target=${targetFrameworkEntries.length}`,
+      `installed app framework count mismatch: source=${sourceSnapshot.frameworkEntries.length} target=${targetFrameworkEntries.length}`,
     );
   }
 }
@@ -115,6 +123,8 @@ if (!fs.existsSync(sourceApp)) {
   fail(`source app not found: ${sourceApp}`);
 }
 
+const sourceSnapshot = snapshotSourceBundle(sourceApp);
+
 fs.mkdirSync(userApplicationsDir, { recursive: true });
 fs.mkdirSync(backupRoot, { recursive: true });
 
@@ -125,11 +135,10 @@ safeRemove(stagingApp);
 info(`installing ${sourceApp} -> ${stagingApp}`);
 runOrFail('ditto', [sourceApp, stagingApp]);
 stabilizeInstalledApp(stagingApp);
-verifyInstalledBundle(stagingApp, sourceApp);
+verifyInstalledBundle(stagingApp, sourceSnapshot);
 
-const sourceRendererAssetDir = path.join(sourceApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
 const targetRendererAssetDir = path.join(stagingApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
-const sourceEntry = pickRendererEntry(sourceRendererAssetDir);
+const sourceEntry = sourceSnapshot.rendererEntry;
 const targetEntry = pickRendererEntry(targetRendererAssetDir);
 if (!sourceEntry || !targetEntry) {
   fail('unable to verify installed renderer assets');

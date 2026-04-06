@@ -1,12 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
-  BettaFishSignal,
   CollabActionResult,
   CollabRepoStatus,
   CommitAndPushToMainPayload,
   DesktopAppInfo,
-  DiagnosisEngineHealth,
-  ExternalDiagnosisRequest,
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
@@ -45,6 +42,4 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   revealInFinder: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:revealInFinder', targetPath),
   saveFileAs: (sourcePath: string, suggestedName?: string): Promise<string | null> =>
     ipcRenderer.invoke('yiyu-workbench:saveFileAs', sourcePath, suggestedName),
-  getDiagnosisEngineHealth: (): Promise<DiagnosisEngineHealth[]> => ipcRenderer.invoke('yiyu-workbench:diagnosisEngineHealth'),
-  runBettafishDiagnosis: (payload: ExternalDiagnosisRequest): Promise<BettaFishSignal> => ipcRenderer.invoke('yiyu-workbench:runBettafishDiagnosis', payload),
 });
