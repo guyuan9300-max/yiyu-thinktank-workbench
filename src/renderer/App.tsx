@@ -24,6 +24,7 @@ import {
   ExternalLink,
   Clock,
   ShieldAlert,
+  BrainCircuit,
   Zap,
   LayoutTemplate,
   Target,
@@ -45,23 +46,24 @@ import {
   User,
   GitCommit,
   Layout,
+  LayoutDashboard,
   GitMerge,
+  Radio,
   Paperclip,
   Info,
   UserPlus,
   Trash2,
+  Pencil,
+  Square,
   X,
 } from 'lucide-react';
 
 import type {
+  AiProvider,
   AgentWorklog,
   AgentWeeklyDigest,
   AgentWeeklyPlanPayload,
   AgentWeeklyPlan,
-  AnalysisRun,
-  AnalysisRunPayload,
-  AnalysisWorkbenchSettings,
-  AnalysisTemplate,
   AppSettings,
   AuthState,
   ChatMessage,
@@ -143,7 +145,9 @@ import {
 } from '../shared/calendar';
 import { buildDepartmentInviteCode, parseDepartmentInviteCode } from '../shared/departmentInvite';
 import {
+  adminResetPassword,
   approveTaskReview,
+  changePassword,
   completeTaskWithReview,
   confirmTask,
   clearDemoData,
@@ -169,9 +173,10 @@ import {
   deleteTaskList,
   deleteTaskTag,
   deleteEventLine,
+  closeEventLine,
+  reopenEventLine,
   disableEmployee,
   extractMeeting,
-  getAnalysisWorkbenchSettings,
   getAgentWorklogs,
   getAuthState,
   getActivityLogs,
@@ -188,6 +193,7 @@ import {
   getClientWorkspaceSettings,
   getClientWorkspace,
   getClientProjectStructure,
+  deleteProjectModule,
   getProjectFlowDetail,
   getProjectModuleDetail,
   getEmployees,
@@ -210,12 +216,12 @@ import {
   getTaskTagSuggestions,
   getTaskBoard,
   getTaskContextPreview,
+  getTaskUnderstanding,
   getTaskSmartBrief,
   getTaskSmartBriefsBatch,
   getTaskSettings,
   getTopics,
   getTopicsSettings,
-  getDiagnosisEngineHealth,
   getCollabRepoStatus,
   generateClientDnaCandidates,
   createFundraisingManualDna,
@@ -242,7 +248,6 @@ import {
   rejectEmployeeReview,
   resolveMeeting,
   runAnalysis,
-  runBettafishDiagnosis,
   scanLegacy,
   searchClientKnowledge,
   getClientAnalysisRun,
@@ -262,7 +267,6 @@ import {
   updateProjectFlow,
   updateProjectModule,
   updateSettings,
-  updateAnalysisWorkbenchSettings,
   updateClientDnaDocument,
   updateHandbookSettings,
   updateOrgModelProfile,
@@ -292,7 +296,10 @@ import { ClientProjectSetupPage } from './components/client_workspace/ClientProj
 import { EventLineClarificationComposer } from './components/tasks/EventLineClarificationComposer';
 import EventLineReportPanel from './components/tasks/EventLineReportPanel';
 import type { ReportDraft } from './components/tasks/EventLineReportPanel';
-import { StrategicAccompanimentShell } from './components/strategic_accompaniment/StrategicAccompanimentShell';
+import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
+import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
+import { SystemLogPanel } from './components/settings/SystemLogPanel';
+import { StrategicBrainView, type ThoughtTaskPayload } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { TaskCalendarView } from './components/tasks/TaskCalendarView';
 import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationCalendarView';
@@ -303,15 +310,10 @@ import { WeeklyReviewSummaryPanel } from './components/tasks/WeeklyReviewSummary
 import { UnderstandingPanel } from './components/tasks/UnderstandingPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
-import { UnifiedWorkbenchStudio } from './components/workbench/UnifiedWorkbenchStudio';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
-import { GrowthHandbookView } from './components/handbook/GrowthHandbookView';
+import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { BrandLogoMark, BrandLogoSettingsCard } from './components/settings/BrandLogoSettingsCard';
 import { FeishuAccountBindingPanel, type FeishuBindingFlowState } from './components/settings/FeishuAccountBindingPanel';
-import { FeishuBotSettingsPanel } from './components/settings/FeishuBotSettingsPanel';
-import { DiagnosisProfileSettingsPanel } from './components/settings/DiagnosisProfileSettingsPanel';
-import { OrganizationRiskDnaSettingsPanel } from './components/settings/OrganizationRiskDnaSettingsPanel';
-import { FundraisingKnowledgeSettingsPanel } from './components/settings/FundraisingKnowledgeSettingsPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
@@ -352,18 +354,10 @@ type ImportFeedback = {
   timestamp: number;
 };
 
-import { UpdateSettingsPanel } from './components/settings/UpdateSettingsPanel';
-import type { DiagnosisProfileGroupKey } from './lib/diagnosisProfiles';
-import { readDiagnosisProfilesFromStorage } from './lib/diagnosisProfiles';
-import {
-  readFundraisingKnowledgeFromStorage,
-  readOrganizationRiskDnaFromStorage,
-} from './lib/fundraisingWorkbenchAssets';
-
-type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'unified_workbench' | 'growth_handbook' | 'settings';
+type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
-type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'analysis' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules';
+type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -399,6 +393,16 @@ type EventLineClarificationState = EventLineClarificationDraftResult & {
   transcript: string;
 };
 
+type TaskEventLineCreateDraftState = {
+  name: string;
+  stage: string;
+  summary: string;
+  intent: string;
+  currentBlocker: string;
+  nextStep: string;
+  recentDecision: string;
+};
+
 type CollabDialogState =
   | {
       mode: 'push';
@@ -423,6 +427,18 @@ function buildEventLineClarificationDraft(
     recentDecision: eventLine?.recentDecision || '',
     missingInfo: [],
     confidence: 'medium',
+  };
+}
+
+function buildTaskEventLineCreateDraft(): TaskEventLineCreateDraftState {
+  return {
+    name: '',
+    stage: '本周推进',
+    summary: '',
+    intent: '',
+    currentBlocker: '',
+    nextStep: '',
+    recentDecision: '',
   };
 }
 
@@ -527,16 +543,23 @@ function FeishuMeetingGlyph({ className = '' }: { className?: string }) {
 
 const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#06B6D4'];
 const providerDefaultModels = {
+  mock: 'mock-summarizer',
+  qwen: 'qwen3.5-plus',
   doubao: 'doubao-seed-2-0-pro-260215',
 } as const;
 
 const providerDisplayNames = {
+  mock: '本地 Mock',
+  qwen: 'Qwen 3.5',
   doubao: '豆包 Seed 2.0 Pro（火山方舟）',
 } as const;
 
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
+const EVENT_LINE_PROJECT_FILTER_STORAGE_KEY = 'yiyu-event-line-project-filter';
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
 const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
+const COLLAB_VISIBLE_WORKSPACE_SEGMENT = '/openclaw/workspace';
+const COLLAB_HIDDEN_WORKSPACE_SEGMENT = '/.openclaw/workspace';
 
 function normalizeCollabRepoPathValue(rawPath: string) {
   return rawPath.replace(/[\\/]+$/, '');
@@ -544,7 +567,10 @@ function normalizeCollabRepoPathValue(rawPath: string) {
 
 function normalizeInitialCollabRepoPath(storedPath: string | null) {
   if (!storedPath) return null;
-  const normalized = normalizeCollabRepoPathValue(storedPath);
+  let normalized = normalizeCollabRepoPathValue(storedPath);
+  if (normalized.includes(COLLAB_HIDDEN_WORKSPACE_SEGMENT)) {
+    normalized = normalized.replace(COLLAB_HIDDEN_WORKSPACE_SEGMENT, COLLAB_VISIBLE_WORKSPACE_SEGMENT);
+  }
   if (normalized.endsWith(`/${COLLAB_LEGACY_REPO_NAME}`)) {
     return normalized.slice(0, -COLLAB_LEGACY_REPO_NAME.length) + COLLAB_PRIMARY_REPO_NAME;
   }
@@ -641,22 +667,6 @@ const DEFAULT_TOPICS_SETTINGS: TopicsSettings = {
   updatedAt: '',
 };
 
-const DEFAULT_ANALYSIS_SETTINGS: AnalysisWorkbenchSettings = {
-  enabledTemplateIds: [],
-  defaultTemplateId: null,
-  defaultTitlePrefix: '系统分析',
-  useOrgDna: true,
-  allowEmployeeTemplateEditing: true,
-  diagnosisProfiles: [],
-  organizationRiskDna: null,
-  fundraisingKnowledgeLibrary: [],
-  deepDnaLibrary: [],
-  coachCaseLibrary: [],
-  coachReminderRules: [],
-  orgWritingNorms: [],
-  updatedAt: '',
-};
-
 const DEFAULT_HANDBOOK_SETTINGS: HandbookSettings = {
   defaultTags: [],
   defaultCategory: '组织沉淀',
@@ -710,25 +720,6 @@ const DEFAULT_FEISHU_USER_BINDING: FeishuUserBinding = {
   lastVerifiedAt: null,
   lastError: null,
 };
-
-function hydrateAnalysisSharedAssets(settings: AnalysisWorkbenchSettings): AnalysisWorkbenchSettings {
-  const diagnosisProfiles = settings.diagnosisProfiles?.length ? settings.diagnosisProfiles : readDiagnosisProfilesFromStorage();
-  const organizationRiskDna = settings.organizationRiskDna ?? readOrganizationRiskDnaFromStorage();
-  const fundraisingKnowledgeLibrary = settings.fundraisingKnowledgeLibrary?.length
-    ? settings.fundraisingKnowledgeLibrary
-    : readFundraisingKnowledgeFromStorage();
-
-  return {
-    ...settings,
-    diagnosisProfiles,
-    organizationRiskDna,
-    fundraisingKnowledgeLibrary,
-    deepDnaLibrary: settings.deepDnaLibrary || [],
-    coachCaseLibrary: settings.coachCaseLibrary || [],
-    coachReminderRules: settings.coachReminderRules || [],
-    orgWritingNorms: settings.orgWritingNorms || [],
-  };
-}
 
 const TASK_COLOR_OPTIONS = ['#5B7BFE', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4', '#64748B', '#EC4899'];
 
@@ -2918,6 +2909,12 @@ function currentWeekLabel() {
   return weekLabelForDate(new Date());
 }
 
+/** Convert "2026-W14" to "第14周" for display */
+function weekLabelCN(label: string): string {
+  const m = label.match(/^\d{4}-W(\d{2})$/);
+  return m ? `第${parseInt(m[1], 10)}周` : label;
+}
+
 function weekBounds(weekLabel: string) {
   const match = weekLabel.match(/^(\d{4})-W(\d{2})$/);
   if (!match) return null;
@@ -3323,7 +3320,7 @@ function TaskPropertyRow({ icon, label, children }: TaskPropertyRowProps) {
 
 export default function App() {
   const initialTodayState = getTodayCalendarState();
-  const [activeTab, setActiveTab] = useState<NavKey>('client_workspace');
+  const [activeTab, setActiveTab] = useState<NavKey>('tasks');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem('yiyu-sidebar-collapsed') === '1';
@@ -3341,7 +3338,6 @@ export default function App() {
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const collabAutoSwitchTargetRef = useRef<string | null>(null);
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('calendar');
-  const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<'__current__' | '__all__' | string>('__current__');
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
     const [taskSelectedDay, setTaskSelectedDay] = useState(initialTodayState.selectedDay);
     const [taskCalendarDisplayMode, setTaskCalendarDisplayMode] = useState<'month' | 'week'>('month');
@@ -3373,16 +3369,12 @@ export default function App() {
   const [latestImportFeedback, setLatestImportFeedback] = useState<ImportFeedback | null>(null);
   const importProgressHoldUntilRef = useRef<number>(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>('overview');
-  const [analysisProfileFocus, setAnalysisProfileFocus] = useState<DiagnosisProfileGroupKey | null>(null);
-  const [analysisProfilePrefillLabel, setAnalysisProfilePrefillLabel] = useState('');
-  const [diagnosisProfileVersion, setDiagnosisProfileVersion] = useState(0);
   const [settingsSectionLoaded, setSettingsSectionLoaded] = useState<Record<SettingsSectionKey, boolean>>({
     overview: true,
     org_dna: false,
     tasks: true,
     client_workspace: false,
     topics: false,
-    analysis: false,
     handbook: false,
     system_admin: false,
     org_overview: false,
@@ -3405,8 +3397,6 @@ export default function App() {
   const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
   const [clientWorkspaceSettingsState, setClientWorkspaceSettingsState] = useState<ClientWorkspaceSettings>(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
   const [topicsSettingsState, setTopicsSettingsState] = useState<TopicsSettings>(DEFAULT_TOPICS_SETTINGS);
-  const [analysisSettingsState, setAnalysisSettingsState] = useState<AnalysisWorkbenchSettings>(DEFAULT_ANALYSIS_SETTINGS);
-  const [fundraisingCoachCasesState, setFundraisingCoachCasesState] = useState<CoachCaseRecord[]>([]);
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
   const [feishuBotSettingsState, setFeishuBotSettingsState] = useState<FeishuBotSettings>(DEFAULT_FEISHU_BOT_SETTINGS);
@@ -3439,8 +3429,6 @@ export default function App() {
   const [reviewDirtyTaskIds, setReviewDirtyTaskIds] = useState<string[]>([]);
   const [radars, setRadars] = useState<TopicRadar[]>([]);
   const [candidates, setCandidates] = useState<TopicCandidate[]>([]);
-  const [analysisTemplates, setAnalysisTemplates] = useState<AnalysisTemplate[]>([]);
-  const [analysisRuns, setAnalysisRuns] = useState<AnalysisRun[]>([]);
   const [handbookEntries, setHandbookEntries] = useState<HandbookEntry[]>([]);
 
   useEffect(() => {
@@ -3449,11 +3437,16 @@ export default function App() {
 
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
+  const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const defaultTagScope: 'org' | 'self' = canManagePublicTaskTaxonomy ? 'org' : 'self';
   const organizationTaskName = resolveOrganizationTaskName(orgModelState.organization.name);
+  const organizationClientId = useMemo(() => {
+    const match = clients.find((c: ClientSummary) => c.name === organizationTaskName);
+    return match?.id || '';
+  }, [organizationTaskName, clients]);
   const organizationTaskAutoReason = buildOrganizationTaskAutoReason(organizationTaskName);
   const organizationTaskManualReason = buildOrganizationTaskManualReason(organizationTaskName);
 
@@ -3688,13 +3681,6 @@ export default function App() {
     setCollabCommitMessage(nextValue);
   }
 
-  const openDiagnosisProfileSettings = (groupKey: DiagnosisProfileGroupKey, prefillLabel = '') => {
-    setActiveTab('settings');
-    setSettingsSection('analysis');
-    setAnalysisProfileFocus(groupKey);
-    setAnalysisProfilePrefillLabel(prefillLabel);
-  };
-
   async function loadSettingsBlock() {
     const response = await getSettings();
     setSettingsState(response.settings);
@@ -3749,13 +3735,6 @@ export default function App() {
     return response;
   }
 
-  async function loadAnalysisSettingsBlock() {
-    const response = await getAnalysisWorkbenchSettings();
-    const hydrated = hydrateAnalysisSharedAssets(response);
-    setAnalysisSettingsState(hydrated);
-    return hydrated;
-  }
-
   async function loadHandbookSettingsBlock() {
     const response = await getHandbookSettings();
     setHandbookSettingsState(response);
@@ -3793,9 +3772,6 @@ export default function App() {
         break;
       case 'topics':
         await loadTopicsSettingsBlock();
-        break;
-      case 'analysis':
-        await loadAnalysisSettingsBlock();
         break;
       case 'handbook':
         await loadHandbookSettingsBlock();
@@ -3944,16 +3920,6 @@ export default function App() {
     return response;
   }
 
-  async function loadAnalysisBlock() {
-    const [response, fundraisingCases] = await Promise.all([
-      getAnalysisTools(),
-      getFundraisingCases().catch(() => []),
-    ]);
-    setAnalysisTemplates(response.templates);
-    setAnalysisRuns(response.runs);
-    setFundraisingCoachCasesState(fundraisingCases);
-  }
-
   async function loadHandbookBlock() {
     const response = await getHandbook();
     setHandbookEntries(response.entries);
@@ -3991,7 +3957,6 @@ export default function App() {
           },
           { name: 'reviews', run: () => loadReviewBlock() },
           { name: 'topics', run: () => loadTopicsBlock() },
-          { name: 'analysis-tools', run: () => loadAnalysisBlock() },
           { name: 'handbook', run: () => loadHandbookBlock() },
           {
             name: 'feishu-user-binding',
@@ -4010,6 +3975,8 @@ export default function App() {
             run: () => (nextAuth.user?.primaryRole === 'admin' ? loadReviewGovernanceSettingsBlock() : Promise.resolve()),
           },
         ];
+        let completedCount = 0;
+        const totalCount = backgroundLoaders.length;
         const failedBackgroundBlocks = (
           await Promise.all(
             backgroundLoaders.map(async ({ name, run }) => {
@@ -4020,10 +3987,14 @@ export default function App() {
               } catch (error) {
                 console.error(`[bootstrap] ${name} failed`, error);
                 return name;
+              } finally {
+                completedCount += 1;
+                setLoadingSubProgress(Math.round((completedCount / totalCount) * 100));
               }
             }),
           )
         ).filter((item): item is string => Boolean(item));
+        setLoadingSubProgress(0);
         if (nextAuth.user?.primaryRole !== 'admin') {
           setAgentWorklogs([]);
           setAgentWeeklyDigests([]);
@@ -4040,7 +4011,6 @@ export default function App() {
           tasks: true,
           client_workspace: false,
           topics: false,
-          analysis: false,
           handbook: false,
           system_admin: false,
           org_overview: false,
@@ -4072,15 +4042,12 @@ export default function App() {
         setReviewDashboard(null);
         setRadars([]);
         setCandidates([]);
-        setAnalysisTemplates([]);
-        setAnalysisRuns([]);
         setHandbookEntries([]);
         setLogs([]);
         setEmployeeReviews([]);
         setOrganizationDnaModules([]);
         setClientWorkspaceSettingsState(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
         setTopicsSettingsState(DEFAULT_TOPICS_SETTINGS);
-        setAnalysisSettingsState(DEFAULT_ANALYSIS_SETTINGS);
         setHandbookSettingsState(DEFAULT_HANDBOOK_SETTINGS);
         setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
         setFeishuBotSettingsState(DEFAULT_FEISHU_BOT_SETTINGS);
@@ -4093,7 +4060,6 @@ export default function App() {
           tasks: true,
           client_workspace: false,
           topics: false,
-          analysis: false,
           handbook: false,
           system_admin: false,
           org_overview: false,
@@ -4148,7 +4114,6 @@ export default function App() {
       || normalizedTab === 'client_workspace'
       || normalizedTab === 'strategic_accompaniment'
       || normalizedTab === 'topics_management'
-      || normalizedTab === 'unified_workbench'
       || normalizedTab === 'growth_handbook'
       || normalizedTab === 'settings'
     ) {
@@ -4421,8 +4386,7 @@ export default function App() {
     { id: 'client_workspace' as const, label: '客户工作台', icon: Briefcase },
     { id: 'strategic_accompaniment' as const, label: '战略陪伴', icon: Target },
     { id: 'topics_management' as const, label: '资讯情报站', icon: Newspaper },
-    { id: 'unified_workbench' as const, label: '测试工作台', icon: LayoutTemplate },
-    { id: 'growth_handbook' as const, label: '成长手册', icon: BookOpen },
+    { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
 
@@ -4431,6 +4395,7 @@ export default function App() {
       email,
       fullName: '',
       password: '',
+      confirmPassword: '',
       departmentId: '',
       jobTitle: '',
       managerName: '',
@@ -4442,15 +4407,22 @@ export default function App() {
     const [form, setForm] = useState(() => createEmptyRegisterForm());
     const [rememberMe, setRememberMe] = useState(true);
     const [departmentInviteCode, setDepartmentInviteCode] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [message, setMessage] = useState(authState.message || '');
     const inviteDepartment = useMemo(() => {
       const inviteKey = parseDepartmentInviteCode(departmentInviteCode);
       if (!inviteKey) return null;
-      return departmentOptions.find((department) => (
-        department.id === inviteKey || buildDepartmentInviteCode(department.id) === inviteKey
+      return departmentOptions.find((department, index) => (
+        department.id === inviteKey
+        || buildDepartmentInviteCode(department.id) === inviteKey
+        || buildDepartmentInviteCode(department.id, {
+          organizationName: orgModelState.organization.name,
+          departmentName: department.name,
+          order: index,
+        }) === inviteKey
       )) || null;
-    }, [departmentInviteCode, departmentOptions]);
+    }, [departmentInviteCode, departmentOptions, orgModelState.organization.name]);
 
     useEffect(() => {
       const href = window.location.href;
@@ -4566,11 +4538,17 @@ export default function App() {
               {mode === 'login' && (
                 <>
                   <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                  <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                    记住我的登录状态
-                    <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
-                  </label>
+                  <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                  <div className="flex gap-3">
+                    <label className="flex-1 flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                      记住我的登录状态
+                      <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+                    </label>
+                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                      显示密码
+                      <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
+                    </label>
+                  </div>
                 </>
               )}
               {mode === 'register' && (
@@ -4596,10 +4574,10 @@ export default function App() {
                           setDepartmentInviteCode(event.target.value);
                           setMessage('');
                         }}
-                        placeholder={'先输入部门邀请码，例如「咨询策略部 邀请码 482193」或 482193'}
+                        placeholder={'先输入部门邀请码，例如「咨询策略部 邀请码 YIYU-ZX01」或 YIYU-ZX01'}
                         className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                       />
-                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴"部门名 + 6 位邀请码"，注册时先锁定部门，后面不用自己手选。</p>
+                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴“部门名 + 邀请码”，例如 “咨询策略部 邀请码 YIYU-ZX01”，注册时先锁定部门，后面不用自己手选。</p>
                       <div className={`rounded-[24px] border px-4 py-4 ${inviteDepartment ? 'border-emerald-200 bg-emerald-50/80' : 'border-dashed border-gray-200 bg-gray-50'}`}>
                         <p className="text-[12px] font-bold text-gray-500">邀请码识别结果</p>
                         {inviteDepartment ? (
@@ -4620,8 +4598,22 @@ export default function App() {
                         <p className="mt-1 text-[12px] text-gray-500">部门由邀请码决定。你现在只需要补全自己的身份和岗位信息。</p>
                       </div>
                       <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input type="password" value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      <div>
+                        <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
+                      </div>
+                      <div>
+                        <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+                      </div>
+                      <div>
+                        <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+                      </div>
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                        显示密码
+                        <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
+                      </label>
                       <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="我的岗位，例如：咨询顾问 / 内容运营" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                       <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属上级（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                       <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前主要负责什么，或最近一段时间的重点（可选）" className="min-h-[96px] w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
@@ -4633,7 +4625,19 @@ export default function App() {
                   )}
                 </>
               )}
-              {message && <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">{message}</div>}
+              {message && (() => {
+                const isSuccess = message.includes('已提交') || message.includes('成功');
+                const isPending = message.includes('等待管理员审核') || message.includes('待审核');
+                const isRejected = message.includes('未通过审核') || message.includes('停用');
+                const style = isSuccess
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : isPending
+                  ? 'border-blue-200 bg-blue-50 text-blue-800'
+                  : isRejected
+                  ? 'border-red-200 bg-red-50 text-red-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800';
+                return <div className={`rounded-2xl border px-4 py-3 text-[13px] ${style}`}>{message}</div>;
+              })()}
               {mode === 'login' ? (
                 <Button
                   primary
@@ -4659,7 +4663,7 @@ export default function App() {
                   primary
                   className="w-full py-3 text-[14px]"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !form.password.trim() || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
+                  disabled={submitting || !form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) || form.password.length < 8 || form.password !== form.confirmPassword || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
                 >
                   {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
                   提交注册
@@ -4703,7 +4707,6 @@ export default function App() {
     loadReviewHistoryBlock,
     loadTaskBlock,
     notifyGrowthRefresh,
-    openDiagnosisProfileSettings,
     operators,
     reviewDashboard,
     reviewHistory,
@@ -4758,7 +4761,6 @@ export default function App() {
       loadReviewHistoryBlock,
       loadTaskBlock,
       notifyGrowthRefresh,
-      openDiagnosisProfileSettings,
       operators,
       reviewDashboard,
       reviewHistory,
@@ -4810,7 +4812,6 @@ export default function App() {
       loadReviewHistoryBlock: typeof loadReviewHistoryBlock;
       loadTaskBlock: typeof loadTaskBlock;
       notifyGrowthRefresh: typeof notifyGrowthRefresh;
-      openDiagnosisProfileSettings: typeof openDiagnosisProfileSettings;
       operators: typeof operators;
       reviewDashboard: typeof reviewDashboard;
       reviewHistory: typeof reviewHistory;
@@ -4868,7 +4869,7 @@ export default function App() {
       clientId: '',
       clientTouched: false,
       clientConfidence: 'none',
-      clientReason: organizationTaskAutoReason,
+      clientReason: '请选择项目。',
       eventLineId: '',
       eventLineTouched: false,
       eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
@@ -4905,6 +4906,8 @@ export default function App() {
       closeEditor?: boolean;
     } | null>(null);
     const [isSavingTask, setIsSavingTask] = useState(false);
+    const [taskUnderstanding, setTaskUnderstanding] = useState<import('./lib/api').TaskUnderstandingSnapshot | null>(null);
+    const [isLoadingUnderstanding, setIsLoadingUnderstanding] = useState(false);
     const isTaskModalOpenRef = useRef(false);
     const [tagDraft, setTagDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
     const [mentionQuery, setMentionQuery] = useState('@');
@@ -4916,6 +4919,12 @@ export default function App() {
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
     const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
+    const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
+      if (typeof window === 'undefined') return '__all__';
+      return window.localStorage.getItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY) || '__all__';
+    });
+    const elProjectDropdownRef = useRef<HTMLDivElement | null>(null);
+    const [elProjectDropdownOpen, setElProjectDropdownOpen] = useState(false);
     const [drillTaskViewOverride, setDrillTaskViewOverride] = useState<ReviewDashboardCardTarget | null>(null);
     const [activeReviewDrillTarget, setActiveReviewDrillTarget] = useState<ReviewDashboardDrillTargetResponse | null>(null);
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
@@ -4932,10 +4941,17 @@ export default function App() {
     const [isTaskEventLineClarifyMode, setIsTaskEventLineClarifyMode] = useState(false);
     const [isGeneratingTaskEventLineClarification, setIsGeneratingTaskEventLineClarification] = useState(false);
     const [isSavingTaskEventLineClarification, setIsSavingTaskEventLineClarification] = useState(false);
+    const [isTaskEventLineCreateOpen, setIsTaskEventLineCreateOpen] = useState(false);
+    const [taskEventLineCreateDraft, setTaskEventLineCreateDraft] = useState<TaskEventLineCreateDraftState>(buildTaskEventLineCreateDraft());
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
+    const [isTemplateEditorOpen, setIsTemplateEditorOpen] = useState(false);
+    const [templateEditorMode, setTemplateEditorMode] = useState<'create' | 'edit'>('create');
+    const [templateEditorInitialData, setTemplateEditorInitialData] = useState<TemplateData | null>(null);
+    const [isTemplateListOpen, setIsTemplateListOpen] = useState(false);
+    const [templateListEditingModuleId, setTemplateListEditingModuleId] = useState<string | null>(null);
     const [taskContextPreview, setTaskContextPreview] = useState<TaskContextPreview | null>(null);
     const [isTaskContextPreviewLoading, setIsTaskContextPreviewLoading] = useState(false);
     const [taskSmartBriefs, setTaskSmartBriefs] = useState<Record<string, TaskSmartBrief>>({});
@@ -4954,6 +4970,19 @@ export default function App() {
       isTaskModalOpenRef.current = isTaskModalOpen;
     }, [isTaskModalOpen]);
 
+    // Load understanding when editing an existing task
+    useEffect(() => {
+      if (!isTaskModalOpen || !editingTask.id) {
+        setTaskUnderstanding(null);
+        return;
+      }
+      setIsLoadingUnderstanding(true);
+      getTaskUnderstanding(editingTask.id)
+        .then(setTaskUnderstanding)
+        .catch(() => setTaskUnderstanding(null))
+        .finally(() => setIsLoadingUnderstanding(false));
+    }, [isTaskModalOpen, editingTask.id]);
+
     const resetTaskModalTransientState = () => {
       setIsDuePickerOpen(false);
       setDuePickerTab('date');
@@ -4968,6 +4997,8 @@ export default function App() {
       setIsSavingTask(false);
       setPendingTaskArchiveText('');
       setPendingSmartBriefDraftSource(null);
+      setIsTaskEventLineCreateOpen(false);
+      setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
     };
 
     const closeTaskModal = (reason: string) => {
@@ -4977,6 +5008,8 @@ export default function App() {
     };
     const [hidePersonalTasks, setHidePersonalTasks] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
+    const [activeReviewTab, setActiveReviewTab] = useState<'overview' | 'events' | 'signals' | 'ai'>('overview');
+    const [reviewPerspective, setReviewPerspective] = useState<'global' | 'ceo' | 'department' | 'personal'>('global');
     const [reviewForm, setReviewForm] = useState<ReviewFormState>(createEmptyReviewForm());
     const syncReviewDirtyTaskIds = (next: Set<string>) => {
       reviewDirtyTaskIdsRef.current = next;
@@ -5026,9 +5059,10 @@ export default function App() {
     }, [activeEventLine]);
 
     useEffect(() => {
-      if (!isTaskModalOpen || !editingTask.clientId) return;
-      if (editingTask.clientId === workspace?.client.id) return;
-      const clientId = editingTask.clientId;
+      const resolvedClientId = editingTask.clientId || organizationClientId;
+      if (!isTaskModalOpen || !resolvedClientId) return;
+      if (resolvedClientId === workspace?.client.id) return;
+      const clientId = resolvedClientId;
       const cachedDnaModules = taskClientDnaCache[clientId];
       const cachedProjectStructure = projectStructureCache[clientId];
       if (cachedDnaModules && cachedProjectStructure) return;
@@ -5063,7 +5097,7 @@ export default function App() {
       return () => {
         cancelled = true;
       };
-    }, [editingTask.clientId, isTaskModalOpen, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
+    }, [editingTask.clientId, organizationClientId, isTaskModalOpen, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
 
     const loadEventLines = useCallback(async () => {
       try {
@@ -5085,6 +5119,26 @@ export default function App() {
       if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !authState.authenticated) return;
       void loadEventLines();
     }, [activeTab, authState.authenticated, loadEventLines, taskViewMode]);
+
+    useEffect(() => {
+      if (authState.authenticated) return;
+      setEventLineSourceStatus(null);
+      setEventLines([]);
+      setEventLinesLoadError(null);
+      setEventLineProjectFilterId('__all__');
+    }, [authState.authenticated]);
+
+    // 自定义下拉菜单：点击外部关闭
+    useEffect(() => {
+      if (!elProjectDropdownOpen) return;
+      const handler = (e: MouseEvent) => {
+        if (elProjectDropdownRef.current && !elProjectDropdownRef.current.contains(e.target as Node)) {
+          setElProjectDropdownOpen(false);
+        }
+      };
+      document.addEventListener('mousedown', handler, true);
+      return () => document.removeEventListener('mousedown', handler, true);
+    }, [elProjectDropdownOpen]);
 
     useEffect(() => {
       if (!isTaskModalOpen) {
@@ -5139,8 +5193,8 @@ export default function App() {
           updates.priority = nextPriority.priority;
           updates.priorityReason = nextPriority.reason;
         }
-        if (nextClient && (!prev.clientTouched && (prev.clientId !== nextClient.clientId || prev.clientReason !== nextClient.reason || prev.clientConfidence !== nextClient.confidence))) {
-          updates.clientId = nextClient.clientId;
+        if (nextClient && (!prev.clientTouched && (prev.clientId !== (nextClient.clientId || organizationClientId) || prev.clientReason !== nextClient.reason || prev.clientConfidence !== nextClient.confidence))) {
+          updates.clientId = nextClient.clientId || organizationClientId;
           updates.clientReason = nextClient.reason;
           updates.clientConfidence = nextClient.confidence;
         }
@@ -5465,14 +5519,15 @@ export default function App() {
       editingTask.clientId && editingTask.clientId === workspace?.client.id
         ? workspace?.dnaModules || []
         : (editingTask.clientId ? taskClientDnaCache[editingTask.clientId] || [] : []);
+    const effectiveTaskClientId = editingTask.clientId || organizationClientId;
     const activeProjectStructure =
-      editingTask.clientId && editingTask.clientId === workspace?.client.id
+      effectiveTaskClientId && effectiveTaskClientId === workspace?.client.id
         ? {
             modules: workspace?.projectModules || [],
             flows: workspace?.projectFlows || [],
           }
-        : (editingTask.clientId
-          ? projectStructureCache[editingTask.clientId] || { modules: [], flows: [] }
+        : (effectiveTaskClientId
+          ? projectStructureCache[effectiveTaskClientId] || { modules: [], flows: [] }
           : { modules: [], flows: [] });
     const taskProjectModuleOptions = activeProjectStructure.modules;
     const taskProjectFlowOptions = activeProjectStructure.flows.filter((flow: ProjectFlow) => {
@@ -5490,29 +5545,48 @@ export default function App() {
       [eventLines],
     );
     const eventLineProjectOptions = useMemo(() => {
-      const seen = new Set<string>();
-      const options: Array<{ id: string; label: string }> = [];
+      const labelById = new Map<string, string>();
+      clients.forEach((client) => {
+        const clientId = (client.id || '').trim();
+        if (!clientId) return;
+        const label = (client.name || '').trim() || '未命名项目';
+        labelById.set(clientId, label);
+      });
       sortedEventLines.forEach((item) => {
         const clientId = (item.primaryClientId || '').trim();
-        if (!clientId || seen.has(clientId)) return;
-        seen.add(clientId);
-        const label =
-          item.primaryClientName?.trim()
-          || clients.find((client) => client.id === clientId)?.name
-          || '未命名项目';
-        options.push({ id: clientId, label });
+        if (!clientId) return;
+        const cloudLabel = item.primaryClientName?.trim();
+        if (!labelById.has(clientId)) {
+          labelById.set(clientId, cloudLabel || '未命名项目');
+          return;
+        }
+        if (cloudLabel && labelById.get(clientId) === '未命名项目') {
+          labelById.set(clientId, cloudLabel);
+        }
       });
-      options.sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
-      return options;
+      return Array.from(labelById.entries())
+        .map(([id, label]) => ({ id, label }))
+        .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
     }, [clients, sortedEventLines]);
-    const resolvedEventLineProjectFilterId =
-      eventLineProjectFilterId === '__current__'
-        ? (currentClientId || '__all__')
-        : eventLineProjectFilterId;
     const filteredEventLines = useMemo(() => {
-      if (resolvedEventLineProjectFilterId === '__all__') return sortedEventLines;
-      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === resolvedEventLineProjectFilterId);
-    }, [resolvedEventLineProjectFilterId, sortedEventLines]);
+      if (eventLineProjectFilterId === '__all__') return sortedEventLines;
+      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === eventLineProjectFilterId);
+    }, [eventLineProjectFilterId, sortedEventLines]);
+    useEffect(() => {
+      if (typeof window === 'undefined') return;
+      if (eventLineProjectFilterId === '__all__') {
+        window.localStorage.removeItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY);
+        return;
+      }
+      window.localStorage.setItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY, eventLineProjectFilterId);
+    }, [eventLineProjectFilterId]);
+    useEffect(() => {
+      if (eventLineProjectFilterId === '__all__') return;
+      const exists = eventLineProjectOptions.some((option) => option.id === eventLineProjectFilterId);
+      if (!exists) {
+        setEventLineProjectFilterId('__all__');
+      }
+    }, [eventLineProjectFilterId, eventLineProjectOptions]);
     const eventLineById = useMemo(
       () =>
         sortedEventLines.reduce<Record<string, EventLine>>((acc, item) => {
@@ -5522,12 +5596,14 @@ export default function App() {
       [sortedEventLines],
     );
     const taskEventLineOptions = useMemo(() => {
-      if (!editingTask.clientId) return sortedEventLines;
-      const scoped = sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === editingTask.clientId);
-      if (scoped.length === 0) return sortedEventLines;
-      if (!editingTask.eventLineId || scoped.some((item) => item.id === editingTask.eventLineId)) return scoped;
-      const selected = sortedEventLines.find((item) => item.id === editingTask.eventLineId);
-      return selected ? [selected, ...scoped] : scoped;
+      const activeLines = sortedEventLines.filter((item) => item.status !== 'archived' && item.status !== 'done');
+      const base = !editingTask.clientId ? activeLines
+        : activeLines.filter((item) => (item.primaryClientId || '').trim() === editingTask.clientId);
+      if (editingTask.eventLineId && !base.some((item) => item.id === editingTask.eventLineId)) {
+        const selected = sortedEventLines.find((item) => item.id === editingTask.eventLineId);
+        return selected ? [selected, ...base] : base;
+      }
+      return base;
     }, [editingTask.clientId, editingTask.eventLineId, sortedEventLines]);
     const editingTaskRecord = useMemo(
       () => (editingTask.id ? tasks.find((item: Task) => item.id === editingTask.id) || null : null),
@@ -5743,7 +5819,7 @@ export default function App() {
         setSavedReviewGroupId(null);
         const response = await loadReviewBlock(weekLabel);
         setIsReviewHistoryOpen(false);
-        flash('success', `已切换到 ${response.currentReview?.weekLabel || weekLabel} 的复盘。`);
+        flash('success', `已切换到${weekLabelCN(response.currentReview?.weekLabel || weekLabel)}的复盘。`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '历史复盘打开失败');
       }
@@ -5860,19 +5936,32 @@ export default function App() {
         flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
         return;
       }
-      if (!editingTask.title.trim()) {
-        flash('error', '请先填写任务标题，再从任务新建事件线。');
+      setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+      setIsTaskEventLineCreateOpen(true);
+    };
+
+    const handleSubmitTaskEventLineCreate = async () => {
+      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
+        flash('error', '个人日程不会接入事件线，请切回协作任务后再创建。');
+        return;
+      }
+      const name = taskEventLineCreateDraft.name.trim();
+      if (!name) {
+        flash('error', '请先输入事件线名称。');
         return;
       }
       setIsCreatingEventLine(true);
       try {
         const created = await createEventLine({
-          name: editingTask.title.trim(),
+          name,
           kind: editingTask.clientId ? 'project_line' : 'custom',
           status: 'active',
-          stage: '本周推进',
-          summary: editingTask.desc.trim() || null,
-          intent: editingTask.desc.trim() || null,
+          stage: taskEventLineCreateDraft.stage.trim() || '本周推进',
+          summary: taskEventLineCreateDraft.summary.trim() || null,
+          intent: taskEventLineCreateDraft.intent.trim() || null,
+          currentBlocker: taskEventLineCreateDraft.currentBlocker.trim() || null,
+          nextStep: taskEventLineCreateDraft.nextStep.trim() || null,
+          recentDecision: taskEventLineCreateDraft.recentDecision.trim() || null,
           ownerId: currentSessionUser?.id || null,
           primaryClientId: editingTask.clientId || null,
           participantIds: editingTask.collaborators.map((item) => item.id),
@@ -5884,6 +5973,8 @@ export default function App() {
           eventLineTouched: true,
           eventLineReason: `已从当前任务创建事件线：${created.name}。如需补充阶段、阻塞或关键决策，可点右侧"查看事件线"。`,
         }));
+        setIsTaskEventLineCreateOpen(false);
+        setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
         flash('success', '事件线已创建，并已挂到当前任务。当前会继续停留在任务编辑页。');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线创建失败');
@@ -5897,31 +5988,58 @@ export default function App() {
       void openEventLineDetail(selectedEventLineSummary.id);
     };
 
-    const handleDeleteEventLine = async (targetEventLine: EventLine) => {
+    const handleCloseEventLine = async (targetEventLine: EventLine) => {
       if (isDeletingEventLine) return;
       const lineName = targetEventLine.name || '未命名事件线';
-      if (!window.confirm(`确认移除事件线“${lineName}”？如果这条线已有任务或证据，将自动归档；如果没有依赖，将直接删除。`)) {
+      if (!window.confirm(`确认结束事件线”${lineName}”？结束后事件线将归档为只读，仍可查看和导出。`)) {
         return;
       }
       setIsDeletingEventLine(true);
       try {
-        const result = await deleteEventLine(targetEventLine.id);
-        await loadEventLines();
+        await closeEventLine(targetEventLine.id);
+        try { await loadEventLines(); } catch {}
         if (editingTask.eventLineId === targetEventLine.id) {
-          const nextReason = result.status === 'archived'
-            ? `事件线已归档：${lineName}。`
-            : `事件线已删除：${lineName}。`;
-          setEditingTask((prev) => ({
-            ...prev,
-            eventLineId: '',
-            eventLineTouched: true,
-            eventLineReason: nextReason,
-          }));
+          setEditingTask((prev) => ({ ...prev, eventLineId: '', eventLineTouched: true, eventLineReason: `事件线已归档：${lineName}。` }));
         }
-        if (activeEventLine?.eventLine.id === targetEventLine.id) {
-          setActiveEventLine(null);
+        if (activeEventLine?.eventLine.id === targetEventLine.id) { setActiveEventLine(null); }
+        flash('success', '事件线已归档');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '事件线归档失败');
+      } finally {
+        setIsDeletingEventLine(false);
+      }
+    };
+
+    const handleReopenEventLine = async (targetEventLine: EventLine) => {
+      if (isDeletingEventLine) return;
+      setIsDeletingEventLine(true);
+      try {
+        await reopenEventLine(targetEventLine.id);
+        try { await loadEventLines(); } catch {}
+        flash('success', '事件线已重新打开');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '重新打开失败');
+      } finally {
+        setIsDeletingEventLine(false);
+      }
+    };
+
+    const handleDeleteEventLine = async (targetEventLine: EventLine) => {
+      if (isDeletingEventLine) return;
+      const lineName = targetEventLine.name || '未命名事件线';
+      if (!window.confirm(`确认删除事件线”${lineName}”？删除后不可恢复。`)) {
+        return;
+      }
+      setIsDeletingEventLine(true);
+      try {
+        await deleteEventLine(targetEventLine.id);
+        // Remove from local state immediately (cloud may keep an archived copy)
+        setEventLines((prev) => prev.filter((el) => el.id !== targetEventLine.id));
+        if (editingTask.eventLineId === targetEventLine.id) {
+          setEditingTask((prev) => ({ ...prev, eventLineId: '', eventLineTouched: true, eventLineReason: `事件线已删除：${lineName}。` }));
         }
-        flash('success', result.status === 'archived' ? '事件线已归档' : '事件线已删除');
+        if (activeEventLine?.eventLine.id === targetEventLine.id) { setActiveEventLine(null); }
+        flash('success', '事件线已删除');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线删除失败');
       } finally {
@@ -5930,40 +6048,54 @@ export default function App() {
     };
     const handleDeleteEventLineFromTask = async () => {
       if (!selectedEventLineSummary) return;
-      await handleDeleteEventLine(selectedEventLineSummary);
+      if (selectedEventLineSummary.visibilityScope === 'private') {
+        await handleDeleteEventLine(selectedEventLineSummary);
+      } else {
+        await handleCloseEventLine(selectedEventLineSummary);
+      }
     };
 
-    const handleCreateProjectModuleFromTask = async () => {
+    const handleCreateProjectModuleFromTask = () => {
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
-        flash('error', '个人日程不进入任务模块。');
+        flash('error', '个人日程不进入任务模板。');
         return;
       }
-      if (!editingTask.clientId) {
-        flash('error', '请先选择客户/项目，再创建任务模块。');
+      setTemplateEditorMode('create');
+      setTemplateEditorInitialData(null);
+      setIsTemplateEditorOpen(true);
+    };
+
+    const handleSaveTemplate = async (data: TemplateData) => {
+      setIsTemplateEditorOpen(false);
+      const targetClientId = editingTask.clientId || organizationClientId || clients[0]?.id;
+      console.warn('[template-save] editingTask.clientId=', JSON.stringify(editingTask.clientId), 'organizationClientId=', organizationClientId, 'targetClientId=', targetClientId);
+      if (!targetClientId) {
+        flash('error', '没有可用的客户/项目，无法保存模板。');
         return;
       }
-      if (isCreatingTaskProjectModule) return;
-      const name = window.prompt('输入任务模块名称', '');
-      if (!name || !name.trim()) return;
       setIsCreatingTaskProjectModule(true);
       try {
-        const created = await createProjectModule(editingTask.clientId, {
-          name: name.trim(),
+        console.warn('[template-save] calling createProjectModule', targetClientId, data.name);
+        const created = await createProjectModule(targetClientId, {
+          name: data.name,
+          goal: data.scenarioDesc || undefined,
+          templateTasksJson: JSON.stringify({ tasks: data.tasks, options: data.options }),
         });
-        const structure = await getClientProjectStructure(editingTask.clientId);
-        setProjectStructureCache((prev) => ({ ...prev, [editingTask.clientId!]: structure }));
+        const structure = await getClientProjectStructure(targetClientId);
+        setProjectStructureCache((prev) => ({ ...prev, [targetClientId]: structure }));
         setEditingTask((prev) => ({
           ...prev,
           projectModuleId: created.id,
           projectModuleTouched: true,
-          projectModuleReason: `已新建模块：${created.name}。`,
+          projectModuleReason: `已新建模板：${created.name}（${data.tasks.length} 条预设任务）。`,
           projectFlowId: '',
           projectFlowTouched: false,
-          projectFlowReason: '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+          projectFlowReason: '',
         }));
-        flash('success', '任务模块已创建');
+        flash('success', `任务模板"${data.name}"已创建`);
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '任务模块创建失败');
+        console.error('[template-save] FAILED', error);
+        flash('error', error instanceof Error ? error.message : '任务模板创建失败');
       } finally {
         setIsCreatingTaskProjectModule(false);
       }
@@ -6369,18 +6501,22 @@ export default function App() {
         closeTaskModal('delete-started');
         resetTaskDraft();
       }
-      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      const deletedId = task.id;
+      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
       flash('success', '任务已删除');
       void (async () => {
         try {
-          await deleteTask(task.id);
-          void loadTaskBlock();
+          await deleteTask(deletedId);
+          // Wait for cloud to process before refreshing
+          await new Promise((r) => setTimeout(r, 2000));
+          await loadTaskBlock();
+          // Ensure deleted task stays deleted even if cloud returned stale data
+          setTasks((prev) => prev.filter((t) => t.id !== deletedId));
           if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
           void refreshWorkspace(task.clientId || undefined);
           if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
         } catch {
-          void loadTaskBlock();
-          flash('error', '删除任务失败，已恢复');
+          // Delete already removed locally — don't restore
         }
       })();
     };
@@ -6735,7 +6871,7 @@ export default function App() {
         clientId: '',
         clientTouched: false,
         clientConfidence: 'none',
-        clientReason: organizationTaskAutoReason,
+        clientReason: '请选择项目。',
         eventLineId: '',
         eventLineTouched: false,
         eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
@@ -6960,8 +7096,16 @@ export default function App() {
         if (task) {
           void getTaskSmartBriefsBatch([{ id: task.id, title: task.title, desc: task.desc || '', clientId: task.clientId, eventLineId: task.eventLineId, attachmentTitles: (task.attachments || []).map((a) => a.title) }])
             .then((briefs) => {
-              if (briefs.length > 0) setTaskSmartBriefs((prev) => ({ ...prev, [briefs[0].taskId]: briefs[0] }));
-            }).catch(() => {});
+              if (briefs.length > 0) {
+                setTaskSmartBriefs((prev) => ({ ...prev, [briefs[0].taskId]: briefs[0] }));
+              } else {
+                // Set empty brief to stop loading spinner
+                setTaskSmartBriefs((prev) => ({ ...prev, [task.id]: { taskId: task.id, summary: '', summarySourceLabels: [], actionItems: [] } as any }));
+              }
+            }).catch(() => {
+              // On error, also set empty brief to stop loading
+              setTaskSmartBriefs((prev) => ({ ...prev, [task.id]: { taskId: task.id, summary: '', summarySourceLabels: [], actionItems: [] } as any }));
+            });
         }
       }
     };
@@ -7027,7 +7171,6 @@ export default function App() {
           ddl: nextDueLabel,
         });
         applyLocalTaskPatch(updatedTask);
-        void loadTaskBlock();
         flash('success', `任务已调整到 ${nextDueLabel}。`);
       } catch (error) {
         applyLocalTaskPatch(previousTaskSnapshot);
@@ -7761,8 +7904,13 @@ export default function App() {
                       />
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-2">
+                          {task.sourceType === 'event_line_notification' && (
+                            <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-blue-50 text-blue-600">通知</span>
+                          )}
                           <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                          <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${task.priority === 'high' ? 'bg-rose-50 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>{task.priority}</span>
+                          {task.sourceType !== 'event_line_notification' && (
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${task.priority === 'high' ? 'bg-rose-50 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>{task.priority}</span>
+                          )}
                         </div>
                         <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
                         <div className="flex flex-wrap gap-2 text-[11px] font-medium">
@@ -7790,15 +7938,19 @@ export default function App() {
                         )}
                       </div>
                       <div className="flex flex-col gap-2">
-                        <Button onClick={() => void handleConfirmTasks([task.id])}>确认</Button>
-                        <Button
-                          onClick={() => {
-                            setRejectingTaskIds([task.id]);
-                            setIsRejectModalOpen(true);
-                          }}
-                        >
-                          退回
+                        <Button onClick={() => void handleConfirmTasks([task.id])}>
+                          {task.sourceType === 'event_line_notification' ? '收到' : '确认'}
                         </Button>
+                        {task.sourceType !== 'event_line_notification' && (
+                          <Button
+                            onClick={() => {
+                              setRejectingTaskIds([task.id]);
+                              setIsRejectModalOpen(true);
+                            }}
+                          >
+                            退回
+                          </Button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -7870,41 +8022,65 @@ export default function App() {
                   <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                   <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
                 </div>
-                <div className="w-full max-w-[260px]">
-                  <label className="mb-1 block text-[11px] font-bold text-gray-400">项目筛选</label>
-                  <select
-                    value={eventLineProjectFilterId}
-                    onChange={(event) => setEventLineProjectFilterId(event.target.value)}
-                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
-                  >
-                    {currentClientId && (
-                      <option value="__current__">当前项目（{currentClient?.name || '未选择'}）</option>
+                <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' as any }}>
+                  <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
+                  <div className="relative" ref={elProjectDropdownRef}>
+                    {/* 自定义下拉按钮 — 替代原生 select，绕过 Electron hiddenInset 事件丢失 */}
+                    <button
+                      type="button"
+                      onClick={() => setElProjectDropdownOpen((v) => !v)}
+                      className="w-full appearance-none rounded-2xl border border-gray-200 bg-white/90 py-3 pl-4 pr-10 text-left text-[13px] font-semibold text-gray-700 shadow-sm outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/10"
+                      style={{ WebkitAppRegion: 'no-drag' as any }}
+                    >
+                      {eventLineProjectFilterId === '__all__'
+                        ? `全部项目（${eventLineProjectOptions.length}）`
+                        : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? '未知项目')}
+                    </button>
+                    <ChevronDown
+                      className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 transition-transform ${elProjectDropdownOpen ? 'rotate-180' : ''}`}
+                    />
+                    {/* 自定义下拉列表 */}
+                    {elProjectDropdownOpen && (
+                      <div
+                        className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[260px] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
+                        style={{ WebkitAppRegion: 'no-drag' as any }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEventLineProjectFilterId('__all__');
+                            setElProjectDropdownOpen(false);
+                          }}
+                          className={`w-full px-4 py-2.5 text-left text-[13px] transition hover:bg-[#5B7BFE]/5 ${eventLineProjectFilterId === '__all__' ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10' : 'text-gray-700'}`}
+                        >
+                          全部项目（{eventLineProjectOptions.length}）
+                        </button>
+                        {eventLineProjectOptions.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => {
+                              setEventLineProjectFilterId(option.id);
+                              setElProjectDropdownOpen(false);
+                            }}
+                            className={`w-full px-4 py-2.5 text-left text-[13px] transition hover:bg-[#5B7BFE]/5 ${eventLineProjectFilterId === option.id ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10' : 'text-gray-700'}`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
                     )}
-                    <option value="__all__">全部项目</option>
-                    {eventLineProjectOptions
-                      .filter((option) => !(currentClientId && option.id === currentClientId))
-                      .map((option) => (
-                      <option key={option.id} value={option.id}>{option.label}</option>
-                    ))}
-                  </select>
+                  </div>
+                  <p className="mt-2 text-[11px] text-gray-500">选择项目后，只显示该项目下的事件线。</p>
                 </div>
               </div>
               {filteredEventLines.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
                   <p className="text-[13px] text-gray-400">
-                    {eventLinesLoadError || (resolvedEventLineProjectFilterId === '__all__'
+                    {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
                       ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
                       : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
                   </p>
-                  {eventLinesLoadError && (
-                    <button
-                      type="button"
-                      className="mt-4 inline-flex items-center rounded-full bg-[#EEF3FF] px-4 py-2 text-[12px] font-semibold text-[#5B7BFE] transition hover:bg-[#E2EAFF]"
-                      onClick={() => { void loadEventLines(); }}
-                    >
-                      重试加载
-                    </button>
-                  )}
                 </div>
               )}
               <div className="space-y-3">
@@ -7926,7 +8102,7 @@ export default function App() {
                             <p className="mt-1 text-[12px] leading-5 text-gray-500 line-clamp-2">{el.summary}</p>
                           )}
                           <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{el.status}</span>
+                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{{ active: '进行中', blocked: '受阻', paused: '暂停', done: '已完成', archived: '已归档' }[el.status] || el.status}</span>
                             {el.stage && <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700">{el.stage}</span>}
                             {el.primaryClientName && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{el.primaryClientName}</span>}
                             <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
@@ -7944,14 +8120,34 @@ export default function App() {
                           >
                             编辑
                           </button>
-                          <button
-                            type="button"
-                            className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
-                            onClick={() => void handleDeleteEventLine(el)}
-                            disabled={isDeletingEventLine}
-                          >
-                            删除
-                          </button>
+                          {taskCount === 0 ? (
+                            <button
+                              type="button"
+                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
+                              onClick={() => void handleDeleteEventLine(el)}
+                              disabled={isDeletingEventLine}
+                            >
+                              删除
+                            </button>
+                          ) : el.status === 'archived' || el.status === 'done' ? (
+                            <button
+                              type="button"
+                              className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-bold text-emerald-600 transition hover:bg-emerald-100 disabled:opacity-60"
+                              onClick={() => void handleReopenEventLine(el)}
+                              disabled={isDeletingEventLine}
+                            >
+                              重新打开
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-600 transition hover:bg-amber-100 disabled:opacity-60"
+                              onClick={() => void handleCloseEventLine(el)}
+                              disabled={isDeletingEventLine}
+                            >
+                              结束事件线
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -7962,249 +8158,354 @@ export default function App() {
           )}
 
           {taskViewMode === 'review' && (
-            <div className="max-w-5xl mx-auto pb-10 space-y-6">
-              <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-100 rounded-3xl p-6 shadow-sm">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <h2 className="text-[18px] font-bold text-gray-900">周复盘</h2>
-                    <p className="text-[12px] text-gray-500 mt-1">组织复盘只看公共任务；成长复盘只看带"私人"标签的任务。</p>
-                    <p className="mt-1 text-[12px] font-bold text-amber-700">当前查看：{reviewForm.weekLabel || currentWeekLabel()}</p>
-                  </div>
-                  <div className="self-start lg:self-auto">
+            <div className="max-w-5xl mx-auto flex flex-col" style={{ height: 'calc(100vh - 80px)' }}>
+
+              {/* ── 上下文控制栏 ── */}
+              <div className="flex items-center justify-between gap-4 py-2 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center bg-gray-100/60 p-0.5 rounded-[12px]">
                     <button
                       type="button"
-                      onClick={() => void handleOpenReviewHistory()}
-                      className="bg-white border border-amber-100 rounded-2xl px-5 py-3 text-[13px] font-bold text-gray-700 shadow-sm transition hover:border-amber-200 hover:text-gray-900"
+                      onClick={() => { setReviewScope('work'); }}
+                      className={`px-3 py-1 rounded-[10px] text-[12px] font-bold transition ${reviewScope === 'work' ? 'bg-white text-[#5B7BFE] shadow-sm border border-gray-200/40' : 'text-gray-500 hover:text-gray-700'}`}
                     >
-                      {isReviewHistoryOpen ? '收起历史复盘' : '查看历史复盘'}
+                      组织复盘
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setReviewScope('personal'); }}
+                      className={`px-3 py-1 rounded-[10px] text-[12px] font-bold transition ${reviewScope === 'personal' ? 'bg-white text-[#5B7BFE] shadow-sm border border-gray-200/40' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      成长复盘
                     </button>
                   </div>
+                  <div className="flex items-center gap-3 text-[12px] font-bold text-gray-400">
+                    <span><span className="text-gray-700">{activeReviewRows.length}</span> 纳入</span>
+                    <span><span className="text-emerald-500">{activeReviewRows.filter(r => r.task.status === 'done').length}</span> 完成</span>
+                    <span><span className="text-amber-500">{activeReviewRows.filter(r => r.task.status !== 'done').length}</span> 未完成</span>
+                  </div>
                 </div>
-                <ReviewHistoryPicker
-                  open={isReviewHistoryOpen}
-                  loading={isLoadingReviewHistory}
-                  items={reviewHistory}
-                  activeWeekLabel={reviewForm.weekLabel || currentWeekLabel()}
-                  onClose={() => setIsReviewHistoryOpen(false)}
-                  onSelect={(weekLabel) => void handleSelectHistoricalReview(weekLabel)}
-                />
-                <div className="mt-5 flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setReviewScope('work');
-                    }}
-                    className={`px-4 py-2 rounded-2xl text-[13px] font-bold ${reviewScope === 'work' ? 'bg-[#5B7BFE] text-white shadow-sm' : 'bg-white text-gray-500 border border-gray-200'}`}
-                  >
-                    组织复盘
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setReviewScope('personal');
-                    }}
-                    className={`px-4 py-2 rounded-2xl text-[13px] font-bold ${reviewScope === 'personal' ? 'bg-rose-500 text-white shadow-sm' : 'bg-white text-gray-500 border border-gray-200'}`}
-                  >
-                    成长复盘
-                  </button>
+                <button
+                  type="button"
+                  onClick={() => void handleOpenReviewHistory()}
+                  className="flex items-center gap-1.5 px-3 py-1 bg-white border border-gray-200 rounded-xl text-[12px] font-bold text-gray-500 hover:bg-gray-50"
+                >
+                  <Clock size={12} className="text-gray-400" /> {isReviewHistoryOpen ? '收起' : '历史'}
+                </button>
+              </div>
+              <ReviewHistoryPicker
+                open={isReviewHistoryOpen}
+                loading={isLoadingReviewHistory}
+                items={reviewHistory}
+                activeWeekLabel={reviewForm.weekLabel || currentWeekLabel()}
+                onClose={() => setIsReviewHistoryOpen(false)}
+                onSelect={(weekLabel) => void handleSelectHistoricalReview(weekLabel)}
+              />
+
+              {/* ── 模块 tab + 视角胶囊（同一行，带下划线） ── */}
+              <div className="flex items-center justify-between border-b border-gray-200 mb-0 shrink-0 overflow-x-auto">
+                <div className="flex items-center gap-8">
+                  {([
+                    { id: 'overview' as const, label: '机构概览', Icon: LayoutDashboard },
+                    { id: 'events' as const, label: '重点事件线', Icon: GitMerge },
+                    { id: 'signals' as const, label: '部门信号', Icon: Radio },
+                    { id: 'ai' as const, label: 'AI摘要', Icon: Bot },
+                  ]).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveReviewTab(tab.id)}
+                      className={`relative pb-3 flex items-center gap-2 text-[14px] font-bold transition whitespace-nowrap ${activeReviewTab === tab.id ? 'text-[#5B7BFE]' : 'text-gray-400 hover:text-gray-600'}`}
+                    >
+                      <tab.Icon size={15} className={activeReviewTab === tab.id ? 'text-[#5B7BFE]' : 'text-gray-300'} />
+                      {tab.label}
+                      {activeReviewTab === tab.id && <span className="absolute bottom-[-1px] left-0 w-full h-[2.5px] bg-[#5B7BFE] rounded-t-full" />}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center bg-gray-100/50 p-1 rounded-full mb-3 shrink-0 ml-4">
+                  {([
+                    { key: 'global' as const, label: '全局视角' },
+                    ...(currentSessionUser?.primaryRole === 'admin' ? [{ key: 'ceo' as const, label: 'CEO视角' }] : []),
+                    { key: 'department' as const, label: '部门视角' },
+                    { key: 'personal' as const, label: '个人视角' },
+                  ]).map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setReviewPerspective(item.key)}
+                      className={`px-4 py-1.5 rounded-full text-[12px] font-bold transition ${reviewPerspective === item.key ? 'bg-white text-[#5B7BFE] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              <>
-                  <div className="bg-white border border-gray-200 rounded-3xl shadow-sm p-5 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-[16px] font-bold text-gray-900">{reviewScope === 'work' ? '组织复盘事件线' : '成长复盘事件线'}</h3>
-                        <p className="text-[12px] text-gray-500 mt-1">
-                          {reviewScope === 'work'
-                            ? '系统会先按事件线把本周任务串起来；同一条线只复盘一次，没有事件线的任务仍按单条事项处理。'
-                            : '成长事项也会优先按事件线归并，避免围绕同一件事重复写多次。'}
-                        </p>
-                      </div>
-                      <span className="text-[11px] font-bold px-3 py-1.5 rounded-full bg-gray-100 text-gray-500">
-                        {activeReviewGroups.length} 个模块 · {activeReviewRows.length} 条任务
-                      </span>
+              {/* ── 内容区域（独立滚动，填满剩余高度） ── */}
+              <div className="flex-1 overflow-y-auto py-4 min-h-0">
+
+              {/* ── 机构概览 ── */}
+              {activeReviewTab === 'overview' && (
+                <div className="space-y-5">
+                  {/* 执行概览文字 */}
+                  <div className="bg-white p-7 rounded-2xl border border-gray-100 shadow-sm space-y-5">
+                    <div>
+                      <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-[0.15em] mb-3">执行概览</h3>
+                      {selfReviewReport ? (
+                        <div className="space-y-2">
+                          <p className="text-gray-600 leading-[1.7] text-[14px] font-medium whitespace-pre-wrap">{selfReviewReport.summary}</p>
+                        </div>
+                      ) : (
+                        <p className="text-gray-400 leading-[1.7] text-[14px] font-medium italic">点击下方「生成周复盘」后，AI 将基于本周任务和事件线产出执行概览。</p>
+                      )}
                     </div>
+                  </div>
+                </div>
+              )}
 
-                    {activeReviewGroups.length === 0 && (
-                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-5 py-10 text-center">
-                        <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center">
-                          <Activity className="w-5 h-5 text-amber-500" />
-                        </div>
-                        {reviewScope === 'work' ? (
-                          <>
-                            <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有可复盘的公共任务'}</p>
-                            <p className="text-[13px] text-gray-400">{'先在任务列表中推进本周的工作，完成的任务会自动出现在这里供你复盘。'}</p>
-                          </>
-                        ) : (
-                          <>
-                            <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有带私人标签的任务'}</p>
-                            <p className="text-[13px] text-gray-400">{'给任务添加私人标签后，它就会出现在成长复盘中。'}</p>
-                          </>
-                        )}
-                      </div>
-                    )}
-
-                    {activeReviewGroups.map((group) => {
-                      const isExpanded = expandedReviewGroupId === group.id;
-                      const reviewed = group.reviewedCount > 0;
-                      const groupDraftStructuredNote = pickSharedReviewStructuredNote(group.rows);
-                      const groupHasDirtyEntries = group.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
-                      const groupHasSavableContent = group.rows.some(
-                        ({ structuredNote, note }) =>
-                          hasMeaningfulReviewStructuredNote(structuredNote) || Boolean(note.trim()),
-                      );
-                      return (
-                        <div key={group.id} className={`border rounded-3xl overflow-hidden transition-all ${isExpanded ? 'border-[#5B7BFE] shadow-[0_8px_30px_rgba(91,123,254,0.12)]' : 'border-gray-200'}`}>
-                          <button
-                            type="button"
-                            className="w-full text-left px-5 py-5 bg-white flex items-start justify-between gap-4"
-                            onClick={() => setExpandedReviewGroupId(isExpanded ? null : group.id)}
-                          >
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className={`text-[15px] font-bold ${group.taskStatus === 'done' ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{group.title}</p>
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
-                                  {group.eventLineId ? '事件线复盘' : '单项复盘'}
-                                </span>
-                                {reviewed && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>}
-                              </div>
-                              <div className="flex flex-wrap gap-2 mt-3 text-[11px]">
-                                <span className="px-2 py-1 rounded-md bg-gray-50 text-gray-500">
-                                  本周共 {group.taskCount} 条任务，已完成 {group.completedCount} 条，待推进 {group.pendingCount} 条
-                                </span>
-                                {group.eventLineName ? (
-                                  <span className="px-2 py-1 rounded-md bg-[#EEF4FF] text-[#335CFF]">{group.eventLineName}</span>
-                                ) : null}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isExpanded ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-gray-50 text-gray-400'}`}>
-                                {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                              </div>
-                            </div>
-                          </button>
-                          {isExpanded && (
-                            <div className="border-t border-gray-100 bg-gray-50/50 p-5">
-                              <div className="space-y-3 mb-5">
-                                {group.hasDivergentNotes ? (
-                                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-6 text-amber-700">
-                                    这条事件线下已有不同任务复盘内容。当前按事件线统一编辑后，会把同一条判断同步到这条线下的相关任务。
-                                  </div>
-                                ) : null}
-                                <div className="rounded-2xl border border-gray-200 bg-white px-4 py-4">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <p className="text-[12px] font-bold uppercase tracking-[0.16em] text-gray-400">
-                                      {group.eventLineId ? '本周事件线任务' : '本周相关任务'}
-                                    </p>
-                                    <span className="text-[11px] text-gray-400">
-                                      {group.taskCount} 条任务
-                                    </span>
-                                  </div>
-                                  <div className="mt-3 space-y-2">
-                                    {group.rows.map(({ task, note: rowNote }) => (
-                                      <div key={task.id} className="flex items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2.5">
-                                        <div className="min-w-0">
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <p className={`text-[13px] font-semibold ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-700'}`}>{task.title}</p>
-                                            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-gray-400">{reviewStatusLabel(task)}</span>
-                                          </div>
-                                          <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-400">
-                                            <span>{reviewTaskDateLabel(task)}</span>
-                                            <span>·</span>
-                                            <span>{task.listName}</span>
-                                            {rowNote.trim() ? (
-                                              <>
-                                                <span>·</span>
-                                                <span className="text-emerald-600">已有复盘</span>
-                                              </>
-                                            ) : null}
-                                          </div>
-                                        </div>
-                                        <button
-                                          type="button"
-                                          className="shrink-0 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE]"
-                                          onClick={() => openTaskEditor(task)}
-                                        >
-                                          编辑任务
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-                              <WeeklyReviewStructuredFields
-                                scope={reviewScope}
-                                value={groupDraftStructuredNote}
-                                taskStatus={group.taskStatus}
-                                onSave={() => void persistReviewCollectionDraft(group.id)}
-                                isSaving={savingReviewGroupId === group.id}
-                                saveDisabled={!groupHasSavableContent}
-                                saveSucceeded={savedReviewGroupId === group.id && !groupHasDirtyEntries}
-                                onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus(group, nextStatus)}
-                                isStatusChanging={reviewStatusChangingGroupId === group.id}
-                                statusScopeLabel={group.taskCount > 1 ? '本组任务状态' : '本条任务状态'}
-                                onChange={(nextValue) => {
-                                  setSavedReviewGroupId((current) => (current === group.id ? null : current));
-                                  markReviewTasksDirty(group.rows.map(({ task }) => task.id));
-                                  setReviewForm((prev) => ({
-                                    ...prev,
-                                    entriesByTaskId: {
-                                      ...prev.entriesByTaskId,
-                                      ...Object.fromEntries(
-                                        group.rows.map(({ task }) => [task.id, { ...nextValue }]),
-                                      ),
-                                    },
-                                  }));
-                                }}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+              {/* ── 重点事件线 ── */}
+              {activeReviewTab === 'events' && (
+                <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-[16px] font-bold text-gray-900">{reviewScope === 'work' ? '组织复盘事件线' : '成长复盘事件线'}</h3>
+                      <p className="text-[12px] text-gray-500 mt-1">
+                        {reviewScope === 'work'
+                          ? '系统会先按事件线把本周任务串起来；同一条线只复盘一次，没有事件线的任务仍按单条事项处理。'
+                          : '成长事项也会优先按事件线归并，避免围绕同一件事重复写多次。'}
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-bold px-3 py-1.5 rounded-full bg-gray-100 text-gray-500">
+                      {activeReviewGroups.length} 个模块 · {activeReviewRows.length} 条任务
+                    </span>
                   </div>
 
-                  {reviewScope === 'work' && (selfReviewReport || departmentReports.length > 0 || executiveOrgReport || simulationBundle || agentDepartmentDigests.length > 0 || agentDepartmentPlans.length > 0) && (
-                    <WeeklyReviewSummaryPanel
-                      selfReport={selfReviewReport}
-                      selfAnalysis={collectStageAnalysis}
-                      departmentReports={departmentReports}
-                      executiveOrgReport={executiveOrgReport}
-                      organizationDnaModules={organizationDnaModules}
-                      onUploadOrganizationDna={(moduleKey) => handleUploadOrgDna(moduleKey)}
-                      orgDnaSavingKey={orgDnaSavingKey}
-                      agentDepartmentDigests={agentDepartmentDigests}
-                      agentDepartmentPlans={agentDepartmentPlans}
-                      simulationBundle={simulationBundle}
-                      onTriggerAction={handleTriggerReviewAction}
-                      onOpenActionResult={handleOpenReviewActionResult}
-                      onDrillTarget={handleReviewDashboardDrillTarget}
-                      viewerRole={currentSessionUser?.primaryRole === 'admin' ? 'admin' : currentSessionUser?.isDepartmentLead ? 'department_lead' : 'employee'}
-                    />
+                  {activeReviewGroups.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-5 py-10 text-center">
+                      <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center">
+                        <Activity className="w-5 h-5 text-[#5B7BFE]" />
+                      </div>
+                      {reviewScope === 'work' ? (
+                        <>
+                          <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有可复盘的公共任务'}</p>
+                          <p className="text-[13px] text-gray-400">{'先在任务列表中推进本周的工作，完成的任务会自动出现在这里供你复盘。'}</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-[14px] font-bold text-gray-600 mb-1">{'本周还没有带私人标签的任务'}</p>
+                          <p className="text-[13px] text-gray-400">{'给任务添加私人标签后，它就会出现在成长复盘中。'}</p>
+                        </>
+                      )}
+                    </div>
                   )}
 
-                  <div className="flex justify-center">
-                    <div className="flex flex-col items-center gap-3">
-                      <p className="text-[12px] text-gray-500">生成时会先同步当前采集内容，再根据任务事实、手写说明和 DNA 视角产出可编辑文稿。</p>
-                      <Button primary className="py-3.5 px-8 text-[15px] shadow-[0_6px_20px_rgba(91,123,254,0.3)] rounded-full" onClick={() => void generateGlobalSummary()} disabled={isGeneratingGlobal}>
-                        {isGeneratingGlobal ? (
-                          <>
-                            <RefreshCw size={18} className="animate-spin" />
-                            生成中...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles size={18} />
-                            {reviewScope === 'work' ? '生成本周复盘' : '生成成长复盘'}
-                          </>
+                  {activeReviewGroups.map((group) => {
+                    const isExpanded = expandedReviewGroupId === group.id;
+                    const reviewed = group.reviewedCount > 0;
+                    const groupDraftStructuredNote = pickSharedReviewStructuredNote(group.rows);
+                    const groupHasDirtyEntries = group.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
+                    const groupHasSavableContent = group.rows.some(
+                      ({ structuredNote, note }) =>
+                        hasMeaningfulReviewStructuredNote(structuredNote) || Boolean(note.trim()),
+                    );
+                    return (
+                      <div key={group.id} className={`border rounded-2xl overflow-hidden transition-all ${isExpanded ? 'border-[#5B7BFE] shadow-[0_8px_30px_rgba(91,123,254,0.12)]' : 'border-gray-200'}`}>
+                        <button
+                          type="button"
+                          className="w-full text-left px-5 py-5 bg-white flex items-start justify-between gap-4"
+                          onClick={() => setExpandedReviewGroupId(isExpanded ? null : group.id)}
+                        >
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className={`text-[15px] font-bold ${group.taskStatus === 'done' ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{group.title}</p>
+                              <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
+                                {group.eventLineId ? '事件线复盘' : '单项复盘'}
+                              </span>
+                              {reviewed && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>}
+                            </div>
+                            <div className="flex flex-wrap gap-2 mt-3 text-[11px]">
+                              <span className="px-2 py-1 rounded-md bg-gray-50 text-gray-500">
+                                本周共 {group.taskCount} 条任务，已完成 {group.completedCount} 条，待推进 {group.pendingCount} 条
+                              </span>
+                              {group.eventLineName ? (
+                                <span className="px-2 py-1 rounded-md bg-[#EEF4FF] text-[#335CFF]">{group.eventLineName}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isExpanded ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-gray-50 text-gray-400'}`}>
+                              {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                            </div>
+                          </div>
+                        </button>
+                        {isExpanded && (
+                          <div className="border-t border-gray-100 bg-gray-50/50 p-5">
+                            <div className="space-y-3 mb-5">
+                              {group.hasDivergentNotes ? (
+                                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-6 text-amber-700">
+                                  这条事件线下已有不同任务复盘内容。当前按事件线统一编辑后，会把同一条判断同步到这条线下的相关任务。
+                                </div>
+                              ) : null}
+                              <div className="rounded-2xl border border-gray-200 bg-white px-4 py-4">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="text-[12px] font-bold uppercase tracking-[0.16em] text-gray-400">
+                                    {group.eventLineId ? '本周事件线任务' : '本周相关任务'}
+                                  </p>
+                                  <span className="text-[11px] text-gray-400">
+                                    {group.taskCount} 条任务
+                                  </span>
+                                </div>
+                                <div className="mt-3 space-y-2">
+                                  {group.rows.map(({ task, note: rowNote }) => (
+                                    <div key={task.id} className="flex items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2.5">
+                                      <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <p className={`text-[13px] font-semibold ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-700'}`}>{task.title}</p>
+                                          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-gray-400">{reviewStatusLabel(task)}</span>
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-400">
+                                          <span>{reviewTaskDateLabel(task)}</span>
+                                          <span>·</span>
+                                          <span>{task.listName}</span>
+                                          {rowNote.trim() ? (
+                                            <>
+                                              <span>·</span>
+                                              <span className="text-emerald-600">已有复盘</span>
+                                            </>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="shrink-0 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE]"
+                                        onClick={() => openTaskEditor(task)}
+                                      >
+                                        编辑任务
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                            <WeeklyReviewStructuredFields
+                              scope={reviewScope}
+                              value={groupDraftStructuredNote}
+                              taskStatus={group.taskStatus}
+                              onSave={() => void persistReviewCollectionDraft(group.id)}
+                              isSaving={savingReviewGroupId === group.id}
+                              saveDisabled={!groupHasSavableContent}
+                              saveSucceeded={savedReviewGroupId === group.id && !groupHasDirtyEntries}
+                              onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus(group, nextStatus)}
+                              isStatusChanging={reviewStatusChangingGroupId === group.id}
+                              statusScopeLabel={group.taskCount > 1 ? '本组任务状态' : '本条任务状态'}
+                              onChange={(nextValue) => {
+                                setSavedReviewGroupId((current) => (current === group.id ? null : current));
+                                markReviewTasksDirty(group.rows.map(({ task }) => task.id));
+                                setReviewForm((prev) => ({
+                                  ...prev,
+                                  entriesByTaskId: {
+                                    ...prev.entriesByTaskId,
+                                    ...Object.fromEntries(
+                                      group.rows.map(({ task }) => [task.id, { ...nextValue }]),
+                                    ),
+                                  },
+                                }));
+                              }}
+                            />
+                          </div>
                         )}
-                      </Button>
-                    </div>
-                  </div>
-                </>
+                      </div>
+                    );
+                  })}
 
-              {/* 角色视角已合并到上方采集阶段中，不再独立渲染 */}
+                </div>
+              )}
+
+              {/* ── 部门信号 ── */}
+              {activeReviewTab === 'signals' && (
+                <div className="space-y-4">
+                  {departmentReports.length > 0 ? (
+                    departmentReports.map((report: any, idx: number) => (
+                      <div key={idx} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+                        <h2 className="text-[16px] font-bold text-gray-800 mb-4">{typeof report === 'object' && report !== null && 'departmentName' in report ? (report as { departmentName: string }).departmentName : `部门 ${idx + 1}`}</h2>
+                        <div className="bg-[#F8F9FB] p-4 rounded-2xl border border-gray-100 text-[14px] font-medium leading-relaxed text-gray-600 italic">
+                          "{typeof report === 'string' ? report : typeof report === 'object' && report !== null && 'summary' in report ? (report as { summary: string }).summary : '暂无信号摘要'}"
+                        </div>
+                        {typeof report === 'object' && report !== null && 'highlights' in report && Array.isArray((report as { highlights: string[] }).highlights) && (
+                          <div className="mt-5">
+                            <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider mb-3 flex items-center gap-2">
+                              <Activity size={14} /> 本周焦点信号
+                            </h3>
+                            <div className="space-y-2">
+                              {((report as { highlights: string[] }).highlights).map((h, i) => (
+                                <div key={i} className="bg-gray-50 p-4 rounded-2xl text-[13px] text-gray-600 font-medium border border-gray-100/50">{h}</div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : agentDepartmentDigests.length > 0 ? (
+                    agentDepartmentDigests.map((digest: any, idx: number) => (
+                      <div key={idx} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+                        <h2 className="text-[16px] font-bold text-gray-800 mb-4">{typeof digest === 'object' && digest !== null && 'departmentName' in digest ? (digest as { departmentName: string }).departmentName : `部门 ${idx + 1}`}</h2>
+                        <div className="bg-[#F8F9FB] p-4 rounded-2xl border border-gray-100 text-[14px] font-medium leading-relaxed text-gray-600 italic">
+                          "{typeof digest === 'string' ? digest : typeof digest === 'object' && digest !== null && 'content' in digest ? (digest as { content: string }).content : JSON.stringify(digest)}"
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="bg-white p-12 rounded-2xl border border-gray-100 shadow-sm text-center flex flex-col items-center gap-3">
+                      <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-300">
+                        <Radio size={24} />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-gray-600 text-[15px] mb-1">暂无部门信号</h3>
+                        <p className="text-gray-400 text-[13px] font-medium">点击「生成周复盘」后，系统将基于各部门任务数据自动生成信号摘要。</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeReviewTab === 'ai' && reviewScope === 'work' && (selfReviewReport || departmentReports.length > 0 || executiveOrgReport || simulationBundle || agentDepartmentDigests.length > 0 || agentDepartmentPlans.length > 0) && (
+                <WeeklyReviewSummaryPanel
+                  selfReport={selfReviewReport}
+                  selfAnalysis={collectStageAnalysis}
+                  departmentReports={departmentReports}
+                  executiveOrgReport={executiveOrgReport}
+                  organizationDnaModules={organizationDnaModules}
+                  onUploadOrganizationDna={(moduleKey) => handleUploadOrgDna(moduleKey)}
+                  orgDnaSavingKey={orgDnaSavingKey}
+                  agentDepartmentDigests={agentDepartmentDigests}
+                  agentDepartmentPlans={agentDepartmentPlans}
+                  simulationBundle={simulationBundle}
+                  onTriggerAction={handleTriggerReviewAction}
+                  onOpenActionResult={handleOpenReviewActionResult}
+                  onDrillTarget={handleReviewDashboardDrillTarget}
+                  viewerRole={currentSessionUser?.primaryRole === 'admin' ? 'admin' : currentSessionUser?.isDepartmentLead ? 'department_lead' : 'employee'}
+                />
+              )}
+
+              </div>{/* end overflow-y-auto */}
+
+              {/* ── 右下角固定生成按钮 ── */}
+              <div className="fixed bottom-8 right-8 z-40">
+                <Button primary className="py-3 px-6 text-[13px] shadow-[0_8px_30px_rgba(91,123,254,0.35)] rounded-full" onClick={() => void generateGlobalSummary()} disabled={isGeneratingGlobal}>
+                  {isGeneratingGlobal ? (
+                    <>
+                      <RefreshCw size={16} className="animate-spin" />
+                      生成中...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={16} />
+                      {reviewScope === 'work' ? '生成周复盘' : '生成成长复盘'}
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -8384,262 +8685,436 @@ export default function App() {
           </div>
         )}
 
-        {activeEventLine && (
+        {isTaskModalOpen && isTaskEventLineCreateOpen && (
           <div
-            className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto bg-black/38 px-4 py-6 backdrop-blur-md animate-in fade-in md:px-6 md:py-10"
-            onClick={() => setActiveEventLine(null)}
+            className="fixed inset-0 z-[95] flex items-center justify-center bg-black/25 px-4 py-6 backdrop-blur-sm"
+            onClick={() => {
+              if (isCreatingEventLine) return;
+              setIsTaskEventLineCreateOpen(false);
+              setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+            }}
           >
             <div
-              className="w-full max-w-[1120px] max-h-[calc(100vh-48px)] overflow-y-auto rounded-[28px] border border-gray-100 bg-white p-6 shadow-[0_24px_72px_rgba(0,0,0,0.2)] md:p-7"
+              className="w-full max-w-[640px] rounded-[24px] border border-gray-100 bg-white p-6 shadow-[0_24px_72px_rgba(0,0,0,0.18)]"
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="flex items-start gap-4">
-                <button
-                  type="button"
-                  className="mt-1 rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={() => setActiveEventLine(null)}
-                  aria-label="关闭事件线详情"
-                >
-                  <X size={16} />
-                </button>
-                <div className="flex-1">
-                  <p className="text-[12px] font-bold tracking-[0.12em] text-[#5B7BFE]">EVENT LINE</p>
-                  <h3 className="mt-2 text-[20px] font-bold text-gray-900">{activeEventLine.eventLine.name}</h3>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[12px] font-bold tracking-[0.12em] text-[#5B7BFE]">NEW EVENT LINE</p>
+                  <h3 className="mt-2 text-[22px] font-bold text-gray-900">新建事件线</h3>
                   <p className="mt-2 text-[13px] leading-6 text-gray-500">
-                    {activeEventLine.eventLine.summary || '这条事件线会把相关任务、会议、支持请求和关键过程痕迹串起来，作为 AI 的工作记忆线。'}
+                    事件线名称用来描述一条持续推进的主线，不需要等于当前任务标题。先起一个更稳定的线名，后面再继续挂任务。
                   </p>
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 flex items-center gap-2 rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-4 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
-                  onClick={() => { setReportEventLineId(activeEventLine.eventLine.id); setActiveEventLine(null); }}
+                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
+                  onClick={() => {
+                    if (isCreatingEventLine) return;
+                    setIsTaskEventLineCreateOpen(false);
+                    setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+                  }}
+                  aria-label="关闭新建事件线"
                 >
-                  <FileBadge size={14} />
-                  汇报预览
+                  <X size={16} />
                 </button>
               </div>
 
-              <div className="mt-5 flex flex-wrap gap-2 text-[12px] font-bold">
-                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-600">#{activeEventLine.eventLine.id}</span>
-                <span className="rounded-full bg-blue-50 px-3 py-1.5 text-[#33449a]">{activeEventLine.eventLine.kind}</span>
-                <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{activeEventLine.eventLine.status}</span>
-                {activeEventLine.eventLine.primaryClientName && (
-                  <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">{activeEventLine.eventLine.primaryClientName}</span>
+              <div className="mt-4 flex flex-wrap gap-2 text-[12px] font-bold">
+                {editingTask.clientId && (
+                  <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">
+                    {taskClientOptions.find((item) => item.id === editingTask.clientId)?.name || '已选择项目'}
+                  </span>
                 )}
-                {activeEventLine.eventLine.stage && (
-                  <span className="rounded-full bg-amber-50 px-3 py-1.5 text-amber-700">{activeEventLine.eventLine.stage}</span>
+                {editingTask.title.trim() && (
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-600">
+                    当前任务：{editingTask.title.trim()}
+                  </span>
                 )}
               </div>
 
               <div className="mt-5 space-y-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">这条线想推进什么</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.intent || '待补充'}</p>
-                    </div>
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">当前阻塞</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.currentBlocker || '待补充'}</p>
-                    </div>
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">下一步</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.nextStep || '待补充'}</p>
-                    </div>
-                    <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                      <p className="text-[12px] font-bold text-gray-500">最近关键决策</p>
-                      <p className="mt-2 text-[13px] leading-6 text-gray-700">{activeEventLine.eventLine.recentDecision || '待补充'}</p>
-                    </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-bold text-gray-500">事件线名称</label>
+                  <input
+                    value={taskEventLineCreateDraft.name}
+                    onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, name: event.target.value }))}
+                    placeholder="输入事件线名称"
+                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[15px] font-semibold text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                    autoFocus
+                  />
+                  <p className="mt-2 text-[11px] text-gray-400">建议写成一条可持续推进的线名，例如“日慈教师赋能成效表达收束”或“CFFC 工作坊合作推进”。</p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-[12px] font-bold text-gray-500">当前阶段</label>
+                    <input
+                      value={taskEventLineCreateDraft.stage}
+                      onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, stage: event.target.value }))}
+                      placeholder="例如：本周推进"
+                      className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[14px] text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                    />
                   </div>
-
-                  <div className="rounded-3xl border border-blue-100 bg-blue-50/40 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[12px] font-bold text-[#33449a]">快速澄清</p>
-                        <p className="mt-1 text-[12px] leading-5 text-[#5c6ba1]">
-                          优先补清楚当前事项、阻塞、下一步和最近关键决策，任务 AI 洞察会先读这一层。
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded-2xl border border-[#D7E0FF] bg-white px-4 py-2 text-[12px] font-bold text-[#33449a] transition hover:bg-[#F8FAFF]"
-                        onClick={() => setIsEventLineClarifyMode((prev) => !prev)}
-                      >
-                        {isEventLineClarifyMode ? '收起澄清' : '快速澄清'}
-                      </button>
-                    </div>
-
-                    {isEventLineClarifyMode && (
-                      <EventLineClarificationComposer
-                        transcript={eventLineClarificationDraft.transcript}
-                        onTranscriptChange={(value) => setEventLineClarificationDraft((prev) => ({ ...prev, transcript: value }))}
-                        draft={eventLineClarificationDraft}
-                        onDraftChange={(patch) => setEventLineClarificationDraft((prev) => ({ ...prev, ...patch }))}
-                        onGenerate={() => void handleGenerateEventLineClarification()}
-                        onCancel={() => {
-                          setEventLineClarificationDraft(buildEventLineClarificationDraft(activeEventLine.eventLine));
-                          setIsEventLineClarifyMode(false);
-                        }}
-                        onSave={() => void handleSaveEventLineClarification()}
-                        isGenerating={isGeneratingEventLineClarification}
-                        isSaving={isSavingEventLineClarification}
-                      />
-                    )}
+                  <div>
+                    <label className="mb-2 block text-[12px] font-bold text-gray-500">这条线想推进什么</label>
+                    <input
+                      value={taskEventLineCreateDraft.intent}
+                      onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, intent: event.target.value }))}
+                      placeholder="可选：写一句这条线想推进什么"
+                      className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[14px] text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                    />
                   </div>
                 </div>
 
-              {activeEventLine.eventLine.primaryClientId && (
-                <div className="mt-5 rounded-3xl border border-indigo-100 bg-indigo-50/30 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[12px] font-bold text-indigo-700">合作背景与上下文</p>
-                      <p className="mt-1 text-[11px] leading-5 text-indigo-500/80">补充客户战略画像和合作关系，让 AI 能从背景理解这条线的意义。</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="shrink-0 rounded-2xl border border-indigo-200 bg-white px-4 py-2 text-[12px] font-bold text-indigo-700 transition hover:bg-indigo-50"
-                      onClick={() => {
-                        setActiveEventLine(null);
-                        const clientId = activeEventLine.eventLine.primaryClientId;
-                        if (clientId) {
-                          setCurrentClientId(clientId);
-                          setActiveTab('client_workspace');
-                        }
-                      }}
-                    >
-                      前往客户工作台补充
-                    </button>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-[10px] font-bold text-indigo-700">客户：{activeEventLine.eventLine.primaryClientName || '未关联'}</span>
-                    <span className="rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-bold text-violet-700">可补：行业、规模、需求痛点</span>
-                    <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold text-[#33449a]">可补：合作关系、战略价值</span>
-                  </div>
+                <div>
+                  <label className="mb-2 block text-[12px] font-bold text-gray-500">补充说明</label>
+                  <textarea
+                    value={taskEventLineCreateDraft.summary}
+                    onChange={(event) => setTaskEventLineCreateDraft((prev) => ({ ...prev, summary: event.target.value }))}
+                    placeholder="可选：补一句背景说明，后面查看事件线时会直接看到。"
+                    className="min-h-[96px] w-full resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[14px] leading-6 text-gray-700 outline-none transition focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/15 placeholder:text-gray-300"
+                  />
                 </div>
-              )}
+              </div>
 
-              {!activeEventLine.eventLine.primaryClientId && (
-                <div className="mt-5 rounded-3xl border border-dashed border-amber-200 bg-amber-50/30 p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <p className="text-[12px] font-bold text-amber-700">这条事件线还没有关联客户</p>
-                      <p className="mt-1 text-[11px] leading-5 text-amber-600/80">关联客户后，系统才能调用客户背景和合作关系来理解这条线的战略意义。</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-                <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[12px] font-bold text-gray-500">关联任务</p>
-                    <span className="text-[11px] text-gray-400">{activeEventLine.tasks.length} 条</span>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {activeEventLine.tasks.length === 0 && (
-                      <p className="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-3 text-[12px] text-gray-400">这条事件线下还没有挂到具体任务。</p>
-                    )}
-                    {activeEventLine.tasks.slice(0, 6).map((task) => (
-                      <button
-                        key={task.id}
-                        type="button"
-                        className="w-full rounded-2xl border border-white bg-white px-4 py-3 text-left transition hover:border-[#D7E0FF] hover:bg-[#F8FAFF]"
-                        onClick={() => {
-                          setActiveEventLine(null);
-                          openTaskEditor(task);
-                        }}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-[13px] font-semibold text-gray-800">{task.title}</p>
-                            <p className="mt-1 text-[11px] text-gray-500">{task.ownerName}{task.dueDate ? ` · ${formatTaskDueLabel(task.dueDate)}` : ''}</p>
-                          </div>
-                          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600">{task.status}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-3xl border border-gray-200 bg-gray-50/70 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[12px] font-bold text-gray-500">最近事件</p>
-                    <span className="text-[11px] text-gray-400">{activeEventLine.activities.length} 条</span>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {activeEventLine.activities.length === 0 && (
-                      <p className="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-3 text-[12px] text-gray-400">还没有沉淀过程痕迹。</p>
-                    )}
-                    {activeEventLine.activities.slice(0, 8).map((activity) => (
-                      <div key={activity.id} className="rounded-2xl border border-white bg-white px-4 py-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[12px] font-semibold text-gray-800">{activity.title}</p>
-                            <p className="mt-1 text-[11px] leading-5 text-gray-500">{activity.summary}</p>
-                          </div>
-                          <span className="shrink-0 text-[10px] text-gray-400">{activity.happenedAt.slice(5, 16).replace('T', ' ')}</span>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Manual note input */}
-                    <div className="mt-3 flex gap-2">
-                      <input
-                        type="text"
-                        value={eventLineNoteText}
-                        onChange={(e) => setEventLineNoteText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && eventLineNoteText.trim() && !isSavingEventLineNote) {
-                            void (async () => {
-                              setIsSavingEventLineNote(true);
-                              try {
-                                await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
-                                setEventLineNoteText('');
-                                const refreshed = await getEventLine(activeEventLine.eventLine.id);
-                                setActiveEventLine(refreshed);
-                                flash('success', '备注已添加');
-                              } catch (err) {
-                                flash('error', err instanceof Error ? err.message : '添加备注失败');
-                              } finally {
-                                setIsSavingEventLineNote(false);
-                              }
-                            })();
-                          }
-                        }}
-                        placeholder="记录一条观察、决策或进展..."
-                        className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-2.5 text-[12px] outline-none transition focus:border-[#5B7BFE] focus:ring-1 focus:ring-[#5B7BFE]/20"
-                        disabled={isSavingEventLineNote}
-                      />
-                      <button
-                        type="button"
-                        disabled={!eventLineNoteText.trim() || isSavingEventLineNote}
-                        onClick={() => {
-                          if (!eventLineNoteText.trim()) return;
-                          void (async () => {
-                            setIsSavingEventLineNote(true);
-                            try {
-                              await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
-                              setEventLineNoteText('');
-                              const refreshed = await getEventLine(activeEventLine.eventLine.id);
-                              setActiveEventLine(refreshed);
-                              flash('success', '备注已添加');
-                            } catch (err) {
-                              flash('error', err instanceof Error ? err.message : '添加备注失败');
-                            } finally {
-                              setIsSavingEventLineNote(false);
-                            }
-                          })();
-                        }}
-                        className="shrink-0 rounded-2xl bg-[#5B7BFE] px-4 py-2.5 text-[12px] font-bold text-white transition hover:bg-[#4a6ae8] disabled:opacity-40"
-                      >
-                        {isSavingEventLineNote ? '...' : '添加'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
+              <div className="mt-6 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  className="rounded-2xl px-4 py-2 text-[13px] font-medium text-gray-500 transition hover:bg-gray-100"
+                  onClick={() => {
+                    if (isCreatingEventLine) return;
+                    setIsTaskEventLineCreateOpen(false);
+                    setTaskEventLineCreateDraft(buildTaskEventLineCreateDraft());
+                  }}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="rounded-2xl bg-[#5B7BFE] px-5 py-2.5 text-[13px] font-bold text-white transition hover:bg-[#4a6ae8] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => void handleSubmitTaskEventLineCreate()}
+                  disabled={isCreatingEventLine || !taskEventLineCreateDraft.name.trim()}
+                >
+                  {isCreatingEventLine ? '创建中...' : '创建并关联'}
+                </button>
               </div>
             </div>
           </div>
         )}
+
+        {isTemplateListOpen && (
+          <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setIsTemplateListOpen(false)}>
+            <div className="bg-white w-full max-w-xl rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                <h2 className="text-lg font-semibold text-gray-800 tracking-wide">任务模板</h2>
+                <button onClick={() => setIsTemplateListOpen(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
+              {/* Body */}
+              <div className="p-6 overflow-y-auto max-h-[60vh] space-y-4 bg-gray-50/50">
+                {taskProjectModuleOptions.length === 0 && (
+                  <p className="text-center text-sm text-gray-400 py-12">当前项目下还没有模板</p>
+                )}
+                {taskProjectModuleOptions.map((mod) => {
+                  const parsed = mod.templateTasksJson ? (() => { try { return JSON.parse(mod.templateTasksJson); } catch { return null; } })() : null;
+                  const stepCount = (parsed?.tasks || []).length;
+                  const isSelected = editingTask.projectModuleId === mod.id;
+                  return (
+                    <div
+                      key={mod.id}
+                      onClick={() => {
+                        setEditingTask((prev) => ({ ...prev, projectModuleId: mod.id, projectModuleTouched: true, projectModuleReason: `已选择模板：${mod.name}`, projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
+                        setIsTemplateListOpen(false);
+                      }}
+                      className={`group relative bg-white p-5 rounded-xl border transition-all duration-200 cursor-pointer ${isSelected ? 'border-blue-500 shadow-[0_0_0_1px_rgba(59,130,246,1)]' : 'border-gray-200 hover:border-blue-300 hover:shadow-md'}`}
+                    >
+                      {isSelected && (
+                        <div className="absolute top-4 right-4 text-blue-500">
+                          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                        </div>
+                      )}
+                      <div className="pr-10">
+                        <div className="flex items-center gap-3 mb-2">
+                          <h3 className={`text-base font-medium ${isSelected ? 'text-blue-700' : 'text-gray-800'}`}>{mod.name}</h3>
+                          <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-xs rounded font-medium border border-blue-100/50">
+                            {stepCount > 0 ? `${stepCount} 个步骤` : '暂无步骤'}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500 leading-relaxed line-clamp-2" title={mod.goal || ''}>{mod.goal || '暂无描述'}</p>
+                      </div>
+                      {/* Hover actions */}
+                      <div className="absolute bottom-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => {
+                            setTemplateEditorMode('edit');
+                            setTemplateListEditingModuleId(mod.id);
+                            setTemplateEditorInitialData({
+                              name: mod.name,
+                              scenarioDesc: mod.goal || '',
+                              tasks: parsed?.tasks || [],
+                              options: parsed?.options || { autoCreateEventLine: true, aiFillEmpty: false },
+                            });
+                            setIsTemplateListOpen(false);
+                            setIsTemplateEditorOpen(true);
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                          title="编辑"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (!window.confirm(`确认删除模板"${mod.name}"？`)) return;
+                            const clientId = editingTask.clientId || organizationClientId;
+                            if (!clientId) return;
+                            void (async () => {
+                              try {
+                                await deleteProjectModule(clientId, mod.id);
+                                const structure = await getClientProjectStructure(clientId);
+                                setProjectStructureCache((prev) => ({ ...prev, [clientId]: structure }));
+                                if (editingTask.projectModuleId === mod.id) {
+                                  setEditingTask((prev) => ({ ...prev, projectModuleId: '', projectModuleTouched: true, projectModuleReason: '', projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
+                                }
+                                flash('success', `模板"${mod.name}"已删除`);
+                              } catch (err) {
+                                flash('error', err instanceof Error ? err.message : '删除失败');
+                              }
+                            })();
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                          title="删除"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Footer */}
+              <div className="p-4 border-t border-gray-100 bg-white">
+                <button
+                  onClick={() => { setIsTemplateListOpen(false); void handleCreateProjectModuleFromTask(); }}
+                  className="w-full py-2.5 flex items-center justify-center gap-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-medium transition-colors"
+                >
+                  <Plus size={18} />
+                  <span>新建模板</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isTemplateEditorOpen && (
+          <TaskTemplateEditorModal
+            mode={templateEditorMode}
+            initialData={templateEditorInitialData}
+            onClose={() => setIsTemplateEditorOpen(false)}
+            onSave={(data) => void handleSaveTemplate(data)}
+          />
+        )}
+
+        {activeEventLine && (() => {
+          const el = activeEventLine.eventLine;
+          const elTasks = activeEventLine.tasks;
+          const elActivities = activeEventLine.activities;
+          const sourceTypeLabels: Record<string, { label: string; color: string }> = {
+            task_activity: { label: '任务', color: 'bg-blue-100 text-blue-600' },
+            meeting: { label: '会议', color: 'bg-cyan-100 text-cyan-600' },
+            support_request: { label: '支持', color: 'bg-pink-100 text-pink-600' },
+            review: { label: '复核', color: 'bg-purple-100 text-purple-600' },
+            attachment: { label: '附件', color: 'bg-orange-100 text-orange-600' },
+            manual_note: { label: '备注', color: 'bg-green-100 text-green-600' },
+          };
+          return (
+          <div
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 backdrop-blur-sm px-4 py-6 animate-in fade-in"
+            onClick={() => setActiveEventLine(null)}
+          >
+            <div
+              className="w-[640px] max-h-[85vh] bg-white rounded-[24px] shadow-xl flex flex-col overflow-hidden"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {/* --- FIXED TOP --- */}
+              <div className="flex-shrink-0 px-8 pt-7 pb-6 border-b border-gray-200/80">
+                {/* Top row */}
+                <div className="flex justify-between items-center mb-1">
+                  <button type="button" onClick={() => setActiveEventLine(null)} className="text-gray-400 hover:text-gray-700 transition-colors">
+                    <X size={20} />
+                  </button>
+                  <button
+                    type="button"
+                    className="bg-blue-600 hover:bg-blue-700 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                    onClick={() => { setReportEventLineId(el.id); setActiveEventLine(null); }}
+                  >
+                    <FileBadge size={14} />
+                    汇报预览
+                  </button>
+                </div>
+
+                {/* Event line name */}
+                <h1 className="text-[22px] font-bold text-black truncate py-1 mb-4">{el.name}</h1>
+                <div className="h-px bg-gray-100 mb-4" />
+
+                {/* Basic info grid */}
+                <div className="bg-[#F8F9FB] rounded-2xl py-4 px-5 grid grid-cols-4 gap-4 mb-5">
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">项目</span>
+                    <span className="text-[13px] text-purple-600 font-medium">{el.primaryClientName || '未关联'}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">创建于</span>
+                    <span className="text-[13px] text-gray-700">{el.createdAt.slice(0, 10)}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">最近更新</span>
+                    <span className="text-[13px] text-gray-700">{el.updatedAt.slice(5, 16).replace('T', ' ')}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">关联</span>
+                    <span className="text-[13px] text-gray-700"><span className="font-bold">{elTasks.length}</span> 条任务 · <span className="font-bold">{el.evidenceCount}</span> 个附件</span>
+                  </div>
+                </div>
+
+                {/* Participants */}
+                <div className="mb-5">
+                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-3">参与人</h3>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {el.ownerName && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-[12px] font-medium">{el.ownerName.charAt(0)}</div>
+                        <span className="text-[13px] text-gray-800">{el.ownerName}</span>
+                        <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded">负责人</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Description */}
+                <div>
+                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-2">事件线描述</h3>
+                  <p className="text-[13px] leading-[22px] text-gray-600">
+                    {el.summary || '暂无描述。可在编辑事件线时添加。'}
+                  </p>
+                </div>
+              </div>
+
+              {/* --- SCROLLABLE BOTTOM --- */}
+              <div className="flex-1 overflow-y-auto px-8 pt-6 pb-10">
+                {/* Linked tasks */}
+                <div className="mb-8">
+                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-3">
+                    关联任务 <span className="lowercase">({elTasks.length} 条)</span>
+                  </h3>
+                  {elTasks.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-400">这条事件线下还没有挂到具体任务。</p>
+                  )}
+                  <div className="flex flex-col gap-2">
+                    {elTasks.slice(0, 6).map((task) => (
+                      <button
+                        key={task.id}
+                        type="button"
+                        className="flex items-start gap-3 p-2 -mx-2 hover:bg-[#F5F6F8] rounded-xl text-left transition-colors"
+                        onClick={() => { setActiveEventLine(null); openTaskEditor(task); }}
+                      >
+                        <span className="mt-0.5 text-gray-400">
+                          {task.status === 'done'
+                            ? <CheckSquare size={16} className="text-blue-500" />
+                            : <Square size={16} />}
+                        </span>
+                        <div className="flex flex-col gap-1 min-w-0">
+                          <span className={`text-[14px] truncate ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{task.title}</span>
+                          <span className="text-[11px] text-gray-400">{task.ownerName}{task.dueDate ? ` · ${formatTaskDueLabel(task.dueDate)}` : ''}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Recent events */}
+                <div className="mb-6">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium">最近事件</h3>
+                    <span className="text-[11px] text-gray-400">共 {elActivities.length} 条</span>
+                  </div>
+                  {elActivities.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-400">还没有沉淀过程痕迹。</p>
+                  )}
+                  <div className="flex flex-col gap-1">
+                    {elActivities.slice(0, 8).map((activity) => {
+                      const st = sourceTypeLabels[activity.sourceType] || { label: activity.sourceType, color: 'bg-gray-100 text-gray-600' };
+                      return (
+                        <div key={activity.id} className="flex items-start py-1.5 hover:bg-gray-50 rounded -mx-2 px-2 transition-colors">
+                          <span className="text-[11px] text-gray-400 w-[90px] flex-shrink-0 pt-px">{activity.happenedAt.slice(5, 16).replace('T', ' ')}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 ${st.color}`}>{st.label}</span>
+                          <span className="text-[13px] text-gray-700 truncate ml-2">{activity.title}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Manual note input */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={eventLineNoteText}
+                    onChange={(e) => setEventLineNoteText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && eventLineNoteText.trim() && !isSavingEventLineNote) {
+                        void (async () => {
+                          setIsSavingEventLineNote(true);
+                          try {
+                            await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
+                            setEventLineNoteText('');
+                            const refreshed = await getEventLine(activeEventLine.eventLine.id);
+                            setActiveEventLine(refreshed);
+                            flash('success', '备注已添加');
+                          } catch (err) {
+                            flash('error', err instanceof Error ? err.message : '添加备注失败');
+                          } finally {
+                            setIsSavingEventLineNote(false);
+                          }
+                        })();
+                      }
+                    }}
+                    placeholder="记录一条观察、决策或进展..."
+                    className="flex-1 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-[12px] outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
+                    disabled={isSavingEventLineNote}
+                  />
+                  <button
+                    type="button"
+                    disabled={!eventLineNoteText.trim() || isSavingEventLineNote}
+                    onClick={() => {
+                      if (!eventLineNoteText.trim()) return;
+                      void (async () => {
+                        setIsSavingEventLineNote(true);
+                        try {
+                          await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
+                          setEventLineNoteText('');
+                          const refreshed = await getEventLine(activeEventLine.eventLine.id);
+                          setActiveEventLine(refreshed);
+                          flash('success', '备注已添加');
+                        } catch (err) {
+                          flash('error', err instanceof Error ? err.message : '添加备注失败');
+                        } finally {
+                          setIsSavingEventLineNote(false);
+                        }
+                      })();
+                    }}
+                    className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-[12px] font-bold text-white transition hover:bg-blue-700 disabled:opacity-40"
+                  >
+                    {isSavingEventLineNote ? '...' : '添加'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          );
+        })()}
 
         {reportEventLineId && (
           <EventLineReportPanel
@@ -8824,6 +9299,32 @@ export default function App() {
                     className="min-h-[220px] w-full flex-1 resize-none border-none text-[15px] leading-relaxed text-gray-600 outline-none placeholder:text-gray-400"
                   />
 
+                  {/* 系统理解面板 */}
+                  {editingTask.id && (
+                    <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/20 p-4">
+                      <div className="mb-3 flex items-center gap-2">
+                        <div className="flex h-5 w-5 items-center justify-center rounded bg-blue-100">
+                          <BrainCircuit size={12} className="text-blue-600" />
+                        </div>
+                        <span className="text-[12px] font-bold text-blue-700">系统理解</span>
+                        {isLoadingUnderstanding && (
+                          <span className="text-[11px] text-slate-400 animate-pulse">正在分析...</span>
+                        )}
+                      </div>
+                      {taskUnderstanding ? (
+                        <UnderstandingPanel snapshot={taskUnderstanding as any} />
+                      ) : isLoadingUnderstanding ? (
+                        <div className="space-y-2">
+                          <div className="h-4 w-3/4 animate-pulse rounded bg-blue-100/50" />
+                          <div className="h-4 w-1/2 animate-pulse rounded bg-blue-100/50" />
+                          <div className="h-4 w-2/3 animate-pulse rounded bg-blue-100/50" />
+                        </div>
+                      ) : (
+                        <p className="text-[12px] text-slate-400">暂无法生成理解（新任务保存后可用）</p>
+                      )}
+                    </div>
+                  )}
+
                   <div className="mt-6 space-y-3">
                     <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white p-4 transition focus-within:border-blue-400 focus-within:bg-blue-50/40">
                       <div className="mb-3 flex items-center gap-2 text-gray-500">
@@ -8845,13 +9346,82 @@ export default function App() {
                           isEditingTaskPersonal || isSavingTask ? 'cursor-not-allowed text-gray-300' : 'text-gray-600'
                         }`}
                       />
-                      <p className="mt-2 text-xs text-gray-400">
-                        {isEditingTaskPersonal
-                          ? '个人日程不会同步到客户工作台。'
-                          : !editingTask.clientId
-                            ? '可以先粘贴内容；保存前请先选择组织/项目，归档时会进入对应客户工作台。'
-                            : '保存并关联项目后，这段文字会自动归档到当前项目的客户工作台。'}
-                      </p>
+                      {/* 附件名称列表（显示在文本框内部） */}
+                      {editingTaskRecord?.attachments?.length ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {editingTaskRecord.attachments.map((attachment: TaskAttachmentRecord) => (
+                            <span
+                              key={attachment.id}
+                              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600"
+                            >
+                              <Paperclip size={10} className="text-gray-400" />
+                              <span className="truncate max-w-[180px]">{attachment.title}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="mt-2 flex items-center justify-between">
+                        <p className="text-xs text-gray-400">
+                          {isEditingTaskPersonal
+                            ? '个人日程不会同步到客户工作台。'
+                            : '保存后文字和附件会自动归档到客户工作台。'}
+                        </p>
+                        {editingTask.id && !isEditingTaskPersonal && (
+                          taskAttachmentUploadProgress ? (
+                            <div className="shrink-0 flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-1.5">
+                              <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-blue-200 border-t-[#5B7BFE]" />
+                              <div className="flex flex-col">
+                                <span className="text-[11px] font-medium text-[#5B7BFE]">
+                                  上传中 {taskAttachmentUploadProgress.percent}%
+                                </span>
+                                <span className="text-[10px] text-blue-400 truncate max-w-[120px]">
+                                  {taskAttachmentUploadProgress.currentFileName}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <label className="shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-gray-400 cursor-pointer transition hover:text-[#5B7BFE] hover:bg-blue-50">
+                              <UploadCloud size={13} />
+                              上传附件
+                              <input
+                                type="file"
+                                multiple
+                                className="hidden"
+                                onChange={(event) => {
+                                  const files = event.target.files;
+                                  if (!files || files.length === 0) return;
+                                  const fileList = Array.from(files);
+                                  void uploadAttachmentsToTask(
+                                    editingTask.id,
+                                    fileList,
+                                    { clientId: editingTask.clientId, eventLineId: editingTask.eventLineId, taskTitle: editingTask.title },
+                                  ).then(() => {
+                                    // Immediately show uploaded files in the UI
+                                    setTasks((prev: Task[]) => prev.map((t: Task) => {
+                                      if (t.id !== editingTask.id) return t;
+                                      const newAtts = fileList.map((f, i) => ({
+                                        id: `pending_${Date.now()}_${i}`,
+                                        title: f.name,
+                                        kind: f.name.split('.').pop() || 'bin',
+                                        path: '',
+                                        source: 'task_attachment',
+                                        sizeBytes: f.size,
+                                        createdAt: new Date().toISOString(),
+                                      }));
+                                      return { ...t, attachments: [...(t.attachments || []), ...newAtts] } as Task;
+                                    }));
+                                    flash('success', `已上传 ${fileList.length} 个附件`);
+                                    void loadTaskBlock();
+                                  }).catch((err: Error) => {
+                                    flash('error', err.message || '附件上传失败');
+                                  });
+                                  event.target.value = '';
+                                }}
+                              />
+                            </label>
+                          )
+                        )}
+                      </div>
                     </div>
                     {pendingTaskArchiveText.trim() && (
                       <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#DDE6FF] bg-[#F7F9FF] px-4 py-3 text-[12px] text-slate-600">
@@ -8877,19 +9447,6 @@ export default function App() {
                         </button>
                       </div>
                     )}
-                    {editingTaskRecord?.attachments?.length ? (
-                      <div className="flex flex-wrap gap-2">
-                        {editingTaskRecord.attachments.map((attachment: TaskAttachmentRecord) => (
-                          <span
-                            key={attachment.id}
-                            className="inline-flex max-w-[280px] items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-[12px] text-slate-600"
-                          >
-                            <span className="truncate">{attachment.title}</span>
-                            <span className="shrink-0 text-[10px] text-slate-400">{attachment.kind.toUpperCase()}</span>
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
                   </div>
                 </div>
 
@@ -9097,7 +9654,7 @@ export default function App() {
                           className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                         >
                           <option value="">
-                            {isEditingTaskPersonal ? `个人日程（${organizationTaskName}）` : `组织任务（${organizationTaskName}）`}
+                            {isEditingTaskPersonal ? '个人日程' : '请选择项目'}
                           </option>
                           {taskClientOptions.map((client) => (
                             <option key={client.id} value={client.id}>
@@ -9121,11 +9678,11 @@ export default function App() {
                                   : (prev.clientId ? '请选择事件线，让复盘更连贯。' : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。'),
                               }))
                             }
-                            disabled={isEditingTaskPersonal || !editingTask.clientId}
+                            disabled={isEditingTaskPersonal}
                             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                           >
                             <option value="">
-                              {isEditingTaskPersonal ? '个人日程不进入事件线' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : '可选：加入事件线')}
+                              {isEditingTaskPersonal ? '个人日程不进入事件线' : '可选：加入事件线'}
                             </option>
                             {taskEventLineOptions.map((line) => (
                               <option key={line.id} value={line.id}>
@@ -9148,12 +9705,12 @@ export default function App() {
                               disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
                               className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              {isDeletingEventLine ? '...' : '删除'}
+                              {isDeletingEventLine ? '...' : (selectedEventLineSummary?.visibilityScope === 'private' ? '删除' : '结束')}
                             </button>
                             <button
                               type="button"
                               onClick={() => void handleCreateEventLineFromTask()}
-                              disabled={!editingTask.title.trim() || !editingTask.clientId || isEditingTaskPersonal}
+                              disabled={isEditingTaskPersonal || isCreatingEventLine}
                               className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               新建
@@ -9171,39 +9728,31 @@ export default function App() {
                     </div>
 
                     <div className="space-y-3">
-                      <TaskPropertyRow icon={<Layout size={16} />} label="任务模块">
+                      <TaskPropertyRow icon={<Layout size={16} />} label="任务模板">
                         <div className="flex w-full items-center gap-2">
-                          <select
-                            value={editingTask.projectModuleId}
-                            onChange={(event) =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                projectModuleId: event.target.value,
-                                projectModuleTouched: true,
-                                projectModuleReason: event.target.value
-                                  ? `已挂到模块：${taskProjectModuleOptions.find((item) => item.id === event.target.value)?.name || '已选择模块'}。`
-                                  : (prev.clientId ? '请选择任务模块，帮助后续复盘落到项目结构。' : '可选：把任务挂到项目下的具体任务模块。'),
-                              }))
-                            }
-                            disabled={isEditingTaskPersonal || !editingTask.clientId}
-                            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-                          >
-                            <option value="">
-                              {isEditingTaskPersonal ? '个人日程不进入任务模块' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : '可选：选择任务模块')}
-                            </option>
-                            {taskProjectModuleOptions.map((module) => (
-                              <option key={module.id} value={module.id}>
-                                {module.name}
-                              </option>
-                            ))}
-                          </select>
+                          <span className="flex-1 truncate text-sm text-gray-500">
+                            {editingTask.projectModuleId
+                              ? taskProjectModuleOptions.find((m) => m.id === editingTask.projectModuleId)?.name || '已选择模板'
+                              : (isEditingTaskPersonal ? '个人日程' : '未选择模板')}
+                          </span>
+                          {editingTask.projectModuleId && !isEditingTaskPersonal && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingTask((prev) => ({ ...prev, projectModuleId: '', projectModuleTouched: true, projectModuleReason: '', projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }))}
+                              title="取消选择"
+                              className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => void handleCreateProjectModuleFromTask()}
-                            disabled={isEditingTaskPersonal || !editingTask.clientId || isCreatingTaskProjectModule}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => setIsTemplateListOpen(true)}
+                            disabled={isEditingTaskPersonal}
+                            title="选择或管理模板"
+                            className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
                           >
-                            {isCreatingTaskProjectModule ? '处理中' : '新建'}
+                            <Plus size={13} />
                           </button>
                         </div>
                       </TaskPropertyRow>
@@ -9212,36 +9761,117 @@ export default function App() {
                         <div className="flex w-full items-center gap-2">
                           <select
                             value={editingTask.projectFlowId}
-                            onChange={(event) =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                projectFlowId: event.target.value,
-                                projectFlowTouched: true,
-                                projectFlowReason: event.target.value
-                                  ? `已挂到流程：${taskProjectFlowOptions.find((item) => item.id === event.target.value)?.name || '已选择流程'}。`
-                                  : (prev.projectModuleId ? '当前未选择具体流程。' : (prev.clientId ? '请先选择任务模块，再选择流程。' : '当前按组织任务处理；如需挂到标准流程，请先关联客户 / 项目。')),
-                              }))
-                            }
-                            disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId}
+                            onChange={(event) => {
+                              const stepId = event.target.value;
+                              if (!stepId) {
+                                setEditingTask((prev) => ({ ...prev, projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
+                                return;
+                              }
+                              let mod = taskProjectModuleOptions.find((m) => m.id === editingTask.projectModuleId);
+                              if (!mod && workspace?.projectModules) {
+                                mod = workspace.projectModules.find((m: any) => m.id === editingTask.projectModuleId);
+                              }
+                              const parsed = mod?.templateTasksJson ? (() => { try { return JSON.parse(mod.templateTasksJson); } catch { return null; } })() : null;
+                              const allSteps = parsed?.tasks || [];
+                              const stepIndex = allSteps.findIndex((t: { id: string }) => t.id === stepId);
+                              const step = stepIndex >= 0 ? allSteps[stepIndex] : null;
+                              if (step) {
+                                // Fill current task with selected step
+                                const durationDays = step.durationDays ?? (step.durationMinutes ? step.durationMinutes / 480 : 1);
+                                setEditingTask((prev) => ({
+                                  ...prev,
+                                  projectFlowId: stepId,
+                                  projectFlowTouched: true,
+                                  projectFlowReason: `已选择流程步骤：${step.title}（从此步开始，后续步骤将自动创建）`,
+                                  title: prev.title || step.title,
+                                  desc: prev.desc || step.description || '',
+                                  durationMinutes: Math.max(30, Math.round(durationDays * 480)),
+                                  priority: step.priority || prev.priority,
+                                }));
+
+                                // Auto-create subsequent steps as separate tasks
+                                const subsequentSteps = allSteps.slice(stepIndex + 1);
+                                if (subsequentSteps.length > 0) {
+                                  const baseDate = new Date(editingTask.dueDate || new Date().toISOString().slice(0, 10));
+                                  let prevEndDate = new Date(baseDate);
+                                  prevEndDate.setDate(prevEndDate.getDate() + Math.ceil(durationDays) - 1);
+
+                                  const tasksToCreate: Array<{ title: string; desc: string; dueDate: string; durationMinutes: number; priority: string; ownerName?: string }> = [];
+                                  for (const nextStep of subsequentSteps) {
+                                    const delay = nextStep.daysAfterPrevious ?? nextStep.relativeDays ?? 0;
+                                    const nextDuration = nextStep.durationDays ?? (nextStep.durationMinutes ? nextStep.durationMinutes / 480 : 1);
+                                    const startDate = new Date(prevEndDate);
+                                    startDate.setDate(startDate.getDate() + delay);
+                                    tasksToCreate.push({
+                                      title: nextStep.title,
+                                      desc: nextStep.description || '',
+                                      dueDate: startDate.toISOString().slice(0, 10),
+                                      durationMinutes: Math.max(30, Math.round(nextDuration * 480)),
+                                      priority: nextStep.priority || 'normal',
+                                      ownerName: nextStep.ownerName,
+                                    });
+                                    const endDate = new Date(startDate);
+                                    endDate.setDate(endDate.getDate() + Math.ceil(nextDuration) - 1);
+                                    prevEndDate = endDate;
+                                  }
+
+                                  // Create tasks in background
+                                  void (async () => {
+                                    for (const t of tasksToCreate) {
+                                      try {
+                                        // Map ownerName to collaboratorId if possible
+                                        const assignee = t.ownerName || '';
+                                        const assigneeCollaborator = assignee && currentSessionUser
+                                          ? (assignee === currentSessionUser.fullName ? currentSessionUser.id : '')
+                                          : '';
+                                        await createTask({
+                                          title: t.title,
+                                          desc: t.desc,
+                                          dueDate: t.dueDate,
+                                          durationMinutes: t.durationMinutes,
+                                          priority: t.priority as 'normal' | 'high',
+                                          ownerName: assignee || editingTask.ownerName || '',
+                                          clientId: editingTask.clientId,
+                                          eventLineId: editingTask.eventLineId,
+                                          projectModuleId: editingTask.projectModuleId,
+                                          listId: editingTask.listId,
+                                          scopeMode: editingTask.scopeMode as 'COLLAB_SHARED' | 'PERSONAL_ONLY',
+                                          ddl: t.dueDate.replace(/-/g, '/'),
+                                          collaboratorIds: assigneeCollaborator ? [assigneeCollaborator] : [],
+                                          tagIds: [],
+                                        } as any);
+                                      } catch {}
+                                    }
+                                    flash('success', `已从模板创建 ${tasksToCreate.length} 个后续任务`);
+                                    void loadTaskBlock();
+                                  })();
+                                }
+                              }
+                            }}
+                            disabled={isEditingTaskPersonal || !editingTask.projectModuleId}
                             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                           >
                             <option value="">
-                              {isEditingTaskPersonal ? '个人日程不进入标准流程' : (!editingTask.clientId ? `组织任务（${organizationTaskName}）` : !editingTask.projectModuleId ? '请先选择任务模块' : '可选：选择流程')}
+                              {isEditingTaskPersonal ? '个人日程' : (!editingTask.projectModuleId ? '请先选择任务模板' : '可选：从模板选择步骤')}
                             </option>
-                            {taskProjectFlowOptions.map((flow) => (
-                              <option key={flow.id} value={flow.id}>
-                                {flow.name}
-                              </option>
-                            ))}
+                            {(() => {
+                              // Try module options first, fall back to workspace modules
+                              let mod = taskProjectModuleOptions.find((m) => m.id === editingTask.projectModuleId);
+                              if (!mod && workspace?.projectModules) {
+                                mod = workspace.projectModules.find((m: any) => m.id === editingTask.projectModuleId);
+                              }
+                              const parsed = mod?.templateTasksJson ? (() => { try { return JSON.parse(mod.templateTasksJson); } catch { return null; } })() : null;
+                              const steps = parsed?.tasks || [];
+                              if (steps.length === 0 && editingTask.projectModuleId) {
+                                return <option value="" disabled>（模板步骤加载中...）</option>;
+                              }
+                              return steps.map((step: { id: string; title: string }, idx: number) => (
+                                <option key={step.id} value={step.id}>
+                                  步骤 {idx + 1}：{step.title}
+                                </option>
+                              ));
+                            })()}
                           </select>
-                          <button
-                            type="button"
-                            onClick={() => void handleCreateProjectFlowFromTask()}
-                            disabled={isEditingTaskPersonal || !editingTask.clientId || !editingTask.projectModuleId || isCreatingTaskProjectFlow}
-                            className="rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {isCreatingTaskProjectFlow ? '处理中' : '新建'}
-                          </button>
                         </div>
                       </TaskPropertyRow>
                     </div>
@@ -9713,6 +10343,7 @@ export default function App() {
     const [inputValue, setInputValue] = useState('');
     const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
     const [clientImportDropZone, setClientImportDropZone] = useState<'buffer' | 'composer' | null>(null);
+    const [answerActionState, setAnswerActionState] = useState<Record<string, 'vectorize' | 'export'>>({});
     const [isTemplateFilling, setIsTemplateFilling] = useState(false);
     const [templateFillDialog, setTemplateFillDialog] = useState<TemplateFillDialogState | null>(null);
     const [isClientModalOpen, setIsClientModalOpen] = useState(false);
@@ -10371,7 +11002,7 @@ export default function App() {
     }, [currentClientId, workspace?.knowledgeStatus?.lastJobStatus]);
 
     const filteredClients = clients.filter((client) => !searchQuery.trim() || `${client.name}${client.alias}${client.domain}`.includes(searchQuery.trim()));
-    const currentThreadId = workspace?.threads?.[0]?.id || activeAnalysisRun?.threadId || null;
+    const currentThreadId = activeAnalysisRun?.threadId || workspace?.threads?.[0]?.id || null;
     const visibleThreadAnalysisRun =
       visibleActiveAnalysisRun && visibleActiveAnalysisRun.threadId === currentThreadId ? visibleActiveAnalysisRun : null;
     const activeAssistantMessageId = visibleThreadAnalysisRun?.assistantMessageId || null;
@@ -10526,17 +11157,27 @@ export default function App() {
     }, [latestChatMessageId, thinkingPanelVisible]);
 
     const aiStatus = useMemo(() => {
-      if (health?.ai.provider === 'qwen' && health.ai.ready) {
+      if (!health?.ai.provider) {
         return {
-          label: 'Qwen 已连接',
+          label: 'AI 状态加载中',
+          className: 'text-gray-600 bg-gray-50 border-gray-200 hover:bg-gray-100',
+          dotClassName: 'bg-gray-400',
+          subtitle: '正在读取当前模型',
+        };
+      }
+      const provider = health.ai.provider as AiProvider;
+      const providerLabel = providerDisplayNames[provider] || provider;
+      if (provider !== 'mock' && health.ai.ready) {
+        return {
+          label: `${providerLabel} 已连接`,
           className: 'text-emerald-600 bg-emerald-50 border-emerald-100 hover:bg-emerald-100',
           dotClassName: 'bg-emerald-500',
           subtitle: health.ai.model,
         };
       }
-      if (health?.ai.provider === 'qwen' && !health.ai.ready) {
+      if (provider !== 'mock' && !health.ai.ready) {
         return {
-          label: 'Qwen 未配置',
+          label: `${providerLabel} 未配置`,
           className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
           dotClassName: 'bg-amber-500',
           subtitle: '当前回退 mock',
@@ -11291,25 +11932,40 @@ export default function App() {
     };
 
     const handleVectorizeAnswer = async (messageId: string) => {
-      if (!currentClientId) return;
+      if (!currentClientId || answerActionState[messageId]) return;
       try {
+        setAnswerActionState((prev) => ({ ...prev, [messageId]: 'vectorize' }));
         const result = await vectorizeAnswer(currentClientId, messageId);
         await refreshWorkspace(currentClientId);
-        flash('success', `已生成机读文档：${result.fileName}`);
+        const opened = await openPathBridge(result.path).catch(() => false);
+        flash('success', opened ? `已生成并打开机读文档：${result.fileName}` : `已生成机读文档，并已归档到当前项目：${result.fileName}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '建立向量失败');
+      } finally {
+        setAnswerActionState((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
       }
     };
 
     const handleExportAnswer = async (messageId: string) => {
-      if (!currentClientId) return;
+      if (!currentClientId || answerActionState[messageId]) return;
       try {
+        setAnswerActionState((prev) => ({ ...prev, [messageId]: 'export' }));
         const result = await exportAnswer(currentClientId, messageId);
-        flash('success', `已生成 Word 文件：${result.fileName}`);
-        void openPathBridge(result.path);
         await refreshWorkspace(currentClientId);
+        const opened = await openPathBridge(result.path).catch(() => false);
+        flash('success', opened ? `已生成、归档并打开 Word 文件：${result.fileName}` : `已生成并归档 Word 文件：${result.fileName}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '导出文件失败');
+      } finally {
+        setAnswerActionState((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
       }
     };
 
@@ -11815,23 +12471,23 @@ export default function App() {
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={msg.answerMode === 'system_failure'}
+                                      disabled={msg.answerMode === 'system_failure' || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void handleVectorizeAnswer(msg.id);
                                       }}
                                     >
-                                      <Sparkles size={14} /> 建立向量
+                                      <Sparkles size={14} /> {answerActionState[msg.id] === 'vectorize' ? '建立中…' : '建立向量'}
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={msg.answerMode === 'system_failure'}
+                                      disabled={msg.answerMode === 'system_failure' || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void handleExportAnswer(msg.id);
                                       }}
                                     >
-                                      <Download size={14} /> 导出文件
+                                      <Download size={14} /> {answerActionState[msg.id] === 'export' ? '导出中…' : '导出文件'}
                                     </button>
                                     {msg.answerMode === 'system_failure' && msg.requestPrompt && (
                                       <button
@@ -12982,106 +13638,6 @@ export default function App() {
     );
   };
 
-
-  const UnifiedWorkbenchView = () => {
-    const enabledTemplates = analysisTemplates.filter((template) => {
-      if (!analysisSettingsState.enabledTemplateIds.length) return true;
-      return analysisSettingsState.enabledTemplateIds.includes(template.id);
-    });
-    const handleRunAnalysis = async (payload: AnalysisRunPayload) => {
-      const created = await runAnalysis(payload);
-      await loadAnalysisBlock();
-      flash('success', '分析运行完成');
-      return created;
-    };
-
-    const handleSaveLearningCard = async (payload: { title: string; summary: string; tags: string[] }) => {
-      await createHandbook({
-        title: payload.title,
-        summary: payload.summary,
-        tags: payload.tags,
-        sourceType: 'analysis',
-        clientId: currentClientId || undefined,
-      });
-      await loadHandbookBlock();
-      notifyGrowthRefresh();
-      flash('success', '已写入成长手册');
-    };
-
-    const handleGetRunComparison = async (runId: string) => {
-      return await getFundraisingRunComparison(runId);
-    };
-
-    const handleSaveReminderRule = async (payload: {
-      title: string;
-      knowledgeKey: string;
-      issuePattern: string;
-      message: string;
-      modeIds: string[];
-    }) => {
-      const nextRule: CoachReminderRule = {
-        id: createUiId('coach-reminder'),
-        title: payload.title,
-        knowledgeKey: payload.knowledgeKey,
-        issuePattern: payload.issuePattern,
-        message: payload.message,
-        modeIds: payload.modeIds,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      await upsertFundraisingReminderRule(nextRule);
-      await loadAnalysisSettingsBlock();
-      flash('success', '已加入个人提醒规则');
-    };
-
-    const handleSaveWritingNorm = async (payload: {
-      title: string;
-      description: string;
-      instruction: string;
-      modeIds: string[];
-      triggerKeywords: string[];
-    }) => {
-      const nextNorm: OrgWritingNorm = {
-        id: createUiId('coach-norm'),
-        title: payload.title,
-        description: payload.description,
-        instruction: payload.instruction,
-        modeIds: payload.modeIds,
-        triggerKeywords: payload.triggerKeywords,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      await upsertFundraisingWritingNorm(nextNorm);
-      await loadAnalysisSettingsBlock();
-      flash('success', '已加入机构规范');
-    };
-
-    return (
-      <UnifiedWorkbenchStudio
-        templates={enabledTemplates}
-        runs={analysisRuns.filter((run) => enabledTemplates.some((template) => template.id === run.templateId))}
-        defaultTitlePrefix={analysisSettingsState.defaultTitlePrefix || '系统分析'}
-        defaultHandbookTags={handbookSettingsState.defaultTags}
-        diagnosisProfiles={analysisSettingsState.diagnosisProfiles}
-        deepDnaLibrary={analysisSettingsState.deepDnaLibrary}
-        organizationRiskDna={analysisSettingsState.organizationRiskDna || null}
-        fundraisingKnowledgeEntries={analysisSettingsState.fundraisingKnowledgeLibrary}
-        coachCases={fundraisingCoachCasesState}
-        coachReminderRules={analysisSettingsState.coachReminderRules}
-        orgWritingNorms={analysisSettingsState.orgWritingNorms}
-        profileLibraryVersion={diagnosisProfileVersion}
-        onRunAnalysis={handleRunAnalysis}
-        onSaveLearningCard={handleSaveLearningCard}
-        onGetDiagnosisEngineHealth={getDiagnosisEngineHealth}
-        onRunBettafishDiagnosis={runBettafishDiagnosis}
-        onOpenProfileSettings={openDiagnosisProfileSettings}
-        onGetRunComparison={handleGetRunComparison}
-        onSaveReminderRule={handleSaveReminderRule}
-        onSaveWritingNorm={handleSaveWritingNorm}
-      />
-    );
-  };
-
   const SettingsView = () => {
     const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
     const [draft, setDraft] = useState({
@@ -13107,7 +13663,6 @@ export default function App() {
     const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
     const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
     const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
-    const [analysisDraft, setAnalysisDraft] = useState(analysisSettingsState);
     const [handbookDraft, setHandbookDraft] = useState({
       ...handbookSettingsState,
       defaultTagsText: handbookSettingsState.defaultTags.join(', '),
@@ -13141,10 +13696,6 @@ export default function App() {
     useEffect(() => {
       setTopicsDraft(topicsSettingsState);
     }, [topicsSettingsState]);
-
-    useEffect(() => {
-      setAnalysisDraft(analysisSettingsState);
-    }, [analysisSettingsState]);
 
     useEffect(() => {
       setHandbookDraft({
@@ -13198,10 +13749,6 @@ export default function App() {
       }
       return [...deduped.values()];
     }, [currentSessionUser, employeeReviews, operators, tasks]);
-    const enabledAnalysisTemplates = analysisTemplates.filter((template) => {
-      if (!analysisDraft.enabledTemplateIds.length) return true;
-      return analysisDraft.enabledTemplateIds.includes(template.id);
-    });
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
@@ -13454,18 +14001,22 @@ export default function App() {
         closeTaskModal('delete-started');
         resetTaskDraft();
       }
-      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      const deletedId = task.id;
+      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
       flash('success', '任务已删除');
       void (async () => {
         try {
-          await deleteTask(task.id);
-          void loadTaskBlock();
+          await deleteTask(deletedId);
+          // Wait for cloud to process before refreshing
+          await new Promise((r) => setTimeout(r, 2000));
+          await loadTaskBlock();
+          // Ensure deleted task stays deleted even if cloud returned stale data
+          setTasks((prev) => prev.filter((t) => t.id !== deletedId));
           if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
           void refreshWorkspace(task.clientId || undefined);
           if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
         } catch {
-          void loadTaskBlock();
-          flash('error', '删除任务失败，已恢复');
+          // Delete already removed locally — don't restore
         }
       })();
     };
@@ -13498,7 +14049,7 @@ export default function App() {
     const handleSaveAiSettings = async () => {
       try {
         await updateSettings({
-          aiProvider: draft.aiProvider as 'mock' | 'qwen',
+          aiProvider: draft.aiProvider as AiProvider,
           aiModel: draft.aiModel,
           apiKey: draft.apiKey.trim() || undefined,
         });
@@ -13545,54 +14096,6 @@ export default function App() {
         flash('success', '资讯情报站设置已保存');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
-      }
-    };
-
-    const handleSaveAnalysisSettings = async () => {
-      try {
-        const next = await updateAnalysisWorkbenchSettings({
-          enabledTemplateIds: analysisDraft.enabledTemplateIds,
-          defaultTemplateId: analysisDraft.defaultTemplateId,
-          defaultTitlePrefix: analysisDraft.defaultTitlePrefix,
-          useOrgDna: analysisDraft.useOrgDna,
-          allowEmployeeTemplateEditing: analysisDraft.allowEmployeeTemplateEditing,
-          diagnosisProfiles: analysisDraft.diagnosisProfiles,
-          organizationRiskDna: analysisDraft.organizationRiskDna || null,
-          fundraisingKnowledgeLibrary: analysisDraft.fundraisingKnowledgeLibrary,
-          deepDnaLibrary: analysisDraft.deepDnaLibrary,
-          coachCaseLibrary: analysisDraft.coachCaseLibrary,
-          coachReminderRules: analysisDraft.coachReminderRules,
-          orgWritingNorms: analysisDraft.orgWritingNorms,
-        });
-        const hydrated = hydrateAnalysisSharedAssets(next);
-        setAnalysisSettingsState(hydrated);
-        setAnalysisDraft(hydrated);
-        setDiagnosisProfileVersion((prev) => prev + 1);
-        await loadLogsBlock();
-        flash('success', '测试工作台设置已保存');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '保存失败');
-      }
-    };
-
-    const persistAnalysisSharedAssets = async (patch: Partial<AnalysisWorkbenchSettings>) => {
-      try {
-        const next = await updateAnalysisWorkbenchSettings({
-          diagnosisProfiles: patch.diagnosisProfiles,
-          organizationRiskDna: patch.organizationRiskDna,
-          fundraisingKnowledgeLibrary: patch.fundraisingKnowledgeLibrary,
-          deepDnaLibrary: patch.deepDnaLibrary,
-          coachCaseLibrary: patch.coachCaseLibrary,
-          coachReminderRules: patch.coachReminderRules,
-          orgWritingNorms: patch.orgWritingNorms,
-        });
-        const hydrated = hydrateAnalysisSharedAssets(next);
-        setAnalysisSettingsState(hydrated);
-        setAnalysisDraft(hydrated);
-        setDiagnosisProfileVersion((prev) => prev + 1);
-        await loadLogsBlock();
-      } catch (error) {
-        throw new Error(error instanceof Error ? error.message : '共享资产保存失败');
       }
     };
 
@@ -13797,13 +14300,13 @@ export default function App() {
       {
         group: '账户与服务',
         items: [
-          { key: 'overview', label: '账户与 AI', icon: Settings, helper: '登录信息、AI 模型、飞书绑定' },
+          { key: 'overview', label: '账户与 AI', icon: Settings, helper: '登录信息、AI 模型、飞书绑定、备份与日志' },
         ],
       },
       {
         group: '组织管理',
         items: [
-          { key: 'system_admin', label: '组织与权限', icon: ShieldAlert, helper: '部门、角色、员工、权限、备份' },
+          { key: 'system_admin', label: '组织与权限', icon: ShieldAlert, helper: '组织架构、邀请码、负责人绑定' },
           { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
         ],
       },
@@ -13813,8 +14316,13 @@ export default function App() {
           { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认清单、复盘规则' },
           { key: 'client_workspace', label: '客户工作台', icon: Briefcase, helper: '聊天、会议、目标' },
           { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取与转任务' },
-          { key: 'analysis', label: '分析工作台', icon: LayoutTemplate, helper: '模板与诊断' },
           { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
+        ],
+      },
+      {
+        group: '运维与排查',
+        items: [
+          { key: 'system_logs', label: '系统日志', icon: Activity, helper: '运行日志、错误排查、导出' },
         ],
       },
     ];
@@ -13834,6 +14342,56 @@ export default function App() {
       org_rules: {
         tab: 'rules',
       },
+    };
+
+    const ChangePasswordCard = ({ flash: flashMsg }: { flash: (type: 'success' | 'error', msg: string) => void }) => {
+      const [pwForm, setPwForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      const [pwSubmitting, setPwSubmitting] = useState(false);
+      const [pwError, setPwError] = useState('');
+      const [pwShowPassword, setPwShowPassword] = useState(false);
+      const newPwValid = pwForm.newPassword.length >= 8;
+      const confirmMatch = pwForm.newPassword === pwForm.confirmPassword;
+      const canSubmit = pwForm.currentPassword.trim() && newPwValid && confirmMatch && !pwSubmitting;
+      const handleChangePw = async () => {
+        setPwError('');
+        setPwSubmitting(true);
+        try {
+          await changePassword({ currentPassword: pwForm.currentPassword, newPassword: pwForm.newPassword });
+          flashMsg('success', '密码修改成功');
+          setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+        } catch (error) {
+          setPwError(error instanceof Error ? error.message : '密码修改失败');
+        } finally {
+          setPwSubmitting(false);
+        }
+      };
+      const pwInputType = pwShowPassword ? 'text' : 'password';
+      return (
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+          <div>
+            <h2 className="text-[16px] font-bold text-gray-900">修改密码</h2>
+            <p className="text-[12px] text-gray-500 mt-1">修改当前账号的登录密码。新密码至少 8 位。</p>
+          </div>
+          <input type={pwInputType} value={pwForm.currentPassword} onChange={(e) => setPwForm((p) => ({ ...p, currentPassword: e.target.value }))} placeholder="当前密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+          <div>
+            <input type={pwInputType} value={pwForm.newPassword} onChange={(e) => setPwForm((p) => ({ ...p, newPassword: e.target.value }))} placeholder="新密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+            {pwForm.newPassword && !newPwValid && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+          </div>
+          <div>
+            <input type={pwInputType} value={pwForm.confirmPassword} onChange={(e) => setPwForm((p) => ({ ...p, confirmPassword: e.target.value }))} placeholder="确认新密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+            {pwForm.confirmPassword && !confirmMatch && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+          </div>
+          <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
+            <input type="checkbox" checked={pwShowPassword} onChange={(e) => setPwShowPassword(e.target.checked)} />
+            显示密码
+          </label>
+          {pwError && <p className="text-[13px] text-red-600 bg-red-50 border border-red-100 rounded-2xl px-4 py-3">{pwError}</p>}
+          <Button primary onClick={() => void handleChangePw()} disabled={!canSubmit}>
+            {pwSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+            确认修改密码
+          </Button>
+        </div>
+      );
     };
 
     const renderOverviewSection = () => (
@@ -13896,6 +14454,8 @@ export default function App() {
           </div>
         </div>
 
+        <ChangePasswordCard flash={flash} />
+
         <FeishuAccountBindingPanel
           binding={feishuUserBindingState}
           busyAction={feishuBindingBusyAction}
@@ -13937,6 +14497,73 @@ export default function App() {
               <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">最近备份</p>
               <p className="text-[12px] text-gray-700">{settingsState?.lastBackupAt || '尚未备份'}</p>
             </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+            <h2 className="text-[16px] font-bold text-gray-900 mb-4">备份与旧数据导入</h2>
+            <div className="flex flex-wrap gap-3 mb-4">
+              <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
+                <Database size={16} /> 立即备份
+              </Button>
+              <Button onClick={() => { void selectFolderBridge().then((folder) => { if (!folder) return; void scanLegacy(folder).then((result) => setLegacyScanResult(result)).catch((error) => flash('error', error instanceof Error ? error.message : '扫描失败')); }); }}>
+                <FolderOpen size={16} /> 扫描旧数据
+              </Button>
+            </div>
+            {legacyScanResult && (
+              <div className="space-y-3">
+                <p className="text-[12px] font-bold text-gray-900">{legacyScanResult.path}</p>
+                <p className="text-[12px] text-gray-500">{legacyScanResult.message}</p>
+                <div className="flex flex-col md:flex-row gap-3">
+                  <select value={legacyImportClientId} onChange={(event) => setLegacyImportClientId(event.target.value)} className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
+                    <option value="">选择导入目标客户</option>
+                    {clients.map((client) => (
+                      <option key={client.id} value={client.id}>{client.name}</option>
+                    ))}
+                  </select>
+                  <Button onClick={() => void handleImportLegacyEntries()} disabled={isImportingLegacy || !importableLegacyEntries.length}>
+                    {isImportingLegacy ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+                    导入可导入文件
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-[16px] font-bold text-gray-900">演示数据</h2>
+                <p className="text-[12px] text-gray-500 mt-1">只在需要演示时手动载入，正式使用可以随时清空。</p>
+              </div>
+              <span className={`text-[11px] font-bold px-3 py-1.5 rounded-full ${settingsState?.demoDataLoaded ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                {settingsState?.demoDataLoaded ? '已载入演示数据' : '未载入演示数据'}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button onClick={() => { void loadDemoData().then(async () => { await loadAll('client_cffc'); flash('success', '演示数据已载入'); }).catch((error) => flash('error', error instanceof Error ? error.message : '载入失败')); }}>
+                <Sparkles size={16} /> 载入演示数据
+              </Button>
+              <Button onClick={() => { void clearDemoData().then(async () => { await loadAll(); flash('success', '演示数据已清空'); }).catch((error) => flash('error', error instanceof Error ? error.message : '清空失败')); }}>
+                <X size={16} /> 清空演示数据
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+          <h2 className="text-[16px] font-bold text-gray-900 mb-4">最近操作日志</h2>
+          <div className="space-y-3 max-h-[420px] overflow-y-auto">
+            {logs.map((log) => (
+              <div key={log.id} className="border border-gray-100 rounded-2xl p-4">
+                <div className="flex justify-between items-center gap-4 mb-2">
+                  <p className="text-[13px] font-bold text-gray-900">{log.action}</p>
+                  <span className="text-[10px] font-bold text-gray-400">{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
+                </div>
+                <p className="text-[12px] text-gray-500">{log.actorName} · {log.entityType} · {log.entityId}</p>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -14201,125 +14828,6 @@ export default function App() {
       </div>
     );
 
-    const renderAnalysisSection = () => (
-      <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">测试工作台规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">控制可用模板、默认模板、默认标题，以及测试工作台里的组织级共享资产。</p>
-            </div>
-            <Button primary onClick={() => void handleSaveAnalysisSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存测试工作台设置
-            </Button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              运行分析时默认注入组织 DNA
-              <input type="checkbox" checked={analysisDraft.useOrgDna} onChange={(event) => setAnalysisDraft((prev) => ({ ...prev, useOrgDna: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              允许普通员工维护模板
-              <input type="checkbox" checked={analysisDraft.allowEmployeeTemplateEditing} onChange={(event) => setAnalysisDraft((prev) => ({ ...prev, allowEmployeeTemplateEditing: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <input value={analysisDraft.defaultTitlePrefix} onChange={(event) => setAnalysisDraft((prev) => ({ ...prev, defaultTitlePrefix: event.target.value }))} placeholder="默认标题前缀" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <select value={analysisDraft.defaultTemplateId || ''} onChange={(event) => setAnalysisDraft((prev) => ({ ...prev, defaultTemplateId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="">请选择默认模板</option>
-              {analysisTemplates.map((template) => (
-                <option key={template.id} value={template.id}>{template.title}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-3">
-            {analysisTemplates.map((template) => (
-              <label key={template.id} className="flex items-start gap-3 rounded-2xl border border-gray-100 px-4 py-3">
-                <input
-                  type="checkbox"
-                  checked={analysisDraft.enabledTemplateIds.includes(template.id)}
-                  onChange={(event) =>
-                    setAnalysisDraft((prev) => ({
-                      ...prev,
-                      enabledTemplateIds: event.target.checked
-                        ? Array.from(new Set([...prev.enabledTemplateIds, template.id]))
-                        : prev.enabledTemplateIds.filter((item) => item !== template.id),
-                    }))
-                  }
-                  disabled={!canEditBusinessSettings}
-                />
-                <div>
-                  <p className="text-[13px] font-bold text-gray-900">{template.title}</p>
-                  <p className="text-[12px] text-gray-500 mt-1">{template.description}</p>
-                </div>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <DiagnosisProfileSettingsPanel
-          profiles={analysisDraft.diagnosisProfiles}
-          deepDnaLibrary={analysisDraft.deepDnaLibrary}
-          focusGroup={analysisProfileFocus}
-          focusLabel={analysisProfilePrefillLabel}
-          onPickFile={selectFilesBridge}
-          onReadFile={(targetPath) => window.yiyuWorkbench.readTextFile(targetPath)}
-          onCreateManualRecord={async (payload) => {
-            const saved = await createFundraisingManualDna(payload);
-            const next = await loadAnalysisSettingsBlock();
-            setAnalysisDraft(next);
-            flash('success', '对象档案已保存');
-            return saved;
-          }}
-          onImportDocument={async (payload) => {
-            const saved = await importFundraisingDna(payload);
-            const next = await loadAnalysisSettingsBlock();
-            setAnalysisDraft(next);
-            flash('success', '对象档案已从文档导入');
-            return saved;
-          }}
-          onCreateWebDraft={async (payload) => {
-            const draft = await createFundraisingWebDnaDraft(payload);
-            const next = await loadAnalysisSettingsBlock();
-            setAnalysisDraft(next);
-            flash('success', '联网草稿已生成');
-            return draft;
-          }}
-          onPublishDraft={async (id) => {
-            const saved = await publishFundraisingDna(id);
-            const next = await loadAnalysisSettingsBlock();
-            setAnalysisDraft(next);
-            flash('success', '联网草稿已发布为对象档案');
-            return saved;
-          }}
-          disabled={!canEditBusinessSettings}
-          onDataChange={() => setDiagnosisProfileVersion((prev) => prev + 1)}
-        />
-
-        <OrganizationRiskDnaSettingsPanel
-          document={analysisDraft.organizationRiskDna || null}
-          onPickFile={selectFilesBridge}
-          onReadFile={(targetPath) => window.yiyuWorkbench.readTextFile(targetPath)}
-          onSaveDocument={async (document) => {
-            await persistAnalysisSharedAssets({ organizationRiskDna: document });
-            flash('success', '组织风险 DNA 已保存为组织级共享资产');
-          }}
-          disabled={!canEditBusinessSettings}
-          onDataChange={() => setDiagnosisProfileVersion((prev) => prev + 1)}
-        />
-
-        <FundraisingKnowledgeSettingsPanel
-          entries={analysisDraft.fundraisingKnowledgeLibrary}
-          onPickFile={selectFilesBridge}
-          onReadFile={(targetPath) => window.yiyuWorkbench.readTextFile(targetPath)}
-          onSaveEntries={async (entries) => {
-            await persistAnalysisSharedAssets({ fundraisingKnowledgeLibrary: entries });
-            flash('success', '筹款知识库已保存为组织级共享资产');
-          }}
-          disabled={!canEditBusinessSettings}
-          onDataChange={() => setDiagnosisProfileVersion((prev) => prev + 1)}
-        />
-      </div>
-    );
-
     const renderHandbookSection = () => (
       <div className="space-y-6">
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
@@ -14353,9 +14861,151 @@ export default function App() {
       </div>
     );
 
+    const EmployeeReviewPanel = () => {
+      const pendingList = employeeReviews.filter((e) => e.accountStatus === 'pending');
+      const rejectedList = employeeReviews.filter((e) => e.accountStatus === 'rejected');
+      const disabledList = employeeReviews.filter((e) => e.accountStatus === 'disabled');
+      const [busyId, setBusyId] = useState<string | null>(null);
+      const [rejectingId, setRejectingId] = useState<string | null>(null);
+      const [rejectReason, setRejectReason] = useState('');
+      const [resetPwId, setResetPwId] = useState<string | null>(null);
+      const [resetPwValue, setResetPwValue] = useState('');
+
+      const handleApprove = async (id: string) => {
+        setBusyId(id);
+        try {
+          await approveEmployee(id, { role: 'employee' });
+          flash('success', '已批准该员工注册');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+      const handleReject = async (id: string) => {
+        setBusyId(id);
+        try {
+          await rejectEmployeeReview(id, { reason: rejectReason || '账号未通过审核，请联系管理员。' });
+          flash('success', '已驳回该注册申请');
+          setRejectingId(null);
+          setRejectReason('');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+      const handleDisable = async (id: string) => {
+        if (!window.confirm('确定要停用该账号吗？')) return;
+        setBusyId(id);
+        try {
+          await disableEmployee(id);
+          flash('success', '已停用该账号');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+      const handleResetPw = async (id: string) => {
+        if (resetPwValue.length < 8) { flash('error', '新密码至少 8 位'); return; }
+        setBusyId(id);
+        try {
+          await adminResetPassword(id, { newPassword: resetPwValue });
+          flash('success', '密码已重置');
+          setResetPwId(null);
+          setResetPwValue('');
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setBusyId(null);
+        }
+      };
+
+      const renderEmployeeRow = (employee: typeof employeeReviews[number], actions: React.ReactNode) => (
+        <div key={employee.id} className="flex items-center justify-between gap-4 rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[13px] font-bold text-gray-900 truncate">{employee.fullName}</p>
+            <p className="text-[12px] text-gray-500 truncate">{employee.email}{employee.departmentName ? ` · ${employee.departmentName}` : ''}{employee.jobTitle ? ` · ${employee.jobTitle}` : ''}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>
+        </div>
+      );
+
+      if (pendingList.length === 0 && rejectedList.length === 0 && disabledList.length === 0) return null;
+
+      return (
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+          <div>
+            <h2 className="text-[16px] font-bold text-gray-900">员工账号审核</h2>
+            <p className="text-[12px] text-gray-500 mt-1">审批注册申请、驳回、停用或重置密码。</p>
+          </div>
+          {pendingList.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-amber-600 uppercase tracking-widest">待审核 ({pendingList.length})</p>
+              {pendingList.map((employee) => renderEmployeeRow(employee, (
+                <>
+                  <button type="button" disabled={busyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[12px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">批准</button>
+                  {rejectingId === employee.id ? (
+                    <div className="flex items-center gap-1">
+                      <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="驳回原因（可选）" className="w-40 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
+                      <button type="button" disabled={busyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">确认驳回</button>
+                      <button type="button" onClick={() => { setRejectingId(null); setRejectReason(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setRejectingId(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100">驳回</button>
+                  )}
+                </>
+              )))}
+            </div>
+          )}
+          {rejectedList.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-red-500 uppercase tracking-widest">已驳回 ({rejectedList.length})</p>
+              {rejectedList.map((employee) => renderEmployeeRow(employee, (
+                <span className="text-[12px] text-red-400">{employee.rejectedReason || '未通过'}</span>
+              )))}
+            </div>
+          )}
+          {disabledList.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-gray-400 uppercase tracking-widest">已停用 ({disabledList.length})</p>
+              {disabledList.map((employee) => renderEmployeeRow(employee, (
+                <span className="text-[12px] text-gray-400">已停用</span>
+              )))}
+            </div>
+          )}
+          {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[12px] font-bold text-gray-500 uppercase tracking-widest">在职员工管理</p>
+              {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').map((employee) => renderEmployeeRow(employee, (
+                <>
+                  {resetPwId === employee.id ? (
+                    <div className="flex items-center gap-1">
+                      <input type="password" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="新密码（≥8位）" className="w-36 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
+                      <button type="button" disabled={busyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
+                      <button type="button" onClick={() => { setResetPwId(null); setResetPwValue(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setResetPwId(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100">重置密码</button>
+                  )}
+                  <button type="button" disabled={busyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-red-500 hover:bg-red-50 disabled:opacity-50">停用</button>
+                </>
+              )))}
+            </div>
+          )}
+        </div>
+      );
+    };
+
     const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => (
       <div className="space-y-6">
         {currentSessionUser?.primaryRole === 'admin' && (
+          <>
+          <EmployeeReviewPanel />
           <OrganizationSetupCenter
             value={orgModelDraft}
             organizationDnaModules={organizationDnaModules}
@@ -14369,212 +15019,14 @@ export default function App() {
             onSave={(nextDraft) => handleSaveOrgModel(nextDraft)}
             onOpenSection={(section) => setSettingsSection(section)}
           />
+          </>
         )}
 
-        <UpdateSettingsPanel
-          appInfo={desktopAppInfo}
-          onOpenPlan={() => {
-            if (!desktopAppInfo?.releasePlanPath) return;
-            void openPathBridge(desktopAppInfo.releasePlanPath);
-          }}
-          onOpenArtifacts={() => {
-            if (!desktopAppInfo?.releaseArtifactsPath) return;
-            void openPathBridge(desktopAppInfo.releaseArtifactsPath);
-          }}
-          onRevealPath={(targetPath) => {
-            void revealInFinderBridge(targetPath);
-          }}
-        />
-
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">权限边界</h2>
-              <p className="text-[12px] text-gray-500 mt-1">大多数业务设置可由普通用户编辑，只有高风险项保持管理员保护。</p>
-            </div>
-            <Button primary onClick={() => void handleSaveSystemAdminSettings()} disabled={!canManageSensitiveSettings}>
-              <ShieldAlert size={16} /> 保存权限规则
-            </Button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {[
-              ['allowBusinessSettingsForEmployees', '允许普通员工编辑业务设置'],
-              ['allowOrgDnaForEmployees', '允许普通员工编辑组织 DNA'],
-              ['protectEmployeeAdmin', '员工与权限管理受保护'],
-              ['protectAiAndCloud', 'AI 密钥与模型配置受保护'],
-              ['protectCloudSecurity', '云端接入与安全项受保护'],
-            ].map(([key, label]) => (
-              <label key={key} className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-                {label}
-                <input type="checkbox" checked={Boolean(systemAdminDraft[key as keyof SystemAdminSettings])} onChange={(event) => setSystemAdminDraft((prev) => ({ ...prev, [key]: event.target.checked }))} disabled={!canManageSensitiveSettings} />
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <FeishuBotSettingsPanel
-          settings={feishuBotSettingsState}
-          canManage={canManageSensitiveSettings}
-          defaultReceiverEmail={currentSessionUser?.email || null}
-          onSubmit={handleSaveFeishuBotSettings}
-        />
-
-        {currentSessionUser?.primaryRole === 'admin' && (
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">员工与权限</h2>
-                <p className="text-[12px] text-gray-500 mt-1">注册后账号会进入这里，只有审批通过才能登录。</p>
-              </div>
-              <span className="text-[11px] font-bold text-[#5B7BFE] bg-blue-50 px-3 py-1.5 rounded-full">{employeeReviews.filter((item) => item.accountStatus === 'pending').length} 待审核</span>
-            </div>
-            <div className="space-y-3 max-h-[360px] overflow-y-auto pr-2">
-              {employeeReviews.map((employee) => (
-                <div key={employee.id} className="border border-gray-100 rounded-2xl p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-[14px] font-bold text-gray-900">{employee.fullName}</p>
-                      <p className="text-[12px] text-gray-500 mt-1">{employee.email}</p>
-                      <div className="mt-3 grid grid-cols-1 gap-2 text-[12px] text-gray-600 md:grid-cols-2">
-                        <div className="rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
-                          <p className="text-[11px] font-bold text-gray-500">注册归属部门</p>
-                          <p className="mt-1 font-semibold text-gray-800">{employee.departmentName || '待识别'}</p>
-                        </div>
-                        <div className="rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
-                          <p className="text-[11px] font-bold text-gray-500">自填岗位</p>
-                          <p className="mt-1 font-semibold text-gray-800">{employee.jobTitle || '未填写'}</p>
-                        </div>
-                        <div className="rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
-                          <p className="text-[11px] font-bold text-gray-500">直属上级</p>
-                          <p className="mt-1 font-semibold text-gray-800">{employee.managerName || '未填写'}</p>
-                        </div>
-                        <div className="rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2">
-                          <p className="text-[11px] font-bold text-gray-500">负责人申报</p>
-                          <p className="mt-1 font-semibold text-gray-800">{employee.isDepartmentLead ? '是，申报为部门负责人' : '否'}</p>
-                        </div>
-                      </div>
-                      {employee.currentFocus && (
-                        <div className="mt-2 rounded-2xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-[12px] text-gray-700">
-                          <p className="text-[11px] font-bold text-[#5B7BFE]">当前重点</p>
-                          <p className="mt-1 leading-6">{employee.currentFocus}</p>
-                        </div>
-                      )}
-                      <div className="mt-3">
-                        <p className="text-[11px] font-bold text-gray-500 mb-1">所属部门</p>
-                        <select
-                          value={employee.departmentId || ''}
-                          onChange={(event) => {
-                            void updateEmployeeDepartment(employee.id, { departmentId: event.target.value || null })
-                              .then(async () => {
-                                await loadEmployeeReviewBlock();
-                                if (settingsSection === 'tasks') {
-                                  await loadSettingsSection('tasks');
-                                }
-                                flash('success', '员工部门已更新');
-                              })
-                              .catch((error) => flash('error', error instanceof Error ? error.message : '更新部门失败'));
-                          }}
-                          className="mt-1 w-[220px] max-w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-medium outline-none"
-                        >
-                          <option value="">未设置部门</option>
-                          {departmentOptions.map((department) => (
-                            <option key={department.id} value={department.id}>
-                              {department.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-2 shrink-0">
-                      {employee.accountStatus === 'pending' && (
-                        <>
-                          <Button primary onClick={() => { void approveEmployee(employee.id, { role: employee.primaryRole || 'employee' }).then(async () => { await loadEmployeeReviewBlock(); flash('success', '已通过员工审核'); }).catch((error) => flash('error', error instanceof Error ? error.message : '审批失败')); }}>通过</Button>
-                          <Button onClick={() => { const reason = window.prompt('请填写驳回原因'); if (!reason?.trim()) { flash('error', '驳回时需要填写原因'); return; } void rejectEmployeeReview(employee.id, { reason: reason.trim() }).then(async () => { await loadEmployeeReviewBlock(); flash('success', '已驳回该账号'); }).catch((error) => flash('error', error instanceof Error ? error.message : '驳回失败')); }}>驳回</Button>
-                        </>
-                      )}
-                      <Button onClick={() => { void updateEmployeeRole(employee.id, { role: employee.primaryRole === 'admin' ? 'employee' : 'admin' }).then(async () => { await loadEmployeeReviewBlock(); flash('success', '角色已更新'); }).catch((error) => flash('error', error instanceof Error ? error.message : '更新失败')); }}>
-                        {employee.primaryRole === 'admin' ? '设为员工' : '设为管理员'}
-                      </Button>
-                      {employee.accountStatus !== 'disabled' && employee.id !== currentSessionUser.id && <Button onClick={() => { void disableEmployee(employee.id).then(async () => { await loadEmployeeReviewBlock(); flash('success', '账号已停用'); }).catch((error) => flash('error', error instanceof Error ? error.message : '停用失败')); }}>停用</Button>}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <h2 className="text-[16px] font-bold text-gray-900 mb-4">备份与旧数据导入</h2>
-            <div className="flex flex-wrap gap-3 mb-4">
-              <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
-                <Database size={16} /> 立即备份
-              </Button>
-              <Button onClick={() => { void selectFolderBridge().then((folder) => { if (!folder) return; void scanLegacy(folder).then((result) => setLegacyScanResult(result)).catch((error) => flash('error', error instanceof Error ? error.message : '扫描失败')); }); }}>
-                <FolderOpen size={16} /> 扫描旧数据
-              </Button>
-            </div>
-            {legacyScanResult && (
-              <div className="space-y-3">
-                <p className="text-[12px] font-bold text-gray-900">{legacyScanResult.path}</p>
-                <p className="text-[12px] text-gray-500">{legacyScanResult.message}</p>
-                <div className="flex flex-col md:flex-row gap-3">
-                  <select value={legacyImportClientId} onChange={(event) => setLegacyImportClientId(event.target.value)} className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                    <option value="">选择导入目标客户</option>
-                    {clients.map((client) => (
-                      <option key={client.id} value={client.id}>{client.name}</option>
-                    ))}
-                  </select>
-                  <Button onClick={() => void handleImportLegacyEntries()} disabled={isImportingLegacy || !importableLegacyEntries.length}>
-                    {isImportingLegacy ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-                    导入可导入文件
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">演示数据</h2>
-                <p className="text-[12px] text-gray-500 mt-1">只在需要演示时手动载入，正式使用可以随时清空。</p>
-              </div>
-              <span className={`text-[11px] font-bold px-3 py-1.5 rounded-full ${settingsState?.demoDataLoaded ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
-                {settingsState?.demoDataLoaded ? '已载入演示数据' : '未载入演示数据'}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <Button onClick={() => { void loadDemoData().then(async () => { await loadAll('client_cffc'); flash('success', '演示数据已载入'); }).catch((error) => flash('error', error instanceof Error ? error.message : '载入失败')); }}>
-                <Sparkles size={16} /> 载入演示数据
-              </Button>
-              <Button onClick={() => { void clearDemoData().then(async () => { await loadAll(); flash('success', '演示数据已清空'); }).catch((error) => flash('error', error instanceof Error ? error.message : '清空失败')); }}>
-                <X size={16} /> 清空演示数据
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <h2 className="text-[16px] font-bold text-gray-900 mb-4">最近操作日志</h2>
-          <div className="space-y-3 max-h-[420px] overflow-y-auto">
-            {logs.map((log) => (
-              <div key={log.id} className="border border-gray-100 rounded-2xl p-4">
-                <div className="flex justify-between items-center gap-4 mb-2">
-                  <p className="text-[13px] font-bold text-gray-900">{log.action}</p>
-                  <span className="text-[10px] font-bold text-gray-400">{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
-                </div>
-                <p className="text-[12px] text-gray-500">{log.actorName} · {log.entityType} · {log.entityId}</p>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     );
 
     const renderSectionContent = () => {
-      if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks'].includes(settingsSection)) {
+      if (!settingsSectionLoaded[settingsSection] && !['overview', 'tasks', 'system_logs'].includes(settingsSection)) {
         return (
           <div className="bg-white border border-gray-100 rounded-3xl p-8 shadow-sm text-[13px] text-gray-500 flex items-center gap-3">
             <RefreshCw size={16} className="animate-spin" />
@@ -14593,8 +15045,6 @@ export default function App() {
           return renderClientWorkspaceSection();
         case 'topics':
           return renderTopicsSection();
-        case 'analysis':
-          return renderAnalysisSection();
         case 'handbook':
           return renderHandbookSection();
         case 'system_admin':
@@ -14607,6 +15057,14 @@ export default function App() {
           return renderSystemAdminSection(orgSectionMeta.org_people.tab);
         case 'org_rules':
           return renderSystemAdminSection(orgSectionMeta.org_rules.tab);
+        case 'system_logs':
+          return (
+            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+              <h2 className="text-[16px] font-bold text-gray-900 mb-1">系统日志</h2>
+              <p className="text-[12px] text-gray-500 mb-5">记录所有 API 请求、错误和业务操作。导出后交给 Claude Code 或 Codex 即可快速定位问题。</p>
+              <SystemLogPanel />
+            </div>
+          );
         default:
           return null;
       }
@@ -14619,7 +15077,10 @@ export default function App() {
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">系统设置</h1>
             <p className="text-[12px] text-gray-500 mt-1">把整个软件的默认规则、权限边界和组织级知识底座收口到一个设置中心。</p>
           </div>
-          <Button onClick={() => { void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败')); }}>
+          <Button onClick={() => {
+            if (!window.confirm('确定要退出登录吗？')) return;
+            void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+          }}>
             <ShieldAlert size={16} /> 退出登录
           </Button>
         </div>
@@ -14663,10 +15124,6 @@ export default function App() {
                               title={settingsSidebarCollapsed ? section.label : undefined}
                               onClick={() => {
                                 setSettingsSection(section.key);
-                                if (section.key !== 'analysis') {
-                                  setAnalysisProfileFocus(null);
-                                  setAnalysisProfilePrefillLabel('');
-                                }
                               }}
                               className={`w-full rounded-2xl border transition-all ${settingsSidebarCollapsed ? 'px-0 py-2.5 text-center' : 'px-4 py-2.5 text-left'} ${isActive ? 'border-blue-200 bg-blue-50/60 text-[#335CFF]' : 'border-transparent hover:border-gray-100 hover:bg-gray-50 text-gray-700'}`}
                             >
@@ -14696,17 +15153,28 @@ export default function App() {
     tasks: <TasksView />,
     client_workspace: <ClientWorkspaceView />,
     strategic_accompaniment: (
-      <StrategicAccompanimentShell
+      <StrategicBrainView
         clients={clients}
         currentClientId={currentClientId}
-        workspace={workspace}
-        tasks={tasks}
-        reviewDashboard={reviewDashboard}
-        jumpRequest={growthContextJump}
-        onConsumeJump={consumeGrowthContextJump}
         onClientChange={(clientId) => {
           setCurrentClientId(clientId);
           void refreshWorkspace(clientId);
+        }}
+        onCreateTaskFromThought={(payload) => {
+          const descParts = [`【系统建议 · ${payload.thoughtLine}】\n${payload.suggestion}`];
+          if (payload.ceoComment) {
+            descParts.push(`\n\n【补充看法 · ${currentSessionUser.fullName || 'CEO'}】\n${payload.ceoComment}`);
+          }
+          resetTaskDraft(payload.dueDate || undefined);
+          setEditingTask((prev) => ({
+            ...prev,
+            desc: descParts.join(''),
+            clientId: payload.clientId,
+            clientTouched: Boolean(payload.clientId),
+            clientConfidence: payload.clientId ? 'manual' : 'none',
+            clientReason: payload.clientId ? `来自战略研判「${payload.thoughtLine}」` : '请选择项目。',
+          }));
+          setIsTaskModalOpen(true);
         }}
       />
     ),
@@ -14725,37 +15193,107 @@ export default function App() {
         onTasksReload={loadTaskBlock}
       />
     ),
-    unified_workbench: <UnifiedWorkbenchView />,
     growth_handbook: (
-      <GrowthHandbookView
-        entries={handbookEntries}
-        settings={handbookSettingsState}
-        currentClientId={currentClientId}
-        tasks={tasks}
-        onCreateEntry={async (payload) => {
-          const entry = await createHandbook(payload);
-          await loadHandbookBlock();
-          notifyGrowthRefresh();
-          return entry;
-        }}
-        onTasksReload={loadTaskBlock}
-        onNavigate={(tab) => setActiveTab(tab as NavKey)}
-        onOpenContext={requestGrowthContextJump}
-        flash={flash}
-      />
+      <GrowthCenterView />
     ),
     settings: <SettingsView />,
   };
 
+  const [splashMessageTick, setSplashMessageTick] = useState(0);
+  useEffect(() => {
+    if (!loading) return;
+    const timer = window.setInterval(() => setSplashMessageTick((t) => t + 1), 3000);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
   if (loading) {
+    const VALUE_MESSAGES = [
+      '让每一天的工作都留下痕迹，变成成长',
+      '任务、客户、会议、复盘——一个界面掌控全局',
+      '本地优先，断网也能正常工作',
+      'AI 不是替代你，是陪你一起想、一起做',
+      '从经验到方法，从方法到可复用的组织资产',
+      '每一次推进都被记住，每一个判断都有依据',
+      '不只是管理工具，是你的成长搭档',
+    ];
+    const PHASE_PROGRESS: Record<string, number> = {
+      '正在初始化桌面界面…': 5,
+      '正在连接本地后端…': 12,
+      '正在恢复登录状态…': 20,
+      '正在读取系统设置…': 30,
+      '正在载入核心模块数据…': 45,
+      '正在载入客户工作区…': 70,
+      '正在读取员工与组织数据…': 85,
+      '正在切换到登录态…': 90,
+      '启动完成': 100,
+    };
+    const baseProgress = PHASE_PROGRESS[loadingPhase] ?? (loadingPhase.includes('受阻') ? 0 : 50);
+    const progressPercent = loadingPhase === '正在载入核心模块数据…'
+      ? 45 + Math.round(loadingSubProgress * 0.25)
+      : baseProgress;
+    const valueIndex = splashMessageTick % VALUE_MESSAGES.length;
+    const isError = loadingPhase.includes('受阻');
     return (
-      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
-        <div className="flex flex-col items-center gap-3 text-center text-gray-500">
-          <div className="flex items-center justify-center gap-3">
-            <RefreshCw size={18} className="animate-spin" />
-            <span>正在加载益语智库自用平台...</span>
+      <div
+        className="min-h-screen flex flex-col items-center justify-center px-6 relative overflow-hidden select-none"
+        style={{ background: 'linear-gradient(160deg, #1E293B 0%, #334155 30%, #F8FAFC 100%)' }}
+      >
+        <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+          {[...Array(6)].map((_, i) => (
+            <div
+              key={i}
+              className="absolute rounded-full opacity-[0.07]"
+              style={{
+                width: `${60 + i * 40}px`,
+                height: `${60 + i * 40}px`,
+                background: 'radial-gradient(circle, #5B7BFE 0%, transparent 70%)',
+                left: `${10 + i * 15}%`,
+                top: `${20 + (i % 3) * 25}%`,
+                animation: `splash-float ${6 + i * 2}s ease-in-out infinite alternate`,
+                animationDelay: `${i * 0.8}s`,
+              }}
+            />
+          ))}
+        </div>
+        <style>{`
+          @keyframes splash-float { 0% { transform: translateY(0) scale(1); } 100% { transform: translateY(-20px) scale(1.1); } }
+          @keyframes splash-breathe { 0%,100% { opacity:.9; transform:scale(1); } 50% { opacity:1; transform:scale(1.04); } }
+          @keyframes splash-fade-up { 0% { opacity:0; transform:translateY(12px); } 100% { opacity:1; transform:translateY(0); } }
+          @keyframes splash-glow { 0%,100% { box-shadow:0 0 8px rgba(91,123,254,.3); } 50% { box-shadow:0 0 16px rgba(91,123,254,.6); } }
+        `}</style>
+
+        <div className="flex flex-col items-center gap-5 z-10" style={{ animation: 'splash-breathe 3s ease-in-out infinite' }}>
+          <div className="w-20 h-20 rounded-2xl bg-white/95 shadow-lg flex items-center justify-center backdrop-blur-sm">
+            <BrandLogoMark logoDataUrl={systemAdminSettingsState?.brandLogoDataUrl || null} className="w-14 h-14" />
           </div>
-          <p className="text-[12px] text-gray-400">{loadingPhase}</p>
+          <div className="text-center">
+            <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>
+            <p className="mt-1 text-[13px] text-white/50 tracking-widest">YIYU THINKTANK WORKBENCH</p>
+          </div>
+        </div>
+
+        <div className="mt-10 h-[48px] flex items-center justify-center z-10">
+          <p
+            key={valueIndex}
+            className="text-[16px] text-white/80 text-center font-light tracking-wide leading-relaxed"
+            style={{ animation: 'splash-fade-up 0.6s ease-out both' }}
+          >
+            {isError ? loadingPhase : VALUE_MESSAGES[valueIndex]}
+          </p>
+        </div>
+
+        <div className="mt-8 w-[280px] z-10">
+          <div className="h-[3px] rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700 ease-out"
+              style={{
+                width: `${progressPercent}%`,
+                background: isError ? 'linear-gradient(90deg,#EF4444,#F87171)' : 'linear-gradient(90deg,#5B7BFE,#818CF8)',
+                animation: isError ? 'none' : 'splash-glow 2s ease-in-out infinite',
+              }}
+            />
+          </div>
+          <p className="mt-3 text-[11px] text-white/30 text-center">{loadingPhase}</p>
         </div>
       </div>
     );
@@ -14851,6 +15389,7 @@ export default function App() {
               <button
                 className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
                 onClick={() => {
+                  if (!window.confirm('确定要退出登录吗？')) return;
                   void logout()
                     .then(async () => {
                       setAuthState({ authenticated: false });

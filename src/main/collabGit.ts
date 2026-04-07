@@ -179,9 +179,14 @@ const IGNORABLE_LOCAL_STATUS_PREFIXES = [
 
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
 const COLLAB_LEGACY_REPO_NAME = 'yiyu-thinktank-workbench-main-sync';
+const COLLAB_VISIBLE_WORKSPACE_SEGMENT = `${path.sep}openclaw${path.sep}workspace`;
+const COLLAB_HIDDEN_WORKSPACE_SEGMENT = `${path.sep}.openclaw${path.sep}workspace`;
 
 function normalizeCollabRepoBindingPath(targetPath: string) {
-  const normalized = path.resolve(targetPath).replace(/[\\/]+$/, '');
+  let normalized = path.resolve(targetPath).replace(/[\\/]+$/, '');
+  if (normalized.includes(COLLAB_HIDDEN_WORKSPACE_SEGMENT)) {
+    normalized = normalized.replace(COLLAB_HIDDEN_WORKSPACE_SEGMENT, COLLAB_VISIBLE_WORKSPACE_SEGMENT);
+  }
   const legacySuffix = `${path.sep}${COLLAB_LEGACY_REPO_NAME}`;
   if (normalized.endsWith(legacySuffix)) {
     return normalized.slice(0, -COLLAB_LEGACY_REPO_NAME.length) + COLLAB_PRIMARY_REPO_NAME;

@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ from app.models import (
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
     FeishuBindingRelaySessionStatusRecord,
+    AdminResetPasswordPayload,
+    ChangePasswordPayload,
     LoginPayload,
     ManagementSignalCardRecord,
     MentionCandidate,
@@ -963,6 +965,7 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         name=str(row["name"]),
         kind=str(row["kind"] or "custom"),
         status=str(row["status"] or "active"),
+        visibilityScope=str(row["visibility_scope"]) if row["visibility_scope"] else "project_public",
         businessCategory=str(row["business_category"]) if row["business_category"] else None,
         stage=str(row["stage"]) if row["stage"] else None,
         summary=str(row["summary"]) if row["summary"] else None,
@@ -978,6 +981,8 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
         primaryDepartmentName=department_name,
         participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
+        closedAt=str(row["closed_at"]) if row["closed_at"] else None,
+        closedByUserId=str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
@@ -1163,8 +1168,7 @@ def _event_line_dependency_counts(state: AppState, event_line_id: str, organizat
         """,
         (event_line_id, organization_id),
     )
-    attachment_count = {"cnt": 0}
-    if _has_event_line_attachments_table():
+    try:
         attachment_count = state.db.fetchone(
             """
             SELECT COUNT(1) AS cnt
@@ -1173,6 +1177,8 @@ def _event_line_dependency_counts(state: AppState, event_line_id: str, organizat
             """,
             (event_line_id, organization_id),
         ) or {"cnt": 0}
+    except Exception:
+        attachment_count = {"cnt": 0}
     return {
         "tasks": int(task_count["cnt"] if task_count else 0),
         "activities": int(activity_count["cnt"] if activity_count else 0),
@@ -4285,6 +4291,23 @@ def create_app() -> FastAPI:
             accountStatus=str(row["account_status"]),
         )
 
+    @app.post("/api/v1/auth/change-password")
+    def change_password(
+        payload: ChangePasswordPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, str]:
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if not verify_password(payload.currentPassword, str(row["password_hash"])):
+            raise HTTPException(status_code=400, detail="当前密码不正确")
+        state.db.execute(
+            "UPDATE employee_accounts SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (hash_password(payload.newPassword), now_iso(), current_user.id),
+        )
+        _log_audit(state, "change_password", actor_user_id=current_user.id, target_user_id=current_user.id, detail={})
+        return {"message": "密码修改成功"}
+
     @app.post("/api/v1/auth/logout")
     def logout(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)), authorization: str | None = Header(default=None)) -> dict[str, str]:
         token = authorization.split(" ", 1)[1]
@@ -4608,9 +4631,9 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, organization_id, name, kind, status, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id,
+                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id,
                 primary_client_id, primary_client_name, primary_department_id, participant_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
@@ -4618,6 +4641,7 @@ def create_app() -> FastAPI:
                 payload.name.strip(),
                 payload.kind,
                 payload.status,
+                payload.visibilityScope,
                 payload.businessCategory,
                 payload.stage,
                 payload.summary,
@@ -4845,20 +4869,107 @@ def create_app() -> FastAPI:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         return _event_line_record(state, row)
 
+    def _can_manage_event_line(current_user: SessionUser, row) -> bool:
+        """Check if user can close/manage this event line: creator, their manager, or admin."""
+        if current_user.primaryRole == "admin":
+            return True
+        owner_id = str(row["owner_id"]) if row["owner_id"] else None
+        if owner_id == current_user.id:
+            return True
+        # Check if current user is the manager of the creator
+        if owner_id:
+            is_manager = state.db.fetchone(
+                "SELECT 1 FROM reporting_lines WHERE manager_user_id = ? AND report_user_id = ? AND effective_to IS NULL",
+                (current_user.id, owner_id),
+            )
+            if is_manager:
+                return True
+        return False
+
+    @app.post("/api/v1/event-lines/{event_line_id}/close")
+    def close_event_line(
+        event_line_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict:
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        if str(row["status"]) in ("done", "archived"):
+            return {"status": str(row["status"])}
+        if not _can_manage_event_line(current_user, row):
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以结束事件线。")
+        timestamp = now_iso()
+        state.db.execute(
+            "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
+            (timestamp, current_user.id, timestamp, event_line_id, current_user.organizationId),
+        )
+        _record_event_line_activity(state, event_line_id, "manual_note", event_line_id, current_user.id, "结束事件线", "事件线已归档")
+        # Send notification to all participants
+        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item)]
+        notify_user_ids = [uid for uid in participant_ids if uid != current_user.id]
+        if notify_user_ids:
+            operator_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (current_user.id,))
+            operator_name = str(operator_row["full_name"]) if operator_row else current_user.id
+            event_line_name = str(row["name"])
+            notify_title = f"事件线已结束：{event_line_name}"
+            notify_desc = f"{operator_name} 于 {timestamp[:10]} 结束了事件线「{event_line_name}」"
+            list_id = _default_list_id(state, current_user.organizationId)
+            if list_id:
+                notify_task_id = new_id("task")
+                state.db.execute(
+                    """
+                    INSERT INTO tasks(
+                        id, organization_id, title, description, creator_id, owner_id, priority, list_id,
+                        progress_status, source_type, source_id, scope_mode, event_line_id,
+                        tags_json, tag_ids_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, 'normal', ?, 'inbox', 'event_line_notification', ?, 'COLLAB_SHARED', ?, '[]', '[]', ?, ?)
+                    """,
+                    (notify_task_id, current_user.organizationId, notify_title, notify_desc,
+                     current_user.id, current_user.id, list_id, event_line_id, event_line_id, timestamp, timestamp),
+                )
+                collab_rows = [(notify_task_id, uid, idx, 0, "pending", None, timestamp, timestamp)
+                               for idx, uid in enumerate(notify_user_ids)]
+                state.db.executemany(
+                    "INSERT INTO task_collaborators(task_id, user_id, order_index, is_owner, inbox_status, handled_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    collab_rows,
+                )
+        return {"status": "archived"}
+
+    @app.post("/api/v1/event-lines/{event_line_id}/reopen")
+    def reopen_event_line(
+        event_line_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict:
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        if not _can_manage_event_line(current_user, row):
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以重新打开事件线。")
+        timestamp = now_iso()
+        state.db.execute(
+            "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ? WHERE id = ? AND organization_id = ?",
+            (timestamp, event_line_id, current_user.organizationId),
+        )
+        _record_event_line_activity(state, event_line_id, "manual_note", event_line_id, current_user.id, "重新打开事件线", "事件线已恢复为活跃")
+        return {"status": "active"}
+
     @app.delete("/api/v1/event-lines/{event_line_id}")
     def delete_event_line(
         event_line_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict:
-        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        # Only admin can delete event lines
+        if current_user.primaryRole != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
+        # Can only delete event lines with zero associated tasks
+        task_count = int(state.db.scalar(
+            "SELECT COUNT(1) FROM tasks WHERE event_line_id = ? AND organization_id = ?",
+            (event_line_id, current_user.organizationId),
+        ) or 0)
+        if task_count > 0:
+            raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
         counts = _event_line_dependency_counts(state, event_line_id, current_user.organizationId)
-        has_dependencies = any(value > 0 for value in counts.values())
-        if has_dependencies:
-            state.db.execute(
-                "UPDATE event_lines SET status = 'archived', updated_at = ? WHERE id = ? AND organization_id = ?",
-                (now_iso(), event_line_id, current_user.organizationId),
-            )
-            return {"status": "archived", "counts": counts}
+        state.db.execute(
+            "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ? AND organization_id = ?",
+            (now_iso(), event_line_id, current_user.organizationId),
+        )
         state.db.execute(
             "DELETE FROM event_lines WHERE id = ? AND organization_id = ?",
             (event_line_id, current_user.organizationId),
@@ -5398,12 +5509,14 @@ def create_app() -> FastAPI:
             )
             system_prompt += role_boundary
             system_prompt += (
-                "\n\n【回答风格】\n"
+                "\n\n【回答风格——必须严格遵守】\n"
                 "- 先给结论，再给关键论据，不要铺垫\n"
-                "- 简单问题简短回答（3-5 句），复杂问题分层展开但不超过 800 字\n"
-                "- 用户没追问就不要主动展开所有维度\n"
-                "- 用「一、二、三」分层，并列要点用「- 」列表\n"
-                "- 关键结论用 **加粗**\n"
+                "- **严禁长段落**：任何一段文字不得超过 3 句话。超过 3 句必须换段（插入空行）\n"
+                "- **编号必须独立成段**：凡出现「第一」「第二」「第三」「首先」「其次」「最后」等序号词，"
+                "每个序号点必须另起一段，序号点之间用空行分隔，绝对不能把多个序号点写在同一段里\n"
+                "- 多层结构用「一、二、三」做大标题，每层下用「- 」列要点\n"
+                "- 关键结论用 **加粗**（加粗完整判断句，不要只加粗关键词）\n"
+                "- 根据问题复杂度自由决定总长度，但必须保持短段落、多分层的排版节奏\n"
             )
             if context_parts:
                 system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)
@@ -5795,6 +5908,20 @@ def create_app() -> FastAPI:
         )
         _log_audit(state, "disable_employee", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
         return _employee_record(_get_user_or_404(state, employee_id))
+
+    @app.post("/api/v1/admin/employees/{employee_id}/reset-password")
+    def admin_reset_password(
+        employee_id: str,
+        payload: AdminResetPasswordPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> dict[str, str]:
+        _get_user_or_404(state, employee_id)
+        state.db.execute(
+            "UPDATE employee_accounts SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (hash_password(payload.newPassword), now_iso(), employee_id),
+        )
+        _log_audit(state, "admin_reset_password", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
+        return {"message": "密码已重置"}
 
     @app.patch("/api/v1/admin/employees/{employee_id}/role", response_model=EmployeeRecord)
     def update_employee_role(
@@ -6749,6 +6876,16 @@ def create_app() -> FastAPI:
             "UPDATE task_collaborators SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
             (timestamp, timestamp, task_id, user_id),
         )
+        # Notification tasks go straight to done after acknowledgement (don't enter calendar/task list)
+        task_row = _task_row_or_404(state, task_id)
+        if str(task_row["source_type"]) == "event_line_notification":
+            all_accepted = not state.db.fetchone(
+                "SELECT 1 FROM task_collaborators WHERE task_id = ? AND inbox_status = 'pending'", (task_id,),
+            )
+            if all_accepted:
+                state.db.execute(
+                    "UPDATE tasks SET progress_status = 'done', updated_at = ? WHERE id = ?", (timestamp, task_id),
+                )
         _record_activity(state, task_id, current_user.id, "accepted", {"userId": user_id})
         return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
 

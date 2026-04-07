@@ -1,4 +1,7 @@
+import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+try { appendFileSync('/tmp/yiyu-thinktank-electron-bootstrap.log', `[${new Date().toISOString()}] [PROBE] main.ts top-of-file reached\n`); } catch {}
 import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
+try { appendFileSync('/tmp/yiyu-thinktank-electron-bootstrap.log', `[${new Date().toISOString()}] [PROBE] electron imported OK\n`); } catch {}
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,10 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
 import type {
-  BettaFishSignal,
   CommitAndPushToMainPayload,
-  DiagnosisEngineHealth,
-  ExternalDiagnosisRequest,
   PullSelectedFromMainPayload,
 } from '../shared/types.js';
 import {
@@ -46,28 +46,6 @@ app.setAboutPanelOptions({
   version: app.getVersion(),
 });
 
-type DiagnosisEngineKey = 'bettafish' | 'mirofish';
-
-type DiagnosisEngineEndpoint = {
-  engineKey: DiagnosisEngineKey;
-  enabled: boolean;
-  baseUrl: string;
-  analyzePath: string;
-  healthPath: string;
-  timeoutMs: number;
-};
-
-type DiagnosisEngineInstallInfo = {
-  repoDir: string;
-  repoExists: boolean;
-};
-
-type DiagnosisEngineBridgeInfo = {
-  scriptPath: string;
-  pythonPath: string;
-  ready: boolean;
-};
-
 type RuntimeSyncMetadata = {
   fingerprint: string;
   syncedAt: string;
@@ -96,8 +74,6 @@ const LOCAL_DEV_CLOUD_SEED_ENV = {
   YIYU_CLOUD_JIANING_PASSWORD: process.env.YIYU_CLOUD_JIANING_PASSWORD || 'Jianing123!',
   YIYU_CLOUD_YISHUO_PASSWORD: process.env.YIYU_CLOUD_YISHUO_PASSWORD || 'Yishuo123!',
 } satisfies NodeJS.ProcessEnv;
-const diagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, ChildProcessWithoutNullStreams | null>> = {};
-const ownedDiagnosisEngineProcesses: Partial<Record<DiagnosisEngineKey, boolean>> = {};
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
 const legacyAppBasenames = new Set(['益语智库.app', '益语智库工作台.app']);
 const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
@@ -158,8 +134,11 @@ function rememberBackendLogLine(line: string) {
 }
 
 function getCollabSuggestedCandidates() {
+  const visibleWorkspaceRepo = path.join(app.getPath('home'), 'openclaw', 'workspace', 'yiyu-thinktank-workbench');
+  const hiddenWorkspaceRepo = path.join(app.getPath('home'), '.openclaw', 'workspace', 'yiyu-thinktank-workbench');
   return [
-    path.join(app.getPath('home'), '.openclaw', 'workspace', 'yiyu-thinktank-workbench'),
+    visibleWorkspaceRepo,
+    hiddenWorkspaceRepo,
     path.join(path.dirname(projectRoot), 'yiyu-thinktank-workbench'),
     path.join(app.getPath('documents'), 'yiyu-thinktank-workbench'),
     path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench'),
@@ -446,308 +425,6 @@ function quoteShellArg(value: string) {
   return `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
 }
 
-function getDiagnosisEngineEndpoint(engineKey: DiagnosisEngineKey): DiagnosisEngineEndpoint {
-  const prefix = engineKey === 'bettafish' ? 'YIYU_BETTAFISH' : 'YIYU_MIROFISH';
-  return {
-    engineKey,
-    enabled: parseBooleanEnv(process.env[`${prefix}_ENABLED`], getDefaultDiagnosisEngineEnabled(engineKey)),
-    baseUrl: process.env[`${prefix}_BASE_URL`] ?? `http://127.0.0.1:${engineKey === 'bettafish' ? 18101 : 18102}`,
-    analyzePath: process.env[`${prefix}_${engineKey === 'bettafish' ? 'ANALYZE' : 'SIMULATE'}_PATH`] ?? (engineKey === 'bettafish' ? '/analyze' : '/simulate'),
-    healthPath: process.env[`${prefix}_HEALTH_PATH`] ?? '/health',
-    timeoutMs: Number.parseInt(process.env[`${prefix}_TIMEOUT_MS`] ?? '', 10) || (engineKey === 'bettafish' ? 12000 : 20000),
-  };
-}
-
-function getDiagnosisEngineInstallInfo(engineKey: DiagnosisEngineKey): DiagnosisEngineInstallInfo {
-  const envRepoDir = engineKey === 'bettafish' ? process.env.YIYU_BETTAFISH_REPO_DIR : process.env.YIYU_MIROFISH_REPO_DIR;
-  const fallbackRepoDir = path.join(projectRoot, 'external', engineKey === 'bettafish' ? 'BettaFish' : 'MiroFish');
-  const repoDir = envRepoDir && envRepoDir.trim() ? envRepoDir : fallbackRepoDir;
-  return {
-    repoDir,
-    repoExists: fs.existsSync(repoDir),
-  };
-}
-
-function getDiagnosisEngineBridgeInfo(engineKey: DiagnosisEngineKey): DiagnosisEngineBridgeInfo {
-  if (engineKey === 'bettafish') {
-    const installInfo = getDiagnosisEngineInstallInfo(engineKey);
-    const scriptPath = path.join(projectRoot, 'backend', 'scripts', 'bettafish_bridge.py');
-    const pythonPath = path.join(installInfo.repoDir, '.venv', 'bin', 'python');
-    return {
-      scriptPath,
-      pythonPath,
-      ready: installInfo.repoExists && fs.existsSync(scriptPath) && isExecutable(pythonPath),
-    };
-  }
-  const installInfo = getDiagnosisEngineInstallInfo(engineKey);
-  return {
-    scriptPath: '',
-    pythonPath: '',
-    ready: installInfo.repoExists,
-  };
-}
-
-function getDefaultDiagnosisEngineEnabled(engineKey: DiagnosisEngineKey) {
-  if (engineKey === 'bettafish') {
-    return getDiagnosisEngineBridgeInfo(engineKey).ready;
-  }
-  return false;
-}
-
-function getDiagnosisEngineAutostart(engineKey: DiagnosisEngineKey) {
-  const prefix = engineKey === 'bettafish' ? 'YIYU_BETTAFISH' : 'YIYU_MIROFISH';
-  const bridge = getDiagnosisEngineBridgeInfo(engineKey);
-  const defaultCommand = engineKey === 'bettafish' && bridge.ready
-    ? `${quoteShellArg(bridge.pythonPath)} ${quoteShellArg(bridge.scriptPath)}`
-    : '';
-  return {
-    autostart: parseBooleanEnv(process.env[`${prefix}_AUTOSTART`], engineKey === 'bettafish' && bridge.ready),
-    command: process.env[`${prefix}_START_COMMAND`] ?? defaultCommand,
-    cwd: process.env[`${prefix}_START_CWD`] ?? projectRoot,
-    waitMs: Number.parseInt(process.env[`${prefix}_START_WAIT_MS`] ?? '', 10) || 15000,
-  };
-}
-
-async function recycleManagedDiagnosisEngine(engineKey: DiagnosisEngineKey) {
-  const bridge = getDiagnosisEngineBridgeInfo(engineKey);
-  const autostart = getDiagnosisEngineAutostart(engineKey);
-  if (engineKey !== 'bettafish' || !bridge.ready || !autostart.command.includes(bridge.scriptPath)) {
-    return;
-  }
-  await new Promise<void>((resolve) => {
-    const child = spawn('pkill', ['-f', bridge.scriptPath], {
-      env: backendEnv(),
-    });
-    child.on('error', () => resolve());
-    child.on('exit', () => resolve());
-  });
-}
-
-async function isDiagnosisEngineListening(engineKey: DiagnosisEngineKey) {
-  const endpoint = getDiagnosisEngineEndpoint(engineKey);
-  try {
-    const url = new URL(endpoint.baseUrl);
-    const host = url.hostname || '127.0.0.1';
-    const port = Number.parseInt(url.port, 10) || (url.protocol === 'https:' ? 443 : 80);
-    await new Promise<void>((resolve, reject) => {
-      const socket = net.createConnection({ host, port });
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new Error('timeout'));
-      }, 400);
-      socket.once('connect', () => {
-        clearTimeout(timer);
-        socket.end();
-        resolve();
-      });
-      socket.once('error', (error) => {
-        clearTimeout(timer);
-        socket.destroy();
-        reject(error);
-      });
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function fetchDiagnosisEngineJson(endpoint: DiagnosisEngineEndpoint, requestPath: string, options?: RequestInit) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), endpoint.timeoutMs);
-  try {
-    const response = await fetch(new URL(requestPath, endpoint.baseUrl).toString(), {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options?.headers ?? {}),
-      },
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(text || `HTTP ${response.status}`);
-    }
-    try {
-      return text ? JSON.parse(text) as Record<string, unknown> : {};
-    } catch {
-      throw new Error('外部引擎返回了不可解析的响应');
-    }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'unknown_error';
-    throw new Error(`${endpoint.engineKey} 请求失败：${detail}`);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function readDiagnosisEngineHealth(endpoint: DiagnosisEngineEndpoint): Promise<DiagnosisEngineHealth> {
-  const installInfo = getDiagnosisEngineInstallInfo(endpoint.engineKey);
-  const autostartInfo = getDiagnosisEngineAutostart(endpoint.engineKey);
-  if (!endpoint.enabled) {
-    return {
-      engineKey: endpoint.engineKey,
-      enabled: false,
-      reachable: false,
-      status: installInfo.repoExists ? (autostartInfo.command.trim() ? 'disabled' : 'not_configured') : 'not_configured',
-      detail: installInfo.repoExists
-        ? (autostartInfo.command.trim() ? 'Engine disabled by configuration' : `已检测到本地仓库，但尚未配置启用参数`)
-        : `未检测到本地 ${endpoint.engineKey} 仓库或启用配置`,
-      baseUrl: endpoint.baseUrl,
-      latencyMs: null,
-    };
-  }
-  if (!installInfo.repoExists) {
-    return {
-      engineKey: endpoint.engineKey,
-      enabled: true,
-      reachable: false,
-      status: 'not_installed',
-      detail: `未找到本地仓库：${installInfo.repoDir}`,
-      baseUrl: endpoint.baseUrl,
-      latencyMs: null,
-    };
-  }
-  const startedAt = Date.now();
-  try {
-    const payload = await fetchDiagnosisEngineJson(endpoint, endpoint.healthPath, { method: 'GET' });
-    const detail = typeof payload.detail === 'string'
-      ? payload.detail
-      : typeof payload.status === 'string'
-        ? payload.status
-        : 'ok';
-    return {
-      engineKey: endpoint.engineKey,
-      enabled: true,
-      reachable: true,
-      status: 'healthy',
-      detail,
-      baseUrl: endpoint.baseUrl,
-      latencyMs: Date.now() - startedAt,
-    };
-  } catch (error) {
-    return {
-      engineKey: endpoint.engineKey,
-      enabled: true,
-      reachable: false,
-      status: 'unreachable',
-      detail: error instanceof Error ? error.message : 'engine_unreachable',
-      baseUrl: endpoint.baseUrl,
-      latencyMs: Date.now() - startedAt,
-    };
-  }
-}
-
-async function ensureDiagnosisEngineHealthy(engineKey: DiagnosisEngineKey) {
-  const endpoint = getDiagnosisEngineEndpoint(engineKey);
-  let health = await readDiagnosisEngineHealth(endpoint);
-  if (health.status === 'healthy') return health;
-
-  const autostart = getDiagnosisEngineAutostart(engineKey);
-  if (!endpoint.enabled || !autostart.autostart || !autostart.command.trim()) {
-    return health;
-  }
-
-  await startDiagnosisEngine(engineKey);
-  try {
-    await waitForDiagnosisEngine(engineKey);
-  } catch {
-    // Ignore here and surface the refreshed health below.
-  }
-  health = await readDiagnosisEngineHealth(endpoint);
-  return health;
-}
-
-function normalizeStringList(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item).trim()).filter(Boolean);
-}
-
-async function invokeBettafishDiagnosis(payload: ExternalDiagnosisRequest): Promise<BettaFishSignal> {
-  const health = await ensureDiagnosisEngineHealthy('bettafish');
-  const endpoint = getDiagnosisEngineEndpoint('bettafish');
-  if (!endpoint.enabled) {
-    throw new Error('BettaFish 当前未启用');
-  }
-  if (health.status !== 'healthy') {
-    throw new Error(health.detail || 'BettaFish 当前不可用');
-  }
-  const response = await fetchDiagnosisEngineJson(endpoint, endpoint.analyzePath, {
-    method: 'POST',
-    body: JSON.stringify({
-      content: payload.content,
-      title: payload.title,
-      scene: payload.scene,
-      audience_type: payload.audienceType,
-      workspace_label: payload.workspaceLabel,
-      mode_label: payload.modeLabel,
-      focus_points: payload.focusPoints ?? [],
-      organization_context: payload.organizationContext ?? {},
-      dna_summary: payload.dnaSummary ?? {},
-      knowledge_refs: payload.knowledgeRefs ?? [],
-      case_refs: payload.caseRefs ?? [],
-      analysis_options: payload.analysisOptions ?? { engineMode: 'standard' },
-    }),
-  });
-  const normalized = (response.data || response.result || response) as Record<string, unknown>;
-  return {
-    engineKey: 'bettafish',
-    emotion: typeof normalized.emotion === 'string' ? normalized.emotion : '未返回',
-    credibility: typeof normalized.credibility === 'string' ? normalized.credibility : '未返回',
-    riskPoints: normalizeStringList(normalized.risk_points ?? normalized.riskPoints),
-    misunderstandingPoints: normalizeStringList(normalized.misunderstanding_points ?? normalized.misunderstandingPoints),
-    generatedAt: new Date().toISOString(),
-    mode: payload.analysisOptions?.engineMode ?? 'standard',
-  };
-}
-
-async function startDiagnosisEngine(engineKey: DiagnosisEngineKey) {
-  const currentProcess = diagnosisEngineProcesses[engineKey];
-  if (currentProcess) return;
-  if (await isDiagnosisEngineListening(engineKey)) return;
-  const autostart = getDiagnosisEngineAutostart(engineKey);
-  if (!autostart.autostart || !autostart.command.trim()) return;
-  const child = spawn(autostart.command, {
-    cwd: autostart.cwd,
-    env: backendEnv(),
-    shell: true,
-  });
-  diagnosisEngineProcesses[engineKey] = child;
-  ownedDiagnosisEngineProcesses[engineKey] = true;
-  logBackend(child.stdout, `${engineKey}:stdout`);
-  logBackend(child.stderr, `${engineKey}:stderr`);
-  child.on('error', (error) => {
-    console.error(`${engineKey} sidecar 启动失败: ${error.message}`);
-  });
-  child.on('exit', (code) => {
-    diagnosisEngineProcesses[engineKey] = null;
-    ownedDiagnosisEngineProcesses[engineKey] = false;
-    console.error(`${engineKey} sidecar 已退出，退出码=${code ?? 'unknown'}`);
-  });
-}
-
-async function waitForDiagnosisEngine(engineKey: DiagnosisEngineKey) {
-  const autostart = getDiagnosisEngineAutostart(engineKey);
-  if (!autostart.autostart) return;
-  const endpoint = getDiagnosisEngineEndpoint(engineKey);
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < autostart.waitMs) {
-    const health = await readDiagnosisEngineHealth(endpoint);
-    if (health.status === 'healthy') {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
-  throw new Error(`${engineKey} sidecar 未在 ${autostart.waitMs}ms 内准备完成`);
-}
-
-function stopDiagnosisEngine(engineKey: DiagnosisEngineKey) {
-  const child = diagnosisEngineProcesses[engineKey];
-  if (!child || !ownedDiagnosisEngineProcesses[engineKey]) return;
-  child.kill('SIGTERM');
-  diagnosisEngineProcesses[engineKey] = null;
-  ownedDiagnosisEngineProcesses[engineKey] = false;
-}
 
 function isExecutable(filePath: string) {
   try {
@@ -1617,15 +1294,20 @@ async function createMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     logElectronInfo('[window] showing startup bootstrap page');
     mainWindow.show();
+    mainWindow.focus();
   }
 
   const loadMode = await loadRendererWithFallback(mainWindow);
   if (loadMode === 'dev') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
-  if (loadMode !== 'error' && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-    logElectronInfo('[window] showing renderer after fallback load');
-    mainWindow.show();
+  if (loadMode !== 'error' && mainWindow && !mainWindow.isDestroyed()) {
+    if (!mainWindow.isVisible()) {
+      logElectronInfo('[window] showing renderer after fallback load');
+      mainWindow.show();
+    }
+    mainWindow.focus();
+    app.focus({ steal: true });
   }
   await new Promise((resolve) => setTimeout(resolve, 1200));
   if (loadMode !== 'error' && mainWindow && !mainWindow.isDestroyed()) {
@@ -1635,8 +1317,10 @@ async function createMainWindow() {
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+appendElectronLaunchLog('INFO', `[app] singleInstanceLock=${gotSingleInstanceLock}`);
 
 if (!gotSingleInstanceLock) {
+  appendElectronLaunchLog('ERROR', '[app] failed to acquire single-instance lock, quitting');
   app.quit();
 }
 
@@ -1733,6 +1417,7 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  appendElectronLaunchLog('INFO', '[app] creating main window');
   try {
     await createMainWindow();
   } catch (error) {
@@ -1740,18 +1425,11 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  appendElectronLaunchLog('INFO', '[app] main window created successfully');
   void waitForCloudBackend().catch((error) => {
     console.error(error);
   });
-  await recycleManagedDiagnosisEngine('bettafish');
-  await startDiagnosisEngine('bettafish');
-  await startDiagnosisEngine('mirofish');
-  void waitForDiagnosisEngine('bettafish').catch((error) => {
-    console.warn(error instanceof Error ? error.message : String(error));
-  });
-  void waitForDiagnosisEngine('mirofish').catch((error) => {
-    console.warn(error instanceof Error ? error.message : String(error));
-  });
+  appendElectronLaunchLog('INFO', '[app] startup sequence complete, app should stay alive');
 
   app.on('activate', async () => {
     if (!mainWindow || mainWindow.isDestroyed() || BrowserWindow.getAllWindows().length === 0) {
@@ -1760,17 +1438,23 @@ app.whenReady().then(async () => {
       } catch (error) {
         dialog.showErrorBox('桌面界面启动失败', error instanceof Error ? error.message : String(error));
       }
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
 });
 
-app.on('before-quit', () => {
-  stopDiagnosisEngine('bettafish');
-  stopDiagnosisEngine('mirofish');
+app.on('before-quit', (event) => {
+  appendElectronLaunchLog('INFO', `[app] before-quit fired`);
   stopBackend();
   stopCloudBackend();
 });
+app.on('will-quit', () => {
+  appendElectronLaunchLog('INFO', '[app] will-quit fired');
+});
 app.on('window-all-closed', () => {
+  appendElectronLaunchLog('INFO', '[app] window-all-closed fired');
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -1957,13 +1641,3 @@ ipcMain.handle('yiyu-workbench:saveFileAs', async (_event, sourcePath: string, s
   return filePath;
 });
 
-ipcMain.handle('yiyu-workbench:diagnosisEngineHealth', async () => {
-  return Promise.all([
-    ensureDiagnosisEngineHealthy('bettafish'),
-    ensureDiagnosisEngineHealthy('mirofish'),
-  ]);
-});
-
-ipcMain.handle('yiyu-workbench:runBettafishDiagnosis', async (_event, payload: ExternalDiagnosisRequest) => {
-  return invokeBettafishDiagnosis(payload);
-});

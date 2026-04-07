@@ -61,6 +61,15 @@ class LoginPayload(BaseModel):
     password: str
 
 
+class ChangePasswordPayload(BaseModel):
+    currentPassword: str = Field(min_length=1)
+    newPassword: str = Field(min_length=8)
+
+
+class AdminResetPasswordPayload(BaseModel):
+    newPassword: str = Field(min_length=8)
+
+
 class RefreshPayload(BaseModel):
     refreshToken: str = Field(min_length=1)
 
@@ -645,6 +654,7 @@ class EventLineRecord(BaseModel):
     name: str
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
     status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
+    visibilityScope: Literal["private", "project_public"] = "project_public"
     businessCategory: str | None = None
     stage: str | None = None
     summary: str | None = None
@@ -660,6 +670,8 @@ class EventLineRecord(BaseModel):
     primaryDepartmentId: str | None = None
     primaryDepartmentName: str | None = None
     participantIds: list[str] = Field(default_factory=list)
+    closedAt: str | None = None
+    closedByUserId: str | None = None
     createdAt: str
     updatedAt: str
 
@@ -708,6 +720,7 @@ class EventLineCreatePayload(BaseModel):
     name: str = Field(min_length=1)
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
     status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
+    visibilityScope: Literal["private", "project_public"] = "project_public"
     businessCategory: str | None = None
     stage: str | None = None
     summary: str | None = None

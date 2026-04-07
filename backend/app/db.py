@@ -756,6 +756,7 @@ class Database:
                     title TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    is_key INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
                 );
@@ -1327,6 +1328,14 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS task_understanding_cache (
+                    task_id TEXT PRIMARY KEY,
+                    snapshot_json TEXT NOT NULL,
+                    task_hash TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS client_strategic_profiles (
                     client_id TEXT PRIMARY KEY,
                     industry TEXT NOT NULL DEFAULT '',
@@ -1457,6 +1466,7 @@ class Database:
             self._ensure_column("task_lists", "archived_at", "TEXT")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "client_id", "TEXT")
+            self._ensure_column("project_modules", "template_tasks_json", "TEXT")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
             self._ensure_column("tasks", "due_date", "TEXT")
@@ -1472,7 +1482,25 @@ class Database:
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("event_lines", "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
+            self._ensure_column("event_lines", "closed_at", "TEXT")
+            self._ensure_column("event_lines", "closed_by_user_id", "TEXT")
             self._ensure_column("event_line_activities", "created_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_line_activities", "is_key", "INTEGER NOT NULL DEFAULT 0")
+            # Backfill is_key: key events = task created, manual note, attachment
+            self.conn.execute("""
+                UPDATE event_line_activities SET is_key = 1
+                WHERE is_key = 0 AND (
+                    source_type IN ('manual_note', 'attachment')
+                    OR (source_type = 'task_activity' AND json_extract(metadata_json, '$.eventType') = 'created')
+                )
+            """)
+            # Ensure status changes and other task activities are system traces
+            self.conn.execute("""
+                UPDATE event_line_activities SET is_key = 0
+                WHERE is_key = 1 AND source_type = 'task_activity'
+                AND json_extract(metadata_json, '$.eventType') != 'created'
+            """)
             self._ensure_column("client_dna_documents", "source_kind", "TEXT NOT NULL DEFAULT 'manual'")
             self._ensure_column("client_dna_documents", "missing_info_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("weekly_reviews", "operator_id", "TEXT NOT NULL DEFAULT ''")

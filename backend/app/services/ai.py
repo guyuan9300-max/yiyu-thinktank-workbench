@@ -955,6 +955,89 @@ class AiService:
             source_content=source_content,
         )
 
+    # ── Growth insight quote distillation ────────────────────────────────
+    def distill_growth_insight_quote(
+        self,
+        *,
+        task_title: str,
+        task_desc: str = "",
+        client_name: str = "",
+        event_line_name: str = "",
+        blocker: str = "",
+        next_action: str = "",
+        recent_decision: str = "",
+        context_summary: str = "",
+        evidence_refs: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Distil raw task/review context into a concise, quotable 金句 (insight quote).
+
+        Returns {"quote": "...", "source_label": "..."}.
+        The quote should be a standalone insight sentence (≤80 chars ideally)
+        that captures transferable work wisdom — like the preview mock data:
+          "让客户先交完整方案再提问题，比直接帮改方案更有效——陪伴的核心是不代偿。"
+        """
+        health = self.get_health()
+        raw_material = "\n".join(
+            part
+            for part in [
+                f"任务标题：{task_title}",
+                f"任务描述：{task_desc}" if task_desc else "",
+                f"客户名称：{client_name}" if client_name else "",
+                f"事件线名称：{event_line_name}" if event_line_name else "",
+                f"当前阻碍：{blocker}" if blocker else "",
+                f"下一步行动：{next_action}" if next_action else "",
+                f"最近判断：{recent_decision}" if recent_decision else "",
+                f"背景摘要：{context_summary}" if context_summary else "",
+                f"证据参考：{'、'.join(evidence_refs)}" if evidence_refs else "",
+            ]
+            if part
+        )
+
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "quote": {"type": "STRING"},
+                "sourceLabel": {"type": "STRING"},
+            },
+        }
+
+        prompt = (
+            "你是一位经验萃取专家。请从下面的任务工作材料中，提炼出一句经验金句。\n\n"
+            "要求：\n"
+            "1. 金句必须是一句完整的、可独立引用的话，30~80个字为佳，最多不超过100字。\n"
+            '2. 金句要传达一个可迁移的工作智慧或判断，而非陈述事实（不要写「完成了XX」「推进了XX」）。\n'
+            "3. 风格参考：\n"
+            "   - 让客户先交完整方案再提问题，比直接帮改方案更有效——陪伴的核心是不代偿。\n"
+            "   - 数字化理解快的客户，效率瓶颈往往不在技术而在项目设计。\n"
+            "   - 月捐人流失率最高的阶段不是首月，而是第三个月——这是承诺感消退的临界点。\n"
+            "   - 合作方的节奏感比能力更重要，节奏对不上的合作最终都会变成消耗。\n"
+            "4. 金句应该像一个有经验的从业者的口头心得，朴实直接，不要写成口号或鸡汤。\n"
+            "5. 如果材料信息不足以提炼出有价值的洞察，就从任务的核心动作中找到一个可迁移的方法论视角。\n"
+            "6. sourceLabel 写一个简短的来源标注，格式如「客户名·阶段」或「事件线名·W周数」，5~15字。\n\n"
+            f"原始工作材料：\n{raw_material}"
+        )
+
+        try:
+            if health.provider in ("qwen", "doubao") and health.ready:
+                result = self._qwen_generate(
+                    prompt,
+                    "你是组织经验萃取助手。只返回 JSON。",
+                    schema,
+                    timeout_seconds=15.0,
+                    max_tokens=300,
+                    temperature=0.7,
+                )
+                if isinstance(result, dict):
+                    quote = str(result.get("quote") or "").strip().strip('"')
+                    source_label = str(result.get("sourceLabel") or "").strip()
+                    if quote and len(quote) >= 10:
+                        return {"quote": quote, "sourceLabel": source_label}
+        except Exception:
+            pass
+
+        # Fallback: use task_title as-is
+        return {"quote": "", "sourceLabel": ""}
+
     def build_topic_task_plan(
         self,
         *,

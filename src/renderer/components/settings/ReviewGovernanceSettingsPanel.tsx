@@ -68,7 +68,7 @@ export function ReviewGovernanceSettingsPanel({
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-[16px] font-bold text-gray-900">周复盘聚合治理</h2>
-          <p className="text-[12px] text-gray-500 mt-1">部门目录已固定为四个：咨询策略部、科技发展部、信息数据部、客户服务部。这里维护部门负责人、月度 DNA 和本周重点计划，员工归属请到“员工与权限”里用下拉菜单设置。</p>
+          <p className="text-[12px] text-gray-500 mt-1">部门目录已固定为四个：咨询策略部、科技发展部、信息数据部、客户服务部。这里维护部门负责人、月度 DNA 和本周重点计划，成员归属默认跟随邀请码加入的部门。</p>
         </div>
         <button
           type="button"
@@ -149,7 +149,7 @@ export function ReviewGovernanceSettingsPanel({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[12px] font-bold text-gray-900">部门成员</p>
-                  <p className="mt-1 text-[11px] leading-5 text-gray-500">成员归属来自“员工与权限”里的部门下拉，不在这里手工输入。</p>
+                  <p className="mt-1 text-[11px] leading-5 text-gray-500">成员归属默认跟随邀请码加入的部门，不在这里手工输入。</p>
                 </div>
                 <span className="rounded-full bg-gray-100 px-3 py-1 text-[11px] font-bold text-gray-600">{department.members.length} 人</span>
               </div>
@@ -163,7 +163,7 @@ export function ReviewGovernanceSettingsPanel({
                 </div>
               ) : (
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] leading-6 text-gray-500">
-                  当前还没有员工归属到这个部门。请到“员工与权限”里给员工选择所属部门。
+                  当前还没有员工归属到这个部门。请先邀请成员通过对应部门的邀请码加入。
                 </div>
               )}
             </div>

@@ -8,8 +8,10 @@ import type {
   AnalysisWorkbenchSettingsPayload,
   AnalysisTemplate,
   AppSettings,
+  AdminResetPasswordPayload,
   AuthLoginPayload,
   AuthRegisterPayload,
+  ChangePasswordPayload,
   ConsultationKnowledgeProcessSummary,
   ConsultationKnowledgeRequestRecord,
   ConsultationKnowledgeRequestStatus,
@@ -104,9 +106,6 @@ import type {
   TopicsSettingsPayload,
   HandbookSettings,
   HandbookSettingsPayload,
-  DiagnosisEngineHealth,
-  ExternalDiagnosisRequest,
-  BettaFishSignal,
   CoachCaseRecord,
   CoachReminderRule,
   TopicCaptureBatchResult,
@@ -206,8 +205,6 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
     },
     revealInFinder: async () => notAvailable('在 Finder 中显示'),
     saveFileAs: async () => notAvailable('另存为'),
-    getDiagnosisEngineHealth: async () => [],
-    runBettafishDiagnosis: async () => notAvailable('外部诊断引擎'),
   };
 }
 
@@ -325,6 +322,27 @@ export async function getTaskContextPreview(taskId: string) {
   return request<TaskContextPreview>(`/api/v1/tasks/${taskId}/context-preview`);
 }
 
+export type TaskUnderstandingSnapshot = {
+  whatIsThis: string;
+  whyItMatters: string;
+  progressNow: string;
+  unknowns: string;
+  knownFacts: string[];
+  confidence: number;
+  sourceBreakdown: Array<{ sourceName: string; available: boolean; snippet: string }>;
+  coverage: number;
+  optionalAdvice?: {
+    realBlocker?: string;
+    timeGate?: string;
+    minimumAction?: string;
+    supportAsk?: string;
+  } | null;
+};
+
+export async function getTaskUnderstanding(taskId: string) {
+  return request<TaskUnderstandingSnapshot>(`/api/v1/tasks/${taskId}/understanding`);
+}
+
 export async function getTaskSmartBrief(taskId: string) {
   return request<TaskSmartBrief>(`/api/v1/tasks/${taskId}/smart-brief`);
 }
@@ -376,6 +394,20 @@ export async function processPendingConsultationKnowledgeRequests() {
 
 export async function logout() {
   return request<AuthState>('/api/v1/auth/logout', { method: 'POST' });
+}
+
+export async function changePassword(payload: ChangePasswordPayload) {
+  return request<{ message: string }>('/api/v1/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function adminResetPassword(employeeId: string, payload: AdminResetPasswordPayload) {
+  return request<{ message: string }>(`/api/v1/admin/employees/${encodeURIComponent(employeeId)}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getSettings() {
@@ -554,6 +586,71 @@ export async function getActivityLogs() {
   >('/api/v1/settings/logs');
 }
 
+// ── System Logs ───────────────────────────────────────────────
+export type SystemLogEntry = {
+  ts: string;
+  level: string;
+  source: string;
+  message: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  duration_ms?: number;
+  user?: string;
+  error?: string;
+  traceback?: string;
+  action?: string;
+  entity_type?: string;
+  entity_id?: string;
+  actor?: string;
+  detail?: Record<string, unknown>;
+};
+
+export type SystemLogsResponse = {
+  entries: SystemLogEntry[];
+  dates: string[];
+  total: number;
+};
+
+export async function getSystemLogs(params?: {
+  startDate?: string;
+  endDate?: string;
+  level?: string;
+  source?: string;
+  keyword?: string;
+  limit?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params?.startDate) search.set('startDate', params.startDate);
+  if (params?.endDate) search.set('endDate', params.endDate);
+  if (params?.level) search.set('level', params.level);
+  if (params?.source) search.set('source', params.source);
+  if (params?.keyword) search.set('keyword', params.keyword);
+  if (params?.limit) search.set('limit', String(params.limit));
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<SystemLogsResponse>(`/api/v1/logs${suffix}`);
+}
+
+export async function exportSystemLogs(params?: {
+  startDate?: string;
+  endDate?: string;
+  level?: string;
+  keyword?: string;
+}) {
+  const search = new URLSearchParams();
+  if (params?.startDate) search.set('startDate', params.startDate);
+  if (params?.endDate) search.set('endDate', params.endDate);
+  if (params?.level) search.set('level', params.level);
+  if (params?.keyword) search.set('keyword', params.keyword);
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  const res = await fetch(`${baseUrl}/api/v1/logs/export${suffix}`);
+  return res.text();
+}
+
+export async function getLogDates() {
+  return request<string[]>('/api/v1/logs/dates');
+}
+
 export async function getEmployees() {
   return request<EmployeeRecord[]>('/api/v1/admin/employees');
 }
@@ -668,6 +765,12 @@ export async function updateProjectModule(clientId: string, moduleId: string, pa
   return request<ProjectModule>(`/api/v1/clients/${clientId}/project-modules/${moduleId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteProjectModule(clientId: string, moduleId: string) {
+  return request<{ status: string }>(`/api/v1/clients/${clientId}/project-modules/${moduleId}`, {
+    method: 'DELETE',
   });
 }
 
@@ -1016,6 +1119,18 @@ export async function updateEventLine(id: string, payload: Partial<EventLineMuta
   return request<EventLine>(`/api/v1/event-lines/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function closeEventLine(id: string) {
+  return request<{ status: string }>(`/api/v1/event-lines/${id}/close`, {
+    method: 'POST',
+  });
+}
+
+export async function reopenEventLine(id: string) {
+  return request<{ status: string }>(`/api/v1/event-lines/${id}/reopen`, {
+    method: 'POST',
   });
 }
 
@@ -1379,13 +1494,6 @@ export async function updateGrowthPendingCapture(id: string, payload: GrowthPend
   });
 }
 
-export async function getDiagnosisEngineHealth() {
-  return window.yiyuWorkbench.getDiagnosisEngineHealth() as Promise<DiagnosisEngineHealth[]>;
-}
-
-export async function runBettafishDiagnosis(payload: ExternalDiagnosisRequest) {
-  return window.yiyuWorkbench.runBettafishDiagnosis(payload) as Promise<BettaFishSignal>;
-}
 
 export async function selectCollabRepo() {
   return window.yiyuWorkbench.selectCollabRepo() as Promise<string | null>;

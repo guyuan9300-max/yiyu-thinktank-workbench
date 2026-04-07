@@ -121,31 +121,68 @@ NARRATIVE_RESPONSE_SCHEMA = {
 }
 
 WEEKLY_OVERVIEW_SYSTEM_INSTRUCTION = """\
-你是益语智库的周复盘写作助手。
+你是益语智库的周复盘写作助手，为管理层生成结构化的周概况。
 
-你的任务不是罗列任务，而是把一周发生的事情收成一段可以指导管理的“本周概况总结”。
+信息权重（从高到低）：
+1. 用户手写的周复盘说明（最可信的一手判断）
+2. 会议纪要和附件内容（包含具体讨论细节、决策、下一步，是最有深度的信息源）
+3. 事件线管理字段（卡点、决策、下一步）
+4. 任务的卡点和下一步
+5. 事件线叙事分析
+6. 组织 DNA 背景（用于解释"为什么重要"，不要照搬）
 
-写作要求：
-1. 先说这一周整体是什么性质的一周，例如在打底、铺线、收束、突破，而不是一上来罗列任务。
-2. 必须优先利用这些背景：益语组织 DNA、客户背景、合作关系、事件线叙事。
-3. 不要把技术排查写成琐碎 debug，要指出它对后续判断和交付意味着什么。
-4. 不要泛泛而谈“持续推进”“值得关注”，要写清楚为什么重要。
-5. 输出语言要像成熟助理给管理层写的周概况，简洁、深入、一针见血。
+写作规则：
+1. headline: 用一句话定性这一周，必须包含一个具体事实（如"日慈教师赋能完成Q1复盘，为爱黔行创始人分歧待协调"），不要泛泛说"持续推进""取得进展"。
+2. needsAttention: 只列需要管理层关注的事件线，reason 必须引用一个具体事实（人名、事件、数据），不要抽象概括。
+3. onTrack: 正常推进的事件线，一句话说明本周具体完成了什么。
+4. blockerSummary: 必须写具体的卡点——谁卡住了、卡在什么事上、为什么卡。如果多条线有类似卡点就对比说明。如果没有明确卡点就留空字符串，不要编造。
+5. nextWeekHint: 必须是一个可执行的管理建议，包含具体的人/事/时间。例如"下周五前让高老师交品牌规划，否则日慈Q2节奏会延迟"。不要写"优先收束""聚焦存量"这种没有行动对象的空话。
+6. nextWeekFocus: 每条必须包含：做什么 + 谁来做 + 什么时候要结果。
 
-输出字段：
-- overview: 1 到 2 段完整中文总结
-- focusLines: 2 到 4 条本周主线
-- nextFocus: 1 到 3 条下周重点
+核心原则：
+- 每一句话都必须有事实支撑，能从输入材料里找到出处
+- 如果材料里没有足够信息支撑某个判断，就不要写，留空比编造好
+- 宁可少写两条有信息量的，也不要多写五条空话
+
+禁止：
+- 不要输出覆盖率、置信度、样本量等元信息
+- 不要用"值得关注""持续推进""成果收束""合作边界""明确落地方案"等抽象表述
+- 不要把不同事件线的卡点抽象成一句话——每个卡点都是独立的，分开写
 """
 
 WEEKLY_OVERVIEW_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "overview": {"type": "string"},
-        "focusLines": {"type": "array", "items": {"type": "string"}},
-        "nextFocus": {"type": "array", "items": {"type": "string"}},
+        "headline": {"type": "string", "description": "一句话定性本周"},
+        "needsAttention": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "lineName": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["lineName", "reason"],
+            },
+            "description": "需要管理层关注的事件线",
+        },
+        "onTrack": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "lineName": {"type": "string"},
+                    "progress": {"type": "string"},
+                },
+                "required": ["lineName", "progress"],
+            },
+            "description": "正常推进的事件线",
+        },
+        "blockerSummary": {"type": "array", "items": {"type": "string"}, "description": "卡点列表，每条一个具体卡点，没有就留空数组"},
+        "nextWeekHint": {"type": "string", "description": "本周管理洞察"},
+        "nextWeekFocus": {"type": "array", "items": {"type": "string"}, "description": "下周重点"},
     },
-    "required": ["overview", "focusLines", "nextFocus"],
+    "required": ["headline", "needsAttention", "onTrack", "blockerSummary", "nextWeekHint", "nextWeekFocus"],
 }
 
 
@@ -491,13 +528,12 @@ def _dedupe_lines(values: list[str], *, limit: int) -> list[str]:
 def _organization_background_preview(org_dna_modules: list[OrganizationDnaModuleRecord]) -> str:
     lines: list[str] = []
     for module in org_dna_modules:
-        if module.moduleKey not in {"organization_intro", "business_intro"}:
+        if not module.hasDocument:
             continue
-        text = _clean_text(module.summary or module.normalizedText[:220])
+        # Summary for DNA modules (keep prompt size manageable), full text for meeting minutes
+        text = _clean_text(module.summary or module.normalizedText[:1500])
         if text:
             lines.append(f"- {module.title}: {text}")
-        if len(lines) >= 3:
-            break
     return "\n".join(lines)
 
 
@@ -513,9 +549,34 @@ def _weekly_overview_task_lines(items: list[WeeklyReviewTaskEntryRecord]) -> str
         desc = _clean_text(getattr(snap, "desc", "") or "")
         note = _clean_text(getattr(snap, "note", "") or item.note or "")
         if desc:
-            parts.append(f"说明={desc[:100]}")
+            parts.append(f"说明={desc}")
         elif note:
-            parts.append(f"备注={note[:100]}")
+            parts.append(f"备注={note}")
+        # Task action fields
+        blocker = _clean_text(getattr(snap, "currentBlocker", "") or "")
+        next_action = _clean_text(getattr(snap, "nextAction", "") or "")
+        decision = _clean_text(getattr(snap, "recentDecision", "") or "")
+        if blocker:
+            parts.append(f"卡点={blocker}")
+        if next_action:
+            parts.append(f"下一步={next_action}")
+        if decision:
+            parts.append(f"决策={decision}")
+        # Event line context
+        elc = snap.eventLineContext
+        if elc:
+            if elc.summary:
+                parts.append(f"事件线说明={_clean_text(elc.summary)}")
+            if elc.currentBlocker:
+                parts.append(f"事件线卡点={_clean_text(elc.currentBlocker)}")
+            if elc.recentDecision:
+                parts.append(f"事件线决策={_clean_text(elc.recentDecision)}")
+            if elc.nextStep:
+                parts.append(f"事件线下一步={_clean_text(elc.nextStep)}")
+        # Review note (user's weekly review input — highest weight)
+        review_note = _clean_text(item.note or "")
+        if review_note and review_note != note:
+            parts.append(f"周复盘={review_note}")
         lines.append("- " + "；".join(parts))
     return "\n".join(lines)
 
@@ -765,6 +826,8 @@ def build_weekly_overview_draft(
     fallback_overview: str,
     fallback_focus_lines: list[str],
     fallback_next_focus: list[str],
+    attachment_texts: list[str] | None = None,
+    local_memory_context: str = "",
 ) -> tuple[str, list[str], list[str]]:
     fallback_focus = _dedupe_lines(fallback_focus_lines, limit=4)
     fallback_next = _dedupe_lines(fallback_next_focus, limit=3)
@@ -774,6 +837,29 @@ def build_weekly_overview_draft(
     if health.provider == "mock" or not health.ready:
         return fallback_summary, fallback_focus, fallback_next
 
+    # Build event line summary from task items (deduplicated)
+    el_summary_lines: list[str] = []
+    seen_el_ids: set[str] = set()
+    for item in items:
+        elc = item.taskSnapshot.eventLineContext
+        if not elc or not elc.id or elc.id in seen_el_ids:
+            continue
+        seen_el_ids.add(elc.id)
+        el_parts = [elc.name or ""]
+        if elc.summary:
+            el_parts.append(f"说明={_clean_text(elc.summary)}")
+        if elc.currentBlocker:
+            el_parts.append(f"卡点={_clean_text(elc.currentBlocker)}")
+        if elc.recentDecision:
+            el_parts.append(f"决策={_clean_text(elc.recentDecision)}")
+        if elc.nextStep:
+            el_parts.append(f"下一步={_clean_text(elc.nextStep)}")
+        if elc.stage:
+            el_parts.append(f"阶段={_clean_text(elc.stage)}")
+        if len(el_parts) > 1:
+            el_summary_lines.append("- " + "；".join(el_parts))
+    event_line_fields_block = "\n".join(el_summary_lines)
+
     prompt = "\n\n".join(
         part
         for part in [
@@ -781,30 +867,90 @@ def build_weekly_overview_draft(
             f"【规则兜底草稿】\n{fallback_summary}",
             f"【规则识别的主线】\n" + "\n".join(f"- {line}" for line in fallback_focus) if fallback_focus else "",
             f"【主线理解卡】\n{_weekly_line_card_lines(line_cards)}" if line_cards else "",
-            f"【组织背景】\n{_organization_background_preview(org_dna_modules)}",
+            f"【组织背景（含团队与市场）】\n{_organization_background_preview(org_dna_modules)}",
+            f"【事件线管理字段】\n{event_line_fields_block}" if event_line_fields_block else "",
             f"【事件线叙事】\n{_narrative_summary_lines(narratives)}" if narratives else "",
             f"【本周任务与线索】\n{_weekly_overview_task_lines(items)}",
+            f"【本地项目记忆（历史判断与上下文）】\n{local_memory_context}" if local_memory_context else "",
+            f"【会议纪要与附件内容（高价值信息源）】\n" + "\n\n".join(attachment_texts[:6]) if attachment_texts else "",
         ]
         if part
     )
 
+    # Log what data is actually in the prompt
+    has_att = "会议纪要" in prompt or "附件内容" in prompt
+    att_section_len = len(prompt.split("【会议纪要与附件内容")[1]) if "【会议纪要与附件内容" in prompt else 0
+    logger.info("[weekly-overview] prompt_len=%d, has_attachment_section=%s, att_section_len=%d, attachment_texts_count=%d",
+                len(prompt), has_att, att_section_len, len(attachment_texts or []))
+
     try:
+        logger.info("[weekly-overview] AI provider=%s, calling _qwen_generate with new structured prompt...", ai.get_health().provider)
         raw = ai._qwen_generate(
             prompt=prompt,
             system_instruction=WEEKLY_OVERVIEW_SYSTEM_INSTRUCTION,
             response_schema=WEEKLY_OVERVIEW_RESPONSE_SCHEMA,
-            timeout_seconds=45.0,
-            max_tokens=1800,
+            timeout_seconds=120.0,
+            max_tokens=4000,
             temperature=0.35,
             top_p=0.9,
             enable_thinking=False,
         )
+        logger.info("[weekly-overview] AI raw response type=%s, keys=%s", type(raw).__name__, list(raw.keys()) if isinstance(raw, dict) else "N/A")
         if not isinstance(raw, dict):
+            logger.warning("[weekly-overview] AI returned non-dict, falling back")
             return fallback_summary, fallback_focus, fallback_next
-        overview = _clean_text(str(raw.get("overview") or ""))
-        focus_lines = _dedupe_lines([str(item) for item in raw.get("focusLines") or []], limit=4)
-        next_focus = _dedupe_lines([str(item) for item in raw.get("nextFocus") or []], limit=3)
-        if not ai._has_sufficient_cjk(overview) or len(overview) < 80:
+
+        headline = _clean_text(str(raw.get("headline") or ""))
+        needs_attention = raw.get("needsAttention") or []
+        on_track = raw.get("onTrack") or []
+        raw_blockers = raw.get("blockerSummary") or []
+        if isinstance(raw_blockers, str):
+            raw_blockers = [raw_blockers] if raw_blockers.strip() else []
+        blocker_items = [_clean_text(str(b)) for b in raw_blockers if _clean_text(str(b))]
+        weekly_insight = _clean_text(str(raw.get("nextWeekHint") or ""))
+        next_week_focus = [str(item) for item in (raw.get("nextWeekFocus") or [])]
+
+        # Assemble structured output into readable overview text
+        overview_parts: list[str] = []
+        if headline:
+            overview_parts.append(headline)
+        if needs_attention:
+            overview_parts.append("\n【需要关注】")
+            for item in needs_attention:
+                if isinstance(item, dict):
+                    name = str(item.get("lineName", ""))
+                    reason = str(item.get("reason", ""))
+                    overview_parts.append(f"• {name}：{reason}")
+        if on_track:
+            overview_parts.append("\n【正常推进】")
+            for item in on_track:
+                if isinstance(item, dict):
+                    name = str(item.get("lineName", ""))
+                    progress = str(item.get("progress", ""))
+                    overview_parts.append(f"• {name}：{progress}")
+        if blocker_items:
+            blocker_lines = "\n".join(f"{i+1}. {b}" for i, b in enumerate(blocker_items))
+            overview_parts.append(f"\n【卡点汇总】\n{blocker_lines}")
+        if weekly_insight:
+            overview_parts.append(f"\n【下周提示】\n{weekly_insight}")
+
+        overview = "\n".join(overview_parts)
+
+        # Build focus_lines from needs_attention + on_track
+        focus_lines: list[str] = []
+        for item in needs_attention:
+            if isinstance(item, dict):
+                focus_lines.append(f"{item.get('lineName', '')}｜{item.get('reason', '')}")
+        for item in on_track:
+            if isinstance(item, dict):
+                focus_lines.append(f"{item.get('lineName', '')}｜{item.get('progress', '')}")
+        focus_lines = _dedupe_lines(focus_lines, limit=6)
+
+        next_focus = _dedupe_lines(next_week_focus, limit=3)
+
+        logger.info("[weekly-overview] assembled overview len=%d, has【=%s", len(overview), "【" in overview)
+        if not ai._has_sufficient_cjk(overview) or len(overview) < 40:
+            logger.warning("[weekly-overview] overview failed CJK/length check, falling back. len=%d", len(overview))
             return fallback_summary, fallback_focus, fallback_next
         if not focus_lines:
             focus_lines = fallback_focus

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 import re
 from typing import Iterable
+
+logger = logging.getLogger(__name__)
 from uuid import uuid4
 
 from app.db import Database, from_json, to_json
@@ -513,6 +516,140 @@ def _build_event_line_memory_snapshot(row) -> EventLineMemorySnapshot:
         updatedAt=str(row["updated_at"]),
         confidence=float(row["confidence"] or 0.0),
     )
+
+
+# ── Document Knowledge → Memory Pipeline ──────────────────────────────
+
+def backfill_document_knowledge_to_memory(db: Database) -> dict[str, int]:
+    """
+    把 knowledge_surrogates 中的文档洞察批量写入 memory_facts。
+
+    每个客户的每个文件夹分类（组织与战略/项目与业务/财务与筹款/品牌与传播/战略陪伴）
+    产出一条聚合记忆 + 每份高质量文档产出一条独立记忆。
+
+    这样 AI 在理解任务/生成研判时，能读到"CFFC 的战略文档反复提到传播清晰度问题"
+    这种从大量文档中提炼出来的认知，而不是只有任务标题。
+    """
+    import json as _json
+
+    stats = {"clients_processed": 0, "category_summaries": 0, "doc_insights": 0, "total_facts": 0}
+
+    # 获取所有客户
+    clients = db.fetchall("SELECT id, name FROM clients")
+
+    for client in clients:
+        client_id = str(client["id"])
+        client_name = str(client["name"])
+
+        # 获取该客户的所有有摘要的知识代理
+        surrogates = db.fetchall(
+            """
+            SELECT title, folder_category, document_role, overview_summary,
+                   core_questions_json, distinct_findings_json, entities_json
+            FROM knowledge_surrogates
+            WHERE client_id = ? AND overview_summary IS NOT NULL AND LENGTH(overview_summary) > 50
+            ORDER BY folder_category, title
+            """,
+            (client_id,),
+        )
+
+        if not surrogates:
+            continue
+
+        stats["clients_processed"] += 1
+
+        # ── 按 folder_category 分组聚合 ──
+        by_category: dict[str, list] = {}
+        for s in surrogates:
+            cat = str(s["folder_category"]) or "其他"
+            by_category.setdefault(cat, []).append(s)
+
+        for category, docs in by_category.items():
+            # 聚合该分类下的核心发现
+            all_findings: list[str] = []
+            all_entities: list[str] = []
+            all_roles: list[str] = []
+            summaries: list[str] = []
+
+            for doc in docs:
+                summary = str(doc["overview_summary"]).strip()
+                if summary:
+                    summaries.append(summary[:200])
+
+                findings = _json.loads(doc["distinct_findings_json"]) if doc["distinct_findings_json"] else []
+                all_findings.extend(str(f)[:120] for f in findings[:3])
+
+                entities = _json.loads(doc["entities_json"]) if doc["entities_json"] else []
+                all_entities.extend(str(e) for e in entities[:3])
+
+                role = str(doc["document_role"]) if doc["document_role"] else ""
+                if role and role not in all_roles:
+                    all_roles.append(role)
+
+            # 去重
+            unique_findings = list(dict.fromkeys(all_findings))[:10]
+            unique_entities = list(dict.fromkeys(all_entities))[:8]
+
+            # 写入分类级聚合记忆
+            category_value = f"[{client_name}/{category}] 共 {len(docs)} 份文档。"
+            if unique_findings:
+                category_value += f" 关键发现：{'；'.join(unique_findings[:5])}"
+            if unique_entities:
+                category_value += f" 涉及：{'、'.join(unique_entities[:5])}"
+
+            upsert_memory_fact(
+                db,
+                scope_type="client",
+                scope_id=client_id,
+                fact_key=f"knowledge_category:{category}",
+                fact_value=category_value[:800],
+                source_type="document_knowledge_backfill",
+                source_id=f"{client_id}:{category}",
+                confidence=0.75,
+                freshness=0.8,
+            )
+            stats["category_summaries"] += 1
+            stats["total_facts"] += 1
+
+        # ── 每份高价值文档写入独立记忆 ──
+        _skip_patterns = {"readme", "video_list", "changelog", "license", "node_modules", ".git", "test", "debug", "verify"}
+        for s in surrogates:
+            summary = str(s["overview_summary"]).strip()
+            if len(summary) < 100:
+                continue  # 跳过摘要太短的
+
+            title = str(s["title"])
+            title_lower = title.lower()
+            # 过滤技术文件、测试文件、链接列表等
+            if any(p in title_lower for p in _skip_patterns):
+                continue
+
+            role = str(s["document_role"]) if s["document_role"] else ""
+            category = str(s["folder_category"]) or "其他"
+
+            findings = _json.loads(s["distinct_findings_json"]) if s["distinct_findings_json"] else []
+            top_findings = [str(f)[:120] for f in findings[:3]]
+
+            fact_value = f"[{title}] {role}。{summary[:300]}"
+            if top_findings:
+                fact_value += f" 要点：{'；'.join(top_findings)}"
+
+            upsert_memory_fact(
+                db,
+                scope_type="client",
+                scope_id=client_id,
+                fact_key=f"doc_insight:{title[:60]}",
+                fact_value=fact_value[:800],
+                source_type="document_knowledge_backfill",
+                source_id=f"surrogate:{s['title'][:80]}",
+                confidence=0.7,
+                freshness=0.7,
+            )
+            stats["doc_insights"] += 1
+            stats["total_facts"] += 1
+
+    logger.info("[memory-foundation] document knowledge backfill complete: %s", stats)
+    return stats
 
 
 def upsert_memory_fact(

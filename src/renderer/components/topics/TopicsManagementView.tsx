@@ -30,7 +30,6 @@ import {
 import { TopicIntelDetailPanel } from './TopicIntelDetailPanel';
 import { TopicIntelInboxCard } from './TopicIntelInboxCard';
 
-type TopicInboxViewKey = 'new' | 'saved' | 'task_linked';
 type TopicReadFilter = 'all' | 'unread';
 
 type TopicCandidateLocalPreference = {
@@ -253,7 +252,6 @@ export function TopicsManagementView({
   onTopicsReload,
   onTasksReload,
 }: TopicsManagementViewProps) {
-  const [view, setView] = useState<TopicInboxViewKey>('new');
   const [selectedRadarId, setSelectedRadarId] = useState<string>('all');
   const [readFilter, setReadFilter] = useState<TopicReadFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -369,9 +367,6 @@ export function TopicsManagementView({
         const read = Boolean(preference.read);
         const customTags = preference.tags || [];
 
-        if (view === 'new' && (saved || linked)) return false;
-        if (view === 'saved' && !saved) return false;
-        if (view === 'task_linked' && !linked) return false;
         if (selectedRadarId !== 'all' && candidate.radarId !== selectedRadarId) return false;
         if (readFilter === 'unread' && read) return false;
         if (!query) return true;
@@ -395,7 +390,7 @@ export function TopicsManagementView({
         return corpus.includes(query);
       })
       .sort((left, right) => candidateSortTime(right) - candidateSortTime(left));
-  }, [candidates, insightCache, localState, radarMap, readFilter, relatedTasksByCandidate, searchQuery, selectedRadarId, view]);
+  }, [candidates, insightCache, localState, radarMap, readFilter, relatedTasksByCandidate, searchQuery, selectedRadarId]);
 
   const selectedCandidate = useMemo(
     () => filteredCandidates.find((candidate) => candidate.id === selectedCandidateId) || filteredCandidates[0] || null,
@@ -832,15 +827,53 @@ export function TopicsManagementView({
 
   return (
     <div className="h-full flex flex-col bg-[#F9FAFB] overflow-hidden relative font-sans text-gray-800">
-      <div className="bg-white border-b border-gray-100 px-5 lg:px-8 py-5 shrink-0 z-10 shadow-sm">
-        <div className="flex flex-col gap-5">
-          <div className="flex justify-between items-start md:items-center gap-4">
-            <div>
-              <h1 className="text-[18px] lg:text-[20px] font-bold text-gray-900 flex items-center gap-2">
-                <Search size={22} className="text-[#5B7BFE]" /> 资讯情报站
-              </h1>
+      <div className="bg-white border-b border-gray-100 px-5 lg:px-8 py-3.5 shrink-0 z-10">
+        <div className="flex flex-col gap-2.5">
+          {/* Row 1: title + inline stats + actions */}
+          <div className="flex items-center gap-4">
+            <h1 className="text-[15px] font-semibold text-gray-800 flex items-center gap-1.5 shrink-0">
+              <Search size={15} className="text-[#5B7BFE]" />
+              情报站
+            </h1>
+            <div className="flex items-center gap-3 text-[12px] text-gray-400 ml-1">
+              <span><span className="font-semibold text-[#5B7BFE]">{viewCounts.new}</span> 新发现</span>
+              <span className="text-gray-200">|</span>
+              <span><span className="font-semibold text-gray-600">{unreadCandidates}</span> 未读</span>
+              <span className="text-gray-200">|</span>
+              <span><span className="font-semibold text-gray-600">{viewCounts.saved}</span> 资料夹</span>
+              <span className="text-gray-200">|</span>
+              <span><span className="font-semibold text-gray-600">{viewCounts.task_linked}</span> 已转任务</span>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 ml-auto shrink-0 flex-wrap justify-end">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="搜索标题、摘要、来源或核心观点"
+                  className="w-[200px] rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-3 py-1.5 text-[12px] outline-none focus:bg-white focus:border-[#5B7BFE]"
+                />
+              </div>
+              <select
+                value={selectedRadarId}
+                onChange={(event) => setSelectedRadarId(event.target.value)}
+                className="w-[132px] rounded-xl border border-gray-200 bg-gray-50 px-3 py-1.5 text-[12px] outline-none focus:bg-white focus:border-[#5B7BFE]"
+              >
+                <option value="all">全部雷达</option>
+                {radars.map((radar) => (
+                  <option key={radar.id} value={radar.id}>
+                    {radar.title}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={readFilter}
+                onChange={(event) => setReadFilter(event.target.value as TopicReadFilter)}
+                className="w-[132px] rounded-xl border border-gray-200 bg-gray-50 px-3 py-1.5 text-[12px] outline-none focus:bg-white focus:border-[#5B7BFE]"
+              >
+                <option value="all">全部阅读状态</option>
+                <option value="unread">只看未读</option>
+              </select>
               <button
                 type="button"
                 onClick={() => {
@@ -849,43 +882,25 @@ export function TopicsManagementView({
                   setPreferredSourceDraft('');
                   setTempPref({ id: 'placeholder-new', title: '', prompt: '', timeRange: topicsSettingsState.defaultTimeRange, preferredSources: [] });
                 }}
-                className="px-4 py-2.5 rounded-2xl text-[13px] font-semibold bg-white border border-gray-200 text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-300 transition-all inline-flex items-center gap-2"
+                className="px-3 py-1.5 rounded-lg text-[12px] font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700 transition-all inline-flex items-center gap-1.5"
               >
-                <Plus size={15} />
+                <Plus size={13} />
                 管理雷达
               </button>
               <button
                 type="button"
                 onClick={() => void handleCapture()}
                 disabled={isCapturing || radars.length === 0}
-                className="px-5 py-2.5 rounded-2xl text-[13px] font-semibold bg-[#5B7BFE] text-white shadow-[0_4px_12px_rgba(91,123,254,0.3)] hover:bg-[#4a6be6] disabled:opacity-60 disabled:cursor-not-allowed transition-all inline-flex items-center gap-2"
+                className="px-3.5 py-1.5 rounded-lg text-[12px] font-medium bg-[#5B7BFE] text-white hover:bg-[#4a6be6] disabled:opacity-50 disabled:cursor-not-allowed transition-all inline-flex items-center gap-1.5"
               >
-                {isCapturing ? <RefreshCw size={16} className="animate-spin" /> : <Search size={16} />}
-                {isCapturing ? '大周抓取中…' : '立即抓取'}
+                {isCapturing ? <RefreshCw size={13} className="animate-spin" /> : <Search size={13} />}
+                {isCapturing ? '抓取中…' : '抓取'}
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="rounded-2xl border border-gray-100 bg-[#f7f9ff] px-4 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">新发现</p>
-              <p className="text-[24px] font-bold text-gray-900 mt-2">{viewCounts.new}</p>
-            </div>
-            <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-amber-600">资料夹</p>
-              <p className="text-[24px] font-bold text-gray-900 mt-2">{viewCounts.saved}</p>
-            </div>
-            <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-violet-600">已转任务</p>
-              <p className="text-[24px] font-bold text-gray-900 mt-2">{viewCounts.task_linked}</p>
-            </div>
-            <div className="rounded-2xl border border-gray-100 bg-white px-4 py-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">未读</p>
-              <p className="text-[24px] font-bold text-gray-900 mt-2">{unreadCandidates}</p>
-            </div>
-          </div>
-
-          <div className="flex gap-3 w-full overflow-x-auto scrollbar-hide pb-1">
+          {/* Row 2: radar chips */}
+          <div className="flex gap-2 w-full overflow-x-auto scrollbar-hide">
             {radarCards.map((pref, index) => {
               const isPlaceholder = pref.id === 'placeholder-new';
               return (
@@ -903,19 +918,19 @@ export function TopicsManagementView({
                       preferredSources: pref.preferredSources || [],
                     });
                   }}
-                  className={`min-w-[220px] flex-1 rounded-2xl border px-4 py-3 text-left transition-all ${
-                    isPlaceholder ? 'bg-white border-dashed border-gray-200 text-gray-400 hover:border-[#b8c7ff] hover:text-[#5B7BFE]' : 'bg-blue-50/50 border-blue-100 text-[#5B7BFE] shadow-sm hover:bg-blue-50'
+                  className={`shrink-0 rounded-full border px-3 py-1 text-left transition-all ${
+                    isPlaceholder
+                      ? 'border-dashed border-gray-200 text-gray-400 hover:border-[#b8c7ff] hover:text-[#5B7BFE]'
+                      : 'bg-[#f7f9ff] border-[#e4eaff] text-[#5B7BFE] hover:bg-[#eef2ff]'
                   }`}
                 >
-                  <div className="flex items-center gap-2">
-                    <Activity size={14} />
-                    <span className="text-[13px] font-bold truncate">{pref.title || '点击添加新雷达…'}</span>
-                  </div>
-                  {!isPlaceholder && (
-                    <p className="text-[11px] mt-2 text-[#5B7BFE]/80">
-                      {pref.timeRange} · 已沉淀 {pref.candidateCount} 条情报 · 优先站点 {pref.preferredSources.length}
-                    </p>
-                  )}
+                  <span className="flex items-center gap-1.5">
+                    <Activity size={11} />
+                    <span className="text-[12px] font-medium whitespace-nowrap">{pref.title || '添加雷达…'}</span>
+                    {!isPlaceholder && (
+                      <span className="text-[10px] text-[#5B7BFE]/50 whitespace-nowrap">{pref.candidateCount}</span>
+                    )}
+                  </span>
                 </button>
               );
             })}
@@ -936,57 +951,6 @@ export function TopicsManagementView({
           <div className="flex flex-col gap-4">
             <div>
               <h2 className="text-[18px] font-bold text-gray-900">情报收件箱</h2>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              {[
-                { key: 'new' as const, label: '新发现', count: viewCounts.new },
-                { key: 'saved' as const, label: '资料夹', count: viewCounts.saved },
-                { key: 'task_linked' as const, label: '已转任务', count: viewCounts.task_linked },
-              ].map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => setView(item.key)}
-                  className={`px-4 py-2 rounded-full text-[12px] font-bold transition-all ${
-                    view === item.key ? 'bg-[#5B7BFE] text-white shadow-[0_6px_18px_rgba(91,123,254,0.24)]' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
-                >
-                  {item.label} {item.count}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.7fr)_minmax(220px,1fr)] xl:grid-cols-[minmax(0,1.9fr)_240px_200px]">
-              <div className="relative">
-                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="搜索标题、摘要、来源或核心观点"
-                  className="w-full rounded-2xl border border-gray-200 bg-gray-50 pl-11 pr-4 py-3 text-[13px] outline-none focus:bg-white focus:border-[#5B7BFE]"
-                />
-              </div>
-              <select
-                value={selectedRadarId}
-                onChange={(event) => setSelectedRadarId(event.target.value)}
-                className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none focus:bg-white focus:border-[#5B7BFE]"
-              >
-                <option value="all">全部雷达</option>
-                {radars.map((radar) => (
-                  <option key={radar.id} value={radar.id}>
-                    {radar.title}
-                  </option>
-                  ))}
-                </select>
-              <select
-                value={readFilter}
-                onChange={(event) => setReadFilter(event.target.value as TopicReadFilter)}
-                className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none focus:bg-white focus:border-[#5B7BFE]"
-              >
-                <option value="all">全部阅读状态</option>
-                <option value="unread">只看未读</option>
-              </select>
             </div>
           </div>
 

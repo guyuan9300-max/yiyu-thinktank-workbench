@@ -1,5 +1,28 @@
 # Thread Sync
 
+## 2026-04-03 客户工作台回答产物按钮收口
+- 线程目标：收口客户工作台中“建立向量 / 导出文件”两个按钮偶发看起来没反应的问题，并确认导出 Word 的真实归档行为。
+- 已读文件：
+  - `src/renderer/App.tsx`
+  - `src/renderer/lib/api.ts`
+  - `backend/app/main.py`
+  - `backend/app/services/knowledge_base.py`
+- 发现的问题：
+  - `建立向量` 后端链路本身是通的，但前端之前只弹一条成功提示，不会自动打开生成的机读 Markdown，用户会误以为没反应。
+  - `导出文件` 的后端链路存在真实错误：回答证据摘录里含有 XML 不兼容控制字符时，`python-docx` 在写“证据来源”段落会直接抛异常，导致接口返回 500。
+  - 前端两个按钮都没有显示“处理中”状态，慢一点时体感像没开始。
+- 最小改动范围：
+  - 只收口回答产物生成链
+  - 不扩 UI 范围，不改其他客户工作台逻辑
+- 已做代码修改：
+  - `backend/app/main.py`
+  - `src/renderer/App.tsx`
+- 当前实现：
+  - `export_answer_to_docx(...)` 新增 DOCX/XML 安全文本清洗，导出 Word 时会自动剔除控制字符，避免因单条证据摘录炸掉整份导出。
+  - `建立向量` 成功后会自动尝试打开生成的机读 Markdown；如果系统没能直接打开，也会明确提示已归档到当前项目。
+  - `导出文件` 成功后会自动尝试打开生成的 Word；如果系统没能直接打开，也会明确提示已归档到当前项目。
+  - 两个按钮在执行中会显示 `建立中… / 导出中…`，避免像没反应。
+
 ## 2026-03-25 Session 003 日志与放行收口
 - 线程目标：把虚拟项目组 Session 001–003 的讨论记录整理成连续可读版本，并把 Session 003 的状态从“规格收敛中”推进到“实现前放行”。
 - 已读文件：
@@ -7036,3 +7059,44 @@
 - 2026-03-30：把火山云协作后端发布链收成了仓库脚本。新增 `cloud_backend/requirements.deploy.txt`、`scripts/deploy-cloud-backend-volcengine.sh`、`scripts/smoke-cloud-backend-volcengine.sh`；本地 now 可以一键把 `cloud_backend/app`、`pyproject.toml`、`uv.lock` 和依赖清单同步到 `/opt/yiyu/cloud-backend`，刷新远端 `.venv`，重启 `yiyu-cloud-backend.service`，最后自动做 `/health` smoke check。对应说明已补到 `deploy/volcengine/cloud-backend/README.md`。
 - 2026-03-30：正式域名 HTTPS 已打通。通过阿里云 DNS 只新增了子域名 `api.yiyu.love -> 101.126.34.232`，没有改动根域名 `yiyu.love` 和 `www` 的现有站点解析；随后在火山云 ECS 上为 `api.yiyu.love` 增加了 nginx 80/443 server block，使用 `acme.sh + Let's Encrypt` 申请并安装证书，当前公网健康检查已通过：[https://api.yiyu.love/health](https://api.yiyu.love/health)。
 - 2026-03-30：双端默认入口已开始收口到正式子域名。`src/main/main.ts` 新增打包版远端协作默认值 `https://api.yiyu.love`，`mobile/lib/api.ts` 和手机端设置页默认示例地址也改成了 `https://api.yiyu.love`；`scripts/smoke-cloud-backend-volcengine.sh` 默认健康检查地址同步切到了正式 HTTPS 子域名。
+- 2026-04-03：彻查“打开的是旧版本且没有数据”的根因。发现真正被拉起的是 `yiyu-thinktank-workbench-main-sync/dist/mac-arm64/益语智库自用平台.app` 这份旧构建，而 `~/Applications/益语智库自用平台.app` 当时只是约 40M 的残包，缺少 `Contents/Frameworks`，根本不能启动。已修复 `scripts/install-mac-app.mjs`：安装后强制校验 `Info.plist`、`PkgInfo`、`Frameworks`、`Electron Framework.framework` 和 Helper 数量，杜绝残包被误判为安装成功；随后重新把完整 308M 安装包复制到 `~/Applications/益语智库自用平台.app` 并验签通过。为防止旧 Dock/旧快捷方式继续打开旧构建，已将 `yiyu-thinktank-workbench-main-sync/dist/mac-arm64/益语智库自用平台.app` 移走并替换为指向 `~/Applications/益语智库自用平台.app` 的软链接。重新启动后确认当前实际运行路径已变成 `~/Applications/益语智库自用平台.app`。
+- 2026-04-03 11:18 事件线页紧急回退：撤销“云端专用 source-status + 自定义下拉”这轮改动，恢复为旧版事件线加载与项目按钮筛选。原因是 `/api/v1/event-lines/source-status` 在安装版运行时稳定返回 500，前端又把事件线列表绑定到该接口，导致整页事件线消失。当前已确认正确安装版 `/Users/guyuanyuan/Applications/益语智库自用平台.app` 重新启动后 `/api/v1/event-lines` 返回 21 条事件线，前端资源为 `index-Bb0VknL-.js`。
+- 2026-04-04：按新的极简壳重写“组织与权限 / 组织搭建中心”页面。旧的大型组织搭建流程、角色接力、流程模板和高级说明全部从主界面移除，前台只保留两层视图：`组织架构` 与 `邀请码管理`。顶部统计继续沿用旧画布的统计口径：部门数、岗位数、成员数、计划数、完整度。树视图支持组织名展示、部门新增/删除、部门名称与负责人内联编辑、岗位新增/删除与岗位名称编辑；邀请码视图支持部门邀请码展示、分享文案复制和岗位摘要显示。数据仍写回原有 `orgModelDraft`，并保留显式保存按钮把草稿持久化到后端。当前未接回旧版的组织 DNA、季度计划、汇报线、流程模板、任务控制规则等深层面板，这些后续再按新壳逐步接回。
+- 2026-04-04：进一步收口“邀请码管理”交互，改成整页一键复制。顶部在邀请码视图新增 `一键复制邀请码`，复制内容会自动拼成一段可直接发到机构群里的文本，包含组织名、提示语和每个部门的邀请码。单个部门卡片上的复制按钮已移除，避免用户逐个部门复制，最大化减少动作并回到大家熟悉的群内分发场景。
+- 2026-04-04：部门邀请码编码规则升级为“机构前缀 + 部门前缀 + 两位序号”的可读格式，例如 `YIYU-ZX01`。当前对 `益语智库` 内置机构前缀 `YIYU`，对常见部门名称内置缩写（如 `咨询部/咨询策略部 -> ZX`）；如果机构名或部门名没有可直接提取的英文字母，则会自动回退到稳定哈希前缀，避免不同公司之间混码。注册页识别逻辑已同步支持这种新格式，同时继续兼容旧的 6 位纯数字邀请码，避免历史邀请码失效。
+- 2026-04-04：在新的“组织搭建中心”极简壳上继续接回两个关键能力。其一，组织根节点名称现在支持直接点击编辑并走原有保存链路；其二，部门负责人优先支持绑定真实员工账号，会从已审批员工列表中直接选择并写入 `leaderUserId + leaderName`，同时保留“手动填写负责人姓名”的兜底路径，避免在成员尚未注册时卡住组织搭建。
+- 2026-04-04：继续把“部门负责人绑定真实员工”往下接到组织 binding。现在在新壳里选中某个真实员工为部门负责人后，不只更新部门的 `leaderUserId + leaderName`，还会自动把该员工的组织 binding 拉到当前部门，并提升为部门负责人权限：`isManager=true`、`taskEditScope=department`、`canApproveTasks/canReassignTasks/canChangeDeadline=true`。如果该部门里已有 `department_lead` 或 `isManager` 的岗位模板，会优先把这个员工挂到该岗位；若更换了部门负责人，会把旧负责人在同部门内的 manager 权限保守降回普通成员权限。
+- 2026-04-04：继续在新的“组织搭建中心”树视图里补机构层负责人展示与绑定。组织根节点不再只显示机构名，而是增加一行“负责人”，支持直接从已审批员工中选择真实负责人；展示格式优先使用员工 `jobTitle + fullName`，例如 `CEO · 顾源源`、`秘书长 · 张三`，没有岗位头衔时退回 `负责人 · 姓名`。选中机构负责人后，会同步写入 `organization.leaderUserId`，确保 `managementUserIds` 包含该人，并把该员工的组织 binding 提升为机构级 manager 权限：`taskEditScope=organization`、`canApproveTasks/canReassignTasks/canChangeDeadline=true`；同时会把其他尚未挂上级的 manager 绑定的 `managerUserId` 回填到新的机构负责人名下。
+- 2026-04-04：按页面收口要求，删除系统设置主页中的三块低价值内容：`版本与更新`、`权限边界`、`飞书单机器人`。这次只移除前台展示区块，不改动对应底层状态与接口，避免误伤其他设置逻辑；系统设置页当前保留组织搭建中心、员工与权限等更常用内容，界面更干净。
+- 2026-04-04：继续收紧系统设置页，删除“员工与权限”整块管理卡片，不再在主设置页里展示账号审批、设管理员、停用和部门切换这类次级后台动作；同时把周复盘治理页里所有仍然指向“员工与权限”的说明文案改成“成员默认跟随邀请码加入部门”，避免用户被引导去一个已经删除的入口。
+- 2026-04-04：继续整理系统设置的信息结构，把原本放在“组织与权限”下的 `备份与旧数据导入`、`演示数据`、`最近操作日志` 三块整体挪到 `账户与 AI` 页，保留原有功能与接口，只调整信息归属和导航辅助文案；新的“组织与权限”只保留组织搭建中心相关内容，不再混入备份、演示和日志这些系统级服务项。
+
+## 2026-04-06 资讯情报站移除收件箱视图切换
+
+- 已改文件：
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已移除“情报收件箱”标题下方的三枚状态切换按钮：`新发现 / 资料夹 / 已转任务`。
+  - 列表不再依赖这组三态切换过滤，默认直接展示通过当前搜索、雷达筛选和未读筛选后的全部候选。
+  - 顶部那一行汇总数字没有动，仍可保留整体感知，不会影响其他交互。
+- 是否需要主线程配合：否
+- 风险点：
+  - 这轮只是去掉前台切换入口，没有删除本地状态与计数逻辑；后续如果要继续精简顶部汇总，再单独收口。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
+
+## 2026-04-06 资讯情报站筛选栏并入顶部操作区
+
+- 已改文件：
+  - `src/renderer/components/topics/TopicsManagementView.tsx`
+  - `docs/thread-sync.md`
+- 当前状态：
+  - 已把“搜索 + 全部雷达 + 全部阅读状态”三项筛选从“情报收件箱”标题下方移到顶部操作区。
+  - 新布局下，这三项控件已缩成更紧凑的尺寸，并与 `管理雷达 / 抓取` 处在同一行的操作带内。
+  - “情报收件箱”区块现在只保留标题和内容列表，视觉层级更干净。
+- 是否需要主线程配合：否
+- 风险点：
+  - 顶部操作区现在内容更密，如果后续继续增加新按钮，可能需要再做一次响应式分行收口。
+- 验证结果：
+  - `cd /Users/guyuanyuan/.openclaw/workspace/yiyu-thinktank-workbench && npm run build:renderer` 通过
