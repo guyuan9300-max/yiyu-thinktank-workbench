@@ -103,6 +103,7 @@ from app.models import (
     TaskPlanLinkRecord,
     TaskPlanLinkUpsertPayload,
     TaskUpdatePayload,
+    UpdateProfilePayload,
     WeeklyReviewCreatePayload,
     WeeklyReviewEntryRecord,
     WeeklyReviewEventLineContextRecord,
@@ -2460,6 +2461,33 @@ def _get_user_or_404(state: AppState, user_id: str):
     return row
 
 
+def _auto_approve_legacy_pending_account(state: AppState, row):
+    if not row or str(row["account_status"]) != "pending":
+        return row
+    timestamp = now_iso()
+    state.db.execute(
+        """
+        UPDATE employee_accounts
+           SET account_status = 'approved',
+               approved_at = COALESCE(approved_at, created_at, ?),
+               rejected_reason = NULL,
+               disabled_at = NULL,
+               updated_at = ?
+         WHERE id = ?
+        """,
+        (timestamp, timestamp, str(row["id"])),
+    )
+    _log_audit(
+        state,
+        "account_status_auto_approved",
+        actor_user_id=str(row["id"]),
+        target_user_id=str(row["id"]),
+        detail={"reason": "legacy_pending_account_removed"},
+    )
+    refreshed = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (str(row["id"]),))
+    return refreshed or row
+
+
 def _require_auth(app: FastAPI, authorization: str | None = Header(default=None)) -> SessionUser:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
@@ -2468,9 +2496,11 @@ def _require_auth(app: FastAPI, authorization: str | None = Header(default=None)
         payload = decode_access_token(_state(app).secret_key, token)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
-    user_row = _state(app).db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (payload["sub"],))
+    state = _state(app)
+    user_row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (payload["sub"],))
     if not user_row:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    user_row = _auto_approve_legacy_pending_account(state, user_row)
     if str(user_row["account_status"]) != "approved":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is not approved")
     return _row_user(user_row)
@@ -4114,15 +4144,15 @@ def create_app() -> FastAPI:
     def list_department_options() -> list[DepartmentOption]:
         return [DepartmentOption(id=item.id, name=item.name, color=item.color) for item in list_department_catalog()]
 
-    def _ensure_login_allowed(row) -> None:
+    def _ensure_login_allowed(row):
+        row = _auto_approve_legacy_pending_account(state, row)
         status_value = str(row["account_status"])
-        if status_value == "pending":
-            raise HTTPException(status_code=403, detail="你的账号已提交，正在等待管理员审核。")
         if status_value == "rejected":
             reason = row["rejected_reason"] or "账号未通过审核，请联系管理员。"
             raise HTTPException(status_code=403, detail=str(reason))
         if status_value == "disabled":
             raise HTTPException(status_code=403, detail="账号已停用")
+        return row
 
     def _issue_auth_tokens(row, *, session_id: str, refresh_token: str) -> AuthTokenResponse:
         token = create_access_token(
@@ -4136,8 +4166,8 @@ def create_app() -> FastAPI:
         )
         return AuthTokenResponse(accessToken=token, refreshToken=refresh_token, user=_row_user(row))
 
-    @app.post("/api/v1/auth/register")
-    def register(payload: RegisterPayload) -> dict[str, str]:
+    @app.post("/api/v1/auth/register", response_model=AuthTokenResponse)
+    def register(payload: RegisterPayload) -> AuthTokenResponse:
         existing = state.db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (payload.email.lower(),))
         if existing:
             raise HTTPException(status_code=409, detail="Email already registered")
@@ -4155,7 +4185,7 @@ def create_app() -> FastAPI:
                 id, organization_id, email, full_name, password_hash, primary_role, account_status,
                 approved_at, approved_by, rejected_reason, disabled_at, recent_mentions_json, last_login_at,
                 department_id, department_name, job_title, manager_name, current_focus, is_department_lead, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, 'employee', 'pending', NULL, NULL, NULL, NULL, '[]', NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, 'employee', 'approved', ?, NULL, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -4163,6 +4193,8 @@ def create_app() -> FastAPI:
                 payload.email.lower(),
                 payload.fullName,
                 hash_password(payload.password),
+                timestamp,
+                timestamp,
                 department.id if department else None,
                 department.name if department else None,
                 job_title,
@@ -4187,14 +4219,25 @@ def create_app() -> FastAPI:
                 "isDepartmentLead": bool(payload.isDepartmentLead),
             },
         )
-        return {"message": "你的账号已提交，正在等待管理员审核。"}
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (user_id,))
+        if not row:
+            raise HTTPException(status_code=500, detail="注册成功后未找到账号记录")
+        session_id = new_id("sess")
+        refresh_token = new_id("rt")
+        expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
+        state.db.execute(
+            "INSERT INTO auth_refresh_sessions(id, user_id, refresh_token, created_at, expires_at, revoked_at) VALUES(?, ?, ?, ?, ?, NULL)",
+            (session_id, user_id, refresh_token, timestamp, expires_at),
+        )
+        _log_audit(state, "register_login", actor_user_id=user_id, target_user_id=user_id, detail={"sessionId": session_id})
+        return _issue_auth_tokens(row, session_id=session_id, refresh_token=refresh_token)
 
     @app.post("/api/v1/auth/login", response_model=AuthTokenResponse)
     def login(payload: LoginPayload) -> AuthTokenResponse:
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE email = ?", (payload.email.lower(),))
         if not row or not verify_password(payload.password, str(row["password_hash"])):
             raise HTTPException(status_code=401, detail="邮箱或密码错误")
-        _ensure_login_allowed(row)
+        row = _ensure_login_allowed(row)
         session_id = new_id("sess")
         refresh_token = new_id("rt")
         timestamp = now_iso()
@@ -4231,7 +4274,7 @@ def create_app() -> FastAPI:
                 (now_iso(), str(session_row["id"])),
             )
             raise HTTPException(status_code=401, detail="账号不存在，请重新登录")
-        _ensure_login_allowed(row)
+        row = _ensure_login_allowed(row)
         timestamp = now_iso()
         next_refresh_token = new_id("rt")
         next_expires_at = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
@@ -4256,20 +4299,26 @@ def create_app() -> FastAPI:
     def me(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> SessionUser:
         return current_user
 
-    @app.patch("/api/v1/auth/me")
+    @app.patch("/api/v1/auth/me", response_model=SessionUser)
     def update_me(
-        payload: dict,
+        payload: UpdateProfilePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> SessionUser:
-        allowed_fields = {"fullName", "primaryRole"}
         updates: list[str] = []
-        params: list[str] = []
-        if "fullName" in payload and payload["fullName"]:
+        params: list[object] = []
+        if payload.fullName and payload.fullName.strip():
             updates.append("full_name = ?")
-            params.append(str(payload["fullName"]).strip())
-        if "primaryRole" in payload and payload["primaryRole"]:
-            updates.append("primary_role = ?")
-            params.append(str(payload["primaryRole"]).strip())
+            params.append(payload.fullName.strip())
+        if payload.email:
+            normalized_email = str(payload.email).strip().lower()
+            existing = state.db.fetchone(
+                "SELECT id FROM employee_accounts WHERE email = ? AND id != ?",
+                (normalized_email, current_user.id),
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="这个邮箱已被其他账号占用。")
+            updates.append("email = ?")
+            params.append(normalized_email)
         if not updates:
             raise HTTPException(status_code=400, detail="没有可更新的字段。")
         updates.append("updated_at = ?")

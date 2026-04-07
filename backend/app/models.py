@@ -178,6 +178,11 @@ class AuthLoginPayload(BaseModel):
     rememberMe: bool = True
 
 
+class UpdateProfilePayload(BaseModel):
+    fullName: str | None = None
+    email: str | None = None
+
+
 class EmployeeRecord(BaseModel):
     id: str
     email: str

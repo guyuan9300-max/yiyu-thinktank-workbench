@@ -870,6 +870,17 @@ class Database:
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
                 """
             )
+            self.conn.execute(
+                """
+                UPDATE employee_accounts
+                   SET account_status = 'approved',
+                       approved_at = COALESCE(approved_at, created_at),
+                       rejected_reason = NULL,
+                       disabled_at = NULL,
+                       updated_at = COALESCE(updated_at, created_at)
+                 WHERE account_status = 'pending'
+                """
+            )
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:
