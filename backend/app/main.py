@@ -48,6 +48,7 @@ from app.models import (
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
+    AccountOverviewResponse,
     AmbiguityItem,
     AppSettingsPayload,
     AppSettingsResponse,
@@ -61,6 +62,7 @@ from app.models import (
     ClarificationAnswerPayload,
     ClarificationCreatePayload,
     ClarificationRecord,
+    CloudConfigResponse,
     ConsultationKnowledgeProcessSummaryResponse,
     ConsultationKnowledgeRequestRecord,
     ClientDnaGeneratePayload,
@@ -15320,27 +15322,75 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
+        def _local_session_user() -> SessionUserRecord:
+            return SessionUserRecord(
+                id="local-device-user",
+                organizationId="local-device",
+                email="local@device.yiyu",
+                fullName="本机用户",
+                primaryRole="employee",
+                accountStatus="approved",
+            )
+
+        def _local_auth_state(message: str | None = None) -> AuthStateResponse:
+            return AuthStateResponse(
+                authenticated=True,
+                user=_local_session_user(),
+                message=message,
+                sessionMode="local",
+            )
+
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
-            return AuthStateResponse(authenticated=False)
+            return _local_auth_state()
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
                 clear_cloud_session()
-                return AuthStateResponse(authenticated=False, message=str(exc.detail))
+                return _local_auth_state(str(exc.detail))
             if exc.status_code in {502, 503, 504} and cached_user is not None:
                 return AuthStateResponse(
                     authenticated=True,
                     user=cached_user,
                     message="云端暂时不可用，已保留当前设备上的登录状态。",
+                    sessionMode="cloud",
                 )
             raise
         import threading
         threading.Thread(target=_sync_org_ai_config_from_cloud, daemon=True).start()
-        return AuthStateResponse(authenticated=True, user=user)
+        return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
+
+    @app.get("/api/v1/account/overview", response_model=AccountOverviewResponse)
+    def account_overview() -> AccountOverviewResponse:
+        token = get_cloud_token()
+        refresh_token = get_cloud_refresh_token()
+        if not token and not refresh_token:
+            return AccountOverviewResponse(
+                sessionMode="local",
+                cloudConnected=False,
+                cloudConfig=CloudConfigResponse(mode="disabled"),
+                user=SessionUserRecord(
+                    id="local-device-user",
+                    organizationId="local-device",
+                    email="local@device.yiyu",
+                    fullName="本机用户",
+                    primaryRole="employee",
+                    accountStatus="approved",
+                ),
+            )
+        cached_user = get_cached_session_user()
+        return AccountOverviewResponse(
+            sessionMode="cloud",
+            cloudConnected=bool(token or refresh_token),
+            cloudConfig=CloudConfigResponse(
+                mode="official_test" if state.cloud_api_url else "disabled",
+                apiBaseUrl=state.cloud_api_url or None,
+            ),
+            user=cached_user,
+        )
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options() -> list[DepartmentOptionRecord]:
@@ -15395,7 +15445,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 pass
         clear_cloud_session()
         log_activity("auth.logout", "session", "current", {})
-        return AuthStateResponse(authenticated=False)
+        return AuthStateResponse(
+            authenticated=True,
+            user=SessionUserRecord(
+                id="local-device-user",
+                organizationId="local-device",
+                email="local@device.yiyu",
+                fullName="本机用户",
+                primaryRole="employee",
+                accountStatus="approved",
+            ),
+            sessionMode="local",
+        )
 
     def process_pending_consultation_knowledge_requests_impl() -> ConsultationKnowledgeProcessSummaryResponse:
         all_requests = list_cloud_consultation_knowledge_requests()

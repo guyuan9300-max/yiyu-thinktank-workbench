@@ -15079,7 +15079,7 @@ export default function App() {
           </div>
           <Button onClick={() => {
             if (!window.confirm('确定要退出登录吗？')) return;
-            void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+            void logout().then(async (response) => { setAuthState(response); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
           }}>
             <ShieldAlert size={16} /> 退出登录
           </Button>
@@ -15391,8 +15391,8 @@ export default function App() {
                 onClick={() => {
                   if (!window.confirm('确定要退出登录吗？')) return;
                   void logout()
-                    .then(async () => {
-                      setAuthState({ authenticated: false });
+                    .then(async (response) => {
+                      setAuthState(response);
                       await loadAll();
                     })
                     .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));

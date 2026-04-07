@@ -1263,15 +1263,17 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
   const groups = countGroups(files);
   const effects = await buildEffectPreviews('push', snapshot, files);
   let executionBlockReason: string | null = null;
-  let notice: string | null = null;
+  const notices: string[] = [];
   if (!snapshot.isConfigured) executionBlockReason = '还没有绑定源码目录，先选一个 Git 仓库后再继续。';
   else if (!snapshot.isValid) executionBlockReason = '当前目录不是有效 Git 仓库，请重新绑定源码目录。';
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
-  else if (snapshot.aheadCount > 0) executionBlockReason = '当前还有已提交但未推送的 commit，这一版先不做按文件拆分续推。';
-  else if (!files.length) executionBlockReason = '当前没有可提交的本地文件改动。';
+  else if (!files.length && snapshot.aheadCount === 0) executionBlockReason = '当前没有可提交的本地文件改动。';
+  if (!executionBlockReason && snapshot.aheadCount > 0) {
+    notices.push(`你本地还有 ${snapshot.aheadCount} 个已提交但未推送的 commit。确认后会和这次勾选的改动一起推到 main。`);
+  }
   if (!executionBlockReason && snapshot.behindCount > 0) {
-    notice = `main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先把远端 main 合进来，再继续把你勾选的本地修改推上去。`;
+    notices.push(`main 最新版本比你本地多 ${snapshot.behindCount} 个提交。确认后会先把远端 main 合进来，再继续把你勾选的本地修改推上去。`);
   }
   return {
     status,
@@ -1279,7 +1281,7 @@ export async function previewPushToMain(options: RepoOptions): Promise<PushPrevi
     effects,
     groups,
     files,
-    notice,
+    notice: notices.join(' '),
     executionBlockReason,
   };
 }
@@ -1329,21 +1331,24 @@ export async function commitAndPushToMain(
   try {
     if (selectedPaths.length === 0) {
       if (preview.status.behindCount > 0) {
-        await runGit(context.gitRepoPath, ['merge', '--ff-only', 'origin/main']);
+        await mergeOriginMainForPush(context, [], preview);
       }
       if (droppedConflictPaths.length > 0) {
         await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
       }
+      if (preview.status.aheadCount > 0) {
+        await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
+      }
     } else {
-    await addPathsToIndex(context, selectedPaths);
-    await runGit(context.gitRepoPath, ['commit', '-m', message]);
-    if (preview.status.behindCount > 0) {
-      await mergeOriginMainForPush(context, selectedPaths, preview);
-    }
-    if (droppedConflictPaths.length > 0) {
-      await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
-    }
-    await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
+      await addPathsToIndex(context, selectedPaths);
+      await runGit(context.gitRepoPath, ['commit', '-m', message]);
+      if (preview.status.behindCount > 0) {
+        await mergeOriginMainForPush(context, selectedPaths, preview);
+      }
+      if (droppedConflictPaths.length > 0) {
+        await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
+      }
+      await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
