@@ -797,6 +797,60 @@ class Database:
                     FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS org_feishu_integrations (
+                    organization_id TEXT PRIMARY KEY,
+                    app_id TEXT NOT NULL DEFAULT '',
+                    app_secret_encrypted TEXT NOT NULL DEFAULT '',
+                    encryption_nonce TEXT NOT NULL DEFAULT '',
+                    callback_mode TEXT NOT NULL DEFAULT 'cloud_relay',
+                    custom_callback_url TEXT NOT NULL DEFAULT '',
+                    effective_callback_url TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    configured_by TEXT,
+                    configured_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    last_validation_status TEXT NOT NULL DEFAULT 'idle',
+                    last_validation_message TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_feishu_integration_audits (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    actor_user_id TEXT,
+                    app_id TEXT NOT NULL DEFAULT '',
+                    callback_mode TEXT NOT NULL DEFAULT 'cloud_relay',
+                    custom_callback_url TEXT NOT NULL DEFAULT '',
+                    effective_callback_url TEXT NOT NULL DEFAULT '',
+                    validation_status TEXT NOT NULL,
+                    validation_message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(actor_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS org_feishu_member_authorizations (
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    app_id TEXT NOT NULL DEFAULT '',
+                    open_id TEXT,
+                    union_id TEXT,
+                    feishu_user_id TEXT,
+                    name TEXT,
+                    en_name TEXT,
+                    avatar_url TEXT,
+                    email TEXT,
+                    tenant_key TEXT,
+                    authorized_at TEXT,
+                    last_verified_at TEXT,
+                    last_error TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, user_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS event_line_attachments (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,

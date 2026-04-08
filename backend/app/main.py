@@ -48,6 +48,14 @@ from app.models import (
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
+    LocalInputMemoryAiSettings,
+    LocalInputMemoryCloudAuth,
+    LocalInputMemoryFeishuIntegration,
+    LocalInputMemoryResponse,
+    RememberedCloudAuthAccount,
+    SaveAiInputMemoryPayload,
+    SaveCloudAuthInputMemoryPayload,
+    SaveFeishuInputMemoryPayload,
     UpdateProfilePayload,
     AccountOverviewResponse,
     AmbiguityItem,
@@ -159,6 +167,8 @@ from app.models import (
     EmployeeRolePayload,
     FeishuBotSettingsPayload,
     FeishuBotSettingsRecord,
+    FeishuMemberAuthorizationRecord,
+    FeishuMemberAuthorizationStartResponse,
     FeishuMeetingLaunchPayload,
     FeishuMeetingLaunchResponse,
     FeishuReceiveIdType,
@@ -183,7 +193,10 @@ from app.models import (
     OperatorRecord,
     OrgDepartmentRecord,
     OrgEmployeeBindingRecord,
+    OrgFeishuIntegrationRecord,
+    OrgFeishuIntegrationSavePayload,
     OrgModelProfileRecord,
+    OrgMembershipSummaryRecord,
     OrgWritingNorm,
     OrgProfileRecord,
     OrgReportingLineRecord,
@@ -426,6 +439,10 @@ from app.services.secrets import MacOSKeychainSecretStore, MemorySecretStore
 APP_NAME = "益语智库自用平台"
 APP_VERSION = "0.1.0"
 APP_BUILD_VERSION = "2026.03.15-v2-migration-1"
+LOCAL_INPUT_MEMORY_SETTINGS_KEY = "settings.local_input_memory"
+REMEMBERED_CLOUD_AUTH_SERVICE = "com.yiyu.self-workbench.remembered-cloud-auth"
+REMEMBERED_AI_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-ai-input"
+REMEMBERED_FEISHU_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-feishu-input"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 THREAD_SYNC_DOC_PATH = PROJECT_ROOT / "docs" / "thread-sync.md"
 SUPPORTED_IMPORT_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx"}
@@ -1701,9 +1718,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
     resolved_data_dir.mkdir(parents=True, exist_ok=True)
     db = Database(resolved_data_dir / "app.db")
-    def build_secret_store(service_name: str):
+    def build_secret_store(service_name: str, account_name: str = "default"):
         try:
-            store = MacOSKeychainSecretStore(service_name=service_name, account_name="default")
+            store = MacOSKeychainSecretStore(service_name=service_name, account_name=account_name)
             store.get_api_key()
             return store
         except Exception:
@@ -3378,6 +3395,83 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def get_system_admin_settings() -> SystemAdminSettingsRecord:
         return _load_json_settings_record("settings.system_admin", _default_system_admin_settings, SystemAdminSettingsRecord)
+
+    def _default_local_input_memory() -> LocalInputMemoryResponse:
+        return LocalInputMemoryResponse()
+
+    def _remembered_cloud_auth_store(email: str):
+        normalized_email = email.strip().lower()
+        if not normalized_email:
+            raise HTTPException(status_code=400, detail="请先提供要记住的邮箱。")
+        return build_secret_store(REMEMBERED_CLOUD_AUTH_SERVICE, account_name=normalized_email)
+
+    def _remembered_ai_store():
+        return build_secret_store(REMEMBERED_AI_INPUT_SERVICE)
+
+    def _remembered_feishu_store():
+        return build_secret_store(REMEMBERED_FEISHU_INPUT_SERVICE)
+
+    def _get_local_input_memory_record() -> LocalInputMemoryResponse:
+        return _load_json_settings_record(
+            LOCAL_INPUT_MEMORY_SETTINGS_KEY,
+            _default_local_input_memory,
+            LocalInputMemoryResponse,
+        )
+
+    def _save_local_input_memory_record(record: LocalInputMemoryResponse) -> LocalInputMemoryResponse:
+        _save_json_settings_record(LOCAL_INPUT_MEMORY_SETTINGS_KEY, record)
+        return record
+
+    def _hydrate_local_input_memory(record: LocalInputMemoryResponse | None = None) -> LocalInputMemoryResponse:
+        raw_record = record or _get_local_input_memory_record()
+
+        remembered_accounts: list[RememberedCloudAuthAccount] = []
+        if raw_record.cloudAuth.rememberInputs:
+            for account in raw_record.cloudAuth.accounts:
+                password = ""
+                try:
+                    password = _remembered_cloud_auth_store(account.email).get_api_key()
+                except Exception:
+                    password = ""
+                remembered_accounts.append(
+                    account.model_copy(update={"password": password})
+                )
+        cloud_auth = LocalInputMemoryCloudAuth(
+            rememberInputs=raw_record.cloudAuth.rememberInputs,
+            lastEmail=raw_record.cloudAuth.lastEmail,
+            accounts=remembered_accounts,
+        )
+
+        remembered_ai_key = ""
+        if raw_record.aiSettings.rememberApiKey:
+            try:
+                remembered_ai_key = _remembered_ai_store().get_api_key()
+            except Exception:
+                remembered_ai_key = ""
+        ai_settings = LocalInputMemoryAiSettings(
+            rememberApiKey=raw_record.aiSettings.rememberApiKey,
+            apiKey=remembered_ai_key,
+        )
+
+        remembered_feishu_secret = ""
+        if raw_record.feishuIntegration.rememberInputs:
+            try:
+                remembered_feishu_secret = _remembered_feishu_store().get_api_key()
+            except Exception:
+                remembered_feishu_secret = ""
+        feishu_integration = LocalInputMemoryFeishuIntegration(
+            rememberInputs=raw_record.feishuIntegration.rememberInputs,
+            appId=raw_record.feishuIntegration.appId,
+            callbackMode=raw_record.feishuIntegration.callbackMode,
+            customCallbackUrl=raw_record.feishuIntegration.customCallbackUrl,
+            appSecret=remembered_feishu_secret,
+        )
+
+        return LocalInputMemoryResponse(
+            cloudAuth=cloud_auth,
+            aiSettings=ai_settings,
+            feishuIntegration=feishu_integration,
+        )
 
     def get_feishu_bot_settings() -> FeishuBotSettingsRecord:
         record = _load_json_settings_record("settings.feishu_bot", _default_feishu_bot_settings, FeishuBotSettingsRecord)
@@ -15392,6 +15486,194 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
             user=cached_user,
         )
+
+    @app.get("/api/v1/local-input-memory", response_model=LocalInputMemoryResponse)
+    def get_local_input_memory() -> LocalInputMemoryResponse:
+        return _hydrate_local_input_memory()
+
+    @app.post("/api/v1/local-input-memory/cloud-auth", response_model=LocalInputMemoryResponse)
+    def save_cloud_auth_input_memory(payload: SaveCloudAuthInputMemoryPayload) -> LocalInputMemoryResponse:
+        current = _get_local_input_memory_record()
+        existing_accounts = current.cloudAuth.accounts
+        for account in existing_accounts:
+            if not payload.rememberInputs:
+                try:
+                    _remembered_cloud_auth_store(account.email).delete_api_key()
+                except Exception:
+                    pass
+        if not payload.rememberInputs:
+            record = current.model_copy(
+                update={
+                    "cloudAuth": LocalInputMemoryCloudAuth(
+                        rememberInputs=False,
+                        lastEmail=None,
+                        accounts=[],
+                    )
+                }
+            )
+            _save_local_input_memory_record(record)
+            return _hydrate_local_input_memory(record)
+
+        email = payload.email.strip().lower()
+        if not email:
+            raise HTTPException(status_code=400, detail="请先填写邮箱，再决定是否记住账号和密码。")
+        previous_account = next((account for account in existing_accounts if account.email.strip().lower() == email), None)
+        full_name = (payload.fullName or "").strip() or (previous_account.fullName if previous_account else "")
+        password = (payload.password or "").strip()
+        if password:
+            _remembered_cloud_auth_store(email).set_api_key(password)
+        updated_account = RememberedCloudAuthAccount(
+            email=email,
+            fullName=full_name,
+            updatedAt=now_iso(),
+        )
+        next_accounts = [updated_account]
+        seen_emails = {email}
+        for account in existing_accounts:
+            normalized_email = account.email.strip().lower()
+            if not normalized_email or normalized_email in seen_emails:
+                continue
+            seen_emails.add(normalized_email)
+            next_accounts.append(
+                account.model_copy(
+                    update={
+                        "email": normalized_email,
+                        "fullName": full_name if normalized_email == email and full_name else account.fullName,
+                    }
+                )
+            )
+        record = current.model_copy(
+            update={
+                "cloudAuth": LocalInputMemoryCloudAuth(
+                    rememberInputs=True,
+                    lastEmail=email,
+                    accounts=next_accounts[:8],
+                )
+            }
+        )
+        _save_local_input_memory_record(record)
+        return _hydrate_local_input_memory(record)
+
+    @app.post("/api/v1/local-input-memory/ai", response_model=LocalInputMemoryResponse)
+    def save_ai_input_memory(payload: SaveAiInputMemoryPayload) -> LocalInputMemoryResponse:
+        current = _get_local_input_memory_record()
+        store = _remembered_ai_store()
+        api_key = (payload.apiKey or "").strip()
+        if payload.rememberApiKey and api_key:
+            store.set_api_key(api_key)
+            ai_record = LocalInputMemoryAiSettings(rememberApiKey=True)
+        else:
+            try:
+                store.delete_api_key()
+            except Exception:
+                pass
+            ai_record = LocalInputMemoryAiSettings(rememberApiKey=False)
+        record = current.model_copy(update={"aiSettings": ai_record})
+        _save_local_input_memory_record(record)
+        return _hydrate_local_input_memory(record)
+
+    @app.post("/api/v1/local-input-memory/feishu", response_model=LocalInputMemoryResponse)
+    def save_feishu_input_memory(payload: SaveFeishuInputMemoryPayload) -> LocalInputMemoryResponse:
+        current = _get_local_input_memory_record()
+        store = _remembered_feishu_store()
+        if payload.rememberInputs:
+            next_secret = (payload.appSecret or "").strip()
+            if next_secret:
+                store.set_api_key(next_secret)
+            feishu_record = LocalInputMemoryFeishuIntegration(
+                rememberInputs=True,
+                appId=(payload.appId or "").strip(),
+                callbackMode=payload.callbackMode or "cloud_relay",
+                customCallbackUrl=(payload.customCallbackUrl or "").strip(),
+            )
+        else:
+            try:
+                store.delete_api_key()
+            except Exception:
+                pass
+            feishu_record = LocalInputMemoryFeishuIntegration(rememberInputs=False)
+        record = current.model_copy(update={"feishuIntegration": feishu_record})
+        _save_local_input_memory_record(record)
+        return _hydrate_local_input_memory(record)
+
+    @app.get("/api/v1/me/org-membership", response_model=OrgMembershipSummaryRecord)
+    def me_org_membership() -> OrgMembershipSummaryRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return OrgMembershipSummaryRecord(hasOrganization=False)
+        payload = cloud_request("GET", "/api/v1/me/org-membership")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid organization membership payload")
+        return OrgMembershipSummaryRecord(**payload)
+
+    @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
+    def get_org_feishu_integration() -> OrgFeishuIntegrationRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return OrgFeishuIntegrationRecord(
+                organizationId=None,
+                organizationName=None,
+                updatedAt=now_iso(),
+                authorizationBlockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
+            )
+        payload = cloud_request("GET", "/api/v1/org-integrations/feishu")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid org feishu payload")
+        return OrgFeishuIntegrationRecord(**payload)
+
+    @app.post("/api/v1/org-integrations/feishu/validate-and-save", response_model=OrgFeishuIntegrationRecord)
+    def validate_and_save_org_feishu_integration(payload: OrgFeishuIntegrationSavePayload) -> OrgFeishuIntegrationRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入或创建组织后，才能启用飞书协作。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/org-integrations/feishu/validate-and-save",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid org feishu payload")
+        return OrgFeishuIntegrationRecord(**response)
+
+    @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
+    def get_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return FeishuMemberAuthorizationRecord(
+                linked=False,
+                readyForAuthorization=False,
+                organizationId=None,
+                organizationName=None,
+                appId="",
+                userId="local-device-user",
+                blockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
+            )
+        payload = cloud_request("GET", "/api/v1/me/feishu-authorization")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
+        return FeishuMemberAuthorizationRecord(**payload)
+
+    @app.post("/api/v1/me/feishu-authorization/start", response_model=FeishuMemberAuthorizationStartResponse)
+    def start_feishu_member_authorization() -> FeishuMemberAuthorizationStartResponse:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入或创建组织后，才能启用飞书协作。")
+        payload = cloud_request("POST", "/api/v1/me/feishu-authorization/start")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu authorization start payload")
+        return FeishuMemberAuthorizationStartResponse(**payload)
+
+    @app.delete("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
+    def clear_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return FeishuMemberAuthorizationRecord(
+                linked=False,
+                readyForAuthorization=False,
+                organizationId=None,
+                organizationName=None,
+                appId="",
+                userId="local-device-user",
+                blockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
+            )
+        payload = cloud_request("DELETE", "/api/v1/me/feishu-authorization")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
+        return FeishuMemberAuthorizationRecord(**payload)
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options() -> list[DepartmentOptionRecord]:

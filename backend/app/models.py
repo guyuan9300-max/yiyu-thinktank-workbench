@@ -178,6 +178,58 @@ class AuthLoginPayload(BaseModel):
     rememberMe: bool = True
 
 
+class RememberedCloudAuthAccount(BaseModel):
+    email: str
+    fullName: str = ""
+    password: str = ""
+    updatedAt: str
+
+
+class LocalInputMemoryCloudAuth(BaseModel):
+    rememberInputs: bool = True
+    lastEmail: str | None = None
+    accounts: list[RememberedCloudAuthAccount] = Field(default_factory=list)
+
+
+class LocalInputMemoryAiSettings(BaseModel):
+    rememberApiKey: bool = False
+    apiKey: str = ""
+
+
+class LocalInputMemoryFeishuIntegration(BaseModel):
+    rememberInputs: bool = False
+    appId: str = ""
+    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
+    customCallbackUrl: str = ""
+    appSecret: str = ""
+
+
+class LocalInputMemoryResponse(BaseModel):
+    cloudAuth: LocalInputMemoryCloudAuth = Field(default_factory=LocalInputMemoryCloudAuth)
+    aiSettings: LocalInputMemoryAiSettings = Field(default_factory=LocalInputMemoryAiSettings)
+    feishuIntegration: LocalInputMemoryFeishuIntegration = Field(default_factory=LocalInputMemoryFeishuIntegration)
+
+
+class SaveCloudAuthInputMemoryPayload(BaseModel):
+    rememberInputs: bool = True
+    email: str
+    fullName: str | None = None
+    password: str | None = None
+
+
+class SaveAiInputMemoryPayload(BaseModel):
+    rememberApiKey: bool = False
+    apiKey: str | None = None
+
+
+class SaveFeishuInputMemoryPayload(BaseModel):
+    rememberInputs: bool = False
+    appId: str | None = None
+    callbackMode: Literal["cloud_relay", "custom"] | None = None
+    customCallbackUrl: str | None = None
+    appSecret: str | None = None
+
+
 class UpdateProfilePayload(BaseModel):
     fullName: str | None = None
     email: str | None = None
@@ -1665,6 +1717,83 @@ class FeishuUserBindingRecord(BaseModel):
 
 
 class FeishuUserBindingStartResponse(BaseModel):
+    authorizeUrl: str
+    state: str
+    expiresAt: str
+    callbackUrl: str
+    qrReady: bool = False
+    qrBlockedReason: str | None = None
+
+
+class OrgMembershipSummaryRecord(BaseModel):
+    hasOrganization: bool = False
+    organizationId: str | None = None
+    organizationName: str | None = None
+
+
+class OrgFeishuIntegrationAuditRecord(BaseModel):
+    id: str
+    organizationId: str
+    actorUserId: str | None = None
+    actorName: str | None = None
+    appId: str = ""
+    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
+    customCallbackUrl: str = ""
+    effectiveCallbackUrl: str = ""
+    validationStatus: Literal["success", "failed"] = "failed"
+    validationMessage: str = ""
+    createdAt: str
+
+
+class OrgFeishuIntegrationRecord(BaseModel):
+    organizationId: str | None = None
+    organizationName: str | None = None
+    appId: str = ""
+    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
+    customCallbackUrl: str = ""
+    effectiveCallbackUrl: str = ""
+    enabled: bool = False
+    hasAppSecret: bool = False
+    configuredBy: str | None = None
+    configuredAt: str | None = None
+    updatedAt: str
+    lastValidationStatus: Literal["idle", "success", "failed"] = "idle"
+    lastValidationMessage: str | None = None
+    authorizationReady: bool = False
+    authorizationBlockedReason: str | None = None
+    recentAudits: list[OrgFeishuIntegrationAuditRecord] = Field(default_factory=list)
+
+
+class OrgFeishuIntegrationSavePayload(BaseModel):
+    appId: str | None = None
+    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
+    customCallbackUrl: str | None = None
+    appSecret: str | None = None
+    clearAppSecret: bool = False
+
+
+class FeishuMemberAuthorizationRecord(BaseModel):
+    linked: bool = False
+    readyForAuthorization: bool = False
+    organizationId: str | None = None
+    organizationName: str | None = None
+    appId: str = ""
+    userId: str = ""
+    openId: str | None = None
+    unionId: str | None = None
+    feishuUserId: str | None = None
+    name: str | None = None
+    enName: str | None = None
+    avatarUrl: str | None = None
+    email: str | None = None
+    tenantKey: str | None = None
+    boundAt: str | None = None
+    lastVerifiedAt: str | None = None
+    lastError: str | None = None
+    blockedReason: str | None = None
+
+
+class FeishuMemberAuthorizationStartResponse(BaseModel):
     authorizeUrl: str
     state: str
     expiresAt: str
