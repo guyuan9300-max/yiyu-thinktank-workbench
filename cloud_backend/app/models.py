@@ -66,6 +66,11 @@ class ChangePasswordPayload(BaseModel):
     newPassword: str = Field(min_length=8)
 
 
+class UpdateProfilePayload(BaseModel):
+    fullName: str | None = Field(default=None, min_length=1)
+    email: EmailStr | None = None
+
+
 class AdminResetPasswordPayload(BaseModel):
     newPassword: str = Field(min_length=8)
 

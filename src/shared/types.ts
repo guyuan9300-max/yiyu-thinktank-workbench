@@ -82,6 +82,7 @@ export interface AuthState {
   authenticated: boolean;
   user?: SessionUser | null;
   message?: string | null;
+  sessionMode?: 'local' | 'cloud';
 }
 
 export type ConsultationKnowledgeTarget = 'vector_memory' | 'document_archive';
@@ -3291,6 +3292,11 @@ export interface EmployeeRejectPayload {
 export interface ChangePasswordPayload {
   currentPassword: string;
   newPassword: string;
+}
+
+export interface UpdateProfilePayload {
+  fullName?: string;
+  email?: string;
 }
 
 export interface AdminResetPasswordPayload {

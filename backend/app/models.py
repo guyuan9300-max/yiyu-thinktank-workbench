@@ -114,6 +114,19 @@ class AuthStateResponse(BaseModel):
     authenticated: bool
     user: SessionUserRecord | None = None
     message: str | None = None
+    sessionMode: Literal["local", "cloud"] = "cloud"
+
+
+class CloudConfigResponse(BaseModel):
+    mode: Literal["disabled", "official_test", "custom"] = "disabled"
+    apiBaseUrl: str | None = None
+
+
+class AccountOverviewResponse(BaseModel):
+    sessionMode: Literal["local", "cloud"]
+    cloudConnected: bool
+    cloudConfig: CloudConfigResponse
+    user: SessionUserRecord | None = None
 
 
 class ConsultationKnowledgeRequestRecord(BaseModel):
@@ -163,6 +176,11 @@ class AuthLoginPayload(BaseModel):
     email: str
     password: str
     rememberMe: bool = True
+
+
+class UpdateProfilePayload(BaseModel):
+    fullName: str | None = None
+    email: str | None = None
 
 
 class EmployeeRecord(BaseModel):

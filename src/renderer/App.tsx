@@ -13,7 +13,6 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
-  ArrowRight,
   PlayCircle,
   Sparkles,
   UploadCloud,
@@ -134,6 +133,7 @@ import type {
   TopicCandidate,
   TopicsSettings,
   TopicRadar,
+  UpdateProfilePayload,
   WeeklyReviewTaskEntry,
   WeeklyReviewTaskStructuredNote,
 } from '../shared/types';
@@ -143,7 +143,6 @@ import {
   formatMonthTitle,
   shiftCalendarMonth,
 } from '../shared/calendar';
-import { buildDepartmentInviteCode, parseDepartmentInviteCode } from '../shared/departmentInvite';
 import {
   adminResetPassword,
   approveTaskReview,
@@ -271,6 +270,7 @@ import {
   updateHandbookSettings,
   updateOrgModelProfile,
   updateOrganizationDnaModule,
+  updateProfile,
   updateReviewGovernanceSettings,
   updateSystemAdminSettings,
   upsertFundraisingReminderRule,
@@ -3439,8 +3439,69 @@ export default function App() {
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
   const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
+  const isCloudSession = authState.sessionMode === 'cloud';
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
+  const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
+  const [cloudAuthMode, setCloudAuthMode] = useState<'login' | 'register'>('login');
+  const [cloudAuthForm, setCloudAuthForm] = useState({
+    email: '',
+    fullName: '',
+    password: '',
+    confirmPassword: '',
+    rememberMe: true,
+  });
+  const [cloudAuthSubmitting, setCloudAuthSubmitting] = useState(false);
+  const [cloudAuthMessage, setCloudAuthMessage] = useState('');
+  const [cloudAuthShowPassword, setCloudAuthShowPassword] = useState(false);
+  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
+  const [draft, setDraft] = useState({
+    currentOperatorId: settingsState?.currentOperatorId || '',
+    aiProvider: settingsState?.aiProvider || 'mock',
+    aiModel: settingsState?.aiModel || providerDefaultModels.doubao,
+    apiKey: '',
+  });
+  const [taskSettingsDraft, setTaskSettingsDraft] = useState<TaskSettings>(taskSettingsState || DEFAULT_TASK_SETTINGS);
+  const [tagManageDraft, setTagManageDraft] = useState({ name: '', scope: canManagePublicTaskTaxonomy ? 'org' as const : 'self' as const, color: TASK_COLOR_OPTIONS[0] });
+  const [editingTagId, setEditingTagId] = useState<string | null>(null);
+  const [listManageDraft, setListManageDraft] = useState({
+    name: '',
+    color: TASK_COLOR_OPTIONS[0],
+    isDefault: false,
+    archived: false,
+    scope: 'org' as 'org' | 'personal',
+  });
+  const [editingListId, setEditingListId] = useState<string | null>(null);
+  const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
+  const [legacyImportClientId, setLegacyImportClientId] = useState('');
+  const [isImportingLegacy, setIsImportingLegacy] = useState(false);
+  const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
+  const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
+  const [handbookDraft, setHandbookDraft] = useState({
+    ...handbookSettingsState,
+    defaultTagsText: handbookSettingsState.defaultTags.join(', '),
+  });
+  const [systemAdminDraft, setSystemAdminDraft] = useState(systemAdminSettingsState);
+  const [reviewGovernanceDraft, setReviewGovernanceDraft] = useState(reviewGovernanceState);
+  const [orgModelDraft, setOrgModelDraft] = useState(orgModelState);
+  const [isSavingReviewGovernance, setIsSavingReviewGovernance] = useState(false);
+  const [isSavingOrgModel, setIsSavingOrgModel] = useState(false);
+  const [isSavingBrandLogo, setIsSavingBrandLogo] = useState(false);
+  const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
+    fullName: currentSessionUser?.fullName || '',
+    email: currentSessionUser?.email || '',
+  });
+  const [profileSubmitting, setProfileSubmitting] = useState(false);
+  const [profileMessage, setProfileMessage] = useState('');
+  const [changePwForm, setChangePwForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [changePwSubmitting, setChangePwSubmitting] = useState(false);
+  const [changePwError, setChangePwError] = useState('');
+  const [changePwShowPassword, setChangePwShowPassword] = useState(false);
+  const [employeeReviewBusyId, setEmployeeReviewBusyId] = useState<string | null>(null);
+  const [rejectingEmployeeId, setRejectingEmployeeId] = useState<string | null>(null);
+  const [employeeRejectReason, setEmployeeRejectReason] = useState('');
+  const [resetPwEmployeeId, setResetPwEmployeeId] = useState<string | null>(null);
+  const [resetPwValue, setResetPwValue] = useState('');
   const defaultTagScope: 'org' | 'self' = canManagePublicTaskTaxonomy ? 'org' : 'self';
   const organizationTaskName = resolveOrganizationTaskName(orgModelState.organization.name);
   const organizationClientId = useMemo(() => {
@@ -3449,6 +3510,27 @@ export default function App() {
   }, [organizationTaskName, clients]);
   const organizationTaskAutoReason = buildOrganizationTaskAutoReason(organizationTaskName);
   const organizationTaskManualReason = buildOrganizationTaskManualReason(organizationTaskName);
+  const effectiveTaskSettings = useMemo(
+    () => resolveTaskSettings(taskSettingsState, taskLists),
+    [taskSettingsState, taskLists],
+  );
+  const availableReviewGovernanceMembers = useMemo<ReviewDepartmentMember[]>(() => {
+    const deduped = new Map<string, ReviewDepartmentMember>();
+    const append = (member: ReviewDepartmentMember) => {
+      const fullName = member.fullName.trim();
+      if (!fullName) return;
+      const key = fullName.toLowerCase();
+      if (deduped.has(key)) return;
+      deduped.set(key, { id: member.id, fullName, email: member.email || null });
+    };
+    employeeReviews.forEach((employee) => append({ id: employee.id, fullName: employee.fullName, email: employee.email }));
+    operators.forEach((operator) => append({ id: operator.id, fullName: operator.name }));
+    tasks.forEach((task) => append({ id: task.ownerId || '', fullName: task.ownerName }));
+    if (currentSessionUser) {
+      append({ id: currentSessionUser.id, fullName: currentSessionUser.fullName, email: currentSessionUser.email });
+    }
+    return [...deduped.values()];
+  }, [currentSessionUser, employeeReviews, operators, tasks]);
 
   const startupRetryRef = useRef(0);
   const backendReadyRef = useRef(false);
@@ -3485,6 +3567,71 @@ export default function App() {
     }
     showBanner(type, text);
   };
+
+  const openCloudAuthModal = (mode: 'login' | 'register' = 'login') => {
+    setCloudAuthMode(mode);
+    setCloudAuthMessage('');
+    setCloudAuthShowPassword(false);
+    setCloudAuthModalOpen(true);
+  };
+
+  useEffect(() => {
+    if (settingsState) {
+      setDraft((prev) => ({
+        ...prev,
+        currentOperatorId: settingsState.currentOperatorId,
+        aiProvider: settingsState.aiProvider,
+        aiModel: settingsState.aiModel,
+      }));
+    }
+  }, [settingsState]);
+
+  useEffect(() => {
+    setTaskSettingsDraft(effectiveTaskSettings);
+  }, [effectiveTaskSettings]);
+
+  useEffect(() => {
+    setClientWorkspaceDraft(clientWorkspaceSettingsState);
+  }, [clientWorkspaceSettingsState]);
+
+  useEffect(() => {
+    setTopicsDraft(topicsSettingsState);
+  }, [topicsSettingsState]);
+
+  useEffect(() => {
+    setHandbookDraft({
+      ...handbookSettingsState,
+      defaultTagsText: handbookSettingsState.defaultTags.join(', '),
+    });
+  }, [handbookSettingsState]);
+
+  useEffect(() => {
+    setSystemAdminDraft(systemAdminSettingsState);
+  }, [systemAdminSettingsState]);
+
+  useEffect(() => {
+    setReviewGovernanceDraft(reviewGovernanceState);
+  }, [reviewGovernanceState]);
+
+  useEffect(() => {
+    setOrgModelDraft(orgModelState);
+  }, [orgModelState]);
+
+  useEffect(() => {
+    const preferredClientId =
+      (currentClientId && clients.some((client) => client.id === currentClientId) && currentClientId) ||
+      clients[0]?.id ||
+      '';
+    setLegacyImportClientId((prev) => (prev && clients.some((client) => client.id === prev) ? prev : preferredClientId));
+  }, [clients, currentClientId]);
+
+  useEffect(() => {
+    setProfileDraft({
+      fullName: currentSessionUser?.fullName || '',
+      email: currentSessionUser?.email || '',
+    });
+    setProfileMessage('');
+  }, [currentSessionUser?.email, currentSessionUser?.fullName]);
 
   const markLoadingPhase = (phase: string) => {
     setLoadingPhase(phase);
@@ -4091,9 +4238,46 @@ export default function App() {
     }
   }
 
+  const handleCloudAuthSubmit = async () => {
+    setCloudAuthSubmitting(true);
+    setCloudAuthMessage('');
+    try {
+      if (cloudAuthMode === 'register') {
+        const response = await register({
+          email: cloudAuthForm.email,
+          fullName: cloudAuthForm.fullName,
+          password: cloudAuthForm.password,
+        });
+        setAuthState(response);
+      } else {
+        const response = await login({
+          email: cloudAuthForm.email,
+          password: cloudAuthForm.password,
+          rememberMe: cloudAuthForm.rememberMe,
+        });
+        setAuthState(response);
+      }
+      await loadAll();
+      setCloudAuthForm({ email: '', fullName: '', password: '', confirmPassword: '', rememberMe: true });
+      setCloudAuthMessage('');
+      setCloudAuthModalOpen(false);
+    } catch (error) {
+      setCloudAuthMessage(error instanceof Error ? error.message : '提交失败');
+    } finally {
+      setCloudAuthSubmitting(false);
+    }
+  };
+
   useEffect(() => {
     void loadDepartmentOptionsBlock().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!isCloudSession) return;
+    setCloudAuthModalOpen(false);
+    setCloudAuthMessage('');
+    setCloudAuthForm({ email: '', fullName: '', password: '', confirmPassword: '', rememberMe: true });
+  }, [isCloudSession]);
 
   useEffect(() => {
     void window.yiyuWorkbench.getDesktopAppInfo().then(setDesktopAppInfo).catch(() => undefined);
@@ -4247,10 +4431,6 @@ export default function App() {
     };
   }, [authState.authenticated, currentClientId, currentSessionUser?.id]);
 
-  const effectiveTaskSettings = useMemo(
-    () => resolveTaskSettings(taskSettingsState, taskLists),
-    [taskSettingsState, taskLists],
-  );
     const activeTaskLists = useMemo(
       () => taskLists.filter((item) => !item.archivedAt),
       [taskLists],
@@ -4391,91 +4571,41 @@ export default function App() {
   ];
 
   const AuthShell = () => {
-    const createEmptyRegisterForm = (email = '') => ({
+    const createEmptyForm = (email = '') => ({
       email,
       fullName: '',
       password: '',
       confirmPassword: '',
-      departmentId: '',
-      jobTitle: '',
-      managerName: '',
-      currentFocus: '',
-      isDepartmentLead: false,
     });
     const [mode, setMode] = useState<'login' | 'register'>('login');
-    const [registerStep, setRegisterStep] = useState<1 | 2>(1);
-    const [form, setForm] = useState(() => createEmptyRegisterForm());
+    const [form, setForm] = useState(() => createEmptyForm());
     const [rememberMe, setRememberMe] = useState(true);
-    const [departmentInviteCode, setDepartmentInviteCode] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [message, setMessage] = useState(authState.message || '');
-    const inviteDepartment = useMemo(() => {
-      const inviteKey = parseDepartmentInviteCode(departmentInviteCode);
-      if (!inviteKey) return null;
-      return departmentOptions.find((department, index) => (
-        department.id === inviteKey
-        || buildDepartmentInviteCode(department.id) === inviteKey
-        || buildDepartmentInviteCode(department.id, {
-          organizationName: orgModelState.organization.name,
-          departmentName: department.name,
-          order: index,
-        }) === inviteKey
-      )) || null;
-    }, [departmentInviteCode, departmentOptions, orgModelState.organization.name]);
-
-    useEffect(() => {
-      const href = window.location.href;
-      if (!href.includes('invite=') && !href.includes('departmentId=')) return;
-      setMode('register');
-      setRegisterStep(1);
-      setDepartmentInviteCode(href);
-    }, []);
-
-    useEffect(() => {
-      if (mode !== 'register') return;
-      setForm((prev) => {
-        const nextDepartmentId = inviteDepartment?.id || '';
-        return prev.departmentId === nextDepartmentId ? prev : { ...prev, departmentId: nextDepartmentId };
-      });
-    }, [inviteDepartment, mode]);
 
     const switchMode = (nextMode: 'login' | 'register') => {
       setMode(nextMode);
       setMessage('');
       if (nextMode === 'register') {
-        setRegisterStep(1);
-        setForm(createEmptyRegisterForm(form.email));
+        setForm(createEmptyForm(form.email));
         return;
       }
       setRememberMe(true);
       setForm((prev) => ({ ...prev, password: '' }));
     };
 
-    const continueRegister = () => {
-      if (!inviteDepartment) {
-        setMessage('请先填写有效的部门邀请码，再继续注册。');
-        return;
-      }
-      setMessage('');
-      setRegisterStep(2);
-    };
-
-    const backToInviteStep = () => {
-      setMessage('');
-      setRegisterStep(1);
-    };
-
     const handleSubmit = async () => {
       setSubmitting(true);
       try {
         if (mode === 'register') {
-          const response = await register(form);
-          setMessage(response.message || '你的账号已提交，正在等待管理员审核。');
-          setMode('login');
-          setRegisterStep(1);
-          setDepartmentInviteCode('');
-          setForm(createEmptyRegisterForm(form.email));
+          const response = await register({
+            email: form.email,
+            fullName: form.fullName,
+            password: form.password,
+          });
+          setAuthState(response);
+          await loadAll();
         } else {
           const response = await login({ email: form.email, password: form.password, rememberMe });
           setAuthState(response);
@@ -4522,11 +4652,11 @@ export default function App() {
               <ShieldAlert size={24} />
             </div>
             <h1 className="text-[30px] font-bold text-gray-900 leading-tight">益语智库自用平台</h1>
-            <p className="text-[14px] text-gray-500 mt-3 leading-relaxed">内部员工协作入口已经切到真实的账号审核与权限体系。未通过审批前，不能进入业务模块。</p>
+            <p className="text-[14px] text-gray-500 mt-3 leading-relaxed">先把个人账号建起来，再决定是否连接云端、加入组织或接受邀请。组织审批只发生在组织层动作里，不再挡住个人注册和登录。</p>
             <div className="mt-8 space-y-3 text-[13px] text-gray-600">
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">邮箱注册后自动进入待审核状态</div>
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">管理员可审批、驳回、停用并设置角色</div>
-              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">@ 协作任务、收件箱接收/退回都绑定真实员工身份</div>
+              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">个人注册成功后即可直接登录，不再等待审批</div>
+              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">加入组织、切换部门、申请权限时，再进入组织层审批或邀请流程</div>
+              <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">如果你只是个人使用，可以先在本机模式下直接开始工作</div>
             </div>
           </div>
           <div className="p-10 lg:p-12">
@@ -4553,76 +4683,29 @@ export default function App() {
               )}
               {mode === 'register' && (
                 <>
-                  <div className="flex items-center justify-between rounded-2xl border border-blue-100 bg-[#F8FAFF] px-4 py-3">
-                    <div>
-                      <p className="text-[12px] font-bold text-[#5B7BFE]">注册步骤 {registerStep}/2</p>
-                      <p className="text-[12px] text-gray-500 mt-1">
-                        {registerStep === 1 ? '先用邀请码锁定机构和部门，再进入个人信息补全。' : '部门已经锁定，接下来只需要补你自己的岗位信息。'}
-                      </p>
-                    </div>
-                    {registerStep === 2 && (
-                      <button type="button" onClick={backToInviteStep} className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[12px] font-bold text-[#5B7BFE]">
-                        重新填写邀请码
-                      </button>
-                    )}
+                  <div className="rounded-2xl border border-blue-100 bg-[#F8FAFF] px-4 py-3">
+                    <p className="text-[12px] font-bold text-[#5B7BFE]">个人账号注册</p>
+                    <p className="mt-1 text-[12px] text-gray-500">先完成个人注册并直接登录。加入组织、填写邀请码、切换部门等动作放到登录后设置里处理。</p>
                   </div>
-                  {registerStep === 1 ? (
-                    <div className="space-y-4">
-                      <input
-                        value={departmentInviteCode}
-                        onChange={(event) => {
-                          setDepartmentInviteCode(event.target.value);
-                          setMessage('');
-                        }}
-                        placeholder={'先输入部门邀请码，例如「咨询策略部 邀请码 YIYU-ZX01」或 YIYU-ZX01'}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                      />
-                      <p className="text-[12px] text-gray-400 -mt-1">邀请码由组织管理员或部门负责人发给你。可以直接粘贴“部门名 + 邀请码”，例如 “咨询策略部 邀请码 YIYU-ZX01”，注册时先锁定部门，后面不用自己手选。</p>
-                      <div className={`rounded-[24px] border px-4 py-4 ${inviteDepartment ? 'border-emerald-200 bg-emerald-50/80' : 'border-dashed border-gray-200 bg-gray-50'}`}>
-                        <p className="text-[12px] font-bold text-gray-500">邀请码识别结果</p>
-                        {inviteDepartment ? (
-                          <div className="mt-2 space-y-1">
-                            <p className="text-[14px] font-bold text-gray-900">机构：益语智库</p>
-                            <p className="text-[13px] text-gray-600">部门：{inviteDepartment.name}</p>
-                          </div>
-                        ) : (
-                          <p className="mt-2 text-[13px] text-gray-500">还没有识别到有效部门。请粘贴管理员发来的邀请码。</p>
-                        )}
-                      </div>
+                  <div className="space-y-4">
+                    <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                    <div>
+                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
                     </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="rounded-[24px] border border-emerald-200 bg-emerald-50/80 px-4 py-4">
-                        <p className="text-[12px] font-bold text-emerald-700">你将加入的组织</p>
-                        <p className="mt-2 text-[15px] font-bold text-gray-900">益语智库 · {inviteDepartment?.name || '未识别部门'}</p>
-                        <p className="mt-1 text-[12px] text-gray-500">部门由邀请码决定。你现在只需要补全自己的身份和岗位信息。</p>
-                      </div>
-                      <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <div>
-                        <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
-                      </div>
-                      <div>
-                        <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
-                      </div>
-                      <div>
-                        <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                        {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
-                      </div>
-                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                        显示密码
-                        <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
-                      </label>
-                      <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="我的岗位，例如：咨询顾问 / 内容运营" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属上级（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前主要负责什么，或最近一段时间的重点（可选）" className="min-h-[96px] w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
-                      <label className="flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
-                        我是这个部门的负责人
-                        <input type="checkbox" checked={form.isDepartmentLead} onChange={(event) => setForm((prev) => ({ ...prev, isDepartmentLead: event.target.checked }))} />
-                      </label>
+                    <div>
+                      <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
                     </div>
-                  )}
+                    <div>
+                      <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                      {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+                    </div>
+                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                      显示密码
+                      <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
+                    </label>
+                  </div>
                 </>
               )}
               {message && (() => {
@@ -4648,30 +4731,142 @@ export default function App() {
                   {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
                   进入系统
                 </Button>
-              ) : registerStep === 1 ? (
-                <Button
-                  primary
-                  className="w-full py-3 text-[14px]"
-                  onClick={continueRegister}
-                  disabled={!inviteDepartment}
-                >
-                  <ArrowRight size={16} />
-                  确认部门，继续填写
-                </Button>
               ) : (
                 <Button
                   primary
                   className="w-full py-3 text-[14px]"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) || form.password.length < 8 || form.password !== form.confirmPassword || !form.fullName.trim() || !form.departmentId || !form.jobTitle?.trim()}
+                  disabled={submitting || !form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) || form.password.length < 8 || form.password !== form.confirmPassword || !form.fullName.trim()}
                 >
                   {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
                   提交注册
                 </Button>
               )}
             </div>
-            <p className="text-[12px] text-gray-400 mt-6">普通成员请使用部门邀请码注册；组织管理员首次进入仍使用服务端 bootstrap 凭据登录。</p>
+            <p className="text-[12px] text-gray-400 mt-6">如果你之后要加入组织、接受邀请或切换部门，请登录后在设置里处理。</p>
             <p className="text-[12px] text-gray-400 mt-2">勾选后会在当前设备持续保留登录状态；不勾选则只保留本次应用会话。</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const CloudAuthModal = () => {
+    if (!cloudAuthModalOpen) return null;
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cloudAuthForm.email);
+    const registerValid =
+      Boolean(cloudAuthForm.fullName.trim())
+      && emailValid
+      && cloudAuthForm.password.length >= 8
+      && cloudAuthForm.password === cloudAuthForm.confirmPassword;
+    const loginValid = Boolean(cloudAuthForm.email.trim()) && Boolean(cloudAuthForm.password.trim());
+    return (
+      <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/35 px-4">
+        <div className="w-full max-w-[720px] rounded-[32px] border border-gray-100 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.18)]">
+          <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-8 py-6">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">连接云端</p>
+              <h2 className="mt-2 text-[24px] font-bold text-gray-900">{cloudAuthMode === 'register' ? '注册个人账号' : '登录云端账号'}</h2>
+              <p className="mt-2 text-[13px] text-gray-500">个人注册和登录不再经过审批；加入组织、切换部门等组织层动作放到登录后处理。</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCloudAuthModalOpen(false)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-500 hover:text-gray-900"
+              aria-label="关闭"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="px-8 py-6 space-y-5">
+            <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 w-fit">
+              <button
+                type="button"
+                onClick={() => {
+                  setCloudAuthMode('login');
+                  setCloudAuthMessage('');
+                }}
+                className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthMode === 'login' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
+              >
+                登录
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCloudAuthMode('register');
+                  setCloudAuthMessage('');
+                }}
+                className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthMode === 'register' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
+              >
+                注册
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {cloudAuthMode === 'register' && (
+                <input
+                  value={cloudAuthForm.fullName}
+                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, fullName: event.target.value }))}
+                  placeholder="姓名 / 昵称"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                />
+              )}
+              <input
+                value={cloudAuthForm.email}
+                onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
+                placeholder="邮箱"
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+              />
+              <input
+                type={cloudAuthShowPassword ? 'text' : 'password'}
+                value={cloudAuthForm.password}
+                onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
+                placeholder={cloudAuthMode === 'register' ? '密码（至少 8 位）' : '密码'}
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+              />
+              {cloudAuthMode === 'register' && (
+                <input
+                  type={cloudAuthShowPassword ? 'text' : 'password'}
+                  value={cloudAuthForm.confirmPassword}
+                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
+                  placeholder="确认密码"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                />
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
+                <input type="checkbox" checked={cloudAuthShowPassword} onChange={(event) => setCloudAuthShowPassword(event.target.checked)} />
+                显示密码
+              </label>
+              <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={cloudAuthForm.rememberMe}
+                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, rememberMe: event.target.checked }))}
+                />
+                记住我的登录状态
+              </label>
+            </div>
+
+            {cloudAuthMessage && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+                {cloudAuthMessage}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3">
+              <Button onClick={() => setCloudAuthModalOpen(false)}>取消</Button>
+              <Button
+                primary
+                onClick={() => void handleCloudAuthSubmit()}
+                disabled={cloudAuthSubmitting || (cloudAuthMode === 'register' ? !registerValid : !loginValid)}
+              >
+                {cloudAuthSubmitting ? <RefreshCw size={16} className="animate-spin" /> : cloudAuthMode === 'register' ? <UserPlus size={16} /> : <ShieldAlert size={16} />}
+                {cloudAuthMode === 'register' ? '注册并连接云端' : '登录并连接云端'}
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -13639,116 +13834,15 @@ export default function App() {
   };
 
   const SettingsView = () => {
-    const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
-    const [draft, setDraft] = useState({
-      currentOperatorId: settingsState?.currentOperatorId || '',
-      aiProvider: settingsState?.aiProvider || 'mock',
-      aiModel: settingsState?.aiModel || providerDefaultModels.doubao,
-      apiKey: '',
-    });
-    const [taskSettingsDraft, setTaskSettingsDraft] = useState(effectiveTaskSettings);
-    const [tagManageDraft, setTagManageDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
-    const [editingTagId, setEditingTagId] = useState<string | null>(null);
-    const [listManageDraft, setListManageDraft] = useState({
-      name: '',
-      color: TASK_COLOR_OPTIONS[0],
-      isDefault: false,
-      archived: false,
-      scope: 'org' as 'org' | 'personal',
-    });
-    const [editingListId, setEditingListId] = useState<string | null>(null);
-    const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
-    const [legacyImportClientId, setLegacyImportClientId] = useState('');
-    const [isImportingLegacy, setIsImportingLegacy] = useState(false);
-    const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
-    const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
-    const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
-    const [handbookDraft, setHandbookDraft] = useState({
-      ...handbookSettingsState,
-      defaultTagsText: handbookSettingsState.defaultTags.join(', '),
-    });
-    const [systemAdminDraft, setSystemAdminDraft] = useState(systemAdminSettingsState);
-    const [reviewGovernanceDraft, setReviewGovernanceDraft] = useState(reviewGovernanceState);
-    const [orgModelDraft, setOrgModelDraft] = useState(orgModelState);
-    const [isSavingReviewGovernance, setIsSavingReviewGovernance] = useState(false);
-    const [isSavingOrgModel, setIsSavingOrgModel] = useState(false);
-    const [isSavingBrandLogo, setIsSavingBrandLogo] = useState(false);
-
-    useEffect(() => {
-      if (settingsState) {
-        setDraft((prev) => ({
-          ...prev,
-          currentOperatorId: settingsState.currentOperatorId,
-          aiProvider: settingsState.aiProvider,
-          aiModel: settingsState.aiModel,
-        }));
-      }
-    }, [settingsState]);
-
-    useEffect(() => {
-      setTaskSettingsDraft(effectiveTaskSettings);
-    }, [effectiveTaskSettings]);
-
-    useEffect(() => {
-      setClientWorkspaceDraft(clientWorkspaceSettingsState);
-    }, [clientWorkspaceSettingsState]);
-
-    useEffect(() => {
-      setTopicsDraft(topicsSettingsState);
-    }, [topicsSettingsState]);
-
-    useEffect(() => {
-      setHandbookDraft({
-        ...handbookSettingsState,
-        defaultTagsText: handbookSettingsState.defaultTags.join(', '),
-      });
-    }, [handbookSettingsState]);
-
-    useEffect(() => {
-      setSystemAdminDraft(systemAdminSettingsState);
-    }, [systemAdminSettingsState]);
-
-    useEffect(() => {
-      setReviewGovernanceDraft(reviewGovernanceState);
-    }, [reviewGovernanceState]);
-
-    useEffect(() => {
-      setOrgModelDraft(orgModelState);
-    }, [orgModelState]);
-
-    useEffect(() => {
-      const preferredClientId =
-        (currentClientId && clients.some((client) => client.id === currentClientId) && currentClientId) ||
-        clients[0]?.id ||
-        '';
-      setLegacyImportClientId((prev) => (prev && clients.some((client) => client.id === prev) ? prev : preferredClientId));
-    }, [clients, currentClientId]);
-
     const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
     const canManagePersonalTaskList = Boolean(currentSessionUser?.id);
     const canManageSensitiveSettings = currentSessionUser?.primaryRole === 'admin';
+    const isLocalSession = authState.sessionMode !== 'cloud';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
     const canEditOrgDna = canManageSensitiveSettings || systemAdminSettingsState.allowOrgDnaForEmployees;
     const hasBrandLogoDraftChange = (systemAdminDraft.brandLogoDataUrl || null) !== (systemAdminSettingsState.brandLogoDataUrl || null);
-    const availableReviewGovernanceMembers = useMemo<ReviewDepartmentMember[]>(() => {
-      const deduped = new Map<string, ReviewDepartmentMember>();
-      const append = (member: ReviewDepartmentMember) => {
-        const fullName = member.fullName.trim();
-        if (!fullName) return;
-        const key = fullName.toLowerCase();
-        if (deduped.has(key)) return;
-        deduped.set(key, { id: member.id, fullName, email: member.email || null });
-      };
-      employeeReviews.forEach((employee) => append({ id: employee.id, fullName: employee.fullName, email: employee.email }));
-      operators.forEach((operator) => append({ id: operator.id, fullName: operator.name }));
-      tasks.forEach((task) => append({ id: task.ownerId || '', fullName: task.ownerName }));
-      if (currentSessionUser) {
-        append({ id: currentSessionUser.id, fullName: currentSessionUser.fullName, email: currentSessionUser.email });
-      }
-      return [...deduped.values()];
-    }, [currentSessionUser, employeeReviews, operators, tasks]);
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
@@ -14061,6 +14155,24 @@ export default function App() {
       }
     };
 
+    const handleSaveProfile = async () => {
+      setProfileSubmitting(true);
+      setProfileMessage('');
+      try {
+        const response = await updateProfile({
+          fullName: profileDraft.fullName?.trim() || undefined,
+          email: profileDraft.email?.trim() || undefined,
+        });
+        setAuthState(response);
+        await loadAll();
+        setProfileMessage('基本信息已更新');
+      } catch (error) {
+        setProfileMessage(error instanceof Error ? error.message : '基本信息更新失败');
+      } finally {
+        setProfileSubmitting(false);
+      }
+    };
+
     const handleUploadOrgDna = async (moduleKey: OrganizationDnaModule['moduleKey']) => {
       const paths = await selectFilesBridge();
       const filePath = paths[0];
@@ -14345,51 +14457,101 @@ export default function App() {
     };
 
     const ChangePasswordCard = ({ flash: flashMsg }: { flash: (type: 'success' | 'error', msg: string) => void }) => {
-      const [pwForm, setPwForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
-      const [pwSubmitting, setPwSubmitting] = useState(false);
-      const [pwError, setPwError] = useState('');
-      const [pwShowPassword, setPwShowPassword] = useState(false);
-      const newPwValid = pwForm.newPassword.length >= 8;
-      const confirmMatch = pwForm.newPassword === pwForm.confirmPassword;
-      const canSubmit = pwForm.currentPassword.trim() && newPwValid && confirmMatch && !pwSubmitting;
+      const newPwValid = changePwForm.newPassword.length >= 8;
+      const confirmMatch = changePwForm.newPassword === changePwForm.confirmPassword;
+      const canSubmit = changePwForm.currentPassword.trim() && newPwValid && confirmMatch && !changePwSubmitting;
       const handleChangePw = async () => {
-        setPwError('');
-        setPwSubmitting(true);
+        setChangePwError('');
+        setChangePwSubmitting(true);
         try {
-          await changePassword({ currentPassword: pwForm.currentPassword, newPassword: pwForm.newPassword });
+          await changePassword({ currentPassword: changePwForm.currentPassword, newPassword: changePwForm.newPassword });
           flashMsg('success', '密码修改成功');
-          setPwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+          setChangePwForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
         } catch (error) {
-          setPwError(error instanceof Error ? error.message : '密码修改失败');
+          setChangePwError(error instanceof Error ? error.message : '密码修改失败');
         } finally {
-          setPwSubmitting(false);
+          setChangePwSubmitting(false);
         }
       };
-      const pwInputType = pwShowPassword ? 'text' : 'password';
+      const pwInputType = changePwShowPassword ? 'text' : 'password';
       return (
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
           <div>
             <h2 className="text-[16px] font-bold text-gray-900">修改密码</h2>
             <p className="text-[12px] text-gray-500 mt-1">修改当前账号的登录密码。新密码至少 8 位。</p>
           </div>
-          <input type={pwInputType} value={pwForm.currentPassword} onChange={(e) => setPwForm((p) => ({ ...p, currentPassword: e.target.value }))} placeholder="当前密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+          <input type={pwInputType} value={changePwForm.currentPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, currentPassword: e.target.value }))} placeholder="当前密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
           <div>
-            <input type={pwInputType} value={pwForm.newPassword} onChange={(e) => setPwForm((p) => ({ ...p, newPassword: e.target.value }))} placeholder="新密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
-            {pwForm.newPassword && !newPwValid && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+            <input type={pwInputType} value={changePwForm.newPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, newPassword: e.target.value }))} placeholder="新密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+            {changePwForm.newPassword && !newPwValid && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
           </div>
           <div>
-            <input type={pwInputType} value={pwForm.confirmPassword} onChange={(e) => setPwForm((p) => ({ ...p, confirmPassword: e.target.value }))} placeholder="确认新密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
-            {pwForm.confirmPassword && !confirmMatch && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+            <input type={pwInputType} value={changePwForm.confirmPassword} onChange={(e) => setChangePwForm((p) => ({ ...p, confirmPassword: e.target.value }))} placeholder="确认新密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none" />
+            {changePwForm.confirmPassword && !confirmMatch && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
           </div>
           <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
-            <input type="checkbox" checked={pwShowPassword} onChange={(e) => setPwShowPassword(e.target.checked)} />
+            <input type="checkbox" checked={changePwShowPassword} onChange={(e) => setChangePwShowPassword(e.target.checked)} />
             显示密码
           </label>
-          {pwError && <p className="text-[13px] text-red-600 bg-red-50 border border-red-100 rounded-2xl px-4 py-3">{pwError}</p>}
+          {changePwError && <p className="text-[13px] text-red-600 bg-red-50 border border-red-100 rounded-2xl px-4 py-3">{changePwError}</p>}
           <Button primary onClick={() => void handleChangePw()} disabled={!canSubmit}>
-            {pwSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
+            {changePwSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
             确认修改密码
           </Button>
+        </div>
+      );
+    };
+
+    const AccountProfileCard = () => {
+      const cardIsLocal = isLocalSession;
+      const canSubmit =
+        !cardIsLocal
+        && !profileSubmitting
+        && Boolean(profileDraft.fullName?.trim())
+        && Boolean(profileDraft.email?.trim())
+        && (
+          profileDraft.fullName?.trim() !== (currentSessionUser?.fullName || '')
+          || profileDraft.email?.trim() !== (currentSessionUser?.email || '')
+        );
+      return (
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+          <div>
+            <h2 className="text-[16px] font-bold text-gray-900">基本信息</h2>
+            <p className="text-[12px] text-gray-500 mt-1">
+              {cardIsLocal
+                ? '当前还是本机模式。连接云端后，这里会显示并允许修改姓名 / 昵称、邮箱等账号信息。'
+                : '登录云端后，你可以在这里维护姓名 / 昵称和邮箱，密码修改放在下面单独处理。'}
+            </p>
+          </div>
+          <input
+            value={cardIsLocal ? '' : (profileDraft.fullName || '')}
+            onChange={(event) => setProfileDraft((prev) => ({ ...prev, fullName: event.target.value }))}
+            placeholder={cardIsLocal ? '登录后显示姓名 / 昵称' : '姓名 / 昵称'}
+            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
+            disabled={cardIsLocal}
+          />
+          <input
+            value={cardIsLocal ? '' : (profileDraft.email || '')}
+            onChange={(event) => setProfileDraft((prev) => ({ ...prev, email: event.target.value }))}
+            placeholder={cardIsLocal ? '登录后显示邮箱' : '邮箱'}
+            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
+            disabled={cardIsLocal}
+          />
+          {!cardIsLocal && profileMessage && (
+            <p className={`rounded-2xl border px-4 py-3 text-[13px] ${profileMessage.includes('已更新') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}`}>
+              {profileMessage}
+            </p>
+          )}
+          {cardIsLocal ? (
+            <Button primary onClick={() => openCloudAuthModal('login')}>
+              <ShieldAlert size={16} /> 注册 / 登录
+            </Button>
+          ) : (
+            <Button primary onClick={() => void handleSaveProfile()} disabled={!canSubmit}>
+              {profileSubmitting ? <RefreshCw size={16} className="animate-spin" /> : <User size={16} />}
+              保存基本信息
+            </Button>
+          )}
         </div>
       );
     };
@@ -14400,8 +14562,10 @@ export default function App() {
           <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-[16px] font-bold text-gray-900">当前会话</h2>
-                <p className="text-[12px] text-gray-500 mt-1">普通登录用户也可以调整当前操作者和个人使用偏好。</p>
+                <h2 className="text-[16px] font-bold text-gray-900">{isLocalSession ? '本机模式' : '当前会话'}</h2>
+                <p className="text-[12px] text-gray-500 mt-1">
+                  {isLocalSession ? '当前只是本机会话，还没有连接云端账号。注册或登录后，才能启用跨设备同步、组织协作和邀请加入。' : '普通登录用户也可以调整当前操作者和个人使用偏好。'}
+                </p>
               </div>
               <Button primary onClick={() => void handleSaveOperatorSelection()} disabled={!canEditBusinessSettings}>
                 <Settings size={16} /> 保存会话
@@ -14416,9 +14580,9 @@ export default function App() {
             </select>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">登录身份</p>
-                <p className="text-[13px] font-bold text-slate-900">{currentSessionUser?.fullName}</p>
-                <p className="text-[12px] text-slate-600 mt-1">{currentSessionUser?.primaryRole} · {currentSessionUser?.email}</p>
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">{isLocalSession ? '当前模式' : '登录身份'}</p>
+                <p className="text-[13px] font-bold text-slate-900">{isLocalSession ? '本机模式（未连接云端）' : currentSessionUser?.fullName}</p>
+                <p className="text-[12px] text-slate-600 mt-1">{isLocalSession ? '当前这台电脑可直接使用；注册或登录后再启用云同步与组织协作。' : `${currentSessionUser?.primaryRole} · ${currentSessionUser?.email}`}</p>
               </div>
               <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
                 <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">系统数据目录</p>
@@ -14454,7 +14618,14 @@ export default function App() {
           </div>
         </div>
 
-        <ChangePasswordCard flash={flash} />
+        {isLocalSession ? (
+          AccountProfileCard()
+        ) : (
+          <>
+            {AccountProfileCard()}
+            {ChangePasswordCard({ flash })}
+          </>
+        )}
 
         <FeishuAccountBindingPanel
           binding={feishuUserBindingState}
@@ -14865,14 +15036,9 @@ export default function App() {
       const pendingList = employeeReviews.filter((e) => e.accountStatus === 'pending');
       const rejectedList = employeeReviews.filter((e) => e.accountStatus === 'rejected');
       const disabledList = employeeReviews.filter((e) => e.accountStatus === 'disabled');
-      const [busyId, setBusyId] = useState<string | null>(null);
-      const [rejectingId, setRejectingId] = useState<string | null>(null);
-      const [rejectReason, setRejectReason] = useState('');
-      const [resetPwId, setResetPwId] = useState<string | null>(null);
-      const [resetPwValue, setResetPwValue] = useState('');
 
       const handleApprove = async (id: string) => {
-        setBusyId(id);
+        setEmployeeReviewBusyId(id);
         try {
           await approveEmployee(id, { role: 'employee' });
           flash('success', '已批准该员工注册');
@@ -14880,26 +15046,26 @@ export default function App() {
         } catch (error) {
           flash('error', error instanceof Error ? error.message : '操作失败');
         } finally {
-          setBusyId(null);
+          setEmployeeReviewBusyId(null);
         }
       };
       const handleReject = async (id: string) => {
-        setBusyId(id);
+        setEmployeeReviewBusyId(id);
         try {
-          await rejectEmployeeReview(id, { reason: rejectReason || '账号未通过审核，请联系管理员。' });
+          await rejectEmployeeReview(id, { reason: employeeRejectReason || '账号未通过审核，请联系管理员。' });
           flash('success', '已驳回该注册申请');
-          setRejectingId(null);
-          setRejectReason('');
+          setRejectingEmployeeId(null);
+          setEmployeeRejectReason('');
           await loadEmployeeReviewBlock();
         } catch (error) {
           flash('error', error instanceof Error ? error.message : '操作失败');
         } finally {
-          setBusyId(null);
+          setEmployeeReviewBusyId(null);
         }
       };
       const handleDisable = async (id: string) => {
         if (!window.confirm('确定要停用该账号吗？')) return;
-        setBusyId(id);
+        setEmployeeReviewBusyId(id);
         try {
           await disableEmployee(id);
           flash('success', '已停用该账号');
@@ -14907,21 +15073,21 @@ export default function App() {
         } catch (error) {
           flash('error', error instanceof Error ? error.message : '操作失败');
         } finally {
-          setBusyId(null);
+          setEmployeeReviewBusyId(null);
         }
       };
       const handleResetPw = async (id: string) => {
         if (resetPwValue.length < 8) { flash('error', '新密码至少 8 位'); return; }
-        setBusyId(id);
+        setEmployeeReviewBusyId(id);
         try {
           await adminResetPassword(id, { newPassword: resetPwValue });
           flash('success', '密码已重置');
-          setResetPwId(null);
+          setResetPwEmployeeId(null);
           setResetPwValue('');
         } catch (error) {
           flash('error', error instanceof Error ? error.message : '操作失败');
         } finally {
-          setBusyId(null);
+          setEmployeeReviewBusyId(null);
         }
       };
 
@@ -14948,15 +15114,15 @@ export default function App() {
               <p className="text-[12px] font-bold text-amber-600 uppercase tracking-widest">待审核 ({pendingList.length})</p>
               {pendingList.map((employee) => renderEmployeeRow(employee, (
                 <>
-                  <button type="button" disabled={busyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[12px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">批准</button>
-                  {rejectingId === employee.id ? (
+                  <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleApprove(employee.id)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[12px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">批准</button>
+                  {rejectingEmployeeId === employee.id ? (
                     <div className="flex items-center gap-1">
-                      <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="驳回原因（可选）" className="w-40 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
-                      <button type="button" disabled={busyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">确认驳回</button>
-                      <button type="button" onClick={() => { setRejectingId(null); setRejectReason(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
+                      <input value={employeeRejectReason} onChange={(e) => setEmployeeRejectReason(e.target.value)} placeholder="驳回原因（可选）" className="w-40 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
+                      <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleReject(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50">确认驳回</button>
+                      <button type="button" onClick={() => { setRejectingEmployeeId(null); setEmployeeRejectReason(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
                     </div>
                   ) : (
-                    <button type="button" onClick={() => setRejectingId(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100">驳回</button>
+                    <button type="button" onClick={() => setRejectingEmployeeId(employee.id)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[12px] font-bold text-red-700 hover:bg-red-100">驳回</button>
                   )}
                 </>
               )))}
@@ -14983,16 +15149,16 @@ export default function App() {
               <p className="text-[12px] font-bold text-gray-500 uppercase tracking-widest">在职员工管理</p>
               {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').map((employee) => renderEmployeeRow(employee, (
                 <>
-                  {resetPwId === employee.id ? (
+                  {resetPwEmployeeId === employee.id ? (
                     <div className="flex items-center gap-1">
                       <input type="password" value={resetPwValue} onChange={(e) => setResetPwValue(e.target.value)} placeholder="新密码（≥8位）" className="w-36 rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] outline-none" />
-                      <button type="button" disabled={busyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
-                      <button type="button" onClick={() => { setResetPwId(null); setResetPwValue(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
+                      <button type="button" disabled={employeeReviewBusyId === employee.id || resetPwValue.length < 8} onClick={() => void handleResetPw(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50">确认</button>
+                      <button type="button" onClick={() => { setResetPwEmployeeId(null); setResetPwValue(''); }} className="rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[12px] text-gray-500">取消</button>
                     </div>
                   ) : (
-                    <button type="button" onClick={() => setResetPwId(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100">重置密码</button>
+                    <button type="button" onClick={() => setResetPwEmployeeId(employee.id)} className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-blue-700 hover:bg-blue-100">重置密码</button>
                   )}
-                  <button type="button" disabled={busyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-red-500 hover:bg-red-50 disabled:opacity-50">停用</button>
+                  <button type="button" disabled={employeeReviewBusyId === employee.id} onClick={() => void handleDisable(employee.id)} className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-red-500 hover:bg-red-50 disabled:opacity-50">停用</button>
                 </>
               )))}
             </div>
@@ -15005,7 +15171,7 @@ export default function App() {
       <div className="space-y-6">
         {currentSessionUser?.primaryRole === 'admin' && (
           <>
-          <EmployeeReviewPanel />
+          {EmployeeReviewPanel()}
           <OrganizationSetupCenter
             value={orgModelDraft}
             organizationDnaModules={organizationDnaModules}
@@ -15077,12 +15243,18 @@ export default function App() {
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">系统设置</h1>
             <p className="text-[12px] text-gray-500 mt-1">把整个软件的默认规则、权限边界和组织级知识底座收口到一个设置中心。</p>
           </div>
-          <Button onClick={() => {
-            if (!window.confirm('确定要退出登录吗？')) return;
-            void logout().then(async () => { setAuthState({ authenticated: false }); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
-          }}>
-            <ShieldAlert size={16} /> 退出登录
-          </Button>
+          {isLocalSession ? (
+            <Button onClick={() => openCloudAuthModal('login')}>
+              <ShieldAlert size={16} /> 注册 / 登录
+            </Button>
+          ) : (
+            <Button onClick={() => {
+              if (!window.confirm('确定要退出登录吗？')) return;
+              void logout().then(async (response) => { setAuthState(response); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+            }}>
+              <ShieldAlert size={16} /> 退出登录
+            </Button>
+          )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className={`grid grid-cols-1 gap-6 ${settingsSidebarCollapsed ? 'xl:grid-cols-[92px_minmax(0,1fr)]' : 'xl:grid-cols-[260px_minmax(0,1fr)]'}`}>
@@ -15196,7 +15368,7 @@ export default function App() {
     growth_handbook: (
       <GrowthCenterView />
     ),
-    settings: <SettingsView />,
+    settings: SettingsView(),
   };
 
   const [splashMessageTick, setSplashMessageTick] = useState(0);
@@ -15303,6 +15475,8 @@ export default function App() {
     return <AuthShell />;
   }
 
+  const isLocalSession = authState.sessionMode !== 'cloud';
+
   return (
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
@@ -15384,22 +15558,31 @@ export default function App() {
           <div className={`px-4 pb-5 ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>
             <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">当前登录</p>
-              <p className="text-[13px] font-bold text-gray-800">{currentSessionUser.fullName}</p>
-              <p className="text-[11px] text-gray-500 mt-1">{currentSessionUser.primaryRole} · {settingsState?.aiProvider || 'mock'} · {health?.stats.clients || 0} 客户</p>
-              <button
-                className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
-                onClick={() => {
-                  if (!window.confirm('确定要退出登录吗？')) return;
-                  void logout()
-                    .then(async () => {
-                      setAuthState({ authenticated: false });
-                      await loadAll();
-                    })
-                    .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
-                }}
-              >
-                退出登录
-              </button>
+              <p className="text-[13px] font-bold text-gray-800">{isLocalSession ? '本机模式' : currentSessionUser.fullName}</p>
+              <p className="text-[11px] text-gray-500 mt-1">{isLocalSession ? `未连接云端 · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.clients || 0} 客户` : `${currentSessionUser.primaryRole} · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.clients || 0} 客户`}</p>
+              {isLocalSession ? (
+                <button
+                  className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
+                  onClick={() => openCloudAuthModal('login')}
+                >
+                  注册 / 登录
+                </button>
+              ) : (
+                <button
+                  className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
+                  onClick={() => {
+                    if (!window.confirm('确定要退出登录吗？')) return;
+                    void logout()
+                      .then(async (response) => {
+                        setAuthState(response);
+                        await loadAll();
+                      })
+                      .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+                  }}
+                >
+                  退出登录
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -15440,6 +15623,7 @@ export default function App() {
           void handleConfirmCollabAction();
         }}
       />
+      {CloudAuthModal()}
       </div>
     </GrowthProvider>
   );
