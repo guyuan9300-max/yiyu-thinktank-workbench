@@ -1535,8 +1535,9 @@ def _sync_task_org_link(state: AppState, task_row, collaborator_ids: list[str] |
     department_row = state.db.fetchone("SELECT quarterly_focus_json FROM org_departments WHERE id = ?", (department_id,)) if department_id else None
     profile_row = state.db.fetchone("SELECT quarterly_focus_json FROM org_profiles WHERE organization_id = ?", (organization_id,))
     rule_row = _resolve_task_control_rule_for_binding(state, organization_id, binding_row)
-    needs_review = bool(is_cross_department or (rule_row and int(rule_row["require_collab_confirmation"] or 0)))
-    approval_state = "pending" if needs_review else "none"
+    # 普通协作任务只保留“收件箱确认”链路，不再把协作确认误挂成复核流程。
+    needs_review = False
+    approval_state = "none"
     state.db.execute(
         """
         INSERT OR REPLACE INTO task_org_links(
@@ -1640,17 +1641,28 @@ def _matches_rule_actor_scope(state: AppState, actor: SessionUser, task_row, tas
     return False
 
 
-def _assert_task_edit_permission(state: AppState, actor: SessionUser, task_row, content_changed: bool, due_date_changed: bool, owner_changed: bool) -> None:
+def _assert_task_edit_permission(
+    state: AppState,
+    actor: SessionUser,
+    task_row,
+    content_changed: bool,
+    due_date_changed: bool,
+    owner_changed: bool,
+    status_changed: bool = False,
+) -> None:
     if actor.primaryRole == "admin":
         return
     organization_id = str(task_row["organization_id"])
     owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else None
     creator_id = str(task_row["creator_id"])
+    collaborator_ids = set(_task_collaborator_ids(state, str(task_row["id"])))
     task_link_row = _task_org_link_row(state, str(task_row["id"]))
     rule_row = None
     if task_link_row and task_link_row["control_rule_id"]:
         rule_row = state.db.fetchone("SELECT * FROM org_task_control_rules WHERE id = ?", (str(task_link_row["control_rule_id"]),))
     if not rule_row:
+        if status_changed and actor.id not in collaborator_ids and actor.id != owner_id and not _manager_has_capability(state, organization_id, actor.id, owner_id, "content"):
+            raise HTTPException(status_code=403, detail="只有负责人或协作者可以标记任务完成")
         if content_changed and actor.id not in {creator_id, owner_id} and not _manager_has_capability(state, organization_id, actor.id, owner_id, "content"):
             raise HTTPException(status_code=403, detail="你当前没有修改该任务内容的权限")
         if due_date_changed and actor.id not in {creator_id, owner_id} and not _manager_has_capability(state, organization_id, actor.id, owner_id, "deadline"):
@@ -1658,6 +1670,8 @@ def _assert_task_edit_permission(state: AppState, actor: SessionUser, task_row, 
         if owner_changed and actor.id not in {creator_id, owner_id} and not _manager_has_capability(state, organization_id, actor.id, owner_id, "owner"):
             raise HTTPException(status_code=403, detail="你当前没有调整该任务负责人的权限")
         return
+    if status_changed and actor.id not in collaborator_ids and actor.id != owner_id and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["content_editable_by"] or "assignee"), "content"):
+        raise HTTPException(status_code=403, detail="只有负责人或协作者可以标记任务完成")
     if content_changed and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["content_editable_by"] or "assignee"), "content"):
         raise HTTPException(status_code=403, detail="你当前没有修改该任务内容的权限")
     if due_date_changed and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["deadline_editable_by"] or "manager"), "deadline"):
@@ -6675,7 +6689,6 @@ def create_app() -> FastAPI:
                 if user_id == current_user.id or user_id in ordered_ids:
                     continue
                 ordered_ids.append(user_id)
-            ordered_ids = ordered_ids[:6]
         if current_user.id not in rows_by_id:
             ordered_ids = [user_id for user_id in ordered_ids if user_id != current_user.id]
             ordered_ids.insert(0, current_user.id)
@@ -7158,18 +7171,18 @@ def create_app() -> FastAPI:
             fallback_owner_id = payload.ownerId or (str(row["owner_id"]) if row["owner_id"] else current_user.id)
             next_collaborator_ids = [fallback_owner_id]
         next_owner_id = payload.ownerId or next_collaborator_ids[0]
+        status_changed = payload.progressStatus is not None and payload.progressStatus != str(row["progress_status"])
         content_changed = any(
             [
                 payload.title is not None and payload.title != str(row["title"]),
                 payload.description is not None and payload.description != str(row["description"]),
                 payload.priority is not None and payload.priority != str(row["priority"]),
                 payload.listId is not None and payload.listId != str(row["list_id"]),
-                payload.progressStatus is not None and payload.progressStatus != str(row["progress_status"]),
             ]
         )
         due_date_changed = payload.dueDate is not None and payload.dueDate != row["due_date"]
         owner_changed = payload.ownerId is not None and payload.ownerId != (str(row["owner_id"]) if row["owner_id"] else None)
-        _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed)
+        _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
         if payload.listId:
             list_row = state.db.fetchone(
                 "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",

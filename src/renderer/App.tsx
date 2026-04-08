@@ -506,56 +506,6 @@ function inferPersonalTaskKeywordLabels(title: string, desc: string) {
     .map((rule) => rule.label);
 }
 
-function FeishuMeetingGlyph({ className = '' }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-      <path
-        d="M4.8 17 27.4 4.6 20.8 27 13.6 21.2 4.8 17Z"
-        fill="none"
-        stroke="#1CB8E6"
-        strokeWidth="1.9"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-      <path
-        d="M13.6 21.2 27.4 4.6"
-        fill="none"
-        stroke="#1CB8E6"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <path
-        d="M13.6 21.2 15 27.1"
-        fill="none"
-        stroke="#1CB8E6"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <path
-        d="M9.7 22.1 7.8 25.7"
-        fill="none"
-        stroke="#1CB8E6"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M14.3 25.1 12.2 29"
-        fill="none"
-        stroke="#1CB8E6"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M18.5 26.1 16.1 30"
-        fill="none"
-        stroke="#1CB8E6"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#06B6D4'];
 const providerDefaultModels = {
   mock: 'mock-summarizer',
@@ -2177,12 +2127,34 @@ function sortTasksByFormalView(tasks: Task[], view: TaskViewDefinition) {
 }
 
 type TaskListFilter = 'doing' | 'done' | 'overdue' | 'all';
+type TaskParticipationFilter = 'all' | 'personal' | 'collab';
+type TaskTimeSort = 'newest' | 'oldest';
+type TaskTimeRangeFilter = 'all' | 'last3days' | 'lastMonth' | 'lastHalfYear' | 'custom';
 
 const TASK_LIST_FILTER_OPTIONS: Array<{ value: TaskListFilter; label: string }> = [
   { value: 'doing', label: '待推进' },
   { value: 'done', label: '已完成' },
   { value: 'overdue', label: '逾期' },
   { value: 'all', label: '全部' },
+];
+
+const TASK_PARTICIPATION_FILTER_OPTIONS: Array<{ value: TaskParticipationFilter; label: string }> = [
+  { value: 'all', label: '全部任务' },
+  { value: 'personal', label: '个人任务' },
+  { value: 'collab', label: '协作任务' },
+];
+
+const TASK_TIME_SORT_OPTIONS: Array<{ value: TaskTimeSort; label: string }> = [
+  { value: 'newest', label: '从近到远' },
+  { value: 'oldest', label: '从远到近' },
+];
+
+const TASK_TIME_RANGE_OPTIONS: Array<{ value: TaskTimeRangeFilter; label: string }> = [
+  { value: 'all', label: '全部时间' },
+  { value: 'last3days', label: '最近三天' },
+  { value: 'lastMonth', label: '最近一个月' },
+  { value: 'lastHalfYear', label: '最近半年' },
+  { value: 'custom', label: '自定义时间' },
 ];
 
 function resolveOrganizationTaskName(organizationName?: string | null) {
@@ -3000,6 +2972,82 @@ function taskIsCollaborativeWatchForUser(task: Task, userId: string | null | und
   if (!userId) return false;
   if (taskIsPrimaryForUser(task, userId)) return false;
   return task.collaborators.some((item) => item.userId === userId);
+}
+
+function taskIsCollaborative(task: Task) {
+  if (task.scopeMode === 'PERSONAL_ONLY') return false;
+  const participantIds = new Set<string>();
+  if (task.creatorId) participantIds.add(task.creatorId);
+  if (task.ownerId) participantIds.add(task.ownerId);
+  task.collaborators.forEach((item) => {
+    if (item.userId) participantIds.add(item.userId);
+  });
+  if (participantIds.size > 1) return true;
+  return task.collaborators.some((item) => !item.isOwner);
+}
+
+function taskWaitsForOthers(task: Task, userId: string | null | undefined) {
+  if (!userId) return false;
+  if (!taskIsPrimaryForUser(task, userId)) return false;
+  return Number(task.collaborationSummary?.pending || 0) > 0;
+}
+
+function taskMatchesParticipationFilter(task: Task, filter: TaskParticipationFilter) {
+  if (filter === 'all') return true;
+  const collaborative = taskIsCollaborative(task);
+  return filter === 'collab' ? collaborative : !collaborative;
+}
+
+function taskCanToggleCompletion(task: Task, userId: string | null | undefined) {
+  if (!userId) return false;
+  if (task.ownerId === userId) return true;
+  return task.collaborators.some((item) => item.userId === userId);
+}
+
+function taskMatchesTimeRange(
+  task: Task,
+  filter: TaskTimeRangeFilter,
+  customStartDate: string,
+  customEndDate: string,
+) {
+  if (filter === 'all') return true;
+  const taskDate = resolveTaskTimelineDateTime(task);
+  if (!taskDate) return false;
+  const taskTime = taskDate.getTime();
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (filter === 'last3days') {
+    const start = new Date(startOfToday);
+    start.setDate(start.getDate() - 2);
+    return taskTime >= start.getTime();
+  }
+  if (filter === 'lastMonth') {
+    const start = new Date(startOfToday);
+    start.setMonth(start.getMonth() - 1);
+    return taskTime >= start.getTime();
+  }
+  if (filter === 'lastHalfYear') {
+    const start = new Date(startOfToday);
+    start.setMonth(start.getMonth() - 6);
+    return taskTime >= start.getTime();
+  }
+  if (filter === 'custom') {
+    const start = customStartDate ? new Date(`${customStartDate}T00:00:00`) : null;
+    const end = customEndDate ? new Date(`${customEndDate}T23:59:59`) : null;
+    if (start && !Number.isNaN(start.getTime()) && taskTime < start.getTime()) return false;
+    if (end && !Number.isNaN(end.getTime()) && taskTime > end.getTime()) return false;
+    return true;
+  }
+  return true;
+}
+
+function sortTasksByTimeDirection(tasks: Task[], direction: TaskTimeSort) {
+  return [...tasks].sort((left, right) => {
+    const leftTime = resolveTaskTimelineDateTime(left)?.getTime() || 0;
+    const rightTime = resolveTaskTimelineDateTime(right)?.getTime() || 0;
+    return direction === 'newest' ? rightTime - leftTime : leftTime - rightTime;
+  });
 }
 
 function weekLabelForDate(baseDate: Date) {
@@ -5313,6 +5361,15 @@ export default function App() {
     };
     const [isTaskGroupOpen, setIsTaskGroupOpen] = useState(true);
     const [taskListFilter, setTaskListFilter] = useState<TaskListFilter>('all');
+    const [taskParticipationFilter, setTaskParticipationFilter] = useState<TaskParticipationFilter>('all');
+    const [taskListTimeSort, setTaskListTimeSort] = useState<TaskTimeSort>('newest');
+    const [taskListTimeRangeFilter, setTaskListTimeRangeFilter] = useState<TaskTimeRangeFilter>('all');
+    const [taskListCustomStartDate, setTaskListCustomStartDate] = useState('');
+    const [taskListCustomEndDate, setTaskListCustomEndDate] = useState('');
+    const [inboxTimeSort, setInboxTimeSort] = useState<TaskTimeSort>('newest');
+    const [inboxTimeRangeFilter, setInboxTimeRangeFilter] = useState<TaskTimeRangeFilter>('all');
+    const [inboxCustomStartDate, setInboxCustomStartDate] = useState('');
+    const [inboxCustomEndDate, setInboxCustomEndDate] = useState('');
     const [taskSearchQuery, setTaskSearchQuery] = useState('');
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     const [isDuePickerOpen, setIsDuePickerOpen] = useState(false);
@@ -5375,12 +5432,14 @@ export default function App() {
     const [isLoadingUnderstanding, setIsLoadingUnderstanding] = useState(false);
     const isTaskModalOpenRef = useRef(false);
     const [tagDraft, setTagDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
-    const [mentionQuery, setMentionQuery] = useState('@');
+    const [mentionQuery, setMentionQuery] = useState('');
     const [mentionOptions, setMentionOptions] = useState<MentionCandidate[]>([]);
     const [isMentionMenuOpen, setIsMentionMenuOpen] = useState(false);
     const [ownerQuery, setOwnerQuery] = useState('');
     const [ownerOptions, setOwnerOptions] = useState<MentionCandidate[]>([]);
     const [isOwnerMenuOpen, setIsOwnerMenuOpen] = useState(false);
+    const collaboratorDropdownRef = useRef<HTMLDivElement | null>(null);
+    const ownerDropdownRef = useRef<HTMLDivElement | null>(null);
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
     const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
@@ -5452,7 +5511,7 @@ export default function App() {
       setIsDuePickerOpen(false);
       setDuePickerTab('date');
       setIsMentionMenuOpen(false);
-      setMentionQuery('@');
+      setMentionQuery('');
       setMentionOptions([]);
       setIsOwnerMenuOpen(false);
       setOwnerQuery('');
@@ -5765,7 +5824,7 @@ export default function App() {
     useEffect(() => {
       if (!isTaskModalOpen) {
         setIsMentionMenuOpen(false);
-        setMentionQuery('@');
+        setMentionQuery('');
         setMentionOptions([]);
         setIsOwnerMenuOpen(false);
         setOwnerQuery('');
@@ -5773,11 +5832,33 @@ export default function App() {
         setSuggestedTaskTags([]);
         return;
       }
-      const normalizedQuery = mentionQuery.replace(/^@/, '').trim();
+      const normalizedQuery = mentionQuery.trim();
       void getMentionCandidates(normalizedQuery)
         .then((items) => setMentionOptions(items))
         .catch(() => setMentionOptions([]));
     }, [isTaskModalOpen, mentionQuery]);
+
+    useEffect(() => {
+      if (!isMentionMenuOpen) return;
+      const handler = (event: MouseEvent) => {
+        if (collaboratorDropdownRef.current && !collaboratorDropdownRef.current.contains(event.target as Node)) {
+          setIsMentionMenuOpen(false);
+        }
+      };
+      document.addEventListener('mousedown', handler, true);
+      return () => document.removeEventListener('mousedown', handler, true);
+    }, [isMentionMenuOpen]);
+
+    useEffect(() => {
+      if (!isOwnerMenuOpen) return;
+      const handler = (event: MouseEvent) => {
+        if (ownerDropdownRef.current && !ownerDropdownRef.current.contains(event.target as Node)) {
+          setIsOwnerMenuOpen(false);
+        }
+      };
+      document.addEventListener('mousedown', handler, true);
+      return () => document.removeEventListener('mousedown', handler, true);
+    }, [isOwnerMenuOpen]);
 
     useEffect(() => {
       if (!isTaskModalOpen) return;
@@ -5803,8 +5884,48 @@ export default function App() {
       return true;
     };
 
-    const pendingTasks = tasks.filter((task) => task.status === 'inbox' && !transitioningInboxTaskIds.includes(task.id));
+    const inboundPendingTasks = tasks.filter((task) => task.status === 'inbox' && !transitioningInboxTaskIds.includes(task.id));
+    const outboundPendingTasks = tasks.filter(
+      (task) => task.status !== 'rejected'
+        && task.status !== 'inbox'
+        && !transitioningInboxTaskIds.includes(task.id)
+        && taskWaitsForOthers(task, currentSessionUser?.id),
+    );
+    const inboundNotificationTasks = useMemo(
+      () => sortTasksByTimeDirection(
+        inboundPendingTasks.filter((task) =>
+          task.sourceType === 'event_line_notification'
+          && taskMatchesTimeRange(task, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
+        ),
+        inboxTimeSort,
+      ),
+      [inboundPendingTasks, inboxCustomEndDate, inboxCustomStartDate, inboxTimeRangeFilter, inboxTimeSort],
+    );
+    const inboundConfirmableTasks = useMemo(
+      () => sortTasksByTimeDirection(
+        inboundPendingTasks.filter((task) =>
+          task.sourceType !== 'event_line_notification'
+          && taskMatchesTimeRange(task, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
+        ),
+        inboxTimeSort,
+      ),
+      [inboundPendingTasks, inboxCustomEndDate, inboxCustomStartDate, inboxTimeRangeFilter, inboxTimeSort],
+    );
+    const filteredOutboundPendingTasks = useMemo(
+      () => sortTasksByTimeDirection(
+        outboundPendingTasks.filter((task) =>
+          taskMatchesTimeRange(task, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
+        ),
+        inboxTimeSort,
+      ),
+      [inboxCustomEndDate, inboxCustomStartDate, inboxTimeRangeFilter, inboxTimeSort, outboundPendingTasks],
+    );
+    const actionableInboxTasks = useMemo(
+      () => [...inboundConfirmableTasks, ...inboundNotificationTasks],
+      [inboundConfirmableTasks, inboundNotificationTasks],
+    );
     const activeTaskListFilterLabel = TASK_LIST_FILTER_OPTIONS.find((item) => item.value === taskListFilter)?.label || '全部';
+    const activeTaskParticipationFilterLabel = TASK_PARTICIPATION_FILTER_OPTIONS.find((item) => item.value === taskParticipationFilter)?.label || '全部任务';
     const activeFormalTaskView = useMemo(() => {
       if (drillTaskViewOverride?.targetType === 'task_view') {
         return {
@@ -5826,22 +5947,31 @@ export default function App() {
       return null;
     }, [drillTaskViewOverride]);
     const baseListTasks = tasks.filter((task) => task.status !== 'rejected' && task.status !== 'inbox');
+    const participationFilteredTasks = baseListTasks.filter((task) => taskMatchesParticipationFilter(task, taskParticipationFilter));
     const taskBucketCounts = useMemo(
       () => ({
-        doing: baseListTasks.filter((task) => task.status !== 'done').length,
-        done: baseListTasks.filter((task) => task.status === 'done').length,
-        overdue: baseListTasks.filter((task) => isTaskOverdue(task)).length,
+        doing: participationFilteredTasks.filter((task) => task.status !== 'done').length,
+        done: participationFilteredTasks.filter((task) => task.status === 'done').length,
+        overdue: participationFilteredTasks.filter((task) => isTaskOverdue(task)).length,
+        all: participationFilteredTasks.length,
+      }),
+      [participationFilteredTasks],
+    );
+    const taskParticipationCounts = useMemo(
+      () => ({
         all: baseListTasks.length,
+        personal: baseListTasks.filter((task) => !taskIsCollaborative(task)).length,
+        collab: baseListTasks.filter((task) => taskIsCollaborative(task)).length,
       }),
       [baseListTasks],
     );
     const rawListTasks = sortTasksForListView(
-      baseListTasks.filter((task) => {
+      participationFilteredTasks.filter((task) => {
         if (taskListFilter === 'done') return task.status === 'done';
         if (taskListFilter === 'overdue') return isTaskOverdue(task);
         if (taskListFilter === 'all') return true;
         return task.status !== 'done';
-      }),
+      }).filter((task) => taskMatchesTimeRange(task, taskListTimeRangeFilter, taskListCustomStartDate, taskListCustomEndDate)),
       effectiveTaskSettings.listSortMode,
     );
     const listTasks = useMemo(() => {
@@ -5863,8 +5993,12 @@ export default function App() {
           || (task.note || '').toLowerCase().includes(q)
         );
       }
-      return filtered;
-    }, [activeFormalTaskView, rawListTasks, taskSearchQuery]);
+      return sortTasksByTimeDirection(filtered, taskListTimeSort);
+    }, [activeFormalTaskView, rawListTasks, taskListTimeSort, taskSearchQuery]);
+    useEffect(() => {
+      const availableIds = new Set(actionableInboxTasks.map((task) => task.id));
+      setSelectedInboxIds((prev) => prev.filter((id) => availableIds.has(id)));
+    }, [actionableInboxTasks]);
     useEffect(() => {
       if (taskViewMode !== 'list') return;
       const pendingClientIds = Array.from(
@@ -5913,7 +6047,7 @@ export default function App() {
         activeFormalTaskView,
       );
     }, [activeFormalTaskView, baseCalendarTasks]);
-    const isAllSelected = pendingTasks.length > 0 && selectedInboxIds.length === pendingTasks.length;
+    const isAllSelected = actionableInboxTasks.length > 0 && selectedInboxIds.length === actionableInboxTasks.length;
 
     const tasksById = new Map(tasks.map((task) => [task.id, task]));
     const buildReviewRows = (items: WeeklyReviewTaskEntry[]): ReviewTaskRow[] =>
@@ -5950,6 +6084,7 @@ export default function App() {
     }, [activeReviewGroups, expandedReviewGroupId]);
 
     const ownerCollaborator = editingTask.collaborators[0];
+    const selectedTaskCollaborators = ownerCollaborator ? editingTask.collaborators.slice(1) : editingTask.collaborators;
     const collaboratorNames = editingTask.collaborators.map((item) => item.fullName);
     const selectedTaskTags = taskTags.filter((tag) => editingTask.tagIds.includes(tag.id));
     const taskClientOptions = clients
@@ -6184,9 +6319,28 @@ export default function App() {
         : '系统会先在当前项目下建议事件线。'
       : '系统会先尝试识别项目，再建议事件线。';
     const clientConfidenceBadge = labelTaskClientConfidence(editingTask.clientConfidence);
-    const availableMentionOptions = mentionOptions.filter(
-      (candidate) => !editingTask.collaborators.some((item) => item.id === candidate.id),
-    );
+    const availableMentionOptions = mentionOptions.filter((candidate) => candidate.id !== ownerCollaborator?.id);
+    const selectedTaskCollaboratorIds = new Set(selectedTaskCollaborators.map((item) => item.id));
+    const toggleTaskCollaborator = (candidate: MentionCandidate) => {
+      setEditingTask((prev) => {
+        const owner = prev.collaborators[0] || null;
+        const others = owner ? prev.collaborators.slice(1) : [...prev.collaborators];
+        const alreadySelected = others.some((item) => item.id === candidate.id);
+        const nextOthers = alreadySelected
+          ? others.filter((item) => item.id !== candidate.id)
+          : [...others, candidate];
+        return {
+          ...prev,
+          collaborators: owner ? [owner, ...nextOthers] : nextOthers,
+        };
+      });
+    };
+    const removeTaskOwner = () => {
+      setEditingTask((prev) => ({
+        ...prev,
+        collaborators: prev.collaborators.slice(1),
+      }));
+    };
     const duePickerDateLabel = formatTaskDuePickerDateLabel(editingTask.dueDate);
     const duePickerSummaryLabel = formatTaskDuePickerSummaryLabel(
       editingTask.dueDate,
@@ -7071,39 +7225,6 @@ export default function App() {
       };
     };
 
-    const handleLaunchFeishuMeeting = async () => {
-      if (!editingTask.clientId) {
-        flash('error', '请先关联客户/项目，再发起飞书会议。');
-        return;
-      }
-      if (!editingTask.title.trim()) {
-        flash('error', '请先填写任务标题，再发起飞书会议。');
-        return;
-      }
-      try {
-        const scheduledAt = editingTask.dueDate
-          ? `${editingTask.dueDate}T${editingTask.dueTime || '10:00'}`
-          : undefined;
-        const result = await launchFeishuMeeting(editingTask.clientId, {
-          title: editingTask.title.trim(),
-          scheduledAt,
-          sourceTaskId: editingTask.id,
-        });
-        const flashType = result.deliveryStatus === 'failed' ? 'error' : 'success';
-        flash(flashType, result.deliveryMessage);
-        if (result.deliveryStatus !== 'sent') {
-          window.alert(
-            `${result.deliveryMessage}\n\n会议草稿：${result.meeting.title}\n会议编号：${result.meeting.id}\n\n${result.commandHint}`,
-          );
-        }
-        if (editingTask.clientId === currentClientId) {
-          await refreshWorkspace(editingTask.clientId);
-        }
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '飞书会议发起失败');
-      }
-    };
-
     const readActionPayloadStrings = (value: unknown): string[] => (
       Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : []
     );
@@ -7299,14 +7420,6 @@ export default function App() {
     };
 
     const isEditingTaskPersonal = editingTask.scopeMode === 'PERSONAL_ONLY';
-    const canLaunchFeishuMeeting = Boolean(editingTask.title.trim() && editingTask.clientId && !isEditingTaskPersonal);
-    const feishuLaunchHint = !editingTask.title.trim()
-      ? '请先填写任务标题'
-      : isEditingTaskPersonal
-        ? '个人日程不发起组织会议'
-      : !editingTask.clientId
-        ? '请先关联客户/项目'
-        : '发起飞书会议';
 
     const ensureTagSelected = async (name: string, scope: 'org' | 'self' = defaultTagScope, color?: string) => {
       void name;
@@ -7931,7 +8044,7 @@ export default function App() {
               >
                 <Inbox size={16} className={taskViewMode === 'inbox' ? 'text-[#5B7BFE]' : 'text-gray-400'} />
                 协作收件箱
-                {pendingTasks.length > 0 && <span className="absolute top-1.5 right-2 w-2 h-2 bg-rose-500 rounded-full" />}
+                {(inboundPendingTasks.length > 0 || outboundPendingTasks.length > 0) && <span className="absolute top-1.5 right-2 w-2 h-2 bg-rose-500 rounded-full" />}
               </button>
                 {[
                   { id: 'list', label: '任务列表' },
@@ -7974,7 +8087,7 @@ export default function App() {
                     <div className={`p-1 rounded-md transition-all ${isTaskGroupOpen ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400 group-hover:bg-gray-100'}`}>
                       <ChevronDown size={14} className={`transition-transform duration-300 ${isTaskGroupOpen ? '' : '-rotate-90'}`} />
                     </div>
-                    <span className="text-[14px] font-bold text-gray-800">{activeFormalTaskView?.name || activeTaskListFilterLabel}</span>
+                    <span className="text-[14px] font-bold text-gray-800">{activeFormalTaskView?.name || `${activeTaskParticipationFilterLabel} · ${activeTaskListFilterLabel}`}</span>
                     <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
                       {listTasks.length}
                     </span>
@@ -8010,12 +8123,71 @@ export default function App() {
                       ))}
                     </select>
                   </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
+                    <span>类型</span>
+                    <select
+                      value={taskParticipationFilter}
+                      onChange={(event) => setTaskParticipationFilter(event.target.value as TaskParticipationFilter)}
+                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                    >
+                      {TASK_PARTICIPATION_FILTER_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
+                    <span>时间排序</span>
+                    <select
+                      value={taskListTimeSort}
+                      onChange={(event) => setTaskListTimeSort(event.target.value as TaskTimeSort)}
+                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                    >
+                      {TASK_TIME_SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
+                    <span>时间范围</span>
+                    <select
+                      value={taskListTimeRangeFilter}
+                      onChange={(event) => setTaskListTimeRangeFilter(event.target.value as TaskTimeRangeFilter)}
+                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                    >
+                      {TASK_TIME_RANGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {taskListTimeRangeFilter === 'custom' && (
+                    <>
+                      <input
+                        type="date"
+                        value={taskListCustomStartDate}
+                        onChange={(event) => setTaskListCustomStartDate(event.target.value)}
+                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                      />
+                      <span className="text-[12px] font-bold text-gray-300">至</span>
+                      <input
+                        type="date"
+                        value={taskListCustomEndDate}
+                        onChange={(event) => setTaskListCustomEndDate(event.target.value)}
+                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                      />
+                    </>
+                  )}
                 </div>
               </div>
               <div className={`space-y-3 transition-all duration-300 ${isTaskGroupOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none h-0 overflow-hidden'}`}>
                 {listTasks.length === 0 && (
                   <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-8 text-center text-[13px] text-gray-400">
-                    {taskBucketCounts.all === 0 ? (
+                    {baseListTasks.length === 0 ? (
                       <>
                         <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-[#EEF2FF] flex items-center justify-center">
                           <Plus className="w-5 h-5 text-[#5B7BFE]" />
@@ -8034,6 +8206,20 @@ export default function App() {
                       <>
                         <p>当前筛选下暂无任务。</p>
                         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                          {TASK_PARTICIPATION_FILTER_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setTaskParticipationFilter(option.value)}
+                              className={`rounded-full border px-3 py-1.5 text-[12px] font-bold transition-colors ${
+                                taskParticipationFilter === option.value
+                                  ? 'border-[#5B7BFE] bg-[#EEF2FF] text-[#5B7BFE]'
+                                  : 'border-gray-200 bg-white text-gray-500 hover:border-[#C9D6FF] hover:text-[#5B7BFE]'
+                              }`}
+                            >
+                              {option.label} {taskParticipationCounts[option.value]}
+                            </button>
+                          ))}
                           {TASK_LIST_FILTER_OPTIONS.map((option) => (
                             <button
                               key={option.value}
@@ -8057,6 +8243,7 @@ export default function App() {
                   const listColor = getListColor(task.listId);
                   const isExpanded = expandedTaskIds.includes(task.id);
                   const isStatusUpdating = updatingTaskStatusIds.includes(task.id);
+                  const canToggleCompletion = taskCanToggleCompletion(task, currentSessionUser?.id);
                   const hasDetailContent = Boolean(
                     task.desc ||
                     canReviewTask(task) ||
@@ -8088,12 +8275,14 @@ export default function App() {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (!canToggleCompletion) return;
                           void toggleTaskStatus(task.id);
                         }}
-                        disabled={isStatusUpdating}
+                        disabled={isStatusUpdating || !canToggleCompletion}
+                        title={canToggleCompletion ? undefined : '只有负责人或协作者可以标记任务完成'}
                         className={`mt-0.5 shrink-0 transition-transform active:scale-90 ${
                           task.priority === 'high' ? 'text-rose-400 hover:text-rose-500' : 'text-gray-300 hover:text-[#5B7BFE]'
-                        } ${isStatusUpdating ? 'cursor-wait opacity-60' : ''}`}
+                        } ${isStatusUpdating ? 'cursor-wait opacity-60' : ''} ${!canToggleCompletion ? 'cursor-not-allowed opacity-40 hover:text-gray-300' : ''}`}
                       >
                         {task.status === 'done' ? <CheckCircle2 size={22} strokeWidth={2} /> : <Circle size={22} strokeWidth={2} />}
                       </button>
@@ -8147,6 +8336,11 @@ export default function App() {
                           <span className={`flex items-center gap-1 px-2 py-1 rounded-md ${task.ddl === '今天' ? 'bg-orange-50 text-orange-600' : 'bg-gray-50 text-gray-500'}`}>
                             <CalendarIcon size={12} /> {task.ddl}
                           </span>
+                          {taskWaitsForOthers(task, currentSessionUser?.id) && (
+                            <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-amber-50 text-amber-700">
+                              <Clock size={12} /> 待 {task.collaborationSummary.pending || 0} 人确认
+                            </span>
+                          )}
                           <span className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors" style={{ color: listColor, backgroundColor: getTint(listColor) }}>
                             <FolderDot size={12} /> {getListName(task.listId)}
                           </span>
@@ -8212,7 +8406,7 @@ export default function App() {
                                 <span className="ml-2 text-[10px] text-gray-400">附件将自动进入客户工作台</span>
                               </div>
                             )}
-                            {task.status === 'doing' && task.orgContext && (
+                            {task.status === 'doing' && task.orgContext?.needsReview && canToggleCompletion && (
                               <div className="flex flex-wrap gap-2 mb-2">
                                 <Button
                                   className="px-3 py-1.5 text-[12px] bg-emerald-500 text-white hover:bg-emerald-600"
@@ -8340,92 +8534,221 @@ export default function App() {
           {taskViewMode === 'inbox' && (
             <div className="max-w-4xl">
               <div className="bg-white border border-gray-100 rounded-3xl p-5 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
                   <div>
                     <h2 className="text-[18px] font-bold text-gray-900">协作收件箱</h2>
-                    <p className="text-[12px] text-gray-500 mt-1">会议发布、选题转任务和 AI 生成任务都会先进入这里。</p>
+                    <p className="text-[12px] text-gray-500 mt-1">这里会分开展示待确认任务和系统通知，也会保留你已发出、正等待对方确认的协作任务。</p>
                   </div>
-                  {pendingTasks.length > 0 && (
+                  {actionableInboxTasks.length > 0 && (
                     <div className="flex items-center gap-2">
-                      <Button onClick={() => setSelectedInboxIds(isAllSelected ? [] : pendingTasks.map((task) => task.id))}>{isAllSelected ? '取消全选' : '全选'}</Button>
-                      <Button primary onClick={() => void handleConfirmTasks(selectedInboxIds.length ? selectedInboxIds : pendingTasks.map((task) => task.id))}>
+                      <Button onClick={() => setSelectedInboxIds(isAllSelected ? [] : actionableInboxTasks.map((task) => task.id))}>{isAllSelected ? '取消全选' : '全选'}</Button>
+                      <Button primary onClick={() => void handleConfirmTasks(selectedInboxIds.length ? selectedInboxIds : actionableInboxTasks.map((task) => task.id))}>
                         确认接收
                       </Button>
                     </div>
                   )}
                 </div>
-                <div className="space-y-3">
-                  {pendingTasks.map((task) => (
-                    <div key={task.id} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
+                    <span>时间排序</span>
+                    <select
+                      value={inboxTimeSort}
+                      onChange={(event) => setInboxTimeSort(event.target.value as TaskTimeSort)}
+                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                    >
+                      {TASK_TIME_SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
+                    <span>时间范围</span>
+                    <select
+                      value={inboxTimeRangeFilter}
+                      onChange={(event) => setInboxTimeRangeFilter(event.target.value as TaskTimeRangeFilter)}
+                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                    >
+                      {TASK_TIME_RANGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {inboxTimeRangeFilter === 'custom' && (
+                    <>
                       <input
-                        type="checkbox"
-                        checked={selectedInboxIds.includes(task.id)}
-                        onChange={(event) => {
-                          setSelectedInboxIds((prev) =>
-                            event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
-                          );
-                        }}
-                        className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                        type="date"
+                        value={inboxCustomStartDate}
+                        onChange={(event) => setInboxCustomStartDate(event.target.value)}
+                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
                       />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          {task.sourceType === 'event_line_notification' && (
-                            <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-blue-50 text-blue-600">通知</span>
-                          )}
-                          <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                          {task.sourceType !== 'event_line_notification' && (
-                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${task.priority === 'high' ? 'bg-rose-50 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>{task.priority}</span>
-                          )}
-                        </div>
-                        <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
-                        <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                          <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                          <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
-                          {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
-                        </div>
-                        {task.collaborators.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {task.collaborators.map((item) => (
-                              <span
-                                key={item.userId}
-                                className={`px-2 py-1 rounded-md text-[10px] font-bold ${
-                                  item.inboxStatus === 'accepted'
-                                    ? 'bg-emerald-50 text-emerald-600'
-                                    : item.inboxStatus === 'returned'
-                                      ? 'bg-rose-50 text-rose-600'
-                                      : 'bg-gray-100 text-gray-500'
-                                }`}
-                              >
-                                {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待处理'}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                      <span className="text-[12px] font-bold text-gray-300">至</span>
+                      <input
+                        type="date"
+                        value={inboxCustomEndDate}
+                        onChange={(event) => setInboxCustomEndDate(event.target.value)}
+                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                      />
+                    </>
+                  )}
+                </div>
+                <div className="space-y-3">
+                  {(inboundConfirmableTasks.length > 0 || filteredOutboundPendingTasks.length > 0) && (
+                    <>
+                      <div className="rounded-2xl border border-amber-100 bg-amber-50/50 px-4 py-3">
+                        <p className="text-[12px] font-bold text-amber-700">待确认任务</p>
                       </div>
-                      <div className="flex flex-col gap-2">
-                        <Button onClick={() => void handleConfirmTasks([task.id])}>
-                          {task.sourceType === 'event_line_notification' ? '收到' : '确认'}
-                        </Button>
-                        {task.sourceType !== 'event_line_notification' && (
-                          <Button
-                            onClick={() => {
-                              setRejectingTaskIds([task.id]);
-                              setIsRejectModalOpen(true);
+                      {inboundConfirmableTasks.length > 0 && (
+                        <div className="rounded-2xl border border-blue-100 bg-blue-50/40 px-4 py-3">
+                          <p className="text-[12px] font-bold text-blue-700">待你确认</p>
+                        </div>
+                      )}
+                      {inboundConfirmableTasks.map((task) => (
+                        <div key={task.id} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedInboxIds.includes(task.id)}
+                            onChange={(event) => {
+                              setSelectedInboxIds((prev) =>
+                                event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
+                              );
                             }}
-                          >
-                            退回
-                          </Button>
-                        )}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                          />
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
+                              <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${task.priority === 'high' ? 'bg-rose-50 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>{task.priority}</span>
+                            </div>
+                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
+                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
+                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
+                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
+                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
+                            </div>
+                            {task.collaborators.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {task.collaborators.map((item) => (
+                                  <span
+                                    key={item.userId}
+                                    className={`px-2 py-1 rounded-md text-[10px] font-bold ${
+                                      item.inboxStatus === 'accepted'
+                                        ? 'bg-emerald-50 text-emerald-600'
+                                        : item.inboxStatus === 'returned'
+                                          ? 'bg-rose-50 text-rose-600'
+                                          : 'bg-gray-100 text-gray-500'
+                                    }`}
+                                  >
+                                    {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待处理'}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <Button onClick={() => void handleConfirmTasks([task.id])}>确认</Button>
+                            <Button
+                              onClick={() => {
+                                setRejectingTaskIds([task.id]);
+                                setIsRejectModalOpen(true);
+                              }}
+                            >
+                              退回
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                      {filteredOutboundPendingTasks.length > 0 && (
+                        <div className="rounded-2xl border border-amber-100 bg-amber-50/40 px-4 py-3">
+                          <p className="text-[12px] font-bold text-amber-700">等待对方确认</p>
+                        </div>
+                      )}
+                      {filteredOutboundPendingTasks.map((task) => (
+                        <div key={`outbound-${task.id}`} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                          <div className="mt-1 h-4 w-4 rounded-full border border-amber-300 bg-amber-50" />
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
+                              <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700">
+                                待 {task.collaborationSummary.pending || 0} 人确认
+                              </span>
+                            </div>
+                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '你发起的协作任务正在等待对方确认。'}</p>
+                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
+                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
+                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
+                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {task.collaborators.map((item) => (
+                                <span
+                                  key={item.userId}
+                                  className={`px-2 py-1 rounded-md text-[10px] font-bold ${
+                                    item.inboxStatus === 'accepted'
+                                      ? 'bg-emerald-50 text-emerald-600'
+                                      : item.inboxStatus === 'returned'
+                                        ? 'bg-rose-50 text-rose-600'
+                                        : 'bg-amber-50 text-amber-700'
+                                  }`}
+                                >
+                                  {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待确认'}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <Button onClick={() => openTaskEditor(task)}>查看任务</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {inboundNotificationTasks.length > 0 && (
+                    <>
+                      <div className="rounded-2xl border border-sky-100 bg-sky-50/50 px-4 py-3">
+                        <p className="text-[12px] font-bold text-sky-700">系统通知</p>
                       </div>
-                    </div>
-                  ))}
-                  {pendingTasks.length === 0 && (
+                      {inboundNotificationTasks.map((task) => (
+                        <div key={`notice-${task.id}`} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedInboxIds.includes(task.id)}
+                            onChange={(event) => {
+                              setSelectedInboxIds((prev) =>
+                                event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
+                              );
+                            }}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                          />
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-blue-50 text-blue-600">通知</span>
+                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
+                            </div>
+                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
+                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
+                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
+                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{task.ddl}</span>
+                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
+                            </div>
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <Button onClick={() => void handleConfirmTasks([task.id])}>收到</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {inboundConfirmableTasks.length === 0 && filteredOutboundPendingTasks.length === 0 && inboundNotificationTasks.length === 0 && (
                     <div className="text-center py-16 text-gray-400">
                       <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
                         <Inbox className="w-5 h-5 text-emerald-500" />
                       </div>
                       <p className="text-[14px] font-bold text-gray-600 mb-1">收件箱已清空</p>
-                      <p className="text-[13px] text-gray-400">团队成员分配给你的协作任务会出现在这里。</p>
+                      <p className="text-[13px] text-gray-400">待你确认或等待对方确认的协作任务会出现在这里。</p>
                     </div>
                   )}
                 </div>
@@ -9979,25 +10302,56 @@ export default function App() {
                     </div>
 
                     <TaskPropertyRow icon={<User size={16} />} label="负责人">
-                      <div className="relative w-full">
+                      <div ref={ownerDropdownRef} className="relative w-full">
                         <button
                           type="button"
-                          onClick={() => setIsOwnerMenuOpen(true)}
-                          className="flex w-full items-center gap-2 rounded px-2 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+                          onClick={() => setIsOwnerMenuOpen((prev) => !prev)}
+                          className="flex min-h-[40px] w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-[#5B7BFE]"
                         >
-                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 text-xs font-bold text-white">
-                            {buildNameBadge(ownerCollaborator?.fullName || '')}
+                          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                            {ownerCollaborator ? (
+                              <span className="inline-flex max-w-full items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-sm text-gray-700">
+                                <span className="truncate">{ownerCollaborator.fullName}</span>
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    removeTaskOwner();
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      removeTaskOwner();
+                                    }
+                                  }}
+                                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-slate-200 hover:text-gray-600"
+                                  aria-label={`移除负责人${ownerCollaborator.fullName}`}
+                                >
+                                  <X size={12} />
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-400">点击选择负责人</span>
+                            )}
                           </div>
-                          <span className="truncate">{ownerCollaborator?.fullName || '未选择'}</span>
+                          <ChevronDown
+                            size={16}
+                            className={`ml-2 flex-shrink-0 text-gray-400 transition-transform ${isOwnerMenuOpen ? 'rotate-180' : ''}`}
+                          />
                         </button>
                         {isOwnerMenuOpen && (
-                          <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
-                            <input
-                              value={ownerQuery}
-                              onChange={(event) => setOwnerQuery(event.target.value)}
-                              placeholder="输入姓名搜索"
-                              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#5B7BFE]"
-                            />
+                          <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+                            <div className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2">
+                              <Search size={14} className="text-gray-400" />
+                              <input
+                                value={ownerQuery}
+                                onChange={(event) => setOwnerQuery(event.target.value)}
+                                placeholder="搜索成员"
+                                className="w-full border-0 bg-transparent text-sm outline-none"
+                              />
+                            </div>
                             <div className="mt-2 max-h-56 overflow-y-auto">
                               {ownerOptions.length === 0 && (
                                 <div className="px-3 py-2 text-xs text-gray-400">暂无匹配人员</div>
@@ -10017,9 +10371,108 @@ export default function App() {
                                   }}
                                 >
                                   <span>{candidate.fullName}{candidate.isSelf ? '（自己）' : ''}</span>
-                                  <span className="text-[10px] text-gray-400">{candidate.email}</span>
+                                  <div
+                                    className={`ml-3 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border text-[12px] font-bold transition ${
+                                      ownerCollaborator?.id === candidate.id
+                                        ? 'border-[#5B7BFE] bg-[#5B7BFE] text-white'
+                                        : 'border-gray-300 bg-white text-transparent'
+                                    }`}
+                                  >
+                                    ✓
+                                  </div>
                                 </button>
                               ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </TaskPropertyRow>
+
+                    <TaskPropertyRow icon={<Users size={16} />} label="协作者">
+                      <div ref={collaboratorDropdownRef} className="relative w-full">
+                        <button
+                          type="button"
+                          onClick={() => setIsMentionMenuOpen((prev) => !prev)}
+                          className="flex min-h-[40px] w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-[#5B7BFE]"
+                        >
+                          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                            {selectedTaskCollaborators.length > 0 ? (
+                              selectedTaskCollaborators.map((candidate) => (
+                                <span
+                                  key={candidate.id}
+                                  className="inline-flex max-w-full items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-sm text-gray-700"
+                                >
+                                  <span className="truncate">{candidate.fullName}</span>
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleTaskCollaborator(candidate);
+                                    }}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        toggleTaskCollaborator(candidate);
+                                      }
+                                    }}
+                                    className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-gray-400 hover:bg-slate-200 hover:text-gray-600"
+                                    aria-label={`移除协作者${candidate.fullName}`}
+                                  >
+                                    <X size={12} />
+                                  </span>
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-sm text-gray-400">点击选择协作者</span>
+                            )}
+                          </div>
+                          <ChevronDown
+                            size={16}
+                            className={`ml-2 flex-shrink-0 text-gray-400 transition-transform ${isMentionMenuOpen ? 'rotate-180' : ''}`}
+                          />
+                        </button>
+                        {isMentionMenuOpen && (
+                          <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+                            <div className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2">
+                              <Search size={14} className="text-gray-400" />
+                              <input
+                                value={mentionQuery}
+                                onChange={(event) => setMentionQuery(event.target.value)}
+                                placeholder="搜索成员"
+                                className="w-full border-0 bg-transparent text-sm outline-none"
+                              />
+                            </div>
+                            <div className="mt-2 max-h-56 overflow-y-auto">
+                              {availableMentionOptions.length === 0 && (
+                                <div className="px-3 py-2 text-xs text-gray-400">暂无匹配人员</div>
+                              )}
+                              {availableMentionOptions.map((candidate) => {
+                                const isSelected = selectedTaskCollaboratorIds.has(candidate.id);
+                                return (
+                                  <button
+                                    key={candidate.id}
+                                    type="button"
+                                    className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
+                                    onClick={() => toggleTaskCollaborator(candidate)}
+                                  >
+                                    <span className="truncate text-sm text-gray-700">
+                                      {candidate.fullName}
+                                      {candidate.isSelf ? '（自己）' : ''}
+                                    </span>
+                                    <div
+                                      className={`ml-3 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border text-[12px] font-bold transition ${
+                                        isSelected
+                                          ? 'border-[#5B7BFE] bg-[#5B7BFE] text-white'
+                                          : 'border-gray-300 bg-white text-transparent'
+                                      }`}
+                                    >
+                                      ✓
+                                    </div>
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -10342,108 +10795,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="p-5">
-                    <div className="mb-2 flex items-center justify-between">
-                      <span className="text-xs font-semibold text-gray-500">协作者</span>
-                      <button
-                        type="button"
-                        title={feishuLaunchHint}
-                        aria-label={feishuLaunchHint}
-                        disabled={!canLaunchFeishuMeeting}
-                        onClick={() => {
-                          void handleLaunchFeishuMeeting();
-                        }}
-                        className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
-                          canLaunchFeishuMeeting
-                            ? 'bg-[#5B7BFE] text-white shadow-[0_8px_16px_rgba(91,123,254,0.24)]'
-                            : 'cursor-not-allowed bg-gray-200 text-gray-400'
-                        }`}
-                      >
-                        <FeishuMeetingGlyph className="h-[20px] w-[20px]" />
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <input
-                        value={mentionQuery}
-                        onFocus={() => setIsMentionMenuOpen(true)}
-                        onChange={(event) => {
-                          const nextValue = event.target.value.startsWith('@') ? event.target.value : `@${event.target.value}`;
-                          setMentionQuery(nextValue);
-                          setIsMentionMenuOpen(true);
-                        }}
-                        placeholder="@ 同事"
-                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#5B7BFE]"
-                      />
-                      {isMentionMenuOpen && availableMentionOptions.length > 0 && (
-                        <div className="absolute left-0 right-0 top-11 z-20 max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
-                          {availableMentionOptions.map((candidate) => {
-                            return (
-                              <button
-                                key={candidate.id}
-                                className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
-                                onClick={() => {
-                                  setEditingTask((prev) => ({
-                                    ...prev,
-                                    collaborators: [...prev.collaborators, candidate],
-                                  }));
-                                  setMentionQuery('@');
-                                  setIsMentionMenuOpen(false);
-                                }}
-                              >
-                                <span>{candidate.fullName}{candidate.isSelf ? '（自己）' : ''}</span>
-                                <span className="text-[10px] text-gray-400">{candidate.email}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {editingTask.collaborators.map((candidate, index) => (
-                        <div
-                          key={candidate.id}
-                          className={`flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold ${
-                            index === 0 ? 'bg-[#5B7BFE] text-white' : 'bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            className="flex items-center gap-2"
-                            onClick={() =>
-                              setEditingTask((prev) => {
-                                const currentIndex = prev.collaborators.findIndex((item) => item.id === candidate.id);
-                                if (currentIndex <= 0) return prev;
-                                const next = [...prev.collaborators];
-                                const [selectedItem] = next.splice(currentIndex, 1);
-                                next.unshift(selectedItem);
-                                return { ...prev, collaborators: next };
-                              })
-                            }
-                          >
-                            {candidate.fullName}
-                            {index === 0 && <span className="text-[10px] uppercase tracking-wide opacity-80">负责人</span>}
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`移除${candidate.fullName}`}
-                            onClick={() =>
-                              setEditingTask((prev) => ({
-                                ...prev,
-                                collaborators: prev.collaborators.filter((item) => item.id !== candidate.id),
-                              }))
-                            }
-                          >
-                            <X size={11} />
-                          </button>
-                        </div>
-                      ))}
-                      {editingTask.collaborators.length === 0 && (
-                        <span className="rounded-full border border-dashed border-gray-200 px-3 py-1 text-[11px] text-gray-500">
-                          暂无协作者
-                        </span>
-                      )}
-                    </div>
-                  </div>
                 </div>
               </div>
 
