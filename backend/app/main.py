@@ -20862,32 +20862,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_manual_task(payload: TaskPayload) -> TaskRecord:
-        local_task = create_task(payload)
-        # Sync to cloud in background if connected
-        if get_cloud_token():
-            import threading as _sync_thr
-            def _bg_sync_task_to_cloud():
-                try:
-                    cloud_payload = {
-                        "title": local_task.title,
-                        "description": local_task.desc,
-                        "status": local_task.status,
-                        "priority": local_task.priority,
-                        "dueDate": local_task.dueDate,
-                        "durationMinutes": local_task.durationMinutes,
-                        "ownerName": local_task.ownerName,
-                        "clientId": local_task.clientId,
-                        "eventLineId": local_task.eventLineId,
-                        "scopeMode": local_task.scopeMode,
-                        "sourceType": "manual",
-                    }
-                    cloud_request("POST", "/api/v1/tasks", json_body=cloud_payload)
-                    # Invalidate task board cache so next load shows the new task
-                    _cloud_task_board_cache["data"] = None
-                except Exception:
-                    pass
-            _sync_thr.Thread(target=_bg_sync_task_to_cloud, daemon=True).start()
-        return local_task
+        return create_task(payload)
 
     @app.patch("/api/v1/tasks/{task_id}", response_model=TaskRecord)
     def update_task(task_id: str, payload: TaskUpdatePayload) -> TaskRecord:
