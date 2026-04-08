@@ -1431,7 +1431,45 @@ app.whenReady().then(async () => {
   });
   appendElectronLaunchLog('INFO', '[app] startup sequence complete, app should stay alive');
 
+  // Periodic backend health watchdog — restart if crashed silently
+  setInterval(async () => {
+    if (!ownsBackendProcess) return;
+    if (backendProcess) return; // still running
+    // Backend was ours but process handle is gone — it crashed
+    appendElectronLaunchLog('ERROR', '[backend:watchdog] backend process gone, attempting restart');
+    try {
+      startBackend();
+      await waitForBackend(20000);
+      appendElectronLaunchLog('INFO', '[backend:watchdog] backend restarted successfully');
+    } catch {
+      appendElectronLaunchLog('ERROR', '[backend:watchdog] backend restart failed');
+    }
+  }, 15000); // Check every 15 seconds
+
   app.on('activate', async () => {
+    // Re-activate: ensure backend is alive before showing window
+    if (ownsBackendProcess && !backendProcess) {
+      // Backend was owned but has exited — restart it
+      appendElectronLaunchLog('INFO', '[app:activate] backend exited, restarting');
+      try {
+        startBackend();
+        await waitForBackend(20000);
+      } catch {
+        appendElectronLaunchLog('ERROR', '[app:activate] backend restart failed');
+      }
+    } else if (!ownsBackendProcess && !backendProcess) {
+      // No backend at all — check if it's reachable
+      const alive = await checkBackendHealthAt(backendPort, []);
+      if (!alive) {
+        appendElectronLaunchLog('INFO', '[app:activate] backend unreachable, starting fresh');
+        try {
+          startBackend();
+          await waitForBackend(20000);
+        } catch {
+          appendElectronLaunchLog('ERROR', '[app:activate] backend start failed');
+        }
+      }
+    }
     if (!mainWindow || mainWindow.isDestroyed() || BrowserWindow.getAllWindows().length === 0) {
       try {
         await createMainWindow();
