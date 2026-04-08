@@ -990,6 +990,47 @@ def ingest_document_knowledge(
         (section_count, chunk_count, now_iso(), v2_document_id),
     )
     refresh_client_folder_counts(db, client_id)
+
+    # --- 即时写入 master_index，让文档上传后立即可被检索 ---
+    try:
+        from app.services.knowledge_base import upsert_master_index_record
+
+        surrogate_id = f"ks_instant_{document_id}"
+        searchable = doc_index_text or preview_text or title
+        retrieval_text = preview_text or fallback_excerpt or ""
+        # 先创建轻量 surrogate 记录（满足外键约束）
+        existing_surrogate = db.fetchone("SELECT id FROM knowledge_surrogates WHERE id = ?", (surrogate_id,))
+        if not existing_surrogate:
+            db.execute(
+                """INSERT OR IGNORE INTO knowledge_surrogates(
+                    id, knowledge_document_id, client_id, source_type, title, folder_category,
+                    surrogate_md_path, overview_summary, retrieval_summary, document_role,
+                    core_questions_json, query_hints_json, distinct_findings_json, entities_json,
+                    time_markers_json, source_links_json, created_at, updated_at
+                ) VALUES(?, ?, ?, 'v2_instant', ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', '[]', '[]', '[]', ?, ?)""",
+                (surrogate_id, legacy_knowledge_document_id or v2_document_id, client_id, safe_filename(title), primary_category,
+                 str(compat_card_path), retrieval_text[:300], retrieval_text,
+                 material_layer or kind, created_at, created_at),
+            )
+        upsert_master_index_record(
+            db,
+            data_dir=data_dir,
+            entry_id=v2_document_id,
+            client_id=client_id,
+            surrogate_id=surrogate_id,
+            title=safe_filename(title),
+            folder_category=primary_category,
+            document_role=material_layer or kind,
+            retrieval_summary=retrieval_text,
+            searchable_text=searchable,
+            source_path=str(managed_path),
+            surrogate_md_path=str(compat_card_path),
+            timestamp=created_at,
+            sync_after=True,
+        )
+    except Exception:
+        pass  # master_index 写入失败不应阻塞文档入库
+
     return {
         "knowledge_document_id": v2_document_id,
         "legacy_knowledge_document_id": legacy_knowledge_document_id,

@@ -183,8 +183,8 @@ class AiService:
                         prompt,
                         system_instruction,
                         context_summary,
-                        timeout_seconds=110.0,
-                        max_tokens=5200,
+                        timeout_seconds=30.0,
+                        max_tokens=3500,
                     )
                 except Exception as retry_error:
                     detail = "；".join(
@@ -453,8 +453,8 @@ class AiService:
                 prompt=f"用户问题：{prompt}\n\n参考材料：\n{detailed_context}",
                 system_instruction=base_instruction,
                 response_schema=None,
-                timeout_seconds=180.0,
-                max_tokens=12000,
+                timeout_seconds=45.0,
+                max_tokens=6000,
                 temperature=0.48,
                 top_p=0.96,
                 enable_thinking=True,
@@ -2727,7 +2727,9 @@ class AiService:
         connect_timeout = min(10.0, max(5.0, read_timeout / 3))
         write_timeout = min(20.0, max(8.0, read_timeout))
         pool_timeout = min(10.0, max(5.0, read_timeout / 2))
-        return httpx.Timeout(timeout=None, connect=connect_timeout, read=read_timeout, write=write_timeout, pool=pool_timeout)
+        # 硬上限：总超时 = read_timeout + 15秒缓冲，防止 TCP 连接永久挂死
+        total_timeout = read_timeout + 15.0
+        return httpx.Timeout(timeout=total_timeout, connect=connect_timeout, read=read_timeout, write=write_timeout, pool=pool_timeout)
 
     def _resolve_llm_config(self) -> tuple[str, str, str]:
         """Returns (base_url, api_key, model) for the current provider."""
@@ -2778,17 +2780,28 @@ class AiService:
         }
         if enable_thinking:
             payload["enable_thinking"] = True
-        with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as client:
-            response = client.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            result = response.json()
+        def _do_request():
+            with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as _client:
+                _resp = _client.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                _resp.raise_for_status()
+                return _resp.json()
+        # 硬超时：用线程池确保不会永久挂死
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+        hard_limit = timeout_seconds + 15.0
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_do_request)
+            try:
+                result = future.result(timeout=hard_limit)
+            except FutureTimeout:
+                future.cancel()
+                raise RuntimeError(f"AI 调用硬超时（{hard_limit:.0f}秒），服务可能不可用")
         text = (
             result.get("choices", [{}])[0]
             .get("message", {})

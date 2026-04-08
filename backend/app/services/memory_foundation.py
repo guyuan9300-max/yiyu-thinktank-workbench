@@ -844,7 +844,35 @@ def refresh_organization_notebook_snapshot(db: Database, client_id: str) -> Orga
         )
         if item
     )
-    confidence = _ratio(filled, 8)
+    notebook_score = _ratio(filled, 8)  # 0~1
+
+    # 综合 confidence：notebook 字段完整度 + 文档丰富度 + 记忆密度 + DNA 覆盖度
+    doc_count = int(db.scalar("SELECT COUNT(*) FROM knowledge_documents WHERE client_id = ?", (client_id,)) or 0)
+    memory_fact_count = int(db.scalar("SELECT COUNT(*) FROM memory_facts WHERE scope_type = 'client' AND scope_id = ?", (client_id,)) or 0)
+    dna_count = len(dna_rows)
+    surrogate_count = int(db.scalar("SELECT COUNT(*) FROM knowledge_surrogates WHERE client_id = ?", (client_id,)) or 0)
+    event_line_count = len(linked_event_lines)
+
+    # 文档丰富度：0~1，10份=0.3，50份=0.7，100份=0.9，200+=1.0
+    doc_score = min(1.0, doc_count / 200) if doc_count > 0 else 0
+    # 记忆密度：0~1，10条=0.2，50条=0.6，100+=1.0
+    memory_score = min(1.0, memory_fact_count / 100) if memory_fact_count > 0 else 0
+    # DNA 覆盖：0~1，4个模块全有=1.0
+    dna_score = min(1.0, dna_count / 4)
+    # 知识代理：0~1（文档被深度处理的比例）
+    surrogate_score = min(1.0, surrogate_count / max(doc_count, 1))
+    # 事件线活跃度
+    eline_score = min(1.0, event_line_count / 3) if event_line_count > 0 else 0
+
+    # 加权综合：notebook 30% + 文档 25% + 记忆 20% + DNA 15% + 事件线 10%
+    confidence = round(
+        notebook_score * 0.30
+        + doc_score * 0.25
+        + memory_score * 0.20
+        + dna_score * 0.15
+        + eline_score * 0.10,
+        2
+    )
     updated_candidates = [
         _coerce_text(client_row["updated_at"]),
         *[_coerce_text(row["updated_at"]) for row in dna_rows],

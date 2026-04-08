@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   BrainCircuit, Sparkles, FileText, CheckCircle, MessageCircle,
   GitBranch, BookOpen, Award, Layers, ChevronDown,
@@ -7,6 +7,7 @@ import {
   ArrowLeft, AlertTriangle, ChevronRight, XCircle,
   Users, Flag, AlertOctagon, HelpCircle, CornerDownRight
 } from 'lucide-react';
+import { getBrainDashboard, type BrainDashboard, type BrainPulse, type BrainClientData } from '../../lib/api';
 
 // --- Mock Data ---
 
@@ -528,7 +529,21 @@ function ProjectDetailView({ clientId, onBack }: { clientId: string; onBack: () 
 
 // ================= TAB CONTENT =================
 
-function PulseTab() {
+function PulseTab({ pulse }: { pulse: BrainPulse | null }) {
+  const p = pulse;
+  const metrics1 = [
+    { icon: BrainCircuit, label: '组织记忆', value: p ? p.memoryCount.toLocaleString() : '...' },
+    { icon: FileText, label: '资料归档', value: p ? p.docCount.toLocaleString() : '...' },
+    { icon: CheckCircle, label: '任务追踪', value: p ? p.taskCount.toLocaleString() : '...' },
+    { icon: MessageCircle, label: 'AI 对话', value: p ? p.chatCount.toLocaleString() : '...' },
+  ];
+  const metrics2 = [
+    { icon: GitBranch, label: '事件线', value: p ? p.eventLineCount.toLocaleString() : '...' },
+    { icon: BookOpen, label: '知识画像', value: p ? p.dnaCount.toLocaleString() : '...' },
+    { icon: Award, label: '成长徽章', value: p ? p.badgeCount.toLocaleString() : '...' },
+    { icon: Layers, label: '经验沉淀', value: p ? p.handbookCount.toLocaleString() : '...' },
+  ];
+
   return (
     <div className="space-y-6">
       <div className="rounded-[32px] border border-blue-100 p-8 bg-white" style={{ backgroundImage: 'radial-gradient(circle at 10% 10%, rgba(59, 130, 246, 0.08), transparent 50%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)', boxShadow: '0 20px 40px -15px rgba(15,23,42,0.05)' }}>
@@ -539,21 +554,21 @@ function PulseTab() {
             </div>
             <div>
               <div className="text-[22px] font-bold text-slate-800 tracking-tight flex items-baseline gap-2">
-                已陪伴 <span className="tabular-nums text-2xl text-blue-600">287</span> 天
+                已陪伴 <span className="tabular-nums text-2xl text-blue-600">{p ? p.daysAccompanied : '...'}</span> 天
               </div>
               <div className="text-[12px] font-medium text-slate-400 mt-1 flex items-center gap-1.5">
-                <Clock size={12} /> 从 2025年6月23日 起
+                <Clock size={12} /> {p ? `${p.reviewCount} 次复盘 · ${p.meetingCount} 场会议` : '加载中...'}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-1.5 bg-emerald-50 text-emerald-600 px-4 py-2 rounded-full border border-emerald-100/50 shadow-sm">
             <Sparkles size={14} />
-            <span className="text-[12px] font-semibold">本周 +23 条新记忆</span>
+            <span className="text-[12px] font-semibold">本周 +{p ? p.weeklyNewFacts : '...'} 条新记忆</span>
           </div>
         </div>
         <div className="space-y-4">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {PULSE_METRICS_1.map((m, i) => (
+            {metrics1.map((m, i) => (
               <div key={i} className="bg-white/80 border border-slate-100 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-center gap-2">
                   <m.icon size={16} className="text-blue-500" />
@@ -564,7 +579,7 @@ function PulseTab() {
             ))}
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {PULSE_METRICS_2.map((m, i) => (
+            {metrics2.map((m, i) => (
               <div key={i} className="bg-white/80 border border-slate-100 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-center gap-2">
                   <m.icon size={16} className="text-indigo-400" />
@@ -732,17 +747,18 @@ function ThoughtsTab({ onCreateTask }: { onCreateTask?: (payload: ThoughtTaskPay
   );
 }
 
-function ClientsTab({ onOpenDetail }: { onOpenDetail: (name: string) => void }) {
+function ClientsTab({ onOpenDetail, clients }: { onOpenDetail: (name: string) => void; clients: BrainClientData[] }) {
+  const sorted = [...clients].sort((a, b) => b.confidence - a.confidence);
   return (
     <div>
       <div className="flex items-center justify-between mb-6 px-2">
         <h2 className="text-[15px] font-bold text-slate-800 flex items-center gap-2">
           <FolderTree size={18} className="text-indigo-500" /> 项目认知图谱
         </h2>
-        <span className="text-[12px] font-medium text-slate-400">目前收录 7 个项目空间</span>
+        <span className="text-[12px] font-medium text-slate-400">目前收录 {clients.length} 个项目空间</span>
       </div>
       <div className="columns-1 md:columns-2 gap-5 space-y-5">
-        {CLIENTS_DNA_DATA.map((client, i) => (
+        {sorted.map((client, i) => (
           <div
             key={i}
             onClick={() => onOpenDetail(client.name)}
@@ -767,11 +783,22 @@ function ClientsTab({ onOpenDetail }: { onOpenDetail: (name: string) => void }) 
                 </span>
               </div>
             </div>
-            <p className="text-[13px] leading-[1.8] text-slate-600 font-medium mb-5 line-clamp-3">
-              "{client.desc}"
-            </p>
+            {client.intro ? (
+              <p className="text-[13px] leading-[1.8] text-slate-600 font-medium mb-5 line-clamp-3">
+                {client.intro}
+              </p>
+            ) : (
+              <p className="text-[13px] leading-[1.8] text-slate-400 italic mb-5">
+                系统对这个项目的了解还很初步
+              </p>
+            )}
             <div className="flex flex-wrap gap-x-4 gap-y-2 mb-4 pt-4 border-t border-slate-50">
-              {client.metrics.map((metric, idx) => (
+              {[
+                { icon: Folder, label: `${client.docs} 文档` },
+                { icon: FileText, label: `${client.dna} 篇 DNA` },
+                { icon: Activity, label: `${client.eventLines} 事件线` },
+                { icon: BrainCircuit, label: `${client.memoryFacts} 条记忆` },
+              ].map((metric, idx) => (
                 <span key={idx} className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
                   <metric.icon size={12} className="text-slate-300" />
                   {metric.label}
@@ -810,12 +837,21 @@ export type StrategicBrainViewProps = {
 };
 
 export function StrategicBrainView({ onCreateTaskFromThought }: StrategicBrainViewProps) {
-  const [selectedClient, setSelectedClient] = useState(CLIENTS[0]);
+  const [selectedClient, setSelectedClient] = useState('全部客户');
   const [activeTab, setActiveTab] = useState('pulse');
   const [viewState, setViewState] = useState<{ type: 'tabs'; detailId: null } | { type: 'detail'; detailId: string }>({ type: 'tabs', detailId: null });
   const [isOpen, setIsOpen] = useState(false);
+  const [dashboard, setDashboard] = useState<BrainDashboard | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   useClickOutside(dropdownRef, () => setIsOpen(false));
+
+  useEffect(() => {
+    getBrainDashboard()
+      .then(setDashboard)
+      .catch(() => setDashboard(null));
+  }, []);
+
+  const clientNames = ['全部客户', ...(dashboard?.clients.map(c => c.name) || [])];
 
   if (viewState.type === 'detail') {
     return (
@@ -850,7 +886,7 @@ export function StrategicBrainView({ onCreateTaskFromThought }: StrategicBrainVi
             </button>
             {isOpen && (
               <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-100 rounded-2xl shadow-xl py-1.5 z-50 overflow-hidden">
-                {CLIENTS.map(client => (
+                {clientNames.map(client => (
                   <button
                     key={client}
                     type="button"
@@ -885,9 +921,9 @@ export function StrategicBrainView({ onCreateTaskFromThought }: StrategicBrainVi
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="max-w-full mx-auto">
-          {activeTab === 'pulse' && <PulseTab />}
+          {activeTab === 'pulse' && <PulseTab pulse={dashboard?.pulse ?? null} />}
           {activeTab === 'thoughts' && <ThoughtsTab onCreateTask={onCreateTaskFromThought} />}
-          {activeTab === 'clients' && <ClientsTab onOpenDetail={(name) => setViewState({ type: 'detail', detailId: name })} />}
+          {activeTab === 'clients' && <ClientsTab clients={dashboard?.clients ?? []} onOpenDetail={(name) => setViewState({ type: 'detail', detailId: name })} />}
           {activeTab === 'learning' && <LearningTab />}
         </div>
       </div>
