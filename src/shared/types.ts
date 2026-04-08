@@ -2356,6 +2356,83 @@ export interface FeishuUserBindingStartResult {
   qrBlockedReason?: string | null;
 }
 
+export interface OrgMembershipSummary {
+  hasOrganization: boolean;
+  organizationId?: string | null;
+  organizationName?: string | null;
+}
+
+export interface OrgFeishuIntegrationAuditRecord {
+  id: string;
+  organizationId: string;
+  actorUserId?: string | null;
+  actorName?: string | null;
+  appId: string;
+  callbackMode: 'cloud_relay' | 'custom';
+  customCallbackUrl: string;
+  effectiveCallbackUrl: string;
+  validationStatus: 'success' | 'failed';
+  validationMessage: string;
+  createdAt: string;
+}
+
+export interface OrgFeishuIntegration {
+  organizationId?: string | null;
+  organizationName?: string | null;
+  appId: string;
+  callbackMode: 'cloud_relay' | 'custom';
+  customCallbackUrl: string;
+  effectiveCallbackUrl: string;
+  enabled: boolean;
+  hasAppSecret: boolean;
+  configuredBy?: string | null;
+  configuredAt?: string | null;
+  updatedAt: string;
+  lastValidationStatus: 'idle' | 'success' | 'failed';
+  lastValidationMessage?: string | null;
+  authorizationReady: boolean;
+  authorizationBlockedReason?: string | null;
+  recentAudits: OrgFeishuIntegrationAuditRecord[];
+}
+
+export interface OrgFeishuIntegrationPayload {
+  appId?: string;
+  callbackMode?: 'cloud_relay' | 'custom';
+  customCallbackUrl?: string | null;
+  appSecret?: string;
+  clearAppSecret?: boolean;
+}
+
+export interface FeishuMemberAuthorization {
+  linked: boolean;
+  readyForAuthorization: boolean;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  appId: string;
+  userId: string;
+  openId?: string | null;
+  unionId?: string | null;
+  feishuUserId?: string | null;
+  name?: string | null;
+  enName?: string | null;
+  avatarUrl?: string | null;
+  email?: string | null;
+  tenantKey?: string | null;
+  boundAt?: string | null;
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  blockedReason?: string | null;
+}
+
+export interface FeishuMemberAuthorizationStartResult {
+  authorizeUrl: string;
+  state: string;
+  expiresAt: string;
+  callbackUrl: string;
+  qrReady: boolean;
+  qrBlockedReason?: string | null;
+}
+
 export interface TopicRadar {
   id: string;
   title: string;
@@ -3275,6 +3352,58 @@ export interface AuthLoginPayload {
   email: string;
   password: string;
   rememberMe?: boolean;
+}
+
+export interface RememberedCloudAuthAccount {
+  email: string;
+  fullName: string;
+  password: string;
+  updatedAt: string;
+}
+
+export interface LocalInputMemoryCloudAuth {
+  rememberInputs: boolean;
+  lastEmail?: string | null;
+  accounts: RememberedCloudAuthAccount[];
+}
+
+export interface LocalInputMemoryAiSettings {
+  rememberApiKey: boolean;
+  apiKey: string;
+}
+
+export interface LocalInputMemoryFeishuIntegration {
+  rememberInputs: boolean;
+  appId: string;
+  callbackMode: 'cloud_relay' | 'custom';
+  customCallbackUrl: string;
+  appSecret: string;
+}
+
+export interface LocalInputMemory {
+  cloudAuth: LocalInputMemoryCloudAuth;
+  aiSettings: LocalInputMemoryAiSettings;
+  feishuIntegration: LocalInputMemoryFeishuIntegration;
+}
+
+export interface SaveCloudAuthInputMemoryPayload {
+  rememberInputs: boolean;
+  email: string;
+  fullName?: string | null;
+  password?: string | null;
+}
+
+export interface SaveAiInputMemoryPayload {
+  rememberApiKey: boolean;
+  apiKey?: string | null;
+}
+
+export interface SaveFeishuInputMemoryPayload {
+  rememberInputs: boolean;
+  appId?: string | null;
+  callbackMode?: 'cloud_relay' | 'custom';
+  customCallbackUrl?: string | null;
+  appSecret?: string | null;
 }
 
 export interface EmployeeRolePayload {

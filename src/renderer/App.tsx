@@ -86,8 +86,12 @@ import type {
   EventLine,
   EventLineClarificationDraftResult,
   EventLineDetail,
+  FeishuMemberAuthorization,
+  FeishuMemberAuthorizationStartResult,
   FeishuBotSettings,
   FeishuBotSettingsPayload,
+  OrgFeishuIntegration,
+  OrgFeishuIntegrationPayload,
   FeishuUserBinding,
   GrowthContextLink,
   HandbookEntry,
@@ -96,6 +100,7 @@ import type {
   HierarchyReport,
   KnowledgeSearchResult,
   LegacyScanReport,
+  LocalInputMemory,
   MentionCandidate,
   OrganizationDnaModule,
   Operator,
@@ -197,11 +202,16 @@ import {
   getProjectModuleDetail,
   getEmployees,
   backfillOrgTaskLinks,
+  clearFeishuMemberAuthorization,
+  getFeishuMemberAuthorization,
   getFeishuBotSettings,
+  getOrgFeishuIntegration,
+  getOrgMembershipSummary,
   getFeishuUserBinding,
   getHealth,
   getHandbook,
   getHandbookSettings,
+  getLocalInputMemory,
   getMentionCandidates,
   getOrganizationDna,
   getOrgModelProfile,
@@ -247,6 +257,9 @@ import {
   rejectEmployeeReview,
   resolveMeeting,
   runAnalysis,
+  saveAiInputMemory,
+  saveCloudAuthInputMemory,
+  saveFeishuInputMemory,
   scanLegacy,
   searchClientKnowledge,
   getClientAnalysisRun,
@@ -258,8 +271,10 @@ import {
   addEventLineNote,
   adoptTaskSmartBriefAction,
   updateEventLine,
+  saveOrgFeishuIntegration,
   updateFeishuBotSettings,
   clearFeishuUserBinding,
+  startFeishuMemberAuthorization,
   startFeishuUserBinding,
   updateClient,
   updateClientWorkspaceSettings,
@@ -313,7 +328,7 @@ import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './co
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { BrandLogoMark, BrandLogoSettingsCard } from './components/settings/BrandLogoSettingsCard';
-import { FeishuAccountBindingPanel, type FeishuBindingFlowState } from './components/settings/FeishuAccountBindingPanel';
+import { FeishuOrgIntegrationPanel, type FeishuAuthorizationFlowState } from './components/settings/FeishuOrgIntegrationPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
@@ -720,6 +735,97 @@ const DEFAULT_FEISHU_USER_BINDING: FeishuUserBinding = {
   lastVerifiedAt: null,
   lastError: null,
 };
+
+const DEFAULT_ORG_MEMBERSHIP_SUMMARY: OrgMembershipSummary = {
+  hasOrganization: false,
+  organizationId: null,
+  organizationName: null,
+};
+
+const DEFAULT_ORG_FEISHU_INTEGRATION: OrgFeishuIntegration = {
+  organizationId: null,
+  organizationName: null,
+  appId: '',
+  callbackMode: 'cloud_relay',
+  customCallbackUrl: '',
+  effectiveCallbackUrl: '',
+  enabled: false,
+  hasAppSecret: false,
+  configuredBy: null,
+  configuredAt: null,
+  updatedAt: '',
+  lastValidationStatus: 'idle',
+  lastValidationMessage: null,
+  authorizationReady: false,
+  authorizationBlockedReason: null,
+  recentAudits: [],
+};
+
+const DEFAULT_FEISHU_MEMBER_AUTHORIZATION: FeishuMemberAuthorization = {
+  linked: false,
+  readyForAuthorization: false,
+  organizationId: null,
+  organizationName: null,
+  appId: '',
+  userId: '',
+  openId: null,
+  unionId: null,
+  feishuUserId: null,
+  name: null,
+  enName: null,
+  avatarUrl: null,
+  email: null,
+  tenantKey: null,
+  boundAt: null,
+  lastVerifiedAt: null,
+  lastError: null,
+  blockedReason: null,
+};
+
+const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
+  cloudAuth: {
+    rememberInputs: true,
+    lastEmail: null,
+    accounts: [],
+  },
+  aiSettings: {
+    rememberApiKey: false,
+    apiKey: '',
+  },
+  feishuIntegration: {
+    rememberInputs: false,
+    appId: '',
+    callbackMode: 'cloud_relay',
+    customCallbackUrl: '',
+    appSecret: '',
+  },
+};
+
+const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
+  authenticated: true,
+  sessionMode: 'local',
+  user: {
+    id: 'local-device-user',
+    organizationId: 'local-device',
+    email: 'local@device.yiyu',
+    fullName: '本机用户',
+    primaryRole: 'employee',
+    accountStatus: 'approved',
+  },
+};
+
+function normalizeAuthStateForDesktop(state: AuthState | null | undefined): AuthState {
+  if (state?.authenticated && state.user) {
+    return {
+      ...state,
+      sessionMode: state.sessionMode || 'cloud',
+    };
+  }
+  return {
+    ...DEFAULT_LOCAL_AUTH_STATE,
+    message: state?.message || null,
+  };
+}
 
 const TASK_COLOR_OPTIONS = ['#5B7BFE', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4', '#64748B', '#EC4899'];
 
@@ -3351,7 +3457,7 @@ export default function App() {
   const [workspaceMeetingTranscript, setWorkspaceMeetingTranscript] = useState('');
   const [workspaceMeetingNotes, setWorkspaceMeetingNotes] = useState('');
 
-  const [authState, setAuthState] = useState<AuthState>({ authenticated: false });
+  const [authState, setAuthState] = useState<AuthState>(DEFAULT_LOCAL_AUTH_STATE);
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([]);
   const [employeeReviews, setEmployeeReviews] = useState<EmployeeRecord[]>([]);
   const [settingsState, setSettingsState] = useState<AppSettings | null>(null);
@@ -3399,10 +3505,12 @@ export default function App() {
   const [topicsSettingsState, setTopicsSettingsState] = useState<TopicsSettings>(DEFAULT_TOPICS_SETTINGS);
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
-  const [feishuBotSettingsState, setFeishuBotSettingsState] = useState<FeishuBotSettings>(DEFAULT_FEISHU_BOT_SETTINGS);
-  const [feishuUserBindingState, setFeishuUserBindingState] = useState<FeishuUserBinding>(DEFAULT_FEISHU_USER_BINDING);
-  const [feishuBindingBusyAction, setFeishuBindingBusyAction] = useState<'idle' | 'starting' | 'refreshing' | 'clearing'>('idle');
-  const [feishuBindingFlowState, setFeishuBindingFlowState] = useState<FeishuBindingFlowState | null>(null);
+  const [orgMembershipState, setOrgMembershipState] = useState<OrgMembershipSummary>(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+  const [orgFeishuIntegrationState, setOrgFeishuIntegrationState] = useState<OrgFeishuIntegration>(DEFAULT_ORG_FEISHU_INTEGRATION);
+  const [feishuMemberAuthorizationState, setFeishuMemberAuthorizationState] = useState<FeishuMemberAuthorization>(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+  const [feishuAuthorizationBusyAction, setFeishuAuthorizationBusyAction] = useState<'idle' | 'starting' | 'refreshing' | 'clearing'>('idle');
+  const [feishuAuthorizationFlowState, setFeishuAuthorizationFlowState] = useState<FeishuAuthorizationFlowState | null>(null);
+  const [isSavingOrgFeishuIntegration, setIsSavingOrgFeishuIntegration] = useState(false);
 
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [currentClientId, setCurrentClientId] = useState<string>('');
@@ -3450,10 +3558,12 @@ export default function App() {
     password: '',
     confirmPassword: '',
     rememberMe: true,
+    rememberInputs: true,
   });
   const [cloudAuthSubmitting, setCloudAuthSubmitting] = useState(false);
   const [cloudAuthMessage, setCloudAuthMessage] = useState('');
   const [cloudAuthShowPassword, setCloudAuthShowPassword] = useState(false);
+  const [localInputMemoryState, setLocalInputMemoryState] = useState<LocalInputMemory>(DEFAULT_LOCAL_INPUT_MEMORY);
   const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
   const [draft, setDraft] = useState({
     currentOperatorId: settingsState?.currentOperatorId || '',
@@ -3461,6 +3571,7 @@ export default function App() {
     aiModel: settingsState?.aiModel || providerDefaultModels.doubao,
     apiKey: '',
   });
+  const [rememberAiInputKey, setRememberAiInputKey] = useState(false);
   const [taskSettingsDraft, setTaskSettingsDraft] = useState<TaskSettings>(taskSettingsState || DEFAULT_TASK_SETTINGS);
   const [tagManageDraft, setTagManageDraft] = useState({ name: '', scope: canManagePublicTaskTaxonomy ? 'org' as const : 'self' as const, color: TASK_COLOR_OPTIONS[0] });
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
@@ -3569,9 +3680,23 @@ export default function App() {
   };
 
   const openCloudAuthModal = (mode: 'login' | 'register' = 'login') => {
+    const rememberedCloudAccount =
+      (localInputMemoryState.cloudAuth.lastEmail
+        ? localInputMemoryState.cloudAuth.accounts.find((account) => account.email === localInputMemoryState.cloudAuth.lastEmail)
+        : null)
+      || localInputMemoryState.cloudAuth.accounts[0]
+      || null;
     setCloudAuthMode(mode);
     setCloudAuthMessage('');
     setCloudAuthShowPassword(false);
+    setCloudAuthForm({
+      email: rememberedCloudAccount?.email || '',
+      fullName: mode === 'register' ? (rememberedCloudAccount?.fullName || '') : '',
+      password: rememberedCloudAccount?.password || '',
+      confirmPassword: mode === 'register' ? (rememberedCloudAccount?.password || '') : '',
+      rememberMe: true,
+      rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
+    });
     setCloudAuthModalOpen(true);
   };
 
@@ -3585,6 +3710,14 @@ export default function App() {
       }));
     }
   }, [settingsState]);
+
+  useEffect(() => {
+    setDraft((prev) => ({
+      ...prev,
+      apiKey: localInputMemoryState.aiSettings.rememberApiKey ? localInputMemoryState.aiSettings.apiKey : '',
+    }));
+    setRememberAiInputKey(localInputMemoryState.aiSettings.rememberApiKey);
+  }, [localInputMemoryState.aiSettings.apiKey, localInputMemoryState.aiSettings.rememberApiKey]);
 
   useEffect(() => {
     setTaskSettingsDraft(effectiveTaskSettings);
@@ -3840,9 +3973,27 @@ export default function App() {
     );
   }
 
-  async function loadFeishuUserBindingBlock() {
-    const response = await getFeishuUserBinding();
-    setFeishuUserBindingState(response);
+  async function loadLocalInputMemoryBlock() {
+    const response = await getLocalInputMemory();
+    setLocalInputMemoryState(response);
+    return response;
+  }
+
+  async function loadOrgMembershipBlock() {
+    const response = await getOrgMembershipSummary();
+    setOrgMembershipState(response);
+    return response;
+  }
+
+  async function loadOrgFeishuIntegrationBlock() {
+    const response = await getOrgFeishuIntegration();
+    setOrgFeishuIntegrationState(response);
+    return response;
+  }
+
+  async function loadFeishuMemberAuthorizationBlock() {
+    const response = await getFeishuMemberAuthorization();
+    setFeishuMemberAuthorizationState(response);
     return response;
   }
 
@@ -3888,14 +4039,12 @@ export default function App() {
     return response;
   }
 
-  async function loadSystemAdminSettingsBlock(includeOrgModel = currentSessionUser?.primaryRole === 'admin') {
-    const [response, feishuSettings, orgModel] = await Promise.all([
+  async function loadSystemAdminSettingsBlock(includeOrgModel = authState.sessionMode === 'cloud') {
+    const [response, orgModel] = await Promise.all([
       getSystemAdminSettings(),
-      getFeishuBotSettings(),
       includeOrgModel ? getOrgModelProfile() : Promise.resolve(EMPTY_ORG_MODEL_SETTINGS),
     ]);
     setSystemAdminSettingsState(response);
-    setFeishuBotSettingsState(feishuSettings);
     setOrgModelState(orgModel);
     return response;
   }
@@ -3928,14 +4077,14 @@ export default function App() {
       case 'org_departments':
       case 'org_people':
       case 'org_rules':
-        await loadSystemAdminSettingsBlock(currentSessionUser?.primaryRole === 'admin');
+        await loadSystemAdminSettingsBlock(authState.sessionMode === 'cloud');
         break;
     }
     setSettingsSectionLoaded((prev) => ({ ...prev, [section]: true }));
   }
 
   async function loadAuthBlock() {
-    const response = await getAuthState();
+    const response = normalizeAuthStateForDesktop(await getAuthState());
     setAuthState(response);
     return response;
   }
@@ -4083,10 +4232,11 @@ export default function App() {
       try {
         markLoadingPhase('正在读取系统设置…');
         await loadSettingsBlock();
+        await loadLocalInputMemoryBlock();
       } catch (settingsError) {
         if (isLocalServiceStartupError(settingsError)) {
           window.setTimeout(() => {
-            void loadSettingsBlock().catch(() => undefined);
+            void Promise.all([loadSettingsBlock(), loadLocalInputMemoryBlock()]).catch(() => undefined);
           }, 1500);
         } else {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
@@ -4106,16 +4256,32 @@ export default function App() {
           { name: 'topics', run: () => loadTopicsBlock() },
           { name: 'handbook', run: () => loadHandbookBlock() },
           {
-            name: 'feishu-user-binding',
+            name: 'org-membership',
             run: () =>
-              loadFeishuUserBindingBlock().catch(() => {
-                setFeishuUserBindingState(DEFAULT_FEISHU_USER_BINDING);
-                return DEFAULT_FEISHU_USER_BINDING;
+              loadOrgMembershipBlock().catch(() => {
+                setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+                return DEFAULT_ORG_MEMBERSHIP_SUMMARY;
+              }),
+          },
+          {
+            name: 'org-feishu-integration',
+            run: () =>
+              loadOrgFeishuIntegrationBlock().catch(() => {
+                setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
+                return DEFAULT_ORG_FEISHU_INTEGRATION;
+              }),
+          },
+          {
+            name: 'feishu-member-authorization',
+            run: () =>
+              loadFeishuMemberAuthorizationBlock().catch(() => {
+                setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+                return DEFAULT_FEISHU_MEMBER_AUTHORIZATION;
               }),
           },
           {
             name: 'system-admin-settings',
-            run: () => loadSystemAdminSettingsBlock(nextAuth.user?.primaryRole === 'admin'),
+            run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud'),
           },
           {
             name: 'review-governance',
@@ -4171,7 +4337,6 @@ export default function App() {
         } else {
           setEmployeeReviews([]);
           setReviewGovernanceState(EMPTY_REVIEW_GOVERNANCE_SETTINGS);
-          setOrgModelState(EMPTY_ORG_MODEL_SETTINGS);
         }
       } else {
         markLoadingPhase('正在切换到登录态…');
@@ -4197,10 +4362,11 @@ export default function App() {
         setTopicsSettingsState(DEFAULT_TOPICS_SETTINGS);
         setHandbookSettingsState(DEFAULT_HANDBOOK_SETTINGS);
         setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
-        setFeishuBotSettingsState(DEFAULT_FEISHU_BOT_SETTINGS);
-        setFeishuUserBindingState(DEFAULT_FEISHU_USER_BINDING);
-        setFeishuBindingBusyAction('idle');
-        setFeishuBindingFlowState(null);
+        setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
+        setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
+        setFeishuAuthorizationBusyAction('idle');
+        setFeishuAuthorizationFlowState(null);
         setSettingsSectionLoaded({
           overview: true,
           org_dna: false,
@@ -4257,8 +4423,26 @@ export default function App() {
         });
         setAuthState(response);
       }
+      try {
+        const nextLocalInputMemory = await saveCloudAuthInputMemory({
+          rememberInputs: cloudAuthForm.rememberInputs,
+          email: cloudAuthForm.email,
+          fullName: cloudAuthForm.fullName,
+          password: cloudAuthForm.password,
+        });
+        setLocalInputMemoryState(nextLocalInputMemory);
+      } catch (memoryError) {
+        console.warn('[cloud-auth] save local input memory failed', memoryError);
+      }
       await loadAll();
-      setCloudAuthForm({ email: '', fullName: '', password: '', confirmPassword: '', rememberMe: true });
+      setCloudAuthForm({
+        email: '',
+        fullName: '',
+        password: '',
+        confirmPassword: '',
+        rememberMe: true,
+        rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
+      });
       setCloudAuthMessage('');
       setCloudAuthModalOpen(false);
     } catch (error) {
@@ -4276,7 +4460,14 @@ export default function App() {
     if (!isCloudSession) return;
     setCloudAuthModalOpen(false);
     setCloudAuthMessage('');
-    setCloudAuthForm({ email: '', fullName: '', password: '', confirmPassword: '', rememberMe: true });
+    setCloudAuthForm({
+      email: '',
+      fullName: '',
+      password: '',
+      confirmPassword: '',
+      rememberMe: true,
+      rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
+    });
   }, [isCloudSession]);
 
   useEffect(() => {
@@ -4571,15 +4762,23 @@ export default function App() {
   ];
 
   const AuthShell = () => {
-    const createEmptyForm = (email = '') => ({
+    const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
+    const defaultRememberedAccount =
+      (localInputMemoryState.cloudAuth.lastEmail
+        ? rememberedAccounts.find((account) => account.email === localInputMemoryState.cloudAuth.lastEmail)
+        : null)
+      || rememberedAccounts[0]
+      || null;
+    const createEmptyForm = (email = '', fullName = '', password = '') => ({
       email,
-      fullName: '',
-      password: '',
-      confirmPassword: '',
+      fullName,
+      password,
+      confirmPassword: password,
     });
     const [mode, setMode] = useState<'login' | 'register'>('login');
-    const [form, setForm] = useState(() => createEmptyForm());
+    const [form, setForm] = useState(() => createEmptyForm(defaultRememberedAccount?.email || '', defaultRememberedAccount?.fullName || '', defaultRememberedAccount?.password || ''));
     const [rememberMe, setRememberMe] = useState(true);
+    const [rememberInputs, setRememberInputs] = useState(localInputMemoryState.cloudAuth.rememberInputs);
     const [showPassword, setShowPassword] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [message, setMessage] = useState(authState.message || '');
@@ -4588,7 +4787,7 @@ export default function App() {
       setMode(nextMode);
       setMessage('');
       if (nextMode === 'register') {
-        setForm(createEmptyForm(form.email));
+        setForm(createEmptyForm(form.email, form.fullName, form.password));
         return;
       }
       setRememberMe(true);
@@ -4605,12 +4804,22 @@ export default function App() {
             password: form.password,
           });
           setAuthState(response);
-          await loadAll();
         } else {
           const response = await login({ email: form.email, password: form.password, rememberMe });
           setAuthState(response);
-          await loadAll();
         }
+        try {
+          const nextLocalInputMemory = await saveCloudAuthInputMemory({
+            rememberInputs,
+            email: form.email,
+            fullName: form.fullName,
+            password: form.password,
+          });
+          setLocalInputMemoryState(nextLocalInputMemory);
+        } catch (memoryError) {
+          console.warn('[auth-shell] save local input memory failed', memoryError);
+        }
+        await loadAll();
       } catch (error) {
         setMessage(error instanceof Error ? error.message : '提交失败');
       } finally {
@@ -4667,6 +4876,23 @@ export default function App() {
             <div className="space-y-4">
               {mode === 'login' && (
                 <>
+                  {rememberedAccounts.length > 0 && (
+                    <select
+                      value={form.email}
+                      onChange={(event) => {
+                        const selected = rememberedAccounts.find((account) => account.email === event.target.value);
+                        setForm(createEmptyForm(selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
+                      }}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                    >
+                      <option value="">选择已记住的账号（可选）</option>
+                      {rememberedAccounts.map((account) => (
+                        <option key={account.email} value={account.email}>
+                          {account.fullName ? `${account.fullName} · ${account.email}` : account.email}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                   <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                   <div className="flex gap-3">
@@ -4679,13 +4905,17 @@ export default function App() {
                       <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
                     </label>
                   </div>
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                    记住这组账号和密码（仅本机）
+                    <input type="checkbox" checked={rememberInputs} onChange={(event) => setRememberInputs(event.target.checked)} />
+                  </label>
                 </>
               )}
               {mode === 'register' && (
                 <>
                   <div className="rounded-2xl border border-blue-100 bg-[#F8FAFF] px-4 py-3">
                     <p className="text-[12px] font-bold text-[#5B7BFE]">个人账号注册</p>
-                    <p className="mt-1 text-[12px] text-gray-500">先完成个人注册并直接登录。加入组织、填写邀请码、切换部门等动作放到登录后设置里处理。</p>
+                    <p className="mt-1 text-[12px] text-gray-500">注册账号依赖云端服务；开源版默认不提供云。本机模式可直接使用，后续接好云端后再注册、同步和加入组织。</p>
                   </div>
                   <div className="space-y-4">
                     <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
@@ -4704,6 +4934,10 @@ export default function App() {
                     <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
                       显示密码
                       <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
+                    </label>
+                    <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
+                      记住这组账号和密码（仅本机）
+                      <input type="checkbox" checked={rememberInputs} onChange={(event) => setRememberInputs(event.target.checked)} />
                     </label>
                   </div>
                 </>
@@ -4753,6 +4987,7 @@ export default function App() {
 
   const CloudAuthModal = () => {
     if (!cloudAuthModalOpen) return null;
+    const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cloudAuthForm.email);
     const registerValid =
       Boolean(cloudAuthForm.fullName.trim())
@@ -4767,7 +5002,11 @@ export default function App() {
             <div>
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">连接云端</p>
               <h2 className="mt-2 text-[24px] font-bold text-gray-900">{cloudAuthMode === 'register' ? '注册个人账号' : '登录云端账号'}</h2>
-              <p className="mt-2 text-[13px] text-gray-500">个人注册和登录不再经过审批；加入组织、切换部门等组织层动作放到登录后处理。</p>
+              <p className="mt-2 text-[13px] text-gray-500">
+                {cloudAuthMode === 'register'
+                  ? '注册账号依赖云端服务；开源版默认不提供云。本机模式可直接使用，接好云端后再注册、同步和加入组织。'
+                  : '登录云端后才会启用云同步、组织协作和需要组织数据的功能。'}
+              </p>
             </div>
             <button
               type="button"
@@ -4803,6 +5042,29 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {rememberedAccounts.length > 0 && (
+                <select
+                  value={cloudAuthForm.email}
+                  onChange={(event) => {
+                    const selected = rememberedAccounts.find((account) => account.email === event.target.value);
+                    setCloudAuthForm((prev) => ({
+                      ...prev,
+                      email: selected?.email || event.target.value,
+                      fullName: cloudAuthMode === 'register' ? (selected?.fullName || '') : prev.fullName,
+                      password: selected?.password || '',
+                      confirmPassword: cloudAuthMode === 'register' ? (selected?.password || '') : '',
+                    }));
+                  }}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
+                >
+                  <option value="">选择已记住的账号（可选）</option>
+                  {rememberedAccounts.map((account) => (
+                    <option key={account.email} value={account.email}>
+                      {account.fullName ? `${account.fullName} · ${account.email}` : account.email}
+                    </option>
+                  ))}
+                </select>
+              )}
               {cloudAuthMode === 'register' && (
                 <input
                   value={cloudAuthForm.fullName}
@@ -4847,6 +5109,14 @@ export default function App() {
                   onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, rememberMe: event.target.checked }))}
                 />
                 记住我的登录状态
+              </label>
+              <label className="flex items-center gap-2 text-[13px] font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={cloudAuthForm.rememberInputs}
+                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, rememberInputs: event.target.checked }))}
+                />
+                记住这组账号和密码（仅本机）
               </label>
             </div>
 
@@ -14147,8 +14417,16 @@ export default function App() {
           aiModel: draft.aiModel,
           apiKey: draft.apiKey.trim() || undefined,
         });
+        const nextLocalInputMemory = await saveAiInputMemory({
+          rememberApiKey: rememberAiInputKey,
+          apiKey: draft.apiKey.trim() || undefined,
+        });
+        setLocalInputMemoryState(nextLocalInputMemory);
         await Promise.all([loadSettingsBlock(), loadLogsBlock()]);
-        setDraft((prev) => ({ ...prev, apiKey: '' }));
+        setDraft((prev) => ({
+          ...prev,
+          apiKey: nextLocalInputMemory.aiSettings.rememberApiKey ? nextLocalInputMemory.aiSettings.apiKey : '',
+        }));
         flash('success', 'AI 设置已保存');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
@@ -14261,108 +14539,119 @@ export default function App() {
       }
     };
 
-    const handleSaveFeishuBotSettings = async (payload: FeishuBotSettingsPayload) => {
-      const next = await updateFeishuBotSettings(payload);
-      setFeishuBotSettingsState(next);
-      if (authState.authenticated) {
-        await loadFeishuUserBindingBlock().catch(() => undefined);
+    const handleSaveOrgFeishuIntegration = async (payload: OrgFeishuIntegrationPayload) => {
+      setIsSavingOrgFeishuIntegration(true);
+      try {
+        const next = await saveOrgFeishuIntegration(payload);
+        setOrgFeishuIntegrationState(next);
+        await Promise.all([
+          loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
+          loadFeishuMemberAuthorizationBlock().catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
+          loadLogsBlock(),
+        ]);
+        flash('success', next.enabled ? '组织飞书接入已验证并生效' : (next.lastValidationMessage || '组织飞书接入保存完成'));
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '组织飞书接入保存失败');
+        throw error;
+      } finally {
+        setIsSavingOrgFeishuIntegration(false);
       }
-      await loadLogsBlock();
-      if (payload.sendTestMessage) {
-        if (next.lastConnectionStatus === 'success') {
-          flash('success', next.lastConnectionMessage || '飞书连接成功，测试消息已发送');
-        } else {
-          flash('error', next.lastConnectionMessage || '飞书连接失败');
-        }
-      } else {
-        flash('success', next.hasAppSecret ? '飞书配置已保存' : '飞书配置已保存，等待补充密钥');
-      }
-      return next;
     };
 
-    const pollFeishuUserBindingUntilLinked = async () => {
-      setFeishuBindingFlowState((current) => (current ? { ...current, isPolling: true } : current));
+    const handleSaveFeishuInputMemory = async (payload: LocalInputMemory['feishuIntegration']) => {
+      const nextLocalInputMemory = await saveFeishuInputMemory({
+        rememberInputs: payload.rememberInputs,
+        appId: payload.appId,
+        callbackMode: payload.callbackMode,
+        customCallbackUrl: payload.customCallbackUrl,
+        appSecret: payload.appSecret,
+      });
+      setLocalInputMemoryState(nextLocalInputMemory);
+    };
+
+    const pollFeishuMemberAuthorizationUntilLinked = async () => {
+      setFeishuAuthorizationFlowState((current) => (current ? { ...current, isPolling: true } : current));
       try {
         let linked = false;
         for (let index = 0; index < 15; index += 1) {
           await new Promise((resolve) => window.setTimeout(resolve, 2000));
-          const next = await getFeishuUserBinding();
-          setFeishuUserBindingState(next);
+          const next = await getFeishuMemberAuthorization();
+          setFeishuMemberAuthorizationState(next);
           if (next.linked) {
             linked = true;
-            setFeishuBindingFlowState(null);
-            flash('success', `已绑定飞书账号：${next.name || next.email || next.openId || '当前用户'}`);
+            setFeishuAuthorizationFlowState(null);
+            flash('success', `成员飞书授权已完成：${next.name || next.email || next.openId || '当前成员'}`);
             break;
           }
         }
         if (!linked) {
-          setFeishuBindingFlowState((current) => (
+          setFeishuAuthorizationFlowState((current) => (
             current
               ? {
                   ...current,
                   isPolling: false,
-                  statusMessage: '授权页已经就绪；完成授权后可点"手动刷新绑定状态"，或重新打开授权页。',
+                  statusMessage: '授权页已经就绪；完成授权后可点“手动刷新授权状态”，或重新打开授权页。',
                 }
               : current
           ));
         }
       } catch (error) {
-        setFeishuBindingFlowState((current) => (
+        setFeishuAuthorizationFlowState((current) => (
           current
             ? {
                 ...current,
                 isPolling: false,
-                statusMessage: error instanceof Error ? error.message : '轮询飞书绑定状态失败',
+                statusMessage: error instanceof Error ? error.message : '轮询成员飞书授权状态失败',
               }
             : current
         ));
       }
     };
 
-    const handleRefreshFeishuUserBinding = async (silent = false) => {
-      setFeishuBindingBusyAction('refreshing');
+    const handleRefreshFeishuMemberAuthorization = async (silent = false) => {
+      setFeishuAuthorizationBusyAction('refreshing');
       try {
-        const next = await loadFeishuUserBindingBlock();
+        const next = await loadFeishuMemberAuthorizationBlock();
         if (next.linked) {
-          setFeishuBindingFlowState(null);
-        } else if (feishuBindingFlowState) {
-          setFeishuBindingFlowState((current) => (
+          setFeishuAuthorizationFlowState(null);
+        } else if (feishuAuthorizationFlowState) {
+          setFeishuAuthorizationFlowState((current) => (
             current
               ? {
                   ...current,
-                  statusMessage: '工作台已刷新绑定状态；如果你刚完成授权但仍未绑定，请重新打开授权页。',
+                  statusMessage: '工作台已刷新成员飞书授权状态；如果你刚完成授权但仍未生效，请重新打开授权页。',
                 }
               : current
           ));
         }
         if (!silent) {
-          flash('success', next.linked ? '飞书绑定状态已刷新' : '当前还没有绑定个人飞书账号');
+          flash('success', next.linked ? '成员飞书授权状态已刷新' : '当前成员还没有完成飞书授权');
         }
         return next;
       } catch (error) {
         if (!silent) {
-          flash('error', error instanceof Error ? error.message : '刷新飞书绑定状态失败');
+          flash('error', error instanceof Error ? error.message : '刷新成员飞书授权状态失败');
         }
         throw error;
       } finally {
-        setFeishuBindingBusyAction('idle');
+        setFeishuAuthorizationBusyAction('idle');
       }
     };
 
-    const handleOpenFeishuBindingInBrowser = async () => {
-      if (!feishuBindingFlowState) return;
+    const handleOpenFeishuAuthorizationInBrowser = async () => {
+      if (!feishuAuthorizationFlowState) return;
       try {
-        await window.yiyuWorkbench.openExternalUrl(feishuBindingFlowState.authorizeUrl);
-        flash('info', '已打开飞书授权页；完成授权后，工作台会自动刷新绑定状态。');
+        await window.yiyuWorkbench.openExternalUrl(feishuAuthorizationFlowState.authorizeUrl);
+        flash('info', '已打开飞书授权页；完成授权后，工作台会自动刷新当前成员的授权状态。');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '打开飞书授权页失败');
       }
     };
 
-    const handleStartFeishuUserBinding = async () => {
-      setFeishuBindingBusyAction('starting');
+    const handleStartFeishuMemberAuthorization = async () => {
+      setFeishuAuthorizationBusyAction('starting');
       try {
-        const started = await startFeishuUserBinding();
+        const started = await startFeishuMemberAuthorization();
         let qrCodeDataUrl: string | null = null;
         if (started.qrReady) {
           try {
@@ -14372,7 +14661,7 @@ export default function App() {
             qrCodeDataUrl = null;
           }
         }
-        setFeishuBindingFlowState({
+        setFeishuAuthorizationFlowState({
           authorizeUrl: started.authorizeUrl,
           callbackUrl: started.callbackUrl,
           expiresAt: started.expiresAt,
@@ -14381,30 +14670,30 @@ export default function App() {
           qrCodeDataUrl,
           isPolling: false,
           statusMessage: started.qrReady
-            ? '请用飞书扫码完成授权；工作台会在后台自动刷新绑定结果。'
-            : started.qrBlockedReason || '当前只支持在这台电脑浏览器里完成授权。',
+            ? '请用飞书扫码完成成员身份授权；工作台会在后台自动刷新结果。'
+            : started.qrBlockedReason || '当前只支持在这台电脑浏览器里继续成员授权。',
         });
-        flash('info', started.qrReady ? '二维码已准备好，请在飞书中扫码授权。' : '当前回调地址不支持手机扫码，请在当前电脑浏览器继续授权。');
-        void pollFeishuUserBindingUntilLinked();
+        flash('info', started.qrReady ? '成员飞书授权二维码已准备好，请在飞书中扫码授权。' : '当前回调地址不支持手机扫码，请在当前电脑浏览器继续授权。');
+        void pollFeishuMemberAuthorizationUntilLinked();
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '发起飞书绑定失败');
+        flash('error', error instanceof Error ? error.message : '发起成员飞书授权失败');
       } finally {
-        setFeishuBindingBusyAction('idle');
+        setFeishuAuthorizationBusyAction('idle');
       }
     };
 
-    const handleClearFeishuUserBinding = async () => {
-      setFeishuBindingBusyAction('clearing');
+    const handleClearFeishuMemberAuthorization = async () => {
+      setFeishuAuthorizationBusyAction('clearing');
       try {
-        const next = await clearFeishuUserBinding();
-        setFeishuUserBindingState(next);
-        setFeishuBindingFlowState(null);
+        const next = await clearFeishuMemberAuthorization();
+        setFeishuMemberAuthorizationState(next);
+        setFeishuAuthorizationFlowState(null);
         await loadLogsBlock();
-        flash('success', '个人飞书绑定已解除');
+        flash('success', '成员飞书授权已解除');
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '解除飞书绑定失败');
+        flash('error', error instanceof Error ? error.message : '解除成员飞书授权失败');
       } finally {
-        setFeishuBindingBusyAction('idle');
+        setFeishuAuthorizationBusyAction('idle');
       }
     };
 
@@ -14412,7 +14701,7 @@ export default function App() {
       {
         group: '账户与服务',
         items: [
-          { key: 'overview', label: '账户与 AI', icon: Settings, helper: '登录信息、AI 模型、飞书绑定、备份与日志' },
+          { key: 'overview', label: '账户与 AI', icon: Settings, helper: '登录信息、AI 模型、飞书协作、备份与日志' },
         ],
       },
       {
@@ -14614,6 +14903,15 @@ export default function App() {
             </select>
             <input value={draft.aiModel} onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))} placeholder="模型名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
             <input type="password" value={draft.apiKey} onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))} placeholder="API Key（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
+            <label className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
+              <input
+                type="checkbox"
+                checked={rememberAiInputKey}
+                onChange={(event) => setRememberAiInputKey(event.target.checked)}
+                disabled={!canManageSensitiveSettings}
+              />
+              记住当前 API Key（仅本机）
+            </label>
             {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
           </div>
         </div>
@@ -14627,16 +14925,25 @@ export default function App() {
           </>
         )}
 
-        <FeishuAccountBindingPanel
-          binding={feishuUserBindingState}
-          busyAction={feishuBindingBusyAction}
+        <FeishuOrgIntegrationPanel
+          sessionMode={authState.sessionMode === 'cloud' ? 'cloud' : 'local'}
+          membership={orgMembershipState}
+          integration={orgFeishuIntegrationState}
+          authorization={feishuMemberAuthorizationState}
           currentUserName={currentSessionUser?.fullName || null}
-          pendingAuthorization={feishuBindingFlowState}
-          onStartBinding={handleStartFeishuUserBinding}
-          onRefresh={async () => { await handleRefreshFeishuUserBinding(); }}
-          onClearBinding={handleClearFeishuUserBinding}
-          onOpenBindingInBrowser={handleOpenFeishuBindingInBrowser}
-          onClosePendingAuthorization={() => setFeishuBindingFlowState(null)}
+          saveBusy={isSavingOrgFeishuIntegration}
+          busyAction={feishuAuthorizationBusyAction}
+          pendingAuthorization={feishuAuthorizationFlowState}
+          rememberedInputs={localInputMemoryState.feishuIntegration}
+          onSaveIntegration={handleSaveOrgFeishuIntegration}
+          onSaveRememberedInputs={handleSaveFeishuInputMemory}
+          onStartAuthorization={handleStartFeishuMemberAuthorization}
+          onRefreshAuthorization={handleRefreshFeishuMemberAuthorization}
+          onClearAuthorization={handleClearFeishuMemberAuthorization}
+          onOpenAuthorizationInBrowser={handleOpenFeishuAuthorizationInBrowser}
+          onClosePendingAuthorization={() => setFeishuAuthorizationFlowState(null)}
+          onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
+          onOpenCloudAuth={() => openCloudAuthModal('login')}
         />
 
         <BrandLogoSettingsCard
@@ -15170,14 +15477,15 @@ export default function App() {
     const renderSystemAdminSection = (initialAdvancedTab: OrgModelTab | null = null) => (
       <div className="space-y-6">
         {currentSessionUser?.primaryRole === 'admin' && (
-          <>
-          {EmployeeReviewPanel()}
+          <>{EmployeeReviewPanel()}</>
+        )}
+        {authState.sessionMode === 'cloud' ? (
           <OrganizationSetupCenter
             value={orgModelDraft}
             organizationDnaModules={organizationDnaModules}
             departmentCatalog={departmentOptions}
             employees={employeeReviews}
-            canEdit={canManageSensitiveSettings}
+            canEdit
             isSaving={isSavingOrgModel}
             activeWeekLabel={currentWeekLabel()}
             initialAdvancedTab={initialAdvancedTab}
@@ -15185,7 +15493,10 @@ export default function App() {
             onSave={(nextDraft) => handleSaveOrgModel(nextDraft)}
             onOpenSection={(section) => setSettingsSection(section)}
           />
-          </>
+        ) : (
+          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm text-[13px] text-gray-600 leading-6">
+            连接云端并加入或创建组织后，才能继续配置组织结构、邀请码与飞书协作底座。
+          </div>
         )}
 
       </div>

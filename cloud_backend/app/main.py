@@ -43,17 +43,23 @@ from app.models import (
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
     FeishuBindingRelaySessionStatusRecord,
+    FeishuMemberAuthorizationRecord,
+    FeishuMemberAuthorizationStartResponse,
     AdminResetPasswordPayload,
     ChangePasswordPayload,
     LoginPayload,
     ManagementSignalCardRecord,
     MentionCandidate,
     OrgDepartmentRecord,
+    OrgFeishuIntegrationAuditRecord,
+    OrgFeishuIntegrationRecord,
+    OrgFeishuIntegrationSavePayload,
     OrgDepartmentPlanItemRecord,
     OrgDepartmentPlanRecord,
     OrgDepartmentQuarterPlanRecord,
     OrgEmployeeBindingRecord,
     OrgFocusItemRecord,
+    OrgMembershipSummaryRecord,
     OrgModelProfileRecord,
     OrgProfileRecord,
     OrgQuarterPlanRecord,
@@ -2544,6 +2550,310 @@ def _render_feishu_relay_callback_page(title: str, detail: str, *, success: bool
     return HTMLResponse(markup)
 
 
+def _normalize_feishu_custom_callback_url(value: str | None) -> str:
+    return (value or "").strip().rstrip("/")
+
+
+def _is_public_https_feishu_url(url: str | None) -> bool:
+    from urllib.parse import urlparse
+
+    normalized = (url or "").strip()
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    hostname = parsed.hostname or ""
+    return parsed.scheme == "https" and _is_public_hostname(hostname)
+
+
+def _build_org_feishu_callback_url(request: Request, callback_mode: str, custom_callback_url: str) -> tuple[str, str | None]:
+    normalized_custom = _normalize_feishu_custom_callback_url(custom_callback_url)
+    if callback_mode == "custom":
+        if _is_public_https_feishu_url(normalized_custom):
+            return normalized_custom, None
+        return "", "当前自定义回调地址不是可公网访问的 HTTPS 地址，成员暂时还不能授权飞书身份。"
+
+    public_base_url = _resolve_public_base_url(request)
+    if public_base_url and public_base_url.startswith("https://"):
+        return f"{public_base_url}/api/v1/integrations/feishu/member-authorization/callback", None
+    return "", "当前组织飞书应用已验证，但云端还没有可公网访问的 HTTPS 授权回调地址，成员暂时还不能授权飞书身份。"
+
+
+def _feishu_parse_response_json(response) -> dict:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="飞书返回了无法解析的响应。") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="飞书返回了无效的响应结构。")
+    return payload
+
+
+def _raise_for_feishu_api_error(payload: dict, fallback_message: str) -> None:
+    code = payload.get("code", 0)
+    if code == 0:
+        return
+    message = str(payload.get("msg") or payload.get("message") or fallback_message)
+    raise HTTPException(status_code=400, detail=message)
+
+
+def _feishu_fetch_app_access_token(*, app_id: str, app_secret: str) -> tuple[str, dict]:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        response = client.post(
+            "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal",
+            json={"app_id": app_id, "app_secret": app_secret},
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书应用令牌获取失败。")
+    token = str(payload.get("app_access_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="飞书没有返回 app access token。")
+    return token, payload
+
+
+def _feishu_exchange_authorization_code(*, app_access_token: str, app_id: str, app_secret: str, code: str) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        response = client.post(
+            "https://open.feishu.cn/open-apis/authen/v1/access_token",
+            headers={"Authorization": f"Bearer {app_access_token}"},
+            json={
+                "grant_type": "authorization_code",
+                "code": code,
+                "app_id": app_id,
+                "app_secret": app_secret,
+            },
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书授权码换取用户令牌失败。")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="飞书用户令牌响应缺少 data。")
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=400, detail="飞书没有返回用户 access token。")
+    return data
+
+
+def _feishu_fetch_user_info(*, user_access_token: str) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        response = client.get(
+            "https://open.feishu.cn/open-apis/authen/v1/user_info",
+            headers={"Authorization": f"Bearer {user_access_token}"},
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书用户信息获取失败。")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="飞书用户信息响应缺少 data。")
+    return data
+
+
+def _build_feishu_authorize_url(*, app_id: str, redirect_uri: str, state_token: str) -> str:
+    from urllib.parse import urlencode
+
+    query = urlencode({"app_id": app_id, "redirect_uri": redirect_uri, "state": state_token})
+    return f"https://open.feishu.cn/open-apis/authen/v1/index?{query}"
+
+
+def _org_feishu_encrypt(state: AppState, plain_text: str, organization_id: str) -> tuple[str, str]:
+    import base64
+    from hashlib import sha256
+    from os import urandom
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    key = sha256(f"{state.secret_key}:{organization_id}:feishu_config".encode()).digest()
+    nonce = urandom(12)
+    cipher = AESGCM(key)
+    cipher_text = cipher.encrypt(nonce, plain_text.encode("utf-8"), None)
+    return base64.b64encode(cipher_text).decode(), base64.b64encode(nonce).decode()
+
+
+def _org_feishu_decrypt(state: AppState, encrypted_b64: str, nonce_b64: str, organization_id: str) -> str:
+    import base64
+    from hashlib import sha256
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    if not encrypted_b64 or not nonce_b64:
+        return ""
+    key = sha256(f"{state.secret_key}:{organization_id}:feishu_config".encode()).digest()
+    cipher = AESGCM(key)
+    cipher_text = base64.b64decode(encrypted_b64)
+    nonce = base64.b64decode(nonce_b64)
+    return cipher.decrypt(nonce, cipher_text, None).decode("utf-8")
+
+
+def _org_membership_summary(state: AppState, current_user: SessionUser) -> OrgMembershipSummaryRecord:
+    if not current_user.organizationId:
+        return OrgMembershipSummaryRecord(hasOrganization=False)
+    row = state.db.fetchone("SELECT id, name FROM organizations WHERE id = ?", (current_user.organizationId,))
+    if not row:
+        return OrgMembershipSummaryRecord(hasOrganization=False)
+    return OrgMembershipSummaryRecord(
+        hasOrganization=True,
+        organizationId=str(row["id"]),
+        organizationName=str(row["name"]),
+    )
+
+
+def _org_feishu_audit_records(state: AppState, organization_id: str, limit: int = 6) -> list[OrgFeishuIntegrationAuditRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT audit.*, actor.full_name AS actor_name
+        FROM org_feishu_integration_audits AS audit
+        LEFT JOIN employee_accounts AS actor ON actor.id = audit.actor_user_id
+        WHERE audit.organization_id = ?
+        ORDER BY audit.created_at DESC
+        LIMIT ?
+        """,
+        (organization_id, limit),
+    )
+    return [
+        OrgFeishuIntegrationAuditRecord(
+            id=str(row["id"]),
+            organizationId=str(row["organization_id"]),
+            actorUserId=str(row["actor_user_id"]) if row["actor_user_id"] else None,
+            actorName=str(row["actor_name"]) if row["actor_name"] else None,
+            appId=str(row["app_id"] or ""),
+            callbackMode=str(row["callback_mode"] or "cloud_relay"),
+            customCallbackUrl=str(row["custom_callback_url"] or ""),
+            effectiveCallbackUrl=str(row["effective_callback_url"] or ""),
+            validationStatus=str(row["validation_status"] or "failed"),
+            validationMessage=str(row["validation_message"] or ""),
+            createdAt=str(row["created_at"]),
+        )
+        for row in rows
+    ]
+
+
+def _record_org_feishu_audit(
+    state: AppState,
+    current_user: SessionUser,
+    *,
+    app_id: str,
+    callback_mode: str,
+    custom_callback_url: str,
+    effective_callback_url: str,
+    validation_status: Literal["success", "failed"],
+    validation_message: str,
+) -> None:
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_integration_audits(
+            id, organization_id, actor_user_id, app_id, callback_mode, custom_callback_url,
+            effective_callback_url, validation_status, validation_message, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id("feishu_audit"),
+            current_user.organizationId,
+            current_user.id,
+            app_id,
+            callback_mode,
+            custom_callback_url,
+            effective_callback_url,
+            validation_status,
+            validation_message,
+            now_iso(),
+        ),
+    )
+
+
+def _org_feishu_integration_record(state: AppState, current_user: SessionUser, request: Request) -> OrgFeishuIntegrationRecord:
+    membership = _org_membership_summary(state, current_user)
+    if not membership.hasOrganization or not membership.organizationId:
+        return OrgFeishuIntegrationRecord(
+            organizationId=None,
+            organizationName=None,
+            updatedAt=now_iso(),
+            authorizationBlockedReason="你还没有加入任何组织。飞书接通依赖组织信息，请先加入组织或创建组织。",
+        )
+    row = state.db.fetchone(
+        "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
+        (membership.organizationId,),
+    )
+    if not row:
+        return OrgFeishuIntegrationRecord(
+            organizationId=membership.organizationId,
+            organizationName=membership.organizationName,
+            updatedAt=now_iso(),
+            authorizationBlockedReason="当前组织尚未接通飞书，任一组织成员都可先完成接入。",
+            recentAudits=_org_feishu_audit_records(state, membership.organizationId),
+        )
+    configured_by = None
+    if row["configured_by"]:
+        actor_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["configured_by"]),))
+        configured_by = str(actor_row["full_name"]) if actor_row and actor_row["full_name"] else str(row["configured_by"])
+    effective_callback_url = str(row["effective_callback_url"] or "")
+    authorization_ready = bool(row["enabled"] and row["app_id"] and row["app_secret_encrypted"] and effective_callback_url)
+    blocked_reason = None
+    if row["enabled"] and not authorization_ready:
+        blocked_reason = str(row["last_validation_message"] or "").strip() or "当前组织飞书应用已验证，但还没有可用的公网 HTTPS 授权回调地址。"
+    elif not row["enabled"]:
+        blocked_reason = "当前组织尚未接通飞书，任一组织成员都可先完成接入。"
+    return OrgFeishuIntegrationRecord(
+        organizationId=membership.organizationId,
+        organizationName=membership.organizationName,
+        appId=str(row["app_id"] or ""),
+        callbackMode=str(row["callback_mode"] or "cloud_relay"),
+        customCallbackUrl=str(row["custom_callback_url"] or ""),
+        effectiveCallbackUrl=effective_callback_url,
+        enabled=bool(row["enabled"]),
+        hasAppSecret=bool(row["app_secret_encrypted"]),
+        configuredBy=configured_by,
+        configuredAt=str(row["configured_at"]) if row["configured_at"] else None,
+        updatedAt=str(row["updated_at"]),
+        lastValidationStatus=str(row["last_validation_status"] or "idle"),
+        lastValidationMessage=str(row["last_validation_message"] or "") or None,
+        authorizationReady=authorization_ready,
+        authorizationBlockedReason=blocked_reason,
+        recentAudits=_org_feishu_audit_records(state, membership.organizationId),
+    )
+
+
+def _feishu_member_authorization_record(state: AppState, current_user: SessionUser, request: Request) -> FeishuMemberAuthorizationRecord:
+    membership = _org_membership_summary(state, current_user)
+    integration = _org_feishu_integration_record(state, current_user, request)
+    blocked_reason = None
+    if not membership.hasOrganization:
+        blocked_reason = "飞书协作需要组织信息，请先加入组织或创建组织。"
+    elif not integration.enabled:
+        blocked_reason = "当前组织尚未接通飞书，请先完成组织飞书接入。"
+    elif not integration.authorizationReady:
+        blocked_reason = integration.authorizationBlockedReason
+
+    row = None
+    if membership.hasOrganization and membership.organizationId:
+        row = state.db.fetchone(
+            "SELECT * FROM org_feishu_member_authorizations WHERE organization_id = ? AND user_id = ?",
+            (membership.organizationId, current_user.id),
+        )
+    return FeishuMemberAuthorizationRecord(
+        linked=bool(row and row["open_id"]),
+        readyForAuthorization=integration.authorizationReady,
+        organizationId=membership.organizationId,
+        organizationName=membership.organizationName,
+        appId=integration.appId,
+        userId=current_user.id,
+        openId=str(row["open_id"]) if row and row["open_id"] else None,
+        unionId=str(row["union_id"]) if row and row["union_id"] else None,
+        feishuUserId=str(row["feishu_user_id"]) if row and row["feishu_user_id"] else None,
+        name=str(row["name"]) if row and row["name"] else None,
+        enName=str(row["en_name"]) if row and row["en_name"] else None,
+        avatarUrl=str(row["avatar_url"]) if row and row["avatar_url"] else None,
+        email=str(row["email"]) if row and row["email"] else None,
+        tenantKey=str(row["tenant_key"]) if row and row["tenant_key"] else None,
+        boundAt=str(row["authorized_at"]) if row and row["authorized_at"] else None,
+        lastVerifiedAt=str(row["last_verified_at"]) if row and row["last_verified_at"] else None,
+        lastError=str(row["last_error"]) if row and row["last_error"] else None,
+        blockedReason=blocked_reason,
+    )
+
+
 def _feishu_relay_session_status(row) -> Literal["pending", "authorized", "expired", "error"]:
     if row is None:
         return "error"
@@ -4366,9 +4676,215 @@ def create_app() -> FastAPI:
             state.db.execute(
                 "UPDATE auth_refresh_sessions SET revoked_at = ? WHERE id = ?",
                 (now_iso(), session_id),
-            )
+        )
         _log_audit(state, "logout", actor_user_id=current_user.id, target_user_id=current_user.id, detail={})
         return {"message": "ok"}
+
+    @app.get("/api/v1/me/org-membership", response_model=OrgMembershipSummaryRecord)
+    def get_org_membership(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgMembershipSummaryRecord:
+        return _org_membership_summary(state, current_user)
+
+    @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
+    def get_org_feishu_integration(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgFeishuIntegrationRecord:
+        return _org_feishu_integration_record(state, current_user, request)
+
+    @app.post("/api/v1/org-integrations/feishu/validate-and-save", response_model=OrgFeishuIntegrationRecord)
+    def validate_and_save_org_feishu_integration(
+        payload: OrgFeishuIntegrationSavePayload,
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgFeishuIntegrationRecord:
+        membership = _org_membership_summary(state, current_user)
+        if not membership.hasOrganization or not membership.organizationId:
+            raise HTTPException(status_code=400, detail="飞书协作需要组织信息，请先加入组织或创建组织。")
+
+        existing = state.db.fetchone(
+            "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
+            (membership.organizationId,),
+        )
+        resolved_app_id = str(payload.appId).strip() if payload.appId is not None else str(existing["app_id"] or "") if existing else ""
+        callback_mode = payload.callbackMode or (str(existing["callback_mode"]) if existing else "cloud_relay")
+        custom_callback_url = _normalize_feishu_custom_callback_url(
+            payload.customCallbackUrl if payload.customCallbackUrl is not None else (str(existing["custom_callback_url"]) if existing else "")
+        )
+
+        app_secret = ""
+        if existing and existing["app_secret_encrypted"] and not payload.clearAppSecret:
+            try:
+                app_secret = _org_feishu_decrypt(
+                    state,
+                    str(existing["app_secret_encrypted"]),
+                    str(existing["encryption_nonce"]),
+                    membership.organizationId,
+                )
+            except Exception:
+                app_secret = ""
+        if payload.appSecret and payload.appSecret.strip():
+            app_secret = payload.appSecret.strip()
+
+        if not resolved_app_id:
+            _record_org_feishu_audit(
+                state,
+                current_user,
+                app_id="",
+                callback_mode=callback_mode,
+                custom_callback_url=custom_callback_url,
+                effective_callback_url="",
+                validation_status="failed",
+                validation_message="请先填写飞书 App ID。",
+            )
+            raise HTTPException(status_code=400, detail="请先填写飞书 App ID。")
+        if not app_secret:
+            _record_org_feishu_audit(
+                state,
+                current_user,
+                app_id=resolved_app_id,
+                callback_mode=callback_mode,
+                custom_callback_url=custom_callback_url,
+                effective_callback_url="",
+                validation_status="failed",
+                validation_message="请先填写飞书 App Secret。",
+            )
+            raise HTTPException(status_code=400, detail="请先填写飞书 App Secret。")
+
+        try:
+            _feishu_fetch_app_access_token(app_id=resolved_app_id, app_secret=app_secret)
+        except HTTPException as exc:
+            _record_org_feishu_audit(
+                state,
+                current_user,
+                app_id=resolved_app_id,
+                callback_mode=callback_mode,
+                custom_callback_url=custom_callback_url,
+                effective_callback_url="",
+                validation_status="failed",
+                validation_message=str(exc.detail),
+            )
+            raise
+
+        effective_callback_url, blocked_reason = _build_org_feishu_callback_url(request, callback_mode, custom_callback_url)
+        encrypted_secret, encryption_nonce = _org_feishu_encrypt(state, app_secret, membership.organizationId)
+        timestamp = now_iso()
+        success_message = (
+            "飞书应用验证成功，组织成员现在可以授权自己的飞书身份。"
+            if effective_callback_url
+            else (blocked_reason or "飞书应用验证成功，但成员飞书授权暂不可用。")
+        )
+        state.db.execute(
+            """
+            INSERT INTO org_feishu_integrations(
+                organization_id, app_id, app_secret_encrypted, encryption_nonce, callback_mode, custom_callback_url,
+                effective_callback_url, enabled, configured_by, configured_at, updated_at, last_validation_status, last_validation_message
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'success', ?)
+            ON CONFLICT(organization_id) DO UPDATE SET
+                app_id = excluded.app_id,
+                app_secret_encrypted = excluded.app_secret_encrypted,
+                encryption_nonce = excluded.encryption_nonce,
+                callback_mode = excluded.callback_mode,
+                custom_callback_url = excluded.custom_callback_url,
+                effective_callback_url = excluded.effective_callback_url,
+                enabled = excluded.enabled,
+                configured_by = excluded.configured_by,
+                configured_at = excluded.configured_at,
+                updated_at = excluded.updated_at,
+                last_validation_status = excluded.last_validation_status,
+                last_validation_message = excluded.last_validation_message
+            """,
+            (
+                membership.organizationId,
+                resolved_app_id,
+                encrypted_secret,
+                encryption_nonce,
+                callback_mode,
+                custom_callback_url,
+                effective_callback_url,
+                current_user.id,
+                timestamp,
+                timestamp,
+                success_message,
+            ),
+        )
+        _record_org_feishu_audit(
+            state,
+            current_user,
+            app_id=resolved_app_id,
+            callback_mode=callback_mode,
+            custom_callback_url=custom_callback_url,
+            effective_callback_url=effective_callback_url,
+            validation_status="success",
+            validation_message=success_message,
+        )
+        return _org_feishu_integration_record(state, current_user, request)
+
+    @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
+    def get_feishu_member_authorization(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuMemberAuthorizationRecord:
+        return _feishu_member_authorization_record(state, current_user, request)
+
+    @app.post("/api/v1/me/feishu-authorization/start", response_model=FeishuMemberAuthorizationStartResponse)
+    def start_feishu_member_authorization(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuMemberAuthorizationStartResponse:
+        membership = _org_membership_summary(state, current_user)
+        if not membership.hasOrganization or not membership.organizationId:
+            raise HTTPException(status_code=400, detail="飞书协作需要组织信息，请先加入组织或创建组织。")
+        integration = _org_feishu_integration_record(state, current_user, request)
+        if not integration.enabled:
+            raise HTTPException(status_code=400, detail="当前组织尚未接通飞书，请先完成组织飞书接入。")
+        if not integration.authorizationReady or not integration.effectiveCallbackUrl:
+            raise HTTPException(status_code=400, detail=integration.authorizationBlockedReason or "当前组织飞书应用还不能用于成员授权。")
+
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET cleared_at = ? WHERE organization_id = ? AND user_id = ? AND cleared_at IS NULL",
+            (now_iso(), membership.organizationId, current_user.id),
+        )
+        state_token = new_id("fs_auth")
+        expires_at = (datetime.now() + timedelta(minutes=10)).replace(microsecond=0).isoformat()
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO feishu_binding_relay_sessions(
+                state_token, organization_id, user_id, code, error_message, created_at, expires_at, authorized_at, cleared_at
+            ) VALUES(?, ?, ?, NULL, NULL, ?, ?, NULL, NULL)
+            """,
+            (state_token, membership.organizationId, current_user.id, timestamp, expires_at),
+        )
+        authorize_url = _build_feishu_authorize_url(
+            app_id=integration.appId,
+            redirect_uri=integration.effectiveCallbackUrl,
+            state_token=state_token,
+        )
+        return FeishuMemberAuthorizationStartResponse(
+            authorizeUrl=authorize_url,
+            state=state_token,
+            expiresAt=expires_at,
+            callbackUrl=integration.effectiveCallbackUrl,
+            qrReady=_is_public_https_feishu_url(integration.effectiveCallbackUrl),
+            qrBlockedReason=None if _is_public_https_feishu_url(integration.effectiveCallbackUrl) else integration.authorizationBlockedReason,
+        )
+
+    @app.delete("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
+    def clear_feishu_member_authorization(
+        request: Request,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuMemberAuthorizationRecord:
+        state.db.execute(
+            "DELETE FROM org_feishu_member_authorizations WHERE organization_id = ? AND user_id = ?",
+            (current_user.organizationId, current_user.id),
+        )
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET cleared_at = ? WHERE organization_id = ? AND user_id = ? AND cleared_at IS NULL",
+            (now_iso(), current_user.organizationId, current_user.id),
+        )
+        return _feishu_member_authorization_record(state, current_user, request)
 
     @app.post("/api/v1/integrations/feishu/user-binding/sessions", response_model=FeishuBindingRelaySessionStatusRecord)
     def create_feishu_binding_relay_session(
@@ -4439,6 +4955,7 @@ def create_app() -> FastAPI:
             )
         return {"message": "ok"}
 
+    @app.get("/api/v1/integrations/feishu/member-authorization/callback", response_class=HTMLResponse)
     @app.get("/api/v1/integrations/feishu/user-binding/callback", response_class=HTMLResponse)
     def receive_feishu_binding_relay_callback(
         code: str | None = Query(default=None),
@@ -4473,15 +4990,118 @@ def create_app() -> FastAPI:
                 ("飞书没有返回有效授权码。", state_token),
             )
             return _render_feishu_relay_callback_page("飞书绑定失败", "飞书没有返回有效授权码，请回到桌面工作台重新发起绑定。", success=False)
+
+        organization_id = str(row["organization_id"])
+        user_id = str(row["user_id"])
+        integration_row = state.db.fetchone(
+            "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
+            (organization_id,),
+        )
+        if not integration_row or not integration_row["enabled"] or not integration_row["app_id"] or not integration_row["app_secret_encrypted"]:
+            message = "当前组织尚未完成飞书接入，请先回到软件里补齐组织飞书配置。"
+            state.db.execute(
+                "UPDATE feishu_binding_relay_sessions SET error_message = ? WHERE state_token = ?",
+                (message, state_token),
+            )
+            return _render_feishu_relay_callback_page("飞书绑定失败", message, success=False)
+
+        try:
+            app_secret = _org_feishu_decrypt(
+                state,
+                str(integration_row["app_secret_encrypted"]),
+                str(integration_row["encryption_nonce"]),
+                organization_id,
+            )
+            app_access_token, _ = _feishu_fetch_app_access_token(
+                app_id=str(integration_row["app_id"]),
+                app_secret=app_secret,
+            )
+            token_payload = _feishu_exchange_authorization_code(
+                app_access_token=app_access_token,
+                app_id=str(integration_row["app_id"]),
+                app_secret=app_secret,
+                code=code.strip(),
+            )
+            user_access_token = str(token_payload.get("access_token") or "").strip()
+            user_info = _feishu_fetch_user_info(user_access_token=user_access_token)
+            timestamp = now_iso()
+            open_id = str(user_info.get("open_id") or token_payload.get("open_id") or "").strip()
+            if not open_id:
+                raise HTTPException(status_code=400, detail="飞书没有返回 open_id，无法完成成员授权。")
+            state.db.execute(
+                """
+                INSERT INTO org_feishu_member_authorizations(
+                    organization_id, user_id, app_id, open_id, union_id, feishu_user_id, name, en_name,
+                    avatar_url, email, tenant_key, authorized_at, last_verified_at, last_error, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                ON CONFLICT(organization_id, user_id) DO UPDATE SET
+                    app_id = excluded.app_id,
+                    open_id = excluded.open_id,
+                    union_id = excluded.union_id,
+                    feishu_user_id = excluded.feishu_user_id,
+                    name = excluded.name,
+                    en_name = excluded.en_name,
+                    avatar_url = excluded.avatar_url,
+                    email = excluded.email,
+                    tenant_key = excluded.tenant_key,
+                    authorized_at = excluded.authorized_at,
+                    last_verified_at = excluded.last_verified_at,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    organization_id,
+                    user_id,
+                    str(integration_row["app_id"]),
+                    open_id,
+                    str(user_info.get("union_id") or token_payload.get("union_id") or "").strip() or None,
+                    str(user_info.get("user_id") or token_payload.get("user_id") or "").strip() or None,
+                    str(user_info.get("name") or "").strip() or None,
+                    str(user_info.get("en_name") or "").strip() or None,
+                    str(user_info.get("avatar_url") or "").strip() or None,
+                    str(user_info.get("email") or "").strip() or None,
+                    str(user_info.get("tenant_key") or token_payload.get("tenant_key") or "").strip() or None,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            state.db.execute(
+                """
+                UPDATE feishu_binding_relay_sessions
+                SET code = ?, error_message = NULL, authorized_at = ?
+                WHERE state_token = ?
+                """,
+                (code.strip(), timestamp, state_token),
+            )
+            return _render_feishu_relay_callback_page("成员飞书授权成功", "当前组织成员飞书身份已授权成功，现在回到桌面工作台即可自动刷新授权状态。", success=True)
+        except HTTPException as exc:
+            message = str(exc.detail)
+        except Exception as exc:
+            message = str(exc)
+        state.db.execute(
+            "UPDATE feishu_binding_relay_sessions SET error_message = ? WHERE state_token = ?",
+            (message, state_token),
+        )
         state.db.execute(
             """
-            UPDATE feishu_binding_relay_sessions
-            SET code = ?, error_message = NULL, authorized_at = ?
-            WHERE state_token = ?
+            INSERT INTO org_feishu_member_authorizations(
+                organization_id, user_id, app_id, last_error, updated_at
+            ) VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(organization_id, user_id) DO UPDATE SET
+                app_id = excluded.app_id,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
             """,
-            (code.strip(), now_iso(), state_token),
+            (
+                organization_id,
+                user_id,
+                str(integration_row["app_id"]) if integration_row and integration_row["app_id"] else "",
+                message,
+                now_iso(),
+            ),
         )
-        return _render_feishu_relay_callback_page("飞书授权结果已回传", "扫码授权已完成，现在回到桌面工作台即可自动刷新个人飞书绑定状态。", success=True)
+        return _render_feishu_relay_callback_page("飞书绑定失败", message, success=False)
 
     @app.get("/api/v1/admin/employees", response_model=list[EmployeeRecord])
     def list_employees(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization))) -> list[EmployeeRecord]:

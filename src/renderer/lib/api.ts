@@ -44,6 +44,8 @@ import type {
   FeishuBotSettings,
   FeishuMeetingLaunchResult,
   FeishuBotSettingsPayload,
+  FeishuMemberAuthorization,
+  FeishuMemberAuthorizationStartResult,
   FeishuUserBinding,
   FeishuUserBindingStartResult,
   EmployeeRolePayload,
@@ -126,6 +128,9 @@ import type {
   ReviewGovernanceSettingsPayload,
   RedeemOrgInvitationPayload,
   OrgWritingNorm,
+  OrgFeishuIntegration,
+  OrgFeishuIntegrationPayload,
+  OrgMembershipSummary,
   RunComparison,
   SupportRequestCreatePayload,
   SupportRequestResolvePayload,
@@ -138,7 +143,11 @@ import type {
   TaskViewsResponse,
   WeeklyReviewPayload,
   LearningRecommendation,
+  LocalInputMemory,
   ReviewDashboardDrillTargetResponse,
+  SaveAiInputMemoryPayload,
+  SaveCloudAuthInputMemoryPayload,
+  SaveFeishuInputMemoryPayload,
   CollabActionResult,
   CollabRepoStatus,
   CommitAndPushToMainPayload,
@@ -319,6 +328,57 @@ export async function getHealth() {
   return request<HealthResponse>('/api/v1/system/health');
 }
 
+export type BrainPulse = {
+  memoryCount: number;
+  docCount: number;
+  taskCount: number;
+  chatCount: number;
+  eventLineCount: number;
+  dnaCount: number;
+  badgeCount: number;
+  handbookCount: number;
+  daysAccompanied: number;
+  reviewCount: number;
+  meetingCount: number;
+  weeklyNewFacts: number;
+};
+
+export type BrainClientData = {
+  name: string;
+  confidence: number;
+  stage: string;
+  intro?: string | null;
+  docs: number;
+  dna: number;
+  eventLines: number;
+  memoryFacts: number;
+};
+
+export type BrainDashboard = {
+  pulse: BrainPulse;
+  clients: BrainClientData[];
+};
+
+export async function getBrainDashboard() {
+  return {
+    pulse: {
+      memoryCount: 0,
+      docCount: 0,
+      taskCount: 0,
+      chatCount: 0,
+      eventLineCount: 0,
+      dnaCount: 0,
+      badgeCount: 0,
+      handbookCount: 0,
+      daysAccompanied: 0,
+      reviewCount: 0,
+      meetingCount: 0,
+      weeklyNewFacts: 0,
+    },
+    clients: [],
+  } satisfies BrainDashboard;
+}
+
 export async function getTaskContextPreview(taskId: string) {
   return request<TaskContextPreview>(`/api/v1/tasks/${taskId}/context-preview`);
 }
@@ -407,6 +467,31 @@ export async function changePassword(payload: ChangePasswordPayload) {
 export async function updateProfile(payload: UpdateProfilePayload) {
   return request<AuthState>('/api/v1/auth/me', {
     method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getLocalInputMemory() {
+  return request<LocalInputMemory>('/api/v1/local-input-memory');
+}
+
+export async function saveCloudAuthInputMemory(payload: SaveCloudAuthInputMemoryPayload) {
+  return request<LocalInputMemory>('/api/v1/local-input-memory/cloud-auth', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function saveAiInputMemory(payload: SaveAiInputMemoryPayload) {
+  return request<LocalInputMemory>('/api/v1/local-input-memory/ai', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function saveFeishuInputMemory(payload: SaveFeishuInputMemoryPayload) {
+  return request<LocalInputMemory>('/api/v1/local-input-memory/feishu', {
+    method: 'POST',
     body: JSON.stringify(payload),
   });
 }
@@ -557,6 +642,37 @@ export async function startFeishuUserBinding() {
 
 export async function clearFeishuUserBinding() {
   return request<FeishuUserBinding>('/api/v1/settings/feishu-user-binding', {
+    method: 'DELETE',
+  });
+}
+
+export async function getOrgMembershipSummary() {
+  return request<OrgMembershipSummary>('/api/v1/me/org-membership');
+}
+
+export async function getOrgFeishuIntegration() {
+  return request<OrgFeishuIntegration>('/api/v1/org-integrations/feishu');
+}
+
+export async function saveOrgFeishuIntegration(payload: OrgFeishuIntegrationPayload) {
+  return request<OrgFeishuIntegration>('/api/v1/org-integrations/feishu/validate-and-save', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getFeishuMemberAuthorization() {
+  return request<FeishuMemberAuthorization>('/api/v1/me/feishu-authorization');
+}
+
+export async function startFeishuMemberAuthorization() {
+  return request<FeishuMemberAuthorizationStartResult>('/api/v1/me/feishu-authorization/start', {
+    method: 'POST',
+  });
+}
+
+export async function clearFeishuMemberAuthorization() {
+  return request<FeishuMemberAuthorization>('/api/v1/me/feishu-authorization', {
     method: 'DELETE',
   });
 }
