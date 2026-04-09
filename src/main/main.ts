@@ -1653,6 +1653,47 @@ ipcMain.handle('yiyu-workbench:openPath', async (_event, targetPath: string) => 
   return message === '';
 });
 
+// --- File watcher for document edit detection ---
+const activeFileWatchers = new Map<string, { watcher: fs.FSWatcher; debounceTimer: ReturnType<typeof setTimeout> | null }>();
+
+ipcMain.handle('yiyu-workbench:watchFile', async (_event, targetPath: string) => {
+  if (activeFileWatchers.has(targetPath)) return true;
+  try {
+    const resolvedPath = path.resolve(targetPath);
+    const stat = await fs.promises.stat(resolvedPath).catch(() => null);
+    if (!stat?.isFile()) return false;
+    const initialMtime = stat.mtimeMs;
+    const watcher = fs.watch(resolvedPath, () => {
+      const entry = activeFileWatchers.get(targetPath);
+      if (!entry) return;
+      if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+      entry.debounceTimer = setTimeout(async () => {
+        const currentStat = await fs.promises.stat(resolvedPath).catch(() => null);
+        if (currentStat && currentStat.mtimeMs !== initialMtime) {
+          const win = BrowserWindow.getAllWindows()[0];
+          if (win) {
+            win.webContents.send('yiyu-workbench:fileChanged', targetPath);
+          }
+        }
+      }, 1500);
+    });
+    activeFileWatchers.set(targetPath, { watcher, debounceTimer: null });
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('yiyu-workbench:unwatchFile', async (_event, targetPath: string) => {
+  const entry = activeFileWatchers.get(targetPath);
+  if (entry) {
+    if (entry.debounceTimer) clearTimeout(entry.debounceTimer);
+    entry.watcher.close();
+    activeFileWatchers.delete(targetPath);
+  }
+  return true;
+});
+
 ipcMain.handle('yiyu-workbench:openExternalUrl', async (_event, targetUrl: string) => {
   await shell.openExternal(targetUrl);
   return true;

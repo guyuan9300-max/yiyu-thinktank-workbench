@@ -35,6 +35,7 @@ import {
   Activity,
   Calendar as CalendarIcon,
   Flag,
+  Eye,
   FolderDot,
   ArrowUp,
   FileBadge,
@@ -305,6 +306,7 @@ import {
   backfillClientWorkspaceImports,
   pullSelectedFromMain,
   selectCollabRepo,
+  createClientFolder,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
@@ -3501,6 +3503,7 @@ export default function App() {
   const [expandedTaskIds, setExpandedTaskIds] = useState<string[]>([]);
   const taskCalendarMonthLabel = `${taskCalendarDate.getFullYear()}-${String(taskCalendarDate.getMonth() + 1).padStart(2, '0')}`;
   const [clientOverlayMode, setClientOverlayMode] = useState<ClientOverlayMode>(null);
+  const [workspaceRightTab, setWorkspaceRightTab] = useState<'overview' | 'evidence' | 'memory' | 'tools'>('overview');
   const [workspaceSelectedMeetingId, setWorkspaceSelectedMeetingId] = useState('');
   const [workspaceMeetingTranscript, setWorkspaceMeetingTranscript] = useState('');
   const [workspaceMeetingNotes, setWorkspaceMeetingNotes] = useState('');
@@ -3571,6 +3574,7 @@ export default function App() {
   }, [currentClientId]);
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number }>>(new Map());
   const [updatingTaskStatusIds, setUpdatingTaskStatusIds] = useState<string[]>([]);
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [taskTags, setTaskTags] = useState<TaskTag[]>([]);
@@ -4226,7 +4230,20 @@ export default function App() {
 
   async function loadTaskBlock() {
     const response = await getTaskBoard();
-    setTasks(response.tasks);
+    const now = Date.now();
+    const OPTIMISTIC_TTL = 120_000;
+    const serverIds = new Set(response.tasks.map((t: Task) => t.id));
+    const pendingOptimistic: Task[] = [];
+    for (const [key, entry] of optimisticTasksRef.current) {
+      if (now - entry.addedAt > OPTIMISTIC_TTL) {
+        optimisticTasksRef.current.delete(key);
+      } else if (!serverIds.has(entry.task.id)) {
+        pendingOptimistic.push(entry.task);
+      } else {
+        optimisticTasksRef.current.delete(key);
+      }
+    }
+    setTasks([...pendingOptimistic, ...response.tasks]);
     setTaskLists(response.lists);
     setTaskTags([]);
     return response;
@@ -4526,7 +4543,13 @@ export default function App() {
     const targetClientId = clientId ?? currentClientId;
     if (!targetClientId) return;
     const nextWorkspace = await getClientWorkspace(targetClientId);
-    setWorkspace(nextWorkspace);
+    setWorkspace((prev) => {
+      if (!prev) return nextWorkspace;
+      try {
+        if (JSON.stringify(prev) === JSON.stringify(nextWorkspace)) return prev;
+      } catch {}
+      return nextWorkspace;
+    });
     return nextWorkspace;
   }
 
@@ -4549,16 +4572,22 @@ export default function App() {
     setGrowthContextJump((prev) => (prev?.requestId === requestId ? null : prev));
   };
 
+  const workspaceKnowledgeActiveRef = useRef(false);
+  workspaceKnowledgeActiveRef.current =
+    ((workspace?.knowledgeStatus?.pendingJobs || 0) + (workspace?.knowledgeStatus?.runningJobs || 0)) > 0;
+
   useEffect(() => {
     const targetClientId = currentClientId;
     if (!targetClientId) {
       setIsImportSubmitting(false);
       return;
     }
-    const activeKnowledgeJobs = (workspace?.knowledgeStatus?.pendingJobs || 0) + (workspace?.knowledgeStatus?.runningJobs || 0);
-    if (!isImportSubmitting && activeKnowledgeJobs === 0) return;
+    if (!isImportSubmitting && !workspaceKnowledgeActiveRef.current) return;
     let cancelled = false;
+    let polling = false;
     const pollWorkspace = async () => {
+      if (polling) return;
+      polling = true;
       try {
         const nextWorkspace = await refreshWorkspace(targetClientId);
         if (cancelled || !nextWorkspace) return;
@@ -4570,6 +4599,8 @@ export default function App() {
         if (!cancelled && Date.now() >= importProgressHoldUntilRef.current) {
           setIsImportSubmitting(false);
         }
+      } finally {
+        polling = false;
       }
     };
     void pollWorkspace();
@@ -4583,8 +4614,6 @@ export default function App() {
   }, [
     currentClientId,
     isImportSubmitting,
-    workspace?.knowledgeStatus?.pendingJobs,
-    workspace?.knowledgeStatus?.runningJobs,
   ]);
 
   useEffect(() => {
@@ -4698,7 +4727,7 @@ export default function App() {
         orgListBootstrapRef.current = (async () => {
           const created = await createTaskList({
             name: '收集箱',
-            color: '#888681',
+            color: '#5B7BFE',
             isDefault: true,
             scope: 'org',
           });
@@ -5868,7 +5897,7 @@ export default function App() {
         .catch(() => setOwnerOptions([]));
     }, [isTaskModalOpen, ownerQuery]);
 
-    const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
+    const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#5B7BFE';
     const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '收集箱';
     const taskControlLevelLabel = (task: Task) => {
       const level = task.orgContext?.controlLevel;
@@ -6841,6 +6870,12 @@ export default function App() {
     };
 
     const upsertLocalTask = (nextTask: Task, replaceId?: string | null) => {
+      if (replaceId && replaceId.startsWith('local-draft:')) {
+        optimisticTasksRef.current.delete(replaceId);
+        optimisticTasksRef.current.set(nextTask.id, { task: nextTask, addedAt: Date.now() });
+      } else if (nextTask.id.startsWith('local-draft:')) {
+        optimisticTasksRef.current.set(nextTask.id, { task: nextTask, addedAt: Date.now() });
+      }
       setTasks((prev) => {
         let matched = false;
         const next = prev.map((item) => {
@@ -6980,7 +7015,7 @@ export default function App() {
         || {
           id: resolvedListId || 'list-local-draft',
           name: isEditingTaskPersonal ? '个人日程' : '收集箱',
-          color: '#888681',
+          color: '#5B7BFE',
         };
       const optimisticTaskId = editingTask.id || `local-draft:${Date.now()}`;
       const optimisticTask = buildOptimisticTaskFromEditor(draftSnapshot, payload, {
@@ -7081,20 +7116,25 @@ export default function App() {
                 : '任务已创建',
           );
         } catch (error) {
+          // Local-first: backend saves to local DB first, so failures are rare.
+          // For updates, restore the previous version; for creates, keep the optimistic task
+          // visible and show a non-destructive warning instead of deleting the user's work.
           if (draftSnapshot.id && existingTaskSnapshot) {
             upsertLocalTask(existingTaskSnapshot, draftSnapshot.id);
+            if (!isTaskModalOpenRef.current) {
+              const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
+              setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
+              setEditingTask(draftSnapshot);
+              setPendingTaskArchiveText(archiveTextSnapshot);
+              setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
+              setIsTaskModalOpen(true);
+            }
+            flash('error', `${error instanceof Error ? error.message : '更新失败'}。草稿已恢复，请检查后重试。`);
           } else {
-            setTasks((prev) => prev.filter((item) => item.id !== optimisticTaskId));
+            // Keep the optimistic task visible — don't delete the user's work
+            flash('info', '任务已保存到本地，云端同步将自动重试。');
+            void loadTaskBlock();
           }
-          if (!isTaskModalOpenRef.current) {
-            const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
-            setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
-            setEditingTask(draftSnapshot);
-            setPendingTaskArchiveText(archiveTextSnapshot);
-            setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
-            setIsTaskModalOpen(true);
-          }
-          flash('error', `${error instanceof Error ? error.message : (draftSnapshot.id ? '更新失败' : '创建失败')}。草稿已恢复，请检查后重试。`);
         }
       })();
     };
@@ -8035,6 +8075,16 @@ export default function App() {
         <div className="window-no-drag flex justify-between items-center mb-8 shrink-0">
           <div className="flex items-center gap-4">
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">任务与日程</h1>
+            {(() => {
+              const pendingCount = tasks.filter((t: { syncStatus?: string | null }) => t.syncStatus && t.syncStatus !== 'synced').length;
+              if (!pendingCount) return null;
+              return (
+                <span className="flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-500" title={`${pendingCount} 个任务等待同步到云端`}>
+                  <UploadCloud size={13} className="animate-pulse" />
+                  {pendingCount}
+                </span>
+              );
+            })()}
             <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 ml-2 overflow-x-auto scrollbar-hide">
               <button
                 onClick={() => handleManualTaskViewModeChange('inbox')}
@@ -11158,6 +11208,13 @@ export default function App() {
     const [isWorkspaceFileSearching, setIsWorkspaceFileSearching] = useState(false);
     const [inputValue, setInputValue] = useState('');
     const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+    const prevActiveMessageIdRef = useRef<string | null>(null);
+    useEffect(() => {
+      if (activeMessageId && activeMessageId !== prevActiveMessageIdRef.current) {
+        setWorkspaceRightTab('evidence');
+      }
+      prevActiveMessageIdRef.current = activeMessageId ?? null;
+    }, [activeMessageId]);
     const [clientImportDropZone, setClientImportDropZone] = useState<'buffer' | 'composer' | null>(null);
     const [answerActionState, setAnswerActionState] = useState<Record<string, 'vectorize' | 'export'>>({});
     const [isTemplateFilling, setIsTemplateFilling] = useState(false);
@@ -13015,6 +13072,19 @@ export default function App() {
                       </div>
                     ))}
                     {workspace?.folders.length === 0 && <div className="text-[12px] text-gray-400 py-2">还没有绑定任何客户目录。</div>}
+                    {/* New folder button */}
+                    <button
+                      className="w-full mt-2 py-2 px-3 rounded-2xl border border-dashed border-gray-200 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE] hover:border-[#C7D5FF] hover:bg-blue-50/50 transition-colors flex items-center justify-center gap-1.5"
+                      onClick={() => {
+                        const name = window.prompt('输入新文件夹名称：');
+                        if (!name?.trim() || !currentClientId) return;
+                        void createClientFolder(currentClientId, name.trim())
+                          .then(() => refreshWorkspace(currentClientId))
+                          .catch((err) => flash('error', err instanceof Error ? err.message : '创建文件夹失败'));
+                      }}
+                    >
+                      <Plus size={12} /> 新建文件夹
+                    </button>
                   </>
                 )}
               </div>
@@ -13445,7 +13515,30 @@ export default function App() {
           </div>
 
           <div className="w-[260px] xl:w-[320px] bg-white border-l border-gray-100 flex flex-col h-full shrink-0 z-10 shadow-[-2px_0_10px_rgba(0,0,0,0.02)]">
-            <div className="p-5 xl:p-6 border-b border-gray-50 bg-gray-50/50">
+            {/* Tab bar */}
+            <div className="flex border-b border-gray-100 bg-gray-50/60 px-2 pt-2 gap-0.5 shrink-0">
+              {([
+                { key: 'overview', label: '速览', icon: Eye },
+                { key: 'evidence', label: '引证', icon: FileBadge },
+                { key: 'memory', label: '记忆', icon: BrainCircuit },
+                { key: 'tools', label: '工具', icon: UploadCloud },
+              ] as const).map((tab) => (
+                <button
+                  key={tab.key}
+                  className={`flex-1 text-[11px] font-bold py-2 px-1 rounded-t-xl transition-colors flex items-center justify-center gap-1 ${
+                    workspaceRightTab === tab.key
+                      ? 'bg-white text-[#5B7BFE] border border-gray-100 border-b-white -mb-px'
+                      : 'text-gray-400 hover:text-gray-600'
+                  }`}
+                  onClick={() => setWorkspaceRightTab(tab.key)}
+                >
+                  <tab.icon size={13} /> {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab: 工具 */}
+            {workspaceRightTab === 'tools' && <div className="p-5 xl:p-6 border-b border-gray-50 bg-gray-50/50 flex-1 overflow-y-auto">
               <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 mb-4 flex items-center gap-2">
                 <UploadCloud size={18} className="text-[#5B7BFE]" /> 导入工具
               </h3>
@@ -13558,9 +13651,10 @@ export default function App() {
                 })()}
               </div>
 
-            </div>
+            </div>}
 
-            <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
+            {/* Tab: 引证 */}
+            {workspaceRightTab === 'evidence' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
               <div className="flex items-center justify-between mb-4 xl:mb-5">
                 <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 flex items-center gap-2">
                   <FileBadge size={18} className="text-amber-500" />
@@ -13624,7 +13718,59 @@ export default function App() {
                 ))}
               </div>
 
-            </div>
+            </div>}
+
+            {/* Tab: 速览 */}
+            {workspaceRightTab === 'overview' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
+              <h3 className="text-[13px] font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <Eye size={16} className="text-[#5B7BFE]" /> 客户概况
+              </h3>
+              <div className="space-y-3">
+                <div className="bg-gray-50 rounded-2xl p-3.5">
+                  <p className="text-[11px] font-bold text-gray-400 mb-1">阶段</p>
+                  <p className="text-[13px] font-bold text-gray-800">{workspace?.client?.stage || '未设置'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-3.5">
+                  <p className="text-[11px] font-bold text-gray-400 mb-1">DNA 模块</p>
+                  <p className="text-[13px] font-bold text-gray-800">{workspace?.dnaModules?.filter((m) => m.hasDocument).length || 0} / {workspace?.dnaModules?.length || 0} 已完成</p>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-3.5">
+                  <p className="text-[11px] font-bold text-gray-400 mb-1">资料</p>
+                  <p className="text-[13px] font-bold text-gray-800">{workspace?.documentCards?.length || 0} 份文档 · {knowledgeStatus?.totalChunks || 0} 个分块</p>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-3.5">
+                  <p className="text-[11px] font-bold text-gray-400 mb-1">事件线</p>
+                  <p className="text-[13px] font-bold text-gray-800">{workspace?.relatedTasks?.filter((t) => t.eventLineId).map((t) => t.eventLineName).filter((v, i, a) => v && a.indexOf(v) === i).length || 0} 条活跃</p>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-3.5">
+                  <p className="text-[11px] font-bold text-gray-400 mb-1">会议</p>
+                  <p className="text-[13px] font-bold text-gray-800">{workspace?.meetings?.length || 0} 次</p>
+                </div>
+                {workspace?.goals && workspace.goals.length > 0 && (
+                  <div className="bg-blue-50/60 rounded-2xl p-3.5 border border-blue-100">
+                    <p className="text-[11px] font-bold text-[#5B7BFE] mb-1">当前目标</p>
+                    <p className="text-[12px] font-medium text-gray-800">{workspace.goals[0].title}</p>
+                  </div>
+                )}
+                {workspace?.client?.intro && (
+                  <div className="bg-gray-50 rounded-2xl p-3.5">
+                    <p className="text-[11px] font-bold text-gray-400 mb-1">简介</p>
+                    <p className="text-[12px] text-gray-600 leading-relaxed line-clamp-4">{workspace.client.intro}</p>
+                  </div>
+                )}
+              </div>
+            </div>}
+
+            {/* Tab: 记忆 */}
+            {workspaceRightTab === 'memory' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
+              <h3 className="text-[13px] font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <BrainCircuit size={16} className="text-purple-500" /> 对话沉淀记忆
+              </h3>
+              <p className="text-[11px] text-gray-400 mb-3">从历次对话中自动提取的关键事实</p>
+              <div className="space-y-2" id="workspace-memory-facts-container">
+                <p className="text-[12px] text-gray-400 italic">记忆数据将在对话产生后自动沉淀到这里。</p>
+              </div>
+            </div>}
           </div>
         </div>
 

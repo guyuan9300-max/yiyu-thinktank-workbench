@@ -6,6 +6,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Circle,
+  CloudUpload,
+  CloudDownload,
   Flag,
   FolderDot,
   Plus,
@@ -1528,6 +1530,11 @@ export function TaskCalendarView({
                                   {task.status === 'done' ? <Check size={10} strokeWidth={3} /> : null}
                                 </button>
                                 <span className="block truncate pl-5 pr-4">{task.title}</span>
+                                {task.syncStatus && task.syncStatus !== 'synced' && (
+                                  <span className="absolute right-1 top-1/2 -translate-y-1/2" title={task.syncStatus === 'pending' ? '等待同步到云端' : task.syncStatus === 'syncing' ? '正在上传到云端' : task.syncStatus === 'error' ? '同步失败' : '本地未同步'}>
+                                    <CloudUpload size={10} className={`${task.syncStatus === 'syncing' || task.syncStatus === 'pending' ? 'animate-pulse text-blue-400' : task.syncStatus === 'error' ? 'text-red-400' : 'text-gray-400'}`} />
+                                  </span>
+                                )}
                               </div>
                             ))}
                             {overflowCount > 0 && !expandedCalendarDays.has(formatDateInputValue(cellDate)) && (

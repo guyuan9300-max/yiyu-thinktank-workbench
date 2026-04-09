@@ -877,6 +877,8 @@ class MemoryFact(BaseModel):
     confidence: float = 0.0
     freshness: float = 0.0
     evidenceRefs: list[str] = Field(default_factory=list)
+    validFrom: str | None = None
+    validTo: str | None = None
     createdAt: str
     updatedAt: str
 
@@ -959,6 +961,7 @@ class TaskRecord(BaseModel):
     memoryHints: list[str] = Field(default_factory=list)
     backgroundReadiness: BackgroundReadiness | None = None
     linkedFactsPreview: list[MemoryFact] = Field(default_factory=list)
+    syncStatus: str | None = None
     createdAt: str
     updatedAt: str
 
@@ -1214,7 +1217,7 @@ class TaskPayload(BaseModel):
     title: str
     desc: str = ""
     priority: Priority = "normal"
-    listId: str
+    listId: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"

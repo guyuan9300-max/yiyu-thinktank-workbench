@@ -44,6 +44,7 @@ import {
   getGrowthWorkbench,
   updateGrowthPendingCapture,
   createHandbook,
+  markHandbookEntryReused,
 } from '../../lib/api';
 import { useGrowthOverviewState } from '../growth/GrowthContext';
 import type {
@@ -124,7 +125,9 @@ const GROWTH_CSS = `
 .gc-ai-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; border: 1px solid #D6E1FF; background: #fff; padding: 4px 12px; font-size: 12px; font-weight: 500; color: #335CFE; box-shadow: 0 1px 2px rgba(0,0,0,0.04); margin-bottom: 16px; }
 .gc-pending-actions { display: flex; gap: 8px; margin-top: 12px; }
 .gc-btn-brand { display: inline-flex; align-items: center; gap: 6px; background: #335CFE; color: #fff; border: none; border-radius: 999px; padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
-.gc-btn-brand:hover { background: #2C50E0; }
+.gc-btn-brand:hover:not(:disabled) { background: #2C50E0; }
+.gc-btn-brand:disabled { opacity: 0.6; cursor: not-allowed; }
+@keyframes gc-toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 .gc-btn-ghost { background: none; border: 1px solid #e2e8f0; color: #64748b; border-radius: 999px; padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
 .gc-btn-ghost:hover { background: #f8fafc; }
 
@@ -590,6 +593,13 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'month' | 'quarter'>('all');
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [pushingIds, setPushingIds] = useState<Set<string>>(new Set());
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = useCallback((text: string, type: 'success' | 'error') => {
+    setToastMsg({ text, type });
+    setTimeout(() => setToastMsg(null), 2500);
+  }, []);
 
   const reloadEntries = useCallback(() => {
     getHandbook()
@@ -599,9 +609,11 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
 
   useEffect(() => {
     setIsLoading(true);
-    reloadEntries();
-    setIsLoading(false);
-  }, [reloadEntries]);
+    getHandbook()
+      .then((res) => setEntries(res.entries || []))
+      .catch(() => setEntries([]))
+      .finally(() => setIsLoading(false));
+  }, []);
 
   const pendingCaptures = useMemo(
     () => (overview?.pendingCaptures || []).filter((c) => c.status === 'open' && !dismissedIds.has(c.id)),
@@ -609,6 +621,8 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
   );
 
   const handlePushToWall = useCallback(async (capture: GrowthPendingCapture) => {
+    if (pushingIds.has(capture.id)) return;
+    setPushingIds((prev) => new Set([...prev, capture.id]));
     try {
       // Create handbook entry from the quote
       await createHandbook({
@@ -621,14 +635,26 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
       await updateGrowthPendingCapture(capture.id, { status: 'promoted' });
       setDismissedIds((prev) => new Set([...prev, capture.id]));
       reloadEntries();
-    } catch {}
-  }, [reloadEntries]);
+      showToast('已成功推上经验墙', 'success');
+    } catch (err) {
+      console.error('[GrowthCenter] 推上经验墙失败:', err);
+      showToast(err instanceof Error ? err.message : '推送失败，请重试', 'error');
+    } finally {
+      setPushingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(capture.id);
+        return next;
+      });
+    }
+  }, [reloadEntries, pushingIds, showToast]);
 
   const handleSkip = useCallback(async (capture: GrowthPendingCapture) => {
     try {
       await updateGrowthPendingCapture(capture.id, { status: 'dismissed', reason: '用户跳过' });
       setDismissedIds((prev) => new Set([...prev, capture.id]));
-    } catch {}
+    } catch (err) {
+      console.error('[GrowthCenter] 跳过失败:', err);
+    }
   }, []);
 
   const sortedEntries = useMemo(() => {
@@ -659,7 +685,17 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
   }
 
   return (
-    <div>
+    <div style={{ position: 'relative' }}>
+      {toastMsg && (
+        <div style={{
+          position: 'fixed', top: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 9999,
+          background: toastMsg.type === 'success' ? '#10b981' : '#ef4444', color: '#fff',
+          padding: '8px 20px', borderRadius: 999, fontSize: 13, fontWeight: 500,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)', animation: 'gc-toast-in 0.2s ease-out',
+        }}>
+          {toastMsg.text}
+        </div>
+      )}
       {sortedEntries.length > 0 && (
         <div>
           <div className="gc-section-header">
@@ -699,7 +735,14 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
                       {projectName && <span className="gc-source-tag">{projectName}</span>}
                       <span className="gc-source-tag">{sourceTypeCN(entry.sourceType || '经验')} · {weekLabelFromDate(entry.createdAt)}</span>
                     </div>
-                    <button className={`gc-like-btn${hasLikes ? ' liked' : ''}`}>
+                    <button
+                      className={`gc-like-btn${hasLikes ? ' liked' : ''}`}
+                      onClick={() => {
+                        markHandbookEntryReused(entry.id)
+                          .then(() => reloadEntries())
+                          .catch(() => {});
+                      }}
+                    >
                       <Heart size={12} fill={hasLikes ? '#5B7BFE' : 'none'} color={hasLikes ? '#5B7BFE' : '#D1D5DB'} strokeWidth={2} />
                       {entry.reuseCount > 0 ? ` ${entry.reuseCount}` : ''}
                     </button>
@@ -733,7 +776,9 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
                   {sourceLabel}
                 </div>
                 <div className="gc-pending-actions">
-                  <button className="gc-btn-brand" onClick={() => void handlePushToWall(capture)}><ArrowRight size={12} color="#fff" /> 推上经验墙</button>
+                  <button className="gc-btn-brand" disabled={pushingIds.has(capture.id)} onClick={() => void handlePushToWall(capture)}>
+                    <ArrowRight size={12} color="#fff" /> {pushingIds.has(capture.id) ? '推送中…' : '推上经验墙'}
+                  </button>
                   <button className="gc-btn-ghost" onClick={() => void handleSkip(capture)}>跳过</button>
                 </div>
               </div>

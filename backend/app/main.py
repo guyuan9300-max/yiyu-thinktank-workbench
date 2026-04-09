@@ -1819,6 +1819,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.job_stop.clear()
         state.job_thread = Thread(target=knowledge_worker_loop, name="knowledge-worker", daemon=True)
         state.job_thread.start()
+        # Probe cloud backend connectivity at startup — clear circuit breaker if reachable
+        if get_cloud_token():
+            def _probe_cloud():
+                import time as _time
+                try:
+                    httpx.get(f"{state.cloud_api_url}/health", timeout=3.0)
+                    _cloud_circuit_breaker["last_failure"] = 0.0  # cloud OK — clear breaker
+                except Exception:
+                    _cloud_circuit_breaker["last_failure"] = _time.time()  # cloud down — keep breaker
+            Thread(target=_probe_cloud, name="cloud-probe", daemon=True).start()
 
     @app.on_event("shutdown")
     def _shutdown_worker() -> None:
@@ -5270,6 +5280,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lines.append("已确认背景事实（来自组织笔记/澄清结果，只作背景，不作引用）：")
             for fact in key_facts[:4]:
                 lines.append(f"- {compact(fact.factValue, limit=180)}")
+        # Inject chat-extracted facts (cross-conversation memory)
+        chat_fact_rows = state.db.fetchall(
+            """
+            SELECT fact_key, fact_value, valid_from, valid_to, confidence
+            FROM memory_facts
+            WHERE scope_type = 'client' AND scope_id = ? AND source_type = 'chat_extraction'
+              AND (valid_to IS NULL OR valid_to >= date('now'))
+            ORDER BY updated_at DESC LIMIT 6
+            """,
+            (client_id,),
+        )
+        if chat_fact_rows:
+            lines.append("对话沉淀记忆（从历次对话中自动提取的关键事实，只作背景，不作引用）：")
+            for row in chat_fact_rows:
+                validity = ""
+                if row["valid_to"]:
+                    validity = f"（有效期至{row['valid_to']}）"
+                lines.append(f"- [{row['fact_key']}] {compact(row['fact_value'], limit=180)}{validity}")
         if ordered_event_lines:
             lines.append("相关事件线记忆（只作背景，不作引用）：")
             for item in ordered_event_lines[:3]:
@@ -5380,7 +5408,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_refresh_token(next_refresh_token, persist=persist_session)
         return user
 
-    def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False) -> object:
+    # Circuit breaker: if cloud was unreachable, skip retries for 60s
+    _cloud_circuit_breaker: dict[str, float] = {"last_failure": 0.0}
+
+    class CloudUnavailableError(Exception):
+        """Raised when cloud backend is unreachable. Caught by try/except Exception in local-first endpoints."""
+        pass
+
+    def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False, timeout: float = 3.0) -> object:
+        import time as _time
+
+        # Fast fail if cloud was down recently (circuit breaker)
+        if _time.time() - _cloud_circuit_breaker["last_failure"] < 60:
+            raise CloudUnavailableError("Cloud backend unavailable (circuit breaker active)")
+
         def perform_request(token: str | None):
             headers = {}
             if token:
@@ -5390,7 +5431,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 f"{state.cloud_api_url}{path}",
                 json=json_body,
                 headers=headers,
-                timeout=60.0,
+                timeout=timeout,
             )
 
         token = get_cloud_token()
@@ -5404,11 +5445,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             response = perform_request(token)
         except httpx.HTTPError:
             # Retry once on connection/timeout error
-            import time
-            time.sleep(1)
+            _time.sleep(0.5)
             try:
                 response = perform_request(token)
             except httpx.HTTPError as exc:
+                _cloud_circuit_breaker["last_failure"] = _time.time()
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
         if response.status_code == 401 and not allow_unauthenticated and get_cloud_refresh_token():
             refresh_cloud_session()
@@ -5416,7 +5457,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 response = perform_request(token)
             except httpx.HTTPError as exc:
+                _cloud_circuit_breaker["last_failure"] = _time.time()
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+        # Cloud responded — reset circuit breaker
+        _cloud_circuit_breaker["last_failure"] = 0.0
         if response.status_code == 401 and not allow_unauthenticated:
             clear_cloud_session()
         if response.status_code == 403 and not allow_unauthenticated and path.startswith("/api/v1/auth/"):
@@ -5498,11 +5542,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def list_cloud_consultation_knowledge_requests(
         status_filter: Literal["pending", "processing", "completed", "failed"] | None = None,
     ) -> list[ConsultationKnowledgeRequestRecord]:
-        suffix = f"?status={quote(status_filter)}" if status_filter else ""
-        payload = cloud_request("GET", f"/api/v1/consultation/knowledge-requests{suffix}")
-        if not isinstance(payload, list):
-            raise HTTPException(status_code=502, detail="Invalid consultation knowledge request payload")
-        return [ConsultationKnowledgeRequestRecord(**item) for item in payload if isinstance(item, dict)]
+        try:
+            suffix = f"?status={quote(status_filter)}" if status_filter else ""
+            payload = cloud_request("GET", f"/api/v1/consultation/knowledge-requests{suffix}")
+            if isinstance(payload, list):
+                return [ConsultationKnowledgeRequestRecord(**item) for item in payload if isinstance(item, dict)]
+        except Exception:
+            pass
+        return []
 
     def update_cloud_consultation_knowledge_request_status(
         request_id: str,
@@ -5820,7 +5867,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             TaskListRecord(
                 id=list_id,
                 name=str(payload.get("listName", "收集箱")),
-                color=str(payload.get("listColor", "#888681")),
+                color=str(payload.get("listColor", "#5B7BFE")),
                 sortOrder=0,
                 isDefault=False,
                 archivedAt=None,
@@ -5965,6 +6012,108 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     _cloud_task_board_cache: dict[str, object] = {"data": None, "ts": 0.0}
+    _cloud_tasks_pulled_to_local: bool = False
+
+    def _pull_cloud_tasks_to_local() -> None:
+        """One-time pull: download all cloud tasks and lists into local SQLite so local becomes the primary store."""
+        nonlocal _cloud_tasks_pulled_to_local
+        if _cloud_tasks_pulled_to_local:
+            return
+        _cloud_tasks_pulled_to_local = True
+        if not get_cloud_token():
+            return
+        try:
+            payload = cloud_request("GET", "/api/v1/tasks", timeout=10.0)
+        except Exception:
+            _cloud_tasks_pulled_to_local = False  # retry next time
+            return
+        if not isinstance(payload, dict):
+            return
+        timestamp = now_iso()
+        # Mirror cloud lists locally
+        for item in payload.get("lists", []):
+            if not isinstance(item, dict):
+                continue
+            lid = str(item.get("id", ""))
+            if not lid:
+                continue
+            existing = state.db.fetchone("SELECT id FROM task_lists WHERE id = ?", (lid,))
+            if not existing:
+                state.db.execute(
+                    "INSERT OR IGNORE INTO task_lists(id, name, color, sort_order, is_default, scope, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    (lid, str(item.get("name", "收集箱")), str(item.get("color", "#5B7BFE")),
+                     int(item.get("sortOrder", 0)), 1 if item.get("isDefault") else 0,
+                     str(item.get("scope", "org")), timestamp, timestamp),
+                )
+        # Mirror cloud tags locally
+        for item in payload.get("tags", []):
+            if not isinstance(item, dict):
+                continue
+            tid = str(item.get("id", ""))
+            if not tid:
+                continue
+            existing = state.db.fetchone("SELECT id FROM task_tags WHERE id = ?", (tid,))
+            if not existing:
+                state.db.execute(
+                    "INSERT OR IGNORE INTO task_tags(id, name, color, scope, operator_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    (tid, str(item.get("name", "")), str(item.get("color", "#5B7BFE")),
+                     str(item.get("scope", "org")), None, timestamp, timestamp),
+                )
+        # Mirror cloud tasks locally
+        for item in payload.get("tasks", []):
+            if not isinstance(item, dict):
+                continue
+            cloud_id = str(item.get("id", ""))
+            if not cloud_id:
+                continue
+            # Skip if already exists locally (by cloud_id or by id)
+            existing = state.db.fetchone("SELECT id FROM tasks WHERE id = ? OR cloud_id = ?", (cloud_id, cloud_id))
+            if existing:
+                continue
+            list_id = str(item.get("listId", "list-0"))
+            # Ensure list exists
+            _ensure_local_task_list(list_id)
+            progress_status = str(item.get("progressStatus", "todo"))
+            viewer_status = item.get("viewerInboxStatus")
+            task_status = "inbox" if viewer_status == "pending" else progress_status
+            due_date = str(item.get("dueDate")) if item.get("dueDate") else None
+            state.db.execute(
+                """
+                INSERT OR IGNORE INTO tasks(
+                    id, title, description, status, priority, list_id, owner_name, ddl, due_date, duration_minutes,
+                    event_line_id, source_type, source_id, client_id, project_module_id, project_flow_id,
+                    scope_mode, business_category, tags_json, tag_ids_json,
+                    sync_status, cloud_id, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cloud_id,  # use cloud_id as local id
+                    str(item.get("title", "")),
+                    str(item.get("description", "")),
+                    task_status,
+                    str(item.get("priority", "normal")),
+                    list_id,
+                    str(item.get("ownerName", "")),
+                    str(item.get("ddl", "")),
+                    due_date,
+                    int(item.get("durationMinutes") or 60),
+                    str(item.get("eventLineId")) if item.get("eventLineId") else None,
+                    str(item.get("sourceType", "manual")),
+                    str(item.get("sourceId")) if item.get("sourceId") else None,
+                    str(item.get("clientId")) if item.get("clientId") else None,
+                    str(item.get("projectModuleId")) if item.get("projectModuleId") else None,
+                    str(item.get("projectFlowId")) if item.get("projectFlowId") else None,
+                    str(item.get("scopeMode", "COLLAB_SHARED")),
+                    str(item.get("businessCategory")) if item.get("businessCategory") else None,
+                    to_json([str(t.get("name", "")) for t in item.get("tags", []) if isinstance(t, dict)]),
+                    to_json([str(t.get("id", "")) for t in item.get("tags", []) if isinstance(t, dict)]),
+                    "synced",
+                    cloud_id,
+                    str(item.get("createdAt", timestamp)),
+                    str(item.get("updatedAt", timestamp)),
+                ),
+            )
 
     def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
         """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
@@ -6140,6 +6289,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             memoryHints=memory_hints,
             backgroundReadiness=background_readiness,
             linkedFactsPreview=linked_facts_preview,
+            syncStatus=str(row["sync_status"]) if row["sync_status"] else None,
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -8616,11 +8766,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         raise HTTPException(status_code=404, detail="Support request not found")
 
     def _task_records_for_views() -> list[TaskRecord]:
+        # Local-first: always read from local DB
         if get_cloud_token():
-            try:
-                return cloud_task_board().tasks
-            except HTTPException:
-                return []
+            _pull_cloud_tasks_to_local()
         return fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,))
 
     def _load_task_view_definition(view_id: str) -> TaskViewDefinitionRecord | None:
@@ -8667,7 +8815,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         for task in tasks:
             if not task.id:
                 continue
-            response = cloud_request("GET", f"/api/v1/support-requests?taskId={quote(task.id)}")
+            response = _safe_cloud_request("GET", f"/api/v1/support-requests?taskId={quote(task.id)}")
             if not isinstance(response, list):
                 continue
             for item in response:
@@ -10879,10 +11027,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _strategic_task_pool(client_id: str, workspace: ClientWorkspaceResponse) -> list[TaskRecord]:
         task_map: dict[str, TaskRecord] = {task.id: task for task in workspace.relatedTasks}
-        try:
-            task_candidates = cloud_task_board().tasks if get_cloud_token() else fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,))
-        except HTTPException:
-            task_candidates = fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,))
+        if get_cloud_token():
+            _pull_cloud_tasks_to_local()
+        task_candidates = fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,))
         for task in task_candidates:
             if task.clientId == client_id or (task.projectContext and task.projectContext.clientId == client_id):
                 task_map[task.id] = task
@@ -11805,7 +11952,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     priority="normal",
                     listId="list-0",
                     listName="会议草稿",
-                    listColor="#888681",
+                    listColor="#5B7BFE",
                     ddl=str(item["due_date"]),
                     ownerName=str(item["owner_name"]),
                     sourceType="meeting",
@@ -12590,6 +12737,75 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 (new_id("tn"), task_id, note, timestamp, timestamp),
             )
 
+    def _ensure_local_task_list(list_id: str) -> str:
+        """Ensure a task list exists locally. For cloud lists, create a local mirror if missing."""
+        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        if row and not row["archived_at"]:
+            return list_id
+        fallback_id = _get_local_task_settings().defaultListId or "list-0"
+        fallback_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (fallback_id,))
+        if fallback_row and not fallback_row["archived_at"]:
+            return fallback_id
+        # Create a catch-all list so we never fail
+        state.db.execute(
+            "INSERT OR IGNORE INTO task_lists(id, name, color, sort_order, is_default, scope, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            ("list-0", "收集箱", "#5B7BFE", 0, 1, "personal", now_iso(), now_iso()),
+        )
+        return "list-0"
+
+    def _try_cloud_sync_task(task_id: str, cloud_payload: dict) -> None:
+        """Try to push a locally-saved task to cloud. Non-blocking: updates sync_status on result."""
+        try:
+            response = cloud_request("POST", "/api/v1/tasks", json_body=cloud_payload, timeout=6.0)
+            if isinstance(response, dict) and response.get("id"):
+                cloud_id = str(response["id"])
+                state.db.execute(
+                    "UPDATE tasks SET sync_status = 'synced', cloud_id = ?, cloud_payload_json = NULL WHERE id = ?",
+                    (cloud_id, task_id),
+                )
+                _cloud_task_board_cache["data"] = None  # invalidate cache
+            else:
+                state.db.execute("UPDATE tasks SET sync_status = 'pending' WHERE id = ?", (task_id,))
+        except Exception:
+            state.db.execute("UPDATE tasks SET sync_status = 'pending' WHERE id = ?", (task_id,))
+
+    _last_pending_sync_ts: float = 0.0
+
+    def sync_pending_tasks_if_due() -> int:
+        """Retry cloud sync for tasks stuck in 'pending'. Called opportunistically. Returns count synced."""
+        nonlocal _last_pending_sync_ts
+        import time
+        now = time.time()
+        if now - _last_pending_sync_ts < 60:
+            return 0  # throttle: at most once per minute
+        _last_pending_sync_ts = now
+        if not get_cloud_token():
+            return 0
+        pending_rows = state.db.fetchall(
+            "SELECT id, cloud_payload_json FROM tasks WHERE sync_status = 'pending' AND cloud_payload_json IS NOT NULL ORDER BY created_at LIMIT 10"
+        )
+        synced = 0
+        for row in pending_rows:
+            task_id = str(row["id"])
+            try:
+                cloud_payload = json.loads(str(row["cloud_payload_json"]))
+            except Exception:
+                state.db.execute("UPDATE tasks SET sync_status = 'error' WHERE id = ?", (task_id,))
+                continue
+            try:
+                response = cloud_request("POST", "/api/v1/tasks", json_body=cloud_payload, timeout=6.0)
+                if isinstance(response, dict) and response.get("id"):
+                    state.db.execute(
+                        "UPDATE tasks SET sync_status = 'synced', cloud_id = ?, cloud_payload_json = NULL WHERE id = ?",
+                        (str(response["id"]), task_id),
+                    )
+                    synced += 1
+            except Exception:
+                break  # cloud still down, stop retrying
+        if synced:
+            _cloud_task_board_cache["data"] = None
+        return synced
+
     def create_task(payload: TaskPayload, status: str = "todo") -> TaskRecord:
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
         requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
@@ -12630,66 +12846,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             event_line_context=event_line_context,
             attachment_count=0,
         )
-        if get_cloud_token():
-            session_user = get_cached_session_user()
-            collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
-            owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
-            response = cloud_request(
-                "POST",
-                "/api/v1/tasks",
-                json_body={
-                    "title": payload.title,
-                    "description": payload.desc,
-                    "priority": payload.priority,
-                    "listId": payload.listId,
-                    "dueDate": payload.dueDate or normalize_due_date_input(payload.ddl),
-                    "durationMinutes": payload.durationMinutes,
-                    "scopeMode": scope_mode,
-                    "clientId": normalized_client_id,
-                    "eventLineId": normalized_event_line_id,
-                    "projectModuleId": project_module.id if project_module else None,
-                    "projectFlowId": project_flow.id if project_flow else None,
-                    "collaboratorIds": collaborator_ids,
-                    "ownerId": owner_id,
-                    "sourceType": payload.sourceType,
-                    "sourceId": payload.sourceId,
-                    "businessCategory": business_category,
-                    "currentBlocker": current_blocker,
-                    "nextAction": next_action,
-                    "recentDecision": recent_decision,
-                    "evidenceCount": evidence_count,
-                },
-            )
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-            log_activity("task.create", "task", str(response.get("id", "unknown")), payload.model_dump())
-            created_task = build_cloud_task(response, {})
-            growth_user_id, growth_user_name = resolve_growth_actor()
-            ingest_task_growth_candidate(
-                state.db,
-                user_id=growth_user_id,
-                user_name=growth_user_name,
-                task=created_task,
-                source_type="task_context_candidate",
-                created_at=now_iso(),
-                ai_service=state.ai,
-            )
-            return created_task
+
+        # --- LOCAL-FIRST: always write to local SQLite first ---
         timestamp = now_iso()
         task_id = new_id("task")
-        list_id = payload.listId or (_get_local_task_settings().defaultListId or "list-0")
-        list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
-        if not list_row or list_row["archived_at"]:
-            raise HTTPException(status_code=400, detail="任务清单无效")
+        list_id = _ensure_local_task_list(payload.listId or (_get_local_task_settings().defaultListId or "list-0"))
         resolved_tags = normalize_local_task_tags(payload.tagIds, payload.tags)
+        has_cloud = bool(get_cloud_token())
+        initial_sync_status = "local" if not has_cloud else "syncing"
+
         state.db.execute(
             """
             INSERT INTO tasks(
                 id, title, description, status, priority, list_id, owner_name, ddl, due_date, duration_minutes, event_line_id, source_type, source_id,
                 client_id, project_module_id, project_flow_id, scope_mode, business_category, current_blocker, next_action, recent_decision, evidence_count,
-                tags_json, tag_ids_json, created_at, updated_at
+                tags_json, tag_ids_json, sync_status, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -12716,6 +12889,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 evidence_count,
                 to_json([tag.name for tag in resolved_tags]),
                 to_json([tag.id for tag in resolved_tags]),
+                initial_sync_status,
                 timestamp,
                 timestamp,
             ),
@@ -12761,6 +12935,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ai_service=state.ai,
         )
         Thread(target=_precompute_task_understanding, args=(created_task.id,), daemon=True).start()
+
+        # --- ASYNC CLOUD SYNC: push to cloud in background, never block the user ---
+        if has_cloud:
+            session_user = get_cached_session_user()
+            collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
+            owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
+            cloud_payload = {
+                "title": payload.title,
+                "description": payload.desc,
+                "priority": payload.priority,
+                "listId": payload.listId,
+                "dueDate": payload.dueDate or normalize_due_date_input(payload.ddl),
+                "durationMinutes": payload.durationMinutes,
+                "scopeMode": scope_mode,
+                "clientId": normalized_client_id,
+                "eventLineId": normalized_event_line_id,
+                "projectModuleId": project_module.id if project_module else None,
+                "projectFlowId": project_flow.id if project_flow else None,
+                "collaboratorIds": collaborator_ids,
+                "ownerId": owner_id,
+                "sourceType": payload.sourceType,
+                "sourceId": payload.sourceId,
+                "businessCategory": business_category,
+                "currentBlocker": current_blocker,
+                "nextAction": next_action,
+                "recentDecision": recent_decision,
+                "evidenceCount": evidence_count,
+            }
+            # Store cloud payload for retry if initial sync fails
+            state.db.execute(
+                "UPDATE tasks SET cloud_payload_json = ? WHERE id = ?",
+                (to_json(cloud_payload), task_id),
+            )
+            Thread(target=_try_cloud_sync_task, args=(task_id, cloud_payload), daemon=True).start()
+
         return created_task
 
     def extract_meeting_content(text: str) -> tuple[list[str], list[str], list[tuple[str, str, float]], list[tuple[str, str]], list[tuple[str, list[str]]]]:
@@ -15337,8 +15546,74 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Zip download unavailable: {exc}") from exc
 
+    @app.get("/api/v1/brain/dashboard")
+    def get_brain_dashboard() -> dict:
+        """Strategic brain dashboard — aggregate pulse metrics from all subsystems."""
+        client_rows = state.db.fetchall("SELECT id, name, stage, intro FROM clients ORDER BY updated_at DESC")
+        task_count = int(state.db.scalar("SELECT COUNT(*) FROM tasks") or 0)
+        chat_count = int(state.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE role = 'user'") or 0)
+        event_line_count = int(state.db.scalar("SELECT COUNT(*) FROM event_lines") or 0)
+        review_count = int(state.db.scalar("SELECT COUNT(*) FROM weekly_reviews") or 0)
+        meeting_count = int(state.db.scalar("SELECT COUNT(*) FROM meetings") or 0)
+        handbook_count = int(state.db.scalar("SELECT COUNT(*) FROM handbook_entries") or 0)
+        memory_fact_count = int(state.db.scalar("SELECT COUNT(*) FROM memory_facts") or 0)
+        badge_count = int(state.db.scalar("SELECT COUNT(*) FROM growth_evidence_records WHERE validation_state IN ('validated','institutionalized')") or 0)
+        doc_count = int(state.db.scalar("SELECT COUNT(*) FROM documents") or 0)
+        dna_count = int(state.db.scalar("SELECT COUNT(*) FROM client_dna_documents WHERE summary != '' AND summary IS NOT NULL") or 0)
+        first_client_row = state.db.fetchone("SELECT MIN(created_at) AS val FROM clients")
+        first_client_at = str(first_client_row["val"]) if first_client_row and first_client_row["val"] else None
+        days_accompanied = 0
+        if first_client_at:
+            try:
+                from datetime import datetime as _dt
+                first = _dt.fromisoformat(first_client_at.replace("Z", "+00:00").split("+")[0])
+                days_accompanied = max(0, (_dt.now() - first).days)
+            except Exception:
+                pass
+        weekly_new_facts = int(state.db.scalar(
+            "SELECT COUNT(*) FROM memory_facts WHERE created_at >= date('now', '-7 days')"
+        ) or 0)
+        clients_data = []
+        for row in client_rows:
+            cid = str(row["id"])
+            client_docs = int(state.db.scalar("SELECT COUNT(*) FROM documents WHERE client_id = ?", (cid,)) or 0)
+            client_dna = int(state.db.scalar("SELECT COUNT(*) FROM client_dna_documents WHERE client_id = ? AND summary != '' AND summary IS NOT NULL", (cid,)) or 0)
+            client_elines = int(state.db.scalar("SELECT COUNT(*) FROM event_lines WHERE primary_client_id = ?", (cid,)) or 0)
+            client_facts = int(state.db.scalar("SELECT COUNT(*) FROM memory_facts WHERE scope_type = 'client' AND scope_id = ?", (cid,)) or 0)
+            notebook = get_client_notebook_response(state.db, cid)
+            confidence = float(notebook.organizationNotebookSnapshot.confidence) if notebook.organizationNotebookSnapshot else 0.0
+            clients_data.append({
+                "name": str(row["name"]),
+                "confidence": round(confidence, 2),
+                "stage": str(row["stage"] or ""),
+                "intro": str(row["intro"] or "")[:200],
+                "docs": client_docs,
+                "dna": client_dna,
+                "eventLines": client_elines,
+                "memoryFacts": client_facts,
+            })
+        return {
+            "pulse": {
+                "memoryCount": memory_fact_count,
+                "docCount": doc_count,
+                "taskCount": task_count,
+                "chatCount": chat_count,
+                "eventLineCount": event_line_count,
+                "dnaCount": dna_count,
+                "badgeCount": badge_count,
+                "handbookCount": handbook_count,
+                "daysAccompanied": days_accompanied,
+                "reviewCount": review_count,
+                "meetingCount": meeting_count,
+                "weeklyNewFacts": weekly_new_facts,
+            },
+            "clients": clients_data,
+        }
+
     @app.get("/api/v1/system/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
+        # Opportunistically sync pending tasks on health check (non-blocking)
+        Thread(target=sync_pending_tasks_if_due, daemon=True).start()
         return build_health()
 
     # ── 自修复系统 ──────────────────────────────────────────
@@ -15600,24 +15875,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def me_org_membership() -> OrgMembershipSummaryRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
             return OrgMembershipSummaryRecord(hasOrganization=False)
-        payload = cloud_request("GET", "/api/v1/me/org-membership")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid organization membership payload")
-        return OrgMembershipSummaryRecord(**payload)
+        try:
+            payload = cloud_request("GET", "/api/v1/me/org-membership")
+            if isinstance(payload, dict):
+                return OrgMembershipSummaryRecord(**payload)
+        except Exception:
+            pass
+        return OrgMembershipSummaryRecord(hasOrganization=False)
 
     @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
     def get_org_feishu_integration() -> OrgFeishuIntegrationRecord:
+        _offline = OrgFeishuIntegrationRecord(
+            organizationId=None, organizationName=None, updatedAt=now_iso(),
+            authorizationBlockedReason="云端暂时不可用，飞书协作功能稍后自动恢复。",
+        )
         if not get_cloud_token() and not get_cloud_refresh_token():
-            return OrgFeishuIntegrationRecord(
-                organizationId=None,
-                organizationName=None,
-                updatedAt=now_iso(),
-                authorizationBlockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
-            )
-        payload = cloud_request("GET", "/api/v1/org-integrations/feishu")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid org feishu payload")
-        return OrgFeishuIntegrationRecord(**payload)
+            return _offline
+        try:
+            payload = cloud_request("GET", "/api/v1/org-integrations/feishu")
+            if isinstance(payload, dict):
+                return OrgFeishuIntegrationRecord(**payload)
+        except Exception:
+            pass
+        return _offline
 
     @app.post("/api/v1/org-integrations/feishu/validate-and-save", response_model=OrgFeishuIntegrationRecord)
     def validate_and_save_org_feishu_integration(payload: OrgFeishuIntegrationSavePayload) -> OrgFeishuIntegrationRecord:
@@ -15644,10 +15924,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 userId="local-device-user",
                 blockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
             )
-        payload = cloud_request("GET", "/api/v1/me/feishu-authorization")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
-        return FeishuMemberAuthorizationRecord(**payload)
+        try:
+            payload = cloud_request("GET", "/api/v1/me/feishu-authorization")
+            if isinstance(payload, dict):
+                return FeishuMemberAuthorizationRecord(**payload)
+        except Exception:
+            pass
+        return FeishuMemberAuthorizationRecord(
+            linked=False, readyForAuthorization=False, organizationId=None, organizationName=None,
+            appId="", userId="local-device-user", blockedReason="云端暂时不可用，飞书协作功能稍后自动恢复。",
+        )
 
     @app.post("/api/v1/me/feishu-authorization/start", response_model=FeishuMemberAuthorizationStartResponse)
     def start_feishu_member_authorization() -> FeishuMemberAuthorizationStartResponse:
@@ -15846,17 +16132,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/admin/employees", response_model=list[EmployeeRecord])
     def list_employee_reviews() -> list[EmployeeRecord]:
-        payload = cloud_request("GET", "/api/v1/admin/employees")
-        if not isinstance(payload, list):
-            raise HTTPException(status_code=502, detail="Invalid employee payload")
-        return [EmployeeRecord(**item) for item in payload if isinstance(item, dict)]
+        try:
+            payload = cloud_request("GET", "/api/v1/admin/employees")
+            if isinstance(payload, list):
+                return [EmployeeRecord(**item) for item in payload if isinstance(item, dict)]
+        except Exception:
+            pass
+        return []
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def read_org_model_profile() -> OrgModelProfileRecord:
-        payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid org model payload")
-        return OrgModelProfileRecord(**payload)
+        try:
+            payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
+            if isinstance(payload, dict):
+                return OrgModelProfileRecord(**payload)
+        except Exception:
+            pass
+        return OrgModelProfileRecord(updatedAt=now_iso())
 
     @app.post("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def update_org_model_profile(payload: OrgModelProfileRecord) -> OrgModelProfileRecord:
@@ -18067,10 +18359,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
     def get_task_settings() -> TaskSettingsRecord:
         if get_cloud_token():
-            payload = cloud_request("GET", "/api/v1/settings/tasks")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid task settings payload")
-            return TaskSettingsRecord(**payload)
+            try:
+                payload = cloud_request("GET", "/api/v1/settings/tasks")
+                if isinstance(payload, dict):
+                    return TaskSettingsRecord(**payload)
+            except Exception:
+                pass  # cloud down — fall back to local
         return _get_local_task_settings()
 
     @app.post("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
@@ -19916,6 +20210,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "answerMode": answer_mode,
             },
         )
+        # Auto-extract key facts from the conversation into memory_facts
+        try:
+            from app.services.memory_foundation import extract_chat_facts_to_memory
+            extract_chat_facts_to_memory(
+                state.db,
+                state.ai,
+                client_id=client_id,
+                thread_id=thread_id,
+                user_prompt=prompt,
+                assistant_content=structured.content,
+                answer_mode=answer_mode,
+            )
+        except Exception:
+            pass  # Non-critical: fact extraction failure should never block chat
         row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
         assert row is not None
         return build_chat_message(row)
@@ -20568,26 +20876,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/tasks", response_model=TaskBoardResponse)
     def list_tasks() -> TaskBoardResponse:
-        if not get_cloud_token():
-            return TaskBoardResponse(tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)), lists=task_lists(), tags=task_tags())
-        return cloud_task_board()
+        # Opportunistically sync pending tasks when user views task board
+        Thread(target=sync_pending_tasks_if_due, daemon=True).start()
+        # If cloud user but local DB is empty, pull cloud tasks into local first
+        if get_cloud_token():
+            _pull_cloud_tasks_to_local()
+        # LOCAL IS PRIMARY — always read from local SQLite
+        return TaskBoardResponse(
+            tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)),
+            lists=task_lists(),
+            tags=task_tags(),
+        )
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def list_task_lists() -> TaskListLibraryResponse:
         if get_cloud_token():
-            payload = cloud_request("GET", "/api/v1/task-lists")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid task list payload")
-            return TaskListLibraryResponse(lists=[TaskListRecord(**item) for item in payload.get("lists", []) if isinstance(item, dict)])
+            try:
+                payload = cloud_request("GET", "/api/v1/task-lists")
+                if isinstance(payload, dict):
+                    return TaskListLibraryResponse(lists=[TaskListRecord(**item) for item in payload.get("lists", []) if isinstance(item, dict)])
+            except Exception:
+                pass  # cloud down — fall back to local
         return TaskListLibraryResponse(lists=task_lists())
 
     @app.post("/api/v1/task-lists", response_model=TaskListRecord)
     def create_task_list(payload: TaskListMutationPayload) -> TaskListRecord:
         if get_cloud_token():
-            response = cloud_request("POST", "/api/v1/task-lists", json_body=payload.model_dump(exclude_none=True))
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid task list payload")
-            return TaskListRecord(**response)
+            try:
+                response = cloud_request("POST", "/api/v1/task-lists", json_body=payload.model_dump(exclude_none=True))
+                if isinstance(response, dict):
+                    return TaskListRecord(**response)
+            except Exception:
+                pass  # cloud down — create locally
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
@@ -20616,10 +20936,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.patch("/api/v1/task-lists/{list_id}", response_model=TaskListRecord)
     def update_task_list(list_id: str, payload: TaskListMutationPayload) -> TaskListRecord:
         if get_cloud_token():
-            response = cloud_request("PATCH", f"/api/v1/task-lists/{list_id}", json_body=payload.model_dump(exclude_none=True))
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid task list payload")
-            return TaskListRecord(**response)
+            try:
+                response = cloud_request("PATCH", f"/api/v1/task-lists/{list_id}", json_body=payload.model_dump(exclude_none=True))
+                if isinstance(response, dict):
+                    return TaskListRecord(**response)
+            except Exception:
+                pass  # cloud down — update locally
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin":
             row_scope = None
@@ -20692,8 +21014,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.delete("/api/v1/task-lists/{list_id}")
     def delete_task_list(list_id: str) -> dict[str, bool]:
         if get_cloud_token():
-            cloud_request("DELETE", f"/api/v1/task-lists/{list_id}")
-            return {"deleted": True}
+            try:
+                cloud_request("DELETE", f"/api/v1/task-lists/{list_id}")
+                return {"deleted": True}
+            except Exception:
+                pass  # cloud down — delete locally
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin":
             row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
@@ -20762,8 +21087,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.delete("/api/v1/task-tags/{tag_id}")
     def delete_task_tag(tag_id: str) -> dict[str, bool]:
         if get_cloud_token():
-            cloud_request("DELETE", f"/api/v1/task-tags/{tag_id}")
-            return {"deleted": True}
+            try:
+                cloud_request("DELETE", f"/api/v1/task-tags/{tag_id}")
+                return {"deleted": True}
+            except Exception:
+                pass  # cloud down — delete locally
         row = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
         if not row:
             raise HTTPException(status_code=404, detail="标签不存在")
@@ -20772,7 +21100,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/refresh-contexts", response_model=TaskContextRefreshResultRecord)
     def refresh_task_contexts() -> TaskContextRefreshResultRecord:
-        task_records = cloud_task_board().tasks if get_cloud_token() else fetch_tasks()
+        if get_cloud_token():
+            _pull_cloud_tasks_to_local()
+        task_records = fetch_tasks()
         clients = [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
         event_lines = list_event_lines()
         project_structures: dict[str, ProjectStructureResponse] = {}
@@ -20817,7 +21147,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/bootstrap-event-lines", response_model=TaskEventLineBootstrapResultRecord)
     def bootstrap_task_event_lines() -> TaskEventLineBootstrapResultRecord:
-        task_records = cloud_task_board().tasks if get_cloud_token() else fetch_tasks()
+        if get_cloud_token():
+            _pull_cloud_tasks_to_local()
+        task_records = fetch_tasks()
         existing_event_lines = list_event_lines()
         event_line_by_signature = {
             f"{(item.primaryClientId or '').strip()}::{item.name.strip()}": item
@@ -21086,36 +21418,48 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ai_service=state.ai,
             )
             return updated_task
+        # Cloud path: try cloud sync, but don't block on failure
         cloud_status_map = {"todo": "todo", "doing": "doing", "done": "done", "inbox": "inbox", "rejected": "rejected"}
-        response = cloud_request(
-            "PATCH",
-            f"/api/v1/tasks/{task_id}",
-            json_body={
-                "title": payload.title,
-                "description": payload.desc,
-                "priority": payload.priority,
-                "listId": payload.listId,
-                "dueDate": payload.dueDate if payload.dueDate is not None else normalize_due_date_input(payload.ddl),
-                "durationMinutes": payload.durationMinutes,
-                "scopeMode": payload.scopeMode,
-                "clientId": payload.clientId,
-                "eventLineId": payload.eventLineId,
-                "projectModuleId": payload.projectModuleId,
-                "projectFlowId": payload.projectFlowId,
-                "progressStatus": cloud_status_map.get(payload.status) if payload.status else None,
-                "collaboratorIds": payload.collaboratorIds,
-                "ownerId": payload.ownerId,
-                "businessCategory": payload.businessCategory,
-                "currentBlocker": payload.currentBlocker,
-                "nextAction": payload.nextAction,
-                "recentDecision": payload.recentDecision,
-                "evidenceCount": payload.evidenceCount,
-            },
-        )
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
-        updated_task = build_cloud_task(response, {})
+        cloud_update_payload = {
+            "title": payload.title,
+            "description": payload.desc,
+            "priority": payload.priority,
+            "listId": payload.listId,
+            "dueDate": payload.dueDate if payload.dueDate is not None else normalize_due_date_input(payload.ddl),
+            "durationMinutes": payload.durationMinutes,
+            "scopeMode": payload.scopeMode,
+            "clientId": payload.clientId,
+            "eventLineId": payload.eventLineId,
+            "projectModuleId": payload.projectModuleId,
+            "projectFlowId": payload.projectFlowId,
+            "progressStatus": cloud_status_map.get(payload.status) if payload.status else None,
+            "collaboratorIds": payload.collaboratorIds,
+            "ownerId": payload.ownerId,
+            "businessCategory": payload.businessCategory,
+            "currentBlocker": payload.currentBlocker,
+            "nextAction": payload.nextAction,
+            "recentDecision": payload.recentDecision,
+            "evidenceCount": payload.evidenceCount,
+        }
+        try:
+            response = cloud_request("PATCH", f"/api/v1/tasks/{task_id}", json_body=cloud_update_payload)
+            if not isinstance(response, dict):
+                raise HTTPException(status_code=502, detail="Invalid cloud task payload")
+            log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
+            updated_task = build_cloud_task(response, {})
+        except Exception:
+            # Cloud failed — if task exists locally, update local copy and return that
+            local_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ? OR cloud_id = ?", (task_id, task_id))
+            if local_row:
+                local_id = str(local_row["id"])
+                state.db.execute(
+                    "UPDATE tasks SET title = COALESCE(?, title), description = COALESCE(?, description), status = COALESCE(?, status), priority = COALESCE(?, priority), due_date = COALESCE(?, due_date), sync_status = 'pending', updated_at = ? WHERE id = ?",
+                    (payload.title, payload.desc, payload.status, payload.priority, payload.dueDate, now_iso(), local_id),
+                )
+                log_activity("task.update", "task", local_id, payload.model_dump(exclude_none=True))
+                updated_task = fetch_tasks("t.id = ?", (local_id,))[0]
+            else:
+                raise HTTPException(status_code=502, detail="云端更新失败，且本地无此任务副本")
         growth_user_id, growth_user_name = resolve_growth_actor()
         ingest_task_growth_candidate(
             state.db,
@@ -21459,35 +21803,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
     def confirm_task(task_id: str) -> TaskRecord:
-        if not get_cloud_token():
-            state.db.execute("UPDATE tasks SET status = 'doing', updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            log_activity("task.confirm", "task", task_id, {})
-            return fetch_tasks("t.id = ?", (task_id,))[0]
-        user = require_session_user()
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/collaborators/{user.id}/accept")
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        log_activity("task.confirm", "task", task_id, {"userId": user.id})
-        return build_cloud_task(response, {})
+        if get_cloud_token():
+            try:
+                user = require_session_user()
+                response = cloud_request("POST", f"/api/v1/tasks/{task_id}/collaborators/{user.id}/accept")
+                if isinstance(response, dict):
+                    log_activity("task.confirm", "task", task_id, {"userId": user.id})
+                    return build_cloud_task(response, {})
+            except Exception:
+                pass  # cloud down — confirm locally
+        state.db.execute("UPDATE tasks SET status = 'doing', updated_at = ? WHERE id = ?", (now_iso(), task_id))
+        log_activity("task.confirm", "task", task_id, {})
+        return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.post("/api/v1/tasks/{task_id}/reject", response_model=TaskRecord)
     def reject_task(task_id: str, payload: TaskRejectPayload) -> TaskRecord:
-        if not get_cloud_token():
-            state.db.execute("UPDATE tasks SET status = 'rejected', updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            upsert_task_note(task_id, payload.reason)
-            log_activity("task.reject", "task", task_id, {"reason": payload.reason})
-            return fetch_tasks("t.id = ?", (task_id,))[0]
-        user = require_session_user()
-        response = cloud_request(
-            "POST",
-            f"/api/v1/tasks/{task_id}/collaborators/{user.id}/return",
-            json_body={"reason": payload.reason},
-        )
+        if get_cloud_token():
+            try:
+                user = require_session_user()
+                response = cloud_request(
+                    "POST",
+                    f"/api/v1/tasks/{task_id}/collaborators/{user.id}/return",
+                    json_body={"reason": payload.reason},
+                )
+                upsert_task_note(task_id, payload.reason)
+                log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": user.id})
+                if isinstance(response, dict):
+                    return build_cloud_task(response, {})
+            except Exception:
+                pass  # cloud down — reject locally
+        state.db.execute("UPDATE tasks SET status = 'rejected', updated_at = ? WHERE id = ?", (now_iso(), task_id))
         upsert_task_note(task_id, payload.reason)
-        log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": user.id})
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        return build_cloud_task(response, {})
+        log_activity("task.reject", "task", task_id, {"reason": payload.reason})
+        return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
@@ -21571,10 +21919,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     (task_id,),
                 )
             ]
-        payload = cloud_request("GET", f"/api/v1/tasks/{task_id}/activity")
-        if not isinstance(payload, list):
-            raise HTTPException(status_code=502, detail="Invalid task activity payload")
-        return [TaskActivityRecord(**item) for item in payload if isinstance(item, dict)]
+        try:
+            payload = cloud_request("GET", f"/api/v1/tasks/{task_id}/activity")
+            if isinstance(payload, list):
+                return [TaskActivityRecord(**item) for item in payload if isinstance(item, dict)]
+        except Exception:
+            pass
+        return []
 
     @app.get("/api/v1/tasks/agent-execution", response_model=list[TaskRecord])
     def list_agent_execution_tasks(week: str | None = None, department: str | None = None) -> list[TaskRecord]:
@@ -21612,23 +21963,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _ = payload
         return AiTagSuggestionResponse(suggestedTags=[])
 
+    def _cloud_is_available() -> bool:
+        """Check if cloud backend is reachable (circuit breaker not active)."""
+        import time as _time
+        return _time.time() - _cloud_circuit_breaker["last_failure"] >= 60
+
+    def _safe_cloud_request(method: str, path: str, **kwargs) -> object | None:
+        """cloud_request wrapper: returns None on any failure instead of raising."""
+        if not _cloud_is_available():
+            return None
+        try:
+            return cloud_request(method, path, **kwargs)
+        except Exception:
+            return None
+
     @app.get("/api/v1/reviews", response_model=ReviewResponse)
     def list_reviews(weekLabel: str | None = Query(default=None)) -> ReviewResponse:
         if get_cloud_token():
             suffix = f"?weekLabel={quote(weekLabel)}" if weekLabel else ""
-            payload = cloud_request("GET", f"/api/v1/reviews/dashboard{suffix}")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid review payload")
-            return augment_review_response(ReviewResponse(**payload), weekLabel)
+            payload = _safe_cloud_request("GET", f"/api/v1/reviews/dashboard{suffix}")
+            if isinstance(payload, dict):
+                try:
+                    return augment_review_response(ReviewResponse(**payload), weekLabel)
+                except Exception:
+                    pass
         return local_review_dashboard(weekLabel)
 
     @app.get("/api/v1/reviews/history", response_model=ReviewHistoryResponse)
     def list_review_history() -> ReviewHistoryResponse:
         if get_cloud_token():
-            payload = cloud_request("GET", "/api/v1/reviews/history")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid review history payload")
-            return ReviewHistoryResponse(**payload)
+            try:
+                payload = cloud_request("GET", "/api/v1/reviews/history")
+                if isinstance(payload, dict):
+                    return ReviewHistoryResponse(**payload)
+            except Exception:
+                pass  # cloud down — fall back to local
         return local_review_history()
 
     @app.post("/api/v1/reviews/weekly", response_model=ReviewResponse)
@@ -23640,7 +24009,7 @@ def seed_defaults(state: AppState) -> None:
         state.db.executemany(
             "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
             [
-                ("list-0", "收集箱", "#888681", 0, 1, "org"),
+                ("list-0", "收集箱", "#5B7BFE", 0, 1, "org"),
                 ("list-1", "客户推进", "#5B7BFE", 1, 0, "org"),
                 ("list-2", "研究洞察", "#F59E0B", 2, 0, "org"),
                 ("list-3", "交付沉淀", "#10B981", 3, 0, "org"),

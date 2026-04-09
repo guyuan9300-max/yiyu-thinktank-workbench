@@ -268,7 +268,7 @@ export function ClientProjectSetupPage({
             </div>
             <div className="mt-4 h-2 overflow-hidden rounded-full bg-white shadow-inner">
               <div
-                className={`h-full rounded-full bg-[linear-gradient(90deg,#5B7BFE,#7B93FF)] transition-all duration-500 ${isIndeterminateProgress ? 'animate-pulse' : ''}`}
+                className={`h-full rounded-full bg-[linear-gradient(90deg,#5B7BFE,#7B93FF)] transition-[width] duration-500 ease-out ${isIndeterminateProgress ? 'animate-pulse' : ''}`}
                 style={{ width: `${Math.max(0, Math.min(100, progressPercent))}%` }}
               />
             </div>

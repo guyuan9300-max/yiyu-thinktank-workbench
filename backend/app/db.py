@@ -845,6 +845,8 @@ class Database:
                     confidence REAL NOT NULL DEFAULT 0.0,
                     freshness REAL NOT NULL DEFAULT 0.0,
                     evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    valid_from TEXT,
+                    valid_to TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(scope_type, scope_id, fact_key, source_type, source_id)
@@ -1478,6 +1480,9 @@ class Database:
             self._ensure_column("tasks", "next_action", "TEXT")
             self._ensure_column("tasks", "recent_decision", "TEXT")
             self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("tasks", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("tasks", "cloud_id", "TEXT")
+            self._ensure_column("tasks", "cloud_payload_json", "TEXT")
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
@@ -1527,6 +1532,8 @@ class Database:
             self._ensure_column("handbook_entries", "author_user_id", "TEXT")
             self._ensure_column("handbook_entries", "author_user_name", "TEXT")
             self._ensure_column("topic_candidates", "event_line_id", "TEXT")
+            self._ensure_column("memory_facts", "valid_from", "TEXT")
+            self._ensure_column("memory_facts", "valid_to", "TEXT")
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_settings (
