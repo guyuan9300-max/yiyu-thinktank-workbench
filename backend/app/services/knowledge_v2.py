@@ -29,8 +29,10 @@ except Exception:  # pragma: no cover - runtime dependency
 V2_PIPELINE_VERSION = "v2-minimal-evidence"
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".csv"}
 ARCHIVE_XML_EXTENSIONS = {".pptx", ".xlsx"}
-HUMAN_VISIBLE_CATEGORIES = ["财务与筹款", "品牌与传播", "项目与业务", "组织与战略", "其他资料", "战略陪伴"]
-EVIDENCE_CATEGORIES = HUMAN_VISIBLE_CATEGORIES[:-1]
+LEGACY_FIXED_CATEGORIES = ["财务与筹款", "品牌与传播", "项目与业务", "组织与战略", "其他资料", "战略陪伴"]
+HUMAN_VISIBLE_CATEGORIES = LEGACY_FIXED_CATEGORIES  # kept for backward compat; new clients use dynamic folders
+EVIDENCE_CATEGORIES = LEGACY_FIXED_CATEGORIES[:-1]
+DEFAULT_INBOX_LABEL = "收件箱"
 WORKSPACE_BACKFILL_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx", ".json", ".csv"}
 QUERY_STOPWORDS = {
     "请",
@@ -272,15 +274,28 @@ def stage_import_copy(data_dir: Path, client_id: str, import_id: str, source_pat
     return target
 
 
-def detect_category(title: str, text: str) -> tuple[str, str, float]:
+def detect_category(title: str, text: str, *, custom_labels: list[str] | None = None) -> tuple[str, str, float]:
     haystack = f"{title}\n{text[:2200]}".lower()
     scores: dict[str, int] = {}
     for category, keywords in CATEGORY_KEYWORDS.items():
         scores[category] = sum(2 if keyword.lower() in title.lower() else 1 for keyword in keywords if keyword.lower() in haystack)
-    best_category = max(scores, key=scores.get) if scores else "其他资料"
+    # Also score against user-created custom folder labels (simple keyword match)
+    if custom_labels:
+        for label in custom_labels:
+            if label in CATEGORY_KEYWORDS or label == DEFAULT_INBOX_LABEL:
+                continue
+            label_lower = label.lower()
+            # Check if the label text appears in the document
+            score = 0
+            for word in label_lower.replace("与", " ").replace("和", " ").replace("/", " ").split():
+                if len(word) >= 2 and word in haystack:
+                    score += 2 if word in title.lower() else 1
+            if score > 0:
+                scores[label] = score
+    best_category = max(scores, key=scores.get) if scores else DEFAULT_INBOX_LABEL
     best_score = scores.get(best_category, 0)
     if best_score <= 0:
-        return "其他资料", "待人工复核", 0.45
+        return DEFAULT_INBOX_LABEL, "待分类", 0.35
     secondary = "核心资料" if best_score >= 4 else "一般资料"
     confidence = min(0.95, 0.5 + best_score * 0.08)
     return best_category, secondary, confidence

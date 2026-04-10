@@ -412,6 +412,8 @@ def _read_clarifications(db: Database, scope_type: str, scope_id: str, *, status
 
 
 def _build_memory_fact(row) -> MemoryFact:
+    valid_from = row["valid_from"] if "valid_from" in row.keys() else None
+    valid_to = row["valid_to"] if "valid_to" in row.keys() else None
     return MemoryFact(
         id=str(row["id"]),
         scopeType=str(row["scope_type"]),  # type: ignore[arg-type]
@@ -423,6 +425,8 @@ def _build_memory_fact(row) -> MemoryFact:
         confidence=float(row["confidence"] or 0.0),
         freshness=float(row["freshness"] or 0.0),
         evidenceRefs=_parse_list(row["evidence_refs_json"]),
+        validFrom=str(valid_from) if valid_from else None,
+        validTo=str(valid_to) if valid_to else None,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
@@ -664,6 +668,8 @@ def upsert_memory_fact(
     confidence: float = 0.6,
     freshness: float = 0.6,
     evidence_refs: list[str] | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
 ) -> MemoryFact:
     normalized_value = _coerce_text(fact_value)
     if not normalized_value:
@@ -683,13 +689,15 @@ def upsert_memory_fact(
         """
         INSERT INTO memory_facts(
             id, scope_type, scope_id, fact_key, fact_value, source_type, source_id,
-            confidence, freshness, evidence_refs_json, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            confidence, freshness, evidence_refs_json, valid_from, valid_to, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(scope_type, scope_id, fact_key, source_type, source_id) DO UPDATE SET
             fact_value = excluded.fact_value,
             confidence = excluded.confidence,
             freshness = excluded.freshness,
             evidence_refs_json = excluded.evidence_refs_json,
+            valid_from = excluded.valid_from,
+            valid_to = excluded.valid_to,
             updated_at = excluded.updated_at
         """,
         (
@@ -703,6 +711,8 @@ def upsert_memory_fact(
             confidence,
             freshness,
             to_json(_unique(evidence_refs or [])),
+            valid_from,
+            valid_to,
             created_at,
             timestamp,
         ),
@@ -2051,3 +2061,125 @@ def backfill_memory_foundation(
         eventLineSnapshotsRefreshed=event_line_snapshots_refreshed,
         updatedAt=_now_iso(),
     )
+
+
+# ────────────────────────────────────────────────────────────────
+# Conversation → memory_facts auto-extraction
+# ────────────────────────────────────────────────────────────────
+
+CHAT_FACT_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fact_key": {"type": "string", "description": "简短的事实标识，如 '核心策略'、'关键决策'、'待办事项'"},
+                    "fact_value": {"type": "string", "description": "事实内容，一句话概括"},
+                    "valid_from": {"type": "string", "description": "生效日期 ISO 格式，如无明确日期则为今天"},
+                    "valid_to": {"type": "string", "description": "失效日期 ISO 格式，如无明确期限则留空字符串"},
+                    "confidence": {"type": "number", "description": "置信度 0.0-1.0"},
+                },
+                "required": ["fact_key", "fact_value", "confidence"],
+            },
+            "maxItems": 5,
+        }
+    },
+    "required": ["facts"],
+}
+
+CHAT_FACT_EXTRACTION_SYSTEM = (
+    "你是一个记忆提取专家。从用户与助手的对话中提取关键事实，包括：\n"
+    "1. 明确的决策或结论\n"
+    "2. 重要的偏好或需求\n"
+    "3. 约定的下一步行动\n"
+    "4. 关键的背景信息变化\n"
+    "只提取有持久价值的事实，忽略临时性的问候、闲聊、操作指令。\n"
+    "每个事实用一句话概括，fact_key 用中文短语命名。\n"
+    "如果对话中没有值得记住的事实，返回空数组。"
+)
+
+
+def extract_chat_facts_to_memory(
+    db: Database,
+    ai_service: object | None,
+    *,
+    client_id: str,
+    thread_id: str,
+    user_prompt: str,
+    assistant_content: str,
+    answer_mode: str,
+) -> list[MemoryFact]:
+    """Extract key facts from a completed chat exchange and persist to memory_facts."""
+    if ai_service is None:
+        return []
+    # Skip non-grounded or failed answers — they lack reliable information
+    if answer_mode in ("system_failure", ""):
+        return []
+    # Skip trivially short exchanges
+    if len(user_prompt.strip()) < 10 or len(assistant_content.strip()) < 30:
+        return []
+
+    conversation_text = f"用户提问：{user_prompt}\n\n助手回答：{assistant_content}"
+    today_iso = _now_iso()[:10]
+    prompt = (
+        f"以下是一段工作对话，请从中提取关键事实。今天日期是 {today_iso}。\n\n"
+        f"{conversation_text}"
+    )
+
+    try:
+        result = ai_service._qwen_generate(  # type: ignore[attr-defined]
+            prompt=prompt,
+            system_instruction=CHAT_FACT_EXTRACTION_SYSTEM,
+            response_schema=CHAT_FACT_EXTRACTION_SCHEMA,
+            timeout_seconds=20.0,
+            max_tokens=1200,
+            temperature=0.3,
+        )
+    except Exception:
+        logger.warning("[chat-fact-extract] AI extraction failed", exc_info=True)
+        return []
+
+    if not isinstance(result, dict):
+        return []
+    raw_facts = result.get("facts", [])
+    if not isinstance(raw_facts, list):
+        return []
+
+    saved: list[MemoryFact] = []
+    for item in raw_facts[:5]:
+        if not isinstance(item, dict):
+            continue
+        fact_key = _coerce_text(item.get("fact_key"))
+        fact_value = _coerce_text(item.get("fact_value"))
+        if not fact_key or not fact_value:
+            continue
+        confidence = float(item.get("confidence", 0.6))
+        if confidence < 0.4:
+            continue
+        valid_from = _coerce_text(item.get("valid_from")) or today_iso
+        valid_to = _coerce_text(item.get("valid_to")) or None
+
+        try:
+            fact = upsert_memory_fact(
+                db,
+                scope_type="client",
+                scope_id=client_id,
+                fact_key=fact_key,
+                fact_value=fact_value,
+                source_type="chat_extraction",
+                source_id=thread_id,
+                confidence=confidence,
+                freshness=0.9,
+                valid_from=valid_from,
+                valid_to=valid_to,
+            )
+            saved.append(fact)
+        except Exception:
+            logger.warning("[chat-fact-extract] Failed to save fact %s", fact_key, exc_info=True)
+            continue
+
+    if saved:
+        logger.info("[chat-fact-extract] Extracted %d facts from thread %s for client %s", len(saved), thread_id, client_id)
+    return saved

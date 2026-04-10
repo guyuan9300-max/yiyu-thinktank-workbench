@@ -864,6 +864,7 @@ export interface Task {
   memoryHints?: string[];
   backgroundReadiness?: BackgroundReadiness | null;
   linkedFactsPreview?: MemoryFact[];
+  syncStatus?: 'local' | 'syncing' | 'synced' | 'pending' | 'error' | null;
   createdAt: string;
   updatedAt: string;
 }

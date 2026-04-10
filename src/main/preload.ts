@@ -42,4 +42,11 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   revealInFinder: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:revealInFinder', targetPath),
   saveFileAs: (sourcePath: string, suggestedName?: string): Promise<string | null> =>
     ipcRenderer.invoke('yiyu-workbench:saveFileAs', sourcePath, suggestedName),
+  watchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:watchFile', targetPath),
+  unwatchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:unwatchFile', targetPath),
+  onFileChanged: (callback: (filePath: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, filePath: string) => callback(filePath);
+    ipcRenderer.on('yiyu-workbench:fileChanged', handler);
+    return () => { ipcRenderer.removeListener('yiyu-workbench:fileChanged', handler); };
+  },
 });

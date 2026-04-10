@@ -360,23 +360,7 @@ export type BrainDashboard = {
 };
 
 export async function getBrainDashboard() {
-  return {
-    pulse: {
-      memoryCount: 0,
-      docCount: 0,
-      taskCount: 0,
-      chatCount: 0,
-      eventLineCount: 0,
-      dnaCount: 0,
-      badgeCount: 0,
-      handbookCount: 0,
-      daysAccompanied: 0,
-      reviewCount: 0,
-      meetingCount: 0,
-      weeklyNewFacts: 0,
-    },
-    clients: [],
-  } satisfies BrainDashboard;
+  return request<BrainDashboard>('/api/v1/brain/dashboard');
 }
 
 export async function getTaskContextPreview(taskId: string) {
@@ -1044,6 +1028,20 @@ export async function createStrategicMeetingPack(clientId: string) {
 export async function applyStrategicMeetingPack(clientId: string, meetingId: string) {
   return request<StrategicCockpitSnapshot>(`/api/v1/clients/${clientId}/strategic-cockpit/meeting-pack/${meetingId}/apply`, {
     method: 'POST',
+  });
+}
+
+export async function createClientFolder(clientId: string, label: string) {
+  return request<{ id: string; label: string; created: boolean }>(`/api/v1/clients/${clientId}/folders`, {
+    method: 'POST',
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function renameClientFolder(clientId: string, folderId: string, label: string) {
+  return request<{ id: string; label: string }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ label }),
   });
 }
 
