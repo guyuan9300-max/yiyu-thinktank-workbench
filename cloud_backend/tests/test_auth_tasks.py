@@ -167,6 +167,18 @@ def test_register_approve_login_and_collaboration_flow():
     )
     assert accepted.status_code == 200, accepted.text
 
+    collaborator_update = client.patch(
+        f"/api/v1/tasks/{body['id']}",
+        json={
+            "title": "【测试】协作者已调整标题",
+            "ownerId": "user_qinghua",
+        },
+        headers=qinghua_headers,
+    )
+    assert collaborator_update.status_code == 200, collaborator_update.text
+    assert collaborator_update.json()["title"] == "【测试】协作者已调整标题"
+    assert collaborator_update.json()["ownerId"] == "user_qinghua"
+
     jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
     returned = client.post(
         f"/api/v1/tasks/{body['id']}/collaborators/user_jianing/return",
@@ -196,6 +208,51 @@ def test_mention_candidates_fill_recent_gap_with_other_approved_employees():
     assert payload[0]["isSelf"] is True
     assert any(item["id"] == "user_qinghua" for item in payload)
     assert any(item["id"] == "user_yishuo" for item in payload)
+
+
+def test_collaborator_can_update_task_content_and_owner():
+    app = create_app()
+    client = TestClient(app)
+
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "协作者权限测试任务",
+            "description": "初始描述",
+            "priority": "normal",
+            "listId": "list-0",
+            "dueDate": "2026-03-20",
+            "collaboratorIds": ["user_jianing"],
+            "ownerId": "user_qinghua",
+        },
+        headers=qinghua_headers,
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+
+    accept = client.post(
+        f"/api/v1/tasks/{task_id}/collaborators/user_jianing/accept",
+        headers=jianing_headers,
+    )
+    assert accept.status_code == 200, accept.text
+
+    updated = client.patch(
+        f"/api/v1/tasks/{task_id}",
+        json={
+            "title": "协作者已修改标题",
+            "description": "协作者已修改描述",
+            "ownerId": "user_jianing",
+        },
+        headers=jianing_headers,
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["title"] == "协作者已修改标题"
+    assert payload["description"] == "协作者已修改描述"
+    assert payload["ownerId"] == "user_jianing"
 
 
 def test_event_line_clarification_fields_persist_in_cloud_backend():

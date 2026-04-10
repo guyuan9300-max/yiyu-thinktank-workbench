@@ -928,6 +928,7 @@ class TaskRecord(BaseModel):
     listName: str
     listColor: str
     ddl: str
+    startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
@@ -1215,6 +1216,7 @@ class TaskPayload(BaseModel):
     desc: str = ""
     priority: Priority = "normal"
     listId: str
+    startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
@@ -1243,6 +1245,7 @@ class TaskUpdatePayload(BaseModel):
     status: TaskStatus | None = None
     priority: Priority | None = None
     listId: str | None = None
+    startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
@@ -1851,6 +1854,7 @@ class WeeklyReviewRecord(BaseModel):
 class WeeklyReviewTaskSnapshotRecord(BaseModel):
     title: str
     status: TaskStatus
+    startDate: str | None = None
     dueDate: str | None = None
     createdAt: str
     ownerId: str | None = None

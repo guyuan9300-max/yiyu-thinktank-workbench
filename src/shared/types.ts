@@ -832,6 +832,7 @@ export interface Task {
   listName: string;
   listColor: string;
   ddl: string;
+  startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
   scopeMode?: TaskScopeMode;
@@ -1244,6 +1245,7 @@ export interface AgentWeeklyPlanPayload {
 export interface WeeklyReviewTaskSnapshot {
   title: string;
   status: TaskStatus;
+  startDate?: string | null;
   dueDate?: string | null;
   createdAt: string;
   ownerId?: string | null;
@@ -3315,6 +3317,7 @@ export interface TaskMutationPayload {
   desc: string;
   priority: Priority;
   listId: string;
+  startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
   scopeMode?: TaskScopeMode;

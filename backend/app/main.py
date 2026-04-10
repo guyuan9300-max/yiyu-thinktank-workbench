@@ -1399,6 +1399,7 @@ def _task_snapshot_from_task(task: TaskRecord, db: Database | None = None) -> di
     return {
         "title": task.title,
         "status": task.status,
+        "startDate": task.startDate,
         "dueDate": task.dueDate,
         "createdAt": task.createdAt,
         "ownerId": task.ownerId,
@@ -5585,7 +5586,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         date = moment.date()
         today = datetime.now().date()
         has_time = bool(re.match(r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}", due_date))
-        time_label = moment.strftime("%H:%M") if has_time else ""
+        time_label = moment.strftime("%H:%M") if has_time else "09:00"
         if date == today:
             return f"今天 {time_label}".strip()
         return f"{date.strftime('%m-%d')} {time_label}".strip()
@@ -5929,6 +5930,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             listName=list_record.name,
             listColor=list_record.color,
             ddl=task_due_label(payload.get("dueDate") if isinstance(payload.get("dueDate"), str) else None),
+            startDate=payload.get("startDate") if isinstance(payload.get("startDate"), str) else None,
             dueDate=payload.get("dueDate") if isinstance(payload.get("dueDate"), str) else None,
             durationMinutes=int(payload.get("durationMinutes") or 60),
             scopeMode=str(payload.get("scopeMode") or "COLLAB_SHARED"),  # type: ignore[arg-type]
@@ -6114,6 +6116,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             listName=str(row["list_name"]),
             listColor=str(row["list_color"]),
             ddl=str(row["ddl"]),
+            startDate=str(row["start_date"]) if row["start_date"] else None,
             dueDate=str(row["due_date"]) if row["due_date"] else None,
             durationMinutes=int(row["duration_minutes"] or 60),
             scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),  # type: ignore[arg-type]
@@ -12642,6 +12645,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "description": payload.desc,
                     "priority": payload.priority,
                     "listId": payload.listId,
+                    "startDate": payload.startDate,
                     "dueDate": payload.dueDate or normalize_due_date_input(payload.ddl),
                     "durationMinutes": payload.durationMinutes,
                     "scopeMode": scope_mode,
@@ -12685,11 +12689,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, title, description, status, priority, list_id, owner_name, ddl, due_date, duration_minutes, event_line_id, source_type, source_id,
+                id, title, description, status, priority, list_id, owner_name, ddl, start_date, due_date, duration_minutes, event_line_id, source_type, source_id,
                 client_id, project_module_id, project_flow_id, scope_mode, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 tags_json, tag_ids_json, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -12700,6 +12704,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 list_id,
                 payload.ownerName,
                 payload.ddl,
+                payload.startDate,
                 payload.dueDate or normalize_due_date_input(payload.ddl),
                 payload.durationMinutes,
                 normalized_event_line_id,
@@ -20933,6 +20938,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "project_module_id": project_module.id if project_module else None,
                 "project_flow_id": project_flow.id if project_flow else None,
                 "ddl": payload.ddl or row["ddl"],
+                "start_date": payload.startDate if payload.startDate is not None else row["start_date"],
                 "due_date": payload.dueDate if payload.dueDate is not None else row["due_date"],
                 "duration_minutes": payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
                 "owner_name": payload.ownerName or row["owner_name"],
@@ -20948,7 +20954,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 UPDATE tasks
-                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, due_date = ?, duration_minutes = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -20963,6 +20969,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     merged["project_module_id"],
                     merged["project_flow_id"],
                     merged["ddl"],
+                    merged["start_date"],
                     merged["due_date"],
                     merged["duration_minutes"],
                     merged["owner_name"],
@@ -21033,7 +21040,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     old_due = str(row["due_date"] or "")
                     new_due = str(merged["due_date"] or "")
                     if old_due != new_due:
-                        change_parts.append(f"截止日期变更：{old_due or '未设定'} → {new_due or '已取消'}")
+                        change_parts.append(f"截止时间变更：{old_due or '未设定'} → {new_due or '已取消'}")
                         change_meta["changes"].append("due_date")  # type: ignore[union-attr]
                     old_title = str(row["title"] or "")
                     new_title = str(merged["title"] or "")
@@ -21095,6 +21102,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "description": payload.desc,
                 "priority": payload.priority,
                 "listId": payload.listId,
+                "startDate": payload.startDate,
                 "dueDate": payload.dueDate if payload.dueDate is not None else normalize_due_date_input(payload.ddl),
                 "durationMinutes": payload.durationMinutes,
                 "scopeMode": payload.scopeMode,

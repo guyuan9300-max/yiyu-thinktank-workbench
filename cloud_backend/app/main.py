@@ -1656,6 +1656,9 @@ def _assert_task_edit_permission(
     owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else None
     creator_id = str(task_row["creator_id"])
     collaborator_ids = set(_task_collaborator_ids(state, str(task_row["id"])))
+    editable_actor_ids = {creator_id, *collaborator_ids}
+    if owner_id:
+        editable_actor_ids.add(owner_id)
     task_link_row = _task_org_link_row(state, str(task_row["id"]))
     rule_row = None
     if task_link_row and task_link_row["control_rule_id"]:
@@ -1663,20 +1666,20 @@ def _assert_task_edit_permission(
     if not rule_row:
         if status_changed and actor.id not in collaborator_ids and actor.id != owner_id and not _manager_has_capability(state, organization_id, actor.id, owner_id, "content"):
             raise HTTPException(status_code=403, detail="只有负责人或协作者可以标记任务完成")
-        if content_changed and actor.id not in {creator_id, owner_id} and not _manager_has_capability(state, organization_id, actor.id, owner_id, "content"):
+        if content_changed and actor.id not in editable_actor_ids and not _manager_has_capability(state, organization_id, actor.id, owner_id, "content"):
             raise HTTPException(status_code=403, detail="你当前没有修改该任务内容的权限")
-        if due_date_changed and actor.id not in {creator_id, owner_id} and not _manager_has_capability(state, organization_id, actor.id, owner_id, "deadline"):
+        if due_date_changed and actor.id not in collaborator_ids and actor.id != owner_id and not _manager_has_capability(state, organization_id, actor.id, owner_id, "deadline"):
             raise HTTPException(status_code=403, detail="你当前没有修改该任务截止时间的权限")
-        if owner_changed and actor.id not in {creator_id, owner_id} and not _manager_has_capability(state, organization_id, actor.id, owner_id, "owner"):
+        if owner_changed and actor.id not in editable_actor_ids and not _manager_has_capability(state, organization_id, actor.id, owner_id, "owner"):
             raise HTTPException(status_code=403, detail="你当前没有调整该任务负责人的权限")
         return
     if status_changed and actor.id not in collaborator_ids and actor.id != owner_id and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["content_editable_by"] or "assignee"), "content"):
         raise HTTPException(status_code=403, detail="只有负责人或协作者可以标记任务完成")
-    if content_changed and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["content_editable_by"] or "assignee"), "content"):
+    if content_changed and actor.id not in editable_actor_ids and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["content_editable_by"] or "assignee"), "content"):
         raise HTTPException(status_code=403, detail="你当前没有修改该任务内容的权限")
-    if due_date_changed and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["deadline_editable_by"] or "manager"), "deadline"):
+    if due_date_changed and actor.id not in collaborator_ids and actor.id != owner_id and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["deadline_editable_by"] or "manager"), "deadline"):
         raise HTTPException(status_code=403, detail="你当前没有修改该任务截止时间的权限")
-    if owner_changed and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["owner_editable_by"] or "manager"), "owner"):
+    if owner_changed and actor.id not in editable_actor_ids and not _matches_rule_actor_scope(state, actor, task_row, task_link_row, str(rule_row["owner_editable_by"] or "manager"), "owner"):
         raise HTTPException(status_code=403, detail="你当前没有调整该任务负责人的权限")
 
 
@@ -3171,6 +3174,7 @@ def _task_snapshot_from_record(state: AppState, task: TaskRecord) -> WeeklyRevie
     return WeeklyReviewTaskSnapshotRecord(
         title=task.title,
         status=task.progressStatus if task.viewerInboxStatus != "pending" else "inbox",
+        startDate=task.startDate,
         dueDate=task.dueDate,
         createdAt=task.createdAt,
         completionNote=task.completionNote,
@@ -3314,6 +3318,7 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         listColor=str(list_row["color"]) if list_row else "#888681",
         ownerId=str(row["owner_id"]) if row["owner_id"] else None,
         ownerName=str(owner["full_name"]) if owner else None,
+        startDate=str(row["start_date"]) if row["start_date"] else None,
         dueDate=row["due_date"],
         durationMinutes=int(row["duration_minutes"] or 60),
         scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),
@@ -7072,10 +7077,10 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, organization_id, title, description, creator_id, owner_id, due_date, duration_minutes, client_id, event_line_id, project_module_id, project_flow_id,
+                id, organization_id, title, description, creator_id, owner_id, start_date, due_date, duration_minutes, client_id, event_line_id, project_module_id, project_flow_id,
                 scope_mode, priority, list_id, progress_status, source_type, source_id, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 tags_json, tag_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -7084,6 +7089,7 @@ def create_app() -> FastAPI:
                 payload.description,
                 current_user.id,
                 owner_id,
+                payload.startDate,
                 payload.dueDate,
                 payload.durationMinutes,
                 requested_client_id,
@@ -7180,7 +7186,10 @@ def create_app() -> FastAPI:
                 payload.listId is not None and payload.listId != str(row["list_id"]),
             ]
         )
-        due_date_changed = payload.dueDate is not None and payload.dueDate != row["due_date"]
+        due_date_changed = (
+            (payload.startDate is not None and payload.startDate != (str(row["start_date"]) if row["start_date"] else None))
+            or (payload.dueDate is not None and payload.dueDate != row["due_date"])
+        )
         owner_changed = payload.ownerId is not None and payload.ownerId != (str(row["owner_id"]) if row["owner_id"] else None)
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
         if payload.listId:
@@ -7231,6 +7240,7 @@ def create_app() -> FastAPI:
             "description": payload.description if payload.description is not None else row["description"],
             "priority": payload.priority or row["priority"],
             "list_id": payload.listId or row["list_id"],
+            "start_date": payload.startDate if payload.startDate is not None else row["start_date"],
             "due_date": payload.dueDate if payload.dueDate is not None else row["due_date"],
             "duration_minutes": payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
             "scope_mode": next_scope_mode,
@@ -7251,7 +7261,7 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             UPDATE tasks
-            SET title = ?, description = ?, priority = ?, list_id = ?, due_date = ?, duration_minutes = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, progress_status = ?, owner_id = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+            SET title = ?, description = ?, priority = ?, list_id = ?, start_date = ?, due_date = ?, duration_minutes = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, progress_status = ?, owner_id = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -7259,6 +7269,7 @@ def create_app() -> FastAPI:
                 merged["description"],
                 merged["priority"],
                 merged["list_id"],
+                merged["start_date"],
                 merged["due_date"],
                 merged["duration_minutes"],
                 merged["scope_mode"],

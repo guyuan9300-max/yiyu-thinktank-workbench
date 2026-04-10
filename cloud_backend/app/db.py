@@ -741,6 +741,7 @@ class Database:
                 "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
             )
             self._ensure_column("tasks", "client_id", "TEXT")
+            self._ensure_column("tasks", "start_date", "TEXT")
             self._ensure_column("tasks", "duration_minutes", "INTEGER NOT NULL DEFAULT 60")
             self._ensure_column("tasks", "scope_mode", "TEXT NOT NULL DEFAULT 'COLLAB_SHARED'")
             self._ensure_column("tasks", "event_line_id", "TEXT")

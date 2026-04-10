@@ -1469,6 +1469,7 @@ class Database:
             self._ensure_column("project_modules", "template_tasks_json", "TEXT")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
+            self._ensure_column("tasks", "start_date", "TEXT")
             self._ensure_column("tasks", "due_date", "TEXT")
             self._ensure_column("tasks", "duration_minutes", "INTEGER NOT NULL DEFAULT 60")
             self._ensure_column("tasks", "scope_mode", "TEXT NOT NULL DEFAULT 'COLLAB_SHARED'")

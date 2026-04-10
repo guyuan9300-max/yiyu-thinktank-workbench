@@ -1,0 +1,466 @@
+- generic [ref=e24]:
+  - complementary [ref=e25]:
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - img "组织 Logo" [ref=e29]
+        - generic [ref=e30]: 益语智库
+      - button "收起侧栏" [ref=e32] [cursor=pointer]:
+        - img [ref=e33]
+    - generic [ref=e35]:
+      - navigation [ref=e36]:
+        - button "任务与日程" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]:
+            - img [ref=e39]
+            - generic [ref=e42]: 任务与日程
+        - button "客户工作台" [ref=e43] [cursor=pointer]:
+          - generic [ref=e44]:
+            - img [ref=e45]
+            - generic [ref=e48]: 客户工作台
+        - button "战略陪伴" [ref=e49] [cursor=pointer]:
+          - generic [ref=e50]:
+            - img [ref=e51]
+            - generic [ref=e55]: 战略陪伴
+        - button "资讯情报站" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]:
+            - img [ref=e58]
+            - generic [ref=e61]: 资讯情报站
+        - button "成长中心" [ref=e62] [cursor=pointer]:
+          - generic [ref=e63]:
+            - img [ref=e64]
+            - generic [ref=e66]: 成长中心
+        - button "系统设置" [ref=e67] [cursor=pointer]:
+          - generic [ref=e68]:
+            - img [ref=e69]
+            - generic [ref=e72]: 系统设置
+      - generic [ref=e75]:
+        - generic [ref=e76]:
+          - paragraph [ref=e77]: 协作同步
+          - paragraph [ref=e78]: 尚未绑定源码目录
+          - paragraph [ref=e79]: 点击任一主按钮后，会先帮你绑定源码目录。
+        - generic [ref=e80]:
+          - button "提交并推送我的修改" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+            - text: 提交并推送我的修改
+          - button "预览并同步最新版本" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+            - text: 预览并同步最新版本
+      - generic [ref=e90]:
+        - paragraph [ref=e91]: 当前登录
+        - paragraph [ref=e92]: 顾源源
+        - paragraph [ref=e93]: admin · qwen · 0 客户
+        - button "退出登录" [ref=e94] [cursor=pointer]
+  - main [ref=e95]:
+    - generic [ref=e96]:
+      - generic [ref=e97]:
+        - generic [ref=e98]:
+          - heading "任务与日程" [level=1] [ref=e99]
+          - generic [ref=e100]:
+            - button "协作收件箱" [ref=e101] [cursor=pointer]:
+              - img [ref=e102]
+              - text: 协作收件箱
+            - button "任务列表" [ref=e105] [cursor=pointer]
+            - button "我的月历" [active] [ref=e106] [cursor=pointer]
+            - button "事件线" [ref=e107] [cursor=pointer]
+            - button "周复盘" [ref=e108] [cursor=pointer]
+        - button "新建任务" [ref=e109] [cursor=pointer]:
+          - img [ref=e110]
+          - text: 新建任务
+      - generic [ref=e1830]:
+        - generic [ref=e1832]:
+          - generic [ref=e1833]:
+            - generic [ref=e1834]:
+              - generic [ref=e1835]:
+                - button "月" [ref=e1836] [cursor=pointer]
+                - button "周" [ref=e1837] [cursor=pointer]
+              - heading "2026年 4月" [level=2] [ref=e1838]
+            - generic [ref=e1839]:
+              - generic [ref=e1840]: 本月任务 28 条
+              - generic [ref=e1841]: 完成 11
+              - generic [ref=e1842]: 待推进 17
+              - generic [ref=e1843]: 逾期 4
+              - generic [ref=e1844]: 高优先级 8
+          - generic [ref=e1845]:
+            - switch "显示全部任务" [ref=e1846] [cursor=pointer]:
+              - generic: 显示全部任务
+            - generic [ref=e1849]:
+              - button [ref=e1850] [cursor=pointer]:
+                - img [ref=e1851]
+              - button "今天" [ref=e1853] [cursor=pointer]
+              - button "跳转日期" [ref=e1854] [cursor=pointer]:
+                - img [ref=e1855]
+              - button [ref=e1858] [cursor=pointer]:
+                - img [ref=e1859]
+        - generic [ref=e1861]:
+          - generic [ref=e1862]: 周一
+          - generic [ref=e1863]: 周二
+          - generic [ref=e1864]: 周三
+          - generic [ref=e1865]: 周四
+          - generic [ref=e1866]: 周五
+          - generic [ref=e1867]: 周六
+          - generic [ref=e1868]: 周日
+        - generic [ref=e1869]:
+          - generic [ref=e1870]:
+            - button "30 取消完成 张真中午交流 编辑 张真中午交流 张真中午交流 取消完成 和日慈王老师梳理心灵魔法学院 编辑 和日慈王老师梳理心灵魔法学院 10:00 和日慈王老师梳理心灵魔法学院 取消完成 日慈高老师Q1 心盛和品牌复盘 编辑 日慈高老师Q1 心盛和品牌复盘 10:00 日慈高老师Q1 心盛和品牌复盘 30日新建任务" [ref=e1871] [cursor=pointer]:
+              - generic [ref=e1872]:
+                - generic [ref=e1875]: "30"
+                - generic [ref=e1876]:
+                  - generic "机构控制" [ref=e1877]:
+                    - button "取消完成 张真中午交流" [ref=e1878]:
+                      - img [ref=e1879]
+                    - button "编辑 张真中午交流" [ref=e1881]:
+                      - img [ref=e1882]
+                    - generic [ref=e1885]: 张真中午交流
+                  - generic "机构控制" [ref=e1886]:
+                    - button "取消完成 和日慈王老师梳理心灵魔法学院" [ref=e1887]:
+                      - img [ref=e1888]
+                    - button "编辑 和日慈王老师梳理心灵魔法学院" [ref=e1890]:
+                      - img [ref=e1891]
+                    - generic [ref=e1894]: 10:00 和日慈王老师梳理心灵魔法学院
+                  - generic "机构控制" [ref=e1895]:
+                    - button "取消完成 日慈高老师Q1 心盛和品牌复盘" [ref=e1896]:
+                      - img [ref=e1897]
+                    - button "编辑 日慈高老师Q1 心盛和品牌复盘" [ref=e1899]:
+                      - img [ref=e1900]
+                    - generic [ref=e1903]: 10:00 日慈高老师Q1 心盛和品牌复盘
+                  - button "30日新建任务" [ref=e1904]:
+                    - generic [ref=e1905]: +
+            - button "31 31日新建任务" [ref=e1906] [cursor=pointer]:
+              - generic [ref=e1907]:
+                - generic [ref=e1910]: "31"
+                - button "31日新建任务" [ref=e1912]:
+                  - generic [ref=e1913]: +
+            - button "1 4月 取消完成 见姚老师和校园厨房卫生监控智能管家项目。 编辑 见姚老师和校园厨房卫生监控智能管家项目。 见姚老师和校园厨房卫生监控智能管家项目。 1日新建任务" [ref=e1914] [cursor=pointer]:
+              - generic [ref=e1915]:
+                - generic [ref=e1917]:
+                  - generic [ref=e1918]: "1"
+                  - generic [ref=e1919]: 4月
+                - generic [ref=e1920]:
+                  - generic "机构控制" [ref=e1921]:
+                    - button "取消完成 见姚老师和校园厨房卫生监控智能管家项目。" [ref=e1922]:
+                      - img [ref=e1923]
+                    - button "编辑 见姚老师和校园厨房卫生监控智能管家项目。" [ref=e1925]:
+                      - img [ref=e1926]
+                    - generic [ref=e1929]: 见姚老师和校园厨房卫生监控智能管家项目。
+                  - button "1日新建任务" [ref=e1930]:
+                    - generic [ref=e1931]: +
+            - button "2 2日新建任务" [ref=e1932] [cursor=pointer]:
+              - generic [ref=e1933]:
+                - generic [ref=e1936]: "2"
+                - button "2日新建任务" [ref=e1938]:
+                  - generic [ref=e1939]: +
+            - button "3 取消完成 送乐乐去火车站 编辑 送乐乐去火车站 15:00 送乐乐去火车站 取消完成 为爱黔行 拉群 编辑 为爱黔行 拉群 19:30 为爱黔行 拉群 3日新建任务" [ref=e1940] [cursor=pointer]:
+              - generic [ref=e1941]:
+                - generic [ref=e1944]: "3"
+                - generic [ref=e1945]:
+                  - generic "机构控制" [ref=e1946]:
+                    - button "取消完成 送乐乐去火车站" [ref=e1947]:
+                      - img [ref=e1948]
+                    - button "编辑 送乐乐去火车站" [ref=e1950]:
+                      - img [ref=e1951]
+                    - generic [ref=e1954]: 15:00 送乐乐去火车站
+                  - generic "机构控制" [ref=e1955]:
+                    - button "取消完成 为爱黔行 拉群" [ref=e1956]:
+                      - img [ref=e1957]
+                    - button "编辑 为爱黔行 拉群" [ref=e1959]:
+                      - img [ref=e1960]
+                    - generic [ref=e1963]: 19:30 为爱黔行 拉群
+                  - button "3日新建任务" [ref=e1964]:
+                    - generic [ref=e1965]: +
+            - button "4 清明 休 完成 日历与任务功能优化 编辑 日历与任务功能优化 日历与任务功能优化 4日新建任务" [ref=e1966] [cursor=pointer]:
+              - generic [ref=e1967]:
+                - generic [ref=e1968]:
+                  - generic [ref=e1970]: "4"
+                  - generic [ref=e1971]:
+                    - generic [ref=e1972]: 清明
+                    - generic [ref=e1973]: 休
+                - generic [ref=e1974]:
+                  - generic "机构控制" [ref=e1975]:
+                    - button "完成 日历与任务功能优化" [ref=e1976]
+                    - button "编辑 日历与任务功能优化" [ref=e1977]:
+                      - img [ref=e1978]
+                    - generic [ref=e1981]: 日历与任务功能优化
+                  - button "4日新建任务" [ref=e1982]:
+                    - generic [ref=e1983]: +
+            - button "5 休 5日新建任务" [ref=e1984] [cursor=pointer]:
+              - generic [ref=e1985]:
+                - generic [ref=e1986]:
+                  - generic [ref=e1988]: "5"
+                  - generic [ref=e1990]: 休
+                - button "5日新建任务" [ref=e1992]:
+                  - generic [ref=e1993]: +
+          - generic [ref=e1994]:
+            - button "6 休 取消完成 烟测-云端同步验证 编辑 烟测-云端同步验证 烟测-云端同步验证 取消完成 烟测-创建后立即可见 编辑 烟测-创建后立即可见 烟测-创建后立即可见 6日新建任务" [ref=e1995] [cursor=pointer]:
+              - generic [ref=e1996]:
+                - generic [ref=e1997]:
+                  - generic [ref=e1999]: "6"
+                  - generic [ref=e2001]: 休
+                - generic [ref=e2002]:
+                  - generic "机构控制" [ref=e2003]:
+                    - button "取消完成 烟测-云端同步验证" [ref=e2004]:
+                      - img [ref=e2005]
+                    - button "编辑 烟测-云端同步验证" [ref=e2007]:
+                      - img [ref=e2008]
+                    - generic [ref=e2011]: 烟测-云端同步验证
+                  - generic "机构控制" [ref=e2012]:
+                    - button "取消完成 烟测-创建后立即可见" [ref=e2013]:
+                      - img [ref=e2014]
+                    - button "编辑 烟测-创建后立即可见" [ref=e2016]:
+                      - img [ref=e2017]
+                    - generic [ref=e2020]: 烟测-创建后立即可见
+                  - button "6日新建任务" [ref=e2021]:
+                    - generic [ref=e2022]: +
+            - button "7 完成 深圳第一人民医院数字化系统项目评估 - 测试更新 编辑 深圳第一人民医院数字化系统项目评估 - 测试更新 09:00 深圳第一人民医院数字化系统项目评估 - 测试更新 完成 深圳益民评估 编辑 深圳益民评估 14:00 深圳益民评估 完成 深圳观澜湖见姚晓菲（汇丰银行项目） 编辑 深圳观澜湖见姚晓菲（汇丰银行项目） 18:00 深圳观澜湖见姚晓菲（汇丰银行项目） 7日新建任务" [ref=e2023] [cursor=pointer]:
+              - generic [ref=e2024]:
+                - generic [ref=e2027]: "7"
+                - generic [ref=e2028]:
+                  - generic "机构控制" [ref=e2029]:
+                    - button "完成 深圳第一人民医院数字化系统项目评估 - 测试更新" [ref=e2030]
+                    - button "编辑 深圳第一人民医院数字化系统项目评估 - 测试更新" [ref=e2031]:
+                      - img [ref=e2032]
+                    - generic [ref=e2035]: 09:00 深圳第一人民医院数字化系统项目评估 - 测试更新
+                  - generic "机构控制" [ref=e2036]:
+                    - button "完成 深圳益民评估" [ref=e2037]
+                    - button "编辑 深圳益民评估" [ref=e2038]:
+                      - img [ref=e2039]
+                    - generic [ref=e2042]: 14:00 深圳益民评估
+                  - generic "机构控制" [ref=e2043]:
+                    - button "完成 深圳观澜湖见姚晓菲（汇丰银行项目）" [ref=e2044]
+                    - button "编辑 深圳观澜湖见姚晓菲（汇丰银行项目）" [ref=e2045]:
+                      - img [ref=e2046]
+                    - generic [ref=e2049]: 18:00 深圳观澜湖见姚晓菲（汇丰银行项目）
+                  - button "7日新建任务" [ref=e2050]:
+                    - generic [ref=e2051]: +
+            - button "8 取消完成 反向测试收件 编辑 反向测试收件 反向测试收件 取消完成 测试协作任务是否可用 编辑 测试协作任务是否可用 测试协作任务是否可用 取消完成 CFFC 洪峰讨论赋能合作 编辑 CFFC 洪峰讨论赋能合作 14:00 CFFC 洪峰讨论赋能合作 8日新建任务" [ref=e2052] [cursor=pointer]:
+              - generic [ref=e2053]:
+                - generic [ref=e2056]: "8"
+                - generic [ref=e2057]:
+                  - generic "反向测试收件" [ref=e2058]:
+                    - button "取消完成 反向测试收件" [ref=e2059]:
+                      - img [ref=e2060]
+                    - button "编辑 反向测试收件" [ref=e2062]:
+                      - img [ref=e2063]
+                    - generic [ref=e2066]: 反向测试收件
+                  - generic "测试协作任务是否可用" [ref=e2067]:
+                    - button "取消完成 测试协作任务是否可用" [ref=e2068]:
+                      - img [ref=e2069]
+                    - button "编辑 测试协作任务是否可用" [ref=e2071]:
+                      - img [ref=e2072]
+                    - generic [ref=e2075]: 测试协作任务是否可用
+                  - generic "机构控制" [ref=e2076]:
+                    - button "取消完成 CFFC 洪峰讨论赋能合作" [ref=e2077]:
+                      - img [ref=e2078]
+                    - button "编辑 CFFC 洪峰讨论赋能合作" [ref=e2080]:
+                      - img [ref=e2081]
+                    - generic [ref=e2084]: 14:00 CFFC 洪峰讨论赋能合作
+                  - button "8日新建任务" [ref=e2085]:
+                    - generic [ref=e2086]: +
+            - button "9 完成 codex-list-save-smoke-195118 编辑 codex-list-save-smoke-195118 codex-list-save-smoke-195118 完成 自测简单保存004662 编辑 自测简单保存004662 自测简单保存004662 完成 PW测试任务A 编辑 PW测试任务A PW测试任务A 取消完成 codex-attachment-progress-verify-2 编辑 codex-attachment-progress-verify-2 codex-attachment-progress-verify-2 + 4 条更多 9日新建任务" [ref=e2087] [cursor=pointer]:
+              - generic [ref=e2088]:
+                - generic [ref=e2091]: "9"
+                - generic [ref=e2092]:
+                  - generic "机构控制" [ref=e2093]:
+                    - button "完成 codex-list-save-smoke-195118" [ref=e2094]
+                    - button "编辑 codex-list-save-smoke-195118" [ref=e2095]:
+                      - img [ref=e2096]
+                    - generic [ref=e2099]: codex-list-save-smoke-195118
+                  - generic "机构控制" [ref=e2100]:
+                    - button "完成 自测简单保存004662" [ref=e2101]
+                    - button "编辑 自测简单保存004662" [ref=e2102]:
+                      - img [ref=e2103]
+                    - generic [ref=e2106]: 自测简单保存004662
+                  - generic "PW测试任务A" [ref=e2107]:
+                    - button "完成 PW测试任务A" [ref=e2108]
+                    - button "编辑 PW测试任务A" [ref=e2109]:
+                      - img [ref=e2110]
+                    - generic [ref=e2113]: PW测试任务A
+                  - generic "机构控制" [ref=e2114]:
+                    - button "取消完成 codex-attachment-progress-verify-2" [ref=e2115]:
+                      - img [ref=e2116]
+                    - button "编辑 codex-attachment-progress-verify-2" [ref=e2118]:
+                      - img [ref=e2119]
+                    - generic [ref=e2122]: codex-attachment-progress-verify-2
+                  - button "+ 4 条更多" [ref=e2123]
+                  - button "9日新建任务" [ref=e2124]:
+                    - generic [ref=e2125]: +
+            - button "10 10日新建任务" [ref=e2126] [cursor=pointer]:
+              - generic [ref=e2127]:
+                - generic [ref=e2130]: "10"
+                - button "10日新建任务" [ref=e2132]:
+                  - generic [ref=e2133]: +
+            - button "11 11日新建任务" [ref=e2134] [cursor=pointer]:
+              - generic [ref=e2135]:
+                - generic [ref=e2138]: "11"
+                - button "11日新建任务" [ref=e2140]:
+                  - generic [ref=e2141]: +
+            - button "12 12日新建任务" [ref=e2142] [cursor=pointer]:
+              - generic [ref=e2143]:
+                - generic [ref=e2146]: "12"
+                - button "12日新建任务" [ref=e2148]:
+                  - generic [ref=e2149]: +
+          - generic [ref=e2150]:
+            - button "13 13日新建任务" [ref=e2151] [cursor=pointer]:
+              - generic [ref=e2152]:
+                - generic [ref=e2155]: "13"
+                - button "13日新建任务" [ref=e2157]:
+                  - generic [ref=e2158]: +
+            - button "14 完成 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段 编辑 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段 08:00 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段 完成 完成益语软件手机版 编辑 完成益语软件手机版 10:00 完成益语软件手机版 14日新建任务" [ref=e2159] [cursor=pointer]:
+              - generic [ref=e2160]:
+                - generic [ref=e2163]: "14"
+                - generic [ref=e2164]:
+                  - generic "机构控制" [ref=e2165]:
+                    - button "完成 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段" [ref=e2166]
+                    - button "编辑 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段" [ref=e2167]:
+                      - img [ref=e2168]
+                    - generic [ref=e2171]: 08:00 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段
+                  - generic "机构控制" [ref=e2172]:
+                    - button "完成 完成益语软件手机版" [ref=e2173]
+                    - button "编辑 完成益语软件手机版" [ref=e2174]:
+                      - img [ref=e2175]
+                    - generic [ref=e2178]: 10:00 完成益语软件手机版
+                  - button "14日新建任务" [ref=e2179]:
+                    - generic [ref=e2180]: +
+            - button "15 完成 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点 编辑 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点 15日新建任务" [ref=e2181] [cursor=pointer]:
+              - generic [ref=e2182]:
+                - generic [ref=e2185]: "15"
+                - generic [ref=e2186]:
+                  - generic "机构控制" [ref=e2187]:
+                    - button "完成 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点" [ref=e2188]
+                    - button "编辑 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点" [ref=e2189]:
+                      - img [ref=e2190]
+                    - generic [ref=e2193]: 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点
+                  - button "15日新建任务" [ref=e2194]:
+                    - generic [ref=e2195]: +
+            - button "16 16日新建任务" [ref=e2196] [cursor=pointer]:
+              - generic [ref=e2197]:
+                - generic [ref=e2200]: "16"
+                - button "16日新建任务" [ref=e2202]:
+                  - generic [ref=e2203]: +
+            - button "17 完成 功能集成测试与问题闭环 编辑 功能集成测试与问题闭环 功能集成测试与问题闭环 17日新建任务" [ref=e2204] [cursor=pointer]:
+              - generic [ref=e2205]:
+                - generic [ref=e2208]: "17"
+                - generic [ref=e2209]:
+                  - generic "机构控制" [ref=e2210]:
+                    - button "完成 功能集成测试与问题闭环" [ref=e2211]
+                    - button "编辑 功能集成测试与问题闭环" [ref=e2212]:
+                      - img [ref=e2213]
+                    - generic [ref=e2216]: 功能集成测试与问题闭环
+                  - button "17日新建任务" [ref=e2217]:
+                    - generic [ref=e2218]: +
+            - button "18 18日新建任务" [ref=e2219] [cursor=pointer]:
+              - generic [ref=e2220]:
+                - generic [ref=e2223]: "18"
+                - button "18日新建任务" [ref=e2225]:
+                  - generic [ref=e2226]: +
+            - button "19 19日新建任务" [ref=e2227] [cursor=pointer]:
+              - generic [ref=e2228]:
+                - generic [ref=e2231]: "19"
+                - button "19日新建任务" [ref=e2233]:
+                  - generic [ref=e2234]: +
+          - generic [ref=e2235]:
+            - button "20 20日新建任务" [ref=e2236] [cursor=pointer]:
+              - generic [ref=e2237]:
+                - generic [ref=e2240]: "20"
+                - button "20日新建任务" [ref=e2242]:
+                  - generic [ref=e2243]: +
+            - button "21 取消完成 [模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序 编辑 [模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序 11:00 [模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序 21日新建任务" [ref=e2244] [cursor=pointer]:
+              - generic [ref=e2245]:
+                - generic [ref=e2248]: "21"
+                - generic [ref=e2249]:
+                  - generic "机构控制" [ref=e2250]:
+                    - button "取消完成 [模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序" [ref=e2251]:
+                      - img [ref=e2252]
+                    - button "编辑 [模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序" [ref=e2254]:
+                      - img [ref=e2255]
+                    - generic [ref=e2258]: 11:00 [模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序
+                  - button "21日新建任务" [ref=e2259]:
+                    - generic [ref=e2260]: +
+            - button "22 22日新建任务" [ref=e2261] [cursor=pointer]:
+              - generic [ref=e2262]:
+                - generic [ref=e2265]: "22"
+                - button "22日新建任务" [ref=e2267]:
+                  - generic [ref=e2268]: +
+            - button "23 23日新建任务" [ref=e2269] [cursor=pointer]:
+              - generic [ref=e2270]:
+                - generic [ref=e2273]: "23"
+                - button "23日新建任务" [ref=e2275]:
+                  - generic [ref=e2276]: +
+            - button "24 24日新建任务" [ref=e2277] [cursor=pointer]:
+              - generic [ref=e2278]:
+                - generic [ref=e2281]: "24"
+                - button "24日新建任务" [ref=e2283]:
+                  - generic [ref=e2284]: +
+            - button "25 25日新建任务" [ref=e2285] [cursor=pointer]:
+              - generic [ref=e2286]:
+                - generic [ref=e2289]: "25"
+                - button "25日新建任务" [ref=e2291]:
+                  - generic [ref=e2292]: +
+            - button "26 完成 为爱黔行 （关键决策人拉群） 编辑 为爱黔行 （关键决策人拉群） 20:00 为爱黔行 （关键决策人拉群） 26日新建任务" [ref=e2293] [cursor=pointer]:
+              - generic [ref=e2294]:
+                - generic [ref=e2297]: "26"
+                - generic [ref=e2298]:
+                  - generic "机构控制" [ref=e2299]:
+                    - button "完成 为爱黔行 （关键决策人拉群）" [ref=e2300]
+                    - button "编辑 为爱黔行 （关键决策人拉群）" [ref=e2301]:
+                      - img [ref=e2302]
+                    - generic [ref=e2305]: 20:00 为爱黔行 （关键决策人拉群）
+                  - button "26日新建任务" [ref=e2306]:
+                    - generic [ref=e2307]: +
+          - generic [ref=e2308]:
+            - button "27 27日新建任务" [ref=e2309] [cursor=pointer]:
+              - generic [ref=e2310]:
+                - generic [ref=e2313]: "27"
+                - button "27日新建任务" [ref=e2315]:
+                  - generic [ref=e2316]: +
+            - button "28 完成 健身 编辑 健身 18:30 健身 28日新建任务" [ref=e2317] [cursor=pointer]:
+              - generic [ref=e2318]:
+                - generic [ref=e2321]: "28"
+                - generic [ref=e2322]:
+                  - generic "机构控制" [ref=e2323]:
+                    - button "完成 健身" [ref=e2324]
+                    - button "编辑 健身" [ref=e2325]:
+                      - img [ref=e2326]
+                    - generic [ref=e2329]: 18:30 健身
+                  - button "28日新建任务" [ref=e2330]:
+                    - generic [ref=e2331]: +
+            - button "29 取消完成 codex-attachment-save-debug-2 编辑 codex-attachment-save-debug-2 codex-attachment-save-debug-2 29日新建任务" [ref=e2332] [cursor=pointer]:
+              - generic [ref=e2333]:
+                - generic [ref=e2336]: "29"
+                - generic [ref=e2337]:
+                  - generic "机构控制" [ref=e2338]:
+                    - button "取消完成 codex-attachment-save-debug-2" [ref=e2339]:
+                      - img [ref=e2340]
+                    - button "编辑 codex-attachment-save-debug-2" [ref=e2342]:
+                      - img [ref=e2343]
+                    - generic [ref=e2346]: codex-attachment-save-debug-2
+                  - button "29日新建任务" [ref=e2347]:
+                    - generic [ref=e2348]: +
+            - button "30 30日新建任务" [ref=e2349] [cursor=pointer]:
+              - generic [ref=e2350]:
+                - generic [ref=e2353]: "30"
+                - button "30日新建任务" [ref=e2355]:
+                  - generic [ref=e2356]: +
+            - button "1 5月 劳动节 休 1日新建任务" [ref=e2357] [cursor=pointer]:
+              - generic [ref=e2358]:
+                - generic [ref=e2359]:
+                  - generic [ref=e2360]:
+                    - generic [ref=e2361]: "1"
+                    - generic [ref=e2362]: 5月
+                  - generic [ref=e2363]:
+                    - generic [ref=e2364]: 劳动节
+                    - generic [ref=e2365]: 休
+                - button "1日新建任务" [ref=e2367]:
+                  - generic [ref=e2368]: +
+            - button "2 休 2日新建任务" [ref=e2369] [cursor=pointer]:
+              - generic [ref=e2370]:
+                - generic [ref=e2371]:
+                  - generic [ref=e2373]: "2"
+                  - generic [ref=e2375]: 休
+                - button "2日新建任务" [ref=e2377]:
+                  - generic [ref=e2378]: +
+            - button "3 休 3日新建任务" [ref=e2379] [cursor=pointer]:
+              - generic [ref=e2380]:
+                - generic [ref=e2381]:
+                  - generic [ref=e2383]: "3"
+                  - generic [ref=e2385]: 休
+                - button "3日新建任务" [ref=e2387]:
+                  - generic [ref=e2388]: +

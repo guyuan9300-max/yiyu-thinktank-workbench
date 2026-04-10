@@ -583,6 +583,7 @@ class TaskRecord(BaseModel):
     listColor: str
     ownerId: str | None = None
     ownerName: str | None = None
+    startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
@@ -657,6 +658,7 @@ class TaskCreatePayload(BaseModel):
     description: str = ""
     priority: Priority = "normal"
     listId: str
+    startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
@@ -682,6 +684,7 @@ class TaskUpdatePayload(BaseModel):
     description: str | None = None
     priority: Priority | None = None
     listId: str | None = None
+    startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
@@ -1009,6 +1012,7 @@ class WeeklyReviewEntryRecord(BaseModel):
 class WeeklyReviewTaskSnapshotRecord(BaseModel):
     title: str
     status: Literal["inbox", "todo", "doing", "done", "rejected"]
+    startDate: str | None = None
     dueDate: str | None = None
     createdAt: str
     completionNote: str | None = None

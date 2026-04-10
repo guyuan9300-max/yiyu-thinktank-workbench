@@ -1,0 +1,1007 @@
+- generic [ref=e24]:
+  - complementary [ref=e25]:
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - img "组织 Logo" [ref=e29]
+        - generic [ref=e30]: 益语智库
+      - button "收起侧栏" [ref=e32] [cursor=pointer]:
+        - img [ref=e33]
+    - generic [ref=e35]:
+      - navigation [ref=e36]:
+        - button "任务与日程" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]:
+            - img [ref=e39]
+            - generic [ref=e42]: 任务与日程
+        - button "客户工作台" [ref=e43] [cursor=pointer]:
+          - generic [ref=e44]:
+            - img [ref=e45]
+            - generic [ref=e48]: 客户工作台
+        - button "战略陪伴" [ref=e49] [cursor=pointer]:
+          - generic [ref=e50]:
+            - img [ref=e51]
+            - generic [ref=e55]: 战略陪伴
+        - button "资讯情报站" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]:
+            - img [ref=e58]
+            - generic [ref=e61]: 资讯情报站
+        - button "成长中心" [ref=e62] [cursor=pointer]:
+          - generic [ref=e63]:
+            - img [ref=e64]
+            - generic [ref=e66]: 成长中心
+        - button "系统设置" [ref=e67] [cursor=pointer]:
+          - generic [ref=e68]:
+            - img [ref=e69]
+            - generic [ref=e72]: 系统设置
+      - generic [ref=e75]:
+        - generic [ref=e76]:
+          - paragraph [ref=e77]: 协作同步
+          - paragraph [ref=e78]: 尚未绑定源码目录
+          - paragraph [ref=e79]: 点击任一主按钮后，会先帮你绑定源码目录。
+        - generic [ref=e80]:
+          - button "提交并推送我的修改" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+            - text: 提交并推送我的修改
+          - button "预览并同步最新版本" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+            - text: 预览并同步最新版本
+      - generic [ref=e90]:
+        - paragraph [ref=e91]: 当前登录
+        - paragraph [ref=e92]: 顾源源
+        - paragraph [ref=e93]: admin · qwen · 0 客户
+        - button "退出登录" [ref=e94] [cursor=pointer]
+  - main [ref=e95]:
+    - generic [ref=e96]:
+      - generic [ref=e97]:
+        - generic [ref=e98]:
+          - heading "任务与日程" [level=1] [ref=e99]
+          - generic [ref=e100]:
+            - button "协作收件箱" [ref=e101] [cursor=pointer]:
+              - img [ref=e102]
+              - text: 协作收件箱
+            - button "任务列表" [ref=e105] [cursor=pointer]
+            - button "我的月历" [ref=e106] [cursor=pointer]
+            - button "事件线" [ref=e107] [cursor=pointer]
+            - button "周复盘" [ref=e108] [cursor=pointer]
+        - button "新建任务" [active] [ref=e109] [cursor=pointer]:
+          - img [ref=e110]
+          - text: 新建任务
+      - generic [ref=e673]:
+        - generic [ref=e674]:
+          - generic [ref=e676] [cursor=pointer]:
+            - img [ref=e678]
+            - generic [ref=e680]: 全部任务 · 全部
+            - generic [ref=e681]: "36"
+          - generic [ref=e682]:
+            - generic [ref=e683]:
+              - img [ref=e684]
+              - textbox "搜索任务..." [ref=e687]
+            - generic [ref=e688]:
+              - generic [ref=e689]: 展示
+              - combobox "展示" [ref=e690]:
+                - option "待推进"
+                - option "已完成"
+                - option "逾期"
+                - option "全部" [selected]
+            - generic [ref=e691]:
+              - generic [ref=e692]: 类型
+              - combobox "类型" [ref=e693]:
+                - option "全部任务" [selected]
+                - option "个人任务"
+                - option "协作任务"
+            - generic [ref=e694]:
+              - generic [ref=e695]: 时间排序
+              - combobox "时间排序" [ref=e696]:
+                - option "从近到远" [selected]
+                - option "从远到近"
+            - generic [ref=e697]:
+              - generic [ref=e698]: 时间范围
+              - combobox "时间范围" [ref=e699]:
+                - option "全部时间" [selected]
+                - option "最近三天"
+                - option "最近一个月"
+                - option "最近半年"
+                - option "自定义时间"
+        - generic [ref=e700]:
+          - button "codex-attachment-save-debug-2 debug 编辑 删除 展开任务卡片 04-29 客户项目 顾源源" [ref=e701] [cursor=pointer]:
+            - button [ref=e702]:
+              - img [ref=e703]
+            - generic [ref=e706]:
+              - generic [ref=e707]:
+                - generic [ref=e708]:
+                  - paragraph [ref=e709]: codex-attachment-save-debug-2
+                  - paragraph [ref=e710]: debug
+                - generic [ref=e711]:
+                  - button "编辑" [ref=e712]
+                  - button "删除" [ref=e713]
+                  - button "展开任务卡片" [ref=e714]:
+                    - img [ref=e715]
+              - generic [ref=e717]:
+                - generic [ref=e718]:
+                  - img [ref=e719]
+                  - text: 04-29
+                - generic [ref=e721]:
+                  - img [ref=e722]
+                  - text: 客户项目
+                - generic [ref=e725]:
+                  - img [ref=e726]
+                  - text: 顾源源
+          - button "健身 编辑 删除 展开任务卡片 04-28 18:30-19:30 客户项目 顾源源" [ref=e729] [cursor=pointer]:
+            - button [ref=e730]:
+              - img [ref=e731]
+            - generic [ref=e733]:
+              - generic [ref=e734]:
+                - paragraph [ref=e736]: 健身
+                - generic [ref=e737]:
+                  - button "编辑" [ref=e738]
+                  - button "删除" [ref=e739]
+                  - button "展开任务卡片" [ref=e740]:
+                    - img [ref=e741]
+              - generic [ref=e743]:
+                - generic [ref=e744]:
+                  - img [ref=e745]
+                  - text: 04-28 18:30-19:30
+                - generic [ref=e747]:
+                  - img [ref=e748]
+                  - text: 客户项目
+                - generic [ref=e751]:
+                  - img [ref=e752]
+                  - text: 顾源源
+          - button "为爱黔行 （关键决策人拉群） 吴老师和詹老师齐、乐乐拉一个群，让大家在里面沟通的，效能是最高的 编辑 删除 展开任务卡片 04-26 20:00-21:00 客户项目 顾源源" [ref=e755] [cursor=pointer]:
+            - button [ref=e756]:
+              - img [ref=e757]
+            - generic [ref=e759]:
+              - generic [ref=e760]:
+                - generic [ref=e761]:
+                  - paragraph [ref=e762]: 为爱黔行 （关键决策人拉群）
+                  - paragraph [ref=e763]: 吴老师和詹老师齐、乐乐拉一个群，让大家在里面沟通的，效能是最高的
+                - generic [ref=e764]:
+                  - button "编辑" [ref=e765]
+                  - button "删除" [ref=e766]
+                  - button "展开任务卡片" [ref=e767]:
+                    - img [ref=e768]
+              - generic [ref=e770]:
+                - generic [ref=e771]:
+                  - img [ref=e772]
+                  - text: 04-26 20:00-21:00
+                - generic [ref=e774]:
+                  - img [ref=e775]
+                  - text: 客户项目
+                - generic [ref=e778]:
+                  - img [ref=e779]
+                  - text: 顾源源
+          - button "[模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序 这也是一条模拟任务，用来测试协作收件箱。请判断当前三段结构里，哪一段最适合先进入工作坊主流程，并给一句修改意见。 编辑 删除 展开任务卡片 04-21 11:00-11:45 产品研发 顾源源、一朔" [ref=e782] [cursor=pointer]:
+            - button [ref=e783]:
+              - img [ref=e784]
+            - generic [ref=e787]:
+              - generic [ref=e788]:
+                - generic [ref=e789]:
+                  - paragraph [ref=e790]: "[模拟协作] 请确认 CFFC 工作坊提纲 V1 的优先级排序"
+                  - paragraph [ref=e791]: 这也是一条模拟任务，用来测试协作收件箱。请判断当前三段结构里，哪一段最适合先进入工作坊主流程，并给一句修改意见。
+                - generic [ref=e792]:
+                  - button "编辑" [ref=e793]
+                  - button "删除" [ref=e794]
+                  - button "展开任务卡片" [ref=e795]:
+                    - img [ref=e796]
+              - generic [ref=e798]:
+                - generic [ref=e799]:
+                  - img [ref=e800]
+                  - text: 04-21 11:00-11:45
+                - generic [ref=e802]:
+                  - img [ref=e803]
+                  - text: 产品研发
+                - generic [ref=e806]:
+                  - img [ref=e807]
+                  - text: 顾源源、一朔
+          - button "功能集成测试与问题闭环 测试人员根据需求文档，编写该功能的专项测试用例，覆盖所有功能点、操作场景 开展分层测试：先验证功能本身的逻辑正确性，再验证该功能和软件现有其他模块的集成兼容性，避免影响原有功能 将测试中发现的 bug、体验问题录入任务管理工具，标记优先级，同步给开发人员进行修复 开发修复完成后，测试人员开展回归测试，验证问题已解决，确认所有测试用例全部通过，功能达到上线标准 编辑 删除 展开任务卡片 04-17 客户项目 事件线 · 益语平台 顾源源" [ref=e810] [cursor=pointer]:
+            - button [ref=e811]:
+              - img [ref=e812]
+            - generic [ref=e814]:
+              - generic [ref=e815]:
+                - generic [ref=e816]:
+                  - paragraph [ref=e817]: 功能集成测试与问题闭环
+                  - paragraph [ref=e818]: 测试人员根据需求文档，编写该功能的专项测试用例，覆盖所有功能点、操作场景 开展分层测试：先验证功能本身的逻辑正确性，再验证该功能和软件现有其他模块的集成兼容性，避免影响原有功能 将测试中发现的 bug、体验问题录入任务管理工具，标记优先级，同步给开发人员进行修复 开发修复完成后，测试人员开展回归测试，验证问题已解决，确认所有测试用例全部通过，功能达到上线标准
+                - generic [ref=e819]:
+                  - button "编辑" [ref=e820]
+                  - button "删除" [ref=e821]
+                  - button "展开任务卡片" [ref=e822]:
+                    - img [ref=e823]
+              - generic [ref=e825]:
+                - generic [ref=e826]:
+                  - img [ref=e827]
+                  - text: 04-17
+                - generic [ref=e829]:
+                  - img [ref=e830]
+                  - text: 客户项目
+                - button "事件线 · 益语平台" [ref=e833]
+                - generic [ref=e834]:
+                  - img [ref=e835]
+                  - text: 顾源源
+          - button "跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点 编辑 删除 展开任务卡片 04-15 客户项目 事件线 · 日慈战略陪伴 顾源源" [ref=e838] [cursor=pointer]:
+            - button [ref=e839]:
+              - img [ref=e840]
+            - generic [ref=e842]:
+              - generic [ref=e843]:
+                - paragraph [ref=e845]: 跟进日慈基金会继续推进当前轮次的带领者培训、演练与实践带领，并记录运行中的关键卡点
+                - generic [ref=e846]:
+                  - button "编辑" [ref=e847]
+                  - button "删除" [ref=e848]
+                  - button "展开任务卡片" [ref=e849]:
+                    - img [ref=e850]
+              - generic [ref=e852]:
+                - generic [ref=e853]:
+                  - img [ref=e854]
+                  - text: 04-15
+                - generic [ref=e856]:
+                  - img [ref=e857]
+                  - text: 客户项目
+                - button "事件线 · 日慈战略陪伴" [ref=e860]
+                - generic [ref=e861]:
+                  - img [ref=e862]
+                  - text: 顾源源
+          - button "完成益语软件手机版 编辑 删除 展开任务卡片 04-14 10:00-11:00 客户项目 顾源源" [ref=e865] [cursor=pointer]:
+            - button [ref=e866]:
+              - img [ref=e867]
+            - generic [ref=e869]:
+              - generic [ref=e870]:
+                - paragraph [ref=e872]: 完成益语软件手机版
+                - generic [ref=e873]:
+                  - button "编辑" [ref=e874]
+                  - button "删除" [ref=e875]
+                  - button "展开任务卡片" [ref=e876]:
+                    - img [ref=e877]
+              - generic [ref=e879]:
+                - generic [ref=e880]:
+                  - img [ref=e881]
+                  - text: 04-14 10:00-11:00
+                - generic [ref=e883]:
+                  - img [ref=e884]
+                  - text: 客户项目
+                - generic [ref=e887]:
+                  - img [ref=e888]
+                  - text: 顾源源
+          - button "以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段 编辑 删除 展开任务卡片 04-14 08:00-13:00 客户项目 顾源源" [ref=e891] [cursor=pointer]:
+            - button [ref=e892]:
+              - img [ref=e893]
+            - generic [ref=e895]:
+              - generic [ref=e896]:
+                - paragraph [ref=e898]: 以魔法心情角作为一只麻雀，然后把它解剖开，让日慈进入到web cOding的阶段
+                - generic [ref=e899]:
+                  - button "编辑" [ref=e900]
+                  - button "删除" [ref=e901]
+                  - button "展开任务卡片" [ref=e902]:
+                    - img [ref=e903]
+              - generic [ref=e905]:
+                - generic [ref=e906]:
+                  - img [ref=e907]
+                  - text: 04-14 08:00-13:00
+                - generic [ref=e909]:
+                  - img [ref=e910]
+                  - text: 客户项目
+                - generic [ref=e913]:
+                  - img [ref=e914]
+                  - text: 顾源源
+          - button "自测重叠定时273364 编辑 删除 展开任务卡片 今天 09:00 → 今天 10:30 客户项目 顾源源" [ref=e917] [cursor=pointer]:
+            - button [ref=e918]:
+              - img [ref=e919]
+            - generic [ref=e921]:
+              - generic [ref=e922]:
+                - paragraph [ref=e924]: 自测重叠定时273364
+                - generic [ref=e925]:
+                  - button "编辑" [ref=e926]
+                  - button "删除" [ref=e927]
+                  - button "展开任务卡片" [ref=e928]:
+                    - img [ref=e929]
+              - generic [ref=e931]:
+                - generic [ref=e932]:
+                  - img [ref=e933]
+                  - text: 今天 09:00 → 今天 10:30
+                - generic [ref=e935]:
+                  - img [ref=e936]
+                  - text: 客户项目
+                - generic [ref=e939]:
+                  - img [ref=e940]
+                  - text: 顾源源
+          - button "自测重叠定时165176 编辑 删除 展开任务卡片 今天 09:00 → 今天 10:30 客户项目 顾源源" [ref=e943] [cursor=pointer]:
+            - button [ref=e944]:
+              - img [ref=e945]
+            - generic [ref=e947]:
+              - generic [ref=e948]:
+                - paragraph [ref=e950]: 自测重叠定时165176
+                - generic [ref=e951]:
+                  - button "编辑" [ref=e952]
+                  - button "删除" [ref=e953]
+                  - button "展开任务卡片" [ref=e954]:
+                    - img [ref=e955]
+              - generic [ref=e957]:
+                - generic [ref=e958]:
+                  - img [ref=e959]
+                  - text: 今天 09:00 → 今天 10:30
+                - generic [ref=e961]:
+                  - img [ref=e962]
+                  - text: 客户项目
+                - generic [ref=e965]:
+                  - img [ref=e966]
+                  - text: 顾源源
+          - button "codex-list-save-smoke-195118 编辑 删除 展开任务卡片 今天 客户项目 顾源源" [ref=e969] [cursor=pointer]:
+            - button [ref=e970]:
+              - img [ref=e971]
+            - generic [ref=e973]:
+              - generic [ref=e974]:
+                - paragraph [ref=e976]: codex-list-save-smoke-195118
+                - generic [ref=e977]:
+                  - button "编辑" [ref=e978]
+                  - button "删除" [ref=e979]
+                  - button "展开任务卡片" [ref=e980]:
+                    - img [ref=e981]
+              - generic [ref=e983]:
+                - generic [ref=e984]:
+                  - img [ref=e985]
+                  - text: 今天
+                - generic [ref=e987]:
+                  - img [ref=e988]
+                  - text: 客户项目
+                - generic [ref=e991]:
+                  - img [ref=e992]
+                  - text: 顾源源
+          - button "自动测保存192223 编辑 删除 展开任务卡片 今天 09:00-10:00 客户项目 顾源源" [ref=e995] [cursor=pointer]:
+            - button [ref=e996]:
+              - img [ref=e997]
+            - generic [ref=e999]:
+              - generic [ref=e1000]:
+                - paragraph [ref=e1002]: 自动测保存192223
+                - generic [ref=e1003]:
+                  - button "编辑" [ref=e1004]
+                  - button "删除" [ref=e1005]
+                  - button "展开任务卡片" [ref=e1006]:
+                    - img [ref=e1007]
+              - generic [ref=e1009]:
+                - generic [ref=e1010]:
+                  - img [ref=e1011]
+                  - text: 今天 09:00-10:00
+                - generic [ref=e1013]:
+                  - img [ref=e1014]
+                  - text: 客户项目
+                - generic [ref=e1017]:
+                  - img [ref=e1018]
+                  - text: 顾源源
+          - button "自测简单保存004662 编辑 删除 展开任务卡片 今天 客户项目 顾源源" [ref=e1021] [cursor=pointer]:
+            - button [ref=e1022]:
+              - img [ref=e1023]
+            - generic [ref=e1025]:
+              - generic [ref=e1026]:
+                - paragraph [ref=e1028]: 自测简单保存004662
+                - generic [ref=e1029]:
+                  - button "编辑" [ref=e1030]
+                  - button "删除" [ref=e1031]
+                  - button "展开任务卡片" [ref=e1032]:
+                    - img [ref=e1033]
+              - generic [ref=e1035]:
+                - generic [ref=e1036]:
+                  - img [ref=e1037]
+                  - text: 今天
+                - generic [ref=e1039]:
+                  - img [ref=e1040]
+                  - text: 客户项目
+                - generic [ref=e1043]:
+                  - img [ref=e1044]
+                  - text: 顾源源
+          - button "PW测试任务A 编辑 删除 展开任务卡片 今天 收集箱" [ref=e1047] [cursor=pointer]:
+            - button "只有负责人或协作者可以标记任务完成" [disabled] [ref=e1048]:
+              - img [ref=e1049]
+            - generic [ref=e1051]:
+              - generic [ref=e1052]:
+                - paragraph [ref=e1054]: PW测试任务A
+                - generic [ref=e1055]:
+                  - button "编辑" [ref=e1056]
+                  - button "删除" [ref=e1057]
+                  - button "展开任务卡片" [ref=e1058]:
+                    - img [ref=e1059]
+              - generic [ref=e1061]:
+                - generic [ref=e1062]:
+                  - img [ref=e1063]
+                  - text: 今天
+                - generic [ref=e1065]:
+                  - img [ref=e1066]
+                  - text: 收集箱
+          - button "飞云南 编辑 删除 展开任务卡片 今天 09:00-13:30 客户项目 顾源源" [ref=e1069] [cursor=pointer]:
+            - button [ref=e1070]:
+              - img [ref=e1071]
+            - generic [ref=e1073]:
+              - generic [ref=e1074]:
+                - paragraph [ref=e1076]: 飞云南
+                - generic [ref=e1077]:
+                  - button "编辑" [ref=e1078]
+                  - button "删除" [ref=e1079]
+                  - button "展开任务卡片" [ref=e1080]:
+                    - img [ref=e1081]
+              - generic [ref=e1083]:
+                - generic [ref=e1084]:
+                  - img [ref=e1085]
+                  - text: 今天 09:00-13:30
+                - generic [ref=e1087]:
+                  - img [ref=e1088]
+                  - text: 客户项目
+                - generic [ref=e1091]:
+                  - img [ref=e1092]
+                  - text: 顾源源
+          - button "codex-attachment-progress-verify-2 验证附件上传后保存任务链路-2 编辑 删除 展开任务卡片 今天 客户项目 顾源源" [ref=e1095] [cursor=pointer]:
+            - button [ref=e1096]:
+              - img [ref=e1097]
+            - generic [ref=e1100]:
+              - generic [ref=e1101]:
+                - generic [ref=e1102]:
+                  - paragraph [ref=e1103]: codex-attachment-progress-verify-2
+                  - paragraph [ref=e1104]: 验证附件上传后保存任务链路-2
+                - generic [ref=e1105]:
+                  - button "编辑" [ref=e1106]
+                  - button "删除" [ref=e1107]
+                  - button "展开任务卡片" [ref=e1108]:
+                    - img [ref=e1109]
+              - generic [ref=e1111]:
+                - generic [ref=e1112]:
+                  - img [ref=e1113]
+                  - text: 今天
+                - generic [ref=e1115]:
+                  - img [ref=e1116]
+                  - text: 客户项目
+                - generic [ref=e1119]:
+                  - img [ref=e1120]
+                  - text: 顾源源
+          - button "CFFC 洪峰讨论赋能合作 编辑 删除 展开任务卡片 04-08 14:00-15:00 收集箱 事件线 · 洪峰讨论赋能合作 顾源源" [ref=e1123] [cursor=pointer]:
+            - button [ref=e1124]:
+              - img [ref=e1125]
+            - generic [ref=e1128]:
+              - generic [ref=e1129]:
+                - paragraph [ref=e1131]: CFFC 洪峰讨论赋能合作
+                - generic [ref=e1132]:
+                  - button "编辑" [ref=e1133]
+                  - button "删除" [ref=e1134]
+                  - button "展开任务卡片" [ref=e1135]:
+                    - img [ref=e1136]
+              - generic [ref=e1138]:
+                - generic [ref=e1139]:
+                  - img [ref=e1140]
+                  - text: 04-08 14:00-15:00
+                - generic [ref=e1142]:
+                  - img [ref=e1143]
+                  - text: 收集箱
+                - button "事件线 · 洪峰讨论赋能合作" [ref=e1146]
+                - generic [ref=e1147]:
+                  - img [ref=e1148]
+                  - text: 顾源源
+          - button "反向测试收件 编辑 删除 展开任务卡片 04-08 健身 林佳维、顾源源" [ref=e1151] [cursor=pointer]:
+            - button [ref=e1152]:
+              - img [ref=e1153]
+            - generic [ref=e1156]:
+              - generic [ref=e1157]:
+                - paragraph [ref=e1159]: 反向测试收件
+                - generic [ref=e1160]:
+                  - button "编辑" [ref=e1161]
+                  - button "删除" [ref=e1162]
+                  - button "展开任务卡片" [ref=e1163]:
+                    - img [ref=e1164]
+              - generic [ref=e1166]:
+                - generic [ref=e1167]:
+                  - img [ref=e1168]
+                  - text: 04-08
+                - generic [ref=e1170]:
+                  - img [ref=e1171]
+                  - text: 健身
+                - generic [ref=e1174]:
+                  - img [ref=e1175]
+                  - text: 林佳维、顾源源
+          - button "测试协作任务是否可用 编辑 删除 展开任务卡片 04-08 客户项目 林佳维、顾源源" [ref=e1178] [cursor=pointer]:
+            - button [ref=e1179]:
+              - img [ref=e1180]
+            - generic [ref=e1183]:
+              - generic [ref=e1184]:
+                - paragraph [ref=e1186]: 测试协作任务是否可用
+                - generic [ref=e1187]:
+                  - button "编辑" [ref=e1188]
+                  - button "删除" [ref=e1189]
+                  - button "展开任务卡片" [ref=e1190]:
+                    - img [ref=e1191]
+              - generic [ref=e1193]:
+                - generic [ref=e1194]:
+                  - img [ref=e1195]
+                  - text: 04-08
+                - generic [ref=e1197]:
+                  - img [ref=e1198]
+                  - text: 客户项目
+                - generic [ref=e1201]:
+                  - img [ref=e1202]
+                  - text: 林佳维、顾源源
+          - button "深圳观澜湖见姚晓菲（汇丰银行项目） 编辑 删除 展开任务卡片 04-07 18:00-21:00 客户项目 顾源源" [ref=e1205] [cursor=pointer]:
+            - button [ref=e1206]:
+              - img [ref=e1207]
+            - generic [ref=e1209]:
+              - generic [ref=e1210]:
+                - paragraph [ref=e1212]: 深圳观澜湖见姚晓菲（汇丰银行项目）
+                - generic [ref=e1213]:
+                  - button "编辑" [ref=e1214]
+                  - button "删除" [ref=e1215]
+                  - button "展开任务卡片" [ref=e1216]:
+                    - img [ref=e1217]
+              - generic [ref=e1219]:
+                - generic [ref=e1220]:
+                  - img [ref=e1221]
+                  - text: 04-07 18:00-21:00
+                - generic [ref=e1223]:
+                  - img [ref=e1224]
+                  - text: 客户项目
+                - generic [ref=e1227]:
+                  - img [ref=e1228]
+                  - text: 顾源源
+          - button "深圳益民评估 编辑 删除 展开任务卡片 04-07 14:00-15:00 客户项目 事件线 · 益语市场 顾源源" [ref=e1231] [cursor=pointer]:
+            - button [ref=e1232]:
+              - img [ref=e1233]
+            - generic [ref=e1235]:
+              - generic [ref=e1236]:
+                - paragraph [ref=e1238]: 深圳益民评估
+                - generic [ref=e1239]:
+                  - button "编辑" [ref=e1240]
+                  - button "删除" [ref=e1241]
+                  - button "展开任务卡片" [ref=e1242]:
+                    - img [ref=e1243]
+              - generic [ref=e1245]:
+                - generic [ref=e1246]:
+                  - img [ref=e1247]
+                  - text: 04-07 14:00-15:00
+                - generic [ref=e1249]:
+                  - img [ref=e1250]
+                  - text: 客户项目
+                - button "事件线 · 益语市场" [ref=e1253]
+                - generic [ref=e1254]:
+                  - img [ref=e1255]
+                  - text: 顾源源
+          - button "深圳第一人民医院数字化系统项目评估 - 测试更新 参加姜老师关于深圳市慈善会中包含社工的活动，其中有两项关于AI招标的评估项目。我提前已经把这两个项目跑了两份人工智能报告，希望在现场可以给大家感受到我们对于人工智能使用和理解的先进程度。 编辑 删除 展开任务卡片 04-07 09:00-12:00 客户项目 顾源源" [ref=e1258] [cursor=pointer]:
+            - button [ref=e1259]:
+              - img [ref=e1260]
+            - generic [ref=e1262]:
+              - generic [ref=e1263]:
+                - generic [ref=e1264]:
+                  - paragraph [ref=e1265]: 深圳第一人民医院数字化系统项目评估 - 测试更新
+                  - paragraph [ref=e1266]: 参加姜老师关于深圳市慈善会中包含社工的活动，其中有两项关于AI招标的评估项目。我提前已经把这两个项目跑了两份人工智能报告，希望在现场可以给大家感受到我们对于人工智能使用和理解的先进程度。
+                - generic [ref=e1267]:
+                  - button "编辑" [ref=e1268]
+                  - button "删除" [ref=e1269]
+                  - button "展开任务卡片" [ref=e1270]:
+                    - img [ref=e1271]
+              - generic [ref=e1273]:
+                - generic [ref=e1274]:
+                  - img [ref=e1275]
+                  - text: 04-07 09:00-12:00
+                - generic [ref=e1277]:
+                  - img [ref=e1278]
+                  - text: 客户项目
+                - generic [ref=e1281]:
+                  - img [ref=e1282]
+                  - text: 顾源源
+          - button "烟测-云端同步验证 验证创建后同步 编辑 删除 展开任务卡片 04-06 客户项目 顾源源" [ref=e1285] [cursor=pointer]:
+            - button [ref=e1286]:
+              - img [ref=e1287]
+            - generic [ref=e1290]:
+              - generic [ref=e1291]:
+                - generic [ref=e1292]:
+                  - paragraph [ref=e1293]: 烟测-云端同步验证
+                  - paragraph [ref=e1294]: 验证创建后同步
+                - generic [ref=e1295]:
+                  - button "编辑" [ref=e1296]
+                  - button "删除" [ref=e1297]
+                  - button "展开任务卡片" [ref=e1298]:
+                    - img [ref=e1299]
+              - generic [ref=e1301]:
+                - generic [ref=e1302]:
+                  - img [ref=e1303]
+                  - text: 04-06
+                - generic [ref=e1305]:
+                  - img [ref=e1306]
+                  - text: 客户项目
+                - generic [ref=e1309]:
+                  - img [ref=e1310]
+                  - text: 顾源源
+          - button "烟测-创建后立即可见 验证创建后不消失 编辑 删除 展开任务卡片 04-06 客户项目 顾源源" [ref=e1313] [cursor=pointer]:
+            - button [ref=e1314]:
+              - img [ref=e1315]
+            - generic [ref=e1318]:
+              - generic [ref=e1319]:
+                - generic [ref=e1320]:
+                  - paragraph [ref=e1321]: 烟测-创建后立即可见
+                  - paragraph [ref=e1322]: 验证创建后不消失
+                - generic [ref=e1323]:
+                  - button "编辑" [ref=e1324]
+                  - button "删除" [ref=e1325]
+                  - button "展开任务卡片" [ref=e1326]:
+                    - img [ref=e1327]
+              - generic [ref=e1329]:
+                - generic [ref=e1330]:
+                  - img [ref=e1331]
+                  - text: 04-06
+                - generic [ref=e1333]:
+                  - img [ref=e1334]
+                  - text: 客户项目
+                - generic [ref=e1337]:
+                  - img [ref=e1338]
+                  - text: 顾源源
+          - button "日历与任务功能优化 要让益语工作平台成为管理的助手，而不只是一个日历面板，这件事情非常重要，因为它直接关乎客户能否感知到易语智库战略陪伴的价值。 在这个经济下行的周期内，大家愿意拿出金钱去做的事情，一定是肉眼可见的价值，而且是短期可以实现的价值。 编辑 删除 展开任务卡片 04-04 客户项目 事件线 · 益语平台 顾源源" [ref=e1341] [cursor=pointer]:
+            - button [ref=e1342]:
+              - img [ref=e1343]
+            - generic [ref=e1345]:
+              - generic [ref=e1346]:
+                - generic [ref=e1347]:
+                  - paragraph [ref=e1348]: 日历与任务功能优化
+                  - paragraph [ref=e1349]: 要让益语工作平台成为管理的助手，而不只是一个日历面板，这件事情非常重要，因为它直接关乎客户能否感知到易语智库战略陪伴的价值。 在这个经济下行的周期内，大家愿意拿出金钱去做的事情，一定是肉眼可见的价值，而且是短期可以实现的价值。
+                - generic [ref=e1350]:
+                  - button "编辑" [ref=e1351]
+                  - button "删除" [ref=e1352]
+                  - button "展开任务卡片" [ref=e1353]:
+                    - img [ref=e1354]
+              - generic [ref=e1356]:
+                - generic [ref=e1357]:
+                  - img [ref=e1358]
+                  - text: 04-04
+                - generic [ref=e1360]:
+                  - img [ref=e1361]
+                  - text: 客户项目
+                - button "事件线 · 益语平台" [ref=e1364]
+                - generic [ref=e1365]:
+                  - img [ref=e1366]
+                  - text: 顾源源
+          - button "为爱黔行 拉群 地点：群里方便 原始输入： 为爱黔行，把吴老师和詹老师拉一个群，在群里方便沟通。 编辑 删除 展开任务卡片 04-03 19:30-20:30 客户项目 顾源源" [ref=e1369] [cursor=pointer]:
+            - button [ref=e1370]:
+              - img [ref=e1371]
+            - generic [ref=e1374]:
+              - generic [ref=e1375]:
+                - generic [ref=e1376]:
+                  - paragraph [ref=e1377]: 为爱黔行 拉群
+                  - paragraph [ref=e1378]: 地点：群里方便 原始输入： 为爱黔行，把吴老师和詹老师拉一个群，在群里方便沟通。
+                - generic [ref=e1379]:
+                  - button "编辑" [ref=e1380]
+                  - button "删除" [ref=e1381]
+                  - button "展开任务卡片" [ref=e1382]:
+                    - img [ref=e1383]
+              - generic [ref=e1385]:
+                - generic [ref=e1386]:
+                  - img [ref=e1387]
+                  - text: 04-03 19:30-20:30
+                - generic [ref=e1389]:
+                  - img [ref=e1390]
+                  - text: 客户项目
+                - generic [ref=e1393]:
+                  - img [ref=e1394]
+                  - text: 顾源源
+          - button "送乐乐去火车站 编辑 删除 展开任务卡片 04-03 15:00-16:00 客户项目 顾源源" [ref=e1397] [cursor=pointer]:
+            - button [ref=e1398]:
+              - img [ref=e1399]
+            - generic [ref=e1402]:
+              - generic [ref=e1403]:
+                - paragraph [ref=e1405]: 送乐乐去火车站
+                - generic [ref=e1406]:
+                  - button "编辑" [ref=e1407]
+                  - button "删除" [ref=e1408]
+                  - button "展开任务卡片" [ref=e1409]:
+                    - img [ref=e1410]
+              - generic [ref=e1412]:
+                - generic [ref=e1413]:
+                  - img [ref=e1414]
+                  - text: 04-03 15:00-16:00
+                - generic [ref=e1416]:
+                  - img [ref=e1417]
+                  - text: 客户项目
+                - generic [ref=e1420]:
+                  - img [ref=e1421]
+                  - text: 顾源源
+          - button "见姚老师和校园厨房卫生监控智能管家项目。 编辑 删除 展开任务卡片 04-01 客户项目 顾源源" [ref=e1424] [cursor=pointer]:
+            - button [ref=e1425]:
+              - img [ref=e1426]
+            - generic [ref=e1429]:
+              - generic [ref=e1430]:
+                - paragraph [ref=e1432]: 见姚老师和校园厨房卫生监控智能管家项目。
+                - generic [ref=e1433]:
+                  - button "编辑" [ref=e1434]
+                  - button "删除" [ref=e1435]
+                  - button "展开任务卡片" [ref=e1436]:
+                    - img [ref=e1437]
+              - generic [ref=e1439]:
+                - generic [ref=e1440]:
+                  - img [ref=e1441]
+                  - text: 04-01
+                - generic [ref=e1443]:
+                  - img [ref=e1444]
+                  - text: 客户项目
+                - generic [ref=e1447]:
+                  - img [ref=e1448]
+                  - text: 顾源源
+          - button "和日慈王老师梳理心灵魔法学院 编辑 删除 展开任务卡片 03-30 10:00-11:00 客户项目 顾源源" [ref=e1451] [cursor=pointer]:
+            - button [ref=e1452]:
+              - img [ref=e1453]
+            - generic [ref=e1456]:
+              - generic [ref=e1457]:
+                - paragraph [ref=e1459]: 和日慈王老师梳理心灵魔法学院
+                - generic [ref=e1460]:
+                  - button "编辑" [ref=e1461]
+                  - button "删除" [ref=e1462]
+                  - button "展开任务卡片" [ref=e1463]:
+                    - img [ref=e1464]
+              - generic [ref=e1466]:
+                - generic [ref=e1467]:
+                  - img [ref=e1468]
+                  - text: 03-30 10:00-11:00
+                - generic [ref=e1470]:
+                  - img [ref=e1471]
+                  - text: 客户项目
+                - generic [ref=e1474]:
+                  - img [ref=e1475]
+                  - text: 顾源源
+          - button "日慈高老师Q1 心盛和品牌复盘 我们讨论了新生计划，数字化遇到的一些障碍，以及接下来要共同完成的事情，以及高老师手底下的两个人，特别是那个叫小鱼的男生，应该尽快处理掉，还有日瓷的品牌也是在高老师手上的。那么在周五之前，高老师要把日瓷品牌接下来要做的事情的时间线发给我，我再跟他约时间一起讨论 编辑 删除 展开任务卡片 03-30 10:00-11:00 客户项目 顾源源" [ref=e1478] [cursor=pointer]:
+            - button [ref=e1479]:
+              - img [ref=e1480]
+            - generic [ref=e1483]:
+              - generic [ref=e1484]:
+                - generic [ref=e1485]:
+                  - paragraph [ref=e1486]: 日慈高老师Q1 心盛和品牌复盘
+                  - paragraph [ref=e1487]: 我们讨论了新生计划，数字化遇到的一些障碍，以及接下来要共同完成的事情，以及高老师手底下的两个人，特别是那个叫小鱼的男生，应该尽快处理掉，还有日瓷的品牌也是在高老师手上的。那么在周五之前，高老师要把日瓷品牌接下来要做的事情的时间线发给我，我再跟他约时间一起讨论
+                - generic [ref=e1488]:
+                  - button "编辑" [ref=e1489]
+                  - button "删除" [ref=e1490]
+                  - button "展开任务卡片" [ref=e1491]:
+                    - img [ref=e1492]
+              - generic [ref=e1494]:
+                - generic [ref=e1495]:
+                  - img [ref=e1496]
+                  - text: 03-30 10:00-11:00
+                - generic [ref=e1498]:
+                  - img [ref=e1499]
+                  - text: 客户项目
+                - generic [ref=e1502]:
+                  - img [ref=e1503]
+                  - text: 顾源源
+          - button "张真中午交流 编辑 删除 展开任务卡片 03-30 客户项目 顾源源" [ref=e1506] [cursor=pointer]:
+            - button [ref=e1507]:
+              - img [ref=e1508]
+            - generic [ref=e1511]:
+              - generic [ref=e1512]:
+                - paragraph [ref=e1514]: 张真中午交流
+                - generic [ref=e1515]:
+                  - button "编辑" [ref=e1516]
+                  - button "删除" [ref=e1517]
+                  - button "展开任务卡片" [ref=e1518]:
+                    - img [ref=e1519]
+              - generic [ref=e1521]:
+                - generic [ref=e1522]:
+                  - img [ref=e1523]
+                  - text: 03-30
+                - generic [ref=e1525]:
+                  - img [ref=e1526]
+                  - text: 客户项目
+                - generic [ref=e1529]:
+                  - img [ref=e1530]
+                  - text: 顾源源
+          - button "本地软件设置全面重新 原始输入： 把本地软件设置全面重新。排查一遍。 编辑 删除 展开任务卡片 03-29 客户项目 事件线 · 完成事件线所有功能 顾源源" [ref=e1533] [cursor=pointer]:
+            - button [ref=e1534]:
+              - img [ref=e1535]
+            - generic [ref=e1537]:
+              - generic [ref=e1538]:
+                - generic [ref=e1539]:
+                  - paragraph [ref=e1540]: 本地软件设置全面重新
+                  - paragraph [ref=e1541]: 原始输入： 把本地软件设置全面重新。排查一遍。
+                - generic [ref=e1542]:
+                  - button "编辑" [ref=e1543]
+                  - button "删除" [ref=e1544]
+                  - button "展开任务卡片" [ref=e1545]:
+                    - img [ref=e1546]
+              - generic [ref=e1548]:
+                - generic [ref=e1549]:
+                  - img [ref=e1550]
+                  - text: 03-29
+                - generic [ref=e1552]:
+                  - img [ref=e1553]
+                  - text: 客户项目
+                - button "事件线 · 完成事件线所有功能" [ref=e1556]
+                - generic [ref=e1557]:
+                  - img [ref=e1558]
+                  - text: 顾源源
+          - button "上官 数字化合作 编辑 删除 展开任务卡片 03-24 14:00-18:00 客户项目 顾源源" [ref=e1561] [cursor=pointer]:
+            - button [ref=e1562]:
+              - img [ref=e1563]
+            - generic [ref=e1566]:
+              - generic [ref=e1567]:
+                - paragraph [ref=e1569]: 上官 数字化合作
+                - generic [ref=e1570]:
+                  - button "编辑" [ref=e1571]
+                  - button "删除" [ref=e1572]
+                  - button "展开任务卡片" [ref=e1573]:
+                    - img [ref=e1574]
+              - generic [ref=e1576]:
+                - generic [ref=e1577]:
+                  - img [ref=e1578]
+                  - text: 03-24 14:00-18:00
+                - generic [ref=e1580]:
+                  - img [ref=e1581]
+                  - text: 客户项目
+                - generic [ref=e1584]:
+                  - img [ref=e1585]
+                  - text: 顾源源
+          - button "颜秘见面 乡基会副秘书张 关系AI发展 有情怀有探索精神 编辑 删除 展开任务卡片 03-24 09:15-11:30 客户项目 顾源源" [ref=e1588] [cursor=pointer]:
+            - button [ref=e1589]:
+              - img [ref=e1590]
+            - generic [ref=e1593]:
+              - generic [ref=e1594]:
+                - generic [ref=e1595]:
+                  - paragraph [ref=e1596]: 颜秘见面
+                  - paragraph [ref=e1597]: 乡基会副秘书张 关系AI发展 有情怀有探索精神
+                - generic [ref=e1598]:
+                  - button "编辑" [ref=e1599]
+                  - button "删除" [ref=e1600]
+                  - button "展开任务卡片" [ref=e1601]:
+                    - img [ref=e1602]
+              - generic [ref=e1604]:
+                - generic [ref=e1605]:
+                  - img [ref=e1606]
+                  - text: 03-24 09:15-11:30
+                - generic [ref=e1608]:
+                  - img [ref=e1609]
+                  - text: 客户项目
+                - generic [ref=e1612]:
+                  - img [ref=e1613]
+                  - text: 顾源源
+          - button "永光老师，贺老师吃饭 编辑 删除 展开任务卡片 03-20 15:00-19:00 品牌市场 顾源源" [ref=e1616] [cursor=pointer]:
+            - button [ref=e1617]:
+              - img [ref=e1618]
+            - generic [ref=e1621]:
+              - generic [ref=e1622]:
+                - paragraph [ref=e1624]: 永光老师，贺老师吃饭
+                - generic [ref=e1625]:
+                  - button "编辑" [ref=e1626]
+                  - button "删除" [ref=e1627]
+                  - button "展开任务卡片" [ref=e1628]:
+                    - img [ref=e1629]
+              - generic [ref=e1631]:
+                - generic [ref=e1632]:
+                  - img [ref=e1633]
+                  - text: 03-20 15:00-19:00
+                - generic [ref=e1635]:
+                  - img [ref=e1636]
+                  - text: 品牌市场
+                - generic [ref=e1639]:
+                  - img [ref=e1640]
+                  - text: 顾源源
+          - button "给黄河教系统合作方案 编辑 删除 展开任务卡片 03-16 客户项目 事件线 · 给黄河教系统合作方案 顾源源" [ref=e1643] [cursor=pointer]:
+            - button [ref=e1644]:
+              - img [ref=e1645]
+            - generic [ref=e1648]:
+              - generic [ref=e1649]:
+                - paragraph [ref=e1651]: 给黄河教系统合作方案
+                - generic [ref=e1652]:
+                  - button "编辑" [ref=e1653]
+                  - button "删除" [ref=e1654]
+                  - button "展开任务卡片" [ref=e1655]:
+                    - img [ref=e1656]
+              - generic [ref=e1658]:
+                - generic [ref=e1659]:
+                  - img [ref=e1660]
+                  - text: 03-16
+                - generic [ref=e1662]:
+                  - img [ref=e1663]
+                  - text: 客户项目
+                - button "事件线 · 给黄河教系统合作方案" [ref=e1666]
+                - generic [ref=e1667]:
+                  - img [ref=e1668]
+                  - text: 顾源源
+      - generic [ref=e1672]:
+        - generic [ref=e1673]:
+          - generic [ref=e1674]:
+            - img [ref=e1676]
+            - heading "新建任务" [level=2] [ref=e1679]
+            - generic [ref=e1680]: 专注核心事务，结构化沉淀
+          - button "关闭任务弹窗" [ref=e1682] [cursor=pointer]:
+            - img [ref=e1683]
+        - generic [ref=e1686]:
+          - generic [ref=e1687]:
+            - textbox "任务标题..." [ref=e1688]
+            - textbox "添加任务描述，背景、目的、预期结果..." [ref=e1689]
+            - generic [ref=e1691]:
+              - generic [ref=e1692]:
+                - img [ref=e1693]
+                - paragraph [ref=e1698]: 往里面贴文字
+              - textbox "把纪要、背景说明、补充材料直接贴在这里，保存任务时会一起归档到当前项目的客户工作台" [ref=e1699]
+              - paragraph [ref=e1701]: 保存后文字和附件会自动归档到客户工作台。
+          - generic [ref=e1702]:
+            - generic [ref=e1703]:
+              - generic [ref=e1704]:
+                - button "协作任务" [ref=e1705] [cursor=pointer]:
+                  - img [ref=e1706]
+                  - text: 协作任务
+                - button "个人日程" [ref=e1711] [cursor=pointer]:
+                  - img [ref=e1712]
+                  - text: 个人日程
+              - generic [ref=e1715]:
+                - generic [ref=e1716]:
+                  - img [ref=e1717]
+                  - generic [ref=e1720]: 负责人
+                - button "顾源源 移除负责人顾源源" [ref=e1723] [cursor=pointer]:
+                  - generic [ref=e1725]:
+                    - generic [ref=e1726]: 顾源源
+                    - button "移除负责人顾源源" [ref=e1727]:
+                      - img [ref=e1728]
+                  - img [ref=e1731]
+              - generic [ref=e1733]:
+                - generic [ref=e1734]:
+                  - img [ref=e1735]
+                  - generic [ref=e1740]: 协作者
+                - button "点击选择协作者" [ref=e1743] [cursor=pointer]:
+                  - generic [ref=e1745]: 点击选择协作者
+                  - img [ref=e1746]
+              - generic [ref=e1748]:
+                - generic [ref=e1749]:
+                  - img [ref=e1750]
+                  - generic [ref=e1752]: 截止时间
+                - button "今天" [ref=e1754] [cursor=pointer]
+              - generic [ref=e1755]:
+                - generic [ref=e1756]:
+                  - img [ref=e1757]
+                  - generic [ref=e1759]: 优先级
+                - combobox [ref=e1761]:
+                  - option "低优先级"
+                  - option "普通优先级"
+                  - option "高优先级" [selected]
+              - generic [ref=e1762]:
+                - generic [ref=e1763]:
+                  - img [ref=e1764]
+                  - generic [ref=e1766]: 任务清单
+                - combobox [ref=e1768]:
+                  - option "暂无组织清单" [selected]
+            - generic [ref=e1769]:
+              - heading "上下文堆栈" [level=3] [ref=e1771]
+              - generic [ref=e1772]:
+                - generic [ref=e1773]:
+                  - generic [ref=e1774]:
+                    - img [ref=e1775]
+                    - generic [ref=e1778]: 组织/项目
+                  - combobox [ref=e1780]:
+                    - option "请选择项目" [selected]
+                - generic [ref=e1781]:
+                  - generic [ref=e1782]:
+                    - img [ref=e1783]
+                    - generic [ref=e1785]: 事件线
+                  - generic [ref=e1787]:
+                    - combobox [ref=e1788]:
+                      - option "可选：加入事件线" [selected]
+                      - option "儿童工作坊"
+                      - option "益语市场"
+                      - option "益语平台"
+                      - option "日慈战略陪伴"
+                      - option "完成事件线所有功能"
+                      - option "cffc 项目结项"
+                      - option "输出为爱黔行战略诊断提纲与待补资料清单"
+                      - option "给黄河教系统合作方案"
+                      - option "洪峰讨论赋能合作"
+                      - option "下一步战略讨论会"
+                    - generic [ref=e1789]:
+                      - button "编辑" [disabled] [ref=e1790]
+                      - button "结束" [disabled] [ref=e1791]
+                      - button "新建" [ref=e1792] [cursor=pointer]
+            - generic [ref=e1793]:
+              - generic [ref=e1794]:
+                - heading "结构与证据" [level=3] [ref=e1795]
+                - img [ref=e1796]
+              - generic [ref=e1798]:
+                - generic [ref=e1799]:
+                  - generic [ref=e1800]:
+                    - img [ref=e1801]
+                    - generic [ref=e1803]: 任务模板
+                  - generic [ref=e1805]:
+                    - generic [ref=e1806]: 未选择模板
+                    - button "选择或管理模板" [ref=e1807] [cursor=pointer]:
+                      - img [ref=e1808]
+                - generic [ref=e1809]:
+                  - generic [ref=e1810]:
+                    - img [ref=e1811]
+                    - generic [ref=e1815]: 标准流程
+                  - combobox [disabled] [ref=e1818]:
+                    - option "请先选择任务模板" [selected]
+        - generic [ref=e1819]:
+          - generic [ref=e1821]: 草稿已自动保存
+          - generic [ref=e1823]:
+            - button "取消" [ref=e1824] [cursor=pointer]
+            - button "保存任务" [ref=e1825] [cursor=pointer]
