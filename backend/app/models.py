@@ -199,8 +199,6 @@ class LocalInputMemoryAiSettings(BaseModel):
 class LocalInputMemoryFeishuIntegration(BaseModel):
     rememberInputs: bool = False
     appId: str = ""
-    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
-    customCallbackUrl: str = ""
     appSecret: str = ""
 
 
@@ -225,8 +223,6 @@ class SaveAiInputMemoryPayload(BaseModel):
 class SaveFeishuInputMemoryPayload(BaseModel):
     rememberInputs: bool = False
     appId: str | None = None
-    callbackMode: Literal["cloud_relay", "custom"] | None = None
-    customCallbackUrl: str | None = None
     appSecret: str | None = None
 
 
@@ -1740,9 +1736,6 @@ class OrgFeishuIntegrationAuditRecord(BaseModel):
     actorUserId: str | None = None
     actorName: str | None = None
     appId: str = ""
-    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
-    customCallbackUrl: str = ""
-    effectiveCallbackUrl: str = ""
     validationStatus: Literal["success", "failed"] = "failed"
     validationMessage: str = ""
     createdAt: str
@@ -1752,9 +1745,6 @@ class OrgFeishuIntegrationRecord(BaseModel):
     organizationId: str | None = None
     organizationName: str | None = None
     appId: str = ""
-    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
-    customCallbackUrl: str = ""
-    effectiveCallbackUrl: str = ""
     enabled: bool = False
     hasAppSecret: bool = False
     configuredBy: str | None = None
@@ -1762,47 +1752,32 @@ class OrgFeishuIntegrationRecord(BaseModel):
     updatedAt: str
     lastValidationStatus: Literal["idle", "success", "failed"] = "idle"
     lastValidationMessage: str | None = None
-    authorizationReady: bool = False
-    authorizationBlockedReason: str | None = None
     recentAudits: list[OrgFeishuIntegrationAuditRecord] = Field(default_factory=list)
 
 
 class OrgFeishuIntegrationSavePayload(BaseModel):
     appId: str | None = None
-    callbackMode: Literal["cloud_relay", "custom"] = "cloud_relay"
-    customCallbackUrl: str | None = None
     appSecret: str | None = None
     clearAppSecret: bool = False
 
 
-class FeishuMemberAuthorizationRecord(BaseModel):
-    linked: bool = False
-    readyForAuthorization: bool = False
+class FeishuDeliveryProfileRecord(BaseModel):
+    userId: str
     organizationId: str | None = None
     organizationName: str | None = None
-    appId: str = ""
-    userId: str = ""
-    openId: str | None = None
-    unionId: str | None = None
-    feishuUserId: str | None = None
-    name: str | None = None
-    enName: str | None = None
-    avatarUrl: str | None = None
-    email: str | None = None
-    tenantKey: str | None = None
-    boundAt: str | None = None
+    mobile: str = ""
+    normalizedMobile: str | None = None
+    deliveryStatus: Literal["missing_org", "integration_pending", "missing_mobile", "matched", "not_found", "failed"] = "missing_mobile"
+    deliveryStatusLabel: str = "未填写飞书手机号"
+    readyForNotifications: bool = False
+    receiveId: str | None = None
     lastVerifiedAt: str | None = None
     lastError: str | None = None
     blockedReason: str | None = None
 
 
-class FeishuMemberAuthorizationStartResponse(BaseModel):
-    authorizeUrl: str
-    state: str
-    expiresAt: str
-    callbackUrl: str
-    qrReady: bool = False
-    qrBlockedReason: str | None = None
+class FeishuDeliveryProfileSavePayload(BaseModel):
+    mobile: str | None = None
 
 
 class AiTagSuggestionPayload(BaseModel):

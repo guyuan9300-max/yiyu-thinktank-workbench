@@ -2371,9 +2371,6 @@ export interface OrgFeishuIntegrationAuditRecord {
   actorUserId?: string | null;
   actorName?: string | null;
   appId: string;
-  callbackMode: 'cloud_relay' | 'custom';
-  customCallbackUrl: string;
-  effectiveCallbackUrl: string;
   validationStatus: 'success' | 'failed';
   validationMessage: string;
   createdAt: string;
@@ -2383,9 +2380,6 @@ export interface OrgFeishuIntegration {
   organizationId?: string | null;
   organizationName?: string | null;
   appId: string;
-  callbackMode: 'cloud_relay' | 'custom';
-  customCallbackUrl: string;
-  effectiveCallbackUrl: string;
   enabled: boolean;
   hasAppSecret: boolean;
   configuredBy?: string | null;
@@ -2393,17 +2387,32 @@ export interface OrgFeishuIntegration {
   updatedAt: string;
   lastValidationStatus: 'idle' | 'success' | 'failed';
   lastValidationMessage?: string | null;
-  authorizationReady: boolean;
-  authorizationBlockedReason?: string | null;
   recentAudits: OrgFeishuIntegrationAuditRecord[];
 }
 
 export interface OrgFeishuIntegrationPayload {
   appId?: string;
-  callbackMode?: 'cloud_relay' | 'custom';
-  customCallbackUrl?: string | null;
   appSecret?: string;
   clearAppSecret?: boolean;
+}
+
+export interface FeishuDeliveryProfile {
+  userId: string;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  mobile: string;
+  normalizedMobile?: string | null;
+  deliveryStatus: 'missing_org' | 'integration_pending' | 'missing_mobile' | 'matched' | 'not_found' | 'failed';
+  deliveryStatusLabel: string;
+  readyForNotifications: boolean;
+  receiveId?: string | null;
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  blockedReason?: string | null;
+}
+
+export interface FeishuDeliveryProfilePayload {
+  mobile?: string | null;
 }
 
 export interface FeishuMemberAuthorization {
@@ -3379,8 +3388,6 @@ export interface LocalInputMemoryAiSettings {
 export interface LocalInputMemoryFeishuIntegration {
   rememberInputs: boolean;
   appId: string;
-  callbackMode: 'cloud_relay' | 'custom';
-  customCallbackUrl: string;
   appSecret: string;
 }
 
@@ -3405,8 +3412,6 @@ export interface SaveAiInputMemoryPayload {
 export interface SaveFeishuInputMemoryPayload {
   rememberInputs: boolean;
   appId?: string | null;
-  callbackMode?: 'cloud_relay' | 'custom';
-  customCallbackUrl?: string | null;
   appSecret?: string | null;
 }
 

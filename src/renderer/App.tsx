@@ -86,13 +86,9 @@ import type {
   EventLine,
   EventLineClarificationDraftResult,
   EventLineDetail,
-  FeishuMemberAuthorization,
-  FeishuMemberAuthorizationStartResult,
-  FeishuBotSettings,
-  FeishuBotSettingsPayload,
+  FeishuDeliveryProfile,
   OrgFeishuIntegration,
   OrgFeishuIntegrationPayload,
-  FeishuUserBinding,
   GrowthContextLink,
   HandbookEntry,
   HandbookSettings,
@@ -202,12 +198,9 @@ import {
   getProjectModuleDetail,
   getEmployees,
   backfillOrgTaskLinks,
-  clearFeishuMemberAuthorization,
-  getFeishuMemberAuthorization,
-  getFeishuBotSettings,
+  getFeishuDeliveryProfile,
   getOrgFeishuIntegration,
   getOrgMembershipSummary,
-  getFeishuUserBinding,
   getHealth,
   getHandbook,
   getHandbookSettings,
@@ -257,6 +250,7 @@ import {
   runAnalysis,
   saveAiInputMemory,
   saveCloudAuthInputMemory,
+  saveFeishuDeliveryProfile,
   saveFeishuInputMemory,
   scanLegacy,
   searchClientKnowledge,
@@ -270,10 +264,6 @@ import {
   adoptTaskSmartBriefAction,
   updateEventLine,
   saveOrgFeishuIntegration,
-  updateFeishuBotSettings,
-  clearFeishuUserBinding,
-  startFeishuMemberAuthorization,
-  startFeishuUserBinding,
   updateClient,
   updateClientWorkspaceSettings,
   updateProjectFlow,
@@ -331,7 +321,7 @@ import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './co
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { BrandLogoMark, BrandLogoSettingsCard } from './components/settings/BrandLogoSettingsCard';
-import { FeishuOrgIntegrationPanel, type FeishuAuthorizationFlowState } from './components/settings/FeishuOrgIntegrationPanel';
+import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
@@ -655,41 +645,6 @@ const DEFAULT_SYSTEM_ADMIN_SETTINGS: SystemAdminSettings = {
   updatedAt: '',
 };
 
-const DEFAULT_FEISHU_BOT_SETTINGS: FeishuBotSettings = {
-  appId: '',
-  receiveIdType: 'open_id',
-  receiverId: '',
-  botName: '罗茜茜',
-  userBindingCallbackUrl: '',
-  ready: false,
-  hasAppSecret: false,
-  secretSource: 'unconfigured',
-  secretFingerprint: null,
-  lastConnectionStatus: 'idle',
-  lastConnectionMessage: null,
-  lastConnectedAt: null,
-  lastTestMessageAt: null,
-  updatedAt: '',
-};
-
-const DEFAULT_FEISHU_USER_BINDING: FeishuUserBinding = {
-  linked: false,
-  readyForAuthorization: false,
-  appId: '',
-  userId: '',
-  openId: null,
-  unionId: null,
-  feishuUserId: null,
-  name: null,
-  enName: null,
-  avatarUrl: null,
-  email: null,
-  tenantKey: null,
-  boundAt: null,
-  lastVerifiedAt: null,
-  lastError: null,
-};
-
 const DEFAULT_ORG_MEMBERSHIP_SUMMARY: OrgMembershipSummary = {
   hasOrganization: false,
   organizationId: null,
@@ -700,9 +655,6 @@ const DEFAULT_ORG_FEISHU_INTEGRATION: OrgFeishuIntegration = {
   organizationId: null,
   organizationName: null,
   appId: '',
-  callbackMode: 'cloud_relay',
-  customCallbackUrl: '',
-  effectiveCallbackUrl: '',
   enabled: false,
   hasAppSecret: false,
   configuredBy: null,
@@ -710,30 +662,22 @@ const DEFAULT_ORG_FEISHU_INTEGRATION: OrgFeishuIntegration = {
   updatedAt: '',
   lastValidationStatus: 'idle',
   lastValidationMessage: null,
-  authorizationReady: false,
-  authorizationBlockedReason: null,
   recentAudits: [],
 };
 
-const DEFAULT_FEISHU_MEMBER_AUTHORIZATION: FeishuMemberAuthorization = {
-  linked: false,
-  readyForAuthorization: false,
+const DEFAULT_FEISHU_DELIVERY_PROFILE: FeishuDeliveryProfile = {
+  userId: 'local-device-user',
   organizationId: null,
   organizationName: null,
-  appId: '',
-  userId: '',
-  openId: null,
-  unionId: null,
-  feishuUserId: null,
-  name: null,
-  enName: null,
-  avatarUrl: null,
-  email: null,
-  tenantKey: null,
-  boundAt: null,
+  mobile: '',
+  normalizedMobile: null,
+  deliveryStatus: 'missing_org',
+  deliveryStatusLabel: '请先连接云端并加入组织',
+  readyForNotifications: false,
+  receiveId: null,
   lastVerifiedAt: null,
   lastError: null,
-  blockedReason: null,
+  blockedReason: '连接云端并加入组织后，才能启用飞书任务提醒。',
 };
 
 const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
@@ -749,8 +693,6 @@ const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
   feishuIntegration: {
     rememberInputs: false,
     appId: '',
-    callbackMode: 'cloud_relay',
-    customCallbackUrl: '',
     appSecret: '',
   },
 };
@@ -3653,10 +3595,9 @@ export default function App() {
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
   const [orgMembershipState, setOrgMembershipState] = useState<OrgMembershipSummary>(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
   const [orgFeishuIntegrationState, setOrgFeishuIntegrationState] = useState<OrgFeishuIntegration>(DEFAULT_ORG_FEISHU_INTEGRATION);
-  const [feishuMemberAuthorizationState, setFeishuMemberAuthorizationState] = useState<FeishuMemberAuthorization>(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
-  const [feishuAuthorizationBusyAction, setFeishuAuthorizationBusyAction] = useState<'idle' | 'starting' | 'refreshing' | 'clearing'>('idle');
-  const [feishuAuthorizationFlowState, setFeishuAuthorizationFlowState] = useState<FeishuAuthorizationFlowState | null>(null);
   const [isSavingOrgFeishuIntegration, setIsSavingOrgFeishuIntegration] = useState(false);
+  const [feishuDeliveryProfileState, setFeishuDeliveryProfileState] = useState<FeishuDeliveryProfile>(DEFAULT_FEISHU_DELIVERY_PROFILE);
+  const [isSavingFeishuDeliveryProfile, setIsSavingFeishuDeliveryProfile] = useState(false);
 
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [currentClientId, setCurrentClientId] = useState<string>('');
@@ -4137,9 +4078,9 @@ export default function App() {
     return response;
   }
 
-  async function loadFeishuMemberAuthorizationBlock() {
-    const response = await getFeishuMemberAuthorization();
-    setFeishuMemberAuthorizationState(response);
+  async function loadFeishuDeliveryProfileBlock() {
+    const response = await getFeishuDeliveryProfile();
+    setFeishuDeliveryProfileState(response);
     return response;
   }
 
@@ -4418,11 +4359,11 @@ export default function App() {
               }),
           },
           {
-            name: 'feishu-member-authorization',
+            name: 'feishu-delivery-profile',
             run: () =>
-              loadFeishuMemberAuthorizationBlock().catch(() => {
-                setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
-                return DEFAULT_FEISHU_MEMBER_AUTHORIZATION;
+              loadFeishuDeliveryProfileBlock().catch(() => {
+                setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
+                return DEFAULT_FEISHU_DELIVERY_PROFILE;
               }),
           },
           {
@@ -4510,9 +4451,7 @@ export default function App() {
         setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
         setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
         setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
-        setFeishuMemberAuthorizationState(DEFAULT_FEISHU_MEMBER_AUTHORIZATION);
-        setFeishuAuthorizationBusyAction('idle');
-        setFeishuAuthorizationFlowState(null);
+        setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
         setSettingsSectionLoaded({
           overview: true,
           org_dna: false,
@@ -15018,7 +14957,7 @@ export default function App() {
         setOrgFeishuIntegrationState(next);
         await Promise.all([
           loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY),
-          loadFeishuMemberAuthorizationBlock().catch(() => DEFAULT_FEISHU_MEMBER_AUTHORIZATION),
+          loadFeishuDeliveryProfileBlock().catch(() => DEFAULT_FEISHU_DELIVERY_PROFILE),
           loadLogsBlock(),
         ]);
         flash('success', next.enabled ? '组织飞书接入已验证并生效' : (next.lastValidationMessage || '组织飞书接入保存完成'));
@@ -15034,138 +14973,24 @@ export default function App() {
       const nextLocalInputMemory = await saveFeishuInputMemory({
         rememberInputs: payload.rememberInputs,
         appId: payload.appId,
-        callbackMode: payload.callbackMode,
-        customCallbackUrl: payload.customCallbackUrl,
         appSecret: payload.appSecret,
       });
       setLocalInputMemoryState(nextLocalInputMemory);
     };
 
-    const pollFeishuMemberAuthorizationUntilLinked = async () => {
-      setFeishuAuthorizationFlowState((current) => (current ? { ...current, isPolling: true } : current));
+    const handleSaveFeishuDeliveryProfile = async (payload: { mobile?: string | null }) => {
+      setIsSavingFeishuDeliveryProfile(true);
       try {
-        let linked = false;
-        for (let index = 0; index < 15; index += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 2000));
-          const next = await getFeishuMemberAuthorization();
-          setFeishuMemberAuthorizationState(next);
-          if (next.linked) {
-            linked = true;
-            setFeishuAuthorizationFlowState(null);
-            flash('success', `成员飞书授权已完成：${next.name || next.email || next.openId || '当前成员'}`);
-            break;
-          }
-        }
-        if (!linked) {
-          setFeishuAuthorizationFlowState((current) => (
-            current
-              ? {
-                  ...current,
-                  isPolling: false,
-                  statusMessage: '授权页已经就绪；完成授权后可点“手动刷新授权状态”，或重新打开授权页。',
-                }
-              : current
-          ));
-        }
-      } catch (error) {
-        setFeishuAuthorizationFlowState((current) => (
-          current
-            ? {
-                ...current,
-                isPolling: false,
-                statusMessage: error instanceof Error ? error.message : '轮询成员飞书授权状态失败',
-              }
-            : current
-        ));
-      }
-    };
-
-    const handleRefreshFeishuMemberAuthorization = async (silent = false) => {
-      setFeishuAuthorizationBusyAction('refreshing');
-      try {
-        const next = await loadFeishuMemberAuthorizationBlock();
-        if (next.linked) {
-          setFeishuAuthorizationFlowState(null);
-        } else if (feishuAuthorizationFlowState) {
-          setFeishuAuthorizationFlowState((current) => (
-            current
-              ? {
-                  ...current,
-                  statusMessage: '工作台已刷新成员飞书授权状态；如果你刚完成授权但仍未生效，请重新打开授权页。',
-                }
-              : current
-          ));
-        }
-        if (!silent) {
-          flash('success', next.linked ? '成员飞书授权状态已刷新' : '当前成员还没有完成飞书授权');
-        }
+        const next = await saveFeishuDeliveryProfile(payload);
+        setFeishuDeliveryProfileState(next);
+        await loadLogsBlock();
+        flash('success', next.readyForNotifications ? '飞书接收手机号已保存并匹配成功' : '飞书接收手机号已保存');
         return next;
       } catch (error) {
-        if (!silent) {
-          flash('error', error instanceof Error ? error.message : '刷新成员飞书授权状态失败');
-        }
+        flash('error', error instanceof Error ? error.message : '保存飞书接收手机号失败');
         throw error;
       } finally {
-        setFeishuAuthorizationBusyAction('idle');
-      }
-    };
-
-    const handleOpenFeishuAuthorizationInBrowser = async () => {
-      if (!feishuAuthorizationFlowState) return;
-      try {
-        await window.yiyuWorkbench.openExternalUrl(feishuAuthorizationFlowState.authorizeUrl);
-        flash('info', '已打开飞书授权页；完成授权后，工作台会自动刷新当前成员的授权状态。');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '打开飞书授权页失败');
-      }
-    };
-
-    const handleStartFeishuMemberAuthorization = async () => {
-      setFeishuAuthorizationBusyAction('starting');
-      try {
-        const started = await startFeishuMemberAuthorization();
-        let qrCodeDataUrl: string | null = null;
-        if (started.qrReady) {
-          try {
-            const qrcode = await import('qrcode');
-            qrCodeDataUrl = await qrcode.toDataURL(started.authorizeUrl, { width: 240, margin: 1 });
-          } catch {
-            qrCodeDataUrl = null;
-          }
-        }
-        setFeishuAuthorizationFlowState({
-          authorizeUrl: started.authorizeUrl,
-          callbackUrl: started.callbackUrl,
-          expiresAt: started.expiresAt,
-          qrReady: started.qrReady,
-          qrBlockedReason: started.qrBlockedReason ?? null,
-          qrCodeDataUrl,
-          isPolling: false,
-          statusMessage: started.qrReady
-            ? '请用飞书扫码完成成员身份授权；工作台会在后台自动刷新结果。'
-            : started.qrBlockedReason || '当前只支持在这台电脑浏览器里继续成员授权。',
-        });
-        flash('info', started.qrReady ? '成员飞书授权二维码已准备好，请在飞书中扫码授权。' : '当前回调地址不支持手机扫码，请在当前电脑浏览器继续授权。');
-        void pollFeishuMemberAuthorizationUntilLinked();
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '发起成员飞书授权失败');
-      } finally {
-        setFeishuAuthorizationBusyAction('idle');
-      }
-    };
-
-    const handleClearFeishuMemberAuthorization = async () => {
-      setFeishuAuthorizationBusyAction('clearing');
-      try {
-        const next = await clearFeishuMemberAuthorization();
-        setFeishuMemberAuthorizationState(next);
-        setFeishuAuthorizationFlowState(null);
-        await loadLogsBlock();
-        flash('success', '成员飞书授权已解除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '解除成员飞书授权失败');
-      } finally {
-        setFeishuAuthorizationBusyAction('idle');
+        setIsSavingFeishuDeliveryProfile(false);
       }
     };
 
@@ -15401,19 +15226,14 @@ export default function App() {
           sessionMode={authState.sessionMode === 'cloud' ? 'cloud' : 'local'}
           membership={orgMembershipState}
           integration={orgFeishuIntegrationState}
-          authorization={feishuMemberAuthorizationState}
+          deliveryProfile={feishuDeliveryProfileState}
           currentUserName={currentSessionUser?.fullName || null}
           saveBusy={isSavingOrgFeishuIntegration}
-          busyAction={feishuAuthorizationBusyAction}
-          pendingAuthorization={feishuAuthorizationFlowState}
+          savePhoneBusy={isSavingFeishuDeliveryProfile}
           rememberedInputs={localInputMemoryState.feishuIntegration}
           onSaveIntegration={handleSaveOrgFeishuIntegration}
           onSaveRememberedInputs={handleSaveFeishuInputMemory}
-          onStartAuthorization={handleStartFeishuMemberAuthorization}
-          onRefreshAuthorization={handleRefreshFeishuMemberAuthorization}
-          onClearAuthorization={handleClearFeishuMemberAuthorization}
-          onOpenAuthorizationInBrowser={handleOpenFeishuAuthorizationInBrowser}
-          onClosePendingAuthorization={() => setFeishuAuthorizationFlowState(null)}
+          onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
           onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
           onOpenCloudAuth={() => openCloudAuthModal('login')}
         />

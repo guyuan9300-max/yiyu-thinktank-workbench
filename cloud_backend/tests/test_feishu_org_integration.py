@@ -19,7 +19,6 @@ def make_client(tmp_path, monkeypatch) -> TestClient:
     monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Qinghua123!")
     monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Jianing123!")
     monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Yishuo123!")
-    monkeypatch.setenv("YIYU_CLOUD_PUBLIC_BASE_URL", "https://workbench.example.com")
     return TestClient(create_app())
 
 
@@ -29,47 +28,69 @@ def auth_headers(client: TestClient, email: str, password: str) -> dict[str, str
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
 
 
-def test_org_feishu_validate_and_member_authorization_ready(tmp_path, monkeypatch):
+def test_org_feishu_validate_and_delivery_profile_flow(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
 
-    monkeypatch.setattr(cloud_main, "_feishu_fetch_app_access_token", lambda **_: "app_token_demo")
+    before = client.get("/api/v1/me/feishu-delivery-profile", headers=headers)
+    assert before.status_code == 200, before.text
+    before_payload = before.json()
+    assert before_payload["deliveryStatus"] == "integration_pending"
+    assert before_payload["readyForNotifications"] is False
+
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_app_access_token", lambda **_: ("app_token_demo", {"code": 0}))
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_token_demo", {"code": 0}))
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_lookup_open_id_by_mobile",
+        lambda **_: (None, "暂未在飞书通讯录中找到该手机号，请确认该成员已加入当前飞书组织且手机号填写正确。"),
+    )
 
     saved = client.post(
         "/api/v1/org-integrations/feishu/validate-and-save",
         json={
             "appId": "cli_demo_app",
             "appSecret": "secret_demo",
-            "callbackMode": "cloud_relay",
         },
         headers=headers,
     )
     assert saved.status_code == 200, saved.text
     payload = saved.json()
     assert payload["enabled"] is True
-    assert payload["authorizationReady"] is True
-    assert payload["effectiveCallbackUrl"].startswith("https://workbench.example.com/")
+    assert payload["appId"] == "cli_demo_app"
     assert payload["recentAudits"][0]["validationStatus"] == "success"
+    assert "手机号" in (payload["lastValidationMessage"] or "")
 
-    authorization = client.get("/api/v1/me/feishu-authorization", headers=headers)
-    assert authorization.status_code == 200, authorization.text
-    authorization_payload = authorization.json()
-    assert authorization_payload["linked"] is False
-    assert authorization_payload["readyForAuthorization"] is True
-    assert authorization_payload["organizationId"] == payload["organizationId"]
+    delivery = client.get("/api/v1/me/feishu-delivery-profile", headers=headers)
+    assert delivery.status_code == 200, delivery.text
+    delivery_payload = delivery.json()
+    assert delivery_payload["deliveryStatus"] == "missing_mobile"
+    assert delivery_payload["readyForNotifications"] is False
+
+    saved_mobile = client.post(
+        "/api/v1/me/feishu-delivery-profile",
+        json={"mobile": "138 0013 8000"},
+        headers=headers,
+    )
+    assert saved_mobile.status_code == 200, saved_mobile.text
+    saved_mobile_payload = saved_mobile.json()
+    assert saved_mobile_payload["mobile"] == "13800138000"
+    assert saved_mobile_payload["normalizedMobile"] == "13800138000"
+    assert saved_mobile_payload["deliveryStatus"] == "not_found"
+    assert saved_mobile_payload["readyForNotifications"] is False
+    assert "暂未在飞书通讯录中找到该手机号" in (saved_mobile_payload["blockedReason"] or "")
 
 
 def test_invalid_feishu_config_does_not_override_existing_valid_config(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
 
-    monkeypatch.setattr(cloud_main, "_feishu_fetch_app_access_token", lambda **_: "app_token_demo")
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_app_access_token", lambda **_: ("app_token_demo", {"code": 0}))
     initial = client.post(
         "/api/v1/org-integrations/feishu/validate-and-save",
         json={
             "appId": "cli_good_app",
             "appSecret": "secret_good",
-            "callbackMode": "cloud_relay",
         },
         headers=headers,
     )
@@ -85,7 +106,6 @@ def test_invalid_feishu_config_does_not_override_existing_valid_config(tmp_path,
         json={
             "appId": "cli_bad_app",
             "appSecret": "secret_bad",
-            "callbackMode": "cloud_relay",
         },
         headers=headers,
     )

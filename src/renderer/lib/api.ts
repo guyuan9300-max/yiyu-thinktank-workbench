@@ -44,8 +44,8 @@ import type {
   FeishuBotSettings,
   FeishuMeetingLaunchResult,
   FeishuBotSettingsPayload,
-  FeishuMemberAuthorization,
-  FeishuMemberAuthorizationStartResult,
+  FeishuDeliveryProfile,
+  FeishuDeliveryProfilePayload,
   FeishuUserBinding,
   FeishuUserBindingStartResult,
   EmployeeRolePayload,
@@ -645,19 +645,14 @@ export async function saveOrgFeishuIntegration(payload: OrgFeishuIntegrationPayl
   });
 }
 
-export async function getFeishuMemberAuthorization() {
-  return request<FeishuMemberAuthorization>('/api/v1/me/feishu-authorization');
+export async function getFeishuDeliveryProfile() {
+  return request<FeishuDeliveryProfile>('/api/v1/me/feishu-delivery-profile');
 }
 
-export async function startFeishuMemberAuthorization() {
-  return request<FeishuMemberAuthorizationStartResult>('/api/v1/me/feishu-authorization/start', {
+export async function saveFeishuDeliveryProfile(payload: FeishuDeliveryProfilePayload) {
+  return request<FeishuDeliveryProfile>('/api/v1/me/feishu-delivery-profile', {
     method: 'POST',
-  });
-}
-
-export async function clearFeishuMemberAuthorization() {
-  return request<FeishuMemberAuthorization>('/api/v1/me/feishu-authorization', {
-    method: 'DELETE',
+    body: JSON.stringify(payload),
   });
 }
 

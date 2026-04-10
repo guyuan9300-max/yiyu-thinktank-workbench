@@ -28,11 +28,11 @@ def test_local_mode_feishu_collaboration_requires_cloud_and_org(tmp_path: Path):
     assert integration.status_code == 200, integration.text
     integration_payload = integration.json()
     assert integration_payload["enabled"] is False
-    assert "连接云端" in integration_payload["authorizationBlockedReason"]
+    assert "连接云端" in integration_payload["lastValidationMessage"]
 
-    authorization = client.get("/api/v1/me/feishu-authorization")
-    assert authorization.status_code == 200, authorization.text
-    authorization_payload = authorization.json()
-    assert authorization_payload["linked"] is False
-    assert authorization_payload["readyForAuthorization"] is False
-    assert "连接云端" in authorization_payload["blockedReason"]
+    delivery = client.get("/api/v1/me/feishu-delivery-profile")
+    assert delivery.status_code == 200, delivery.text
+    delivery_payload = delivery.json()
+    assert delivery_payload["deliveryStatus"] == "missing_org"
+    assert delivery_payload["readyForNotifications"] is False
+    assert "连接云端" in delivery_payload["blockedReason"]

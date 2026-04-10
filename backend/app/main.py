@@ -167,8 +167,8 @@ from app.models import (
     EmployeeRolePayload,
     FeishuBotSettingsPayload,
     FeishuBotSettingsRecord,
-    FeishuMemberAuthorizationRecord,
-    FeishuMemberAuthorizationStartResponse,
+    FeishuDeliveryProfileRecord,
+    FeishuDeliveryProfileSavePayload,
     FeishuMeetingLaunchPayload,
     FeishuMeetingLaunchResponse,
     FeishuReceiveIdType,
@@ -3463,8 +3463,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         feishu_integration = LocalInputMemoryFeishuIntegration(
             rememberInputs=raw_record.feishuIntegration.rememberInputs,
             appId=raw_record.feishuIntegration.appId,
-            callbackMode=raw_record.feishuIntegration.callbackMode,
-            customCallbackUrl=raw_record.feishuIntegration.customCallbackUrl,
             appSecret=remembered_feishu_secret,
         )
 
@@ -15588,8 +15586,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             feishu_record = LocalInputMemoryFeishuIntegration(
                 rememberInputs=True,
                 appId=(payload.appId or "").strip(),
-                callbackMode=payload.callbackMode or "cloud_relay",
-                customCallbackUrl=(payload.customCallbackUrl or "").strip(),
             )
         else:
             try:
@@ -15617,7 +15613,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 organizationId=None,
                 organizationName=None,
                 updatedAt=now_iso(),
-                authorizationBlockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
+                lastValidationStatus="idle",
+                lastValidationMessage="连接云端并加入或创建组织后，才能启用飞书协作。",
             )
         payload = cloud_request("GET", "/api/v1/org-integrations/feishu")
         if not isinstance(payload, dict):
@@ -15637,48 +15634,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid org feishu payload")
         return OrgFeishuIntegrationRecord(**response)
 
-    @app.get("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
-    def get_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
+    @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
+    def get_feishu_delivery_profile() -> FeishuDeliveryProfileRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
-            return FeishuMemberAuthorizationRecord(
-                linked=False,
-                readyForAuthorization=False,
+            return FeishuDeliveryProfileRecord(
+                userId="local-device-user",
                 organizationId=None,
                 organizationName=None,
-                appId="",
-                userId="local-device-user",
-                blockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
+                mobile="",
+                normalizedMobile=None,
+                deliveryStatus="missing_org",
+                deliveryStatusLabel="请先连接云端并加入组织",
+                readyForNotifications=False,
+                blockedReason="连接云端并加入组织后，才能启用飞书任务提醒。",
             )
-        payload = cloud_request("GET", "/api/v1/me/feishu-authorization")
+        payload = cloud_request("GET", "/api/v1/me/feishu-delivery-profile")
         if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
-        return FeishuMemberAuthorizationRecord(**payload)
+            raise HTTPException(status_code=502, detail="Invalid feishu delivery profile payload")
+        return FeishuDeliveryProfileRecord(**payload)
 
-    @app.post("/api/v1/me/feishu-authorization/start", response_model=FeishuMemberAuthorizationStartResponse)
-    def start_feishu_member_authorization() -> FeishuMemberAuthorizationStartResponse:
+    @app.post("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
+    def save_feishu_delivery_profile(payload: FeishuDeliveryProfileSavePayload) -> FeishuDeliveryProfileRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
             raise HTTPException(status_code=400, detail="连接云端并加入或创建组织后，才能启用飞书协作。")
-        payload = cloud_request("POST", "/api/v1/me/feishu-authorization/start")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid feishu authorization start payload")
-        return FeishuMemberAuthorizationStartResponse(**payload)
-
-    @app.delete("/api/v1/me/feishu-authorization", response_model=FeishuMemberAuthorizationRecord)
-    def clear_feishu_member_authorization() -> FeishuMemberAuthorizationRecord:
-        if not get_cloud_token() and not get_cloud_refresh_token():
-            return FeishuMemberAuthorizationRecord(
-                linked=False,
-                readyForAuthorization=False,
-                organizationId=None,
-                organizationName=None,
-                appId="",
-                userId="local-device-user",
-                blockedReason="连接云端并加入或创建组织后，才能启用飞书协作。",
-            )
-        payload = cloud_request("DELETE", "/api/v1/me/feishu-authorization")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid feishu authorization payload")
-        return FeishuMemberAuthorizationRecord(**payload)
+        response = cloud_request("POST", "/api/v1/me/feishu-delivery-profile", json_body=payload.model_dump(exclude_none=True))
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid feishu delivery profile payload")
+        return FeishuDeliveryProfileRecord(**response)
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
     def auth_department_options() -> list[DepartmentOptionRecord]:

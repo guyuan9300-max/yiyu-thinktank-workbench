@@ -698,6 +698,7 @@ class Database:
             self._ensure_column("employee_accounts", "manager_name", "TEXT")
             self._ensure_column("employee_accounts", "current_focus", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "is_department_lead", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("employee_accounts", "feishu_mobile", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
@@ -851,6 +852,43 @@ class Database:
                     FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
                     FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS org_feishu_delivery_targets (
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    mobile TEXT NOT NULL DEFAULT '',
+                    receive_id_type TEXT NOT NULL DEFAULT 'open_id',
+                    receive_id TEXT,
+                    match_status TEXT NOT NULL DEFAULT 'not_found',
+                    last_verified_at TEXT,
+                    last_error TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, user_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_delivery_targets_status
+                    ON org_feishu_delivery_targets(organization_id, match_status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS org_feishu_task_notifications (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    recipient_user_id TEXT NOT NULL,
+                    recipient_open_id TEXT,
+                    delivery_status TEXT NOT NULL,
+                    delivery_message TEXT NOT NULL DEFAULT '',
+                    changed_fields_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(recipient_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_task_notifications_task
+                    ON org_feishu_task_notifications(task_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_task_notifications_recipient
+                    ON org_feishu_task_notifications(recipient_user_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS event_line_attachments (
                     id TEXT PRIMARY KEY,
