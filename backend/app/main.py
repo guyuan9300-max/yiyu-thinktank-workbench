@@ -5431,6 +5431,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {}
         return response.json()
 
+    def sync_new_badge_unlock_notifications_to_cloud(board: BadgeBoardResponse, *, user_id: str) -> None:
+        if not get_cloud_token():
+            return
+        badge_map = {badge.id: badge for category in board.categories for badge in category.badges}
+        synced_key = f"feishu_badge_notified_unlock_ids:{user_id}"
+        synced_ids = set(from_json(state.db.get_setting(synced_key, "[]")) or [])
+        unlock_rows = state.db.fetchall(
+            """
+            SELECT id, badge_id, badge_name, xp, unlocked_at
+            FROM badge_unlock_records
+            WHERE user_id = ?
+            ORDER BY created_at ASC
+            """,
+            (user_id,),
+        )
+        updated_synced_ids = set(synced_ids)
+        for row in unlock_rows:
+            unlock_id = str(row["id"])
+            if unlock_id in synced_ids:
+                continue
+            badge = badge_map.get(str(row["badge_id"]))
+            category_name = badge.categoryLabel if badge else ""
+            badge_description = badge.description if badge else ""
+            try:
+                response = cloud_request(
+                    "POST",
+                    "/api/v1/me/feishu-notifications/badge-unlock",
+                    json_body={
+                        "badgeId": str(row["badge_id"]),
+                        "badgeName": str(row["badge_name"]),
+                        "categoryName": category_name,
+                        "badgeDescription": badge_description,
+                        "xp": int(row["xp"] or 0),
+                        "unlockedAt": str(row["unlocked_at"]) if row["unlocked_at"] else None,
+                    },
+                )
+            except HTTPException:
+                continue
+            if not isinstance(response, dict):
+                continue
+            if str(response.get("deliveryStatus") or "") in {"sent_card", "sent_text_fallback"}:
+                updated_synced_ids.add(unlock_id)
+        if updated_synced_ids != synced_ids:
+            state.db.set_setting(synced_key, json.dumps(sorted(updated_synced_ids), ensure_ascii=False))
+
     def cloud_upload_file(
         path: str,
         *,
@@ -23454,7 +23499,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         handbook_entries = list_handbook().entries
         if handbook_entries:
             backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        badge_board = build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        sync_new_badge_unlock_notifications_to_cloud(badge_board, user_id=user_id)
         return build_growth_overview(
             state.db,
             user_id=user_id,
@@ -23468,7 +23514,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         handbook_entries = list_handbook().entries
         if handbook_entries:
             backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        badge_board = build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        sync_new_badge_unlock_notifications_to_cloud(badge_board, user_id=user_id)
         return build_growth_workbench_snapshot(week_label=resolve_growth_week_label(user_id, weekLabel))
 
     @app.get("/api/v1/growth/ledger", response_model=GrowthLedgerResponse)
@@ -23480,7 +23527,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         handbook_entries = list_handbook().entries
         if handbook_entries:
             backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        badge_board = build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        sync_new_badge_unlock_notifications_to_cloud(badge_board, user_id=user_id)
         return build_growth_ledger(state.db, user_id=user_id, ability_key=abilityKey, week_label=weekLabel)
 
     @app.get("/api/v1/growth/badges", response_model=BadgeBoardResponse)
@@ -23489,7 +23537,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         handbook_entries = list_handbook().entries
         if handbook_entries:
             backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        return build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        badge_board = build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        sync_new_badge_unlock_notifications_to_cloud(badge_board, user_id=user_id)
+        return badge_board
 
     @app.get("/api/v1/growth/recommendations", response_model=list[LearningRecommendationRecord])
     def get_growth_recommendations() -> list[LearningRecommendationRecord]:

@@ -890,6 +890,58 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_org_feishu_task_notifications_recipient
                     ON org_feishu_task_notifications(recipient_user_id, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS org_feishu_notifications (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
+                    object_type TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL DEFAULT '',
+                    recipient_user_id TEXT NOT NULL,
+                    recipient_open_id TEXT,
+                    title TEXT NOT NULL DEFAULT '',
+                    card_json TEXT NOT NULL DEFAULT '',
+                    text_fallback TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    dedupe_key TEXT,
+                    delivery_status TEXT NOT NULL DEFAULT 'queued',
+                    delivery_channel TEXT NOT NULL DEFAULT '',
+                    delivery_message TEXT NOT NULL DEFAULT '',
+                    due_at TEXT,
+                    sent_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(recipient_user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_notifications_due
+                    ON org_feishu_notifications(delivery_status, due_at, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_notifications_recipient
+                    ON org_feishu_notifications(recipient_user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_notifications_dedupe
+                    ON org_feishu_notifications(dedupe_key, recipient_user_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS org_feishu_query_logs (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL UNIQUE,
+                    sender_open_id TEXT NOT NULL,
+                    sender_feishu_user_id TEXT,
+                    chat_id TEXT NOT NULL DEFAULT '',
+                    query_type TEXT NOT NULL DEFAULT '',
+                    query_text TEXT NOT NULL DEFAULT '',
+                    resolved_user_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'resolved',
+                    reply_excerpt TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(resolved_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_query_logs_org_created
+                    ON org_feishu_query_logs(organization_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_org_feishu_query_logs_sender
+                    ON org_feishu_query_logs(sender_open_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS event_line_attachments (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,

@@ -153,13 +153,37 @@ class FeishuTaskNotificationRecord(BaseModel):
     id: str
     organizationId: str
     taskId: str
-    eventType: Literal["created", "key_fields_changed"]
+    eventType: Literal["created", "key_fields_changed", "content_fields_changed"]
     recipientUserId: str
     recipientOpenId: str | None = None
     deliveryStatus: Literal["sent", "skipped_unbound", "failed"]
     deliveryMessage: str = ""
     changedFields: list[str] = Field(default_factory=list)
     createdAt: str
+
+
+class FeishuBadgeNotificationPayload(BaseModel):
+    badgeId: str = Field(min_length=1)
+    badgeName: str = Field(min_length=1)
+    categoryName: str = ""
+    badgeDescription: str = ""
+    xp: int = 0
+    unlockedAt: str | None = None
+
+
+class FeishuNotificationDispatchRecord(BaseModel):
+    id: str
+    messageType: str
+    objectType: str
+    objectId: str
+    recipientUserId: str
+    deliveryStatus: str
+    deliveryChannel: str = ""
+    deliveryMessage: str = ""
+    dedupeKey: str | None = None
+    createdAt: str
+    updatedAt: str
+    sentAt: str | None = None
 
 
 class RolePayload(BaseModel):

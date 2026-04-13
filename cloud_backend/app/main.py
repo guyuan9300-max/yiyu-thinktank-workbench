@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import json
 import logging
 import mimetypes
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from threading import Event, Thread
+from typing import Literal, cast
 from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
@@ -39,8 +42,10 @@ from app.models import (
     EventLineReportAttachmentRecord,
     EventLineReportSnapshotRecord,
     EventLineUpdatePayload,
+    FeishuBadgeNotificationPayload,
     FeishuDeliveryProfileRecord,
     FeishuDeliveryProfileSavePayload,
+    FeishuNotificationDispatchRecord,
     HealthResponse,
     HierarchyReportRecord,
     FeishuBindingRelaySessionCreatePayload,
@@ -128,6 +133,22 @@ DEFAULT_ORG_ID = "org_yiyu_default"
 DEFAULT_ADMIN_EMAIL = DEFAULT_BOOTSTRAP_ADMIN_EMAIL
 ALLOWED_APPROVER_ROLES: tuple[PrimaryRole, ...] = ("admin",)
 ORG_QUARTERS: tuple[str, ...] = ("Q1", "Q2", "Q3", "Q4")
+TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS: tuple[str, ...] = ("startDate", "dueDate", "durationMinutes", "ownerId", "collaboratorIds")
+TASK_DEFERRED_FEISHU_CHANGE_FIELDS: tuple[str, ...] = ("title", "description", "priority", "listId")
+FEISHU_QUERY_REPLY_LIMIT = 5
+FEISHU_QUERY_HELP_TEXT = (
+    "当前支持这些问法：\n"
+    "1. 我今天有哪些任务\n"
+    "2. 我本周有哪些任务\n"
+    "3. 我有哪些逾期任务\n"
+    "4. 我有哪些待确认协作任务\n"
+    "5. 我有哪些任务未完成 / 我的待办\n"
+    "6. 我有哪些进行中的任务 / 我有哪些已完成任务\n"
+    "7. 我和顾源源协作的任务有哪些\n"
+    "8. 我这周复盘提交了吗\n"
+    "9. 我参与的事件线有哪些\n"
+    "10. 任务 xxx 状态 / 事件线 xxx 状态\n"
+)
 
 
 def now_iso() -> str:
@@ -177,6 +198,12 @@ class AppState:
     db: Database
     data_dir: Path
     secret_key: str
+    feishu_notification_stop: Event = field(default_factory=Event)
+    feishu_notification_thread: Thread | None = None
+    feishu_notifications: "FeishuNotificationService | None" = None
+    feishu_query_stop: Event = field(default_factory=Event)
+    feishu_query_thread: Thread | None = None
+    feishu_query_manager: "FeishuLongConnectionCoordinator | None" = None
 
 
 def _state(app: FastAPI) -> AppState:
@@ -3011,6 +3038,53 @@ def _feishu_send_text_message(*, tenant_access_token: str, receive_id_type: Lite
     return payload
 
 
+def _feishu_send_interactive_message(*, tenant_access_token: str, receive_id_type: Literal["open_id"], receive_id: str, card: dict) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        response = client.post(
+            "https://open.feishu.cn/open-apis/im/v1/messages",
+            params={"receive_id_type": receive_id_type},
+            headers={"Authorization": f"Bearer {tenant_access_token}"},
+            json={
+                "receive_id": receive_id,
+                "msg_type": "interactive",
+                "content": json.dumps(card, ensure_ascii=False),
+            },
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书卡片发送失败。")
+    return payload
+
+
+def _feishu_patch_interactive_message(*, tenant_access_token: str, message_id: str, card: dict) -> dict:
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+        response = client.patch(
+            f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
+            headers={
+                "Authorization": f"Bearer {tenant_access_token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json={"content": json.dumps(card, ensure_ascii=False)},
+        )
+    payload = _feishu_parse_response_json(response)
+    _raise_for_feishu_api_error(payload, "飞书查询卡片更新失败。")
+    return payload
+
+
+def _feishu_message_id_from_payload(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("message_id"):
+        return str(data["message_id"])
+    if payload.get("message_id"):
+        return str(payload["message_id"])
+    return None
+
+
 def _upsert_org_feishu_delivery_target(
     state: AppState,
     *,
@@ -3128,12 +3202,1401 @@ def _resolve_feishu_delivery_target(
     return receive_id, "matched", None
 
 
+@dataclass
+class FeishuSenderProfile:
+    open_id: str
+    feishu_user_id: str | None = None
+    union_id: str | None = None
+    name: str | None = None
+    email: str | None = None
+    enterprise_email: str | None = None
+    mobile: str | None = None
+    tenant_key: str | None = None
+
+
+@dataclass
+class FeishuQueryIntent:
+    kind: str
+    keyword: str | None = None
+    status_filter: Literal["open", "doing", "done", "overdue", "pending", "any"] | None = None
+    time_filter: Literal["today", "week", "none"] | None = None
+    participant_name: str | None = None
+    owner_name: str | None = None
+
+
+@dataclass
+class FeishuQueryModelConfig:
+    api_key: str
+    model: str
+    provider: str = "env"
+
+
+def _feishu_extract_text_content(content: str | None) -> str:
+    raw = str(content or "").strip()
+    if not raw:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if isinstance(payload, dict):
+        text = str(payload.get("text") or "").strip()
+        if text:
+            return text
+    return raw
+
+
+def _feishu_text_for_match(value: str | None) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
+
+
+def _feishu_extract_json_object(raw: str | None) -> dict[str, object] | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    candidates.extend(fenced)
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return cast(dict[str, object], payload)
+    return None
+
+
+def _org_ai_decrypt_value(state: AppState, encrypted_b64: str, nonce_b64: str, organization_id: str) -> str:
+    import base64
+    from hashlib import sha256
+
+    if not encrypted_b64 or not nonce_b64:
+        return ""
+    key = sha256(f"{state.secret_key}:{organization_id}:ai_config".encode()).digest()
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    cipher = AESGCM(key)
+    return cipher.decrypt(base64.b64decode(nonce_b64), base64.b64decode(encrypted_b64), None).decode("utf-8")
+
+
+def _load_feishu_query_model_config(state: AppState, organization_id: str) -> FeishuQueryModelConfig | None:
+    from app.smart_input import DEFAULT_LLM_MODEL, _qwen_api_key
+
+    configured = state.db.fetchone("SELECT * FROM org_ai_config WHERE org_id = ?", (organization_id,))
+    default_model = os.getenv("YIYU_FEISHU_QUERY_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_LLM_MODEL))
+    if configured and configured["api_key_encrypted"]:
+        provider = str(configured["ai_provider"] or "").strip() or "configured"
+        if provider != "mock":
+            try:
+                api_key = _org_ai_decrypt_value(
+                    state,
+                    str(configured["api_key_encrypted"] or ""),
+                    str(configured["encryption_nonce"] or ""),
+                    organization_id,
+                )
+            except Exception as exc:
+                logger.warning("feishu.query.load_org_ai_config_failed: %s", exc)
+                api_key = ""
+            if api_key:
+                return FeishuQueryModelConfig(
+                    api_key=api_key,
+                    model=str(configured["ai_model"] or "").strip() or default_model,
+                    provider=provider,
+                )
+    fallback_key = _qwen_api_key()
+    if not fallback_key:
+        return None
+    return FeishuQueryModelConfig(api_key=fallback_key, model=default_model, provider="env")
+
+
+def _feishu_name_matches(candidate: str | None, target: str | None) -> bool:
+    left = _feishu_text_for_match(candidate)
+    right = _feishu_text_for_match(target)
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def _task_matches_keyword(task: TaskRecord, keyword: str | None) -> bool:
+    normalized = _feishu_text_for_match(keyword)
+    if not normalized:
+        return True
+    haystacks = (
+        task.title,
+        task.description,
+        task.ownerName,
+        task.creatorName,
+        task.eventLineName,
+        task.clientName,
+    )
+    for value in haystacks:
+        if normalized in _feishu_text_for_match(value):
+            return True
+    return False
+
+
+def _task_matches_participant(task: TaskRecord, participant_name: str | None) -> bool:
+    normalized = _feishu_text_for_match(participant_name)
+    if not normalized:
+        return True
+    if _feishu_name_matches(task.ownerName, participant_name):
+        return True
+    return any(_feishu_name_matches(item.fullName, participant_name) for item in task.collaborators)
+
+
+def _feishu_query_card_template(status: str) -> str:
+    return {
+        "resolved": "blue",
+        "no_result": "grey",
+        "denied": "orange",
+        "unresolved": "orange",
+        "error": "red",
+    }.get(status, "blue")
+
+
+def _feishu_query_card_title(query_type: str, status: str) -> str:
+    if status == "error":
+        return "益语智库｜查询失败"
+    if status == "unresolved":
+        return "益语智库｜身份待确认"
+    if status == "denied":
+        return "益语智库｜查询范围受限"
+    mapping = {
+        "tasks_today": "益语智库｜今日任务",
+        "tasks_week": "益语智库｜本周任务",
+        "tasks_overdue": "益语智库｜逾期任务",
+        "tasks_pending": "益语智库｜待确认任务",
+        "tasks_open": "益语智库｜待办任务",
+        "tasks_doing": "益语智库｜进行中任务",
+        "tasks_done": "益语智库｜已完成任务",
+        "tasks_list": "益语智库｜任务查询",
+        "task_lookup": "益语智库｜任务摘要",
+        "review_status": "益语智库｜周复盘查询",
+        "review_summary": "益语智库｜周复盘摘要",
+        "eventline_list": "益语智库｜事件线查询",
+        "eventline_lookup": "益语智库｜事件线摘要",
+        "feishu_status": "益语智库｜飞书状态",
+        "scope_denied": "益语智库｜查询范围受限",
+        "identity": "益语智库｜身份待确认",
+        "help": "益语智库｜支持问法",
+    }
+    return mapping.get(query_type, "益语智库｜查询结果")
+
+
+def _build_feishu_query_progress_card(question: str) -> dict:
+    normalized_question = str(question or "").strip()
+    short_question = normalized_question[:80] + ("..." if len(normalized_question) > 80 else "")
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": "wathet",
+            "title": {"tag": "plain_text", "content": "益语智库｜正在处理"},
+        },
+        "elements": [
+            {"tag": "markdown", "content": "**⌨️ 正在查询益语云数据**"},
+            {"tag": "markdown", "content": f"你刚才问的是：{short_question or '未提供问题内容'}"},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": "请稍候，结果会直接替换这张卡片。"}]},
+        ],
+    }
+
+
+def _build_feishu_query_result_card(*, query_type: str, status: str, reply_text: str) -> dict:
+    lines = [line.strip() for line in str(reply_text or "").splitlines() if line.strip()]
+    body_lines = lines[:8] if lines else ["暂无可展示结果。"]
+    elements: list[dict[str, object]] = []
+    if body_lines:
+        elements.append({"tag": "markdown", "content": "\n".join(body_lines)})
+    if len(lines) > len(body_lines):
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": "内容较长，已截取关键信息显示。"}]})
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "template": _feishu_query_card_template(status),
+            "title": {"tag": "plain_text", "content": _feishu_query_card_title(query_type, status)},
+        },
+        "elements": elements or [{"tag": "plain_text", "content": "暂无可展示结果。"}],
+    }
+
+
+def _week_label_for_today() -> str:
+    iso = datetime.now().date().isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _task_progress_label(value: str | None) -> str:
+    return {
+        "inbox": "待确认",
+        "todo": "待处理",
+        "doing": "进行中",
+        "done": "已完成",
+        "rejected": "已退回",
+    }.get(str(value or "").strip(), str(value or "未知状态") or "未知状态")
+
+
+def _task_time_brief(record: TaskRecord) -> str:
+    if record.dueDate:
+        return f"截止 {_task_datetime_text(record.dueDate)}"
+    if record.startDate:
+        return f"开始 {_task_datetime_text(record.startDate)}"
+    return "未设时间"
+
+
+def _task_latest_activity_brief(state: AppState, task_id: str) -> str | None:
+    row = state.db.fetchone(
+        """
+        SELECT e.event_type, e.created_at, u.full_name
+        FROM task_activity_events e
+        JOIN employee_accounts u ON u.id = e.actor_id
+        WHERE e.task_id = ?
+        ORDER BY e.created_at DESC
+        LIMIT 1
+        """,
+        (task_id,),
+    )
+    if not row:
+        return None
+    event_label = {
+        "created": "创建",
+        "updated": "更新",
+        "completed": "完成",
+        "reviewed": "复核",
+        "returned": "退回",
+        "note_added": "补充备注",
+    }.get(str(row["event_type"] or "").strip(), str(row["event_type"] or "更新") or "更新")
+    actor_name = str(row["full_name"] or "同事")
+    return f"{actor_name} 于 {str(row['created_at'])[:16].replace('T', ' ')} {event_label}"
+
+
+def _task_date_span(record: TaskRecord) -> tuple[datetime.date | None, datetime.date | None]:
+    start_dt = _task_datetime_value(record.startDate) or _task_datetime_value(record.dueDate)
+    due_dt = _task_datetime_value(record.dueDate) or start_dt
+    return (start_dt.date() if start_dt else None, due_dt.date() if due_dt else None)
+
+
+def _task_intersects_dates(record: TaskRecord, range_start: datetime.date, range_end: datetime.date) -> bool:
+    start_date, end_date = _task_date_span(record)
+    if start_date is None and end_date is None:
+        return False
+    start_value = start_date or end_date
+    end_value = end_date or start_date
+    assert start_value is not None and end_value is not None
+    return not (end_value < range_start or start_value > range_end)
+
+
+def _task_sort_key(record: TaskRecord) -> tuple[datetime, int, str]:
+    due_dt = _task_datetime_value(record.dueDate) or _task_datetime_value(record.startDate) or datetime.max
+    priority_order = {"high": 0, "normal": 1, "low": 2}
+    return (
+        due_dt,
+        priority_order.get(record.priority, 3),
+        str(record.updatedAt),
+    )
+
+
+def _match_accounts_by_field(state: AppState, organization_id: str, field_name: str, value: str | None) -> list:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return []
+    if field_name == "email":
+        return state.db.fetchall(
+            """
+            SELECT *
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND account_status NOT IN ('rejected', 'disabled')
+              AND lower(email) = lower(?)
+            """,
+            (organization_id, normalized),
+        )
+    if field_name == "feishu_mobile":
+        normalized_mobile = _normalize_feishu_mobile(normalized)
+        if not normalized_mobile:
+            return []
+        return state.db.fetchall(
+            """
+            SELECT *
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND account_status NOT IN ('rejected', 'disabled')
+              AND replace(feishu_mobile, ' ', '') = ?
+            """,
+            (organization_id, normalized_mobile),
+        )
+    if field_name == "full_name":
+        return state.db.fetchall(
+            """
+            SELECT *
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND account_status NOT IN ('rejected', 'disabled')
+              AND full_name = ?
+            """,
+            (organization_id, normalized),
+        )
+    return []
+
+
+def _feishu_fetch_contact_user_profile(
+    *,
+    tenant_access_token: str,
+    open_id: str | None,
+    feishu_user_id: str | None = None,
+    union_id: str | None = None,
+    tenant_key: str | None = None,
+) -> FeishuSenderProfile | None:
+    import httpx
+
+    last_error: Exception | None = None
+    for user_id_type, identifier in (
+        ("open_id", str(open_id or "").strip()),
+        ("user_id", str(feishu_user_id or "").strip()),
+    ):
+        if not identifier:
+            continue
+        try:
+            with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+                response = client.get(
+                    f"https://open.feishu.cn/open-apis/contact/v3/users/{identifier}",
+                    params={"user_id_type": user_id_type},
+                    headers={"Authorization": f"Bearer {tenant_access_token}"},
+                )
+            payload = _feishu_parse_response_json(response)
+            _raise_for_feishu_api_error(payload, "飞书成员信息获取失败。")
+            data = payload.get("data") or {}
+            user = data.get("user") or {}
+            if not isinstance(user, dict):
+                continue
+            resolved_open_id = str(user.get("open_id") or open_id or "").strip()
+            if not resolved_open_id:
+                continue
+            return FeishuSenderProfile(
+                open_id=resolved_open_id,
+                feishu_user_id=str(user.get("user_id") or feishu_user_id or "").strip() or None,
+                union_id=str(user.get("union_id") or union_id or "").strip() or None,
+                name=str(user.get("name") or "").strip() or None,
+                email=str(user.get("email") or "").strip() or None,
+                enterprise_email=str(user.get("enterprise_email") or "").strip() or None,
+                mobile=_normalize_feishu_mobile(str(user.get("mobile") or "")) or None,
+                tenant_key=tenant_key,
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error:
+        logger.warning("feishu.query.fetch_user_profile_failed: %s", last_error)
+    return None
+
+
+def _record_feishu_query_log(
+    state: AppState,
+    *,
+    organization_id: str,
+    message_id: str,
+    sender_open_id: str,
+    sender_feishu_user_id: str | None,
+    chat_id: str,
+    query_type: str,
+    query_text: str,
+    resolved_user_id: str | None,
+    status: str,
+    reply_excerpt: str,
+) -> None:
+    timestamp = now_iso()
+    existing = state.db.fetchone(
+        "SELECT id FROM org_feishu_query_logs WHERE message_id = ?",
+        (message_id,),
+    )
+    if existing:
+        state.db.execute(
+            """
+            UPDATE org_feishu_query_logs
+            SET organization_id = ?,
+                sender_open_id = ?,
+                sender_feishu_user_id = ?,
+                chat_id = ?,
+                query_type = ?,
+                query_text = ?,
+                resolved_user_id = ?,
+                status = ?,
+                reply_excerpt = ?,
+                created_at = ?
+            WHERE message_id = ?
+            """,
+            (
+                organization_id,
+                sender_open_id,
+                sender_feishu_user_id,
+                chat_id,
+                query_type,
+                query_text,
+                resolved_user_id,
+                status,
+                _truncate_plain_text(reply_excerpt, 600),
+                timestamp,
+                message_id,
+            ),
+        )
+        return
+    state.db.execute(
+        """
+        INSERT INTO org_feishu_query_logs(
+            id, organization_id, message_id, sender_open_id, sender_feishu_user_id, chat_id,
+            query_type, query_text, resolved_user_id, status, reply_excerpt, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id("fs_query"),
+            organization_id,
+            message_id,
+            sender_open_id,
+            sender_feishu_user_id,
+            chat_id,
+            query_type,
+            query_text,
+            resolved_user_id,
+            status,
+            _truncate_plain_text(reply_excerpt, 600),
+            timestamp,
+        ),
+    )
+
+
+class FeishuIdentityResolver:
+    def __init__(self, state: AppState):
+        self.state = state
+
+    def resolve_user(
+        self,
+        *,
+        organization_id: str,
+        sender_open_id: str,
+        sender_feishu_user_id: str | None,
+        sender_union_id: str | None,
+        tenant_access_token: str,
+        tenant_key: str | None,
+    ) -> tuple[SessionUser | None, str | None]:
+        mapped = self.state.db.fetchone(
+            """
+            SELECT acc.*
+            FROM org_feishu_delivery_targets target
+            JOIN employee_accounts acc ON acc.id = target.user_id
+            WHERE target.organization_id = ?
+              AND target.receive_id = ?
+              AND target.match_status = 'matched'
+              AND acc.account_status NOT IN ('rejected', 'disabled')
+            LIMIT 1
+            """,
+            (organization_id, sender_open_id),
+        )
+        if mapped:
+            return _row_user(mapped), None
+
+        profile = _feishu_fetch_contact_user_profile(
+            tenant_access_token=tenant_access_token,
+            open_id=sender_open_id,
+            feishu_user_id=sender_feishu_user_id,
+            union_id=sender_union_id,
+            tenant_key=tenant_key,
+        )
+        if not profile:
+            return None, "暂时还没识别到你在益语软件里的身份。请先在软件“系统设置”里填写飞书手机号，或确认当前组织已给机器人开通成员信息读取权限。"
+
+        matched_row = self._match_employee_account(organization_id=organization_id, profile=profile)
+        if not matched_row:
+            return None, "暂时还没识别到你在益语软件里的账号。请先在软件“系统设置”里补充飞书手机号，或确认你的飞书邮箱/姓名与益语账号一致。"
+
+        mobile_value = profile.mobile or ""
+        _upsert_org_feishu_delivery_target(
+            self.state,
+            organization_id=organization_id,
+            user_id=str(matched_row["id"]),
+            mobile=mobile_value,
+            receive_id=profile.open_id,
+            match_status="matched",
+            last_error=None,
+        )
+        return _row_user(matched_row), None
+
+    def _match_employee_account(self, *, organization_id: str, profile: FeishuSenderProfile):
+        candidate_sets = [
+            _match_accounts_by_field(self.state, organization_id, "email", profile.email),
+            _match_accounts_by_field(self.state, organization_id, "email", profile.enterprise_email),
+            _match_accounts_by_field(self.state, organization_id, "feishu_mobile", profile.mobile),
+            _match_accounts_by_field(self.state, organization_id, "full_name", profile.name),
+        ]
+        for rows in candidate_sets:
+            if len(rows) == 1:
+                return rows[0]
+        return None
+
+
+class FeishuQueryService:
+    def __init__(self, state: AppState):
+        self.state = state
+
+    def build_reply(self, *, current_user: SessionUser, text: str) -> tuple[str, str, str]:
+        intent = self._parse_intent(current_user, text)
+        if intent.kind == "denied_scope":
+            return "denied", "scope_denied", "当前机器人 V1 仅支持查询你本人的任务、周复盘、事件线和飞书接通状态。"
+        if intent.kind == "help":
+            return "resolved", "help", FEISHU_QUERY_HELP_TEXT
+        if self._is_task_list_intent(intent):
+            normalized_intent = self._normalized_task_list_intent(intent)
+            if normalized_intent.status_filter == "pending":
+                reply = self._reply_pending_tasks(current_user, normalized_intent)
+            else:
+                reply = self._reply_task_list(self._task_list_title(normalized_intent), self._filter_tasks_by_intent(current_user, normalized_intent))
+            return self._status_for_lookup_reply(intent.kind, reply), intent.kind, reply
+        if intent.kind == "review_status":
+            return "resolved", intent.kind, self._reply_review_status(current_user)
+        if intent.kind == "review_summary":
+            return "resolved", intent.kind, self._reply_review_summary(current_user)
+        if intent.kind == "eventline_list":
+            reply = self._reply_event_line_list(current_user)
+            return self._status_for_lookup_reply(intent.kind, reply), intent.kind, reply
+        if intent.kind == "eventline_lookup":
+            reply = self._reply_event_line_detail(current_user, intent.keyword or "")
+            return self._status_for_lookup_reply(intent.kind, reply), intent.kind, reply
+        if intent.kind == "task_lookup":
+            reply = self._reply_task_detail(current_user, intent.keyword or "", participant_name=intent.participant_name)
+            return self._status_for_lookup_reply(intent.kind, reply), intent.kind, reply
+        if intent.kind == "feishu_status":
+            return "resolved", intent.kind, self._reply_feishu_status(current_user)
+        return "resolved", "help", FEISHU_QUERY_HELP_TEXT
+
+    @staticmethod
+    def _status_for_lookup_reply(kind: str, reply_text: str) -> str:
+        if kind in {"task_lookup", "eventline_lookup", "tasks_list", "tasks_today", "tasks_week", "tasks_overdue", "tasks_pending", "tasks_open", "tasks_doing", "tasks_done", "eventline_list"}:
+            if any(marker in reply_text for marker in ("当前没有", "没有找到", "没有查到")):
+                return "no_result"
+        return "resolved"
+
+    @staticmethod
+    def _is_task_list_intent(intent: FeishuQueryIntent) -> bool:
+        return intent.kind in {"tasks_list", "tasks_today", "tasks_week", "tasks_overdue", "tasks_pending", "tasks_open", "tasks_doing", "tasks_done"}
+
+    def _parse_intent(self, current_user: SessionUser, text: str) -> FeishuQueryIntent:
+        model_intent = self._parse_intent_with_model(current_user, text)
+        if model_intent and model_intent.kind != "help":
+            return model_intent
+        rules_intent = self._parse_intent_with_rules(text)
+        if model_intent and model_intent.kind == "help" and rules_intent.kind == "help":
+            return model_intent
+        return rules_intent
+
+    def _parse_intent_with_rules(self, text: str) -> FeishuQueryIntent:
+        normalized = _feishu_text_for_match(text)
+        if not normalized:
+            return FeishuQueryIntent(kind="help")
+        if any(keyword in normalized for keyword in ("部门", "组织", "团队", "同事", "别人")):
+            return FeishuQueryIntent(kind="denied_scope")
+        if "有哪些任务" in normalized and "我" not in normalized and not normalized.startswith("任务"):
+            return FeishuQueryIntent(kind="denied_scope")
+        if any(keyword in normalized for keyword in ("帮助", "怎么查", "支持哪些", "能查什么", "菜单")):
+            return FeishuQueryIntent(kind="help")
+        if "飞书" in normalized and any(keyword in normalized for keyword in ("匹配", "接通", "状态", "提醒")):
+            return FeishuQueryIntent(kind="feishu_status")
+        if "待确认" in normalized and "任务" in normalized:
+            return FeishuQueryIntent(kind="tasks_pending")
+        if any(keyword in normalized for keyword in ("逾期", "过期")) and "任务" in normalized:
+            return FeishuQueryIntent(kind="tasks_overdue")
+        if ("今天" in normalized or "今日" in normalized) and "任务" in normalized:
+            return FeishuQueryIntent(kind="tasks_today")
+        if ("本周" in normalized or "这周" in normalized) and "任务" in normalized:
+            return FeishuQueryIntent(kind="tasks_week")
+        if self._is_task_list_query(normalized):
+            if any(keyword in normalized for keyword in ("进行中", "正在做", "处理中")):
+                return FeishuQueryIntent(kind="tasks_doing")
+            if any(keyword in normalized for keyword in ("已完成", "完成了", "做完", "做完了", "已做完")):
+                return FeishuQueryIntent(kind="tasks_done")
+            return FeishuQueryIntent(kind="tasks_open")
+        if "复盘" in normalized and any(keyword in normalized for keyword in ("提交", "了吗", "状态")):
+            return FeishuQueryIntent(kind="review_status")
+        if "复盘" in normalized:
+            return FeishuQueryIntent(kind="review_summary")
+        if "事件线" in normalized and any(keyword in normalized for keyword in ("有哪些", "哪些", "参与")):
+            return FeishuQueryIntent(kind="eventline_list")
+        if "事件线" in normalized:
+            keyword = self._extract_lookup_keyword(
+                text,
+                base_words=("事件线", "状态", "进展", "情况", "任务", "详情", "我的", "查一下", "看看", "是什么"),
+            )
+            if keyword:
+                return FeishuQueryIntent(kind="eventline_lookup", keyword=keyword)
+        if self._is_task_detail_query(normalized):
+            keyword = self._extract_lookup_keyword(
+                text,
+                base_words=("任务", "状态", "详情", "谁负责", "负责人", "协作者", "截止", "开始", "变更", "最近", "查一下", "看看", "我的", "是什么", "未完成", "进行中", "已完成"),
+            )
+            if keyword:
+                return FeishuQueryIntent(kind="task_lookup", keyword=keyword)
+        return FeishuQueryIntent(kind="help")
+
+    def _parse_intent_with_model(self, current_user: SessionUser, text: str) -> FeishuQueryIntent | None:
+        config = _load_feishu_query_model_config(self.state, current_user.organizationId)
+        if not config:
+            return None
+        member_names = self._org_member_names(current_user.organizationId)
+        system_prompt = (
+            "你是益语智库飞书查询意图解析器。你的唯一任务是把用户问题解析成 JSON，不要直接回答问题。\n"
+            "只允许输出一个 JSON 对象，不能输出 markdown、解释或多余文本。\n"
+            "可选 intent：tasks_list、task_lookup、review_status、review_summary、eventline_list、eventline_lookup、feishu_status、help、denied_scope。\n"
+            "status_filter 只能是 open、doing、done、overdue、pending、any。\n"
+            "time_filter 只能是 today、week、none。\n"
+            "规则：\n"
+            "1. 当前机器人只允许查询“本人”数据。\n"
+            "2. 允许“我和某成员协作的任务有哪些”这类问法，此时 intent=tasks_list，participant_name=该成员姓名。\n"
+            "3. 如果是在问别人自己的数据，例如“顾源源有哪些任务”，应返回 denied_scope。\n"
+            "4. overdue 表示“已过截止时间且还没完成”。\n"
+            "5. pending 表示“待确认协作任务”。\n"
+            "6. 只有在明确点名某一条任务或事件线时，才使用 task_lookup / eventline_lookup。\n"
+            "7. 如果用户问“我有哪些任务过期了但还没完成”，应识别为 tasks_list + overdue。\n"
+            "8. 如果用户问“我和顾源源协作的任务有哪些”，应识别为 tasks_list，participant_name=顾源源。\n"
+            f"当前提问人：{current_user.fullName}。\n"
+            f"当前组织成员名单：{', '.join(member_names[:80]) or '暂无'}。\n"
+            '输出格式：{"intent":"","status_filter":"open","time_filter":"none","participant_name":"","owner_name":"","keyword":""}'
+        )
+        payload = {
+            "model": config.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": str(text or "").strip()},
+            ],
+            "temperature": 0.1,
+            "top_p": 0.8,
+            "max_tokens": 320,
+            "stream": False,
+        }
+        try:
+            import httpx
+
+            timeout = httpx.Timeout(timeout=None, connect=5.0, read=12.0, write=8.0, pool=8.0)
+            raw = _sync_qwen_chat(config.api_key, payload, timeout)
+            parsed = _feishu_extract_json_object(raw)
+            if not parsed:
+                return None
+            return self._intent_from_model_payload(current_user, parsed)
+        except Exception as exc:
+            logger.warning("feishu.query.model_parse_failed: %s", exc)
+            return None
+
+    def _intent_from_model_payload(self, current_user: SessionUser, payload: dict[str, object]) -> FeishuQueryIntent | None:
+        raw_kind = str(payload.get("intent") or payload.get("kind") or "").strip().lower()
+        kind_alias = {
+            "task_list": "tasks_list",
+            "task_lookup": "task_lookup",
+            "eventline_detail": "eventline_lookup",
+            "event_line_list": "eventline_list",
+            "event_line_lookup": "eventline_lookup",
+            "review": "review_summary",
+            "review_check": "review_status",
+        }
+        kind = kind_alias.get(raw_kind, raw_kind)
+        allowed_kinds = {"tasks_list", "task_lookup", "review_status", "review_summary", "eventline_list", "eventline_lookup", "feishu_status", "help", "denied_scope"}
+        if kind not in allowed_kinds:
+            return None
+        status_filter = str(payload.get("status_filter") or payload.get("status") or "open").strip().lower() or "open"
+        if status_filter not in {"open", "doing", "done", "overdue", "pending", "any"}:
+            status_filter = "open"
+        time_filter = str(payload.get("time_filter") or payload.get("time_scope") or "none").strip().lower() or "none"
+        if time_filter not in {"today", "week", "none"}:
+            time_filter = "none"
+        participant_name = self._normalize_member_name(
+            current_user.organizationId,
+            str(
+                payload.get("participant_name")
+                or payload.get("collaborator_name")
+                or payload.get("with_person")
+                or payload.get("person_name")
+                or ""
+            ).strip(),
+        )
+        owner_name = self._normalize_member_name(current_user.organizationId, str(payload.get("owner_name") or "").strip())
+        keyword = str(payload.get("keyword") or payload.get("task_keyword") or payload.get("eventline_keyword") or "").strip() or None
+        if participant_name and _feishu_name_matches(participant_name, current_user.fullName):
+            participant_name = None
+        if owner_name and _feishu_name_matches(owner_name, current_user.fullName):
+            owner_name = None
+        return FeishuQueryIntent(
+            kind=kind,
+            keyword=keyword,
+            status_filter=status_filter,
+            time_filter=time_filter,
+            participant_name=participant_name,
+            owner_name=owner_name,
+        )
+
+    def _org_member_names(self, organization_id: str) -> list[str]:
+        rows = self.state.db.fetchall(
+            """
+            SELECT full_name
+            FROM employee_accounts
+            WHERE organization_id = ?
+              AND account_status NOT IN ('rejected', 'disabled')
+            ORDER BY full_name COLLATE NOCASE ASC
+            LIMIT 80
+            """,
+            (organization_id,),
+        )
+        return [str(row["full_name"]) for row in rows if str(row["full_name"] or "").strip()]
+
+    def _normalize_member_name(self, organization_id: str, candidate: str | None) -> str | None:
+        normalized = str(candidate or "").strip()
+        if not normalized:
+            return None
+        for name in self._org_member_names(organization_id):
+            if _feishu_name_matches(name, normalized):
+                return name
+        return normalized[:24]
+
+    @staticmethod
+    def _is_task_list_query(normalized: str) -> bool:
+        if any(keyword in normalized for keyword in ("待办", "待处理")):
+            return True
+        if "任务" not in normalized:
+            return False
+        explicit_list_markers = (
+            "有哪些",
+            "哪些任务",
+            "我的任务",
+            "还有哪些",
+            "手上有哪些",
+            "未完成",
+            "没完成",
+            "未做完",
+            "没做完",
+            "待办",
+            "待处理",
+            "进行中",
+            "正在做",
+            "处理中",
+            "已完成",
+            "完成了",
+            "做完",
+            "做完了",
+            "已做完",
+        )
+        return "我" in normalized and any(marker in normalized for marker in explicit_list_markers)
+
+    @staticmethod
+    def _is_task_detail_query(normalized: str) -> bool:
+        if "任务" not in normalized:
+            return False
+        detail_markers = ("状态", "详情", "负责人", "协作者", "截止", "开始", "变更", "最近", "谁负责")
+        if normalized.startswith("任务") and len(normalized) > 2:
+            return True
+        return any(marker in normalized for marker in detail_markers)
+
+    def _all_task_records(self, current_user: SessionUser) -> list[TaskRecord]:
+        rows = self.state.db.fetchall(
+            """
+            SELECT DISTINCT t.*
+            FROM tasks t
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            WHERE t.organization_id = ?
+              AND (
+                    t.owner_id = ?
+                    OR tc.user_id = ?
+                  )
+            ORDER BY t.updated_at DESC
+            """,
+            (current_user.organizationId, current_user.id, current_user.id),
+        )
+        return sorted([_task_record(self.state, row, current_user.id) for row in rows], key=_task_sort_key)
+
+    def _extract_lookup_keyword(self, text: str, *, base_words: tuple[str, ...]) -> str | None:
+        candidate = str(text or "").strip()
+        for item in base_words:
+            candidate = candidate.replace(item, " ")
+        candidate = re.sub(r"[：:，,。？！!?、/]+", " ", candidate)
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        if len(candidate) >= 2:
+            return candidate[:24]
+        return None
+
+    def _active_task_records(self, current_user: SessionUser) -> list[TaskRecord]:
+        rows = self.state.db.fetchall(
+            """
+            SELECT DISTINCT t.*
+            FROM tasks t
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            WHERE t.organization_id = ?
+              AND t.progress_status NOT IN ('done', 'rejected')
+              AND (
+                    t.owner_id = ?
+                    OR (tc.user_id = ? AND tc.inbox_status = 'accepted')
+                  )
+            ORDER BY t.updated_at DESC
+            """,
+            (current_user.organizationId, current_user.id, current_user.id),
+        )
+        return sorted([_task_record(self.state, row, current_user.id) for row in rows], key=_task_sort_key)
+
+    def _pending_task_records(self, current_user: SessionUser) -> list[TaskRecord]:
+        rows = self.state.db.fetchall(
+            """
+            SELECT DISTINCT t.*
+            FROM tasks t
+            JOIN task_collaborators tc ON tc.task_id = t.id
+            WHERE t.organization_id = ?
+              AND tc.user_id = ?
+              AND tc.inbox_status = 'pending'
+            ORDER BY t.updated_at DESC
+            """,
+            (current_user.organizationId, current_user.id),
+        )
+        return [_task_record(self.state, row, current_user.id) for row in rows]
+
+    @staticmethod
+    def _normalized_task_list_intent(intent: FeishuQueryIntent) -> FeishuQueryIntent:
+        if intent.kind == "tasks_today":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="open", time_filter="today", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        if intent.kind == "tasks_week":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="open", time_filter="week", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        if intent.kind == "tasks_overdue":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="overdue", time_filter="none", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        if intent.kind == "tasks_pending":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="pending", time_filter="none", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        if intent.kind == "tasks_doing":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="doing", time_filter="none", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        if intent.kind == "tasks_done":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="done", time_filter="none", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        if intent.kind == "tasks_open":
+            return FeishuQueryIntent(kind="tasks_list", status_filter="open", time_filter="none", participant_name=intent.participant_name, owner_name=intent.owner_name, keyword=intent.keyword)
+        return FeishuQueryIntent(
+            kind="tasks_list",
+            status_filter=intent.status_filter or "open",
+            time_filter=intent.time_filter or "none",
+            participant_name=intent.participant_name,
+            owner_name=intent.owner_name,
+            keyword=intent.keyword,
+        )
+
+    def _filter_tasks_by_intent(self, current_user: SessionUser, intent: FeishuQueryIntent) -> list[TaskRecord]:
+        status_filter = intent.status_filter or "open"
+        if status_filter == "pending":
+            tasks = self._pending_task_records(current_user)
+        elif status_filter == "done":
+            tasks = [item for item in self._all_task_records(current_user) if item.progressStatus == "done"]
+        elif status_filter == "any":
+            tasks = self._all_task_records(current_user)
+        else:
+            tasks = self._active_task_records(current_user)
+
+        today = datetime.now().date()
+        if status_filter == "doing":
+            tasks = [item for item in tasks if item.progressStatus == "doing"]
+        elif status_filter == "overdue":
+            tasks = [
+                item
+                for item in tasks
+                if (due_dt := _task_datetime_value(item.dueDate)) is not None and due_dt.date() < today
+            ]
+
+        if intent.time_filter == "today":
+            tasks = [item for item in tasks if _task_intersects_dates(item, today, today)]
+        elif intent.time_filter == "week":
+            week_start = today - timedelta(days=today.weekday())
+            week_end = week_start + timedelta(days=6)
+            tasks = [item for item in tasks if _task_intersects_dates(item, week_start, week_end)]
+
+        if intent.owner_name:
+            tasks = [item for item in tasks if _feishu_name_matches(item.ownerName, intent.owner_name)]
+        if intent.participant_name:
+            tasks = [item for item in tasks if _task_matches_participant(item, intent.participant_name)]
+        if intent.keyword:
+            tasks = [item for item in tasks if _task_matches_keyword(item, intent.keyword)]
+        return tasks[:FEISHU_QUERY_REPLY_LIMIT]
+
+    def _filter_tasks(self, current_user: SessionUser, mode: Literal["today", "week", "overdue", "open", "doing", "done"]) -> list[TaskRecord]:
+        if mode == "done":
+            rows = self.state.db.fetchall(
+                """
+                SELECT DISTINCT t.*
+                FROM tasks t
+                LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+                WHERE t.organization_id = ?
+                  AND t.progress_status = 'done'
+                  AND (
+                        t.owner_id = ?
+                        OR tc.user_id = ?
+                      )
+                ORDER BY t.updated_at DESC
+                """,
+                (current_user.organizationId, current_user.id, current_user.id),
+            )
+            tasks = [_task_record(self.state, row, current_user.id) for row in rows]
+            return tasks[:FEISHU_QUERY_REPLY_LIMIT]
+
+        tasks = self._active_task_records(current_user)
+        today = datetime.now().date()
+        if mode == "open":
+            return tasks[:FEISHU_QUERY_REPLY_LIMIT]
+        if mode == "doing":
+            return [item for item in tasks if item.progressStatus == "doing"][:FEISHU_QUERY_REPLY_LIMIT]
+        if mode == "overdue":
+            overdue: list[TaskRecord] = []
+            for item in tasks:
+                due_dt = _task_datetime_value(item.dueDate)
+                if due_dt and due_dt.date() < today:
+                    overdue.append(item)
+            return overdue[:FEISHU_QUERY_REPLY_LIMIT]
+        if mode == "today":
+            return [item for item in tasks if _task_intersects_dates(item, today, today)][:FEISHU_QUERY_REPLY_LIMIT]
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=6)
+        return [item for item in tasks if _task_intersects_dates(item, week_start, week_end)][:FEISHU_QUERY_REPLY_LIMIT]
+
+    def _task_list_title(self, intent: FeishuQueryIntent) -> str:
+        partner_prefix = f"我和{intent.participant_name}协作的" if intent.participant_name else ""
+        if intent.status_filter == "pending":
+            return f"{partner_prefix or '我的'}待确认协作任务"
+        if intent.status_filter == "overdue":
+            return f"{partner_prefix}逾期任务" if partner_prefix else "我的逾期任务"
+        if intent.time_filter == "today":
+            return f"我今天和{intent.participant_name}协作的任务" if intent.participant_name else "我今天的任务"
+        if intent.time_filter == "week":
+            return f"我本周和{intent.participant_name}协作的任务" if intent.participant_name else "我本周的任务"
+        if intent.status_filter == "doing":
+            return f"{partner_prefix}进行中的任务" if partner_prefix else "我进行中的任务"
+        if intent.status_filter == "done":
+            return f"{partner_prefix}已完成的任务" if partner_prefix else "我已完成的任务"
+        return f"{partner_prefix}任务" if partner_prefix else "我的待办"
+
+    def _reply_task_list(self, title: str, tasks: list[TaskRecord]) -> str:
+        if not tasks:
+            return f"【益语智库】{title}\n当前没有匹配任务。你也可以补充标题关键词再查。"
+        lines = [f"【益语智库】{title}（{len(tasks)} 项）"]
+        for index, item in enumerate(tasks[:FEISHU_QUERY_REPLY_LIMIT], start=1):
+            lines.append(f"{index}. {item.title}｜{_task_progress_label(item.progressStatus)}｜{_task_time_brief(item)}")
+        if len(tasks) >= FEISHU_QUERY_REPLY_LIMIT:
+            lines.append("如需继续缩小范围，请补标题关键词或时间范围。")
+        return "\n".join(lines)
+
+    def _reply_pending_tasks(self, current_user: SessionUser, intent: FeishuQueryIntent) -> str:
+        tasks = self._filter_tasks_by_intent(current_user, intent)
+        if not tasks:
+            return f"【益语智库】{self._task_list_title(intent)}\n当前没有待确认任务。"
+        lines = [f"【益语智库】{self._task_list_title(intent)}（{len(tasks)} 项）"]
+        for index, item in enumerate(tasks, start=1):
+            lines.append(f"{index}. {item.title}｜发起人 {item.creatorName}｜{_task_time_brief(item)}")
+        lines.append("如需处理，请回到益语智库协作收件箱确认接受。")
+        return "\n".join(lines)
+
+    def _reply_task_detail(self, current_user: SessionUser, keyword: str, *, participant_name: str | None = None) -> str:
+        tasks = [
+            item
+            for item in self._all_task_records(current_user)
+            if _task_matches_keyword(item, keyword) and _task_matches_participant(item, participant_name)
+        ]
+        if not tasks:
+            return f"【益语智库】任务查询\n我查了你当前组织下你参与的任务，没有找到和“{keyword}”匹配的任务。你也可以直接问“我有哪些任务未完成”这类列表问题。"
+        if len(tasks) > 1:
+            lines = [f"【益语智库】任务查询\n我找到 {min(len(tasks), FEISHU_QUERY_REPLY_LIMIT)} 个候选任务，请补更具体的标题关键词："]
+            for index, item in enumerate(tasks[:FEISHU_QUERY_REPLY_LIMIT], start=1):
+                lines.append(f"{index}. {item.title}｜{_task_progress_label(item.progressStatus)}｜{_task_time_brief(item)}")
+            return "\n".join(lines)
+        task = tasks[0]
+        collaborators = "、".join(item.fullName for item in task.collaborators[:3]) if task.collaborators else "无"
+        latest_activity = _task_latest_activity_brief(self.state, task.id) or "暂无明显变更记录"
+        return "\n".join(
+            [
+                f"【益语智库】任务摘要｜{task.title}",
+                f"状态：{_task_progress_label(task.progressStatus)}",
+                f"负责人：{task.ownerName or '未设置'}",
+                f"协作者：{collaborators}",
+                f"开始时间：{_task_datetime_text(task.startDate)}",
+                f"截止时间：{_task_datetime_text(task.dueDate)}",
+                f"最近变更：{latest_activity}",
+            ]
+        )
+
+    def _reply_review_status(self, current_user: SessionUser) -> str:
+        dashboard = _dashboard_for_user(self.state, current_user, None)
+        current_week = _week_label_for_today()
+        if dashboard.currentReview and dashboard.currentReview.weekLabel == current_week:
+            return f"【益语智库】周复盘状态\n你本周（{current_week}）已提交周复盘，提交时间：{str(dashboard.currentReview.submittedAt)[:16].replace('T', ' ')}。"
+        return f"【益语智库】周复盘状态\n你本周（{current_week}）还没有提交周复盘。"
+
+    def _reply_review_summary(self, current_user: SessionUser) -> str:
+        dashboard = _dashboard_for_user(self.state, current_user, None)
+        review = dashboard.currentReview
+        if not review:
+            return f"【益语智库】周复盘摘要\n你本周（{_week_label_for_today()}）还没有提交周复盘。"
+        highlights = _extract_non_empty_lines(review.workProgress, review.workFreeNote, limit=3)
+        blockers = _extract_non_empty_lines(review.workBlocker, review.supportNeeded, limit=2)
+        next_focus = _extract_non_empty_lines(review.nextWeekFocus, review.workDirection, limit=1)
+        lines = [f"【益语智库】周复盘摘要｜{review.weekLabel}"]
+        if highlights:
+            lines.append(f"重点：{'；'.join(highlights)}")
+        if blockers:
+            lines.append(f"卡点：{'；'.join(blockers)}")
+        if next_focus:
+            lines.append(f"下周重点：{next_focus[0]}")
+        lines.append(f"提交时间：{str(review.submittedAt)[:16].replace('T', ' ')}")
+        return "\n".join(lines)
+
+    def _reply_event_line_list(self, current_user: SessionUser) -> str:
+        rows = self.state.db.fetchall(
+            """
+            SELECT DISTINCT el.*
+            FROM event_lines el
+            JOIN tasks t ON t.event_line_id = el.id
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            WHERE el.organization_id = ?
+              AND (t.owner_id = ? OR tc.user_id = ?)
+            ORDER BY el.updated_at DESC
+            LIMIT ?
+            """,
+            (current_user.organizationId, current_user.id, current_user.id, FEISHU_QUERY_REPLY_LIMIT),
+        )
+        if not rows:
+            return "【益语智库】我的事件线\n当前没有查到你参与的事件线。"
+        lines = [f"【益语智库】我的事件线（{len(rows)} 条）"]
+        for index, row in enumerate(rows, start=1):
+            event_line = _event_line_record(self.state, row)
+            task_count = int(
+                self.state.db.scalar(
+                    """
+                    SELECT COUNT(DISTINCT t.id)
+                    FROM tasks t
+                    LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+                    WHERE t.event_line_id = ?
+                      AND (t.owner_id = ? OR tc.user_id = ?)
+                    """,
+                    (event_line.id, current_user.id, current_user.id),
+                )
+                or 0
+            )
+            lines.append(f"{index}. {event_line.name}｜{event_line.status}｜关联任务 {task_count} 项")
+        return "\n".join(lines)
+
+    def _reply_event_line_detail(self, current_user: SessionUser, keyword: str) -> str:
+        rows = self.state.db.fetchall(
+            """
+            SELECT DISTINCT el.*
+            FROM event_lines el
+            JOIN tasks t ON t.event_line_id = el.id
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            WHERE el.organization_id = ?
+              AND (t.owner_id = ? OR tc.user_id = ?)
+            ORDER BY el.updated_at DESC
+            """,
+            (current_user.organizationId, current_user.id, current_user.id),
+        )
+        matched = [row for row in rows if _feishu_text_for_match(keyword) in _feishu_text_for_match(str(row["name"] or ""))]
+        if not matched:
+            return f"【益语智库】事件线查询\n没有找到名称包含“{keyword}”的事件线。"
+        if len(matched) > 1:
+            lines = [f"【益语智库】事件线查询\n我找到 {min(len(matched), FEISHU_QUERY_REPLY_LIMIT)} 个候选事件线，请补更具体的关键词："]
+            for index, row in enumerate(matched[:FEISHU_QUERY_REPLY_LIMIT], start=1):
+                lines.append(f"{index}. {str(row['name'])}｜{str(row['status'] or 'active')}")
+            return "\n".join(lines)
+        detail = _event_line_detail_record(self.state, matched[0], current_user.id)
+        related_tasks = detail.tasks[:3]
+        lines = [f"【益语智库】事件线摘要｜{detail.eventLine.name}"]
+        lines.append(f"状态：{detail.eventLine.status}")
+        if detail.eventLine.stage:
+            lines.append(f"阶段：{detail.eventLine.stage}")
+        if detail.eventLine.currentBlocker:
+            lines.append(f"当前卡点：{detail.eventLine.currentBlocker}")
+        if detail.eventLine.nextStep:
+            lines.append(f"下一步：{detail.eventLine.nextStep}")
+        if related_tasks:
+            lines.append("关联任务：")
+            for item in related_tasks:
+                lines.append(f"- {item.title}｜{_task_progress_label(item.progressStatus)}｜{_task_time_brief(item)}")
+        return "\n".join(lines)
+
+    def _reply_feishu_status(self, current_user: SessionUser) -> str:
+        delivery = _feishu_delivery_profile_record(self.state, current_user)
+        integration = _org_feishu_integration_record(self.state, current_user)
+        lines = ["【益语智库】飞书接通状态"]
+        lines.append(f"组织飞书接入：{'已接通' if integration.enabled else '未接通'}")
+        lines.append(f"本人身份匹配：{delivery.deliveryStatusLabel}")
+        if delivery.mobile:
+            lines.append(f"手机号：{delivery.mobile}")
+        if delivery.blockedReason:
+            lines.append(f"提示：{delivery.blockedReason}")
+        return "\n".join(lines)
+
+
+class FeishuInboundService:
+    def __init__(self, state: AppState):
+        self.state = state
+        self.identity_resolver = FeishuIdentityResolver(state)
+        self.query_service = FeishuQueryService(state)
+
+    def _send_processing_placeholder(
+        self,
+        *,
+        tenant_access_token: str,
+        sender_open_id: str,
+        question: str,
+    ) -> str | None:
+        try:
+            payload = _feishu_send_interactive_message(
+                tenant_access_token=tenant_access_token,
+                receive_id_type="open_id",
+                receive_id=sender_open_id,
+                card=_build_feishu_query_progress_card(question),
+            )
+        except Exception as exc:
+            logger.warning("feishu.query.placeholder_send_failed: %s", exc)
+            return None
+        return _feishu_message_id_from_payload(payload)
+
+    def _deliver_query_reply(
+        self,
+        *,
+        tenant_access_token: str,
+        sender_open_id: str,
+        placeholder_message_id: str | None,
+        query_type: str,
+        status: str,
+        reply_text: str,
+    ) -> tuple[str, str]:
+        card = _build_feishu_query_result_card(query_type=query_type, status=status, reply_text=reply_text)
+        if placeholder_message_id:
+            try:
+                _feishu_patch_interactive_message(
+                    tenant_access_token=tenant_access_token,
+                    message_id=placeholder_message_id,
+                    card=card,
+                )
+                return status, reply_text
+            except Exception as exc:
+                logger.warning("feishu.query.placeholder_patch_failed: %s", exc)
+        try:
+            _feishu_send_interactive_message(
+                tenant_access_token=tenant_access_token,
+                receive_id_type="open_id",
+                receive_id=sender_open_id,
+                card=card,
+            )
+            return status, reply_text
+        except Exception as card_exc:
+            try:
+                _feishu_send_text_message(
+                    tenant_access_token=tenant_access_token,
+                    receive_id_type="open_id",
+                    receive_id=sender_open_id,
+                    text=reply_text,
+                )
+                return status, reply_text
+            except Exception as text_exc:
+                error_text = f"{reply_text}\n（当前回消息失败：{str(text_exc)[:80]}）"
+                return "error", error_text
+
+    def handle_text_message(
+        self,
+        *,
+        organization_id: str,
+        tenant_access_token: str,
+        sender_open_id: str,
+        sender_feishu_user_id: str | None,
+        sender_union_id: str | None,
+        tenant_key: str | None,
+        chat_id: str,
+        message_id: str,
+        text: str,
+    ) -> None:
+        existing = self.state.db.fetchone(
+            "SELECT id FROM org_feishu_query_logs WHERE message_id = ?",
+            (message_id,),
+        )
+        if existing:
+            return
+        placeholder_message_id = self._send_processing_placeholder(
+            tenant_access_token=tenant_access_token,
+            sender_open_id=sender_open_id,
+            question=text,
+        )
+
+        current_user, resolve_error = self.identity_resolver.resolve_user(
+            organization_id=organization_id,
+            sender_open_id=sender_open_id,
+            sender_feishu_user_id=sender_feishu_user_id,
+            sender_union_id=sender_union_id,
+            tenant_access_token=tenant_access_token,
+            tenant_key=tenant_key,
+        )
+        if current_user is None:
+            reply_text = resolve_error or "暂时无法识别你的益语账号，请先在软件里完成飞书身份匹配。"
+            status = "unresolved"
+            status, reply_text = self._deliver_query_reply(
+                tenant_access_token=tenant_access_token,
+                sender_open_id=sender_open_id,
+                placeholder_message_id=placeholder_message_id,
+                query_type="identity",
+                status=status,
+                reply_text=reply_text,
+            )
+            _record_feishu_query_log(
+                self.state,
+                organization_id=organization_id,
+                message_id=message_id,
+                sender_open_id=sender_open_id,
+                sender_feishu_user_id=sender_feishu_user_id,
+                chat_id=chat_id,
+                query_type="identity",
+                query_text=text,
+                resolved_user_id=None,
+                status=status,
+                reply_excerpt=reply_text,
+            )
+            return
+
+        status, query_type, reply_text = self.query_service.build_reply(current_user=current_user, text=text)
+        status, reply_text = self._deliver_query_reply(
+            tenant_access_token=tenant_access_token,
+            sender_open_id=sender_open_id,
+            placeholder_message_id=placeholder_message_id,
+            query_type=query_type,
+            status=status,
+            reply_text=reply_text,
+        )
+        _record_feishu_query_log(
+            self.state,
+            organization_id=organization_id,
+            message_id=message_id,
+            sender_open_id=sender_open_id,
+            sender_feishu_user_id=sender_feishu_user_id,
+            chat_id=chat_id,
+            query_type=query_type,
+            query_text=text,
+            resolved_user_id=current_user.id,
+            status=status,
+            reply_excerpt=reply_text,
+        )
+
+
+class FeishuLongConnectionCoordinator:
+    reconcile_interval_seconds = 45
+    reconnect_delay_seconds = 10
+
+    def __init__(self, state: AppState):
+        self.state = state
+        self.inbound_service = FeishuInboundService(state)
+        self._active_workers: dict[str, Thread] = {}
+
+    def run(self) -> None:
+        while not self.state.feishu_query_stop.is_set():
+            try:
+                self._ensure_workers()
+            except Exception:
+                logger.exception("feishu.query.coordinator_failed")
+            self.state.feishu_query_stop.wait(self.reconcile_interval_seconds)
+
+    def _ensure_workers(self) -> None:
+        rows = self.state.db.fetchall(
+            """
+            SELECT organization_id, app_id, updated_at
+            FROM org_feishu_integrations
+            WHERE enabled = 1
+              AND app_id != ''
+              AND app_secret_encrypted != ''
+            ORDER BY updated_at DESC
+            """
+        )
+        for row in rows:
+            organization_id = str(row["organization_id"])
+            if organization_id in self._active_workers and self._active_workers[organization_id].is_alive():
+                continue
+            worker = Thread(
+                target=self._run_org_worker,
+                args=(organization_id,),
+                name=f"feishu-query-{organization_id}",
+                daemon=True,
+            )
+            worker.start()
+            self._active_workers[organization_id] = worker
+
+    def _run_org_worker(self, organization_id: str) -> None:
+        while not self.state.feishu_query_stop.is_set():
+            try:
+                import lark_oapi as lark
+
+                integration_row = self.state.db.fetchone(
+                    "SELECT * FROM org_feishu_integrations WHERE organization_id = ? AND enabled = 1",
+                    (organization_id,),
+                )
+                if not integration_row:
+                    return
+                app_id = str(integration_row["app_id"] or "").strip()
+                if not app_id or not integration_row["app_secret_encrypted"]:
+                    return
+                app_secret = _org_feishu_decrypt(
+                    self.state,
+                    str(integration_row["app_secret_encrypted"]),
+                    str(integration_row["encryption_nonce"]),
+                    organization_id,
+                )
+
+                def _handler(data) -> None:
+                    try:
+                        event = getattr(data, "event", None)
+                        sender = getattr(event, "sender", None)
+                        message = getattr(event, "message", None)
+                        sender_id = getattr(sender, "sender_id", None)
+                        if not sender or not message or not sender_id:
+                            return
+                        if str(getattr(sender, "sender_type", "") or "") == "app":
+                            return
+                        if str(getattr(message, "chat_type", "") or "") != "p2p":
+                            return
+                        if str(getattr(message, "message_type", "") or "") != "text":
+                            return
+                        sender_open_id = str(getattr(sender_id, "open_id", "") or "").strip()
+                        if not sender_open_id:
+                            return
+                        tenant_access = _resolve_org_feishu_tenant_access_token(self.state, organization_id=organization_id)
+                        if not tenant_access:
+                            return
+                        _app_id, tenant_access_token = tenant_access
+                        self.inbound_service.handle_text_message(
+                            organization_id=organization_id,
+                            tenant_access_token=tenant_access_token,
+                            sender_open_id=sender_open_id,
+                            sender_feishu_user_id=str(getattr(sender_id, "user_id", "") or "").strip() or None,
+                            sender_union_id=str(getattr(sender_id, "union_id", "") or "").strip() or None,
+                            tenant_key=str(getattr(sender, "tenant_key", "") or "").strip() or None,
+                            chat_id=str(getattr(message, "chat_id", "") or "").strip(),
+                            message_id=str(getattr(message, "message_id", "") or "").strip(),
+                            text=_feishu_extract_text_content(getattr(message, "content", None)),
+                        )
+                    except Exception:
+                        logger.exception("feishu.query.handle_text_message_failed", extra={"organization_id": organization_id})
+
+                event_handler = lark.EventDispatcherHandler.builder("", "") \
+                    .register_p2_im_message_receive_v1(_handler) \
+                    .build()
+
+                cli = lark.ws.Client(
+                    app_id,
+                    app_secret,
+                    event_handler=event_handler,
+                    log_level=lark.LogLevel.INFO,
+                )
+                cli.start()
+            except Exception:
+                logger.exception("feishu.query.worker_failed", extra={"organization_id": organization_id})
+            if self.state.feishu_query_stop.wait(self.reconnect_delay_seconds):
+                break
+
+
 def _record_task_feishu_notification(
     state: AppState,
     *,
     organization_id: str,
     task_id: str,
-    event_type: Literal["created", "key_fields_changed"],
+    event_type: Literal["created", "key_fields_changed", "content_fields_changed"],
     recipient_user_id: str,
     recipient_open_id: str | None,
     delivery_status: Literal["sent", "skipped_unbound", "failed"],
@@ -3197,6 +4660,14 @@ def _task_role_label(task_row, recipient_user_id: str) -> str:
 
 def _task_changed_field_labels(changed_fields: list[str]) -> list[str]:
     labels: list[str] = []
+    if "title" in changed_fields:
+        labels.append("标题")
+    if "description" in changed_fields:
+        labels.append("详情")
+    if "priority" in changed_fields:
+        labels.append("优先级")
+    if "listId" in changed_fields:
+        labels.append("任务清单")
     if "startDate" in changed_fields:
         labels.append("开始时间")
     if "dueDate" in changed_fields:
@@ -3208,6 +4679,27 @@ def _task_changed_field_labels(changed_fields: list[str]) -> list[str]:
     if "collaboratorIds" in changed_fields:
         labels.append("协作者")
     return labels
+
+
+def _task_change_notice_heading(changed_fields: list[str]) -> str:
+    if any(field in TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS for field in changed_fields):
+        return "任务安排已更新"
+    return "任务内容已更新"
+
+
+def _task_priority_label(value: str | None) -> str:
+    return {
+        "low": "低优先级",
+        "normal": "普通优先级",
+        "high": "高优先级",
+    }.get(str(value or "").strip(), str(value or "未设置") or "未设置")
+
+
+def _task_list_name(state: AppState, list_id: str | None) -> str:
+    if not list_id:
+        return "未设置"
+    row = state.db.fetchone("SELECT name FROM task_lists WHERE id = ?", (list_id,))
+    return str(row["name"]) if row and row["name"] else str(list_id)
 
 
 def _build_task_created_feishu_message(
@@ -3244,12 +4736,21 @@ def _build_task_changed_feishu_message(
         [str(task_row["owner_id"]) if task_row["owner_id"] else "", *collaborator_ids],
     )
     lines = [
-        "【益语智库】任务安排已更新",
+        f"【益语智库】{_task_change_notice_heading(changed_fields)}",
         f"任务：{str(task_row['title'])}",
         f"你的角色：{_task_role_label(task_row, recipient_user_id)}",
         f"发起变更：{actor_name}",
         f"变更项：{'、'.join(_task_changed_field_labels(changed_fields))}",
     ]
+    if "title" in changed_fields:
+        lines.append(f"当前标题：{str(task_row['title'])}")
+    if "description" in changed_fields:
+        description = str(task_row["description"] or "").strip()
+        lines.append(f"当前详情：{_truncate_plain_text(description, 80) if description else '已清空'}")
+    if "priority" in changed_fields:
+        lines.append(f"优先级：{_task_priority_label(str(task_row['priority']) if task_row['priority'] else None)}")
+    if "listId" in changed_fields:
+        lines.append(f"任务清单：{_task_list_name(state, str(task_row['list_id']) if task_row['list_id'] else None)}")
     if "startDate" in changed_fields:
         lines.append(f"开始时间：{_task_datetime_text(str(task_row['start_date']) if task_row['start_date'] else None)}")
     if "dueDate" in changed_fields:
@@ -3266,6 +4767,901 @@ def _build_task_changed_feishu_message(
     return "\n".join(lines)
 
 
+def _task_datetime_value(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        normalized = raw.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        if len(raw) <= 10 and "T" not in raw:
+            return parsed.replace(hour=9, minute=0, second=0, microsecond=0)
+        return parsed.replace(second=0, microsecond=0)
+    except ValueError:
+        return None
+
+
+def _truncate_plain_text(value: str, limit: int = 48) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)]}…"
+
+
+def _extract_non_empty_lines(*values: str, limit: int) -> list[str]:
+    lines: list[str] = []
+    for value in values:
+        for item in str(value or "").splitlines():
+            cleaned = item.strip().lstrip("•").strip()
+            if cleaned and cleaned not in lines:
+                lines.append(cleaned)
+            if len(lines) >= limit:
+                return lines
+    return lines
+
+
+def _build_feishu_readonly_card(
+    *,
+    template: Literal["blue", "orange", "cyan", "green", "turquoise", "red"],
+    title: str,
+    headline: str,
+    core_lines: list[str],
+    secondary_blocks: list[tuple[str, list[str] | str]],
+    footer: str,
+) -> dict:
+    elements: list[dict[str, object]] = [
+        {"tag": "markdown", "content": f"**{headline}**"},
+    ]
+    if core_lines:
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": "\n".join(f"• {line}" for line in core_lines if line),
+            }
+        )
+    for index, (section_title, section_value) in enumerate(secondary_blocks):
+        lines = section_value if isinstance(section_value, list) else [section_value]
+        normalized = [str(item).strip() for item in lines if str(item).strip()]
+        if not normalized:
+            continue
+        elements.append({"tag": "hr"})
+        content = "\n".join(f"• {line}" for line in normalized)
+        elements.append({"tag": "markdown", "content": f"**{section_title}**\n{content}"})
+        if index >= 2:
+            break
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "markdown", "content": f"> {footer}"})
+    return {
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": title},
+        },
+        "elements": elements,
+    }
+
+
+def _feishu_dispatch_record(row) -> FeishuNotificationDispatchRecord:
+    return FeishuNotificationDispatchRecord(
+        id=str(row["id"]),
+        messageType=str(row["message_type"]),
+        objectType=str(row["object_type"]),
+        objectId=str(row["object_id"]),
+        recipientUserId=str(row["recipient_user_id"]),
+        deliveryStatus=str(row["delivery_status"]),
+        deliveryChannel=str(row["delivery_channel"] or ""),
+        deliveryMessage=str(row["delivery_message"] or ""),
+        dedupeKey=str(row["dedupe_key"]) if row["dedupe_key"] else None,
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+        sentAt=str(row["sent_at"]) if row["sent_at"] else None,
+    )
+
+
+class FeishuNotificationService:
+    task_change_merge_window_seconds = 3 * 60
+
+    def __init__(self, state: AppState):
+        self.state = state
+
+    def notify_task_change(
+        self,
+        *,
+        task_row,
+        current_user: SessionUser,
+        collaborator_ids: list[str],
+        event_type: Literal["created", "key_fields_changed"],
+        changed_fields: list[str] | None = None,
+    ) -> None:
+        if event_type == "created":
+            self._send_task_created(task_row=task_row, current_user=current_user, collaborator_ids=collaborator_ids)
+            return
+        normalized_changed_fields = [
+            field
+            for field in (changed_fields or [])
+            if field in {*TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS, *TASK_DEFERRED_FEISHU_CHANGE_FIELDS}
+        ]
+        if not normalized_changed_fields:
+            return
+        immediate_changed_fields = [field for field in normalized_changed_fields if field in TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS]
+        deferred_changed_fields = [field for field in normalized_changed_fields if field in TASK_DEFERRED_FEISHU_CHANGE_FIELDS]
+        if immediate_changed_fields:
+            self._send_task_changed_immediately(
+                task_row=task_row,
+                current_user=current_user,
+                collaborator_ids=collaborator_ids,
+                changed_fields=normalized_changed_fields,
+            )
+            return
+        self._queue_task_changed(
+            task_row=task_row,
+            current_user=current_user,
+            collaborator_ids=collaborator_ids,
+            changed_fields=deferred_changed_fields,
+        )
+
+    def notify_weekly_review(
+        self,
+        *,
+        review_id: str,
+        current_user: SessionUser,
+        payload: WeeklyReviewCreatePayload,
+    ) -> FeishuNotificationDispatchRecord:
+        headline = _truncate_plain_text(
+            next(
+                (
+                    value
+                    for value in [
+                        payload.workFreeNote,
+                        payload.workProgress,
+                        payload.personalGrowthNote,
+                        payload.nextWeekFocus,
+                        f"{payload.weekLabel} 周复盘已保存",
+                    ]
+                    if str(value or "").strip()
+                ),
+                f"{payload.weekLabel} 周复盘已保存",
+            ),
+            60,
+        )
+        highlights = _extract_non_empty_lines(payload.workProgress, payload.workFreeNote, limit=3)
+        blockers = _extract_non_empty_lines(payload.workBlocker, payload.supportNeeded, limit=2)
+        next_focus = _extract_non_empty_lines(payload.nextWeekFocus, payload.workDirection, limit=1)
+        card = _build_feishu_readonly_card(
+            template="cyan",
+            title=f"周复盘已保存｜{payload.weekLabel}",
+            headline=headline,
+            core_lines=[
+                f"周标题：{payload.weekLabel}",
+                f"提交人：{current_user.fullName}",
+                f"下周重点：{next_focus[0] if next_focus else '待补充'}",
+            ],
+            secondary_blocks=[
+                ("本周亮点", highlights),
+                ("卡点关注", blockers),
+            ],
+            footer="请回到益语智库查看完整周复盘。",
+        )
+        text = "\n".join(
+            [
+                "【益语智库】周复盘已保存",
+                f"周标题：{payload.weekLabel}",
+                f"一句话总结：{headline}",
+                *(f"亮点：{item}" for item in highlights[:3]),
+                *(f"卡点：{item}" for item in blockers[:2]),
+                f"下周重点：{next_focus[0] if next_focus else '待补充'}",
+                "请回到益语智库查看完整周复盘。",
+            ]
+        )
+        return self._send_prepared_notification(
+            organization_id=current_user.organizationId,
+            message_type="weekly_review",
+            object_type="weekly_review",
+            object_id=review_id,
+            event_type="saved",
+            recipient_user_id=current_user.id,
+            title=f"{payload.weekLabel} 周复盘",
+            card=card,
+            text=text,
+            payload={
+                "weekLabel": payload.weekLabel,
+                "headline": headline,
+                "highlights": highlights,
+                "blockers": blockers,
+                "nextFocus": next_focus,
+            },
+        )
+
+    def notify_badge_unlock(
+        self,
+        *,
+        current_user: SessionUser,
+        payload: FeishuBadgeNotificationPayload,
+    ) -> FeishuNotificationDispatchRecord:
+        dedupe_key = f"badge_unlock:{current_user.organizationId}:{current_user.id}:{payload.badgeId}"
+        existing = self._blocking_dedupe_record(dedupe_key=dedupe_key)
+        if existing:
+            return existing
+        card = _build_feishu_readonly_card(
+            template="green",
+            title=f"点亮徽章｜{_truncate_plain_text(payload.badgeName, 30)}",
+            headline=payload.badgeName,
+            core_lines=[
+                f"获得者：{current_user.fullName}",
+                f"分类：{payload.categoryName or '成长徽章'}",
+                f"获得 XP：+{int(payload.xp or 0)}",
+            ],
+            secondary_blocks=[
+                ("徽章说明", payload.badgeDescription or "恭喜完成一次新的成长点亮。"),
+            ],
+            footer="请回到益语智库查看完整徽章与成长记录。",
+        )
+        text = "\n".join(
+            [
+                "【益语智库】你点亮了新徽章",
+                f"徽章：{payload.badgeName}",
+                f"分类：{payload.categoryName or '成长徽章'}",
+                f"获得 XP：+{int(payload.xp or 0)}",
+                f"说明：{payload.badgeDescription or '恭喜完成一次新的成长点亮。'}",
+                "请回到益语智库查看完整徽章与成长记录。",
+            ]
+        )
+        return self._send_prepared_notification(
+            organization_id=current_user.organizationId,
+            message_type="badge_unlock",
+            object_type="badge_unlock",
+            object_id=payload.badgeId,
+            event_type="unlocked",
+            recipient_user_id=current_user.id,
+            title=payload.badgeName,
+            card=card,
+            text=text,
+            dedupe_key=dedupe_key,
+            payload=payload.model_dump(),
+        )
+
+    def process_due_notifications(self, *, reference_time: datetime | None = None) -> None:
+        now_value = (reference_time or datetime.now()).replace(microsecond=0).isoformat()
+        rows = self.state.db.fetchall(
+            """
+            SELECT * FROM org_feishu_notifications
+            WHERE delivery_status = 'queued' AND due_at IS NOT NULL AND due_at <= ?
+            ORDER BY created_at ASC
+            LIMIT 50
+            """,
+            (now_value,),
+        )
+        for row in rows:
+            if str(row["message_type"]) not in {"task_changed", "task_content_changed"}:
+                continue
+            self._deliver_task_changed_row(row)
+
+    def process_overdue_digest(self, *, reference_time: datetime | None = None) -> None:
+        current_time = reference_time or datetime.now()
+        if current_time.weekday() >= 5 or current_time.hour < 9:
+            return
+        today_key = current_time.date().isoformat()
+        org_rows = self.state.db.fetchall("SELECT id FROM organizations")
+        for org_row in org_rows:
+            organization_id = str(org_row["id"])
+            user_rows = self.state.db.fetchall(
+                """
+                SELECT id, full_name
+                FROM employee_accounts
+                WHERE organization_id = ? AND account_status != 'disabled'
+                ORDER BY created_at ASC
+                """,
+                (organization_id,),
+            )
+            for user_row in user_rows:
+                user_id = str(user_row["id"])
+                dedupe_key = f"overdue_digest:{organization_id}:{user_id}:{today_key}"
+                if self._any_dedupe_record(dedupe_key=dedupe_key):
+                    continue
+                overdue_tasks = self._collect_overdue_tasks_for_user(
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    reference_time=current_time,
+                )
+                if not overdue_tasks:
+                    continue
+                user_name = str(user_row["full_name"] or user_id)
+                earliest = overdue_tasks[0]["dueText"]
+                card = _build_feishu_readonly_card(
+                    template="red",
+                    title=f"逾期任务提醒｜{len(overdue_tasks)} 项",
+                    headline=f"{user_name}，你有 {len(overdue_tasks)} 项任务已逾期",
+                    core_lines=[
+                        f"逾期总数：{len(overdue_tasks)}",
+                        f"最早逾期：{earliest}",
+                    ],
+                    secondary_blocks=[
+                        ("待处理任务", [f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]]),
+                    ],
+                    footer="请回到益语智库处理或调整截止时间。",
+                )
+                text = "\n".join(
+                    [
+                        "【益语智库】今日逾期提醒",
+                        f"逾期总数：{len(overdue_tasks)}",
+                        f"最早逾期：{earliest}",
+                        *[f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]],
+                        "请回到益语智库处理或调整截止时间。",
+                    ]
+                )
+                self._send_prepared_notification(
+                    organization_id=organization_id,
+                    message_type="overdue_digest",
+                    object_type="overdue_digest",
+                    object_id=today_key,
+                    event_type="daily_digest",
+                    recipient_user_id=user_id,
+                    title=f"{today_key} 逾期提醒",
+                    card=card,
+                    text=text,
+                    dedupe_key=dedupe_key,
+                    payload={
+                        "date": today_key,
+                        "taskCount": len(overdue_tasks),
+                        "taskIds": [item["id"] for item in overdue_tasks[:5]],
+                    },
+                )
+
+    def _task_recipient_ids(self, *, task_row, collaborator_ids: list[str]) -> list[str]:
+        owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else None
+        recipient_ids: list[str] = []
+        for candidate in [owner_id, *collaborator_ids]:
+            if candidate and candidate not in recipient_ids:
+                recipient_ids.append(candidate)
+        return recipient_ids
+
+    def _send_task_created(self, *, task_row, current_user: SessionUser, collaborator_ids: list[str]) -> None:
+        recipient_ids = self._task_recipient_ids(task_row=task_row, collaborator_ids=collaborator_ids)
+        for recipient_user_id in recipient_ids:
+            card = _build_feishu_readonly_card(
+                template="blue",
+                title=f"新建任务｜{_truncate_plain_text(str(task_row['title']), 30)}",
+                headline=str(task_row["title"]),
+                core_lines=[
+                    f"你的角色：{_task_role_label(task_row, recipient_user_id)}",
+                    f"发起人：{current_user.fullName}",
+                    f"开始时间：{_task_datetime_text(str(task_row['start_date']) if task_row['start_date'] else None)}",
+                    f"截止时间：{_task_datetime_text(str(task_row['due_date']) if task_row['due_date'] else None)}",
+                ],
+                secondary_blocks=[],
+                footer="请回到益语智库处理。",
+            )
+            text = _build_task_created_feishu_message(
+                self.state,
+                task_row=task_row,
+                recipient_user_id=recipient_user_id,
+                actor_name=current_user.fullName,
+            )
+            self._send_prepared_notification(
+                organization_id=str(task_row["organization_id"]),
+                message_type="task_created",
+                object_type="task",
+                object_id=str(task_row["id"]),
+                event_type="created",
+                recipient_user_id=recipient_user_id,
+                title=str(task_row["title"]),
+                card=card,
+                text=text,
+                payload={
+                    "changedFields": [],
+                    "collaboratorIds": collaborator_ids,
+                },
+            )
+
+    def _send_task_changed_immediately(
+        self,
+        *,
+        task_row,
+        current_user: SessionUser,
+        collaborator_ids: list[str],
+        changed_fields: list[str],
+    ) -> None:
+        recipient_ids = self._task_recipient_ids(task_row=task_row, collaborator_ids=collaborator_ids)
+        task_id = str(task_row["id"])
+        timestamp = now_iso()
+        pending_rows = self.state.db.fetchall(
+            """
+            SELECT *
+            FROM org_feishu_notifications
+            WHERE object_type = 'task'
+              AND object_id = ?
+              AND message_type = 'task_content_changed'
+              AND delivery_status = 'queued'
+            ORDER BY created_at ASC
+            """,
+            (task_id,),
+        )
+        pending_by_recipient = {str(row["recipient_user_id"]): row for row in pending_rows}
+        for row in pending_rows:
+            pending_recipient = str(row["recipient_user_id"])
+            if pending_recipient in recipient_ids:
+                continue
+            self.state.db.execute(
+                """
+                UPDATE org_feishu_notifications
+                SET delivery_status = 'cancelled',
+                    delivery_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("成员已不在最新任务安排中，本次内容提醒已取消。", timestamp, str(row["id"])),
+            )
+        for recipient_user_id in recipient_ids:
+            merged_changed_fields = list(changed_fields)
+            pending_row = pending_by_recipient.get(recipient_user_id)
+            if pending_row:
+                pending_payload = from_json(str(pending_row["payload_json"] or "{}"), {})
+                pending_fields = list(pending_payload.get("changedFields") or []) if isinstance(pending_payload, dict) else []
+                for item in pending_fields:
+                    if item not in merged_changed_fields:
+                        merged_changed_fields.append(item)
+                self.state.db.execute(
+                    """
+                    UPDATE org_feishu_notifications
+                    SET delivery_status = 'cancelled',
+                        delivery_message = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    ("已并入一次即时任务更新提醒。", timestamp, str(pending_row["id"])),
+                )
+            card = _build_feishu_readonly_card(
+                template="orange",
+                title=f"{_task_change_notice_heading(merged_changed_fields)}｜{_truncate_plain_text(str(task_row['title']), 30)}",
+                headline=str(task_row["title"]),
+                core_lines=[
+                    f"你的角色：{_task_role_label(task_row, recipient_user_id)}",
+                    f"变更人：{current_user.fullName}",
+                    f"变更项：{'、'.join(_task_changed_field_labels(merged_changed_fields)) or '任务安排'}",
+                ],
+                secondary_blocks=[
+                    (
+                        "最新安排",
+                        [
+                            f"开始时间：{_task_datetime_text(str(task_row['start_date']) if task_row['start_date'] else None)}",
+                            f"截止时间：{_task_datetime_text(str(task_row['due_date']) if task_row['due_date'] else None)}",
+                            f"负责人：{_task_person_name_map(self.state, [str(task_row['owner_id']) if task_row['owner_id'] else '']).get(str(task_row['owner_id']) if task_row['owner_id'] else '', '未设置')}",
+                        ],
+                    ),
+                    (
+                        "当前协作者",
+                        [name for name in _task_person_name_map(self.state, collaborator_ids).values()] or ["无"],
+                    ),
+                ],
+                footer="请回到益语智库查看最新安排。",
+            )
+            text = _build_task_changed_feishu_message(
+                self.state,
+                task_row=task_row,
+                collaborator_ids=collaborator_ids,
+                recipient_user_id=recipient_user_id,
+                actor_name=current_user.fullName,
+                changed_fields=merged_changed_fields,
+            )
+            self._send_prepared_notification(
+                organization_id=str(task_row["organization_id"]),
+                message_type="task_changed",
+                object_type="task",
+                object_id=task_id,
+                event_type="key_fields_changed",
+                recipient_user_id=recipient_user_id,
+                title=str(task_row["title"]),
+                card=card,
+                text=text,
+                payload={"changedFields": merged_changed_fields},
+            )
+
+    def _queue_task_changed(
+        self,
+        *,
+        task_row,
+        current_user: SessionUser,
+        collaborator_ids: list[str],
+        changed_fields: list[str],
+    ) -> None:
+        recipient_ids = self._task_recipient_ids(task_row=task_row, collaborator_ids=collaborator_ids)
+        task_id = str(task_row["id"])
+        timestamp = now_iso()
+        due_at = (datetime.now() + timedelta(seconds=self.task_change_merge_window_seconds)).replace(microsecond=0).isoformat()
+        existing_rows = self.state.db.fetchall(
+            """
+            SELECT id, recipient_user_id FROM org_feishu_notifications
+            WHERE object_type = 'task' AND object_id = ? AND message_type = 'task_content_changed' AND delivery_status = 'queued'
+            """,
+            (task_id,),
+        )
+        for row in existing_rows:
+            existing_recipient = str(row["recipient_user_id"])
+            if existing_recipient in recipient_ids:
+                continue
+            self.state.db.execute(
+                """
+                UPDATE org_feishu_notifications
+                SET delivery_status = 'cancelled',
+                    delivery_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("成员已不在最新任务安排中，本次提醒已取消。", timestamp, str(row["id"])),
+            )
+        for recipient_user_id in recipient_ids:
+            dedupe_key = f"task_content_changed:{task_id}:{recipient_user_id}"
+            payload = {
+                "actorName": current_user.fullName,
+                "changedFields": changed_fields,
+            }
+            existing = self.state.db.fetchone(
+                """
+                SELECT * FROM org_feishu_notifications
+                WHERE dedupe_key = ? AND delivery_status = 'queued'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (dedupe_key,),
+            )
+            if existing:
+                existing_payload = from_json(str(existing["payload_json"] or "{}"), {})
+                merged_changed_fields = list(existing_payload.get("changedFields") or []) if isinstance(existing_payload, dict) else []
+                for item in changed_fields:
+                    if item not in merged_changed_fields:
+                        merged_changed_fields.append(item)
+                payload["changedFields"] = merged_changed_fields
+                self.state.db.execute(
+                    """
+                    UPDATE org_feishu_notifications
+                    SET title = ?,
+                        payload_json = ?,
+                        due_at = ?,
+                        updated_at = ?,
+                        delivery_message = ''
+                    WHERE id = ?
+                    """,
+                    (
+                        str(task_row["title"]),
+                        to_json(payload),
+                        due_at,
+                        timestamp,
+                        str(existing["id"]),
+                    ),
+                )
+                continue
+            self.state.db.execute(
+                """
+                INSERT INTO org_feishu_notifications(
+                    id, organization_id, message_type, object_type, object_id, event_type, recipient_user_id,
+                    title, payload_json, dedupe_key, delivery_status, delivery_message, due_at, created_at, updated_at
+                ) VALUES(?, ?, 'task_content_changed', 'task', ?, 'content_fields_changed', ?, ?, ?, ?, 'queued', '', ?, ?, ?)
+                """,
+                (
+                    new_id("fs_notice"),
+                    str(task_row["organization_id"]),
+                    task_id,
+                    recipient_user_id,
+                    str(task_row["title"]),
+                    to_json(payload),
+                    dedupe_key,
+                    due_at,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def _deliver_task_changed_row(self, row) -> None:
+        task_id = str(row["object_id"])
+        task_row = self.state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        if not task_row:
+            self.state.db.execute(
+                """
+                UPDATE org_feishu_notifications
+                SET delivery_status = 'failed',
+                    delivery_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("任务已不存在，无法继续发送飞书提醒。", now_iso(), str(row["id"])),
+            )
+            return
+        recipient_user_id = str(row["recipient_user_id"])
+        collaborator_ids = _task_collaborator_ids(self.state, task_id)
+        current_recipient_ids = self._task_recipient_ids(task_row=task_row, collaborator_ids=collaborator_ids)
+        if recipient_user_id not in current_recipient_ids:
+            self.state.db.execute(
+                """
+                UPDATE org_feishu_notifications
+                SET delivery_status = 'cancelled',
+                    delivery_message = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("成员已不在最新任务安排中，本次提醒已取消。", now_iso(), str(row["id"])),
+            )
+            return
+        payload = from_json(str(row["payload_json"] or "{}"), {})
+        actor_name = str(payload.get("actorName") or "同事") if isinstance(payload, dict) else "同事"
+        changed_fields = list(payload.get("changedFields") or []) if isinstance(payload, dict) else []
+        event_type = str(row["event_type"] or "content_fields_changed")
+        card = _build_feishu_readonly_card(
+            template="orange",
+            title=f"{_task_change_notice_heading(changed_fields)}｜{_truncate_plain_text(str(task_row['title']), 30)}",
+            headline=str(task_row["title"]),
+            core_lines=[
+                f"你的角色：{_task_role_label(task_row, recipient_user_id)}",
+                f"变更人：{actor_name}",
+                f"变更项：{'、'.join(_task_changed_field_labels(changed_fields)) or '任务安排'}",
+            ],
+            secondary_blocks=[
+                (
+                    "最新安排",
+                    [
+                        f"开始时间：{_task_datetime_text(str(task_row['start_date']) if task_row['start_date'] else None)}",
+                        f"截止时间：{_task_datetime_text(str(task_row['due_date']) if task_row['due_date'] else None)}",
+                        f"负责人：{_task_person_name_map(self.state, [str(task_row['owner_id']) if task_row['owner_id'] else '']).get(str(task_row['owner_id']) if task_row['owner_id'] else '', '未设置')}",
+                    ],
+                ),
+                (
+                    "当前协作者",
+                    [name for name in _task_person_name_map(self.state, collaborator_ids).values()] or ["无"],
+                ),
+            ],
+            footer="请回到益语智库查看最新安排。",
+        )
+        text = _build_task_changed_feishu_message(
+            self.state,
+            task_row=task_row,
+            collaborator_ids=collaborator_ids,
+            recipient_user_id=recipient_user_id,
+            actor_name=actor_name,
+            changed_fields=changed_fields,
+        )
+        self._send_prepared_notification(
+            notification_id=str(row["id"]),
+            organization_id=str(task_row["organization_id"]),
+            message_type=str(row["message_type"]),
+            object_type="task",
+            object_id=task_id,
+            event_type=event_type,
+            recipient_user_id=recipient_user_id,
+            title=str(task_row["title"]),
+            card=card,
+            text=text,
+            dedupe_key=str(row["dedupe_key"]) if row["dedupe_key"] else None,
+            payload={"changedFields": changed_fields},
+        )
+
+    def _collect_overdue_tasks_for_user(self, *, organization_id: str, user_id: str, reference_time: datetime) -> list[dict[str, str]]:
+        rows = self.state.db.fetchall(
+            """
+            SELECT DISTINCT t.id, t.title, t.due_date
+            FROM tasks t
+            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+            WHERE t.organization_id = ?
+              AND t.progress_status NOT IN ('done', 'rejected')
+              AND t.due_date IS NOT NULL
+              AND (t.owner_id = ? OR tc.user_id = ?)
+            ORDER BY t.due_date ASC, t.created_at ASC
+            """,
+            (organization_id, user_id, user_id),
+        )
+        overdue: list[dict[str, str]] = []
+        for row in rows:
+            due_value = str(row["due_date"]) if row["due_date"] else None
+            due_dt = _task_datetime_value(due_value)
+            if due_dt is None or due_dt >= reference_time:
+                continue
+            overdue.append(
+                {
+                    "id": str(row["id"]),
+                    "title": str(row["title"]),
+                    "dueText": _task_datetime_text(due_value),
+                }
+            )
+        return overdue
+
+    def _blocking_dedupe_record(self, *, dedupe_key: str) -> FeishuNotificationDispatchRecord | None:
+        row = self.state.db.fetchone(
+            """
+            SELECT * FROM org_feishu_notifications
+            WHERE dedupe_key = ? AND delivery_status IN ('queued', 'sending', 'sent_card', 'sent_text_fallback')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (dedupe_key,),
+        )
+        return _feishu_dispatch_record(row) if row else None
+
+    def _any_dedupe_record(self, *, dedupe_key: str) -> bool:
+        row = self.state.db.fetchone(
+            "SELECT id FROM org_feishu_notifications WHERE dedupe_key = ? ORDER BY updated_at DESC LIMIT 1",
+            (dedupe_key,),
+        )
+        return row is not None
+
+    def _send_prepared_notification(
+        self,
+        *,
+        organization_id: str,
+        message_type: str,
+        object_type: str,
+        object_id: str,
+        event_type: str,
+        recipient_user_id: str,
+        title: str,
+        card: dict,
+        text: str,
+        dedupe_key: str | None = None,
+        payload: dict[str, object] | None = None,
+        notification_id: str | None = None,
+    ) -> FeishuNotificationDispatchRecord:
+        timestamp = now_iso()
+        payload_json = to_json(payload or {})
+        card_json = to_json(card)
+        if notification_id:
+            self.state.db.execute(
+                """
+                UPDATE org_feishu_notifications
+                SET organization_id = ?,
+                    message_type = ?,
+                    object_type = ?,
+                    object_id = ?,
+                    event_type = ?,
+                    recipient_user_id = ?,
+                    title = ?,
+                    card_json = ?,
+                    text_fallback = ?,
+                    payload_json = ?,
+                    dedupe_key = ?,
+                    delivery_status = 'sending',
+                    delivery_channel = '',
+                    delivery_message = '',
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    organization_id,
+                    message_type,
+                    object_type,
+                    object_id,
+                    event_type,
+                    recipient_user_id,
+                    title,
+                    card_json,
+                    text,
+                    payload_json,
+                    dedupe_key,
+                    timestamp,
+                    notification_id,
+                ),
+            )
+            row_id = notification_id
+        else:
+            row_id = new_id("fs_notice")
+            self.state.db.execute(
+                """
+                INSERT INTO org_feishu_notifications(
+                    id, organization_id, message_type, object_type, object_id, event_type, recipient_user_id, title,
+                    card_json, text_fallback, payload_json, dedupe_key, delivery_status, delivery_channel, delivery_message,
+                    due_at, sent_at, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sending', '', '', NULL, NULL, ?, ?)
+                """,
+                (
+                    row_id,
+                    organization_id,
+                    message_type,
+                    object_type,
+                    object_id,
+                    event_type,
+                    recipient_user_id,
+                    title,
+                    card_json,
+                    text,
+                    payload_json,
+                    dedupe_key,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+        recipient_open_id: str | None = None
+        delivery_status = "failed"
+        delivery_channel = ""
+        delivery_message = ""
+        tenant_access = _resolve_org_feishu_tenant_access_token(self.state, organization_id=organization_id)
+        if not tenant_access:
+            delivery_message = "当前组织尚未接通飞书，提醒未发送。"
+        else:
+            try:
+                _app_id, tenant_access_token = tenant_access
+                recipient_open_id, match_status, match_error = _resolve_feishu_delivery_target(
+                    self.state,
+                    organization_id=organization_id,
+                    user_id=recipient_user_id,
+                    tenant_access_token=tenant_access_token,
+                )
+                if not recipient_open_id:
+                    delivery_status = "skipped_unbound"
+                    delivery_message = match_error or ("成员飞书提醒目标未匹配，已跳过发送。" if match_status == "not_found" else "飞书提醒目标校验失败。")
+                else:
+                    try:
+                        _feishu_send_interactive_message(
+                            tenant_access_token=tenant_access_token,
+                            receive_id_type="open_id",
+                            receive_id=recipient_open_id,
+                            card=card,
+                        )
+                        delivery_status = "sent_card"
+                        delivery_channel = "interactive"
+                        delivery_message = "卡片发送成功。"
+                    except Exception as card_exc:
+                        card_error = str(card_exc.detail) if isinstance(card_exc, HTTPException) else "飞书卡片发送失败。"
+                        try:
+                            _feishu_send_text_message(
+                                tenant_access_token=tenant_access_token,
+                                receive_id_type="open_id",
+                                receive_id=recipient_open_id,
+                                text=text,
+                            )
+                            delivery_status = "sent_text_fallback"
+                            delivery_channel = "text"
+                            delivery_message = f"卡片发送失败，已自动降级为文本：{card_error}"
+                        except Exception as text_exc:
+                            delivery_status = "failed"
+                            delivery_message = str(text_exc.detail) if isinstance(text_exc, HTTPException) else card_error
+            except Exception as exc:
+                logger.exception(
+                    "feishu.notification.send_failed",
+                    extra={"message_type": message_type, "object_id": object_id, "recipient_user_id": recipient_user_id},
+                )
+                delivery_message = str(exc.detail) if isinstance(exc, HTTPException) else "飞书提醒发送失败。"
+
+        sent_at = now_iso() if delivery_status in {"sent_card", "sent_text_fallback"} else None
+        self.state.db.execute(
+            """
+            UPDATE org_feishu_notifications
+            SET recipient_open_id = ?,
+                delivery_status = ?,
+                delivery_channel = ?,
+                delivery_message = ?,
+                sent_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                recipient_open_id,
+                delivery_status,
+                delivery_channel,
+                delivery_message,
+                sent_at,
+                now_iso(),
+                row_id,
+            ),
+        )
+        if object_type == "task" and event_type in {"created", "key_fields_changed", "content_fields_changed"}:
+            payload_obj = payload or {}
+            changed_fields = list(payload_obj.get("changedFields") or []) if isinstance(payload_obj, dict) else []
+            _record_task_feishu_notification(
+                self.state,
+                organization_id=organization_id,
+                task_id=object_id,
+                event_type=cast(Literal["created", "key_fields_changed", "content_fields_changed"], event_type),
+                recipient_user_id=recipient_user_id,
+                recipient_open_id=recipient_open_id,
+                delivery_status="sent" if delivery_status in {"sent_card", "sent_text_fallback"} else "skipped_unbound" if delivery_status == "skipped_unbound" else "failed",
+                delivery_message=delivery_message or "发送成功。",
+                changed_fields=changed_fields,
+            )
+        row = self.state.db.fetchone("SELECT * FROM org_feishu_notifications WHERE id = ?", (row_id,))
+        assert row is not None
+        return _feishu_dispatch_record(row)
+
+
 def _notify_task_feishu_recipients(
     state: AppState,
     *,
@@ -3275,138 +5671,15 @@ def _notify_task_feishu_recipients(
     event_type: Literal["created", "key_fields_changed"],
     changed_fields: list[str] | None = None,
 ) -> None:
-    organization_id = str(task_row["organization_id"])
-    owner_id = str(task_row["owner_id"]) if task_row["owner_id"] else None
-    recipient_ids: list[str] = []
-    for candidate in [owner_id, *collaborator_ids]:
-        if candidate and candidate not in recipient_ids:
-            recipient_ids.append(candidate)
-    if not recipient_ids:
-        return
-
-    integration_row = state.db.fetchone(
-        "SELECT * FROM org_feishu_integrations WHERE organization_id = ?",
-        (organization_id,),
+    if not state.feishu_notifications:
+        state.feishu_notifications = FeishuNotificationService(state)
+    state.feishu_notifications.notify_task_change(
+        task_row=task_row,
+        current_user=current_user,
+        collaborator_ids=collaborator_ids,
+        event_type=event_type,
+        changed_fields=changed_fields,
     )
-    if not integration_row or not integration_row["enabled"] or not integration_row["app_id"] or not integration_row["app_secret_encrypted"]:
-        message = "当前组织尚未接通飞书，任务提醒未发送。"
-        for recipient_user_id in recipient_ids:
-            _record_task_feishu_notification(
-                state,
-                organization_id=organization_id,
-                task_id=str(task_row["id"]),
-                event_type=event_type,
-                recipient_user_id=recipient_user_id,
-                recipient_open_id=None,
-                delivery_status="failed",
-                delivery_message=message,
-                changed_fields=changed_fields,
-            )
-        return
-
-    try:
-        app_secret = _org_feishu_decrypt(
-            state,
-            str(integration_row["app_secret_encrypted"]),
-            str(integration_row["encryption_nonce"]),
-            organization_id,
-        )
-        tenant_access_token, _ = _feishu_fetch_tenant_access_token(
-            app_id=str(integration_row["app_id"]),
-            app_secret=app_secret,
-        )
-    except Exception as exc:
-        logger.exception("task.feishu.token_failed", extra={"task_id": str(task_row["id"]), "organization_id": organization_id})
-        message = str(exc.detail) if isinstance(exc, HTTPException) else "飞书租户令牌获取失败。"
-        for recipient_user_id in recipient_ids:
-            _record_task_feishu_notification(
-                state,
-                organization_id=organization_id,
-                task_id=str(task_row["id"]),
-                event_type=event_type,
-                recipient_user_id=recipient_user_id,
-                recipient_open_id=None,
-                delivery_status="failed",
-                delivery_message=message,
-                changed_fields=changed_fields,
-            )
-        return
-
-    actor_name = current_user.fullName
-    for recipient_user_id in recipient_ids:
-        receive_id, match_status, match_error = _resolve_feishu_delivery_target(
-            state,
-            organization_id=organization_id,
-            user_id=recipient_user_id,
-            tenant_access_token=tenant_access_token,
-        )
-        if not receive_id:
-            _record_task_feishu_notification(
-                state,
-                organization_id=organization_id,
-                task_id=str(task_row["id"]),
-                event_type=event_type,
-                recipient_user_id=recipient_user_id,
-                recipient_open_id=None,
-                delivery_status="skipped_unbound",
-                delivery_message=match_error or ("成员飞书提醒目标未匹配，已跳过发送。" if match_status == "not_found" else "飞书提醒目标校验失败。"),
-                changed_fields=changed_fields,
-            )
-            continue
-
-        message_text = (
-            _build_task_created_feishu_message(
-                state,
-                task_row=task_row,
-                recipient_user_id=recipient_user_id,
-                actor_name=actor_name,
-            )
-            if event_type == "created"
-            else _build_task_changed_feishu_message(
-                state,
-                task_row=task_row,
-                collaborator_ids=collaborator_ids,
-                recipient_user_id=recipient_user_id,
-                actor_name=actor_name,
-                changed_fields=changed_fields or [],
-            )
-        )
-
-        try:
-            _feishu_send_text_message(
-                tenant_access_token=tenant_access_token,
-                receive_id_type="open_id",
-                receive_id=receive_id,
-                text=message_text,
-            )
-            _record_task_feishu_notification(
-                state,
-                organization_id=organization_id,
-                task_id=str(task_row["id"]),
-                event_type=event_type,
-                recipient_user_id=recipient_user_id,
-                recipient_open_id=receive_id,
-                delivery_status="sent",
-                delivery_message="发送成功。",
-                changed_fields=changed_fields,
-            )
-        except Exception as exc:
-            logger.exception(
-                "task.feishu.send_failed",
-                extra={"task_id": str(task_row["id"]), "organization_id": organization_id, "recipient_user_id": recipient_user_id},
-            )
-            error_message = str(exc.detail) if isinstance(exc, HTTPException) else "飞书消息发送失败。"
-            _record_task_feishu_notification(
-                state,
-                organization_id=organization_id,
-                task_id=str(task_row["id"]),
-                event_type=event_type,
-                recipient_user_id=recipient_user_id,
-                recipient_open_id=receive_id,
-                delivery_status="failed",
-                delivery_message=error_message,
-                changed_fields=changed_fields,
-            )
 
 
 def _feishu_relay_session_status(row) -> Literal["pending", "authorized", "expired", "error"]:
@@ -3423,6 +5696,18 @@ def _feishu_relay_session_status(row) -> Literal["pending", "authorized", "expir
     if row["code"]:
         return "authorized"
     return "pending"
+
+
+def _feishu_notification_loop(state: AppState) -> None:
+    if not state.feishu_notifications:
+        state.feishu_notifications = FeishuNotificationService(state)
+    while not state.feishu_notification_stop.is_set():
+        try:
+            state.feishu_notifications.process_due_notifications()
+            state.feishu_notifications.process_overdue_digest()
+        except Exception:
+            logger.exception("feishu.notification.loop_failed")
+        state.feishu_notification_stop.wait(20.0)
 
 
 def _feishu_relay_status_record(row, *, include_code: bool = False) -> FeishuBindingRelaySessionStatusRecord:
@@ -4992,6 +7277,7 @@ def create_app() -> FastAPI:
         data_dir=data_dir,
         secret_key=ensure_cloud_secret(data_dir),
     )
+    state.feishu_notifications = FeishuNotificationService(state)
     app.state.app_state = state
     _ensure_seed_data(state)
     _backfill_task_tag_ids(state)
@@ -5006,6 +7292,48 @@ def create_app() -> FastAPI:
             employeeCount=state.db.scalar("SELECT COUNT(1) AS count FROM employee_accounts"),
             taskCount=state.db.scalar("SELECT COUNT(1) AS count FROM tasks"),
         )
+
+    @app.on_event("startup")
+    def _startup_feishu_notifications() -> None:
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        if state.feishu_notification_thread and state.feishu_notification_thread.is_alive():
+            return
+        state.feishu_notification_stop.clear()
+        state.feishu_notification_thread = Thread(
+            target=_feishu_notification_loop,
+            args=(state,),
+            name="feishu-notification-loop",
+            daemon=True,
+        )
+        state.feishu_notification_thread.start()
+
+    @app.on_event("startup")
+    def _startup_feishu_query_bridge() -> None:
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        if state.feishu_query_thread and state.feishu_query_thread.is_alive():
+            return
+        state.feishu_query_stop.clear()
+        state.feishu_query_manager = FeishuLongConnectionCoordinator(state)
+        state.feishu_query_thread = Thread(
+            target=state.feishu_query_manager.run,
+            name="feishu-query-coordinator",
+            daemon=True,
+        )
+        state.feishu_query_thread.start()
+
+    @app.on_event("shutdown")
+    def _shutdown_feishu_notifications() -> None:
+        state.feishu_notification_stop.set()
+        if state.feishu_notification_thread and state.feishu_notification_thread.is_alive():
+            state.feishu_notification_thread.join(timeout=1.5)
+
+    @app.on_event("shutdown")
+    def _shutdown_feishu_query_bridge() -> None:
+        state.feishu_query_stop.set()
+        if state.feishu_query_thread and state.feishu_query_thread.is_alive():
+            state.feishu_query_thread.join(timeout=1.5)
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOption])
     def list_department_options() -> list[DepartmentOption]:
@@ -5445,6 +7773,15 @@ def create_app() -> FastAPI:
                         last_error=error_message,
                     )
         return _feishu_delivery_profile_record(state, current_user)
+
+    @app.post("/api/v1/me/feishu-notifications/badge-unlock", response_model=FeishuNotificationDispatchRecord)
+    def send_badge_unlock_feishu_notification(
+        payload: FeishuBadgeNotificationPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuNotificationDispatchRecord:
+        if not state.feishu_notifications:
+            state.feishu_notifications = FeishuNotificationService(state)
+        return state.feishu_notifications.notify_badge_unlock(current_user=current_user, payload=payload)
 
     @app.post("/api/v1/integrations/feishu/user-binding/sessions", response_model=FeishuBindingRelaySessionStatusRecord)
     def create_feishu_binding_relay_session(
@@ -7884,6 +10221,14 @@ def create_app() -> FastAPI:
         updated_row = _task_row_or_404(state, task_id)
         _sync_task_org_link(state, updated_row, next_collaborator_ids)
         changed_fields: list[str] = []
+        if payload.title is not None and str(merged["title"] or "") != str(row["title"] or ""):
+            changed_fields.append("title")
+        if payload.description is not None and str(merged["description"] or "") != str(row["description"] or ""):
+            changed_fields.append("description")
+        if payload.priority is not None and str(merged["priority"] or "") != str(row["priority"] or ""):
+            changed_fields.append("priority")
+        if payload.listId is not None and str(merged["list_id"] or "") != str(row["list_id"] or ""):
+            changed_fields.append("listId")
         if payload.startDate is not None and merged["start_date"] != previous_start_date:
             changed_fields.append("startDate")
         if payload.dueDate is not None and merged["due_date"] != previous_due_date:
@@ -8434,6 +10779,12 @@ def create_app() -> FastAPI:
             target_user_id=current_user.id,
             detail={"weekLabel": payload.weekLabel, "contentDomains": ["work", "personal"], "personalExcludedFromAggregation": True},
         )
+        if state.feishu_notifications:
+            state.feishu_notifications.notify_weekly_review(
+                review_id=review_id,
+                current_user=current_user,
+                payload=payload,
+            )
         return _dashboard_for_user(state, current_user, payload.weekLabel)
 
     return app
