@@ -38,6 +38,9 @@ from app.models import (
     EventLineActivityRecord,
     EventLineCreatePayload,
     EventLineDetailRecord,
+    EventLineImportBatchPayload,
+    EventLineImportItemResult,
+    EventLineImportResultRecord,
     EventLineRecord,
     EventLineReportAttachmentRecord,
     EventLineReportSnapshotRecord,
@@ -8237,6 +8240,171 @@ def create_app() -> FastAPI:
         )
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         return _event_line_record(state, row)
+
+    @app.post("/api/v1/event-lines/import-desktop", response_model=EventLineImportResultRecord)
+    def import_desktop_event_lines(
+        payload: EventLineImportBatchPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineImportResultRecord:
+        if current_user.primaryRole != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员可以导入本地事件线到云端。")
+
+        results: list[EventLineImportItemResult] = []
+        imported = 0
+        skipped = 0
+
+        def _resolve_org_user_id(user_id: str | None, fallback: str | None = None) -> str | None:
+            normalized = (user_id or "").strip()
+            if not normalized:
+                return fallback
+            row = state.db.fetchone(
+                "SELECT id FROM employee_accounts WHERE id = ? AND organization_id = ?",
+                (normalized, current_user.organizationId),
+            )
+            return str(row["id"]) if row else fallback
+
+        def _resolve_department_id(department_id: str | None) -> str | None:
+            normalized = (department_id or "").strip()
+            if not normalized:
+                return None
+            row = state.db.fetchone(
+                "SELECT id FROM org_departments WHERE id = ? AND organization_id = ?",
+                (normalized, current_user.organizationId),
+            )
+            return str(row["id"]) if row else None
+
+        for item in payload.eventLines:
+            existing = state.db.fetchone(
+                "SELECT id FROM event_lines WHERE id = ? AND organization_id = ?",
+                (item.id, current_user.organizationId),
+            )
+            if existing:
+                skipped += 1
+                results.append(
+                    EventLineImportItemResult(
+                        id=item.id,
+                        name=item.name,
+                        status="skipped",
+                        reason="云端已存在同 ID 事件线",
+                        importedActivityCount=0,
+                    )
+                )
+                continue
+
+            owner_id = _resolve_org_user_id(item.ownerId, current_user.id) or current_user.id
+            closed_by_user_id = _resolve_org_user_id(item.closedByUserId)
+            participant_ids: list[str] = []
+            seen_participants: set[str] = set()
+            for candidate in [owner_id, *item.participantIds]:
+                resolved = _resolve_org_user_id(candidate)
+                if not resolved or resolved in seen_participants:
+                    continue
+                participant_ids.append(resolved)
+                seen_participants.add(resolved)
+            if not participant_ids:
+                participant_ids = [owner_id]
+
+            resolved_department_id = _resolve_department_id(item.primaryDepartmentId)
+            client_id = (item.primaryClientId or "").strip() or None
+            client_name = (item.primaryClientName or "").strip() or None
+            if client_id:
+                client_row = _client_row_by_id(state, client_id, current_user.organizationId)
+                if client_row:
+                    client_name = str(client_row["name"]) if client_row["name"] else client_name
+
+            state.db.execute(
+                """
+                INSERT INTO event_lines(
+                    id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent,
+                    current_blocker, recent_decision, next_step, evidence_count, owner_id,
+                    primary_client_id, primary_client_name, primary_department_id, participant_ids_json,
+                    closed_at, closed_by_user_id, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    current_user.organizationId,
+                    item.name.strip(),
+                    item.kind,
+                    item.status,
+                    item.visibilityScope,
+                    item.businessCategory,
+                    item.stage,
+                    item.summary,
+                    item.intent,
+                    item.currentBlocker,
+                    item.recentDecision,
+                    item.nextStep,
+                    max(int(item.evidenceCount or 0), 0),
+                    owner_id,
+                    client_id,
+                    client_name,
+                    resolved_department_id,
+                    to_json(participant_ids),
+                    item.closedAt,
+                    closed_by_user_id,
+                    item.createdAt,
+                    item.updatedAt,
+                ),
+            )
+
+            imported_activity_count = 0
+            for activity in item.activities:
+                existing_activity = state.db.fetchone(
+                    "SELECT id FROM event_line_activities WHERE id = ?",
+                    (activity.id,),
+                )
+                if existing_activity:
+                    continue
+                activity_actor_id = _resolve_org_user_id(activity.actorId)
+                state.db.execute(
+                    """
+                    INSERT INTO event_line_activities(
+                        id, event_line_id, source_type, source_id, happened_at, actor_id, title, summary, metadata_json
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        activity.id,
+                        item.id,
+                        activity.sourceType,
+                        activity.sourceId,
+                        activity.happenedAt,
+                        activity_actor_id,
+                        activity.title,
+                        activity.summary,
+                        to_json(activity.metadata),
+                    ),
+                )
+                imported_activity_count += 1
+
+            imported += 1
+            results.append(
+                EventLineImportItemResult(
+                    id=item.id,
+                    name=item.name,
+                    status="imported",
+                    importedActivityCount=imported_activity_count,
+                )
+            )
+
+        _log_audit(
+            state,
+            "event_line.import_desktop",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={
+                "requested": len(payload.eventLines),
+                "imported": imported,
+                "skipped": skipped,
+            },
+        )
+        return EventLineImportResultRecord(
+            requested=len(payload.eventLines),
+            imported=imported,
+            skipped=skipped,
+            updatedAt=now_iso(),
+            items=results,
+        )
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(

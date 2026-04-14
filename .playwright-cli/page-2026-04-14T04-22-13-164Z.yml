@@ -1,0 +1,79 @@
+- generic [ref=e24]:
+  - complementary [ref=e25]:
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - img "组织 Logo" [ref=e29]
+        - generic [ref=e30]: 益语智库
+      - button "收起侧栏" [ref=e32] [cursor=pointer]:
+        - img [ref=e33]
+    - generic [ref=e35]:
+      - navigation [ref=e36]:
+        - button "任务与日程" [ref=e37] [cursor=pointer]:
+          - generic [ref=e38]:
+            - img [ref=e39]
+            - generic [ref=e42]: 任务与日程
+        - button "客户工作台" [ref=e43] [cursor=pointer]:
+          - generic [ref=e44]:
+            - img [ref=e45]
+            - generic [ref=e48]: 客户工作台
+        - button "战略陪伴" [ref=e49] [cursor=pointer]:
+          - generic [ref=e50]:
+            - img [ref=e51]
+            - generic [ref=e55]: 战略陪伴
+        - button "资讯情报站" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]:
+            - img [ref=e58]
+            - generic [ref=e61]: 资讯情报站
+        - button "成长中心" [ref=e62] [cursor=pointer]:
+          - generic [ref=e63]:
+            - img [ref=e64]
+            - generic [ref=e66]: 成长中心
+        - button "系统设置" [ref=e67] [cursor=pointer]:
+          - generic [ref=e68]:
+            - img [ref=e69]
+            - generic [ref=e72]: 系统设置
+      - generic [ref=e75]:
+        - generic [ref=e76]:
+          - paragraph [ref=e77]: 协作同步
+          - paragraph [ref=e78]: 尚未绑定源码目录
+          - paragraph [ref=e79]: 点击任一主按钮后，会先帮你绑定源码目录。
+        - generic [ref=e80]:
+          - button "提交并推送我的修改" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+            - text: 提交并推送我的修改
+          - button "预览并同步最新版本" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+            - text: 预览并同步最新版本
+      - generic [ref=e90]:
+        - paragraph [ref=e91]: 当前登录
+        - paragraph [ref=e92]: 顾源源
+        - paragraph [ref=e93]: admin · qwen · 0 客户
+        - button "退出登录" [ref=e94] [cursor=pointer]
+  - main [ref=e95]:
+    - generic [ref=e96]:
+      - generic [ref=e97]:
+        - generic [ref=e98]:
+          - heading "任务与日程" [level=1] [ref=e99]
+          - generic [ref=e100]:
+            - button "协作收件箱" [ref=e101] [cursor=pointer]:
+              - img [ref=e102]
+              - text: 协作收件箱
+            - button "任务列表" [ref=e105] [cursor=pointer]
+            - button "我的月历" [ref=e106] [cursor=pointer]
+            - button "事件线" [active] [ref=e107] [cursor=pointer]
+            - button "周复盘" [ref=e108] [cursor=pointer]
+        - button "新建任务" [ref=e109] [cursor=pointer]:
+          - img [ref=e110]
+          - text: 新建任务
+      - generic [ref=e685]:
+        - generic [ref=e686]:
+          - generic [ref=e687]:
+            - heading "事件线" [level=2] [ref=e688]
+            - paragraph [ref=e689]: 事件线需要连接云端协作后才会显示具体内容。
+          - generic [ref=e690]:
+            - generic [ref=e691]: 项目筛选
+            - generic [ref=e692]:
+              - button "连接云端后可筛选项目" [disabled] [ref=e693]
+              - img
+            - paragraph [ref=e694]: 当前是本机模式，因此这里不会显示任何具体事件线。
+        - paragraph [ref=e696]: 当前未连接云端协作，所以事件线视图只保留空白骨架，不显示具体事件线。连接云端后即可查看和编辑。

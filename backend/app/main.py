@@ -15906,22 +15906,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines", response_model=list[EventLineRecord])
     def list_event_lines() -> list[EventLineRecord]:
-        if get_cloud_token():
-            try:
-                response = cloud_request("GET", "/api/v1/event-lines")
-                if not isinstance(response, list):
-                    raise HTTPException(status_code=502, detail="Invalid event line payload")
-                return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
-            except HTTPException:
-                pass
-        rows = state.db.fetchall(
-            """
-            SELECT *
-            FROM event_lines
-            ORDER BY updated_at DESC, created_at DESC
-            """
-        )
-        return [build_event_line(row) for row in rows]
+        _require_cloud_event_line_session()
+        response = cloud_request("GET", "/api/v1/event-lines")
+        if not isinstance(response, list):
+            raise HTTPException(status_code=502, detail="Invalid event line payload")
+        return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(payload: EventLineCreatePayload) -> EventLineRecord:
@@ -15978,18 +15967,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
-        if get_cloud_token():
-            try:
-                response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
-                if not isinstance(response, dict):
-                    raise HTTPException(status_code=502, detail="Invalid event line detail payload")
-                return build_cloud_event_line_detail(response)
-            except HTTPException:
-                pass
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
-        return build_event_line_detail(row)
+        _require_cloud_event_line_session()
+        response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid event line detail payload")
+        return build_cloud_event_line_detail(response)
 
     @app.post("/api/v1/event-lines/{event_line_id}/clarification-draft", response_model=EventLineClarificationDraftRecord)
     def generate_event_line_clarification_draft(

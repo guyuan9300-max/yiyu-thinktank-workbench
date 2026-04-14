@@ -513,6 +513,29 @@ const providerDisplayNames = {
   doubao: '豆包 Seed 2.0 Pro（火山方舟）',
 } as const;
 
+function inferCloudVendorLabel(cloudApiUrl?: string | null) {
+  const value = (cloudApiUrl || '').trim();
+  if (!value) return '未配置';
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    if (hostname === '127.0.0.1' || hostname === 'localhost') return '本地调试云端';
+    if (
+      hostname === '101.126.34.232'
+      || hostname.includes('volcengine')
+      || hostname.includes('volces')
+      || hostname.includes('bytedance')
+    ) {
+      return '火山云';
+    }
+    if (hostname.includes('cloudflare')) return 'Cloudflare';
+    if (hostname.includes('aliyun') || hostname.includes('aliyuncs')) return '阿里云';
+    if (hostname.includes('tencent') || hostname.includes('qcloud')) return '腾讯云';
+    return '自定义云端';
+  } catch {
+    return '自定义云端';
+  }
+}
+
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 const EVENT_LINE_PROJECT_FILTER_STORAGE_KEY = 'yiyu-event-line-project-filter';
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
@@ -710,11 +733,23 @@ const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   },
 };
 
+function isLocalDeviceSessionUser(user?: AuthState['user'] | null) {
+  if (!user) return true;
+  return (
+    user.id === 'local-device-user'
+    || user.organizationId === 'local-device'
+    || user.email === 'local@device.yiyu'
+  );
+}
+
 function normalizeAuthStateForDesktop(state: AuthState | null | undefined): AuthState {
   if (state?.authenticated && state.user) {
+    const inferredSessionMode = state.sessionMode === 'cloud' || !isLocalDeviceSessionUser(state.user)
+      ? 'cloud'
+      : 'local';
     return {
       ...state,
-      sessionMode: state.sessionMode || 'cloud',
+      sessionMode: inferredSessionMode,
     };
   }
   return {
@@ -3634,7 +3669,24 @@ export default function App() {
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
   const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
-  const isCloudSession = authState.sessionMode === 'cloud';
+  const isCloudSession = authState.sessionMode === 'cloud' || !isLocalDeviceSessionUser(currentSessionUser);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as typeof window & { __YIYU_DEBUG_AUTH__?: Record<string, unknown> }).__YIYU_DEBUG_AUTH__ = {
+      authSessionMode: authState.sessionMode,
+      authAuthenticated: authState.authenticated,
+      authUserId: authState.user?.id || null,
+      authUserEmail: authState.user?.email || null,
+      authUserName: authState.user?.fullName || null,
+      currentSessionUserId: currentSessionUser?.id || null,
+      currentSessionUserEmail: currentSessionUser?.email || null,
+      currentSessionUserName: currentSessionUser?.fullName || null,
+      inferredIsLocalDeviceUser: isLocalDeviceSessionUser(currentSessionUser),
+      inferredIsCloudSession: isCloudSession,
+      activeTab,
+      taskViewMode,
+    };
+  }, [activeTab, authState.authenticated, authState.sessionMode, authState.user?.email, authState.user?.fullName, authState.user?.id, currentSessionUser, isCloudSession, taskViewMode]);
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
@@ -5383,6 +5435,7 @@ export default function App() {
       tasks: typeof tasks;
       workspace: typeof workspace;
     };
+    const isCloudSession = authState.sessionMode === 'cloud' || !isLocalDeviceSessionUser(currentSessionUser);
     const buildDefaultCollaborators = (): MentionCandidate[] => {
       if (!effectiveTaskSettings.autoAssignSelf || !currentSessionUser) return [];
       return [{
@@ -5762,6 +5815,11 @@ export default function App() {
     }, [clearProjectStructureUnavailable, markProjectStructureUnavailable, projectStructureCache, taskClientDnaCache, workspace?.client.id, workspace?.projectFlows, workspace?.projectModules]);
 
     const loadEventLines = useCallback(async () => {
+      if (!isCloudSession) {
+        setEventLines([]);
+        setEventLinesLoadError(null);
+        return;
+      }
       try {
         const records = await getEventLines();
         setEventLines(records);
@@ -5770,25 +5828,24 @@ export default function App() {
         console.warn('[event-lines] load failed', error);
         setEventLinesLoadError(error instanceof Error ? error.message : '事件线加载失败');
       }
-    }, []);
+    }, [isCloudSession]);
 
     useEffect(() => {
-      if (!authState.authenticated) return;
+      if (!isCloudSession) return;
       void loadEventLines();
-    }, [authState.authenticated, loadEventLines]);
+    }, [isCloudSession, loadEventLines]);
 
     useEffect(() => {
-      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !authState.authenticated) return;
+      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !isCloudSession) return;
       void loadEventLines();
-    }, [activeTab, authState.authenticated, loadEventLines, taskViewMode]);
+    }, [activeTab, isCloudSession, loadEventLines, taskViewMode]);
 
     useEffect(() => {
-      if (authState.authenticated) return;
-      setEventLineSourceStatus(null);
+      if (isCloudSession) return;
       setEventLines([]);
       setEventLinesLoadError(null);
       setEventLineProjectFilterId('__all__');
-    }, [authState.authenticated]);
+    }, [isCloudSession]);
 
     // 自定义下拉菜单：点击外部关闭
     useEffect(() => {
@@ -6249,22 +6306,15 @@ export default function App() {
     );
     const eventLineProjectOptions = useMemo(() => {
       const labelById = new Map<string, string>();
-      clients.forEach((client) => {
-        const clientId = (client.id || '').trim();
-        if (!clientId) return;
-        const label = (client.name || '').trim() || '未命名项目';
-        labelById.set(clientId, label);
-      });
       sortedEventLines.forEach((item) => {
         const clientId = (item.primaryClientId || '').trim();
         if (!clientId) return;
+        const matchedClient = clients.find((client) => (client.id || '').trim() === clientId);
+        const matchedLabel = (matchedClient?.name || '').trim();
         const cloudLabel = item.primaryClientName?.trim();
-        if (!labelById.has(clientId)) {
-          labelById.set(clientId, cloudLabel || '未命名项目');
-          return;
-        }
-        if (cloudLabel && labelById.get(clientId) === '未命名项目') {
-          labelById.set(clientId, cloudLabel);
+        const nextLabel = matchedLabel || cloudLabel || '未命名项目';
+        if (!labelById.has(clientId) || labelById.get(clientId) === '未命名项目') {
+          labelById.set(clientId, nextLabel);
         }
       });
       return Array.from(labelById.entries())
@@ -6545,6 +6595,10 @@ export default function App() {
     };
 
     const openEventLineDetail = async (eventLineId: string, options?: { clarify?: boolean }) => {
+      if (!isCloudSession) {
+        flash('info', '当前是本机模式。连接云端协作后才能查看事件线。');
+        return null;
+      }
       setIsEventLineBusy(true);
       try {
         const detail = await getEventLine(eventLineId);
@@ -8537,7 +8591,7 @@ export default function App() {
                               {task.projectContext.clientName}
                             </span>
                           )}
-                          {task.eventLineName && task.eventLineId && (
+                          {isCloudSession && task.eventLineName && task.eventLineId && (
                             <button
                               type="button"
                               className="flex items-center gap-1 px-2 py-1 rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-colors cursor-pointer"
@@ -8913,7 +8967,11 @@ export default function App() {
               <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
                 <div>
                   <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
+                  <p className="text-[12px] text-gray-500 mt-1">
+                    {isCloudSession
+                      ? '按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。'
+                      : '事件线需要连接云端协作后才会显示具体内容。'}
+                  </p>
                 </div>
                 <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' as any }}>
                   <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
@@ -8921,11 +8979,17 @@ export default function App() {
                     {/* 自定义下拉按钮 — 替代原生 select，绕过 Electron hiddenInset 事件丢失 */}
                     <button
                       type="button"
-                      onClick={() => setElProjectDropdownOpen((v) => !v)}
-                      className="w-full appearance-none rounded-2xl border border-gray-200 bg-white/90 py-3 pl-4 pr-10 text-left text-[13px] font-semibold text-gray-700 shadow-sm outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/10"
+                      onClick={() => {
+                        if (!isCloudSession) return;
+                        setElProjectDropdownOpen((v) => !v);
+                      }}
+                      disabled={!isCloudSession}
+                      className="w-full appearance-none rounded-2xl border border-gray-200 bg-white/90 py-3 pl-4 pr-10 text-left text-[13px] font-semibold text-gray-700 shadow-sm outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/10 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
                       style={{ WebkitAppRegion: 'no-drag' as any }}
                     >
-                      {eventLineProjectFilterId === '__all__'
+                      {!isCloudSession
+                        ? '连接云端后可筛选项目'
+                        : eventLineProjectFilterId === '__all__'
                         ? `全部项目（${eventLineProjectOptions.length}）`
                         : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? '未知项目')}
                     </button>
@@ -8933,7 +8997,7 @@ export default function App() {
                       className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 transition-transform ${elProjectDropdownOpen ? 'rotate-180' : ''}`}
                     />
                     {/* 自定义下拉列表 */}
-                    {elProjectDropdownOpen && (
+                    {isCloudSession && elProjectDropdownOpen && (
                       <div
                         className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[260px] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
                         style={{ WebkitAppRegion: 'no-drag' as any }}
@@ -8964,13 +9028,17 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                  <p className="mt-2 text-[11px] text-gray-500">选择项目后，只显示该项目下的事件线。</p>
+                  <p className="mt-2 text-[11px] text-gray-500">
+                    {isCloudSession ? '选择项目后，只显示该项目下的事件线。' : '当前是本机模式，因此这里不会显示任何具体事件线。'}
+                  </p>
                 </div>
               </div>
               {filteredEventLines.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
                   <p className="text-[13px] text-gray-400">
-                    {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
+                    {!isCloudSession
+                      ? '当前未连接云端协作，所以事件线视图只保留空白骨架，不显示具体事件线。连接云端后即可查看和编辑。'
+                      : eventLinesLoadError || (eventLineProjectFilterId === '__all__'
                       ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
                       : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
                   </p>
@@ -10688,6 +10756,7 @@ export default function App() {
                         </select>
                       </TaskPropertyRow>
 
+                      {isCloudSession && (
                       <TaskPropertyRow icon={<GitCommit size={16} />} label="事件线">
                         <div className="w-full space-y-1.5">
                           <select
@@ -10742,6 +10811,7 @@ export default function App() {
                           </div>
                         </div>
                       </TaskPropertyRow>
+                      )}
                     </div>
                   </div>
 
@@ -14998,7 +15068,7 @@ export default function App() {
       {
         group: '账户与服务',
         items: [
-          { key: 'overview', label: '账户与 AI', icon: Settings, helper: '登录信息、AI 模型、飞书协作、备份与日志' },
+          { key: 'overview', label: '账户与AI', icon: Settings, helper: '云端接入、AI 模型、飞书协作、备份与日志' },
         ],
       },
       {
@@ -15144,47 +15214,63 @@ export default function App() {
 
     const renderOverviewSection = () => (
       <div className="space-y-6">
+        {(() => {
+          const configuredCloudUrl = settingsState?.cloudApiUrl?.trim() || '';
+          const cloudVendorLabel = inferCloudVendorLabel(configuredCloudUrl);
+          const cloudStatusLabel = isLocalSession ? '未接入云端' : '已接入云端';
+          const cloudStatusTone = isLocalSession
+            ? 'bg-amber-50 text-amber-700 border border-amber-100'
+            : 'bg-emerald-50 text-emerald-700 border border-emerald-100';
+          const cloudStatusDescription = isLocalSession
+            ? (configuredCloudUrl
+              ? '当前仍是本机模式。下面显示的是已配置的云端目标，但这不代表已经接入成功。'
+              : '当前仍是本机模式，且还没有可识别的云端目标。')
+            : '当前账号已经接入云端，任务协作、组织能力与跨设备同步都会优先走云端链路。';
+          const cloudOrgLabel = !isLocalSession
+            ? (orgMembershipState.organizationName || currentSessionUser?.organizationId || '已连接组织')
+            : '接入云端后显示';
+          return (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-[16px] font-bold text-gray-900">{isLocalSession ? '本机模式' : '当前会话'}</h2>
-                <p className="text-[12px] text-gray-500 mt-1">
-                  {isLocalSession ? '当前只是本机会话，还没有连接云端账号。注册或登录后，才能启用跨设备同步、组织协作和邀请加入。' : '普通登录用户也可以调整当前操作者和个人使用偏好。'}
-                </p>
+                <h2 className="text-[16px] font-bold text-gray-900">接入云端</h2>
+                <p className="text-[12px] text-gray-500 mt-1">{cloudStatusDescription}</p>
               </div>
-              <Button primary onClick={() => void handleSaveOperatorSelection()} disabled={!canEditBusinessSettings}>
-                <Settings size={16} /> 保存会话
-              </Button>
+              <span className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-bold ${cloudStatusTone}`}>
+                {cloudStatusLabel}
+              </span>
             </div>
-            <select value={draft.currentOperatorId} onChange={(event) => setDraft((prev) => ({ ...prev, currentOperatorId: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              {operators.map((operator) => (
-                <option key={operator.id} value={operator.id}>
-                  {operator.name} · {operator.role}
-                </option>
-              ))}
-            </select>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">{isLocalSession ? '当前模式' : '登录身份'}</p>
-                <p className="text-[13px] font-bold text-slate-900">{isLocalSession ? '本机模式（未连接云端）' : currentSessionUser?.fullName}</p>
-                <p className="text-[12px] text-slate-600 mt-1">{isLocalSession ? '当前这台电脑可直接使用；注册或登录后再启用云同步与组织协作。' : `${currentSessionUser?.primaryRole} · ${currentSessionUser?.email}`}</p>
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">{isLocalSession ? '已配置云厂商' : '已接入厂商'}</p>
+                <p className="text-[13px] font-bold text-slate-900">{cloudVendorLabel}</p>
+                <p className="text-[12px] text-slate-600 mt-1">
+                  {configuredCloudUrl ? '这表示当前软件准备连接到哪一类云端服务。' : '当前还没有读取到明确的云端地址。'}
+                </p>
               </div>
               <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">系统数据目录</p>
-                <p className="text-[12px] text-slate-600 break-all">{settingsState?.dataDir || '未加载'}</p>
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">当前组织</p>
+                <p className="text-[13px] font-bold text-slate-900">{cloudOrgLabel}</p>
+                <p className="text-[12px] text-slate-600 mt-1">
+                  {isLocalSession ? '仅在真正接入云端后，才会出现组织上下文。' : '当前这套云端会话所属的组织环境。'}
+                </p>
               </div>
+            </div>
+            <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
+              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">云服务器地址</p>
+              <p className="text-[12px] text-slate-700 break-all font-medium">{configuredCloudUrl || '未配置'}</p>
             </div>
           </div>
 
           <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-[16px] font-bold text-gray-900">AI 与云端</h2>
-                <p className="text-[12px] text-gray-500 mt-1">AI Key、模型与云端接入属于高风险项，只有管理员可写。</p>
+                <h2 className="text-[16px] font-bold text-gray-900">接入AI</h2>
+                <p className="text-[12px] text-gray-500 mt-1">这里只处理模型与 API Key，不代表已经接入云端。只有管理员可写。</p>
               </div>
               <Button primary onClick={() => void handleSaveAiSettings()} disabled={!canManageSensitiveSettings}>
-                <Bot size={16} /> 保存 AI 设置
+                <Bot size={16} /> 保存AI接入
               </Button>
             </div>
             <select
@@ -15199,7 +15285,7 @@ export default function App() {
               <option value="doubao">豆包 Seed 2.0 Pro（火山方舟）</option>
             </select>
             <input value={draft.aiModel} onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))} placeholder="模型名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
-            <input type="password" value={draft.apiKey} onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))} placeholder="API Key（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
+            <input type="password" value={draft.apiKey} onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))} placeholder="API Key" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
             <label className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
               <input
                 type="checkbox"
@@ -15209,9 +15295,11 @@ export default function App() {
               />
               记住当前 API Key（仅本机）
             </label>
-            {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
+            {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前账号只能查看 AI 接入状态，不能修改密钥和模型配置。</p>}
           </div>
         </div>
+          );
+        })()}
 
         {isLocalSession ? (
           AccountProfileCard()

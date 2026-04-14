@@ -854,6 +854,63 @@ class EventLineUpdatePayload(BaseModel):
     participantIds: list[str] | None = None
 
 
+class EventLineImportActivityPayload(BaseModel):
+    id: str = Field(min_length=1)
+    sourceType: Literal["task_activity", "meeting", "support_request", "review", "attachment", "manual_note"]
+    sourceId: str = Field(min_length=1)
+    happenedAt: str = Field(min_length=1)
+    actorId: str | None = None
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class EventLineImportPayload(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
+    status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
+    visibilityScope: Literal["private", "project_public"] = "project_public"
+    businessCategory: str | None = None
+    stage: str | None = None
+    summary: str | None = None
+    intent: str | None = None
+    currentBlocker: str | None = None
+    recentDecision: str | None = None
+    nextStep: str | None = None
+    evidenceCount: int = 0
+    ownerId: str | None = None
+    primaryClientId: str | None = None
+    primaryClientName: str | None = None
+    primaryDepartmentId: str | None = None
+    participantIds: list[str] = Field(default_factory=list)
+    closedAt: str | None = None
+    closedByUserId: str | None = None
+    createdAt: str = Field(min_length=1)
+    updatedAt: str = Field(min_length=1)
+    activities: list[EventLineImportActivityPayload] = Field(default_factory=list)
+
+
+class EventLineImportBatchPayload(BaseModel):
+    eventLines: list[EventLineImportPayload] = Field(default_factory=list)
+
+
+class EventLineImportItemResult(BaseModel):
+    id: str
+    name: str
+    status: Literal["imported", "skipped"]
+    reason: str | None = None
+    importedActivityCount: int = 0
+
+
+class EventLineImportResultRecord(BaseModel):
+    requested: int = 0
+    imported: int = 0
+    skipped: int = 0
+    updatedAt: str
+    items: list[EventLineImportItemResult] = Field(default_factory=list)
+
+
 class TaskTagLibraryResponse(BaseModel):
     tags: list[TaskTagRecord]
 

@@ -301,6 +301,73 @@ def test_event_line_clarification_fields_persist_in_cloud_backend():
     assert detail.json()["eventLine"]["evidenceCount"] == 4
 
 
+def test_desktop_event_line_import_preserves_id_and_skips_existing_rows():
+    app = create_app()
+    client = TestClient(app)
+
+    headers = auth_headers(client)
+    payload = {
+        "eventLines": [
+            {
+                "id": "eline_desktop_import_1",
+                "name": "桌面端补迁移事件线",
+                "kind": "project_line",
+                "status": "active",
+                "visibilityScope": "project_public",
+                "businessCategory": "业务扩展",
+                "stage": "资料补齐中",
+                "summary": "先把本地事件线补到云端。",
+                "intent": "保留原始 ID 迁移到云端",
+                "currentBlocker": "还没正式迁移。",
+                "recentDecision": "先做增量导入。",
+                "nextStep": "确认导入成功后再讨论任务规则。",
+                "evidenceCount": 2,
+                "ownerId": "user_qinghua",
+                "primaryClientId": "client_demo_yellow_river",
+                "participantIds": ["user_qinghua", "user_admin"],
+                "createdAt": now_iso(),
+                "updatedAt": now_iso(),
+                "activities": [
+                    {
+                        "id": "ela_desktop_import_1",
+                        "sourceType": "manual_note",
+                        "sourceId": "ela_desktop_import_1",
+                        "happenedAt": now_iso(),
+                        "actorId": "user_qinghua",
+                        "title": "桌面备注",
+                        "summary": "这是从桌面端补迁移过来的备注。",
+                        "metadata": {"source": "desktop"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    imported = client.post("/api/v1/event-lines/import-desktop", json=payload, headers=headers)
+    assert imported.status_code == 200, imported.text
+    imported_payload = imported.json()
+    assert imported_payload["requested"] == 1
+    assert imported_payload["imported"] == 1
+    assert imported_payload["items"][0]["id"] == "eline_desktop_import_1"
+    assert imported_payload["items"][0]["status"] == "imported"
+    assert imported_payload["items"][0]["importedActivityCount"] == 1
+
+    detail = client.get("/api/v1/event-lines/eline_desktop_import_1", headers=headers)
+    assert detail.status_code == 200, detail.text
+    detail_payload = detail.json()
+    assert detail_payload["eventLine"]["id"] == "eline_desktop_import_1"
+    assert detail_payload["eventLine"]["ownerId"] == "user_qinghua"
+    assert detail_payload["eventLine"]["primaryClientId"] == "client_demo_yellow_river"
+    assert any(item["id"] == "ela_desktop_import_1" for item in detail_payload["activities"])
+
+    second_run = client.post("/api/v1/event-lines/import-desktop", json=payload, headers=headers)
+    assert second_run.status_code == 200, second_run.text
+    second_payload = second_run.json()
+    assert second_payload["imported"] == 0
+    assert second_payload["skipped"] == 1
+    assert second_payload["items"][0]["status"] == "skipped"
+
+
 def test_review_dashboard_works_for_task_with_event_line_context():
     app = create_app()
     client = TestClient(app)
