@@ -641,16 +641,25 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS task_lists (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     scope TEXT NOT NULL DEFAULT 'org',
-                    archived_at TEXT
+                    archived_at TEXT,
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS task_tags (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL UNIQUE,
                     scope TEXT NOT NULL DEFAULT 'org',
                     color TEXT NOT NULL DEFAULT '#5B7BFE',
@@ -658,7 +667,14 @@ class Database:
                     created_by TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT '',
-                    archived_at TEXT
+                    archived_at TEXT,
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS task_settings (
@@ -696,12 +712,16 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
                     title TEXT NOT NULL,
                     description TEXT NOT NULL,
                     status TEXT NOT NULL,
                     priority TEXT NOT NULL,
                     list_id TEXT NOT NULL,
+                    creator_id TEXT NOT NULL DEFAULT '',
+                    owner_id TEXT,
                     owner_name TEXT NOT NULL,
+                    progress_status TEXT NOT NULL DEFAULT 'todo',
                     ddl TEXT NOT NULL,
                     due_date TEXT,
                     duration_minutes INTEGER NOT NULL DEFAULT 60,
@@ -718,11 +738,35 @@ class Database:
                     tag_ids_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE RESTRICT
                 );
 
+                CREATE TABLE IF NOT EXISTS task_collaborators (
+                    task_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT NOT NULL,
+                    full_name TEXT NOT NULL DEFAULT '',
+                    email TEXT NOT NULL DEFAULT '',
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    is_owner INTEGER NOT NULL DEFAULT 0,
+                    inbox_status TEXT NOT NULL DEFAULT 'pending',
+                    return_reason TEXT,
+                    handled_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (task_id, user_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_collaborators_user
+                    ON task_collaborators(user_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS event_lines (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'custom',
                     status TEXT NOT NULL DEFAULT 'active',
@@ -742,7 +786,14 @@ class Database:
                     primary_department_name TEXT,
                     participant_ids_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS event_line_activities (
@@ -985,20 +1036,39 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS weekly_reviews (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
                     week_label TEXT NOT NULL,
                     operator_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT NOT NULL DEFAULT '',
+                    work_progress TEXT NOT NULL DEFAULT '',
+                    work_blocker TEXT NOT NULL DEFAULT '',
+                    blocker_type TEXT NOT NULL DEFAULT '',
+                    work_direction TEXT NOT NULL DEFAULT '',
+                    next_week_focus TEXT NOT NULL DEFAULT '',
+                    support_needed TEXT NOT NULL DEFAULT '',
+                    related_plan_ids_json TEXT NOT NULL DEFAULT '[]',
                     summary TEXT NOT NULL,
                     work_free_note TEXT NOT NULL DEFAULT '',
                     personal_growth_note TEXT NOT NULL DEFAULT '',
                     personal_private_note TEXT NOT NULL DEFAULT '',
+                    submitted_at TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT ''
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS weekly_review_task_entries (
                     id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
                     review_id TEXT NOT NULL,
                     task_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT '',
                     week_label TEXT NOT NULL,
                     content_domain TEXT NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
@@ -1010,6 +1080,35 @@ class Database:
                     UNIQUE(review_id, task_id),
                     FOREIGN KEY(review_id) REFERENCES weekly_reviews(id) ON DELETE CASCADE,
                     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_outbox (
+                    id TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    queued_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    UNIQUE(entity_type, entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_sync_outbox_queue
+                    ON sync_outbox(updated_at ASC, queued_at ASC);
+
+                CREATE TABLE IF NOT EXISTS sync_conflicts (
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    cloud_id TEXT,
+                    local_version TEXT NOT NULL DEFAULT '',
+                    cloud_version TEXT NOT NULL DEFAULT '',
+                    local_payload_json TEXT NOT NULL DEFAULT '{}',
+                    cloud_payload_json TEXT NOT NULL DEFAULT '{}',
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, entity_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS task_smart_brief_action_adoptions (
@@ -1463,10 +1562,30 @@ class Database:
             self._ensure_column("task_tags", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "updated_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "archived_at", "TEXT")
+            self._ensure_column("task_tags", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("task_tags", "cloud_id", "TEXT")
+            self._ensure_column("task_tags", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
+            self._ensure_column("task_lists", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("task_lists", "cloud_id", "TEXT")
+            self._ensure_column("task_lists", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "creator_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "owner_id", "TEXT")
+            self._ensure_column("tasks", "progress_status", "TEXT NOT NULL DEFAULT 'todo'")
             self._ensure_column("tasks", "client_id", "TEXT")
             self._ensure_column("project_modules", "template_tasks_json", "TEXT")
             self._ensure_column("tasks", "project_module_id", "TEXT")
@@ -1484,13 +1603,45 @@ class Database:
             self._ensure_column("tasks", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column("tasks", "cloud_id", "TEXT")
             self._ensure_column("tasks", "cloud_payload_json", "TEXT")
+            self._ensure_column("tasks", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_collaborators (
+                    task_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT NOT NULL,
+                    full_name TEXT NOT NULL DEFAULT '',
+                    email TEXT NOT NULL DEFAULT '',
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    is_owner INTEGER NOT NULL DEFAULT 0,
+                    inbox_status TEXT NOT NULL DEFAULT 'pending',
+                    return_reason TEXT,
+                    handled_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (task_id, user_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                )
+                """
+            )
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("event_lines", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
             self._ensure_column("event_lines", "closed_at", "TEXT")
             self._ensure_column("event_lines", "closed_by_user_id", "TEXT")
+            self._ensure_column("event_lines", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("event_lines", "cloud_id", "TEXT")
+            self._ensure_column("event_lines", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_lines", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_lines", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_lines", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_lines", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_line_activities", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_line_activities", "is_key", "INTEGER NOT NULL DEFAULT 0")
             # Backfill is_key: key events = task created, manual note, attachment
@@ -1510,11 +1661,69 @@ class Database:
             self._ensure_column("client_dna_documents", "source_kind", "TEXT NOT NULL DEFAULT 'manual'")
             self._ensure_column("client_dna_documents", "missing_info_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("weekly_reviews", "operator_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "user_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "work_progress", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "work_blocker", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "blocker_type", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "work_direction", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "next_week_focus", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "support_needed", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "related_plan_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("weekly_reviews", "updated_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_reviews", "work_free_note", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_reviews", "personal_growth_note", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_reviews", "personal_private_note", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "submitted_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("weekly_reviews", "cloud_id", "TEXT")
+            self._ensure_column("weekly_reviews", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_reviews", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_review_task_entries", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("weekly_review_task_entries", "user_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_review_task_entries", "structured_note_json", "TEXT NOT NULL DEFAULT '{}'")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sync_outbox (
+                    id TEXT PRIMARY KEY,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    queued_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    UNIQUE(entity_type, entity_id)
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sync_conflicts (
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    cloud_id TEXT,
+                    local_version TEXT NOT NULL DEFAULT '',
+                    cloud_version TEXT NOT NULL DEFAULT '',
+                    local_payload_json TEXT NOT NULL DEFAULT '{}',
+                    cloud_payload_json TEXT NOT NULL DEFAULT '{}',
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, entity_id)
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sync_outbox_queue
+                ON sync_outbox(updated_at ASC, queued_at ASC)
+                """
+            )
             self._ensure_column("growth_evidence_records", "contribution_tags_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("growth_evidence_records", "org_contribution_score", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("growth_evidence_records", "suggested_premium_rate", "REAL NOT NULL DEFAULT 0")

@@ -460,6 +460,7 @@ type TaskEditorState = {
   priority: 'low' | 'normal' | 'high';
   priorityTouched: boolean;
   priorityReason: string;
+  ownerId: string;
   startDate: string;
   startTime: string;
   dueDate: string;
@@ -4323,6 +4324,12 @@ export default function App() {
     return response;
   }
 
+  function resetCloudBoundTaskViews() {
+    setTasks([]);
+    setReviewDashboard(null);
+    setReviewHistory([]);
+  }
+
   async function loadAgentWorklogBlock(monthLabel: string) {
     const response = await getAgentWorklogs(monthLabel);
     setAgentWorklogs(response.worklogs);
@@ -5436,6 +5443,7 @@ export default function App() {
       workspace: typeof workspace;
     };
     const isCloudSession = authState.sessionMode === 'cloud' || !isLocalDeviceSessionUser(currentSessionUser);
+    const isLocalSession = !isCloudSession;
     const buildDefaultCollaborators = (): MentionCandidate[] => {
       if (!effectiveTaskSettings.autoAssignSelf || !currentSessionUser) return [];
       return [{
@@ -5471,6 +5479,7 @@ export default function App() {
       priority: effectiveTaskSettings.defaultPriority,
       priorityTouched: false,
       priorityReason: '系统会根据任务内容自动识别优先级，你可以手动调整。',
+      ownerId: '',
       startDate: '',
       startTime: '',
       dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset),
@@ -5815,11 +5824,6 @@ export default function App() {
     }, [clearProjectStructureUnavailable, markProjectStructureUnavailable, projectStructureCache, taskClientDnaCache, workspace?.client.id, workspace?.projectFlows, workspace?.projectModules]);
 
     const loadEventLines = useCallback(async () => {
-      if (!isCloudSession) {
-        setEventLines([]);
-        setEventLinesLoadError(null);
-        return;
-      }
       try {
         const records = await getEventLines();
         setEventLines(records);
@@ -5828,24 +5832,33 @@ export default function App() {
         console.warn('[event-lines] load failed', error);
         setEventLinesLoadError(error instanceof Error ? error.message : '事件线加载失败');
       }
-    }, [isCloudSession]);
+    }, []);
 
     useEffect(() => {
-      if (!isCloudSession) return;
       void loadEventLines();
-    }, [isCloudSession, loadEventLines]);
+    }, [loadEventLines]);
 
     useEffect(() => {
-      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines' || !isCloudSession) return;
+      if (!authState.authenticated || authState.sessionMode !== 'cloud' || isLocalDeviceSessionUser(currentSessionUser)) {
+        setEventLines([]);
+        setEventLinesLoadError(null);
+        setActiveEventLine(null);
+        setReportEventLineId(null);
+        return;
+      }
       void loadEventLines();
-    }, [activeTab, isCloudSession, loadEventLines, taskViewMode]);
+    }, [
+      authState.authenticated,
+      authState.sessionMode,
+      currentSessionUser?.id,
+      currentSessionUser?.organizationId,
+      loadEventLines,
+    ]);
 
     useEffect(() => {
-      if (isCloudSession) return;
-      setEventLines([]);
-      setEventLinesLoadError(null);
-      setEventLineProjectFilterId('__all__');
-    }, [isCloudSession]);
+      if (activeTab !== 'tasks' || taskViewMode !== 'event_lines') return;
+      void loadEventLines();
+    }, [activeTab, loadEventLines, taskViewMode]);
 
     // 自定义下拉菜单：点击外部关闭
     useEffect(() => {
@@ -6243,8 +6256,12 @@ export default function App() {
       }
     }, [activeReviewGroups, expandedReviewGroupId]);
 
-    const ownerCollaborator = editingTask.collaborators[0];
-    const selectedTaskCollaborators = ownerCollaborator ? editingTask.collaborators.slice(1) : editingTask.collaborators;
+    const ownerCollaborator = editingTask.ownerId
+      ? editingTask.collaborators.find((item) => item.id === editingTask.ownerId) || null
+      : null;
+    const selectedTaskCollaborators = ownerCollaborator
+      ? editingTask.collaborators.filter((item) => item.id !== ownerCollaborator.id)
+      : editingTask.collaborators;
     const collaboratorNames = editingTask.collaborators.map((item) => item.fullName);
     const selectedTaskTags = taskTags.filter((tag) => editingTask.tagIds.includes(tag.id));
     const taskClientOptions = clients
@@ -6476,22 +6493,20 @@ export default function App() {
     const selectedTaskCollaboratorIds = new Set(selectedTaskCollaborators.map((item) => item.id));
     const toggleTaskCollaborator = (candidate: MentionCandidate) => {
       setEditingTask((prev) => {
-        const owner = prev.collaborators[0] || null;
-        const others = owner ? prev.collaborators.slice(1) : [...prev.collaborators];
-        const alreadySelected = others.some((item) => item.id === candidate.id);
-        const nextOthers = alreadySelected
-          ? others.filter((item) => item.id !== candidate.id)
-          : [...others, candidate];
+        const alreadySelected = prev.collaborators.some((item) => item.id === candidate.id);
+        const nextCollaborators = alreadySelected
+          ? prev.collaborators.filter((item) => item.id !== candidate.id)
+          : [...prev.collaborators, candidate];
         return {
           ...prev,
-          collaborators: owner ? [owner, ...nextOthers] : nextOthers,
+          collaborators: nextCollaborators,
         };
       });
     };
     const removeTaskOwner = () => {
       setEditingTask((prev) => ({
         ...prev,
-        collaborators: prev.collaborators.slice(1),
+        ownerId: '',
       }));
     };
     const duePickerSummaryLabel = formatTaskDuePickerSummaryLabel(
@@ -6595,10 +6610,6 @@ export default function App() {
     };
 
     const openEventLineDetail = async (eventLineId: string, options?: { clarify?: boolean }) => {
-      if (!isCloudSession) {
-        flash('info', '当前是本机模式。连接云端协作后才能查看事件线。');
-        return null;
-      }
       setIsEventLineBusy(true);
       try {
         const detail = await getEventLine(eventLineId);
@@ -7115,8 +7126,8 @@ export default function App() {
         }
         return resolveDefaultListId('org') || editingTask.listId;
       })();
-      const ownerId = ownerCollaborator?.id || currentSessionUser?.id || null;
-      const ownerName = ownerCollaborator?.fullName || currentOperatorName;
+      const ownerId = editingTask.ownerId || null;
+      const ownerName = ownerCollaborator?.fullName || '';
       const payload: TaskMutationPayload = {
         scopeMode: editingTask.scopeMode,
         title: editingTask.title.trim(),
@@ -7459,8 +7470,8 @@ export default function App() {
           clientId: primaryClientId,
           eventLineId: primaryEventLineId,
           ddl: '待确认',
-          ownerId: currentSessionUser?.id || null,
-          ownerName: currentSessionUser?.fullName || '',
+          ownerId: null,
+          ownerName: '',
           collaboratorIds: [],
           tagIds: [],
           sourceType: 'review_action',
@@ -7572,6 +7583,7 @@ export default function App() {
         priority: effectiveTaskSettings.defaultPriority,
         priorityTouched: false,
         priorityReason: '系统会根据任务内容自动识别优先级，你可以手动调整。',
+        ownerId: '',
         startDate: '',
         startTime: '',
         dueDate: nextDueParts.date,
@@ -7664,6 +7676,7 @@ export default function App() {
         priority: task.priority,
         priorityTouched: true,
         priorityReason: '保留当前优先级，你可以手动调整。',
+        ownerId: task.ownerId || '',
         startDate: inferredStartDate,
         startTime: inferredStartTime,
         dueDate: inferredDueDate,
@@ -7685,13 +7698,25 @@ export default function App() {
         projectFlowReason: task.projectFlowName ? `当前任务已挂到流程"${task.projectFlowName}"。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
         ddl: formatTaskTimelineLabel(task),
         tagIds: [],
-        collaborators: task.collaborators.map((item) => ({
-          id: item.userId,
-          fullName: item.fullName,
-          email: item.email,
-          primaryRole: currentSessionUser.primaryRole,
-          isSelf: item.userId === currentSessionUser.id,
-        })),
+        collaborators: (() => {
+          const nextCollaborators = task.collaborators.map((item) => ({
+            id: item.userId,
+            fullName: item.fullName,
+            email: item.email,
+            primaryRole: currentSessionUser.primaryRole,
+            isSelf: item.userId === currentSessionUser.id,
+          }));
+          if (task.ownerId && !nextCollaborators.some((item) => item.id === task.ownerId)) {
+            nextCollaborators.unshift({
+              id: task.ownerId,
+              fullName: task.ownerName || '未指定',
+              email: '',
+              primaryRole: currentSessionUser.primaryRole,
+              isSelf: task.ownerId === currentSessionUser.id,
+            });
+          }
+          return nextCollaborators;
+        })(),
       });
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
@@ -8322,6 +8347,14 @@ export default function App() {
         <div ref={taskViewportRef} className={`flex-1 min-w-0 overflow-y-auto scrollbar-hide ${isTaskInteractionBlocked ? 'pointer-events-none' : ''}`}>
           {taskViewMode === 'list' && (
             <div className="max-w-3xl">
+              {isLocalSession && baseListTasks.length === 0 && (
+                <div className="mb-4 rounded-2xl border border-dashed border-slate-200 bg-white/90 px-5 py-5">
+                  <p className="text-[13px] font-bold text-slate-800">当前是本机模式</p>
+                  <p className="mt-2 text-[12px] leading-6 text-slate-500">
+                    这里只显示本机创建的任务，不显示顾源源等云端账号的协作任务。连接云端后，才会恢复组织共享的任务与协作数据。
+                  </p>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 cursor-pointer select-none group" onClick={() => setIsTaskGroupOpen(!isTaskGroupOpen)}>
@@ -8433,8 +8466,12 @@ export default function App() {
                         <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-[#EEF2FF] flex items-center justify-center">
                           <Plus className="w-5 h-5 text-[#5B7BFE]" />
                         </div>
-                        <p className="text-[14px] font-bold text-gray-600 mb-1">还没有任务</p>
-                        <p className="text-gray-400 mb-4">创建第一条任务，系统会自动追踪它的事件线和推进过程。</p>
+                        <p className="text-[14px] font-bold text-gray-600 mb-1">{isLocalSession ? '本机模式下还没有任务' : '还没有任务'}</p>
+                        <p className="text-gray-400 mb-4">
+                          {isLocalSession
+                            ? '当前不会显示已登录账号的云端任务；如果只是本机使用，可以先创建本地任务。'
+                            : '创建第一条任务，系统会自动追踪它的事件线和推进过程。'}
+                        </p>
                         <button
                           type="button"
                           onClick={() => { requestCreateTaskEditor(); }}
@@ -8591,7 +8628,7 @@ export default function App() {
                               {task.projectContext.clientName}
                             </span>
                           )}
-                          {isCloudSession && task.eventLineName && task.eventLineId && (
+                          {task.eventLineName && task.eventLineId && (
                             <button
                               type="button"
                               className="flex items-center gap-1 px-2 py-1 rounded-md bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-colors cursor-pointer"
@@ -8911,8 +8948,12 @@ export default function App() {
                       <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
                         <Inbox className="w-5 h-5 text-emerald-500" />
                       </div>
-                      <p className="text-[14px] font-bold text-gray-600 mb-1">收件箱已清空</p>
-                      <p className="text-[13px] text-gray-400">待你确认或等待对方确认的协作任务会出现在这里。</p>
+                      <p className="text-[14px] font-bold text-gray-600 mb-1">{isLocalSession ? '当前是本机模式' : '收件箱已清空'}</p>
+                      <p className="text-[13px] text-gray-400">
+                        {isLocalSession
+                          ? '收件箱只显示云端协作任务。退出登录后，这里不会再显示任何账号的协作数据。'
+                          : '待你确认或等待对方确认的协作任务会出现在这里。'}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -8922,28 +8963,37 @@ export default function App() {
 
           {taskViewMode === 'calendar' && (
             <div className="space-y-3">
-              <TaskCalendarView
-                tasks={calendarTasks}
-                currentUserId={currentSessionUser?.id || null}
-                calendarDisplayMode={taskCalendarDisplayMode}
-                onSetCalendarDisplayMode={setTaskCalendarDisplayMode}
-                calendarDate={taskCalendarDate}
-                selectedDate={taskSelectedDate}
-                onSelectDate={handleTaskCalendarDateSelect}
-                onShiftMonth={handleCalendarShift}
-                onAlignCalendarDate={handleAlignTaskCalendarDate}
-                onGoToToday={handleCalendarToday}
-                onOpenTaskEditor={openTaskEditorFromCalendar}
-                onCalendarNotice={flash}
-                onToggleTaskStatus={toggleTaskStatus}
-                onRescheduleTask={handleRescheduleTask}
-                onUpdateTaskDuration={handleUpdateTaskDuration}
-                onApproveTaskReview={handleApproveTaskReview}
-                onReturnTaskReview={handleReturnTaskReview}
-                isTaskOverdue={isTaskOverdue}
-                showCollaborativeTasks={hidePersonalTasks}
-                onToggleCollaborativeTasks={() => setHidePersonalTasks((prev) => !prev)}
-              />
+              {isLocalSession && calendarTasks.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center">
+                  <p className="text-[14px] font-bold text-slate-700">当前是本机模式</p>
+                  <p className="mt-2 text-[13px] leading-6 text-slate-500">
+                    月历不会显示已登录账号的云端任务。连接云端后，你才能看到组织共享日程；如果只是本机使用，先创建本地任务即可。
+                  </p>
+                </div>
+              ) : (
+                <TaskCalendarView
+                  tasks={calendarTasks}
+                  currentUserId={currentSessionUser?.id || null}
+                  calendarDisplayMode={taskCalendarDisplayMode}
+                  onSetCalendarDisplayMode={setTaskCalendarDisplayMode}
+                  calendarDate={taskCalendarDate}
+                  selectedDate={taskSelectedDate}
+                  onSelectDate={handleTaskCalendarDateSelect}
+                  onShiftMonth={handleCalendarShift}
+                  onAlignCalendarDate={handleAlignTaskCalendarDate}
+                  onGoToToday={handleCalendarToday}
+                  onOpenTaskEditor={openTaskEditorFromCalendar}
+                  onCalendarNotice={flash}
+                  onToggleTaskStatus={toggleTaskStatus}
+                  onRescheduleTask={handleRescheduleTask}
+                  onUpdateTaskDuration={handleUpdateTaskDuration}
+                  onApproveTaskReview={handleApproveTaskReview}
+                  onReturnTaskReview={handleReturnTaskReview}
+                  isTaskOverdue={isTaskOverdue}
+                  showCollaborativeTasks={hidePersonalTasks}
+                  onToggleCollaborativeTasks={() => setHidePersonalTasks((prev) => !prev)}
+                />
+              )}
             </div>
           )}
 
@@ -8964,13 +9014,20 @@ export default function App() {
 
           {taskViewMode === 'event_lines' && (
             <div className="max-w-4xl mx-auto pb-10">
+              {isLocalSession ? (
+                <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
+                  <p className="text-[14px] font-bold text-gray-700">当前未连接云端协作</p>
+                  <p className="mt-2 text-[13px] leading-6 text-gray-400">
+                    事件线按组织协作维度管理。退出登录后，这里只保留空白骨架，不显示任何云端账号的事件线内容。
+                  </p>
+                </div>
+              ) : (
+                <>
               <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
                 <div>
                   <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                   <p className="text-[12px] text-gray-500 mt-1">
-                    {isCloudSession
-                      ? '按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。'
-                      : '事件线需要连接云端协作后才会显示具体内容。'}
+                    按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。
                   </p>
                 </div>
                 <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' as any }}>
@@ -8980,16 +9037,12 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (!isCloudSession) return;
                         setElProjectDropdownOpen((v) => !v);
                       }}
-                      disabled={!isCloudSession}
                       className="w-full appearance-none rounded-2xl border border-gray-200 bg-white/90 py-3 pl-4 pr-10 text-left text-[13px] font-semibold text-gray-700 shadow-sm outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/10 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
                       style={{ WebkitAppRegion: 'no-drag' as any }}
                     >
-                      {!isCloudSession
-                        ? '连接云端后可筛选项目'
-                        : eventLineProjectFilterId === '__all__'
+                      {eventLineProjectFilterId === '__all__'
                         ? `全部项目（${eventLineProjectOptions.length}）`
                         : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? '未知项目')}
                     </button>
@@ -8997,7 +9050,7 @@ export default function App() {
                       className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 transition-transform ${elProjectDropdownOpen ? 'rotate-180' : ''}`}
                     />
                     {/* 自定义下拉列表 */}
-                    {isCloudSession && elProjectDropdownOpen && (
+                    {elProjectDropdownOpen && (
                       <div
                         className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[260px] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
                         style={{ WebkitAppRegion: 'no-drag' as any }}
@@ -9029,16 +9082,14 @@ export default function App() {
                     )}
                   </div>
                   <p className="mt-2 text-[11px] text-gray-500">
-                    {isCloudSession ? '选择项目后，只显示该项目下的事件线。' : '当前是本机模式，因此这里不会显示任何具体事件线。'}
+                    选择项目后，只显示该项目下的事件线。
                   </p>
                 </div>
               </div>
               {filteredEventLines.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
                   <p className="text-[13px] text-gray-400">
-                    {!isCloudSession
-                      ? '当前未连接云端协作，所以事件线视图只保留空白骨架，不显示具体事件线。连接云端后即可查看和编辑。'
-                      : eventLinesLoadError || (eventLineProjectFilterId === '__all__'
+                    {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
                       ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
                       : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
                   </p>
@@ -9115,6 +9166,8 @@ export default function App() {
                   );
                 })}
               </div>
+                </>
+              )}
             </div>
           )}
 
@@ -10540,8 +10593,14 @@ export default function App() {
                                   className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
                                   onClick={() => {
                                     setEditingTask((prev) => {
-                                      const nextCollaborators = prev.collaborators.filter((item) => item.id !== candidate.id);
-                                      return { ...prev, collaborators: [candidate, ...nextCollaborators] };
+                                      const nextCollaborators = prev.collaborators.some((item) => item.id === candidate.id)
+                                        ? prev.collaborators
+                                        : [candidate, ...prev.collaborators];
+                                      return {
+                                        ...prev,
+                                        ownerId: candidate.id,
+                                        collaborators: nextCollaborators,
+                                      };
                                     });
                                     setOwnerQuery('');
                                     setIsOwnerMenuOpen(false);
@@ -10550,7 +10609,7 @@ export default function App() {
                                   <span>{candidate.fullName}{candidate.isSelf ? '（自己）' : ''}</span>
                                   <div
                                     className={`ml-3 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border text-[12px] font-bold transition ${
-                                      ownerCollaborator?.id === candidate.id
+                                      editingTask.ownerId === candidate.id
                                         ? 'border-[#5B7BFE] bg-[#5B7BFE] text-white'
                                         : 'border-gray-300 bg-white text-transparent'
                                     }`}
@@ -10930,7 +10989,8 @@ export default function App() {
                                           dueDate: t.dueDate,
                                           durationMinutes: t.durationMinutes,
                                           priority: t.priority as 'normal' | 'high',
-                                          ownerName: assignee || editingTask.ownerName || '',
+                                          ownerId: null,
+                                          ownerName: '',
                                           clientId: editingTask.clientId,
                                           eventLineId: editingTask.eventLineId,
                                           projectModuleId: editingTask.projectModuleId,
@@ -13459,8 +13519,8 @@ export default function App() {
                                         listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
                                         dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
                                         ddl: '本周',
-                                        ownerId: currentSessionUser?.id,
-                                        ownerName: currentOperatorName,
+                                        ownerId: null,
+                                        ownerName: '',
                                         collaboratorIds: currentSessionUser ? [currentSessionUser.id] : [],
                                         tagIds: [],
                                         tags: ['AI 转任务', currentClient?.name || '客户'],
@@ -15941,7 +16001,13 @@ export default function App() {
           ) : (
             <Button onClick={() => {
               if (!window.confirm('确定要退出登录吗？')) return;
-              void logout().then(async (response) => { setAuthState(response); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
+              void logout()
+                .then(async (response) => {
+                  resetCloudBoundTaskViews();
+                  setAuthState(response);
+                  await loadAll();
+                })
+                .catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
             }}>
               <ShieldAlert size={16} /> 退出登录
             </Button>
@@ -16264,6 +16330,7 @@ export default function App() {
                     if (!window.confirm('确定要退出登录吗？')) return;
                     void logout()
                       .then(async (response) => {
+                        resetCloudBoundTaskViews();
                         setAuthState(response);
                         await loadAll();
                       })

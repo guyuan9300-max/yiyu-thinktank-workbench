@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import sqlite3
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -648,6 +650,11 @@ class AppState:
 
 
 _runtime_state: AppState | None = None
+_local_cloud_sync_runtime = {
+    "lock": threading.Lock(),
+    "running": False,
+    "last_started_at": 0.0,
+}
 
 
 def _require_runtime_state() -> AppState:
@@ -2561,6 +2568,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return state.volatile_cloud_refresh_token
 
     def set_cloud_session(token: str | None, user: SessionUserRecord | None, *, persist: bool = True) -> None:
+        _clear_cloud_task_board_cache()
         state.cloud_session_persistent = persist
         session_user_json = to_json(user.model_dump()) if user else ""
         if persist:
@@ -2592,6 +2600,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.cloud_session_persistent = False
 
     def get_cached_session_user() -> SessionUserRecord | None:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return None
         raw = state.db.get_setting("cloud_session_user", "")
         if not raw:
             raw = state.volatile_cloud_session_user_json
@@ -2602,6 +2612,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return SessionUserRecord(**parsed)
         except Exception:
             return None
+
+    def has_active_cloud_session() -> bool:
+        session_user = get_cached_session_user()
+        if not session_user:
+            return False
+        if session_user.id == "local-device-user" or session_user.organizationId in {"", "local-device"}:
+            return False
+        return bool(get_cloud_token() or get_cloud_refresh_token())
 
     def current_session_is_admin() -> bool:
         session_user = get_cached_session_user()
@@ -6009,7 +6027,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
 
-    _cloud_task_board_cache: dict[str, object] = {"data": None, "ts": 0.0}
+    _cloud_task_board_cache: dict[str, object] = {
+        "data": None,
+        "ts": 0.0,
+        "user_id": "",
+        "organization_id": "",
+    }
+
+    def _clear_cloud_task_board_cache() -> None:
+        _cloud_task_board_cache["data"] = None
+        _cloud_task_board_cache["ts"] = 0.0
+        _cloud_task_board_cache["user_id"] = ""
+        _cloud_task_board_cache["organization_id"] = ""
 
     def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
         """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
@@ -6051,7 +6080,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def cloud_task_board() -> TaskBoardResponse:
         import time
         now = time.time()
-        if _cloud_task_board_cache["data"] is not None and now - _cloud_task_board_cache["ts"] < 30:
+        session_user = get_cached_session_user()
+        cache_user_id = str(_cloud_task_board_cache.get("user_id") or "")
+        cache_org_id = str(_cloud_task_board_cache.get("organization_id") or "")
+        if (
+            _cloud_task_board_cache["data"] is not None
+            and now - _cloud_task_board_cache["ts"] < 30
+            and session_user is not None
+            and cache_user_id == session_user.id
+            and cache_org_id == session_user.organizationId
+        ):
             return _merge_local_tasks_into(_cloud_task_board_cache["data"])  # type: ignore[arg-type]
         payload = cloud_request("GET", "/api/v1/tasks")
         if not isinstance(payload, dict):
@@ -6077,6 +6115,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         result = _merge_local_tasks_into(result)
         _cloud_task_board_cache["data"] = result
         _cloud_task_board_cache["ts"] = now
+        _cloud_task_board_cache["user_id"] = session_user.id if session_user else ""
+        _cloud_task_board_cache["organization_id"] = session_user.organizationId if session_user else ""
         return result
 
     def fetch_cloud_task_by_id(task_id: str) -> TaskRecord:
@@ -6087,23 +6127,71 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return task
 
     def task_lists() -> list[TaskListRecord]:
-        return [
-            _local_task_list_record(row)
-            for row in state.db.fetchall(
-                """
-                SELECT *
-                FROM task_lists
-                ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
-                         CASE WHEN is_default = 1 THEN 0 ELSE 1 END,
-                         sort_order ASC,
-                         name COLLATE NOCASE ASC
-                """
-            )
-        ]
+        scope_where, scope_params = _local_scope_where("organization_id")
+        rows = state.db.fetchall(
+            f"""
+            SELECT *
+            FROM task_lists
+            WHERE {scope_where}
+            ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
+                     CASE WHEN is_default = 1 THEN 0 ELSE 1 END,
+                     sort_order ASC,
+                     name COLLATE NOCASE ASC
+            """,
+            scope_params,
+        )
+        if not has_active_cloud_session():
+            task_scope_where, task_scope_params = _local_scope_where("t.organization_id")
+            visible_list_ids = {
+                str(item["list_id"])
+                for item in state.db.fetchall(
+                    f"""
+                    SELECT DISTINCT t.list_id
+                    FROM tasks t
+                    WHERE {task_scope_where}
+                    """,
+                    task_scope_params,
+                )
+                if item["list_id"]
+            }
+            if visible_list_ids:
+                default_list_ids = {
+                    str(row["id"])
+                    for row in rows
+                    if int(row["is_default"] or 0) == 1 and str(row["scope"] or "org") == "org"
+                }
+                allowed_ids = visible_list_ids | default_list_ids
+                rows = [row for row in rows if str(row["id"]) in allowed_ids]
+            else:
+                fallback_row = next(
+                    (
+                        row
+                        for row in rows
+                        if int(row["is_default"] or 0) == 1 and str(row["scope"] or "org") == "org"
+                    ),
+                    None,
+                )
+                if fallback_row is None:
+                    fallback_row = next((row for row in rows if int(row["is_default"] or 0) == 1), None)
+                rows = [fallback_row] if fallback_row is not None else []
+        return [_local_task_list_record(row) for row in rows]
 
     def task_tags() -> list[TaskTagRecord]:
         operator_row = current_operator_row()
-        return _visible_local_task_tags(state.db, str(operator_row["id"]))
+        scope_where, scope_params = _local_scope_where("organization_id")
+        rows = state.db.fetchall(
+            f"""
+            SELECT *
+            FROM task_tags
+            WHERE {scope_where}
+              AND (scope = 'org' OR owner_operator_id = ?)
+            ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
+                     CASE scope WHEN 'org' THEN 0 ELSE 1 END,
+                     name COLLATE NOCASE ASC
+            """,
+            (*scope_params, str(operator_row["id"])),
+        )
+        return [_local_task_tag_record(row) for row in rows]
 
     def build_task(row) -> TaskRecord:
         note_row = state.db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (str(row["id"]),))
@@ -6149,11 +6237,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id=client_id,
             event_line_id=event_line_id,
         )
+        collaborator_rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM task_collaborators
+            WHERE task_id = ?
+            ORDER BY is_owner DESC, order_index ASC, updated_at ASC
+            """,
+            (str(row["id"]),),
+        )
+        collaborators = [
+            TaskCollaboratorRecord(
+                userId=str(item["user_id"]),
+                fullName=str(item["full_name"] or ""),
+                email=str(item["email"] or ""),
+                orderIndex=int(item["order_index"] or index),
+                isOwner=bool(int(item["is_owner"] or 0)),
+                inboxStatus=str(item["inbox_status"] or "pending"),  # type: ignore[arg-type]
+                returnReason=str(item["return_reason"]) if item["return_reason"] else None,
+                handledAt=str(item["handled_at"]) if item["handled_at"] else None,
+            )
+            for index, item in enumerate(collaborator_rows)
+        ]
+        viewer_user = get_cached_session_user()
+        viewer_status = None
+        if viewer_user:
+            viewer_status = next(
+                (item.inboxStatus for item in collaborators if item.userId == viewer_user.id),
+                None,
+            )
+        progress_status = str(row["progress_status"] or row["status"] or "todo")
+        task_status = "inbox" if viewer_status == "pending" else progress_status
+        local_tag_rows = _local_tag_rows_by_ids(state.db, _parse_json_list(row["tag_ids_json"]))
         return TaskRecord(
             id=str(row["id"]),
             title=str(row["title"]),
             desc=str(row["description"]),
-            status=str(row["status"]),  # type: ignore[arg-type]
+            status=task_status,  # type: ignore[arg-type]
+            creatorId=str(row["creator_id"]) if "creator_id" in row.keys() and row["creator_id"] else None,
             priority=str(row["priority"]),  # type: ignore[arg-type]
             listId=str(row["list_id"]),
             listName=str(row["list_name"]),
@@ -6171,6 +6292,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             projectModuleName=project_module.name if project_module else None,
             projectFlowId=project_flow.id if project_flow else project_flow_id,
             projectFlowName=project_flow.name if project_flow else None,
+            ownerId=str(row["owner_id"]) if "owner_id" in row.keys() and row["owner_id"] else None,
             ownerName=str(row["owner_name"]),
             sourceType=str(row["source_type"]),
             sourceId=str(row["source_id"]) if row["source_id"] else None,
@@ -6179,9 +6301,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             nextAction=next_action,
             recentDecision=recent_decision,
             evidenceCount=evidence_count,
-            tags=[],
+            tags=[_local_task_tag_record(item) for item in local_tag_rows],
             note=str(note_row["note"]) if note_row else None,
             attachments=attachments,
+            collaborators=collaborators,
+            collaborationSummary={
+                "total": len(collaborators),
+                "pending": sum(1 for item in collaborators if item.inboxStatus == "pending"),
+                "accepted": sum(1 for item in collaborators if item.inboxStatus == "accepted"),
+                "returned": sum(1 for item in collaborators if item.inboxStatus == "returned"),
+            },
+            viewerInboxStatus=viewer_status,
             projectContext=project_context,
             memoryHints=memory_hints,
             backgroundReadiness=background_readiness,
@@ -6363,6 +6493,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             clarificationNeeds=memory_response.clarificationNeeds,
         )
 
+    def _build_local_event_line_report_snapshot(event_line_id: str) -> dict[str, object]:
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        activity_rows = state.db.fetchall(
+            "SELECT * FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at ASC, created_at ASC",
+            (event_line_id,),
+        )
+        attachment_rows = state.db.fetchall(
+            """
+            SELECT id, task_id, title, kind, size_bytes, created_at
+            FROM task_attachments
+            WHERE event_line_id = ?
+            ORDER BY created_at ASC
+            """,
+            (event_line_id,),
+        )
+        participant_names: list[str] = []
+        for uid in [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]:
+            user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
+            if user_row and user_row["full_name"]:
+                participant_names.append(str(user_row["full_name"]))
+        return {
+            "eventLine": build_event_line(row).model_dump(),
+            "activities": [build_event_line_activity(item).model_dump() for item in activity_rows],
+            "tasks": [item.model_dump() for item in fetch_tasks("t.event_line_id = ?", (event_line_id,))],
+            "attachments": [
+                {
+                    "id": str(att["id"]),
+                    "taskId": str(att["task_id"] or ""),
+                    "title": str(att["title"] or ""),
+                    "kind": str(att["kind"] or ""),
+                    "mimeType": None,
+                    "sizeBytes": int(att["size_bytes"] or 0),
+                    "downloadUrl": f"/api/public/task-attachments/{att['id']}",
+                    "actorName": None,
+                    "createdAt": str(att["created_at"] or now_iso()),
+                }
+                for att in attachment_rows
+            ],
+            "participantNames": participant_names,
+            "snapshotAt": now_iso(),
+        }
+
     def _cloud_event_line_unavailable_status(
         detail: str,
         *,
@@ -6507,16 +6681,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def fetch_tasks(where_clause: str = "", params: tuple = ()) -> list[TaskRecord]:
+        scope_where, scope_params = _local_scope_where("t.organization_id")
+        visibility_where, visibility_params = _local_task_visibility_where("t")
         query = """
             SELECT t.*, l.name AS list_name, l.color AS list_color, c.name AS client_name
             FROM tasks t
             JOIN task_lists l ON l.id = t.list_id
             LEFT JOIN clients c ON c.id = t.client_id
         """
+        clauses = [scope_where, visibility_where]
         if where_clause:
-            query += f" WHERE {where_clause}"
-        query += " ORDER BY CASE t.status WHEN 'inbox' THEN 0 WHEN 'doing' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, t.updated_at DESC"
-        return [build_task(row) for row in state.db.fetchall(query, params)]
+            clauses.append(where_clause)
+        query += f" WHERE {' AND '.join(clauses)}"
+        query += " ORDER BY CASE COALESCE(t.progress_status, t.status) WHEN 'inbox' THEN 0 WHEN 'doing' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, t.updated_at DESC"
+        return [build_task(row) for row in state.db.fetchall(query, (*scope_params, *visibility_params, *params))]
 
     def build_growth_workbench_snapshot(week_label: str | None = None) -> GrowthWorkbenchSnapshotRecord:
         phase_blueprints = [
@@ -12676,76 +12854,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             event_line_context=event_line_context,
             attachment_count=0,
         )
-        if get_cloud_token():
-            session_user = get_cached_session_user()
-            collaborator_ids = payload.collaboratorIds or ([session_user.id] if session_user else [])
-            owner_id = payload.ownerId or (collaborator_ids[0] if collaborator_ids else None)
-            response = cloud_request(
-                "POST",
-                "/api/v1/tasks",
-                json_body={
-                    "title": payload.title,
-                    "description": payload.desc,
-                    "priority": payload.priority,
-                    "listId": payload.listId,
-                    "startDate": payload.startDate,
-                    "dueDate": payload.dueDate or normalize_due_date_input(payload.ddl),
-                    "durationMinutes": payload.durationMinutes,
-                    "scopeMode": scope_mode,
-                    "clientId": normalized_client_id,
-                    "eventLineId": normalized_event_line_id,
-                    "projectModuleId": project_module.id if project_module else None,
-                    "projectFlowId": project_flow.id if project_flow else None,
-                    "collaboratorIds": collaborator_ids,
-                    "ownerId": owner_id,
-                    "sourceType": payload.sourceType,
-                    "sourceId": payload.sourceId,
-                    "businessCategory": business_category,
-                    "currentBlocker": current_blocker,
-                    "nextAction": next_action,
-                    "recentDecision": recent_decision,
-                    "evidenceCount": evidence_count,
-                },
-            )
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-            log_activity("task.create", "task", str(response.get("id", "unknown")), payload.model_dump())
-            created_task = build_cloud_task(response, {})
-            growth_user_id, growth_user_name = resolve_growth_actor()
-            ingest_task_growth_candidate(
-                state.db,
-                user_id=growth_user_id,
-                user_name=growth_user_name,
-                task=created_task,
-                source_type="task_context_candidate",
-                created_at=now_iso(),
-                ai_service=state.ai,
-            )
-            return created_task
         timestamp = now_iso()
         task_id = new_id("task")
         list_id = payload.listId or (_get_local_task_settings().defaultListId or "list-0")
         list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not list_row or list_row["archived_at"]:
             raise HTTPException(status_code=400, detail="任务清单无效")
+        session_user = get_cached_session_user()
+        organization_id = session_user.organizationId if session_user else ""
+        creator_id = session_user.id if session_user else str(current_operator_row()["id"])
+        collaborator_ids = [item for item in payload.collaboratorIds if item]
+        collaborator_ids = list(dict.fromkeys(collaborator_ids))
+        owner_id = payload.ownerId or None
+        if owner_id and owner_id not in collaborator_ids:
+            collaborator_ids = [owner_id, *collaborator_ids]
         resolved_tags = normalize_local_task_tags(payload.tagIds, payload.tags)
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, title, description, status, priority, list_id, owner_name, ddl, start_date, due_date, duration_minutes, event_line_id, source_type, source_id,
+                id, organization_id, title, description, status, priority, list_id, creator_id, owner_id, owner_name, progress_status, ddl, start_date, due_date, duration_minutes, event_line_id, source_type, source_id,
                 client_id, project_module_id, project_flow_id, scope_mode, business_category, current_blocker, next_action, recent_decision, evidence_count,
-                tags_json, tag_ids_json, created_at, updated_at
+                tags_json, tag_ids_json, created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
+                organization_id,
                 payload.title,
                 payload.desc,
                 status,
                 payload.priority,
                 list_id,
+                creator_id,
+                owner_id,
                 payload.ownerName,
+                status,
                 payload.ddl,
                 payload.startDate,
                 payload.dueDate or normalize_due_date_input(payload.ddl),
@@ -12766,8 +12910,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json([tag.id for tag in resolved_tags]),
                 timestamp,
                 timestamp,
+                "queued" if organization_id else "local",
+                "",
+                "",
+                "",
+                "",
+                "create" if organization_id else "",
+                "",
             ),
         )
+        state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
+        for index, collaborator_id in enumerate(collaborator_ids or ([owner_id] if owner_id else [])):
+            if not collaborator_id:
+                continue
+            full_name = session_user.fullName if session_user and collaborator_id == session_user.id else ""
+            email = session_user.email if session_user and collaborator_id == session_user.id else ""
+            state.db.execute(
+                """
+                INSERT INTO task_collaborators(
+                    task_id, organization_id, user_id, full_name, email, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    organization_id,
+                    collaborator_id,
+                    full_name,
+                    email,
+                    index,
+                    1 if collaborator_id == owner_id else 0,
+                    "accepted" if session_user and collaborator_id == session_user.id else "pending",
+                    timestamp if session_user and collaborator_id == session_user.id else None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
         if normalized_event_line_id:
             state.db.execute(
                 """
@@ -12808,6 +12985,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=timestamp,
             ai_service=state.ai,
         )
+        if organization_id:
+            _queue_sync_action("task", task_id, "create")
+            _schedule_local_cloud_sync(force=True)
         Thread(target=_precompute_task_understanding, args=(created_task.id,), daemon=True).start()
         return created_task
 
@@ -12829,35 +13009,72 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return task.scopeMode == "PERSONAL_ONLY" or any(tag.scope == "self" for tag in task.tags)
 
     def local_review_row_for_week(week_label: str):
-        operator_id = str(current_operator_row()["id"])
+        organization_id, user_id = _current_local_scope()
+        if organization_id:
+            return state.db.fetchone(
+                """
+                SELECT *
+                FROM weekly_reviews
+                WHERE week_label = ?
+                  AND (COALESCE(organization_id, '') = ? OR COALESCE(organization_id, '') = '')
+                  AND (COALESCE(user_id, '') = ? OR COALESCE(user_id, '') = '')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (week_label, organization_id, user_id),
+            )
         return state.db.fetchone(
             "SELECT * FROM weekly_reviews WHERE week_label = ? AND operator_id = ? ORDER BY created_at DESC LIMIT 1",
-            (week_label, operator_id),
+            (week_label, user_id),
         )
 
     def local_review_history() -> ReviewHistoryResponse:
-        operator_id = str(current_operator_row()["id"])
-        rows = state.db.fetchall(
-            """
-            SELECT
-                r.week_label,
-                COALESCE(r.updated_at, r.created_at) AS submitted_at,
-                (
-                    SELECT COUNT(*)
-                    FROM weekly_review_task_entries e
-                    WHERE e.review_id = r.id AND e.content_domain = 'work'
-                ) AS work_item_count,
-                (
-                    SELECT COUNT(*)
-                    FROM weekly_review_task_entries e
-                    WHERE e.review_id = r.id AND e.content_domain = 'personal'
-                ) AS personal_item_count
-            FROM weekly_reviews r
-            WHERE r.operator_id = ?
-            ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.week_label DESC
-            """,
-            (operator_id,),
-        )
+        organization_id, user_id = _current_local_scope()
+        if organization_id:
+            rows = state.db.fetchall(
+                """
+                SELECT
+                    r.week_label,
+                    COALESCE(r.updated_at, r.created_at) AS submitted_at,
+                    (
+                        SELECT COUNT(*)
+                        FROM weekly_review_task_entries e
+                        WHERE e.review_id = r.id AND e.content_domain = 'work'
+                    ) AS work_item_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM weekly_review_task_entries e
+                        WHERE e.review_id = r.id AND e.content_domain = 'personal'
+                    ) AS personal_item_count
+                FROM weekly_reviews r
+                WHERE (COALESCE(r.organization_id, '') = ? OR COALESCE(r.organization_id, '') = '')
+                  AND (COALESCE(r.user_id, '') = ? OR COALESCE(r.user_id, '') = '')
+                ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.week_label DESC
+                """,
+                (organization_id, user_id),
+            )
+        else:
+            rows = state.db.fetchall(
+                """
+                SELECT
+                    r.week_label,
+                    COALESCE(r.updated_at, r.created_at) AS submitted_at,
+                    (
+                        SELECT COUNT(*)
+                        FROM weekly_review_task_entries e
+                        WHERE e.review_id = r.id AND e.content_domain = 'work'
+                    ) AS work_item_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM weekly_review_task_entries e
+                        WHERE e.review_id = r.id AND e.content_domain = 'personal'
+                    ) AS personal_item_count
+                FROM weekly_reviews r
+                WHERE r.operator_id = ?
+                ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.week_label DESC
+                """,
+                (user_id,),
+            )
         return ReviewHistoryResponse(
             items=[
                 ReviewHistoryEntryRecord(
@@ -12872,16 +13089,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def build_local_review_record(row) -> WeeklyReviewRecord:
+        session_user = get_cached_session_user()
         operator = current_operator_row()
         return WeeklyReviewRecord(
             id=str(row["id"]),
-            userId=str(operator["id"]),
-            userName=str(operator["name"]),
+            userId=str(row["user_id"] or (session_user.id if session_user else operator["id"])),
+            userName=session_user.fullName if session_user else str(operator["name"]),
             weekLabel=str(row["week_label"]),
+            workProgress=str(row["work_progress"] or ""),
+            workBlocker=str(row["work_blocker"] or ""),
+            blockerType=str(row["blocker_type"] or ""),
+            workDirection=str(row["work_direction"] or ""),
+            nextWeekFocus=str(row["next_week_focus"] or ""),
+            supportNeeded=str(row["support_needed"] or ""),
+            relatedPlanIds=[str(item) for item in from_json(row["related_plan_ids_json"], []) if str(item).strip()]
+            if isinstance(from_json(row["related_plan_ids_json"], []), list)
+            else [],
             workFreeNote=str(row["work_free_note"] or row["summary"] or ""),
             personalGrowthNote=str(row["personal_growth_note"] or ""),
             personalPrivateNote=str(row["personal_private_note"] or ""),
-            submittedAt=str(row["updated_at"] or row["created_at"]),
+            submittedAt=str(row["submitted_at"] or row["updated_at"] or row["created_at"]),
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"] or row["created_at"]),
         )
@@ -12894,6 +13121,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             userId=str(operator["id"]),
             userName=str(operator["name"]),
             weekLabel=week_label,
+            workProgress="",
+            workBlocker="",
+            blockerType="",
+            workDirection="",
+            nextWeekFocus="",
+            supportNeeded="",
+            relatedPlanIds=[],
             workFreeNote="",
             personalGrowthNote="",
             personalPrivateNote="",
@@ -15219,6 +15453,1148 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return augment_review_response(base_response, target_week)
 
+    _SYNC_ENTITY_TABLE = {
+        "task_list": "task_lists",
+        "task_tag": "task_tags",
+        "task": "tasks",
+        "event_line": "event_lines",
+        "weekly_review": "weekly_reviews",
+    }
+
+    def _current_local_scope() -> tuple[str, str]:
+        session_user = get_cached_session_user()
+        if session_user:
+            return session_user.organizationId, session_user.id
+        operator = current_operator_row()
+        return "", str(operator["id"])
+
+    def _local_scope_where(column: str = "organization_id") -> tuple[str, tuple[object, ...]]:
+        organization_id, _ = _current_local_scope()
+        if organization_id:
+            return f"(COALESCE({column}, '') = ? OR COALESCE({column}, '') = '')", (organization_id,)
+        return f"COALESCE({column}, '') = ''", ()
+
+    def _local_task_visibility_where(task_alias: str = "t") -> tuple[str, tuple[object, ...]]:
+        session_user = get_cached_session_user()
+        if not session_user or not has_active_cloud_session():
+            return "1 = 1", ()
+        return (
+            f"({task_alias}.creator_id = ? OR {task_alias}.owner_id = ? OR EXISTS ("
+            "SELECT 1 FROM task_collaborators tc_visible "
+            f"WHERE tc_visible.task_id = {task_alias}.id AND tc_visible.user_id = ?))",
+            (session_user.id, session_user.id, session_user.id),
+        )
+
+    def _sync_metadata_columns() -> tuple[str, ...]:
+        return (
+            "sync_status",
+            "cloud_id",
+            "cloud_payload_json",
+            "last_synced_at",
+            "last_cloud_version",
+            "pending_sync_action",
+            "last_sync_error",
+        )
+
+    def _update_sync_metadata(
+        table: str,
+        entity_id: str,
+        *,
+        sync_status: str | None = None,
+        cloud_id: str | None = None,
+        cloud_payload_json: str | None = None,
+        last_synced_at: str | None = None,
+        last_cloud_version: str | None = None,
+        pending_sync_action: str | None = None,
+        last_sync_error: str | None = None,
+    ) -> None:
+        fields: list[str] = []
+        values: list[object] = []
+        for column, value in (
+            ("sync_status", sync_status),
+            ("cloud_id", cloud_id),
+            ("cloud_payload_json", cloud_payload_json),
+            ("last_synced_at", last_synced_at),
+            ("last_cloud_version", last_cloud_version),
+            ("pending_sync_action", pending_sync_action),
+            ("last_sync_error", last_sync_error),
+        ):
+            if value is None:
+                continue
+            fields.append(f"{column} = ?")
+            values.append(value)
+        if not fields:
+            return
+        values.append(entity_id)
+        state.db.execute(
+            f"UPDATE {table} SET {', '.join(fields)} WHERE id = ?",
+            tuple(values),
+        )
+
+    def _queue_sync_action(entity_type: str, entity_id: str, action: str, payload: dict[str, object] | None = None) -> None:
+        payload_json = to_json(payload or {})
+        timestamp = now_iso()
+        existing = state.db.fetchone(
+            "SELECT id FROM sync_outbox WHERE entity_type = ? AND entity_id = ?",
+            (entity_type, entity_id),
+        )
+        if existing:
+            state.db.execute(
+                """
+                UPDATE sync_outbox
+                SET action = ?, payload_json = ?, updated_at = ?, last_error = ''
+                WHERE entity_type = ? AND entity_id = ?
+                """,
+                (action, payload_json, timestamp, entity_type, entity_id),
+            )
+        else:
+            state.db.execute(
+                """
+                INSERT INTO sync_outbox(id, entity_type, entity_id, action, payload_json, queued_at, updated_at, attempts, last_error)
+                VALUES(?, ?, ?, ?, ?, ?, ?, 0, '')
+                """,
+                (new_id("sync"), entity_type, entity_id, action, payload_json, timestamp, timestamp),
+            )
+        table = _SYNC_ENTITY_TABLE.get(entity_type)
+        if table:
+            _update_sync_metadata(
+                table,
+                entity_id,
+                sync_status="queued",
+                pending_sync_action=action,
+                last_sync_error="",
+            )
+        state.db.execute(
+            "DELETE FROM sync_conflicts WHERE entity_type = ? AND entity_id = ?",
+            (entity_type, entity_id),
+        )
+
+    def _clear_sync_action(entity_type: str, entity_id: str) -> None:
+        state.db.execute(
+            "DELETE FROM sync_outbox WHERE entity_type = ? AND entity_id = ?",
+            (entity_type, entity_id),
+        )
+
+    def _record_sync_conflict(
+        entity_type: str,
+        entity_id: str,
+        *,
+        cloud_id: str | None,
+        local_version: str,
+        cloud_version: str,
+        local_payload: dict[str, object],
+        cloud_payload: dict[str, object],
+        detail: str,
+    ) -> None:
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO sync_conflicts(
+                entity_type, entity_id, cloud_id, local_version, cloud_version, local_payload_json, cloud_payload_json, detail, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+                cloud_id = excluded.cloud_id,
+                local_version = excluded.local_version,
+                cloud_version = excluded.cloud_version,
+                local_payload_json = excluded.local_payload_json,
+                cloud_payload_json = excluded.cloud_payload_json,
+                detail = excluded.detail,
+                updated_at = excluded.updated_at
+            """,
+            (
+                entity_type,
+                entity_id,
+                cloud_id,
+                local_version,
+                cloud_version,
+                to_json(local_payload),
+                to_json(cloud_payload),
+                detail,
+                timestamp,
+                timestamp,
+            ),
+        )
+        table = _SYNC_ENTITY_TABLE.get(entity_type)
+        if table:
+            _update_sync_metadata(
+                table,
+                entity_id,
+                sync_status="conflict",
+                pending_sync_action="",
+                last_sync_error=detail,
+            )
+        _clear_sync_action(entity_type, entity_id)
+
+    def _row_has_pending_local_change(row) -> bool:
+        pending_action = str(row["pending_sync_action"] or "").strip() if "pending_sync_action" in row.keys() else ""
+        if pending_action:
+            return True
+        sync_status = str(row["sync_status"] or "").strip() if "sync_status" in row.keys() else ""
+        if sync_status in {"queued", "failed", "conflict"}:
+            return True
+        updated_at = str(row["updated_at"] or "").strip() if "updated_at" in row.keys() else ""
+        last_synced_at = str(row["last_synced_at"] or "").strip() if "last_synced_at" in row.keys() else ""
+        return bool(updated_at and (not last_synced_at or updated_at > last_synced_at))
+
+    def _sync_remote_version_changed(row, remote_updated_at: str | None) -> bool:
+        last_cloud_version = str(row["last_cloud_version"] or "").strip() if "last_cloud_version" in row.keys() else ""
+        remote_version = (remote_updated_at or "").strip()
+        return bool(last_cloud_version and remote_version and last_cloud_version != remote_version)
+
+    def _local_task_list_row(list_id: str):
+        return state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+
+    def _local_task_tag_row(tag_id: str):
+        return state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
+
+    def _local_task_row(task_id: str):
+        return state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+
+    def _local_event_line_row(event_line_id: str):
+        return state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+
+    def _local_review_row(review_id: str):
+        return state.db.fetchone("SELECT * FROM weekly_reviews WHERE id = ?", (review_id,))
+
+    def _local_task_list_payload(row) -> dict[str, object]:
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"] or ""),
+            "color": str(row["color"] or "#5B7BFE"),
+            "isDefault": bool(int(row["is_default"] or 0)),
+            "scope": str(row["scope"] or "org"),
+            "archived": bool(row["archived_at"]),
+            "sortOrder": int(row["sort_order"] or 0),
+        }
+
+    def _local_task_tag_payload(row) -> dict[str, object]:
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"] or ""),
+            "color": str(row["color"] or "#5B7BFE"),
+            "scope": str(row["scope"] or "org"),
+            "archived": bool(row["archived_at"]),
+        }
+
+    def _local_task_collaborator_rows(task_id: str) -> list[sqlite3.Row]:
+        return state.db.fetchall(
+            """
+            SELECT *
+            FROM task_collaborators
+            WHERE task_id = ?
+            ORDER BY is_owner DESC, order_index ASC, updated_at ASC
+            """,
+            (task_id,),
+        )
+
+    def _local_task_payload(row) -> dict[str, object]:
+        collaborator_rows = _local_task_collaborator_rows(str(row["id"]))
+        collaborator_ids = [str(item["user_id"]) for item in collaborator_rows if str(item["user_id"] or "").strip()]
+        return {
+            "id": str(row["id"]),
+            "title": str(row["title"] or ""),
+            "description": str(row["description"] or ""),
+            "priority": str(row["priority"] or "normal"),
+            "listId": str(row["list_id"] or ""),
+            "startDate": str(row["start_date"]) if row["start_date"] else None,
+            "dueDate": str(row["due_date"]) if row["due_date"] else None,
+            "durationMinutes": int(row["duration_minutes"] or 60),
+            "scopeMode": str(row["scope_mode"] or "COLLAB_SHARED"),
+            "clientId": str(row["client_id"]) if row["client_id"] else None,
+            "eventLineId": str(row["event_line_id"]) if row["event_line_id"] else None,
+            "projectModuleId": str(row["project_module_id"]) if row["project_module_id"] else None,
+            "projectFlowId": str(row["project_flow_id"]) if row["project_flow_id"] else None,
+            "collaboratorIds": collaborator_ids,
+            "ownerId": str(row["owner_id"]) if row["owner_id"] else None,
+            "progressStatus": str(row["progress_status"] or row["status"] or "todo"),
+            "sourceType": str(row["source_type"] or "manual"),
+            "sourceId": str(row["source_id"]) if row["source_id"] else None,
+            "businessCategory": str(row["business_category"]) if row["business_category"] else None,
+            "currentBlocker": str(row["current_blocker"]) if row["current_blocker"] else None,
+            "nextAction": str(row["next_action"]) if row["next_action"] else None,
+            "recentDecision": str(row["recent_decision"]) if row["recent_decision"] else None,
+            "evidenceCount": int(row["evidence_count"] or 0),
+        }
+
+    def _local_event_line_payload(row) -> dict[str, object]:
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"] or ""),
+            "kind": str(row["kind"] or "custom"),
+            "status": str(row["status"] or "active"),
+            "visibilityScope": str(row["visibility_scope"] or "project_public"),
+            "businessCategory": str(row["business_category"]) if row["business_category"] else None,
+            "stage": str(row["stage"]) if row["stage"] else None,
+            "summary": str(row["summary"]) if row["summary"] else None,
+            "intent": str(row["intent"]) if row["intent"] else None,
+            "currentBlocker": str(row["current_blocker"]) if row["current_blocker"] else None,
+            "recentDecision": str(row["recent_decision"]) if row["recent_decision"] else None,
+            "nextStep": str(row["next_step"]) if row["next_step"] else None,
+            "evidenceCount": int(row["evidence_count"] or 0),
+            "ownerId": str(row["owner_id"]) if row["owner_id"] else None,
+            "primaryClientId": str(row["primary_client_id"]) if row["primary_client_id"] else None,
+            "primaryDepartmentId": str(row["primary_department_id"]) if row["primary_department_id"] else None,
+            "participantIds": [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()],
+        }
+
+    def _local_review_payload(row) -> dict[str, object]:
+        entry_rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM weekly_review_task_entries
+            WHERE review_id = ?
+            ORDER BY reviewed_at DESC, updated_at DESC
+            """,
+            (str(row["id"]),),
+        )
+        return {
+            "id": str(row["id"]),
+            "weekLabel": str(row["week_label"] or ""),
+            "taskEntries": [
+                {
+                    "taskId": str(item["task_id"]),
+                    "contentDomain": str(item["content_domain"] or "work"),
+                    "note": str(item["note"] or ""),
+                    "structuredNote": from_json(item["structured_note_json"], {}),
+                }
+                for item in entry_rows
+            ],
+            "workProgress": str(row["work_progress"] or ""),
+            "workBlocker": str(row["work_blocker"] or ""),
+            "blockerType": str(row["blocker_type"] or ""),
+            "workDirection": str(row["work_direction"] or ""),
+            "nextWeekFocus": str(row["next_week_focus"] or ""),
+            "supportNeeded": str(row["support_needed"] or ""),
+            "relatedPlanIds": [str(item) for item in from_json(row["related_plan_ids_json"], []) if str(item).strip()]
+            if isinstance(from_json(row["related_plan_ids_json"], []), list)
+            else [],
+            "workFreeNote": str(row["work_free_note"] or ""),
+            "personalGrowthNote": str(row["personal_growth_note"] or ""),
+            "personalPrivateNote": "",
+        }
+
+    def _upsert_local_task_list_from_cloud(payload: dict[str, object], organization_id: str) -> None:
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO task_lists(
+                id, organization_id, name, color, sort_order, is_default, scope, archived_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                name = excluded.name,
+                color = excluded.color,
+                sort_order = excluded.sort_order,
+                is_default = excluded.is_default,
+                scope = excluded.scope,
+                archived_at = excluded.archived_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                str(payload.get("id")),
+                organization_id,
+                str(payload.get("name") or ""),
+                str(payload.get("color") or "#5B7BFE"),
+                int(payload.get("sortOrder") or 0),
+                1 if payload.get("isDefault") else 0,
+                str(payload.get("scope") or "org"),
+                str(payload.get("archivedAt")) if payload.get("archivedAt") else None,
+                str(payload.get("id")),
+                to_json(payload),
+                timestamp,
+                str(payload.get("updatedAt") or timestamp),
+            ),
+        )
+
+    def _upsert_local_task_tag_from_cloud(payload: dict[str, object], organization_id: str) -> None:
+        timestamp = now_iso()
+        remote_id = str(payload.get("id") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        existing_by_remote_id = state.db.fetchone("SELECT id FROM task_tags WHERE id = ?", (remote_id,)) if remote_id else None
+        existing_by_name = (
+            state.db.fetchone("SELECT id FROM task_tags WHERE name = ? AND id != ?", (name, remote_id))
+            if name and remote_id
+            else None
+        )
+
+        if existing_by_name and not existing_by_remote_id:
+            old_id = str(existing_by_name["id"])
+            state.db.execute(
+                """
+                UPDATE task_tags
+                SET id = ?, organization_id = ?, name = ?, scope = ?, color = ?, owner_operator_id = ?, created_by = ?,
+                    created_at = ?, updated_at = ?, archived_at = ?, sync_status = 'synced', cloud_id = ?,
+                    cloud_payload_json = ?, last_synced_at = ?, last_cloud_version = ?, pending_sync_action = '',
+                    last_sync_error = ''
+                WHERE id = ?
+                """,
+                (
+                    remote_id,
+                    organization_id,
+                    name,
+                    str(payload.get("scope") or "org"),
+                    str(payload.get("color") or "#5B7BFE"),
+                    str(payload.get("ownerUserId") or ""),
+                    str(payload.get("createdBy") or ""),
+                    str(payload.get("updatedAt") or timestamp),
+                    str(payload.get("updatedAt") or timestamp),
+                    str(payload.get("archivedAt")) if payload.get("archivedAt") else None,
+                    remote_id,
+                    to_json(payload),
+                    timestamp,
+                    str(payload.get("updatedAt") or timestamp),
+                    old_id,
+                ),
+            )
+            for task_row in state.db.fetchall("SELECT id, tag_ids_json, tags_json FROM tasks"):
+                tag_ids = _parse_json_list(task_row["tag_ids_json"])
+                if old_id not in tag_ids:
+                    continue
+                next_tag_ids: list[str] = []
+                for tag_id in tag_ids:
+                    candidate = remote_id if tag_id == old_id else tag_id
+                    if candidate and candidate not in next_tag_ids:
+                        next_tag_ids.append(candidate)
+                resolved_tags = [_local_task_tag_record(item) for item in _local_tag_rows_by_ids(state.db, next_tag_ids)]
+                state.db.execute(
+                    "UPDATE tasks SET tag_ids_json = ?, tags_json = ?, updated_at = ? WHERE id = ?",
+                    (to_json([item.id for item in resolved_tags]), to_json([item.name for item in resolved_tags]), timestamp, str(task_row["id"])),
+                )
+            state.db.execute(
+                "UPDATE sync_outbox SET entity_id = ? WHERE entity_type = 'task_tag' AND entity_id = ?",
+                (remote_id, old_id),
+            )
+            state.db.execute(
+                "UPDATE sync_conflicts SET entity_id = ? WHERE entity_type = 'task_tag' AND entity_id = ?",
+                (remote_id, old_id),
+            )
+            return
+
+        state.db.execute(
+            """
+            INSERT INTO task_tags(
+                id, organization_id, name, scope, color, owner_operator_id, created_by, created_at, updated_at, archived_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                name = excluded.name,
+                scope = excluded.scope,
+                color = excluded.color,
+                owner_operator_id = excluded.owner_operator_id,
+                created_by = excluded.created_by,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                archived_at = excluded.archived_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                str(payload.get("id")),
+                organization_id,
+                str(payload.get("name") or ""),
+                str(payload.get("scope") or "org"),
+                str(payload.get("color") or "#5B7BFE"),
+                str(payload.get("ownerUserId") or ""),
+                str(payload.get("createdBy") or ""),
+                str(payload.get("updatedAt") or timestamp),
+                str(payload.get("updatedAt") or timestamp),
+                str(payload.get("archivedAt")) if payload.get("archivedAt") else None,
+                str(payload.get("id")),
+                to_json(payload),
+                timestamp,
+                str(payload.get("updatedAt") or timestamp),
+            ),
+        )
+
+    def _upsert_local_task_from_cloud(payload: dict[str, object], organization_id: str) -> None:
+        timestamp = now_iso()
+        owner_name = str(payload.get("ownerName") or "")
+        tags_payload = [item for item in payload.get("tags", []) if isinstance(item, dict)] if isinstance(payload.get("tags"), list) else []
+        state.db.execute(
+            """
+            INSERT INTO tasks(
+                id, organization_id, title, description, status, priority, list_id, creator_id, owner_id, owner_name, progress_status,
+                ddl, start_date, due_date, duration_minutes, scope_mode, event_line_id, source_type, source_id,
+                client_id, project_module_id, project_flow_id, business_category, current_blocker, next_action, recent_decision,
+                evidence_count, tags_json, tag_ids_json, created_at, updated_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                title = excluded.title,
+                description = excluded.description,
+                status = excluded.status,
+                priority = excluded.priority,
+                list_id = excluded.list_id,
+                creator_id = excluded.creator_id,
+                owner_id = excluded.owner_id,
+                owner_name = excluded.owner_name,
+                progress_status = excluded.progress_status,
+                ddl = excluded.ddl,
+                start_date = excluded.start_date,
+                due_date = excluded.due_date,
+                duration_minutes = excluded.duration_minutes,
+                scope_mode = excluded.scope_mode,
+                event_line_id = excluded.event_line_id,
+                source_type = excluded.source_type,
+                source_id = excluded.source_id,
+                client_id = excluded.client_id,
+                project_module_id = excluded.project_module_id,
+                project_flow_id = excluded.project_flow_id,
+                business_category = excluded.business_category,
+                current_blocker = excluded.current_blocker,
+                next_action = excluded.next_action,
+                recent_decision = excluded.recent_decision,
+                evidence_count = excluded.evidence_count,
+                tags_json = excluded.tags_json,
+                tag_ids_json = excluded.tag_ids_json,
+                updated_at = excluded.updated_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                str(payload.get("id")),
+                organization_id,
+                str(payload.get("title") or ""),
+                str(payload.get("description") or ""),
+                str(payload.get("progressStatus") or "todo"),
+                str(payload.get("priority") or "normal"),
+                str(payload.get("listId") or ""),
+                str(payload.get("creatorId") or ""),
+                str(payload.get("ownerId")) if payload.get("ownerId") else None,
+                owner_name,
+                str(payload.get("progressStatus") or "todo"),
+                task_due_label(str(payload.get("dueDate") or "")) if payload.get("dueDate") else "",
+                str(payload.get("startDate")) if payload.get("startDate") else None,
+                str(payload.get("dueDate")) if payload.get("dueDate") else None,
+                int(payload.get("durationMinutes") or 60),
+                str(payload.get("scopeMode") or "COLLAB_SHARED"),
+                str(payload.get("eventLineId")) if payload.get("eventLineId") else None,
+                str(payload.get("sourceType") or "manual"),
+                str(payload.get("sourceId")) if payload.get("sourceId") else None,
+                str(payload.get("clientId")) if payload.get("clientId") else None,
+                str(payload.get("projectModuleId")) if payload.get("projectModuleId") else None,
+                str(payload.get("projectFlowId")) if payload.get("projectFlowId") else None,
+                str(payload.get("businessCategory")) if payload.get("businessCategory") else None,
+                str(payload.get("currentBlocker")) if payload.get("currentBlocker") else None,
+                str(payload.get("nextAction")) if payload.get("nextAction") else None,
+                str(payload.get("recentDecision")) if payload.get("recentDecision") else None,
+                int(payload.get("evidenceCount") or 0),
+                to_json([str(item.get("name") or "") for item in tags_payload if str(item.get("name") or "").strip()]),
+                to_json([str(item.get("id") or "") for item in tags_payload if str(item.get("id") or "").strip()]),
+                str(payload.get("createdAt") or timestamp),
+                str(payload.get("updatedAt") or timestamp),
+                str(payload.get("id")),
+                to_json(payload),
+                timestamp,
+                str(payload.get("updatedAt") or timestamp),
+            ),
+        )
+        collaborator_rows = [item for item in payload.get("collaborators", []) if isinstance(item, dict)] if isinstance(payload.get("collaborators"), list) else []
+        state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (str(payload.get("id")),))
+        for index, collaborator in enumerate(collaborator_rows):
+            state.db.execute(
+                """
+                INSERT INTO task_collaborators(
+                    task_id, organization_id, user_id, full_name, email, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(payload.get("id")),
+                    organization_id,
+                    str(collaborator.get("userId") or ""),
+                    str(collaborator.get("fullName") or ""),
+                    str(collaborator.get("email") or ""),
+                    int(collaborator.get("orderIndex") or index),
+                    1 if collaborator.get("isOwner") else 0,
+                    str(collaborator.get("inboxStatus") or "pending"),
+                    str(collaborator.get("returnReason")) if collaborator.get("returnReason") else None,
+                    str(collaborator.get("handledAt")) if collaborator.get("handledAt") else None,
+                    str(payload.get("createdAt") or timestamp),
+                    str(payload.get("updatedAt") or timestamp),
+                ),
+            )
+        note = str(payload.get("note") or "").strip()
+        if note:
+            upsert_task_note(str(payload.get("id")), note)
+
+    def _upsert_local_event_line_from_cloud(payload: dict[str, object], organization_id: str, activities: list[dict[str, object]] | None = None) -> None:
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO event_lines(
+                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker, recent_decision, next_step,
+                evidence_count, owner_id, owner_name, primary_client_id, primary_client_name, primary_department_id, primary_department_name,
+                participant_ids_json, created_at, updated_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                name = excluded.name,
+                kind = excluded.kind,
+                status = excluded.status,
+                visibility_scope = excluded.visibility_scope,
+                business_category = excluded.business_category,
+                stage = excluded.stage,
+                summary = excluded.summary,
+                intent = excluded.intent,
+                current_blocker = excluded.current_blocker,
+                recent_decision = excluded.recent_decision,
+                next_step = excluded.next_step,
+                evidence_count = excluded.evidence_count,
+                owner_id = excluded.owner_id,
+                owner_name = excluded.owner_name,
+                primary_client_id = excluded.primary_client_id,
+                primary_client_name = excluded.primary_client_name,
+                primary_department_id = excluded.primary_department_id,
+                primary_department_name = excluded.primary_department_name,
+                participant_ids_json = excluded.participant_ids_json,
+                updated_at = excluded.updated_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                str(payload.get("id")),
+                organization_id,
+                str(payload.get("name") or ""),
+                str(payload.get("kind") or "custom"),
+                str(payload.get("status") or "active"),
+                str(payload.get("visibilityScope") or "project_public"),
+                str(payload.get("businessCategory")) if payload.get("businessCategory") else None,
+                str(payload.get("stage")) if payload.get("stage") else None,
+                str(payload.get("summary")) if payload.get("summary") else None,
+                str(payload.get("intent")) if payload.get("intent") else None,
+                str(payload.get("currentBlocker")) if payload.get("currentBlocker") else None,
+                str(payload.get("recentDecision")) if payload.get("recentDecision") else None,
+                str(payload.get("nextStep")) if payload.get("nextStep") else None,
+                int(payload.get("evidenceCount") or 0),
+                str(payload.get("ownerId")) if payload.get("ownerId") else None,
+                str(payload.get("ownerName")) if payload.get("ownerName") else None,
+                str(payload.get("primaryClientId")) if payload.get("primaryClientId") else None,
+                str(payload.get("primaryClientName")) if payload.get("primaryClientName") else None,
+                str(payload.get("primaryDepartmentId")) if payload.get("primaryDepartmentId") else None,
+                str(payload.get("primaryDepartmentName")) if payload.get("primaryDepartmentName") else None,
+                to_json([str(item) for item in payload.get("participantIds", []) if str(item).strip()] if isinstance(payload.get("participantIds"), list) else []),
+                str(payload.get("createdAt") or timestamp),
+                str(payload.get("updatedAt") or timestamp),
+                str(payload.get("id")),
+                to_json(payload),
+                timestamp,
+                str(payload.get("updatedAt") or timestamp),
+            ),
+        )
+        if activities is not None:
+            state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (str(payload.get("id")),))
+            for activity in activities:
+                metadata = activity.get("metadata") if isinstance(activity.get("metadata"), dict) else {}
+                state.db.execute(
+                    """
+                    INSERT INTO event_line_activities(
+                        id, event_line_id, source_type, source_id, happened_at, actor_id, actor_name, title, summary, metadata_json, is_key, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(activity.get("id") or new_id("ela")),
+                        str(payload.get("id")),
+                        str(activity.get("sourceType") or "manual_note"),
+                        str(activity.get("sourceId") or ""),
+                        str(activity.get("happenedAt") or timestamp),
+                        str(activity.get("actorId")) if activity.get("actorId") else None,
+                        str(activity.get("actorName")) if activity.get("actorName") else None,
+                        str(activity.get("title") or ""),
+                        str(activity.get("summary") or ""),
+                        to_json(metadata),
+                        1 if activity.get("isKey") else 0,
+                        str(activity.get("happenedAt") or timestamp),
+                    ),
+                )
+
+    def _upsert_local_review_from_cloud(payload: dict[str, object], organization_id: str, user_id: str) -> None:
+        try:
+            review_response = ReviewResponse(**payload)
+        except Exception:
+            return
+        current_review = review_response.currentReview
+        if current_review is None:
+            return
+        existing = state.db.fetchone("SELECT personal_private_note, created_at FROM weekly_reviews WHERE id = ?", (current_review.id,))
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO weekly_reviews(
+                id, organization_id, week_label, operator_id, user_id, work_progress, work_blocker, blocker_type, work_direction,
+                next_week_focus, support_needed, related_plan_ids_json, summary, work_free_note, personal_growth_note, personal_private_note,
+                submitted_at, created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                week_label = excluded.week_label,
+                operator_id = excluded.operator_id,
+                user_id = excluded.user_id,
+                work_progress = excluded.work_progress,
+                work_blocker = excluded.work_blocker,
+                blocker_type = excluded.blocker_type,
+                work_direction = excluded.work_direction,
+                next_week_focus = excluded.next_week_focus,
+                support_needed = excluded.support_needed,
+                related_plan_ids_json = excluded.related_plan_ids_json,
+                summary = excluded.summary,
+                work_free_note = excluded.work_free_note,
+                personal_growth_note = excluded.personal_growth_note,
+                submitted_at = excluded.submitted_at,
+                updated_at = excluded.updated_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                current_review.id,
+                organization_id,
+                current_review.weekLabel,
+                user_id,
+                user_id,
+                current_review.workProgress,
+                current_review.workBlocker,
+                current_review.blockerType,
+                current_review.workDirection,
+                current_review.nextWeekFocus,
+                current_review.supportNeeded,
+                to_json(current_review.relatedPlanIds),
+                "",
+                current_review.workFreeNote,
+                current_review.personalGrowthNote,
+                str(existing["personal_private_note"]) if existing and existing["personal_private_note"] else "",
+                current_review.submittedAt,
+                str(existing["created_at"]) if existing and existing["created_at"] else current_review.createdAt,
+                current_review.updatedAt,
+                current_review.id,
+                to_json(payload),
+                timestamp,
+                current_review.updatedAt,
+            ),
+        )
+        state.db.execute("DELETE FROM weekly_review_task_entries WHERE review_id = ?", (current_review.id,))
+        for item in [*review_response.workItems, *review_response.personalItems]:
+            state.db.execute(
+                """
+                INSERT INTO weekly_review_task_entries(
+                    id, organization_id, review_id, task_id, user_id, week_label, content_domain, note, structured_note_json, reviewed_at, task_snapshot_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    organization_id,
+                    current_review.id,
+                    item.taskId,
+                    user_id,
+                    item.weekLabel,
+                    item.contentDomain,
+                    item.note,
+                    to_json(item.structuredNote.model_dump()),
+                    item.reviewedAt or current_review.updatedAt,
+                    to_json(item.taskSnapshot.model_dump() if item.taskSnapshot else None),
+                    item.reviewedAt or current_review.updatedAt,
+                    current_review.updatedAt,
+                ),
+            )
+
+    def _fetch_remote_event_line_detail_payload(event_line_id: str) -> dict[str, object] | None:
+        try:
+            payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+        except HTTPException:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _process_outbox_task(
+        outbox_row,
+        remote_tasks_by_id: dict[str, dict[str, object]],
+        organization_id: str,
+    ) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        action = str(outbox_row["action"])
+        local_row = _local_task_row(entity_id)
+        remote_payload = remote_tasks_by_id.get(entity_id)
+        if action == "delete":
+            if remote_payload:
+                cloud_request("DELETE", f"/api/v1/tasks/{entity_id}")
+            _clear_sync_action("task", entity_id)
+            return
+        if local_row is None:
+            _clear_sync_action("task", entity_id)
+            return
+        if remote_payload and _sync_remote_version_changed(local_row, str(remote_payload.get("updatedAt") or "")) and _row_has_pending_local_change(local_row):
+            _record_sync_conflict(
+                "task",
+                entity_id,
+                cloud_id=entity_id,
+                local_version=str(local_row["updated_at"] or ""),
+                cloud_version=str(remote_payload.get("updatedAt") or ""),
+                local_payload=_local_task_payload(local_row),
+                cloud_payload=remote_payload,
+                detail="这条任务在本地和云端都被修改了，请手工决定保留哪一版。",
+            )
+            return
+        payload = _local_task_payload(local_row)
+        response = cloud_request(
+            "PATCH" if remote_payload else "POST",
+            f"/api/v1/tasks/{entity_id}" if remote_payload else "/api/v1/tasks",
+            json_body=payload,
+        )
+        if isinstance(response, dict):
+            _upsert_local_task_from_cloud(response, organization_id)
+        _clear_sync_action("task", entity_id)
+
+    def _process_outbox_event_line(
+        outbox_row,
+        remote_event_lines_by_id: dict[str, dict[str, object]],
+        organization_id: str,
+    ) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        action = str(outbox_row["action"])
+        local_row = _local_event_line_row(entity_id)
+        remote_payload = remote_event_lines_by_id.get(entity_id)
+        if action == "delete":
+            if remote_payload:
+                cloud_request("DELETE", f"/api/v1/event-lines/{entity_id}")
+            _clear_sync_action("event_line", entity_id)
+            return
+        if local_row is None:
+            _clear_sync_action("event_line", entity_id)
+            return
+        if remote_payload and _sync_remote_version_changed(local_row, str(remote_payload.get("updatedAt") or "")) and _row_has_pending_local_change(local_row):
+            _record_sync_conflict(
+                "event_line",
+                entity_id,
+                cloud_id=entity_id,
+                local_version=str(local_row["updated_at"] or ""),
+                cloud_version=str(remote_payload.get("updatedAt") or ""),
+                local_payload=_local_event_line_payload(local_row),
+                cloud_payload=remote_payload,
+                detail="这条事件线在本地和云端都被修改了，请手工决定保留哪一版。",
+            )
+            return
+        payload = _local_event_line_payload(local_row)
+        response = cloud_request(
+            "PATCH" if remote_payload else "POST",
+            f"/api/v1/event-lines/{entity_id}" if remote_payload else "/api/v1/event-lines",
+            json_body=payload,
+        )
+        if isinstance(response, dict):
+            detail_payload = _fetch_remote_event_line_detail_payload(entity_id)
+            record = detail_payload.get("eventLine") if detail_payload and isinstance(detail_payload.get("eventLine"), dict) else response
+            activities = detail_payload.get("activities") if detail_payload and isinstance(detail_payload.get("activities"), list) else None
+            if isinstance(record, dict):
+                _upsert_local_event_line_from_cloud(record, organization_id, activities if isinstance(activities, list) else None)
+        _clear_sync_action("event_line", entity_id)
+
+    def _process_outbox_task_list(outbox_row, remote_lists_by_id: dict[str, dict[str, object]], organization_id: str) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        action = str(outbox_row["action"])
+        local_row = _local_task_list_row(entity_id)
+        remote_payload = remote_lists_by_id.get(entity_id)
+        if action == "delete":
+            if remote_payload:
+                cloud_request("DELETE", f"/api/v1/task-lists/{entity_id}")
+            _clear_sync_action("task_list", entity_id)
+            return
+        if local_row is None:
+            _clear_sync_action("task_list", entity_id)
+            return
+        payload = _local_task_list_payload(local_row)
+        response = cloud_request(
+            "PATCH" if remote_payload else "POST",
+            f"/api/v1/task-lists/{entity_id}" if remote_payload else "/api/v1/task-lists",
+            json_body=payload,
+        )
+        if isinstance(response, dict):
+            _upsert_local_task_list_from_cloud(response, organization_id)
+        _clear_sync_action("task_list", entity_id)
+
+    def _process_outbox_task_tag(outbox_row, remote_tags_by_id: dict[str, dict[str, object]], organization_id: str) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        action = str(outbox_row["action"])
+        local_row = _local_task_tag_row(entity_id)
+        remote_payload = remote_tags_by_id.get(entity_id)
+        if action == "delete":
+            if remote_payload:
+                cloud_request("DELETE", f"/api/v1/task-tags/{entity_id}")
+            _clear_sync_action("task_tag", entity_id)
+            return
+        if local_row is None:
+            _clear_sync_action("task_tag", entity_id)
+            return
+        payload = _local_task_tag_payload(local_row)
+        response = cloud_request(
+            "PATCH" if remote_payload else "POST",
+            f"/api/v1/task-tags/{entity_id}" if remote_payload else "/api/v1/task-tags",
+            json_body=payload,
+        )
+        if isinstance(response, dict):
+            _upsert_local_task_tag_from_cloud(response, organization_id)
+        _clear_sync_action("task_tag", entity_id)
+
+    def _process_outbox_weekly_review(
+        outbox_row,
+        remote_reviews_by_week: dict[str, dict[str, object]],
+        organization_id: str,
+        user_id: str,
+    ) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        local_row = _local_review_row(entity_id)
+        if local_row is None:
+            _clear_sync_action("weekly_review", entity_id)
+            return
+        week_label = str(local_row["week_label"] or "")
+        remote_payload = remote_reviews_by_week.get(week_label)
+        current_remote_review = remote_payload.get("currentReview") if isinstance(remote_payload, dict) and isinstance(remote_payload.get("currentReview"), dict) else None
+        if current_remote_review and _sync_remote_version_changed(local_row, str(current_remote_review.get("updatedAt") or "")) and _row_has_pending_local_change(local_row):
+            _record_sync_conflict(
+                "weekly_review",
+                entity_id,
+                cloud_id=str(current_remote_review.get("id") or entity_id),
+                local_version=str(local_row["updated_at"] or ""),
+                cloud_version=str(current_remote_review.get("updatedAt") or ""),
+                local_payload=_local_review_payload(local_row),
+                cloud_payload=remote_payload if isinstance(remote_payload, dict) else {},
+                detail="这周复盘在本地和云端都被修改了，请手工决定保留哪一版。",
+            )
+            return
+        response = cloud_request("POST", "/api/v1/reviews/weekly", json_body=_local_review_payload(local_row))
+        if isinstance(response, dict):
+            _upsert_local_review_from_cloud(response, organization_id, user_id)
+        _clear_sync_action("weekly_review", entity_id)
+
+    def _fetch_remote_review_payloads() -> dict[str, dict[str, object]]:
+        history_payload = cloud_request("GET", "/api/v1/reviews/history")
+        if not isinstance(history_payload, dict):
+            return {}
+        items = history_payload.get("items", [])
+        if not isinstance(items, list):
+            return {}
+        result: dict[str, dict[str, object]] = {}
+        for item in items[:12]:
+            if not isinstance(item, dict):
+                continue
+            week_label = str(item.get("weekLabel") or "").strip()
+            if not week_label:
+                continue
+            try:
+                payload = cloud_request("GET", f"/api/v1/reviews/dashboard?weekLabel={quote(week_label)}")
+            except HTTPException:
+                continue
+            if isinstance(payload, dict):
+                result[week_label] = payload
+        return result
+
+    def _run_local_cloud_sync_once() -> None:
+        session_user = get_cached_session_user()
+        if session_user is None:
+            try:
+                session_user = require_session_user()
+            except HTTPException:
+                return
+        organization_id = session_user.organizationId
+        user_id = session_user.id
+
+        lists_payload = cloud_request("GET", "/api/v1/task-lists")
+        tags_payload = cloud_request("GET", "/api/v1/task-tags")
+        tasks_payload = cloud_request("GET", "/api/v1/tasks")
+        event_lines_payload = cloud_request("GET", "/api/v1/event-lines")
+        remote_reviews_by_week = _fetch_remote_review_payloads()
+
+        remote_lists = lists_payload.get("lists", []) if isinstance(lists_payload, dict) and isinstance(lists_payload.get("lists"), list) else []
+        remote_tags = tags_payload.get("tags", []) if isinstance(tags_payload, dict) and isinstance(tags_payload.get("tags"), list) else []
+        remote_tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) and isinstance(tasks_payload.get("tasks"), list) else []
+        remote_event_lines = event_lines_payload if isinstance(event_lines_payload, list) else []
+
+        remote_lists_by_id = {str(item.get("id")): item for item in remote_lists if isinstance(item, dict) and str(item.get("id") or "").strip()}
+        remote_tags_by_id = {str(item.get("id")): item for item in remote_tags if isinstance(item, dict) and str(item.get("id") or "").strip()}
+        remote_tasks_by_id = {str(item.get("id")): item for item in remote_tasks if isinstance(item, dict) and str(item.get("id") or "").strip()}
+        remote_event_lines_by_id = {str(item.get("id")): item for item in remote_event_lines if isinstance(item, dict) and str(item.get("id") or "").strip()}
+
+        outbox_rows = state.db.fetchall(
+            "SELECT * FROM sync_outbox ORDER BY queued_at ASC, updated_at ASC"
+        )
+        for outbox_row in outbox_rows:
+            entity_type = str(outbox_row["entity_type"] or "")
+            try:
+                if entity_type == "task":
+                    _process_outbox_task(outbox_row, remote_tasks_by_id, organization_id)
+                elif entity_type == "event_line":
+                    _process_outbox_event_line(outbox_row, remote_event_lines_by_id, organization_id)
+                elif entity_type == "task_list":
+                    _process_outbox_task_list(outbox_row, remote_lists_by_id, organization_id)
+                elif entity_type == "task_tag":
+                    _process_outbox_task_tag(outbox_row, remote_tags_by_id, organization_id)
+                elif entity_type == "weekly_review":
+                    _process_outbox_weekly_review(outbox_row, remote_reviews_by_week, organization_id, user_id)
+            except HTTPException as exc:
+                state.db.execute(
+                    """
+                    UPDATE sync_outbox
+                    SET attempts = attempts + 1, updated_at = ?, last_error = ?
+                    WHERE entity_type = ? AND entity_id = ?
+                    """,
+                    (now_iso(), str(exc.detail) if exc.detail else "sync failed", entity_type, str(outbox_row["entity_id"])),
+                )
+                table = _SYNC_ENTITY_TABLE.get(entity_type)
+                if table:
+                    _update_sync_metadata(
+                        table,
+                        str(outbox_row["entity_id"]),
+                        sync_status="failed",
+                        last_sync_error=str(exc.detail) if exc.detail else "sync failed",
+                    )
+
+        lists_payload = cloud_request("GET", "/api/v1/task-lists")
+        tags_payload = cloud_request("GET", "/api/v1/task-tags")
+        tasks_payload = cloud_request("GET", "/api/v1/tasks")
+        event_lines_payload = cloud_request("GET", "/api/v1/event-lines")
+        remote_reviews_by_week = _fetch_remote_review_payloads()
+        remote_lists = lists_payload.get("lists", []) if isinstance(lists_payload, dict) and isinstance(lists_payload.get("lists"), list) else []
+        remote_tags = tags_payload.get("tags", []) if isinstance(tags_payload, dict) and isinstance(tags_payload.get("tags"), list) else []
+        remote_tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) and isinstance(tasks_payload.get("tasks"), list) else []
+        remote_event_lines = event_lines_payload if isinstance(event_lines_payload, list) else []
+
+        for item in remote_lists:
+            if isinstance(item, dict):
+                _upsert_local_task_list_from_cloud(item, organization_id)
+        for item in remote_tags:
+            if isinstance(item, dict):
+                _upsert_local_task_tag_from_cloud(item, organization_id)
+        for item in remote_tasks:
+            if not isinstance(item, dict):
+                continue
+            local_row = _local_task_row(str(item.get("id")))
+            if local_row and _row_has_pending_local_change(local_row) and _sync_remote_version_changed(local_row, str(item.get("updatedAt") or "")):
+                continue
+            _upsert_local_task_from_cloud(item, organization_id)
+        for item in remote_event_lines:
+            if not isinstance(item, dict):
+                continue
+            local_row = _local_event_line_row(str(item.get("id")))
+            if local_row and _row_has_pending_local_change(local_row) and _sync_remote_version_changed(local_row, str(item.get("updatedAt") or "")):
+                continue
+            detail_payload = _fetch_remote_event_line_detail_payload(str(item.get("id")))
+            if detail_payload and isinstance(detail_payload.get("eventLine"), dict):
+                _upsert_local_event_line_from_cloud(
+                    detail_payload["eventLine"],
+                    organization_id,
+                    detail_payload.get("activities") if isinstance(detail_payload.get("activities"), list) else None,
+                )
+            else:
+                _upsert_local_event_line_from_cloud(item, organization_id, None)
+        for review_payload in remote_reviews_by_week.values():
+            if isinstance(review_payload, dict):
+                _upsert_local_review_from_cloud(review_payload, organization_id, user_id)
+
+        state.db.set_setting("local_cloud_sync_last_success_at", now_iso())
+        state.db.set_setting("local_cloud_sync_snapshot_user_id", user_id)
+        state.db.set_setting("local_cloud_sync_snapshot_org_id", organization_id)
+
+    def _run_local_cloud_sync_background() -> None:
+        with _local_cloud_sync_runtime["lock"]:
+            if _local_cloud_sync_runtime["running"]:
+                return
+            _local_cloud_sync_runtime["running"] = True
+            _local_cloud_sync_runtime["last_started_at"] = time.time()
+        try:
+            _run_local_cloud_sync_once()
+        finally:
+            with _local_cloud_sync_runtime["lock"]:
+                _local_cloud_sync_runtime["running"] = False
+
+    def _schedule_local_cloud_sync(*, force: bool = False) -> None:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return
+        now_ts = time.time()
+        if not force and now_ts - float(_local_cloud_sync_runtime["last_started_at"]) < 3:
+            return
+        Thread(target=_run_local_cloud_sync_background, daemon=True).start()
+
+    def _has_local_cloud_sync_snapshot() -> bool:
+        last_success_at = str(state.db.get_setting("local_cloud_sync_last_success_at", "") or "").strip()
+        if not last_success_at:
+            return False
+        session_user = get_cached_session_user()
+        if session_user is None:
+            return False
+        snapshot_user_id = str(state.db.get_setting("local_cloud_sync_snapshot_user_id", "") or "").strip()
+        snapshot_org_id = str(state.db.get_setting("local_cloud_sync_snapshot_org_id", "") or "").strip()
+        return snapshot_user_id == session_user.id and snapshot_org_id == session_user.organizationId
+
+    def _try_bootstrap_local_cloud_snapshot() -> bool:
+        try:
+            if not get_cloud_token() and not get_cloud_refresh_token():
+                return False
+            try:
+                session_user = require_session_user()
+            except HTTPException:
+                session_user = get_cached_session_user()
+                if session_user is None:
+                    return False
+            organization_id = session_user.organizationId
+            user_id = session_user.id
+            try:
+                lists_payload = cloud_request("GET", "/api/v1/task-lists")
+                tags_payload = cloud_request("GET", "/api/v1/task-tags")
+                tasks_payload = cloud_request("GET", "/api/v1/tasks")
+            except HTTPException:
+                return False
+            remote_lists = lists_payload.get("lists", []) if isinstance(lists_payload, dict) and isinstance(lists_payload.get("lists"), list) else []
+            remote_tags = tags_payload.get("tags", []) if isinstance(tags_payload, dict) and isinstance(tags_payload.get("tags"), list) else []
+            remote_tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) and isinstance(tasks_payload.get("tasks"), list) else []
+            for item in remote_lists:
+                if isinstance(item, dict):
+                    _upsert_local_task_list_from_cloud(item, organization_id)
+            for item in remote_tags:
+                if isinstance(item, dict):
+                    _upsert_local_task_tag_from_cloud(item, organization_id)
+            for item in remote_tasks:
+                if isinstance(item, dict):
+                    _upsert_local_task_from_cloud(item, organization_id)
+            try:
+                remote_reviews_by_week = _fetch_remote_review_payloads()
+            except HTTPException:
+                remote_reviews_by_week = {}
+            for review_payload in remote_reviews_by_week.values():
+                if isinstance(review_payload, dict):
+                    _upsert_local_review_from_cloud(review_payload, organization_id, user_id)
+            state.db.set_setting("local_cloud_sync_last_success_at", now_iso())
+            state.db.set_setting("local_cloud_sync_snapshot_user_id", user_id)
+            state.db.set_setting("local_cloud_sync_snapshot_org_id", organization_id)
+            return True
+        except Exception:
+            traceback.print_exc()
+            return False
+
     # ── Attachment local cache ──
     def _att_cache_dir() -> Path:
         d = Path(state.data_dir) / "cache" / "event-line-attachments"
@@ -15486,6 +16862,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         token = get_cloud_token()
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
+            state.db.set_setting("cloud_session_user", "")
+            state.volatile_cloud_session_user_json = ""
             return _local_auth_state()
         cached_user = get_cached_session_user()
         try:
@@ -15525,6 +16903,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ),
             )
         cached_user = get_cached_session_user()
+        if cached_user is None:
+            try:
+                cached_user = require_session_user()
+            except HTTPException:
+                cached_user = SessionUserRecord(
+                    id="cloud-session-user",
+                    organizationId="",
+                    email="",
+                    fullName="",
+                    primaryRole="employee",
+                    accountStatus="approved",
+                )
         return AccountOverviewResponse(
             sessionMode="cloud",
             cloudConnected=bool(token or refresh_token),
@@ -15906,37 +17296,49 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines", response_model=list[EventLineRecord])
     def list_event_lines() -> list[EventLineRecord]:
-        _require_cloud_event_line_session()
-        response = cloud_request("GET", "/api/v1/event-lines")
-        if not isinstance(response, list):
-            raise HTTPException(status_code=502, detail="Invalid event line payload")
-        return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync(force=True)
+            else:
+                try:
+                    payload = _fetch_cloud_event_lines_payload()
+                    return [build_cloud_event_line(item) for item in payload]
+                except HTTPException:
+                    pass
+        else:
+            return []
+        scope_where, scope_params = _local_scope_where("organization_id")
+        rows = state.db.fetchall(
+            f"""
+            SELECT *
+            FROM event_lines
+            WHERE {scope_where}
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            scope_params,
+        )
+        return [build_event_line(row) for row in rows]
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(payload: EventLineCreatePayload) -> EventLineRecord:
-        if get_cloud_token():
-            try:
-                response = cloud_request("POST", "/api/v1/event-lines", json_body=payload.model_dump())
-                if not isinstance(response, dict):
-                    raise HTTPException(status_code=502, detail="Invalid event line payload")
-                return build_cloud_event_line(response)
-            except HTTPException:
-                pass
         timestamp = now_iso()
         event_line_id = new_id("eline")
+        organization_id, session_user_id = _current_local_scope()
+        session_user = get_cached_session_user()
         client_id = str(payload.primaryClientId).strip() if payload.primaryClientId else None
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker,
+                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker,
                 recent_decision, next_step, evidence_count, owner_id, owner_name, primary_client_id,
                 primary_client_name, primary_department_id, primary_department_name, participant_ids_json,
                 created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
+                organization_id or "",
                 payload.name.strip(),
                 payload.kind,
                 payload.status,
@@ -15948,9 +17350,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.currentBlocker,
                 payload.recentDecision,
                 payload.nextStep,
-                payload.evidenceCount,
-                payload.ownerId,
-                current_operator_name(),
+                int(payload.evidenceCount or 0),
+                payload.ownerId or (session_user.id if session_user else session_user_id),
+                session_user.fullName if session_user else current_operator_name(),
                 client_id,
                 str(client_row["name"]) if client_row else None,
                 payload.primaryDepartmentId,
@@ -15960,6 +17362,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timestamp,
             ),
         )
+        if organization_id:
+            _queue_sync_action("event_line", event_line_id, "create")
+            _schedule_local_cloud_sync(force=True)
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=500, detail="Event line creation failed")
@@ -15967,11 +17372,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
-        _require_cloud_event_line_session()
-        response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid event line detail payload")
-        return build_cloud_event_line_detail(response)
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync(force=True)
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        if not row:
+            if has_active_cloud_session():
+                payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+                if isinstance(payload, dict):
+                    return build_cloud_event_line_detail(payload)
+            raise HTTPException(status_code=404, detail="Event line not found")
+        return build_event_line_detail(row)
 
     @app.post("/api/v1/event-lines/{event_line_id}/clarification-draft", response_model=EventLineClarificationDraftRecord)
     def generate_event_line_clarification_draft(
@@ -16957,8 +18368,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot")
     def get_event_line_report_snapshot(event_line_id: str) -> dict:
+        if state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,)):
+            return _build_local_event_line_report_snapshot(event_line_id)
         if not get_cloud_token():
-            raise HTTPException(status_code=400, detail="需要登录云端才能获取事件线汇报快照")
+            raise HTTPException(status_code=400, detail="当前既没有本地事件线，也没有可用云端会话。")
         payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}/report-snapshot")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid report snapshot payload")
@@ -17484,14 +18897,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(event_line_id: str, payload: EventLineUpdatePayload) -> EventLineRecord:
-        if get_cloud_token():
-            try:
-                response = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body=payload.model_dump(exclude_unset=True))
-                if not isinstance(response, dict):
-                    raise HTTPException(status_code=502, detail="Invalid event line payload")
-                return build_cloud_event_line(response)
-            except HTTPException:
-                pass
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
@@ -17499,13 +18904,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         next_client_id = str(updates.get("primaryClientId")).strip() if updates.get("primaryClientId") else (str(row["primary_client_id"]) if row["primary_client_id"] else None)
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (next_client_id,)) if next_client_id else None
         participant_ids = updates.get("participantIds")
+        organization_id = str(row["organization_id"] or "") if "organization_id" in row.keys() else ""
         state.db.execute(
             """
             UPDATE event_lines
             SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?,
                 current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, owner_name = ?,
                 primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, primary_department_name = ?,
-                participant_ids_json = ?, updated_at = ?
+                participant_ids_json = ?, updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = ?
             WHERE id = ?
             """,
             (
@@ -17519,7 +18925,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 updates.get("currentBlocker", row["current_blocker"]),
                 updates.get("recentDecision", row["recent_decision"]),
                 updates.get("nextStep", row["next_step"]),
-                updates.get("evidenceCount", row["evidence_count"]),
+                int(updates.get("evidenceCount", row["evidence_count"]) or 0),
                 updates.get("ownerId", row["owner_id"]),
                 updates.get("ownerName", row["owner_name"]),
                 next_client_id,
@@ -17528,9 +18934,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 updates.get("primaryDepartmentName", row["primary_department_name"]),
                 to_json(participant_ids if participant_ids is not None else from_json(row["participant_ids_json"], [])),
                 now_iso(),
+                "queued" if organization_id else (str(row["sync_status"] or "") if "sync_status" in row.keys() else "local"),
+                "update" if organization_id else "",
+                "",
                 event_line_id,
             ),
         )
+        if organization_id:
+            _queue_sync_action("event_line", event_line_id, "update")
+            _schedule_local_cloud_sync(force=True)
         updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not updated_row:
             raise HTTPException(status_code=500, detail="Event line update failed")
@@ -17554,103 +18966,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/close")
     def close_event_line(event_line_id: str) -> dict:
-        cloud_result: dict | None = None
-        if get_cloud_token():
-            # Try dedicated /close first; if 404/405, fall back to PATCH status=archived
-            try:
-                resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/close")
-                if isinstance(resp, dict):
-                    cloud_result = resp
-            except HTTPException as exc:
-                if exc.status_code not in (404, 405):
-                    raise
-                # Fallback: use PATCH to set status=archived
-                try:
-                    resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
-                    if isinstance(resp, dict):
-                        cloud_result = {"status": "archived"}
-                except HTTPException:
-                    pass
-        # Always sync local copy
-        row = state.db.fetchone("SELECT id, status FROM event_lines WHERE id = ?", (event_line_id,))
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if row and str(row["status"]) not in ("done", "archived"):
             timestamp = now_iso()
+            organization_id = str(row["organization_id"] or "") if "organization_id" in row.keys() else ""
             state.db.execute(
-                "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ?",
-                (timestamp, current_operator_name(), timestamp, event_line_id),
+                "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = '' WHERE id = ?",
+                (timestamp, current_operator_name(), timestamp, "queued" if organization_id else "local", "update" if organization_id else "", event_line_id),
             )
-        if cloud_result:
-            return cloud_result
+            if organization_id:
+                _queue_sync_action("event_line", event_line_id, "update")
+                _schedule_local_cloud_sync(force=True)
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
         return {"status": "archived"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/reopen")
     def reopen_event_line(event_line_id: str) -> dict:
-        cloud_result: dict | None = None
-        if get_cloud_token():
-            # Try dedicated /reopen first; if 404/405, fall back to PATCH status=active
-            try:
-                resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/reopen")
-                if isinstance(resp, dict):
-                    cloud_result = resp
-            except HTTPException as exc:
-                if exc.status_code not in (404, 405):
-                    raise
-                try:
-                    resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "active"})
-                    if isinstance(resp, dict):
-                        cloud_result = {"status": "active"}
-                except HTTPException:
-                    pass
-        # Always sync local copy
-        row = state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,))
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if row:
             timestamp = now_iso()
+            organization_id = str(row["organization_id"] or "") if "organization_id" in row.keys() else ""
             state.db.execute(
-                "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ? WHERE id = ?",
-                (timestamp, event_line_id),
+                "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = '' WHERE id = ?",
+                (timestamp, "queued" if organization_id else "local", "update" if organization_id else "", event_line_id),
             )
-        if cloud_result:
-            return cloud_result
+            if organization_id:
+                _queue_sync_action("event_line", event_line_id, "update")
+                _schedule_local_cloud_sync(force=True)
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
         return {"status": "active"}
 
     @app.delete("/api/v1/event-lines/{event_line_id}")
     def delete_event_line(event_line_id: str) -> dict:
-        cloud_deleted = False
-        if get_cloud_token():
-            # Try real DELETE first; if cloud returns 405 (not supported), fall back to PATCH archived
-            for attempt_method in ("DELETE", "PATCH_ARCHIVED"):
-                try:
-                    if attempt_method == "DELETE":
-                        resp = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
-                    else:
-                        resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
-                    cloud_deleted = True
-                    break
-                except HTTPException as exc:
-                    if exc.status_code == 403:
-                        raise
-                    if exc.status_code == 405 and attempt_method == "DELETE":
-                        continue  # try PATCH fallback
-                    break  # 404 or other — cloud doesn't have it
-        # Always clean local copy
-        row = state.db.fetchone("SELECT id, visibility_scope FROM event_lines WHERE id = ?", (event_line_id,))
-        if row and not cloud_deleted:
-            # Local-only fallback: only admin can delete
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        if row:
             if not current_session_is_admin():
                 raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
             task_count = int(state.db.scalar("SELECT COUNT(1) FROM tasks WHERE event_line_id = ?", (event_line_id,)) or 0)
             if task_count > 0:
                 raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
+            organization_id = str(row["organization_id"] or "") if "organization_id" in row.keys() else ""
         if row:
             state.db.execute("UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?", (now_iso(), event_line_id))
             state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
             state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
             state.db.execute("DELETE FROM event_lines WHERE id = ?", (event_line_id,))
-        if not row and not cloud_deleted:
+            if organization_id:
+                _queue_sync_action("event_line", event_line_id, "delete", {"id": event_line_id})
+                _schedule_local_cloud_sync(force=True)
+        if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
         return {"status": "deleted"}
 
@@ -20582,27 +21948,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/tasks", response_model=TaskBoardResponse)
     def list_tasks() -> TaskBoardResponse:
-        if not get_cloud_token():
-            return TaskBoardResponse(tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)), lists=task_lists(), tags=task_tags())
-        return cloud_task_board()
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync()
+            else:
+                if _try_bootstrap_local_cloud_snapshot():
+                    return TaskBoardResponse(
+                        tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)),
+                        lists=task_lists(),
+                        tags=task_tags(),
+                    )
+                try:
+                    return cloud_task_board()
+                except HTTPException:
+                    pass
+        return TaskBoardResponse(tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)), lists=task_lists(), tags=task_tags())
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def list_task_lists() -> TaskListLibraryResponse:
-        if get_cloud_token():
-            payload = cloud_request("GET", "/api/v1/task-lists")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid task list payload")
-            return TaskListLibraryResponse(lists=[TaskListRecord(**item) for item in payload.get("lists", []) if isinstance(item, dict)])
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync()
+            else:
+                _try_bootstrap_local_cloud_snapshot()
         return TaskListLibraryResponse(lists=task_lists())
 
     @app.post("/api/v1/task-lists", response_model=TaskListRecord)
     def create_task_list(payload: TaskListMutationPayload) -> TaskListRecord:
-        if get_cloud_token():
-            response = cloud_request("POST", "/api/v1/task-lists", json_body=payload.model_dump(exclude_none=True))
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid task list payload")
-            return TaskListRecord(**response)
         session_user = get_cached_session_user()
+        organization_id = session_user.organizationId if session_user else ""
         if session_user and session_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
         trimmed_name = payload.name.strip()
@@ -20617,24 +21991,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute("UPDATE task_lists SET is_default = 0 WHERE scope = ?", (next_scope,))
         state.db.execute(
             """
-            INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO task_lists(
+                id, organization_id, name, color, sort_order, is_default, scope, archived_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, '', '', '', ?, '')
             """,
-            (list_id, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
+            (list_id, organization_id, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope, "queued" if organization_id else "local", "create" if organization_id else ""),
         )
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert row is not None
         log_activity("task-list.create", "task_list", list_id, payload.model_dump(exclude_none=True))
+        if organization_id:
+            _queue_sync_action("task_list", list_id, "create")
+            _schedule_local_cloud_sync(force=True)
         return _local_task_list_record(row)
 
     @app.patch("/api/v1/task-lists/{list_id}", response_model=TaskListRecord)
     def update_task_list(list_id: str, payload: TaskListMutationPayload) -> TaskListRecord:
-        if get_cloud_token():
-            response = cloud_request("PATCH", f"/api/v1/task-lists/{list_id}", json_body=payload.model_dump(exclude_none=True))
-            if not isinstance(response, dict):
-                raise HTTPException(status_code=502, detail="Invalid task list payload")
-            return TaskListRecord(**response)
         session_user = get_cached_session_user()
+        organization_id = session_user.organizationId if session_user else ""
         if session_user and session_user.primaryRole != "admin":
             row_scope = None
             row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
@@ -20701,14 +22077,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         updated = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert updated is not None
         log_activity("task-list.update", "task_list", list_id, payload.model_dump(exclude_none=True))
+        if organization_id:
+            _update_sync_metadata("task_lists", list_id, sync_status="queued", pending_sync_action="update", last_sync_error="")
+            _queue_sync_action("task_list", list_id, "update")
+            _schedule_local_cloud_sync(force=True)
         return _local_task_list_record(updated)
 
     @app.delete("/api/v1/task-lists/{list_id}")
     def delete_task_list(list_id: str) -> dict[str, bool]:
-        if get_cloud_token():
-            cloud_request("DELETE", f"/api/v1/task-lists/{list_id}")
-            return {"deleted": True}
         session_user = get_cached_session_user()
+        organization_id = session_user.organizationId if session_user else ""
         if session_user and session_user.primaryRole != "admin":
             row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
             if not row or str(row["scope"] or "org") != "personal":
@@ -20733,34 +22111,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
         state.db.execute("DELETE FROM task_lists WHERE id = ?", (list_id,))
         log_activity("task-list.delete", "task_list", list_id, {})
+        if organization_id:
+            _queue_sync_action("task_list", list_id, "delete", {"id": list_id})
+            _schedule_local_cloud_sync(force=True)
         return {"deleted": True}
 
     @app.get("/api/v1/task-tags", response_model=TaskTagLibraryResponse)
     def list_task_tags() -> TaskTagLibraryResponse:
-        if get_cloud_token():
-            response = cloud_request("GET", "/api/v1/task-tags")
-            if isinstance(response, dict):
-                return TaskTagLibraryResponse(
-                    tags=[build_cloud_task_tag(item) for item in response.get("tags", []) if isinstance(item, dict)]
-                )
-        operator_row = current_operator_row()
-        return TaskTagLibraryResponse(tags=_visible_local_task_tags(state.db, str(operator_row["id"])))
+        _schedule_local_cloud_sync()
+        return TaskTagLibraryResponse(tags=task_tags())
 
     @app.post("/api/v1/task-tags", response_model=TaskTagRecord)
     def create_task_tag(payload: TaskTagMutationPayload) -> TaskTagRecord:
-        if get_cloud_token():
-            response = cloud_request("POST", "/api/v1/task-tags", payload.model_dump())
-            if isinstance(response, dict):
-                return build_cloud_task_tag(response)
         operator_row = current_operator_row()
-        return _ensure_local_tag(state.db, str(operator_row["id"]), payload.name, payload.scope, payload.color)
+        created = _ensure_local_tag(state.db, str(operator_row["id"]), payload.name, payload.scope, payload.color)
+        session_user = get_cached_session_user()
+        if session_user and payload.scope == "org":
+            state.db.execute("UPDATE task_tags SET organization_id = ?, sync_status = 'queued', pending_sync_action = 'create', last_sync_error = '' WHERE id = ?", (session_user.organizationId, created.id))
+            _queue_sync_action("task_tag", created.id, "create")
+            _schedule_local_cloud_sync(force=True)
+        return created
 
     @app.patch("/api/v1/task-tags/{tag_id}", response_model=TaskTagRecord)
     def update_task_tag(tag_id: str, payload: TaskTagMutationPayload) -> TaskTagRecord:
-        if get_cloud_token():
-            response = cloud_request("PATCH", f"/api/v1/task-tags/{tag_id}", payload.model_dump())
-            if isinstance(response, dict):
-                return build_cloud_task_tag(response)
         row = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
         if not row:
             raise HTTPException(status_code=404, detail="标签不存在")
@@ -20771,22 +22144,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         updated = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
         assert updated is not None
+        session_user = get_cached_session_user()
+        if session_user and str(updated["scope"] or "org") == "org":
+            state.db.execute("UPDATE task_tags SET organization_id = COALESCE(NULLIF(organization_id, ''), ?), sync_status = 'queued', pending_sync_action = 'update', last_sync_error = '' WHERE id = ?", (session_user.organizationId, tag_id))
+            _queue_sync_action("task_tag", tag_id, "update")
+            _schedule_local_cloud_sync(force=True)
         return _local_task_tag_record(updated)
 
     @app.delete("/api/v1/task-tags/{tag_id}")
     def delete_task_tag(tag_id: str) -> dict[str, bool]:
-        if get_cloud_token():
-            cloud_request("DELETE", f"/api/v1/task-tags/{tag_id}")
-            return {"deleted": True}
         row = state.db.fetchone("SELECT * FROM task_tags WHERE id = ?", (tag_id,))
         if not row:
             raise HTTPException(status_code=404, detail="标签不存在")
+        session_user = get_cached_session_user()
         state.db.execute("DELETE FROM task_tags WHERE id = ?", (tag_id,))
+        if session_user and str(row["scope"] or "org") == "org":
+            _queue_sync_action("task_tag", tag_id, "delete", {"id": tag_id})
+            _schedule_local_cloud_sync(force=True)
         return {"deleted": True}
 
     @app.post("/api/v1/tasks/refresh-contexts", response_model=TaskContextRefreshResultRecord)
     def refresh_task_contexts() -> TaskContextRefreshResultRecord:
-        task_records = cloud_task_board().tasks if get_cloud_token() else fetch_tasks()
+        task_records = cloud_task_board().tasks if has_active_cloud_session() else fetch_tasks()
         clients = [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
         event_lines = list_event_lines()
         project_structures: dict[str, ProjectStructureResponse] = {}
@@ -20831,7 +22210,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/bootstrap-event-lines", response_model=TaskEventLineBootstrapResultRecord)
     def bootstrap_task_event_lines() -> TaskEventLineBootstrapResultRecord:
-        task_records = cloud_task_board().tasks if get_cloud_token() else fetch_tasks()
+        task_records = cloud_task_board().tasks if has_active_cloud_session() else fetch_tasks()
         existing_event_lines = list_event_lines()
         event_line_by_signature = {
             f"{(item.primaryClientId or '').strip()}::{item.name.strip()}": item
@@ -20880,10 +22259,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/tasks/{task_id}", response_model=TaskRecord)
     def update_task(task_id: str, payload: TaskUpdatePayload) -> TaskRecord:
-        if not get_cloud_token():
+        if True:
             row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
             if not row:
                 raise HTTPException(status_code=404, detail="Task not found")
+            session_user = get_cached_session_user()
+            organization_id = str(row["organization_id"] or (session_user.organizationId if session_user else ""))
             if payload.listId:
                 list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (payload.listId,))
                 if not list_row or list_row["archived_at"]:
@@ -20935,6 +22316,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 event_line_context=event_line_context,
                 attachment_count=attachment_count,
             )
+            owner_field_touched = "ownerId" in payload.model_fields_set
+            owner_name_field_touched = "ownerName" in payload.model_fields_set
             merged = {
                 "title": payload.title or row["title"],
                 "description": payload.desc if payload.desc is not None else row["description"],
@@ -20950,7 +22333,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "start_date": payload.startDate if payload.startDate is not None else row["start_date"],
                 "due_date": payload.dueDate if payload.dueDate is not None else row["due_date"],
                 "duration_minutes": payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
-                "owner_name": payload.ownerName or row["owner_name"],
+                "owner_id": payload.ownerId if owner_field_touched else (str(row["owner_id"]) if row["owner_id"] else None),
+                "owner_name": payload.ownerName if owner_name_field_touched else row["owner_name"],
+                "progress_status": payload.status or row["progress_status"] or row["status"],
                 "business_category": business_category,
                 "current_blocker": current_blocker,
                 "next_action": next_action,
@@ -20963,7 +22348,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 UPDATE tasks
-                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_id = ?, owner_name = ?, progress_status = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = ?
                 WHERE id = ?
                 """,
                 (
@@ -20981,7 +22366,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     merged["start_date"],
                     merged["due_date"],
                     merged["duration_minutes"],
+                    merged["owner_id"],
                     merged["owner_name"],
+                    merged["progress_status"],
                     merged["business_category"],
                     merged["current_blocker"],
                     merged["next_action"],
@@ -20990,9 +22377,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     merged["tags_json"],
                     merged["tag_ids_json"],
                     merged["updated_at"],
+                    "queued" if organization_id else str(row["sync_status"] or "local"),
+                    "update" if organization_id else str(row["pending_sync_action"] or ""),
+                    "",
                     task_id,
                 ),
             )
+            if payload.collaboratorIds is not None or owner_field_touched:
+                collaborator_ids = [item for item in (payload.collaboratorIds if payload.collaboratorIds is not None else [str(item["user_id"]) for item in _local_task_collaborator_rows(task_id)]) if item]
+                next_owner_id = str(merged["owner_id"]) if merged["owner_id"] else None
+                if next_owner_id and next_owner_id not in collaborator_ids:
+                    collaborator_ids = [next_owner_id, *collaborator_ids]
+                collaborator_ids = list(dict.fromkeys(collaborator_ids))
+                state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
+                for index, collaborator_id in enumerate(collaborator_ids):
+                    full_name = session_user.fullName if session_user and collaborator_id == session_user.id else ""
+                    email = session_user.email if session_user and collaborator_id == session_user.id else ""
+                    state.db.execute(
+                        """
+                        INSERT INTO task_collaborators(
+                            task_id, organization_id, user_id, full_name, email, order_index, is_owner, inbox_status, return_reason, handled_at, created_at, updated_at
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            organization_id,
+                            collaborator_id,
+                            full_name,
+                            email,
+                            index,
+                            1 if collaborator_id == next_owner_id else 0,
+                            "accepted" if session_user and collaborator_id == session_user.id else "pending",
+                            str(row["updated_at"]) if session_user and collaborator_id == session_user.id else None,
+                            str(row["created_at"]),
+                            merged["updated_at"],
+                        ),
+                    )
             _sync_task_attachment_scope(
                 state.db,
                 state.data_dir,
@@ -21101,6 +22521,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 created_at=str(merged["updated_at"]),
                 ai_service=state.ai,
             )
+            if organization_id:
+                _queue_sync_action("task", task_id, "update")
+                _schedule_local_cloud_sync(force=True)
             return updated_task
         cloud_status_map = {"todo": "todo", "doing": "doing", "done": "done", "inbox": "inbox", "rejected": "rejected"}
         response = cloud_request(
@@ -21149,10 +22572,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.delete("/api/v1/tasks/{task_id}")
     def delete_task(task_id: str) -> dict[str, bool]:
-        if not get_cloud_token():
+        if True:
             row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
             if not row:
                 raise HTTPException(status_code=404, detail="Task not found")
+            organization_id = str(row["organization_id"] or "")
             task_title = str(row["title"] or "任务")
             event_line_id = str(row["event_line_id"]) if row["event_line_id"] else None
             client_id = str(row["client_id"]) if row["client_id"] else None
@@ -21169,28 +22593,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             state.db.execute("DELETE FROM growth_signal_events WHERE task_id = ?", (task_id,))
             state.db.execute("DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,))
+            state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
             state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             log_activity("task.delete", "task", task_id, {"title": task_title, "eventLineId": event_line_id, "clientId": client_id})
             if event_line_id:
                 refresh_event_line_memory_snapshot(state.db, event_line_id)
             if client_id:
                 refresh_organization_notebook_snapshot(state.db, client_id)
+            if organization_id:
+                _queue_sync_action("task", task_id, "delete", {"id": task_id, "title": task_title})
+                _schedule_local_cloud_sync(force=True)
             return {"deleted": True}
-        # Cloud mode: try cloud delete, also clean up local data
-        try:
-            cloud_request("DELETE", f"/api/v1/tasks/{task_id}")
-        except HTTPException:
-            pass  # Cloud task may not exist (local-only) — still clean up locally
-        # Clean up local data regardless
-        state.db.execute("DELETE FROM task_attachments_cloud WHERE task_id = ?", (task_id,))
-        state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-        state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?", (task_id,))
-        state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (task_id,))
-        state.db.execute("DELETE FROM growth_signal_events WHERE task_id = ?", (task_id,))
-        state.db.execute("DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,))
-        _cloud_task_board_cache["data"] = None  # Invalidate cache
-        log_activity("task.delete", "task", task_id, {})
-        return {"deleted": True}
 
     @app.post("/api/v1/tasks/{task_id}/attachments", response_model=TaskRecord)
     def upload_task_attachment(
@@ -21476,35 +22889,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
     def confirm_task(task_id: str) -> TaskRecord:
-        if not get_cloud_token():
-            state.db.execute("UPDATE tasks SET status = 'doing', updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            log_activity("task.confirm", "task", task_id, {})
-            return fetch_tasks("t.id = ?", (task_id,))[0]
-        user = require_session_user()
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/collaborators/{user.id}/accept")
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        log_activity("task.confirm", "task", task_id, {"userId": user.id})
-        return build_cloud_task(response, {})
+        timestamp = now_iso()
+        user = get_cached_session_user()
+        if user:
+            state.db.execute(
+                "UPDATE task_collaborators SET inbox_status = 'accepted', handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
+                (timestamp, timestamp, task_id, user.id),
+            )
+            state.db.execute(
+                "UPDATE tasks SET status = 'doing', progress_status = 'doing', updated_at = ?, sync_status = 'queued', pending_sync_action = 'update', last_sync_error = '' WHERE id = ?",
+                (timestamp, task_id),
+            )
+            _queue_sync_action("task", task_id, "update")
+            _schedule_local_cloud_sync(force=True)
+        else:
+            state.db.execute("UPDATE tasks SET status = 'doing', progress_status = 'doing', updated_at = ? WHERE id = ?", (timestamp, task_id))
+        log_activity("task.confirm", "task", task_id, {"userId": user.id if user else None})
+        return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.post("/api/v1/tasks/{task_id}/reject", response_model=TaskRecord)
     def reject_task(task_id: str, payload: TaskRejectPayload) -> TaskRecord:
-        if not get_cloud_token():
-            state.db.execute("UPDATE tasks SET status = 'rejected', updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            upsert_task_note(task_id, payload.reason)
-            log_activity("task.reject", "task", task_id, {"reason": payload.reason})
-            return fetch_tasks("t.id = ?", (task_id,))[0]
-        user = require_session_user()
-        response = cloud_request(
-            "POST",
-            f"/api/v1/tasks/{task_id}/collaborators/{user.id}/return",
-            json_body={"reason": payload.reason},
-        )
+        timestamp = now_iso()
+        user = get_cached_session_user()
+        if user:
+            state.db.execute(
+                "UPDATE task_collaborators SET inbox_status = 'returned', return_reason = ?, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
+                (payload.reason, timestamp, timestamp, task_id, user.id),
+            )
+            state.db.execute(
+                "UPDATE tasks SET status = 'rejected', progress_status = 'rejected', updated_at = ?, sync_status = 'queued', pending_sync_action = 'update', last_sync_error = '' WHERE id = ?",
+                (timestamp, task_id),
+            )
+            _queue_sync_action("task", task_id, "update")
+            _schedule_local_cloud_sync(force=True)
+        else:
+            state.db.execute("UPDATE tasks SET status = 'rejected', progress_status = 'rejected', updated_at = ? WHERE id = ?", (timestamp, task_id))
         upsert_task_note(task_id, payload.reason)
-        log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": user.id})
-        if not isinstance(response, dict):
-            raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        return build_cloud_task(response, {})
+        log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": user.id if user else None})
+        return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
@@ -21544,18 +22966,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def save_task_note(task_id: str, payload: TaskNotePayload) -> TaskRecord:
         upsert_task_note(task_id, payload.note)
         log_activity("task.note", "task", task_id, {"noteLength": len(payload.note)})
-        if not get_cloud_token():
-            state.db.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            return fetch_tasks("t.id = ?", (task_id,))[0]
-        try:
-            cloud_request("POST", f"/api/v1/tasks/{task_id}/note", {"note": payload.note})
-        except HTTPException:
-            pass  # 云端保存失败时保留本地备注，不阻断用户操作
-        board = cloud_task_board()
-        task = next((item for item in board.tasks if item.id == task_id), None)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        return task
+        session_user = get_cached_session_user()
+        timestamp = now_iso()
+        if session_user:
+            state.db.execute(
+                "UPDATE tasks SET updated_at = ?, sync_status = 'queued', pending_sync_action = 'update', last_sync_error = '' WHERE id = ?",
+                (timestamp, task_id),
+            )
+            _queue_sync_action("task", task_id, "update")
+            _schedule_local_cloud_sync(force=True)
+        else:
+            state.db.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (timestamp, task_id))
+        return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.get("/api/v1/tasks/{task_id}/activity", response_model=list[TaskActivityRecord])
     def get_task_activity(task_id: str) -> list[TaskActivityRecord]:
@@ -21631,77 +23053,71 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/reviews", response_model=ReviewResponse)
     def list_reviews(weekLabel: str | None = Query(default=None)) -> ReviewResponse:
-        if get_cloud_token():
-            suffix = f"?weekLabel={quote(weekLabel)}" if weekLabel else ""
-            payload = cloud_request("GET", f"/api/v1/reviews/dashboard{suffix}")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid review payload")
-            return augment_review_response(ReviewResponse(**payload), weekLabel)
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync(force=True)
+            else:
+                if _try_bootstrap_local_cloud_snapshot():
+                    return local_review_dashboard(weekLabel)
+                try:
+                    suffix = f"?weekLabel={quote(weekLabel)}" if weekLabel else ""
+                    payload = cloud_request("GET", f"/api/v1/reviews/dashboard{suffix}")
+                    if isinstance(payload, dict):
+                        return ReviewResponse(**payload)
+                except HTTPException:
+                    pass
         return local_review_dashboard(weekLabel)
 
     @app.get("/api/v1/reviews/history", response_model=ReviewHistoryResponse)
     def list_review_history() -> ReviewHistoryResponse:
-        if get_cloud_token():
-            payload = cloud_request("GET", "/api/v1/reviews/history")
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid review history payload")
-            return ReviewHistoryResponse(**payload)
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync(force=True)
+            else:
+                if _try_bootstrap_local_cloud_snapshot():
+                    return local_review_history()
+                try:
+                    payload = cloud_request("GET", "/api/v1/reviews/history")
+                    if isinstance(payload, dict):
+                        return ReviewHistoryResponse(**payload)
+                except HTTPException:
+                    pass
         return local_review_history()
 
     @app.post("/api/v1/reviews/weekly", response_model=ReviewResponse)
     def create_weekly_review(payload: WeeklyReviewPayload) -> ReviewResponse:
-        if get_cloud_token():
-            response_payload = cloud_request("POST", "/api/v1/reviews/weekly", json_body=payload.model_dump())
-            if not isinstance(response_payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid review payload")
-            log_activity(
-                "review.create",
-                "weekly_review",
-                str(response_payload.get("currentReview", {}).get("id", "review")),
-                {"weekLabel": payload.weekLabel, "personalExcludedFromAggregation": True},
-            )
-            try:
-                parsed_response = ReviewResponse(**response_payload)
-                response = augment_review_response(parsed_response, payload.weekLabel)
-            except Exception as augment_exc:
-                import traceback
-                err_detail = traceback.format_exc()
-                # Write error to file for debugging
-                try:
-                    Path(state.data_dir).joinpath("augment_error.log").write_text(err_detail, encoding="utf-8")
-                except Exception:
-                    pass
-                # Try returning raw response without augmentation
-                try:
-                    response = ReviewResponse(**response_payload)
-                except Exception:
-                    raise HTTPException(status_code=500, detail=f"Review parse failed: {augment_exc}") from augment_exc
-            if response.currentReview:
-                user_id, user_name = resolve_growth_actor()
-                ingest_review_growth(
-                    state.db,
-                    user_id=user_id,
-                    user_name=user_name,
-                    review=response.currentReview,
-                    task_entries=[*response.workItems, *response.personalItems],
-                )
-            return response
         created_at = now_iso()
-        operator_id = str(current_operator_row()["id"])
+        organization_id, session_user_id = _current_local_scope()
+        operator_id = session_user_id or str(current_operator_row()["id"])
         existing = local_review_row_for_week(payload.weekLabel)
+        sync_action = "update" if existing else "create"
         if existing:
             review_id = str(existing["id"])
             state.db.execute(
                 """
                 UPDATE weekly_reviews
-                SET work_free_note = ?, personal_growth_note = ?, personal_private_note = ?, updated_at = ?
+                SET organization_id = ?, user_id = ?, work_progress = ?, work_blocker = ?, blocker_type = ?, work_direction = ?,
+                    next_week_focus = ?, support_needed = ?, related_plan_ids_json = ?, work_free_note = ?, personal_growth_note = ?,
+                    personal_private_note = ?, submitted_at = ?, updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = ''
                 WHERE id = ?
                 """,
                 (
+                    organization_id or "",
+                    operator_id,
+                    payload.workProgress.strip(),
+                    payload.workBlocker.strip(),
+                    payload.blockerType.strip(),
+                    payload.workDirection.strip(),
+                    payload.nextWeekFocus.strip(),
+                    payload.supportNeeded.strip(),
+                    to_json(payload.relatedPlanIds),
                     payload.workFreeNote.strip(),
                     payload.personalGrowthNote.strip(),
                     payload.personalPrivateNote.strip(),
                     created_at,
+                    created_at,
+                    "queued" if organization_id else "local",
+                    sync_action if organization_id else "",
                     review_id,
                 ),
             )
@@ -21710,17 +23126,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO weekly_reviews(
-                    id, week_label, operator_id, summary, work_free_note, personal_growth_note, personal_private_note, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, organization_id, week_label, operator_id, user_id, work_progress, work_blocker, blocker_type, work_direction,
+                    next_week_focus, support_needed, related_plan_ids_json, summary, work_free_note, personal_growth_note, personal_private_note,
+                    submitted_at, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     review_id,
+                    organization_id or "",
                     payload.weekLabel,
                     operator_id,
+                    operator_id,
+                    payload.workProgress.strip(),
+                    payload.workBlocker.strip(),
+                    payload.blockerType.strip(),
+                    payload.workDirection.strip(),
+                    payload.nextWeekFocus.strip(),
+                    payload.supportNeeded.strip(),
+                    to_json(payload.relatedPlanIds),
                     "",
                     payload.workFreeNote.strip(),
                     payload.personalGrowthNote.strip(),
                     payload.personalPrivateNote.strip(),
+                    created_at,
                     created_at,
                     created_at,
                 ),
@@ -21750,22 +23178,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.db.execute(
                     """
                     UPDATE weekly_review_task_entries
-                    SET content_domain = ?, note = ?, structured_note_json = ?, reviewed_at = ?, task_snapshot_json = ?, updated_at = ?
+                    SET organization_id = ?, user_id = ?, content_domain = ?, note = ?, structured_note_json = ?, reviewed_at = ?, task_snapshot_json = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (content_domain, note, to_json(structured_note.model_dump()), created_at, to_json(snapshot), created_at, str(existing_entry["id"])),
+                    (organization_id or "", operator_id, content_domain, note, to_json(structured_note.model_dump()), created_at, to_json(snapshot), created_at, str(existing_entry["id"])),
                 )
             else:
                 state.db.execute(
                     """
                     INSERT INTO weekly_review_task_entries(
-                        id, review_id, task_id, week_label, content_domain, note, structured_note_json, reviewed_at, task_snapshot_json, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, organization_id, review_id, task_id, user_id, week_label, content_domain, note, structured_note_json, reviewed_at, task_snapshot_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_id("review_item"),
+                        organization_id or "",
                         review_id,
                         task_id,
+                        operator_id,
                         payload.weekLabel,
                         content_domain,
                         note,
@@ -21793,20 +23223,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             UPDATE weekly_reviews
-            SET summary = ?, work_free_note = ?, personal_growth_note = ?, personal_private_note = ?, updated_at = ?
+            SET summary = ?, work_progress = ?, work_blocker = ?, blocker_type = ?, work_direction = ?, next_week_focus = ?, support_needed = ?,
+                related_plan_ids_json = ?, work_free_note = ?, personal_growth_note = ?, personal_private_note = ?, submitted_at = ?, updated_at = ?,
+                sync_status = ?, pending_sync_action = ?, last_sync_error = ''
             WHERE id = ?
             """,
             (
                 summarize_local_review_notes(reviewed_work_items),
+                payload.workProgress.strip(),
+                payload.workBlocker.strip(),
+                payload.blockerType.strip(),
+                payload.workDirection.strip(),
+                payload.nextWeekFocus.strip(),
+                payload.supportNeeded.strip(),
+                to_json(payload.relatedPlanIds),
                 payload.workFreeNote.strip(),
                 payload.personalGrowthNote.strip(),
                 payload.personalPrivateNote.strip(),
                 created_at,
+                created_at,
+                "queued" if organization_id else "local",
+                sync_action if organization_id else "",
                 review_id,
             ),
         )
         log_activity("review.create", "weekly_review", review_id, {"weekLabel": payload.weekLabel})
         record_weekly_review_writeback(state.db, review_id=review_id)
+        if organization_id:
+            _queue_sync_action("weekly_review", review_id, sync_action)
+            _schedule_local_cloud_sync(force=True)
         response = local_review_dashboard(payload.weekLabel)
         if response.currentReview:
             _, user_name = resolve_growth_actor()
@@ -23636,7 +25081,13 @@ def backfill_local_task_tag_ids(state: AppState) -> None:
             (to_json([item.id for item in resolved]), to_json([item.name for item in resolved]), timestamp, str(row["id"])),
         )
     state.db.execute(
-        "UPDATE weekly_reviews SET operator_id = COALESCE(NULLIF(operator_id, ''), ?), updated_at = COALESCE(NULLIF(updated_at, ''), created_at) WHERE operator_id = '' OR updated_at = ''",
+        """
+        UPDATE weekly_reviews
+        SET operator_id = COALESCE(NULLIF(operator_id, ''), ?),
+            updated_at = COALESCE(NULLIF(updated_at, ''), created_at),
+            submitted_at = COALESCE(NULLIF(submitted_at, ''), NULLIF(updated_at, ''), created_at)
+        WHERE operator_id = '' OR updated_at = '' OR submitted_at = ''
+        """,
         (operator_id,),
     )
 

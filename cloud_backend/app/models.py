@@ -670,6 +670,7 @@ class TaskBoardResponse(BaseModel):
 
 
 class TaskCreatePayload(BaseModel):
+    id: str | None = None
     title: str
     description: str = ""
     priority: Priority = "normal"
@@ -818,6 +819,7 @@ class EventLineReportSnapshotRecord(BaseModel):
 
 
 class EventLineCreatePayload(BaseModel):
+    id: str | None = None
     name: str = Field(min_length=1)
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
     status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
@@ -949,6 +951,7 @@ class TaskNotePayload(BaseModel):
 
 
 class TaskTagMutationPayload(BaseModel):
+    id: str | None = None
     name: str = Field(min_length=1, max_length=20)
     color: str | None = None
     scope: Literal["org", "self"] = "org"
@@ -956,6 +959,7 @@ class TaskTagMutationPayload(BaseModel):
 
 
 class TaskListMutationPayload(BaseModel):
+    id: str | None = None
     name: str = Field(min_length=1, max_length=30)
     color: str = Field(min_length=4, max_length=16)
     isDefault: bool | None = None
@@ -1247,6 +1251,7 @@ class ReviewHistoryResponse(BaseModel):
 
 
 class WeeklyReviewCreatePayload(BaseModel):
+    id: str | None = None
     weekLabel: str
     taskEntries: list[dict[str, object]] = Field(default_factory=list)
     workProgress: str = ""

@@ -5921,6 +5921,7 @@ def _ensure_task_tag(
     name: str,
     scope: str = "org",
     color: str | None = None,
+    forced_id: str | None = None,
 ) -> TaskTagRecord:
     trimmed = name.strip()
     if not trimmed:
@@ -5945,7 +5946,7 @@ def _ensure_task_tag(
             existing = state.db.fetchone("SELECT * FROM task_tag_library WHERE id = ?", (str(existing["id"]),))
         assert existing is not None
         return _task_tag_record(existing)
-    tag_id = new_id("tag")
+    tag_id = (forced_id or "").strip() or new_id("tag")
     state.db.execute(
         """
         INSERT INTO task_tag_library(id, organization_id, name, scope, color, owner_user_id, created_by, created_at, updated_at, archived_at)
@@ -8186,7 +8187,7 @@ def create_app() -> FastAPI:
         if payload.ownerId:
             _get_user_or_404(state, payload.ownerId)
         timestamp = now_iso()
-        event_line_id = new_id("eline")
+        event_line_id = (payload.id or "").strip() or new_id("eline")
         owner_id = payload.ownerId or current_user.id
         participant_ids = list(dict.fromkeys([owner_id, *[item for item in payload.participantIds if item]]))
         department_name = None
@@ -9869,7 +9870,7 @@ def create_app() -> FastAPI:
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
-        list_id = new_id("list")
+        list_id = (payload.id or "").strip() or new_id("list")
         next_scope = payload.scope or "org"
         is_default = bool(payload.isDefault) or state.db.scalar(
             "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
@@ -10011,7 +10012,7 @@ def create_app() -> FastAPI:
         payload: TaskTagMutationPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskTagRecord:
-        return _ensure_task_tag(state, current_user, payload.name, payload.scope, payload.color)
+        return _ensure_task_tag(state, current_user, payload.name, payload.scope, payload.color, payload.id)
 
     @app.patch("/api/v1/task-tags/{tag_id}", response_model=TaskTagRecord)
     def update_task_tag(
@@ -10084,12 +10085,13 @@ def create_app() -> FastAPI:
         if not list_row or list_row["archived_at"]:
             raise HTTPException(status_code=400, detail="Invalid task list")
         collaborator_ids = [item for item in payload.collaboratorIds if item]
-        if payload.ownerId and payload.ownerId in collaborator_ids:
-            collaborator_ids = [payload.ownerId] + [item for item in collaborator_ids if item != payload.ownerId]
-        if not collaborator_ids:
-            collaborator_ids = [current_user.id]
-        owner_id = collaborator_ids[0]
-        for user_id in collaborator_ids:
+        owner_id = (payload.ownerId or "").strip() or None
+        if owner_id and owner_id in collaborator_ids:
+            collaborator_ids = [owner_id] + [item for item in collaborator_ids if item != owner_id]
+        elif owner_id:
+            collaborator_ids = [owner_id, *[item for item in collaborator_ids if item != owner_id]]
+        collaborator_ids = list(dict.fromkeys(collaborator_ids))
+        for user_id in ([owner_id] if owner_id else []) + collaborator_ids:
             _get_user_or_404(state, user_id)
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
         requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
@@ -10101,7 +10103,7 @@ def create_app() -> FastAPI:
         if event_line_client_id:
             requested_client_id = event_line_client_id
         timestamp = now_iso()
-        task_id = new_id("task")
+        task_id = (payload.id or "").strip() or new_id("task")
         resolved_tags: list[TaskTagRecord] = []
         (
             business_category,
@@ -10169,7 +10171,7 @@ def create_app() -> FastAPI:
                     task_id,
                     user_id,
                     index,
-                    1 if index == 0 else 0,
+                    1 if owner_id and user_id == owner_id else 0,
                     "accepted" if user_id == current_user.id else "pending",
                     timestamp if user_id == current_user.id else None,
                     timestamp,
@@ -10204,13 +10206,14 @@ def create_app() -> FastAPI:
         )
         task_row = _task_row_or_404(state, task_id)
         _sync_task_org_link(state, task_row, collaborator_ids)
-        _notify_task_feishu_recipients(
-            state,
-            task_row=task_row,
-            current_user=current_user,
-            collaborator_ids=collaborator_ids,
-            event_type="created",
-        )
+        if owner_id:
+            _notify_task_feishu_recipients(
+                state,
+                task_row=task_row,
+                current_user=current_user,
+                collaborator_ids=collaborator_ids,
+                event_type="created",
+            )
         return _task_record(state, task_row, current_user.id)
 
     @app.patch("/api/v1/tasks/{task_id}", response_model=TaskRecord)
@@ -10221,15 +10224,16 @@ def create_app() -> FastAPI:
     ) -> TaskRecord:
         row = _task_row_or_404(state, task_id)
         existing_collaborator_ids = _task_collaborator_ids(state, task_id)
+        owner_field_touched = "ownerId" in payload.model_fields_set
+        next_owner_id = (payload.ownerId or "").strip() if owner_field_touched and payload.ownerId else None
+        if not owner_field_touched:
+            next_owner_id = str(row["owner_id"]) if row["owner_id"] else None
         next_collaborator_ids = [item for item in (payload.collaboratorIds if payload.collaboratorIds is not None else existing_collaborator_ids) if item]
-        if payload.ownerId and payload.ownerId in next_collaborator_ids:
-            next_collaborator_ids = [payload.ownerId] + [item for item in next_collaborator_ids if item != payload.ownerId]
-        elif payload.ownerId:
-            next_collaborator_ids = [payload.ownerId, *[item for item in next_collaborator_ids if item != payload.ownerId]]
-        if not next_collaborator_ids:
-            fallback_owner_id = payload.ownerId or (str(row["owner_id"]) if row["owner_id"] else current_user.id)
-            next_collaborator_ids = [fallback_owner_id]
-        next_owner_id = payload.ownerId or next_collaborator_ids[0]
+        if next_owner_id and next_owner_id in next_collaborator_ids:
+            next_collaborator_ids = [next_owner_id] + [item for item in next_collaborator_ids if item != next_owner_id]
+        elif next_owner_id:
+            next_collaborator_ids = [next_owner_id, *[item for item in next_collaborator_ids if item != next_owner_id]]
+        next_collaborator_ids = list(dict.fromkeys(next_collaborator_ids))
         previous_owner_id = str(row["owner_id"]) if row["owner_id"] else None
         previous_start_date = str(row["start_date"]) if row["start_date"] else None
         previous_due_date = str(row["due_date"]) if row["due_date"] else None
@@ -10247,7 +10251,7 @@ def create_app() -> FastAPI:
             (payload.startDate is not None and payload.startDate != (str(row["start_date"]) if row["start_date"] else None))
             or (payload.dueDate is not None and payload.dueDate != row["due_date"])
         )
-        owner_changed = payload.ownerId is not None and payload.ownerId != (str(row["owner_id"]) if row["owner_id"] else None)
+        owner_changed = owner_field_touched and next_owner_id != previous_owner_id
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
         if payload.listId:
             list_row = state.db.fetchone(
@@ -10292,6 +10296,8 @@ def create_app() -> FastAPI:
             evidence_count=payload.evidenceCount if "evidenceCount" in payload.model_fields_set else int(row["evidence_count"] or 0),
             event_line_row=event_line_row,
         )
+        for user_id in ([next_owner_id] if next_owner_id else []) + next_collaborator_ids:
+            _get_user_or_404(state, user_id)
         merged = {
             "title": payload.title or row["title"],
             "description": payload.description if payload.description is not None else row["description"],
@@ -10347,7 +10353,7 @@ def create_app() -> FastAPI:
                 task_id,
             ),
         )
-        if payload.collaboratorIds is not None or payload.ownerId is not None:
+        if payload.collaboratorIds is not None or owner_field_touched:
             state.db.execute("UPDATE tasks SET owner_id = ?, updated_at = ? WHERE id = ?", (next_owner_id, now_iso(), task_id))
             existing_rows = state.db.fetchall("SELECT user_id, inbox_status FROM task_collaborators WHERE task_id = ?", (task_id,))
             existing_by_user = {str(item["user_id"]): str(item["inbox_status"]) for item in existing_rows}
@@ -10363,7 +10369,7 @@ def create_app() -> FastAPI:
                         task_id,
                         user_id,
                         index,
-                        1 if index == 0 else 0,
+                        1 if next_owner_id and user_id == next_owner_id else 0,
                         existing_by_user.get(user_id, "accepted" if user_id == current_user.id else "pending"),
                         now_iso() if existing_by_user.get(user_id) == "accepted" else None,
                         now_iso(),
@@ -10408,7 +10414,7 @@ def create_app() -> FastAPI:
         if payload.collaboratorIds is not None:
             if {item for item in next_collaborator_ids if item} != {item for item in existing_collaborator_ids if item}:
                 changed_fields.append("collaboratorIds")
-        if changed_fields:
+        if changed_fields and next_owner_id:
             _notify_task_feishu_recipients(
                 state,
                 task_row=updated_row,
@@ -10863,7 +10869,7 @@ def create_app() -> FastAPI:
         if existing:
             review_id = str(existing["id"])
         else:
-            review_id = new_id("review")
+            review_id = (payload.id or "").strip() or new_id("review")
         normalized_entries: list[tuple[TaskRecord, str, str, str]] = []
         for entry in payload.taskEntries:
             task_id = str(entry.get("taskId", "")).strip()
