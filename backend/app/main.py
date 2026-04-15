@@ -17451,7 +17451,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _build_task_understanding_record(task: "TaskRecord") -> UnderstandingSnapshotV1Record:
         from app.services.understanding_builder import build_understanding_basic
         snapshot = WeeklyReviewTaskSnapshotRecord(
-            title=task.title, status=task.status, dueDate=task.dueDate,
+            title=task.title, desc=task.desc or "", status=task.status, dueDate=task.dueDate,
             createdAt=task.createdAt, ownerId=None, ownerName=None,
             clientId=task.clientId, clientName=task.clientName,
             eventLineId=task.eventLineId, eventLineName=task.eventLineName,
@@ -17460,7 +17460,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         entry = WeeklyReviewTaskEntryRecord(
             id=f"understanding_{task.id}", reviewId=None, taskId=task.id,
-            weekLabel="", contentDomain="work", note=task.desc or "",
+            weekLabel="", contentDomain="work", note="",
             taskSnapshot=snapshot,
         )
         return build_understanding_basic(ai=state.ai, task_entry=entry, org_dna_modules=list_organization_dna_modules())
@@ -17498,13 +17498,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cached = state.db.fetchone("SELECT snapshot_json FROM task_understanding_cache WHERE task_id = ?", (task_id,))
         if cached and cached["snapshot_json"]:
             return from_json(cached["snapshot_json"], {})
+        task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
         # 无缓存 → 后台排队，先返回占位
         Thread(target=_precompute_task_understanding, args=(task_id,), daemon=True).start()
         return {
-            "whatIsThis": "系统正在学习这个任务，请稍后刷新。",
-            "whyItMatters": "", "progressNow": "", "unknowns": "",
-            "knownFacts": [], "confidence": 0, "sourceBreakdown": [],
-            "coverage": 0, "optionalAdvice": None, "_pending": True,
+            "taskId": task_id,
+            "mode": "basic",
+            "whatIsThis": "智能摘要正在整理这条任务的上下文。",
+            "whyItMatters": "任务内容、项目背景和已归档材料会一起参与判断。",
+            "progressNow": "如果你刚补充过说明、项目或附件，摘要会在几秒内自动刷新。",
+            "unknowns": "当前先显示基础占位，整理完成后会自动替换成正式摘要。",
+            "knownFacts": [],
+            "confidence": 0,
+            "sourceBreakdown": [],
+            "coverage": 0,
+            "optionalAdvice": None,
+            "_pending": True,
         }
 
     @app.get("/api/v1/tasks/{task_id}/context-preview", response_model=TaskContextPreviewRecord)

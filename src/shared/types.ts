@@ -1245,6 +1245,7 @@ export interface AgentWeeklyPlanPayload {
 
 export interface WeeklyReviewTaskSnapshot {
   title: string;
+  desc?: string;
   status: TaskStatus;
   startDate?: string | null;
   dueDate?: string | null;
@@ -1764,7 +1765,7 @@ export interface ReviewDashboard {
 export type UnderstandingMode = 'basic' | 'enhanced';
 
 export interface UnderstandingSourceBreakdown {
-  sourceType: 'org_dna' | 'client_background' | 'quarterly_focus' | 'task_title' | 'task_desc' | 'review_note' | 'event_line_memory' | 'meeting' | 'support_request' | 'calendar' | 'attachment';
+  sourceType: 'org_dna' | 'client_background' | 'quarterly_focus' | 'task_title' | 'task_desc' | 'review_note' | 'event_line_memory' | 'meeting' | 'support_request' | 'knowledge_base' | 'calendar' | 'attachment';
   available: boolean;
   label: string;
 }

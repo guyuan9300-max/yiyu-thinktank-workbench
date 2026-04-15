@@ -1833,6 +1833,7 @@ class WeeklyReviewRecord(BaseModel):
 
 class WeeklyReviewTaskSnapshotRecord(BaseModel):
     title: str
+    desc: str = ""
     status: TaskStatus
     startDate: str | None = None
     dueDate: str | None = None

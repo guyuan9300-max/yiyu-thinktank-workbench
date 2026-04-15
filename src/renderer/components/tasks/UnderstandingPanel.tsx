@@ -1,9 +1,23 @@
-import type { UnderstandingSnapshotV1 } from '../../../shared/types';
+import type { UnderstandingSnapshotV1, UnderstandingSourceBreakdown } from '../../../shared/types';
 
-function confidenceBadge(confidence: number) {
-  if (confidence >= 70) return { label: '高置信', className: 'bg-emerald-50 text-emerald-700' };
-  if (confidence >= 40) return { label: '中置信', className: 'bg-amber-50 text-amber-700' };
-  return { label: '低置信', className: 'bg-slate-100 text-slate-500' };
+function completenessBadge(coverage: number) {
+  if (coverage >= 75) return { label: '信息较完整', className: 'bg-emerald-50 text-emerald-700' };
+  if (coverage >= 45) return { label: '基本可判断', className: 'bg-sky-50 text-sky-700' };
+  return { label: '信息较少', className: 'bg-amber-50 text-amber-700' };
+}
+
+const SOURCE_GROUPS: Array<{ key: string; label: string; types: UnderstandingSourceBreakdown['sourceType'][] }> = [
+  { key: 'org', label: '机构背景', types: ['org_dna', 'quarterly_focus'] },
+  { key: 'project', label: '项目背景', types: ['client_background'] },
+  { key: 'task', label: '任务内容', types: ['task_title', 'task_desc', 'review_note'] },
+  { key: 'context', label: '事件线/会议材料', types: ['event_line_memory', 'meeting', 'support_request', 'knowledge_base', 'attachment', 'calendar'] },
+];
+
+function summarizeSourceGroups(sourceBreakdown: UnderstandingSourceBreakdown[]) {
+  const availableTypes = new Set(sourceBreakdown.filter((item) => item.available).map((item) => item.sourceType));
+  const available = SOURCE_GROUPS.filter((group) => group.types.some((type) => availableTypes.has(type))).map((group) => group.label);
+  const missing = SOURCE_GROUPS.filter((group) => !group.types.some((type) => availableTypes.has(type))).map((group) => group.label);
+  return { available, missing };
 }
 
 type UnderstandingPanelProps = {
@@ -11,27 +25,23 @@ type UnderstandingPanelProps = {
 };
 
 export function UnderstandingPanel({ snapshot }: UnderstandingPanelProps) {
-  const badge = confidenceBadge(snapshot.confidence);
+  const badge = completenessBadge(snapshot.coverage);
+  const sourceSummary = summarizeSourceGroups(snapshot.sourceBreakdown);
+  const referenceSummary = sourceSummary.available.length > 0 ? sourceSummary.available.join('、') : '当前任务基础信息';
+  const suggestionSummary = sourceSummary.missing.length > 0 ? sourceSummary.missing.join('、') : '当前信息已够用';
 
   return (
     <div className="space-y-3">
-      {/* 状态条 */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${badge.className}`}>{badge.label}</span>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">
-          覆盖 {snapshot.coverage}%
+        <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${badge.className}`}>信息量：{badge.label}</span>
+        <span className="rounded-full bg-gray-50 px-2.5 py-1 text-[10px] font-bold text-gray-500">
+          已参考：{referenceSummary}
         </span>
-        <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-[#33449a]">
-          {snapshot.mode === 'enhanced' ? '增强模式' : '基础模式'}
+        <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-700">
+          建议补充：{suggestionSummary}
         </span>
-        {snapshot.sourceBreakdown.filter((s) => s.available).map((s) => (
-          <span key={s.sourceType} className="rounded-full bg-gray-50 px-2 py-0.5 text-[9px] font-bold text-gray-400">
-            {s.label}
-          </span>
-        ))}
       </div>
 
-      {/* 第一层：4 个核心问题 */}
       <div className="space-y-2.5">
         <div className="rounded-2xl bg-slate-50 px-4 py-3">
           <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">这是什么事</p>
@@ -51,18 +61,8 @@ export function UnderstandingPanel({ snapshot }: UnderstandingPanelProps) {
         </div>
       </div>
 
-      {/* 已知事实 */}
-      {snapshot.knownFacts.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {snapshot.knownFacts.map((fact) => (
-            <span key={fact} className="rounded-full bg-gray-50 px-2.5 py-1 text-[10px] text-gray-500">{fact}</span>
-          ))}
-        </div>
-      )}
-
-      {/* 第二层：可选建议（只在有内容时显示） */}
       {snapshot.optionalAdvice && (
-        <div className="rounded-2xl border border-slate-100 bg-white px-4 py-3 space-y-2">
+        <div className="space-y-2 rounded-2xl border border-slate-100 bg-white px-4 py-3">
           {snapshot.optionalAdvice.timeGate && (
             <p className="text-[12px] leading-5 text-red-600">
               <span className="font-bold">时间闸门：</span>{snapshot.optionalAdvice.timeGate}

@@ -155,6 +155,7 @@ import type {
   PullSelectedFromMainPayload,
   PushPreview,
   EventLineReportSnapshot,
+  UnderstandingSnapshotV1,
 } from '../../shared/types';
 
 function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
@@ -403,21 +404,8 @@ export async function getTaskContextPreview(taskId: string) {
   return request<TaskContextPreview>(`/api/v1/tasks/${taskId}/context-preview`);
 }
 
-export type TaskUnderstandingSnapshot = {
-  whatIsThis: string;
-  whyItMatters: string;
-  progressNow: string;
-  unknowns: string;
-  knownFacts: string[];
-  confidence: number;
-  sourceBreakdown: Array<{ sourceName: string; available: boolean; snippet: string }>;
-  coverage: number;
-  optionalAdvice?: {
-    realBlocker?: string;
-    timeGate?: string;
-    minimumAction?: string;
-    supportAsk?: string;
-  } | null;
+export type TaskUnderstandingSnapshot = UnderstandingSnapshotV1 & {
+  _pending?: boolean;
 };
 
 export async function getTaskUnderstanding(taskId: string) {
