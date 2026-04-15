@@ -50,6 +50,7 @@ from app.models import (
     AuthLoginPayload,
     AuthRegisterPayload,
     AuthStateResponse,
+    CloudDirectAccessResponse,
     LocalInputMemoryAiSettings,
     LocalInputMemoryCloudAuth,
     LocalInputMemoryFeishuIntegration,
@@ -16925,6 +16926,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             user=cached_user,
         )
 
+    @app.get("/api/v1/cloud/direct-access", response_model=CloudDirectAccessResponse)
+    def cloud_direct_access() -> CloudDirectAccessResponse:
+        user = require_session_user()
+        token = get_cloud_token()
+        if not token or not state.cloud_api_url:
+            raise HTTPException(status_code=503, detail="当前还没有可用的云端会话。")
+        if user.organizationId == "local-device":
+            raise HTTPException(status_code=503, detail="本机模式下没有可直连的云端会话。")
+        return CloudDirectAccessResponse(
+            apiBaseUrl=state.cloud_api_url,
+            accessToken=token,
+        )
+
     @app.get("/api/v1/local-input-memory", response_model=LocalInputMemoryResponse)
     def get_local_input_memory() -> LocalInputMemoryResponse:
         return _hydrate_local_input_memory()
@@ -18376,6 +18390,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid report snapshot payload")
         return payload
+
+    @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot-overrides")
+    def get_event_line_report_snapshot_overrides(event_line_id: str) -> dict:
+        if not state.db.fetchone("SELECT id FROM event_lines WHERE id = ?", (event_line_id,)):
+            raise HTTPException(status_code=404, detail="Local event line not found")
+        return _build_local_event_line_report_snapshot(event_line_id)
 
     @app.post("/api/v1/event-lines/{event_line_id}/export-word")
     def export_event_line_word(event_line_id: str, draft: dict = Body(...)) -> dict:

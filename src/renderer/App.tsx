@@ -302,6 +302,10 @@ import {
 } from './lib/taskTimeline';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
 import { EventLineClarificationComposer } from './components/tasks/EventLineClarificationComposer';
+import EventLineEditorModal, {
+  type EventLineEditorDraft,
+  type EventLineProjectOption,
+} from './components/tasks/EventLineEditorModal';
 import EventLineReportPanel from './components/tasks/EventLineReportPanel';
 import type { ReportDraft } from './components/tasks/EventLineReportPanel';
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
@@ -447,6 +451,35 @@ function buildTaskEventLineCreateDraft(): TaskEventLineCreateDraftState {
     currentBlocker: '',
     nextStep: '',
     recentDecision: '',
+  };
+}
+
+function buildEmptyEventLineEditorDraft(defaults?: Partial<EventLineEditorDraft>): EventLineEditorDraft {
+  return {
+    name: '',
+    kind: 'project_line',
+    primaryClientId: '',
+    summary: '',
+    stage: '本周推进',
+    currentBlocker: '',
+    recentDecision: '',
+    nextStep: '',
+    participantIds: [],
+    ...defaults,
+  };
+}
+
+function buildEventLineEditorDraftFromDetail(detail: EventLineDetail): EventLineEditorDraft {
+  return {
+    name: detail.eventLine.name || '',
+    kind: detail.eventLine.kind || 'project_line',
+    primaryClientId: detail.eventLine.primaryClientId || '',
+    summary: detail.eventLine.summary || '',
+    stage: detail.eventLine.stage || '',
+    currentBlocker: detail.eventLine.currentBlocker || '',
+    recentDecision: detail.eventLine.recentDecision || '',
+    nextStep: detail.eventLine.nextStep || '',
+    participantIds: detail.eventLine.participantIds || [],
   };
 }
 
@@ -5548,6 +5581,7 @@ export default function App() {
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
     const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
+    const [eventLineMemberOptions, setEventLineMemberOptions] = useState<MentionCandidate[]>([]);
     const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
       if (typeof window === 'undefined') return '__all__';
       return window.localStorage.getItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY) || '__all__';
@@ -5558,6 +5592,10 @@ export default function App() {
     const [activeReviewDrillTarget, setActiveReviewDrillTarget] = useState<ReviewDashboardDrillTargetResponse | null>(null);
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
     const [activeEventLine, setActiveEventLine] = useState<EventLineDetail | null>(null);
+    const [isEventLineEditorOpen, setIsEventLineEditorOpen] = useState(false);
+    const [isEventLineCreateOpen, setIsEventLineCreateOpen] = useState(false);
+    const [eventLineProjectResumeTarget, setEventLineProjectResumeTarget] = useState<'create' | 'edit' | null>(null);
+    const [eventLineEditorDraft, setEventLineEditorDraft] = useState<EventLineEditorDraft>(buildEmptyEventLineEditorDraft());
     const [reportEventLineId, setReportEventLineId] = useState<string | null>(null);
     const [eventLineClarificationDraft, setEventLineClarificationDraft] = useState<EventLineClarificationState>(buildEventLineClarificationDraft(null));
     const [isEventLineClarifyMode, setIsEventLineClarifyMode] = useState(false);
@@ -5574,6 +5612,7 @@ export default function App() {
     const [taskEventLineCreateDraft, setTaskEventLineCreateDraft] = useState<TaskEventLineCreateDraftState>(buildTaskEventLineCreateDraft());
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
+    const [isSavingEventLineEditor, setIsSavingEventLineEditor] = useState(false);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
     const [isTemplateEditorOpen, setIsTemplateEditorOpen] = useState(false);
@@ -6077,6 +6116,16 @@ export default function App() {
         .catch(() => setOwnerOptions([]));
     }, [isTaskModalOpen, ownerQuery]);
 
+    useEffect(() => {
+      if (!isCloudSession) {
+        setEventLineMemberOptions([]);
+        return;
+      }
+      void getMentionCandidates('')
+        .then((items) => setEventLineMemberOptions(items))
+        .catch(() => setEventLineMemberOptions([]));
+    }, [isCloudSession]);
+
     const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
     const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '收集箱';
     const taskControlLevelLabel = (task: Task) => {
@@ -6321,6 +6370,10 @@ export default function App() {
         }),
       [eventLines],
     );
+    const eventLineMemberLabelById = useMemo(
+      () => new Map(eventLineMemberOptions.map((item) => [item.id, item.fullName])),
+      [eventLineMemberOptions],
+    );
     const eventLineProjectOptions = useMemo(() => {
       const labelById = new Map<string, string>();
       sortedEventLines.forEach((item) => {
@@ -6338,6 +6391,23 @@ export default function App() {
         .map(([id, label]) => ({ id, label }))
         .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
     }, [clients, sortedEventLines]);
+    const eventLineEditorProjectOptions = useMemo<EventLineProjectOption[]>(() => {
+      const optionMap = new Map<string, string>();
+      clients.forEach((client) => {
+        const clientId = (client.id || '').trim();
+        const clientName = (client.name || '').trim();
+        if (!clientId || !clientName) return;
+        optionMap.set(clientId, clientName);
+      });
+      eventLineProjectOptions.forEach((option) => {
+        if (!optionMap.has(option.id)) {
+          optionMap.set(option.id, option.label);
+        }
+      });
+      return Array.from(optionMap.entries())
+        .map(([id, label]) => ({ id, label }))
+        .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
+    }, [clients, eventLineProjectOptions]);
     const filteredEventLines = useMemo(() => {
       if (eventLineProjectFilterId === '__all__') return sortedEventLines;
       return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === eventLineProjectFilterId);
@@ -6614,6 +6684,8 @@ export default function App() {
       try {
         const detail = await getEventLine(eventLineId);
         setActiveEventLine(detail);
+        setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(detail));
+        setIsEventLineEditorOpen(true);
         setIsEventLineClarifyMode(Boolean(options?.clarify));
         return detail;
       } catch (error) {
@@ -6622,6 +6694,156 @@ export default function App() {
       } finally {
         setIsEventLineBusy(false);
       }
+    };
+
+    const handleOpenEventLineCreate = () => {
+      const defaultClientId = eventLineProjectFilterId !== '__all__' ? eventLineProjectFilterId : '';
+      const defaultParticipantIds = currentSessionUser?.id ? [currentSessionUser.id] : [];
+      setEventLineEditorDraft(buildEmptyEventLineEditorDraft({
+        primaryClientId: defaultClientId,
+        kind: defaultClientId ? 'project_line' : 'custom',
+        participantIds: defaultParticipantIds,
+      }));
+      setIsEventLineCreateOpen(true);
+    };
+
+    const handleQuickCreateEventLineProject = async (initialName?: string) => {
+      const normalizedName = (initialName || '').trim();
+      if (!normalizedName) {
+        flash('error', '请先输入项目名称');
+        return;
+      }
+      const existingClient = clients.find((item) => item.name.trim().toLowerCase() === normalizedName.toLowerCase());
+      if (existingClient) {
+        setEventLineEditorDraft((prev) => ({ ...prev, primaryClientId: existingClient.id }));
+        flash('success', `已关联现有项目“${existingClient.name}”`);
+        return;
+      }
+      try {
+        const savedClient = await createClient({
+          name: normalizedName,
+          alias: normalizedName,
+          domain: '项目',
+          type: '项目',
+          intro: '等待导入已有资料，系统将自动分析归档并建立项目上下文。',
+          stage: '待导入资料',
+        });
+        const nextClients = await getClients();
+        setClients(nextClients);
+        setEventLineEditorDraft((prev) => ({ ...prev, primaryClientId: savedClient.id }));
+        flash('success', `项目“${savedClient.name}”已创建并关联到当前事件线`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '创建项目失败');
+      }
+    };
+
+    const handleSaveEventLineEditor = async () => {
+      if (!activeEventLine) return;
+      const participantIds = Array.from(new Set(eventLineEditorDraft.participantIds.filter(Boolean)));
+      setIsSavingEventLineEditor(true);
+      try {
+        const updated = await updateEventLine(activeEventLine.eventLine.id, {
+          name: eventLineEditorDraft.name.trim(),
+          kind: eventLineEditorDraft.kind,
+          primaryClientId: eventLineEditorDraft.primaryClientId || null,
+          summary: eventLineEditorDraft.summary.trim() || null,
+          stage: eventLineEditorDraft.stage.trim() || null,
+          currentBlocker: eventLineEditorDraft.currentBlocker.trim() || null,
+          recentDecision: eventLineEditorDraft.recentDecision.trim() || null,
+          nextStep: eventLineEditorDraft.nextStep.trim() || null,
+          participantIds,
+          ownerId: participantIds[0] || currentSessionUser?.id || activeEventLine.eventLine.ownerId || null,
+        });
+        setEventLines((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+        const refreshed = await getEventLine(updated.id);
+        setActiveEventLine(refreshed);
+        setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
+        flash('success', '事件线已更新');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '事件线保存失败');
+      } finally {
+        setIsSavingEventLineEditor(false);
+      }
+    };
+
+    const handleCreateEventLineFromWorkspace = async () => {
+      const participantIds = Array.from(new Set(eventLineEditorDraft.participantIds.filter(Boolean)));
+      if (!eventLineEditorDraft.name.trim()) {
+        flash('error', '请先填写事件线名称。');
+        return;
+      }
+      setIsCreatingEventLine(true);
+      try {
+        const created = await createEventLine({
+          name: eventLineEditorDraft.name.trim(),
+          kind: eventLineEditorDraft.kind,
+          status: 'active',
+          primaryClientId: eventLineEditorDraft.primaryClientId || null,
+          summary: eventLineEditorDraft.summary.trim() || null,
+          stage: eventLineEditorDraft.stage.trim() || null,
+          currentBlocker: eventLineEditorDraft.currentBlocker.trim() || null,
+          recentDecision: eventLineEditorDraft.recentDecision.trim() || null,
+          nextStep: eventLineEditorDraft.nextStep.trim() || null,
+          participantIds,
+          ownerId: participantIds[0] || currentSessionUser?.id || null,
+        });
+        setEventLines((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
+        setIsEventLineCreateOpen(false);
+        flash('success', '事件线已创建');
+        await openEventLineDetail(created.id);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '事件线创建失败');
+      } finally {
+        setIsCreatingEventLine(false);
+      }
+    };
+
+    const handleEventLineStatusChange = async (
+      targetEventLine: EventLine,
+      nextStatus: Extract<EventLine['status'], 'active' | 'paused' | 'blocked' | 'done'>,
+    ) => {
+      if (targetEventLine.status === nextStatus || isDeletingEventLine) return;
+      setIsDeletingEventLine(true);
+      try {
+        const updated = await updateEventLine(targetEventLine.id, { status: nextStatus });
+        setEventLines((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+        if (activeEventLine?.eventLine.id === updated.id) {
+          const refreshed = await getEventLine(updated.id);
+          setActiveEventLine(refreshed);
+          setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
+        }
+        flash('success', `事件线状态已切换为${{ active: '进行中', paused: '暂停', blocked: '阻塞', done: '完成' }[nextStatus]}`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '事件线状态更新失败');
+      } finally {
+        setIsDeletingEventLine(false);
+      }
+    };
+
+    const handleOpenEventLineMeeting = (meetingId: string, label: string) => {
+      setIsEventLineEditorOpen(false);
+      setActiveEventLine(null);
+      setActiveTab('client_workspace');
+      setGrowthContextJump({
+        requestId: `event-line-meeting-${meetingId}-${Date.now()}`,
+        context: {
+          objectType: 'meeting',
+          objectId: meetingId,
+          label,
+          subtitle: '事件线关联会议',
+          tab: 'meeting',
+          statusLabel: '会议',
+        },
+      });
+    };
+
+    const handleAddEventLineNoteFromEditor = async (text: string) => {
+      if (!activeEventLine) return;
+      await addEventLineNote(activeEventLine.eventLine.id, text);
+      const refreshed = await getEventLine(activeEventLine.eventLine.id);
+      setActiveEventLine(refreshed);
+      setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
+      flash('success', '备注已添加');
     };
 
     const handleSaveEventLineClarification = async () => {
@@ -6775,7 +6997,7 @@ export default function App() {
     const handleCloseEventLine = async (targetEventLine: EventLine) => {
       if (isDeletingEventLine) return;
       const lineName = targetEventLine.name || '未命名事件线';
-      if (!window.confirm(`确认结束事件线”${lineName}”？结束后事件线将归档为只读，仍可查看和导出。`)) {
+      if (!window.confirm(`确认归档事件线“${lineName}”？只有完成状态的事件线才建议归档。`)) {
         return;
       }
       setIsDeletingEventLine(true);
@@ -6785,7 +7007,16 @@ export default function App() {
         if (editingTask.eventLineId === targetEventLine.id) {
           setEditingTask((prev) => ({ ...prev, eventLineId: '', eventLineTouched: true, eventLineReason: `事件线已归档：${lineName}。` }));
         }
-        if (activeEventLine?.eventLine.id === targetEventLine.id) { setActiveEventLine(null); }
+        if (activeEventLine?.eventLine.id === targetEventLine.id) {
+          const refreshed = await getEventLine(targetEventLine.id).catch(() => null);
+          if (refreshed) {
+            setActiveEventLine(refreshed);
+            setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
+          } else {
+            setActiveEventLine(null);
+            setIsEventLineEditorOpen(false);
+          }
+        }
         flash('success', '事件线已归档');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线归档失败');
@@ -6800,6 +7031,13 @@ export default function App() {
       try {
         await reopenEventLine(targetEventLine.id);
         try { await loadEventLines(); } catch {}
+        if (activeEventLine?.eventLine.id === targetEventLine.id) {
+          const refreshed = await getEventLine(targetEventLine.id).catch(() => null);
+          if (refreshed) {
+            setActiveEventLine(refreshed);
+            setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
+          }
+        }
         flash('success', '事件线已重新打开');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '重新打开失败');
@@ -6822,7 +7060,10 @@ export default function App() {
         if (editingTask.eventLineId === targetEventLine.id) {
           setEditingTask((prev) => ({ ...prev, eventLineId: '', eventLineTouched: true, eventLineReason: `事件线已删除：${lineName}。` }));
         }
-        if (activeEventLine?.eventLine.id === targetEventLine.id) { setActiveEventLine(null); }
+        if (activeEventLine?.eventLine.id === targetEventLine.id) {
+          setActiveEventLine(null);
+          setIsEventLineEditorOpen(false);
+        }
         flash('success', '事件线已删除');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线删除失败');
@@ -9024,11 +9265,21 @@ export default function App() {
               ) : (
                 <>
               <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-                <div>
-                  <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">
-                    按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。
-                  </p>
+                <div className="flex items-end gap-3">
+                  <button
+                    type="button"
+                    onClick={handleOpenEventLineCreate}
+                    className="inline-flex items-center gap-2 rounded-2xl bg-[#5B7BFE] px-4 py-3 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.24)] transition hover:bg-[#4A6AE8]"
+                  >
+                    <Plus size={16} />
+                    新建事件线
+                  </button>
+                  <div>
+                    <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
+                    <p className="mt-1 text-[12px] text-gray-500">
+                      按项目查看事件线；卡片主体进入汇报预览，右侧直接切状态、归档、编辑或删除。
+                    </p>
+                  </div>
                 </div>
                 <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' as any }}>
                   <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
@@ -9090,14 +9341,17 @@ export default function App() {
                 <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-12 text-center">
                   <p className="text-[13px] text-gray-400">
                     {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
-                      ? '还没有事件线。在创建任务时关联事件线，或在任务编辑器中新建事件线。'
-                      : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
+                      ? '还没有事件线。可以先在这里新建事件线，再把任务挂进对应主线。'
+                      : '当前项目下还没有事件线。可先在这里新建一条主线。')}
                   </p>
                 </div>
               )}
               <div className="space-y-3">
                 {filteredEventLines.map((el) => {
                   const taskCount = tasks.filter((t) => t.eventLineId === el.id).length;
+                  const participantNames = (el.participantIds || [])
+                    .map((id) => eventLineMemberLabelById.get(id))
+                    .filter((value): value is string => Boolean(value));
                   return (
                     <div
                       key={el.id}
@@ -9116,15 +9370,49 @@ export default function App() {
                           <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                             <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{{ active: '进行中', blocked: '受阻', paused: '暂停', done: '已完成', archived: '已归档' }[el.status] || el.status}</span>
                             {el.stage && <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700">{el.stage}</span>}
+                            <span className="rounded-full bg-slate-100 px-2.5 py-1 font-semibold text-slate-600">
+                              {participantNames.length > 0 ? `主要负责人 · ${participantNames.join('、')}` : (el.ownerName ? `主要负责人 · ${el.ownerName}` : '未设置主要负责人')}
+                            </span>
                             {el.primaryClientName && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{el.primaryClientName}</span>}
                             <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
-                            {el.ownerName && <span className="rounded-full bg-blue-50 px-2.5 py-1 font-semibold text-blue-600">{el.ownerName}</span>}
                           </div>
                         </button>
-                        <div className="shrink-0 flex items-start gap-2">
-                          <div className="pt-1 text-[11px] text-gray-400">
-                            {el.updatedAt.slice(0, 10)}
+                        <div className="shrink-0 flex flex-col items-end gap-2">
+                          <div className="pt-1 text-[11px] text-gray-400">{el.updatedAt.slice(0, 10)}</div>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {el.status === 'archived' ? (
+                              <button
+                                type="button"
+                                className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-bold text-emerald-600 transition hover:bg-emerald-100 disabled:opacity-60"
+                                onClick={() => void handleReopenEventLine(el)}
+                                disabled={isDeletingEventLine}
+                              >
+                                取消归档
+                              </button>
+                            ) : (
+                              <select
+                                value={el.status}
+                                onChange={(event) => void handleEventLineStatusChange(el, event.target.value as 'active' | 'paused' | 'blocked' | 'done')}
+                                disabled={isDeletingEventLine}
+                                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-700 outline-none transition hover:border-[#5B7BFE] focus:border-[#5B7BFE]"
+                              >
+                                <option value="active">进行中</option>
+                                <option value="paused">暂停</option>
+                                <option value="blocked">阻塞</option>
+                                <option value="done">完成</option>
+                              </select>
+                            )}
+                            <button
+                              type="button"
+                              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-600 transition hover:bg-amber-100 disabled:opacity-50"
+                              onClick={() => void handleCloseEventLine(el)}
+                              disabled={isDeletingEventLine || el.status === 'archived' || el.status !== 'done'}
+                              title={el.status !== 'done' ? '只有完成状态下才可归档' : '归档事件线'}
+                            >
+                              归档
+                            </button>
                           </div>
+                          <div className="flex flex-wrap justify-end gap-2">
                           <button
                             type="button"
                             className="rounded-xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
@@ -9132,34 +9420,16 @@ export default function App() {
                           >
                             编辑
                           </button>
-                          {taskCount === 0 ? (
                             <button
                               type="button"
-                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
+                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-50"
                               onClick={() => void handleDeleteEventLine(el)}
-                              disabled={isDeletingEventLine}
+                              disabled={isDeletingEventLine || currentSessionUser?.primaryRole !== 'admin'}
+                              title={currentSessionUser?.primaryRole !== 'admin' ? '只有管理员可以删除事件线' : '删除事件线'}
                             >
                               删除
                             </button>
-                          ) : el.status === 'archived' || el.status === 'done' ? (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-bold text-emerald-600 transition hover:bg-emerald-100 disabled:opacity-60"
-                              onClick={() => void handleReopenEventLine(el)}
-                              disabled={isDeletingEventLine}
-                            >
-                              重新打开
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-600 transition hover:bg-amber-100 disabled:opacity-60"
-                              onClick={() => void handleCloseEventLine(el)}
-                              disabled={isDeletingEventLine}
-                            >
-                              结束事件线
-                            </button>
-                          )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -9931,204 +10201,51 @@ export default function App() {
           />
         )}
 
-        {activeEventLine && (() => {
-          const el = activeEventLine.eventLine;
-          const elTasks = activeEventLine.tasks;
-          const elActivities = activeEventLine.activities;
-          const sourceTypeLabels: Record<string, { label: string; color: string }> = {
-            task_activity: { label: '任务', color: 'bg-blue-100 text-blue-600' },
-            meeting: { label: '会议', color: 'bg-cyan-100 text-cyan-600' },
-            support_request: { label: '支持', color: 'bg-pink-100 text-pink-600' },
-            review: { label: '复核', color: 'bg-purple-100 text-purple-600' },
-            attachment: { label: '附件', color: 'bg-orange-100 text-orange-600' },
-            manual_note: { label: '备注', color: 'bg-green-100 text-green-600' },
-          };
-          return (
-          <div
-            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 backdrop-blur-sm px-4 py-6 animate-in fade-in"
-            onClick={() => setActiveEventLine(null)}
-          >
-            <div
-              className="w-[640px] max-h-[85vh] bg-white rounded-[24px] shadow-xl flex flex-col overflow-hidden"
-              onClick={(event) => event.stopPropagation()}
-            >
-              {/* --- FIXED TOP --- */}
-              <div className="flex-shrink-0 px-8 pt-7 pb-6 border-b border-gray-200/80">
-                {/* Top row */}
-                <div className="flex justify-between items-center mb-1">
-                  <button type="button" onClick={() => setActiveEventLine(null)} className="text-gray-400 hover:text-gray-700 transition-colors">
-                    <X size={20} />
-                  </button>
-                  <button
-                    type="button"
-                    className="bg-blue-600 hover:bg-blue-700 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
-                    onClick={() => { setReportEventLineId(el.id); setActiveEventLine(null); }}
-                  >
-                    <FileBadge size={14} />
-                    汇报预览
-                  </button>
-                </div>
+        {activeEventLine && isEventLineEditorOpen && (
+          <EventLineEditorModal
+            mode="edit"
+            detail={activeEventLine}
+            draft={eventLineEditorDraft}
+            projectOptions={eventLineEditorProjectOptions}
+            memberOptions={eventLineMemberOptions}
+            canDelete={currentSessionUser?.primaryRole === 'admin'}
+            isSaving={isSavingEventLineEditor}
+            onClose={() => {
+              setIsEventLineEditorOpen(false);
+              setActiveEventLine(null);
+            }}
+            onChange={(patch) => setEventLineEditorDraft((prev) => ({ ...prev, ...patch }))}
+            onSubmit={() => void handleSaveEventLineEditor()}
+            onCreateProject={handleQuickCreateEventLineProject}
+            onDelete={() => void handleDeleteEventLine(activeEventLine.eventLine)}
+            onOpenReport={() => {
+              setReportEventLineId(activeEventLine.eventLine.id);
+              setIsEventLineEditorOpen(false);
+            }}
+            onOpenTask={(task) => {
+              setIsEventLineEditorOpen(false);
+              setActiveEventLine(null);
+              openTaskEditor(task);
+            }}
+            onOpenMeeting={handleOpenEventLineMeeting}
+            onAddNote={handleAddEventLineNoteFromEditor}
+          />
+        )}
 
-                {/* Event line name */}
-                <h1 className="text-[22px] font-bold text-black truncate py-1 mb-4">{el.name}</h1>
-                <div className="h-px bg-gray-100 mb-4" />
-
-                {/* Basic info grid */}
-                <div className="bg-[#F8F9FB] rounded-2xl py-4 px-5 grid grid-cols-4 gap-4 mb-5">
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">项目</span>
-                    <span className="text-[13px] text-purple-600 font-medium">{el.primaryClientName || '未关联'}</span>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">创建于</span>
-                    <span className="text-[13px] text-gray-700">{el.createdAt.slice(0, 10)}</span>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">最近更新</span>
-                    <span className="text-[13px] text-gray-700">{el.updatedAt.slice(5, 16).replace('T', ' ')}</span>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-widest font-medium">关联</span>
-                    <span className="text-[13px] text-gray-700"><span className="font-bold">{elTasks.length}</span> 条任务 · <span className="font-bold">{el.evidenceCount}</span> 个附件</span>
-                  </div>
-                </div>
-
-                {/* Participants */}
-                <div className="mb-5">
-                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-3">参与人</h3>
-                  <div className="flex flex-wrap items-center gap-3">
-                    {el.ownerName && (
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-[12px] font-medium">{el.ownerName.charAt(0)}</div>
-                        <span className="text-[13px] text-gray-800">{el.ownerName}</span>
-                        <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded">负责人</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Description */}
-                <div>
-                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-2">事件线描述</h3>
-                  <p className="text-[13px] leading-[22px] text-gray-600">
-                    {el.summary || '暂无描述。可在编辑事件线时添加。'}
-                  </p>
-                </div>
-              </div>
-
-              {/* --- SCROLLABLE BOTTOM --- */}
-              <div className="flex-1 overflow-y-auto px-8 pt-6 pb-10">
-                {/* Linked tasks */}
-                <div className="mb-8">
-                  <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium mb-3">
-                    关联任务 <span className="lowercase">({elTasks.length} 条)</span>
-                  </h3>
-                  {elTasks.length === 0 && (
-                    <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-400">这条事件线下还没有挂到具体任务。</p>
-                  )}
-                  <div className="flex flex-col gap-2">
-                    {elTasks.slice(0, 6).map((task) => (
-                      <button
-                        key={task.id}
-                        type="button"
-                        className="flex items-start gap-3 p-2 -mx-2 hover:bg-[#F5F6F8] rounded-xl text-left transition-colors"
-                        onClick={() => { setActiveEventLine(null); openTaskEditor(task); }}
-                      >
-                        <span className="mt-0.5 text-gray-400">
-                          {task.status === 'done'
-                            ? <CheckSquare size={16} className="text-blue-500" />
-                            : <Square size={16} />}
-                        </span>
-                        <div className="flex flex-col gap-1 min-w-0">
-                          <span className={`text-[14px] truncate ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{task.title}</span>
-                          <span className="text-[11px] text-gray-400">{task.ownerName}{task.dueDate ? ` · ${formatTaskTimelineLabel(task)}` : ''}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Recent events */}
-                <div className="mb-6">
-                  <div className="flex justify-between items-center mb-3">
-                    <h3 className="text-[11px] text-gray-500 uppercase tracking-widest font-medium">最近事件</h3>
-                    <span className="text-[11px] text-gray-400">共 {elActivities.length} 条</span>
-                  </div>
-                  {elActivities.length === 0 && (
-                    <p className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-[12px] text-gray-400">还没有沉淀过程痕迹。</p>
-                  )}
-                  <div className="flex flex-col gap-1">
-                    {elActivities.slice(0, 8).map((activity) => {
-                      const st = sourceTypeLabels[activity.sourceType] || { label: activity.sourceType, color: 'bg-gray-100 text-gray-600' };
-                      return (
-                        <div key={activity.id} className="flex items-start py-1.5 hover:bg-gray-50 rounded -mx-2 px-2 transition-colors">
-                          <span className="text-[11px] text-gray-400 w-[90px] flex-shrink-0 pt-px">{activity.happenedAt.slice(5, 16).replace('T', ' ')}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 ${st.color}`}>{st.label}</span>
-                          <span className="text-[13px] text-gray-700 truncate ml-2">{activity.title}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Manual note input */}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={eventLineNoteText}
-                    onChange={(e) => setEventLineNoteText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && eventLineNoteText.trim() && !isSavingEventLineNote) {
-                        void (async () => {
-                          setIsSavingEventLineNote(true);
-                          try {
-                            await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
-                            setEventLineNoteText('');
-                            const refreshed = await getEventLine(activeEventLine.eventLine.id);
-                            setActiveEventLine(refreshed);
-                            flash('success', '备注已添加');
-                          } catch (err) {
-                            flash('error', err instanceof Error ? err.message : '添加备注失败');
-                          } finally {
-                            setIsSavingEventLineNote(false);
-                          }
-                        })();
-                      }
-                    }}
-                    placeholder="记录一条观察、决策或进展..."
-                    className="flex-1 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-[12px] outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20"
-                    disabled={isSavingEventLineNote}
-                  />
-                  <button
-                    type="button"
-                    disabled={!eventLineNoteText.trim() || isSavingEventLineNote}
-                    onClick={() => {
-                      if (!eventLineNoteText.trim()) return;
-                      void (async () => {
-                        setIsSavingEventLineNote(true);
-                        try {
-                          await addEventLineNote(activeEventLine.eventLine.id, eventLineNoteText.trim());
-                          setEventLineNoteText('');
-                          const refreshed = await getEventLine(activeEventLine.eventLine.id);
-                          setActiveEventLine(refreshed);
-                          flash('success', '备注已添加');
-                        } catch (err) {
-                          flash('error', err instanceof Error ? err.message : '添加备注失败');
-                        } finally {
-                          setIsSavingEventLineNote(false);
-                        }
-                      })();
-                    }}
-                    className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-[12px] font-bold text-white transition hover:bg-blue-700 disabled:opacity-40"
-                  >
-                    {isSavingEventLineNote ? '...' : '添加'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          );
-        })()}
+        {isEventLineCreateOpen && (
+          <EventLineEditorModal
+            mode="create"
+            draft={eventLineEditorDraft}
+            projectOptions={eventLineEditorProjectOptions}
+            memberOptions={eventLineMemberOptions}
+            canDelete={false}
+            isSaving={isCreatingEventLine}
+            onClose={() => setIsEventLineCreateOpen(false)}
+            onChange={(patch) => setEventLineEditorDraft((prev) => ({ ...prev, ...patch }))}
+            onSubmit={() => void handleCreateEventLineFromWorkspace()}
+            onCreateProject={handleQuickCreateEventLineProject}
+          />
+        )}
 
         {reportEventLineId && (
           <EventLineReportPanel
@@ -10842,32 +10959,9 @@ export default function App() {
                               </option>
                             ))}
                           </select>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={handleEditEventLineFromTask}
-                              disabled={!editingTask.eventLineId || isEditingTaskPersonal}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              编辑
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteEventLineFromTask()}
-                              disabled={!editingTask.eventLineId || isEditingTaskPersonal || isDeletingEventLine}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              {isDeletingEventLine ? '...' : (selectedEventLineSummary?.visibilityScope === 'private' ? '删除' : '结束')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void handleCreateEventLineFromTask()}
-                              disabled={isEditingTaskPersonal || isCreatingEventLine}
-                              className="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              新建
-                            </button>
-                          </div>
+                          <p className="text-[11px] leading-5 text-gray-400">
+                            事件线请在「任务与日程 → 事件线」页统一新建、编辑、切换状态和归档。
+                          </p>
                         </div>
                       </TaskPropertyRow>
                       )}
@@ -11354,6 +11448,7 @@ export default function App() {
     const [templateFillDialog, setTemplateFillDialog] = useState<TemplateFillDialogState | null>(null);
     const [isClientModalOpen, setIsClientModalOpen] = useState(false);
     const [editingClientId, setEditingClientId] = useState<string | null>(null);
+    const [clientModalSource, setClientModalSource] = useState<'workspace' | 'event_line'>('workspace');
     const [isDeleteClientConfirmOpen, setIsDeleteClientConfirmOpen] = useState(false);
     const [deleteClientConfirmInput, setDeleteClientConfirmInput] = useState('');
     const [clientTextDocumentDraft, setClientTextDocumentDraft] = useState<ClientTextDocumentDraft>({
@@ -12303,10 +12398,43 @@ export default function App() {
       }
     };
 
-    const openCreateClientModal = () => {
+    const resumeEventLineModalAfterProject = () => {
+      if (eventLineProjectResumeTarget === 'create') {
+        setIsEventLineCreateOpen(true);
+      } else if (eventLineProjectResumeTarget === 'edit' && activeEventLine) {
+        setIsEventLineEditorOpen(true);
+      }
+      setEventLineProjectResumeTarget(null);
+    };
+
+    const closeClientModal = (options?: { resumeEventLine?: boolean }) => {
+      setIsDeleteClientConfirmOpen(false);
+      setDeleteClientConfirmInput('');
+      setIsClientModalOpen(false);
+      if (options?.resumeEventLine && clientModalSource === 'event_line') {
+        resumeEventLineModalAfterProject();
+      } else if (!options?.resumeEventLine) {
+        setEventLineProjectResumeTarget(null);
+      }
+    };
+
+    const openCreateClientModal = (
+      source: 'workspace' | 'event_line' = 'workspace',
+      options?: { initialName?: string },
+    ) => {
+      setClientModalSource(source);
+      if (source === 'event_line') {
+        const nextResumeTarget = isEventLineCreateOpen ? 'create' : (isEventLineEditorOpen ? 'edit' : null);
+        setEventLineProjectResumeTarget(nextResumeTarget);
+        setIsEventLineCreateOpen(false);
+        setIsEventLineEditorOpen(false);
+      } else {
+        setEventLineProjectResumeTarget(null);
+      }
       setEditingClientId(null);
+      const initialName = options?.initialName?.trim() || '';
       setClientDraft({
-        name: '',
+        name: initialName,
         alias: '',
         domain: '项目',
         type: '项目',
@@ -12317,6 +12445,7 @@ export default function App() {
     };
 
     const openEditClientModal = (client: ClientSummary) => {
+      setClientModalSource('workspace');
       setEditingClientId(client.id);
       setClientDraft({
         name: client.name,
@@ -12347,6 +12476,15 @@ export default function App() {
         const savedClient = editingClientId ? await updateClient(editingClientId, payload) : await createClient(payload);
         setSearchQuery('');
         setIsClientModalOpen(false);
+        if (clientModalSource === 'event_line') {
+          const nextClients = await getClients();
+          setClients(nextClients);
+          setEventLineEditorDraft((prev) => ({ ...prev, primaryClientId: savedClient.id }));
+          resumeEventLineModalAfterProject();
+          flash('success', isEditingProject ? '项目已更新，可继续回到事件线编辑。' : '项目已创建，已经自动带入当前事件线。');
+          return;
+        }
+        setEventLineProjectResumeTarget(null);
         setActiveTab('client_workspace');
         if (!isEditingProject) {
           setClientWorkspaceSurfaceMode('setup');
@@ -12993,7 +13131,7 @@ export default function App() {
                 </div>
                 <Button
                   className="h-11 w-11 shrink-0 rounded-[16px] p-0 border border-[#E5E5EA] bg-[#F2F2F7] text-[#6B7280] shadow-[0_1px_2px_rgba(0,0,0,0.05)] hover:bg-[#E9E9EE] hover:border-[#D1D5DB] hover:text-[#4B5563]"
-                  onClick={openCreateClientModal}
+                  onClick={() => openCreateClientModal()}
                   aria-label="创建项目"
                   title="创建项目"
                 >
@@ -13255,7 +13393,7 @@ export default function App() {
                     先创建一个项目开始正式使用；如果只是想演示流程，也可以手动载入演示数据。
                   </p>
                   <div className="flex items-center gap-3">
-                    <Button primary onClick={openCreateClientModal}>
+                    <Button primary onClick={() => openCreateClientModal()}>
                       <Plus size={16} />
                       创建项目
                     </Button>
@@ -14510,18 +14648,14 @@ export default function App() {
 
         {isClientModalOpen && (
           <div
-            className="fixed inset-0 bg-black/30 backdrop-blur-md z-50 flex items-center justify-center animate-in fade-in"
+            className="fixed inset-0 z-[130] flex items-center justify-center bg-black/30 backdrop-blur-md animate-in fade-in"
           >
             <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[580px] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
               <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
                 <button
                   type="button"
                   className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={() => {
-                    setIsDeleteClientConfirmOpen(false);
-                    setDeleteClientConfirmInput('');
-                    setIsClientModalOpen(false);
-                  }}
+                  onClick={() => closeClientModal({ resumeEventLine: true })}
                   aria-label="关闭项目弹窗"
                 >
                   <X size={16} />
@@ -14561,11 +14695,7 @@ export default function App() {
                 </div>
                 <div className="flex items-center gap-3">
                 <button
-                  onClick={() => {
-                    setIsDeleteClientConfirmOpen(false);
-                    setDeleteClientConfirmInput('');
-                    setIsClientModalOpen(false);
-                  }}
+                  onClick={() => closeClientModal({ resumeEventLine: true })}
                   className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors"
                 >
                   取消
@@ -14579,7 +14709,7 @@ export default function App() {
           </div>
         )}
         {isClientModalOpen && isDeleteClientConfirmOpen && (
-          <div className="fixed inset-0 bg-black/35 z-[60] flex items-center justify-center animate-in fade-in">
+          <div className="fixed inset-0 z-[135] flex items-center justify-center bg-black/35 animate-in fade-in">
             <div className="w-[440px] rounded-[24px] bg-white border border-rose-100 shadow-[0_24px_80px_rgba(0,0,0,0.18)] overflow-hidden" onClick={(event) => event.stopPropagation()}>
               <div className="px-7 py-5 border-b border-rose-100 bg-rose-50/70">
                 <div className="flex items-center gap-4">

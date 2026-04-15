@@ -1167,12 +1167,11 @@ def _event_line_detail_record(state: AppState, row, viewer_id: str | None = None
         """
         SELECT DISTINCT t.*
         FROM tasks t
-        LEFT JOIN task_collaborators tc ON tc.task_id = t.id
         WHERE t.event_line_id = ?
-          AND (t.creator_id = ? OR tc.user_id = ?)
+          AND t.organization_id = ?
         ORDER BY t.updated_at DESC
         """,
-        (event_line.id, viewer_id or "", viewer_id or ""),
+        (event_line.id, str(row["organization_id"])),
     )
     activity_rows = state.db.fetchall(
         """
@@ -5456,8 +5455,7 @@ class FeishuNotificationService:
         overdue: list[dict[str, str]] = []
         for row in rows:
             due_value = str(row["due_date"]) if row["due_date"] else None
-            due_dt = _task_datetime_value(due_value)
-            if due_dt is None or due_dt >= reference_time:
+            if not _is_due_date_overdue_by_day(due_value, reference_time.date()):
                 continue
             overdue.append(
                 {

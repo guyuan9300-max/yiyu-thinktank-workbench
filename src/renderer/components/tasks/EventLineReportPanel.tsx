@@ -18,7 +18,12 @@ import type {
   EventLineActivity,
   Task,
 } from '../../../shared/types.js';
-import { getEventLineReportSnapshot, updateEventLine } from '../../lib/api.js';
+import {
+  getEventLineReportSnapshot,
+  getEventLineReportSnapshotDirect,
+  getEventLineReportSnapshotLocalOverrides,
+  updateEventLine,
+} from '../../lib/api.js';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -75,6 +80,40 @@ function fileSizeLabel(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function mergeReportSnapshots(
+  remoteSnapshot: EventLineReportSnapshot,
+  localSnapshot: EventLineReportSnapshot | null,
+): EventLineReportSnapshot {
+  if (!localSnapshot) return remoteSnapshot;
+
+  const mergeById = <T extends { id: string }>(remoteItems: T[], localItems: T[]) => {
+    const mergedMap = new Map<string, T>();
+    remoteItems.forEach((item) => mergedMap.set(item.id, item));
+    localItems.forEach((item) => mergedMap.set(item.id, { ...(mergedMap.get(item.id) || {}), ...item }));
+    return Array.from(mergedMap.values());
+  };
+
+  const mergedEventLine = {
+    ...remoteSnapshot.eventLine,
+    ...localSnapshot.eventLine,
+  };
+
+  return {
+    eventLine: mergedEventLine,
+    activities: mergeById(remoteSnapshot.activities, localSnapshot.activities).sort((left, right) =>
+      left.happenedAt.localeCompare(right.happenedAt) || left.id.localeCompare(right.id),
+    ),
+    tasks: mergeById(remoteSnapshot.tasks, localSnapshot.tasks).sort((left, right) =>
+      (right.updatedAt || '').localeCompare(left.updatedAt || '') || left.title.localeCompare(right.title, 'zh-CN'),
+    ),
+    attachments: mergeById(remoteSnapshot.attachments, localSnapshot.attachments).sort((left, right) =>
+      (left.createdAt || '').localeCompare(right.createdAt || '') || left.id.localeCompare(right.id),
+    ),
+    participantNames: Array.from(new Set([...(remoteSnapshot.participantNames || []), ...(localSnapshot.participantNames || [])])),
+    snapshotAt: localSnapshot.snapshotAt || remoteSnapshot.snapshotAt,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -245,7 +284,16 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
       setError(null);
     }
     try {
-      const data = await getEventLineReportSnapshot(eventLineId);
+      let data: EventLineReportSnapshot;
+      try {
+        const [remoteSnapshot, localOverrides] = await Promise.all([
+          getEventLineReportSnapshotDirect(eventLineId),
+          getEventLineReportSnapshotLocalOverrides(eventLineId),
+        ]);
+        data = mergeReportSnapshots(remoteSnapshot, localOverrides);
+      } catch {
+        data = await getEventLineReportSnapshot(eventLineId);
+      }
       setSnapshot(data);
       setDraft((prev) => {
         // Preserve user edits during silent refresh

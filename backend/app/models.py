@@ -122,6 +122,11 @@ class CloudConfigResponse(BaseModel):
     apiBaseUrl: str | None = None
 
 
+class CloudDirectAccessResponse(BaseModel):
+    apiBaseUrl: str
+    accessToken: str
+
+
 class AccountOverviewResponse(BaseModel):
     sessionMode: Literal["local", "cloud"]
     cloudConnected: bool

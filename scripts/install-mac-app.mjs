@@ -19,6 +19,7 @@ const backupRoot = path.join(os.homedir(), 'Library', 'Application Support', 'yi
 const backupApp = path.join(backupRoot, `益语智库自用平台.old-${timestamp}.app`);
 const legacyCandidates = [
   '/Applications/益语智库.app',
+  path.join(os.homedir(), 'Desktop', APP_NAME),
   path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron', '益语智库工作台.app'),
   path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron-dist', '益语智库工作台.app'),
 ];
@@ -62,6 +63,7 @@ function stopRunningApp() {
   runQuiet('osascript', ['-e', 'tell application "益语智库自用平台" to quit']);
   runQuiet('pkill', ['-x', '益语智库自用平台']);
   runQuiet('pkill', ['-f', `${targetApp}/Contents/MacOS/${APP_BASENAME}`]);
+  runQuiet('pkill', ['-f', `${APP_NAME}/Contents/MacOS/${APP_BASENAME}`]);
   const waitResult = spawnSync(
     'bash',
     ['-lc', 'for _ in {1..30}; do pgrep -x "益语智库自用平台" >/dev/null || exit 0; sleep 0.2; done; exit 0'],

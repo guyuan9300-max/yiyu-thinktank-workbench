@@ -223,6 +223,12 @@ if (typeof window !== 'undefined' && !window.yiyuWorkbench) {
 }
 
 const baseUrl = window.yiyuWorkbench.backendBaseUrl;
+type CloudDirectAccess = {
+  apiBaseUrl: string;
+  accessToken: string;
+};
+
+let cachedCloudDirectAccess: CloudDirectAccess | null = null;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase();
@@ -264,6 +270,36 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       detail = payload.detail || text;
     } catch {}
     throw new Error(detail || `HTTP ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function getCloudDirectAccess(forceRefresh = false): Promise<CloudDirectAccess> {
+  if (!forceRefresh && cachedCloudDirectAccess) {
+    return cachedCloudDirectAccess;
+  }
+  const access = await request<CloudDirectAccess>('/api/v1/cloud/direct-access');
+  cachedCloudDirectAccess = access;
+  return access;
+}
+
+async function requestCloud<T>(path: string, options?: RequestInit, attempt = 0): Promise<T> {
+  const access = await getCloudDirectAccess(attempt > 0);
+  const response = await fetch(`${access.apiBaseUrl}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${access.accessToken}`,
+      ...(options?.headers ?? {}),
+    },
+    ...options,
+  });
+  if (response.status === 401 && attempt === 0) {
+    cachedCloudDirectAccess = null;
+    return requestCloud<T>(path, options, 1);
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `云端请求失败 (${response.status})`);
   }
   return response.json() as Promise<T>;
 }
@@ -1230,6 +1266,18 @@ export async function getEventLine(id: string) {
 
 export async function getEventLineReportSnapshot(id: string) {
   return request<EventLineReportSnapshot>(`/api/v1/event-lines/${id}/report-snapshot`);
+}
+
+export async function getEventLineReportSnapshotDirect(id: string) {
+  return requestCloud<EventLineReportSnapshot>(`/api/v1/event-lines/${id}/report-snapshot`);
+}
+
+export async function getEventLineReportSnapshotLocalOverrides(id: string) {
+  try {
+    return await request<EventLineReportSnapshot>(`/api/v1/event-lines/${id}/report-snapshot-overrides`);
+  } catch {
+    return null;
+  }
 }
 
 export async function updateEventLine(id: string, payload: Partial<EventLineMutationPayload>) {
