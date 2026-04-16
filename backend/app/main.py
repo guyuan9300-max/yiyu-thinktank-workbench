@@ -205,6 +205,8 @@ from app.models import (
     OrgReportingLineRecord,
     OrgRoleTemplateRecord,
     OrgTaskControlRuleRecord,
+    WorkObjectTerminologyStateRecord,
+    WorkObjectTerminologyUpdatePayload,
     OrganizationDnaModuleRecord,
     OrganizationDnaResponse,
     OrganizationDnaUploadPayload,
@@ -1204,6 +1206,7 @@ def _sync_task_attachment_scope(
         updated_attachment = TaskAttachmentRecord(
             id=attachment.id,
             taskId=attachment.taskId,
+            workObjectId=normalized_client_id,
             clientId=normalized_client_id,
             eventLineId=normalized_event_line_id,
             documentId=attachment.documentId,
@@ -1784,6 +1787,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
 
     @app.middleware("http")
+    async def _work_object_route_alias_middleware(request: Request, call_next):
+        path = request.scope.get("path", "")
+        if isinstance(path, str) and path.startswith("/api/v1/work-objects"):
+            aliased_path = "/api/v1/clients" + path.removeprefix("/api/v1/work-objects")
+            request.scope["path"] = aliased_path
+            request.scope["raw_path"] = aliased_path.encode("utf-8")
+        return await call_next(request)
+
+    @app.middleware("http")
     async def _local_browser_origin_guard(request: Request, call_next):
         rejection_reason = validate_local_browser_request(request.url.path, request.headers, request.method)
         if rejection_reason:
@@ -2076,6 +2088,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         append_knowledge_job_event(job_id, "info", "知识加工任务已入队", {"jobType": job_type, "totalItems": total_items})
         return KnowledgeJobRecord(
             id=job_id,
+            workObjectId=client_id,
             clientId=client_id,
             jobType=job_type,
             status="queued",
@@ -2519,6 +2532,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             dataDir=str(state.data_dir),
             stats={
                 "clients": state.db.scalar("SELECT COUNT(1) AS count FROM clients"),
+                "workObjects": state.db.scalar("SELECT COUNT(1) AS count FROM clients"),
                 "tasks": state.db.scalar("SELECT COUNT(1) AS count FROM tasks"),
                 "topics": state.db.scalar("SELECT COUNT(1) AS count FROM topic_candidates"),
                 "handbookEntries": state.db.scalar("SELECT COUNT(1) AS count FROM handbook_entries"),
@@ -2544,6 +2558,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             dataDir=str(state.data_dir),
             backupDir=str(state.backup_dir),
             cloudApiUrl=state.cloud_api_url,
+            localWorkObjectMode=_get_local_work_object_mode(),
             lastBackupAt=state.db.get_setting("last_backup_at", "") or None,
             foldersRootLabel=state.db.get_setting("folders_root_label", "桌面客户资料"),
             aiConfigured=bool(ai_health.fingerprint),
@@ -2638,6 +2653,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def current_session_is_admin() -> bool:
         session_user = get_cached_session_user()
         return bool(session_user and session_user.primaryRole == "admin")
+
+    def _normalize_work_object_mode(value: object) -> Literal["client", "project"] | None:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"client", "project"}:
+            return normalized
+        return None
+
+    def _get_local_work_object_mode() -> Literal["client", "project"] | None:
+        return _normalize_work_object_mode(state.db.get_setting("work_object_mode", ""))
+
+    def _set_local_work_object_mode(mode: str) -> Literal["client", "project"]:
+        normalized = _normalize_work_object_mode(mode) or "project"
+        state.db.set_setting("work_object_mode", normalized)
+        state.db.set_setting("work_object_mode_seen", "1")
+        state.db.set_setting("work_object_mode_updated_at", now_iso())
+        return normalized
+
+    def _resolve_work_object_terminology_state() -> WorkObjectTerminologyStateRecord:
+        local_mode = _get_local_work_object_mode()
+        local_updated_at = state.db.get_setting("work_object_mode_updated_at", "") or now_iso()
+        session_user = get_cached_session_user()
+        if has_active_cloud_session() and session_user and session_user.organizationId not in {"", "local-device"}:
+            try:
+                payload = cloud_request("GET", "/api/v1/settings/work-object-terminology")
+                if isinstance(payload, dict):
+                    return WorkObjectTerminologyStateRecord(**payload)
+            except HTTPException:
+                pass
+        effective_mode = local_mode or "project"
+        return WorkObjectTerminologyStateRecord(
+            localMode=local_mode,
+            organizationMode=None,
+            effectiveMode=effective_mode,
+            source="local" if local_mode else "default",
+            lockedByOrganization=False,
+            needsOnboarding=False,
+            updatedAt=local_updated_at,
+        )
 
     def _load_json_settings_record(key: str, default_factory, model_cls):
         raw = state.db.get_setting(key, "")
@@ -4311,6 +4364,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _client_dna_record(client_id: str, module_key: str, module_title: str, row=None) -> ClientDnaModuleRecord:
         return ClientDnaModuleRecord(
+            workObjectId=client_id,
             clientId=client_id,
             moduleKey=module_key,  # type: ignore[arg-type]
             title=module_title,
@@ -4559,6 +4613,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if pending:
             return KnowledgeJobRecord(
                 id=str(pending["id"]),
+                workObjectId=str(pending["client_id"]),
                 clientId=str(pending["client_id"]),
                 jobType=str(pending["job_type"]),
                 status=str(pending["status"]),  # type: ignore[arg-type]
@@ -4584,6 +4639,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _project_module_record(row) -> ProjectModuleRecord:
         return ProjectModuleRecord(
             id=str(row["id"]),
+            workObjectId=str(row["client_id"]),
             clientId=str(row["client_id"]),
             name=str(row["name"]),
             alias=str(row["alias"]) if row["alias"] else None,
@@ -4614,6 +4670,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             resolved_module_name = str(module_row["name"]) if module_row and module_row["name"] else None
         return ProjectFlowRecord(
             id=str(row["id"]),
+            workObjectId=str(row["client_id"]),
             clientId=str(row["client_id"]),
             moduleId=str(row["module_id"]),
             moduleName=resolved_module_name,
@@ -5714,6 +5771,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return TaskAttachmentRecord(
             id=str(row["id"]),
             taskId=str(row["task_id"]),
+            workObjectId=str(row["client_id"]),
             clientId=str(row["client_id"]),
             eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
             documentId=str(row["document_id"]) if row["document_id"] else None,
@@ -6355,6 +6413,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             evidenceCount=int(payload.get("evidenceCount") or 0),
             ownerId=str(payload.get("ownerId")) if payload.get("ownerId") else None,
             ownerName=str(payload.get("ownerName")) if payload.get("ownerName") else None,
+            primaryWorkObjectId=client_id,
+            primaryWorkObjectName=cloud_client_name or (str(client_row["name"]) if client_row else None),
             primaryClientId=client_id,
             primaryClientName=cloud_client_name or (str(client_row["name"]) if client_row else None),
             primaryDepartmentId=str(payload.get("primaryDepartmentId")) if payload.get("primaryDepartmentId") else None,
@@ -6417,6 +6477,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
             ownerId=str(row["owner_id"]) if row["owner_id"] else None,
             ownerName=str(row["owner_name"]) if row["owner_name"] else None,
+            primaryWorkObjectId=client_id,
+            primaryWorkObjectName=str(client_row["name"]) if client_row else (str(row["primary_client_name"]) if row["primary_client_name"] else None),
             primaryClientId=client_id,
             primaryClientName=str(client_row["name"]) if client_row else (str(row["primary_client_name"]) if row["primary_client_name"] else None),
             primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
@@ -8826,6 +8888,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return [
             MeetingSummary(
                 id=str(row["id"]),
+                workObjectId=str(row["client_id"]),
                 clientId=str(row["client_id"]),
                 title=str(row["title"]),
                 stage=str(row["stage"]),  # type: ignore[arg-type]
@@ -9071,6 +9134,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Client not found")
         return ClientSummary(
             id=str(row["id"]),
+            workObjectId=str(row["id"]),
             name=str(row["name"]),
             alias=str(row["alias"]),
             domain=str(row["domain"]),
@@ -9304,6 +9368,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             source_evidence.append('历史项目摘要')
 
         return TaskProjectContextRecord(
+            workObjectId=client_id,
+            workObjectName=client_name,
             clientId=client_id,
             clientName=client_name,
             stage=stage,
@@ -10823,6 +10889,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         folders = [
             ClientFolder(
                 id=str(folder_rows[label]["id"]),
+                workObjectId=str(folder_rows[label]["client_id"]),
                 clientId=str(folder_rows[label]["client_id"]),
                 label=str(folder_rows[label]["label"]),
                 path=str(folder_rows[label]["path"]),
@@ -10836,6 +10903,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         documents = [
             DocumentRecord(
                 id=str(row["id"]),
+                workObjectId=str(row["client_id"]),
                 clientId=str(row["client_id"]),
                 folderId=str(row["folder_id"]) if row["folder_id"] else None,
                 title=str(row["title"]),
@@ -10851,6 +10919,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         imports = [
             ImportRecord(
                 id=str(row["id"]),
+                workObjectId=str(row["client_id"]),
                 clientId=str(row["client_id"]),
                 sourcePath=str(row["source_path"]),
                 mode=str(row["mode"]),  # type: ignore[arg-type]
@@ -10903,6 +10972,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         goals = [
             GoalRecord(
                 id=str(row["id"]),
+                workObjectId=str(row["client_id"]),
                 clientId=str(row["client_id"]),
                 title=str(row["title"]),
                 quarter=str(row["quarter"]),
@@ -10917,6 +10987,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         dna_terms = [
             DnaTerm(
                 id=str(row["id"]),
+                workObjectId=str(row["client_id"]),
                 clientId=str(row["client_id"]),
                 category=str(row["category"]),
                 canonicalName=str(row["canonical_name"]),
@@ -10930,7 +11001,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             build_document_card_record(item)
             for item in fetch_document_cards(state.db, client_id, data_dir=state.data_dir, limit=document_limit)
         ]
-        knowledge_jobs = [KnowledgeJobRecord(**item) for item in fetch_recent_knowledge_jobs(state.db, client_id, limit=8)]
+        knowledge_jobs = [
+            KnowledgeJobRecord(workObjectId=str(item.get("workObjectId") or client_id), **item)
+            for item in fetch_recent_knowledge_jobs(state.db, client_id, limit=8)
+        ]
         recent_reclass_events = [FileReclassEventRecord(**item) for item in fetch_recent_reclass_events(state.db, client_id, limit=8)]
         knowledge_status = build_knowledge_status_record(client_id)
         notebook_summary = get_client_notebook_response(state.db, client_id).organizationNotebookSnapshot
@@ -10940,6 +11014,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             (client_id, client_id),
         )
         return ClientWorkspaceResponse(
+            workObject=client,
             client=client,
             folders=folders,
             documents=documents,
@@ -12014,6 +12089,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def build_meeting_summary(row) -> MeetingSummary:
         return MeetingSummary(
             id=str(row["id"]),
+            workObjectId=str(row["client_id"]),
             clientId=str(row["client_id"]),
             title=str(row["title"]),
             stage=str(row["stage"]),  # type: ignore[arg-type]
@@ -19359,6 +19435,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_settings() -> SettingsResponse:
         return build_settings_response()
 
+    @app.get("/api/v1/settings/work-object-terminology", response_model=WorkObjectTerminologyStateRecord)
+    def get_work_object_terminology() -> WorkObjectTerminologyStateRecord:
+        return _resolve_work_object_terminology_state()
+
+    @app.post("/api/v1/settings/work-object-terminology", response_model=WorkObjectTerminologyStateRecord)
+    def update_work_object_terminology(payload: WorkObjectTerminologyUpdatePayload) -> WorkObjectTerminologyStateRecord:
+        if payload.target == "organization":
+            if not has_active_cloud_session():
+                raise HTTPException(status_code=400, detail="请先连接云端并加入组织后再修改组织术语。")
+            try:
+                cloud_request("POST", "/api/v1/settings/work-object-terminology", json_body=payload.model_dump())
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    raise HTTPException(status_code=502, detail="当前连接的云端还没有部署术语配置接口，请先更新云端服务。") from exc
+                raise
+            return _resolve_work_object_terminology_state()
+        _set_local_work_object_mode(payload.mode)
+        return _resolve_work_object_terminology_state()
+
     @app.get("/api/v1/settings/logs", response_model=list[ActivityLogRecord])
     def get_activity_logs() -> list[ActivityLogRecord]:
         return [
@@ -20106,6 +20201,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if pending:
             return KnowledgeJobRecord(
                 id=str(pending["id"]),
+                workObjectId=str(pending["client_id"]),
                 clientId=str(pending["client_id"]),
                 jobType=str(pending["job_type"]),
                 status=str(pending["status"]),  # type: ignore[arg-type]
@@ -20214,7 +20310,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             (goal_id, client_id, payload.title, payload.quarter, payload.progress, payload.ownerName, timestamp, timestamp),
         )
         log_activity("goal.create", "goal", goal_id, payload.model_dump())
-        return GoalRecord(id=goal_id, clientId=client_id, title=payload.title, quarter=payload.quarter, progress=payload.progress, ownerName=payload.ownerName)
+        return GoalRecord(id=goal_id, workObjectId=client_id, clientId=client_id, title=payload.title, quarter=payload.quarter, progress=payload.progress, ownerName=payload.ownerName)
 
     @app.get("/api/v1/clients/{client_id}/dna-documents", response_model=ClientDnaModulesResponse)
     def list_client_dna_documents(client_id: str) -> ClientDnaModulesResponse:
@@ -20236,6 +20332,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return job
         return KnowledgeJobRecord(
             id=new_id("kjob"),
+            workObjectId=client_id,
             clientId=client_id,
             jobType="generate_client_dna_candidates",
             status="completed",
@@ -20489,6 +20586,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("dna.upsert", "dna", term_id, payload.model_dump())
         return DnaTerm(
             id=term_id,
+            workObjectId=client_id,
             clientId=client_id,
             category=payload.category,
             canonicalName=payload.canonicalName,
@@ -20499,8 +20597,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/imports", response_model=list[ImportRecord])
     def import_documents(payload: ImportPayload) -> list[ImportRecord]:
-        build_client_summary(payload.clientId)
-        ensure_standard_client_folders(payload.clientId)
+        resolved_work_object_id = payload.workObjectId or payload.clientId
+        build_client_summary(resolved_work_object_id)
+        ensure_standard_client_folders(resolved_work_object_id)
         results: list[ImportRecord] = []
         allowed_extensions = set(SUPPORTED_IMPORT_EXTENSIONS)
         if payload.allowLegacy:
@@ -20518,7 +20617,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 INSERT INTO imports(id, client_id, source_path, mode, status, imported_count, skipped_count, created_at)
                 VALUES(?, ?, ?, ?, 'queued', 0, 0, ?)
                 """,
-                (import_id, payload.clientId, str(source_path), payload.mode, timestamp),
+                (import_id, resolved_work_object_id, str(source_path), payload.mode, timestamp),
             )
             if payload.mode == "folder":
                 candidates = [path for path in source_path.rglob("*") if path.is_file()]
@@ -20527,7 +20626,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ensure_source_tree_snapshot(
                 state.db,
                 import_id=import_id,
-                client_id=payload.clientId,
+                client_id=resolved_work_object_id,
                 source_path=source_path,
                 mode=payload.mode,
                 created_at=timestamp,
@@ -20544,11 +20643,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     WHERE client_id = ?
                       AND (import_source_path = ? OR current_human_path = ? OR original_path = ?)
                     """,
-                    (payload.clientId, str(path), str(path), str(path)),
+                    (resolved_work_object_id, str(path), str(path), str(path)),
                 ):
                     skipped += 1
                     continue
-                managed_import_path = stage_import_copy(state.data_dir, payload.clientId, import_id, path)
+                managed_import_path = stage_import_copy(state.data_dir, resolved_work_object_id, import_id, path)
                 excerpt = build_excerpt(path)
                 document_id = new_id("doc")
                 state.db.execute(
@@ -20558,7 +20657,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     """,
                     (
                         document_id,
-                        payload.clientId,
+                        resolved_work_object_id,
                         None,
                         path.name,
                         str(managed_import_path),
@@ -20591,11 +20690,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "UPDATE imports SET status = 'completed', imported_count = 0, skipped_count = ? WHERE id = ?",
                     (skipped, import_id),
                 )
-                log_activity("import.create", "import", import_id, {"clientId": payload.clientId, "sourcePath": str(source_path), "queued": queued, "skipped": skipped, "jobId": None})
+                log_activity("import.create", "import", import_id, {"clientId": resolved_work_object_id, "sourcePath": str(source_path), "queued": queued, "skipped": skipped, "jobId": None})
                 results.append(
                     ImportRecord(
                         id=import_id,
-                        clientId=payload.clientId,
+                        workObjectId=resolved_work_object_id,
+                        clientId=resolved_work_object_id,
                         sourcePath=str(source_path),
                         mode=payload.mode,
                         status="completed",
@@ -20606,21 +20706,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
                 continue
             job = enqueue_knowledge_job(
-                payload.clientId,
+                resolved_work_object_id,
                 "ingest_import",
                 {
-                    "clientId": payload.clientId,
+                    "clientId": resolved_work_object_id,
                     "importId": import_id,
                     "mode": payload.mode,
                     "documents": queued_documents,
                 },
                 total_items=queued,
             )
-            log_activity("import.create", "import", import_id, {"clientId": payload.clientId, "sourcePath": str(source_path), "queued": queued, "skipped": skipped, "jobId": job.id})
+            log_activity("import.create", "import", import_id, {"clientId": resolved_work_object_id, "sourcePath": str(source_path), "queued": queued, "skipped": skipped, "jobId": job.id})
             results.append(
                 ImportRecord(
                     id=import_id,
-                    clientId=payload.clientId,
+                    workObjectId=resolved_work_object_id,
+                    clientId=resolved_work_object_id,
                     sourcePath=str(source_path),
                     mode=payload.mode,
                     status="queued",
@@ -21660,7 +21761,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (meeting_id, client_id, payload.title, payload.scheduledAt, timestamp, timestamp),
         )
-        agenda_source = workspace_for_client(client_id).goals[:2] or [GoalRecord(id="seed", clientId=client_id, title="明确本周推进重点", quarter="本季度", progress=0, ownerName=current_operator_row()["name"])]
+        agenda_source = workspace_for_client(client_id).goals[:2] or [GoalRecord(id="seed", workObjectId=client_id, clientId=client_id, title="明确本周推进重点", quarter="本季度", progress=0, ownerName=current_operator_row()["name"])]
         for index, goal in enumerate(agenda_source):
             state.db.execute(
                 "INSERT INTO agenda_items(id, meeting_id, title, description, sort_order) VALUES(?, ?, ?, ?, ?)",

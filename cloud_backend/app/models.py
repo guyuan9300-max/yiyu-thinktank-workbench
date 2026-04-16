@@ -23,6 +23,7 @@ OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
 OrgTaskControlLevel = Literal["normal", "leader_control", "department_control", "organization_control"]
 OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organization_lead", "creator"]
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
+WorkObjectMode = Literal["client", "project"]
 ConsultationKnowledgeTarget = Literal["vector_memory", "document_archive"]
 ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed", "failed"]
 SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
@@ -226,6 +227,7 @@ class DepartmentOption(BaseModel):
 class OrgProfileRecord(BaseModel):
     organizationId: str
     name: str
+    workObjectMode: WorkObjectMode = "project"
     annualGoal: str = ""
     annualStrategyYear: str = ""
     annualStrategy: str = ""
@@ -234,6 +236,20 @@ class OrgProfileRecord(BaseModel):
     leaderUserId: str | None = None
     managementUserIds: list[str] = Field(default_factory=list)
     updatedAt: str
+
+
+class WorkObjectTerminologyStateRecord(BaseModel):
+    localMode: WorkObjectMode | None = None
+    organizationMode: WorkObjectMode | None = None
+    effectiveMode: WorkObjectMode = "project"
+    source: Literal["default", "local", "organization"] = "organization"
+    lockedByOrganization: bool = True
+    needsOnboarding: bool = False
+    updatedAt: str
+
+
+class WorkObjectTerminologyUpdatePayload(BaseModel):
+    mode: WorkObjectMode
 
 
 class OrgQuarterPlanRecord(BaseModel):
@@ -529,10 +545,13 @@ class MentionCandidate(BaseModel):
     isSelf: bool = False
 
 
-class ClientSummaryRecord(BaseModel):
+class WorkObjectRecord(BaseModel):
     id: str
     name: str
     alias: str | None = None
+
+
+ClientSummaryRecord = WorkObjectRecord
 
 
 class TaskListRecord(BaseModel):
@@ -603,6 +622,8 @@ class TaskRecord(BaseModel):
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
+    workObjectId: str | None = None
+    workObjectName: str | None = None
     clientId: str | None = None
     clientName: str | None = None
     eventLineId: str | None = None
@@ -634,6 +655,7 @@ class TaskRecord(BaseModel):
 class TaskAttachmentRecord(BaseModel):
     id: str
     taskId: str
+    workObjectId: str | None = None
     clientId: str | None = None
     eventLineId: str | None = None
     title: str
@@ -679,6 +701,7 @@ class TaskCreatePayload(BaseModel):
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
+    workObjectId: str | None = None
     clientId: str | None = None
     eventLineId: str | None = None
     projectModuleId: str | None = None
@@ -705,6 +728,7 @@ class TaskUpdatePayload(BaseModel):
     dueDate: str | None = None
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
+    workObjectId: str | None = None
     clientId: str | None = None
     eventLineId: str | None = None
     projectModuleId: str | None = None
@@ -767,6 +791,8 @@ class EventLineRecord(BaseModel):
     evidenceCount: int = 0
     ownerId: str | None = None
     ownerName: str | None = None
+    primaryWorkObjectId: str | None = None
+    primaryWorkObjectName: str | None = None
     primaryClientId: str | None = None
     primaryClientName: str | None = None
     primaryDepartmentId: str | None = None
@@ -833,6 +859,7 @@ class EventLineCreatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
+    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] = Field(default_factory=list)
@@ -851,6 +878,7 @@ class EventLineUpdatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
+    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] | None = None
@@ -882,6 +910,7 @@ class EventLineImportPayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int = 0
     ownerId: str | None = None
+    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryClientName: str | None = None
     primaryDepartmentId: str | None = None

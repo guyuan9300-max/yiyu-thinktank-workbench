@@ -137,6 +137,7 @@ import type {
   UpdateProfilePayload,
   WeeklyReviewTaskEntry,
   WeeklyReviewTaskStructuredNote,
+  WorkObjectTerminologyState,
 } from '../shared/types';
 import {
   getTodayCalendarState,
@@ -218,6 +219,7 @@ import {
   getTaskTagSuggestions,
   getTaskBoard,
   getTaskLists,
+  getWorkObjectTerminology,
   getTaskContextPreview,
   getTaskUnderstanding,
   getTaskSettings,
@@ -284,6 +286,7 @@ import {
   updateTaskSettings,
   updateTaskTag,
   updateTask,
+  updateWorkObjectTerminology,
   uploadTaskAttachment,
   updateTopicsSettings,
   upsertDna,
@@ -296,6 +299,7 @@ import {
   selectCollabRepo,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
+import { resolveWorkObjectTerminology } from './lib/workObjectTerminology';
 import {
   formatTaskTimelineLabel as formatUnifiedTaskTimelineLabel,
   resolveTaskDateTimeRange as resolveUnifiedTaskDateTimeRange,
@@ -2292,7 +2296,7 @@ function resolveOrganizationTaskName(organizationName?: string | null) {
 }
 
 function buildOrganizationTaskAutoReason(organizationName?: string | null) {
-  return `默认按组织任务"${resolveOrganizationTaskName(organizationName)}"处理；只有明确命中客户 / 项目名称时才自动关联。`;
+  return `默认按组织任务"${resolveOrganizationTaskName(organizationName)}"处理；只有明确命中具体工作对象名称时才自动关联。`;
 }
 
 function buildOrganizationTaskManualReason(organizationName?: string | null) {
@@ -2396,7 +2400,7 @@ function inferTaskClient(params: {
         return {
           clientId: winner.client.id,
           confidence: 'medium',
-          reason: `系统自动识别客户 / 项目：命中多个关键词"${hits.join('、') || winner.client.name}"，已预填为"${winner.client.name}"。`,
+          reason: `系统自动识别工作对象：命中多个关键词"${hits.join('、') || winner.client.name}"，已预填为"${winner.client.name}"。`,
         };
       }
       return {
@@ -2409,7 +2413,7 @@ function inferTaskClient(params: {
     return {
       clientId: winner.client.id,
       confidence,
-      reason: `系统自动识别客户 / 项目：命中"${hits.join('、') || winner.client.name}"，已预填为"${winner.client.name}"。`,
+      reason: `系统自动识别工作对象：命中"${hits.join('、') || winner.client.name}"，已预填为"${winner.client.name}"。`,
     };
   }
   return { clientId: '', confidence: 'none', reason: buildOrganizationTaskAutoReason(params.organizationName) };
@@ -2430,13 +2434,13 @@ function inferTaskEventLine(params: {
     return {
       eventLineId: '',
       reason: params.currentClientId
-        ? '当前项目下还没有事件线，可从这条任务直接新建。'
+        ? '当前关联对象下还没有事件线，可从这条任务直接新建。'
         : '当前还没有可选事件线，可从这条任务直接新建。',
     };
   }
   const summarizeScope = () => {
     if (params.currentClientId && scopedEventLines.length > 0) {
-      return `当前项目下已有 ${scopedEventLines.length} 条事件线，可手动调整。`;
+      return `当前关联对象下已有 ${scopedEventLines.length} 条事件线，可手动调整。`;
     }
     return candidateLines.length === 1
       ? '当前仅有 1 条可选事件线，可直接确认或手动调整。'
@@ -2446,7 +2450,7 @@ function inferTaskEventLine(params: {
     if (params.currentClientId && scopedEventLines.length === 1) {
       return {
         eventLineId: scopedEventLines[0].id,
-        reason: `当前项目下仅有一条事件线，先预填为"${scopedEventLines[0].name}"。`,
+        reason: `当前关联对象下仅有一条事件线，先预填为"${scopedEventLines[0].name}"。`,
       };
     }
     return { eventLineId: '', reason: summarizeScope() };
@@ -2472,13 +2476,13 @@ function inferTaskEventLine(params: {
     const hits = [...winner.exactHits, ...winner.supportHits].slice(0, 2);
     return {
       eventLineId: winner.eventLine.id,
-      reason: `系统已在${params.currentClientId && scopedEventLines.length > 0 ? '当前项目' : '可选范围'}内匹配到事件线"${winner.eventLine.name}"${hits.length ? `，命中"${hits.join('、')}"` : ''}。`,
+      reason: `系统已在${params.currentClientId && scopedEventLines.length > 0 ? '当前关联对象' : '可选范围'}内匹配到事件线"${winner.eventLine.name}"${hits.length ? `，命中"${hits.join('、')}"` : ''}。`,
     };
   }
   if (params.currentClientId && scopedEventLines.length === 1) {
     return {
       eventLineId: scopedEventLines[0].id,
-      reason: `当前项目下仅有一条事件线，先预填为"${scopedEventLines[0].name}"，可手动调整。`,
+      reason: `当前关联对象下仅有一条事件线，先预填为"${scopedEventLines[0].name}"，可手动调整。`,
     };
   }
   return { eventLineId: '', reason: summarizeScope() };
@@ -2677,11 +2681,17 @@ function buildTaskProjectPreview(params: {
   workspace: ClientWorkspace | null;
   dnaModules: ClientDnaModule[];
   projectStructure: ProjectStructureResponse;
+  terminology?: {
+    singularLabel?: string;
+    workspaceLabel?: string;
+  };
 }): TaskProjectContext | null {
   if (!params.clientId) return null;
   const client = params.clients.find((item) => item.id === params.clientId);
   if (!client) return null;
   const workspace = params.workspace?.client.id === params.clientId ? params.workspace : null;
+  const singularLabel = params.terminology?.singularLabel || '项目';
+  const workspaceLabel = params.terminology?.workspaceLabel || `${singularLabel}工作台`;
   const moduleMap = new Map(params.dnaModules.map((item) => [item.moduleKey, item]));
   const projectModule = params.projectStructure.modules.find((item) => item.id === params.projectModuleId);
   const projectFlow = params.projectStructure.flows.find((item) => item.id === params.projectFlowId);
@@ -2957,13 +2967,13 @@ function buildTaskProjectPreview(params: {
     }
     if (relatedMeetings.length > 0) return `最近进展：${relatedMeetings.join(' / ')}`.slice(0, 120);
     if (workspaceDocumentCount >= 8) {
-      return `最近进展：客户工作台里已沉淀 ${workspaceDocumentCount} 份相关资料，但还需要继续把它们挂到具体推进结构上。`.slice(0, 120);
+      return `最近进展：${workspaceLabel}里已沉淀 ${workspaceDocumentCount} 份相关资料，但还需要继续把它们挂到具体推进结构上。`.slice(0, 120);
     }
     if (goals.length > 0) return `最近进展：已围绕"${goals[0]}"持续推进。`.slice(0, 120);
     return '最近进展仍待补充，建议尽快沉淀会议或推进记录。';
   })();
-  const sourceEvidence = ['任务关联客户'];
-  if (workspace) sourceEvidence.push('客户工作台上下文');
+  const sourceEvidence = [`任务关联${singularLabel}`];
+  if (workspace) sourceEvidence.push(`${workspaceLabel}上下文`);
   if (workspaceDocumentCount > 0) sourceEvidence.push(`知识资料 ${workspaceDocumentCount} 份`);
   relatedDocumentCards.slice(0, 2).forEach((item) => sourceEvidence.push(`资料卡：${item.title}`));
   attachmentTitles.slice(0, 2).forEach((item) => sourceEvidence.push(`附件：${item}`));
@@ -3672,6 +3682,7 @@ export default function App() {
   const [departmentOptions, setDepartmentOptions] = useState<DepartmentOption[]>([]);
   const [employeeReviews, setEmployeeReviews] = useState<EmployeeRecord[]>([]);
   const [settingsState, setSettingsState] = useState<AppSettings | null>(null);
+  const [workObjectTerminologyState, setWorkObjectTerminologyState] = useState<WorkObjectTerminologyState | null>(null);
   const [taskSettingsState, setTaskSettingsState] = useState<TaskSettings | null>(null);
   const [reviewGovernanceState, setReviewGovernanceState] = useState<ReviewGovernanceSettings>(EMPTY_REVIEW_GOVERNANCE_SETTINGS);
   const [orgModelState, setOrgModelState] = useState<OrgModelSettings>(EMPTY_ORG_MODEL_SETTINGS);
@@ -3798,6 +3809,25 @@ export default function App() {
   const [loadingSubProgress, setLoadingSubProgress] = useState(0);
   const currentSessionUser = authState.user || null;
   const isCloudSession = authState.sessionMode === 'cloud' || !isLocalDeviceSessionUser(currentSessionUser);
+  const hasOrganizationTerminologyScope = isCloudSession
+    && Boolean(
+      ((orgMembershipState.organizationId || currentSessionUser?.organizationId || '') || '')
+        .trim()
+        .replace(/^local-device$/u, ''),
+    );
+  const canEditWorkObjectMode = !hasOrganizationTerminologyScope || currentSessionUser?.primaryRole === 'admin';
+  const terminology = useMemo(
+    () => resolveWorkObjectTerminology(workObjectTerminologyState ?? {
+      localMode: settingsState?.localWorkObjectMode ?? null,
+      organizationMode: null,
+      effectiveMode: settingsState?.localWorkObjectMode ?? 'project',
+      source: settingsState?.localWorkObjectMode ? 'local' : 'default',
+      lockedByOrganization: false,
+      needsOnboarding: false,
+      updatedAt: '',
+    }),
+    [settingsState?.localWorkObjectMode, workObjectTerminologyState],
+  );
   useEffect(() => {
     if (typeof window === 'undefined') return;
     (window as typeof window & { __YIYU_DEBUG_AUTH__?: Record<string, unknown> }).__YIYU_DEBUG_AUTH__ = {
@@ -4239,6 +4269,12 @@ export default function App() {
     );
   }
 
+  async function loadWorkObjectTerminologyBlock() {
+    const response = await getWorkObjectTerminology();
+    setWorkObjectTerminologyState(response);
+    return response;
+  }
+
   async function loadLocalInputMemoryBlock() {
     const response = await getLocalInputMemory();
     setLocalInputMemoryState(response);
@@ -4432,7 +4468,7 @@ export default function App() {
       } catch (error) {
         console.error('[bootstrap] loadClientBlock workspace fetch failed', error);
         setWorkspace(null);
-        flash('error', error instanceof Error ? error.message : '项目工作区加载失败');
+        flash('error', error instanceof Error ? error.message : `${terminology.workspaceLabel}加载失败`);
       }
     } else {
       console.warn('[bootstrap] loadClientBlock found no selectable client');
@@ -4525,11 +4561,12 @@ export default function App() {
       try {
         markLoadingPhase('正在读取系统设置…');
         await loadSettingsBlock();
+        await loadWorkObjectTerminologyBlock();
         await loadLocalInputMemoryBlock();
       } catch (settingsError) {
         if (isLocalServiceStartupError(settingsError)) {
           window.setTimeout(() => {
-            void Promise.all([loadSettingsBlock(), loadLocalInputMemoryBlock()]).catch(() => undefined);
+            void Promise.all([loadSettingsBlock(), loadWorkObjectTerminologyBlock(), loadLocalInputMemoryBlock()]).catch(() => undefined);
           }, 1500);
         } else {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
@@ -4606,7 +4643,7 @@ export default function App() {
           setAgentWeeklyDigests([]);
           setAgentWeeklyPlans([]);
         }
-        markLoadingPhase('正在载入客户工作区…');
+        markLoadingPhase(`正在载入${terminology.workspaceLabel}…`);
         await loadClientBlock(nextClientId);
         if (failedBackgroundBlocks.length > 0) {
           flash('error', `部分模块加载失败：${failedBackgroundBlocks.join('、')}`);
@@ -4934,7 +4971,7 @@ export default function App() {
       if (!orgListBootstrapRef.current) {
         orgListBootstrapRef.current = (async () => {
           const created = await createTaskList({
-            name: '客户项目',
+            name: '组织任务',
             color: '#5B7BFE',
             isDefault: true,
             scope: 'org',
@@ -5019,7 +5056,7 @@ export default function App() {
 
   const navItems = [
     { id: 'tasks' as const, label: '任务与日程', icon: CheckSquare },
-    { id: 'client_workspace' as const, label: '客户工作台', icon: Briefcase },
+    { id: 'client_workspace' as const, label: terminology.workspaceLabel, icon: Briefcase },
     { id: 'strategic_accompaniment' as const, label: '战略陪伴', icon: Target },
     { id: 'topics_management' as const, label: '资讯情报站', icon: Newspaper },
     { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
@@ -5585,7 +5622,7 @@ export default function App() {
       if (!orgListBootstrapRef.current) {
         orgListBootstrapRef.current = (async () => {
           const created = await createTaskList({
-            name: '客户项目',
+            name: '组织任务',
             color: '#5B7BFE',
             isDefault: true,
             scope: 'org',
@@ -6316,7 +6353,7 @@ export default function App() {
     }, [isCloudSession]);
 
     const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
-    const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '客户项目';
+    const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '组织任务';
     const taskControlLevelLabel = (task: Task) => {
       const level = task.orgContext?.controlLevel;
       if (level === 'leader_control') return '负责人控制';
@@ -6731,7 +6768,7 @@ export default function App() {
         const selectedClientLabel =
           taskClientOptions.find((item) => item.id === selectedClientId)?.name
           || selectedLine?.primaryClientName
-          || '已关联项目';
+          || `已关联${terminology.singularLabel}`;
         return {
           ...prev,
           clientId: shouldAutofillClient ? selectedClientId : prev.clientId,
@@ -6784,6 +6821,7 @@ export default function App() {
           workspace,
           dnaModules: activeTaskDnaModules,
           projectStructure: activeProjectStructure,
+          terminology,
         }),
       [
         activeProjectStructure,
@@ -6797,6 +6835,7 @@ export default function App() {
         editingTaskRecord?.attachments?.length,
         pendingTaskArchiveText,
         selectedEventLineSummary,
+        terminology,
         workspace,
       ],
     );
@@ -6864,9 +6903,9 @@ export default function App() {
     }, [editingTask.id, editingTask.scopeMode, isTaskModalOpen]);
     const eventLineScopeHint = editingTask.clientId
       ? selectedTaskClientLabel
-        ? `系统会先在"${selectedTaskClientLabel}"项目下建议事件线。`
-        : '系统会先在当前项目下建议事件线。'
-      : '系统会先尝试识别项目，再建议事件线。';
+        ? `系统会先在"${selectedTaskClientLabel}"下建议事件线。`
+        : `系统会先在当前${terminology.singularLabel}下建议事件线。`
+      : `系统会先尝试识别${terminology.singularLabel}，再建议事件线。`;
     const clientConfidenceBadge = labelTaskClientConfidence(editingTask.clientConfidence);
     const availableMentionOptions = mentionOptions.filter((candidate) => candidate.id !== ownerCollaborator?.id);
     const selectedTaskCollaboratorIds = new Set(selectedTaskCollaborators.map((item) => item.id));
@@ -7057,7 +7096,7 @@ export default function App() {
     const handleQuickCreateEventLineProject = async (initialName?: string) => {
       const normalizedName = (initialName || '').trim();
       if (!normalizedName) {
-        flash('error', '请先输入项目名称');
+        flash('error', `请先输入${terminology.singularLabel}名称`);
         return;
       }
       const existingClient = clients.find((item) => item.name.trim().toLowerCase() === normalizedName.toLowerCase());
@@ -7070,17 +7109,17 @@ export default function App() {
         const savedClient = await createClient({
           name: normalizedName,
           alias: normalizedName,
-          domain: '项目',
-          type: '项目',
-          intro: '等待导入已有资料，系统将自动分析归档并建立项目上下文。',
+          domain: terminology.singularLabel,
+          type: terminology.singularLabel,
+          intro: `等待导入已有资料，系统将自动分析归档并建立${terminology.singularLabel}上下文。`,
           stage: '待导入资料',
         });
         const nextClients = await getClients();
         setClients(nextClients);
         setEventLineEditorDraft((prev) => ({ ...prev, primaryClientId: savedClient.id }));
-        flash('success', `项目“${savedClient.name}”已创建并关联到当前事件线`);
+        flash('success', `${terminology.singularLabel}“${savedClient.name}”已创建并关联到当前事件线`);
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '创建项目失败');
+        flash('error', error instanceof Error ? error.message : `创建${terminology.singularLabel}失败`);
       }
     };
 
@@ -7479,7 +7518,7 @@ export default function App() {
         return;
       }
       if (!editingTask.clientId) {
-        flash('error', '请先选择客户/项目。');
+        flash('error', `请先选择${terminology.singularLabel}。`);
         return;
       }
       if (!editingTask.projectModuleId) {
@@ -7683,11 +7722,11 @@ export default function App() {
         ? { ...pendingSmartBriefDraftSource }
         : null;
       if (archiveTextSnapshot && editingTask.scopeMode === 'PERSONAL_ONLY') {
-        flash('error', '个人日程不会同步到客户工作台，请切回协作任务后再归档文字。');
+        flash('error', `个人日程不会同步到${terminology.workspaceLabel}，请切回协作任务后再归档文字。`);
         return;
       }
       if (archiveTextSnapshot && !editingTask.clientId) {
-        flash('error', '请先关联客户/项目，再把这段文字归档到客户工作台。');
+        flash('error', `请先关联${terminology.singularLabel}，再把这段文字归档到${terminology.workspaceLabel}。`);
         return;
       }
       setIsDuePickerOpen(false);
@@ -7841,7 +7880,7 @@ export default function App() {
             'success',
             archiveTextSnapshot || attachmentFilesSnapshot.length > 0
               ? `任务已保存，${[
-                archiveTextSnapshot ? '文字已归档到当前电脑的客户工作台' : '',
+                archiveTextSnapshot ? `文字已归档到当前电脑的${terminology.workspaceLabel}` : '',
                 attachmentFilesSnapshot.length > 0 ? `${attachmentFilesSnapshot.length} 个附件已上传` : '',
               ].filter(Boolean).join('，')}。`
               : draftSnapshot.id
@@ -8341,7 +8380,7 @@ export default function App() {
         clientId: task.clientId || '',
         clientTouched: Boolean(task.clientId),
         clientConfidence: task.clientId ? 'manual' : 'none',
-        clientReason: task.clientName ? `当前任务已关联客户"${task.clientName}"，你可以手动调整。` : organizationTaskManualReason,
+        clientReason: task.clientName ? `当前任务已关联${terminology.singularLabel}“${task.clientName}”，你可以手动调整。` : organizationTaskManualReason,
         eventLineId: task.eventLineId || '',
         eventLineTouched: Boolean(task.eventLineId),
         eventLineReason: task.eventLineName ? `当前任务已挂到事件线"${task.eventLineName}"。` : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
@@ -9365,7 +9404,7 @@ export default function App() {
                                     }}
                                   />
                                 </label>
-                                <span className="ml-2 text-[10px] text-gray-400">附件会先进入当前电脑的客户工作台</span>
+                                <span className="ml-2 text-[10px] text-gray-400">附件会先进入当前电脑的{terminology.workspaceLabel}</span>
                               </div>
                             )}
                             {task.status === 'doing' && task.orgContext?.needsReview && canToggleCompletion && (
@@ -9719,12 +9758,12 @@ export default function App() {
                   <div>
                     <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                     <p className="mt-1 text-[12px] text-gray-500">
-                      按项目查看事件线；卡片主体进入汇报预览，右侧直接切状态、归档、编辑或删除。
+                      按{terminology.singularLabel}查看事件线；卡片主体进入汇报预览，右侧直接切状态、归档、编辑或删除。
                     </p>
                   </div>
                 </div>
                 <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' as any }}>
-                  <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
+                  <label className="mb-2 block text-[11px] font-bold text-gray-400">{terminology.singularLabel}筛选</label>
                   <div className="relative" ref={elProjectDropdownRef}>
                     {/* 自定义下拉按钮 — 替代原生 select，绕过 Electron hiddenInset 事件丢失 */}
                     <button
@@ -9736,8 +9775,8 @@ export default function App() {
                       style={{ WebkitAppRegion: 'no-drag' as any }}
                     >
                       {eventLineProjectFilterId === '__all__'
-                        ? `全部项目（${eventLineProjectOptions.length}）`
-                        : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? '未知项目')}
+                        ? `全部${terminology.pluralLabel}（${eventLineProjectOptions.length}）`
+                        : (eventLineProjectOptions.find((o) => o.id === eventLineProjectFilterId)?.label ?? `未知${terminology.singularLabel}`)}
                     </button>
                     <ChevronDown
                       className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 transition-transform ${elProjectDropdownOpen ? 'rotate-180' : ''}`}
@@ -9756,7 +9795,7 @@ export default function App() {
                           }}
                           className={`w-full px-4 py-2.5 text-left text-[13px] transition hover:bg-[#5B7BFE]/5 ${eventLineProjectFilterId === '__all__' ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10' : 'text-gray-700'}`}
                         >
-                          全部项目（{eventLineProjectOptions.length}）
+                          全部{terminology.pluralLabel}（{eventLineProjectOptions.length}）
                         </button>
                         {eventLineProjectOptions.map((option) => (
                           <button
@@ -9775,7 +9814,7 @@ export default function App() {
                     )}
                   </div>
                   <p className="mt-2 text-[11px] text-gray-500">
-                    选择项目后，只显示该项目下的事件线。
+                    选择{terminology.singularLabel}后，只显示该{terminology.singularLabel}下的事件线。
                   </p>
                 </div>
               </div>
@@ -9784,7 +9823,7 @@ export default function App() {
                   <p className="text-[13px] text-gray-400">
                     {eventLinesLoadError || (eventLineProjectFilterId === '__all__'
                       ? '还没有事件线。可以先在这里新建事件线，再把任务挂进对应主线。'
-                      : '当前项目下还没有事件线。可先在这里新建一条主线。')}
+                      : `当前${terminology.singularLabel}下还没有事件线。可先在这里新建一条主线。`)}
                   </p>
                 </div>
               )}
@@ -10449,7 +10488,7 @@ export default function App() {
               <div className="mt-4 flex flex-wrap gap-2 text-[12px] font-bold">
                 {editingTask.clientId && (
                   <span className="rounded-full bg-violet-50 px-3 py-1.5 text-violet-700">
-                    {taskClientOptions.find((item) => item.id === editingTask.clientId)?.name || '已选择项目'}
+                    {taskClientOptions.find((item) => item.id === editingTask.clientId)?.name || `已选择${terminology.singularLabel}`}
                   </span>
                 )}
                 {editingTask.title.trim() && (
@@ -10534,7 +10573,7 @@ export default function App() {
             <div className="bg-white w-full max-w-xl rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
               {/* Header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                <h2 className="text-lg font-semibold text-gray-800 tracking-wide">项目模板</h2>
+                <h2 className="text-lg font-semibold text-gray-800 tracking-wide">共享模板</h2>
                 <button onClick={() => setIsTemplateListOpen(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors">
                   <X size={20} />
                 </button>
@@ -10542,7 +10581,7 @@ export default function App() {
               {/* Body */}
               <div className="p-6 overflow-y-auto max-h-[60vh] space-y-4 bg-gray-50/50">
                 {taskProjectModuleOptions.length === 0 && (
-                  <p className="text-center text-sm text-gray-400 py-12">当前项目下还没有共享模板</p>
+                  <p className="text-center text-sm text-gray-400 py-12">当前{terminology.singularLabel}下还没有共享模板</p>
                 )}
                 {taskProjectModuleOptions.map((mod) => {
                   const parsed = mod.templateTasksJson ? (() => { try { return JSON.parse(mod.templateTasksJson); } catch { return null; } })() : null;
@@ -10552,7 +10591,7 @@ export default function App() {
                     <div
                       key={mod.id}
                       onClick={() => {
-                        setEditingTask((prev) => ({ ...prev, projectModuleId: mod.id, projectModuleTouched: true, projectModuleReason: `已选择项目模板：${mod.name}`, projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
+                        setEditingTask((prev) => ({ ...prev, projectModuleId: mod.id, projectModuleTouched: true, projectModuleReason: `已选择共享模板：${mod.name}`, projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
                         setIsTemplateListOpen(false);
                       }}
                       className={`group relative bg-white p-5 rounded-xl border transition-all duration-200 cursor-pointer ${isSelected ? 'border-blue-500 shadow-[0_0_0_1px_rgba(59,130,246,1)]' : 'border-gray-200 hover:border-blue-300 hover:shadow-md'}`}
@@ -10916,7 +10955,7 @@ export default function App() {
                         value={pendingTaskArchiveText}
                         onChange={(event) => setPendingTaskArchiveText(event.target.value)}
                         disabled={isSavingTask}
-                        placeholder="把纪要、背景说明、补充材料直接贴在这里，保存任务时会先归档到当前电脑的客户工作台"
+                        placeholder={`把纪要、背景说明、补充材料直接贴在这里，保存任务时会先归档到当前电脑的${terminology.workspaceLabel}`}
                         className={`min-h-[120px] w-full resize-none border-none bg-transparent text-[14px] leading-relaxed outline-none placeholder:text-gray-400 ${
                           isSavingTask ? 'cursor-not-allowed text-gray-300' : 'text-gray-600'
                         }`}
@@ -10955,7 +10994,7 @@ export default function App() {
                       ) : null}
                       <div className="mt-2 flex items-center justify-between">
                         <p className="text-xs text-gray-400">
-                          保存后文字和附件会先进入当前电脑的客户工作台；共享工作台同步取决于后续云同步。
+                          保存后文字和附件会先进入当前电脑的{terminology.workspaceLabel}；共享工作台同步取决于后续云同步。
                         </p>
                         {taskAttachmentUploadProgress ? (
                           <div className="shrink-0 flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-1.5">
@@ -11379,12 +11418,12 @@ export default function App() {
 
                   <div className="border-b border-gray-100 p-5">
                     <div className="space-y-3">
-                      <TaskPropertyRow icon={<Layout size={16} />} label="项目模板">
+                      <TaskPropertyRow icon={<Layout size={16} />} label="共享模板">
                         <div className="flex w-full items-center gap-2">
                           <span className="flex-1 truncate text-sm text-gray-500">
                             {editingTask.projectModuleId
-                              ? taskProjectModuleOptions.find((m) => m.id === editingTask.projectModuleId)?.name || '已选择项目模板'
-                              : '未选择项目模板'}
+                              ? taskProjectModuleOptions.find((m) => m.id === editingTask.projectModuleId)?.name || '已选择共享模板'
+                              : '未选择共享模板'}
                           </span>
                           {editingTask.projectModuleId && !isEditingTaskPersonal && (
                             <button
@@ -12078,7 +12117,7 @@ export default function App() {
           : normalizedStage === 'parsing'
           ? '正在识别模板字段'
           : normalizedStage === 'retrieving'
-            ? '正在检索客户资料'
+            ? `正在检索${terminology.singularLabel}资料`
             : normalizedStage === 'writing'
               ? 'AI 正在填写模板'
               : normalizedStage === 'completed'
@@ -12721,8 +12760,8 @@ export default function App() {
       setClientDraft({
         name: initialName,
         alias: '',
-        domain: '项目',
-        type: '项目',
+        domain: terminology.singularLabel,
+        type: terminology.singularLabel,
         intro: '',
         stage: '待导入资料',
       });
@@ -12745,16 +12784,16 @@ export default function App() {
 
     const submitClientModal = async () => {
       if (!clientDraft.name.trim()) {
-        flash('error', '请先填写项目名称');
+        flash('error', `请先填写${terminology.singularLabel}名称`);
         return;
       }
       const isEditingProject = Boolean(editingClientId);
       const payload = {
         name: clientDraft.name.trim(),
         alias: clientDraft.alias.trim() || clientDraft.name.trim(),
-        domain: clientDraft.domain.trim() || '项目',
-        type: clientDraft.type.trim() || '项目',
-        intro: clientDraft.intro.trim() || '等待导入已有资料，系统将自动分析归档并建立项目上下文。',
+        domain: clientDraft.domain.trim() || terminology.singularLabel,
+        type: clientDraft.type.trim() || terminology.singularLabel,
+        intro: clientDraft.intro.trim() || `等待导入已有资料，系统将自动分析归档并建立${terminology.singularLabel}上下文。`,
         stage: clientDraft.stage.trim() || '待导入资料',
       };
       try {
@@ -12766,7 +12805,7 @@ export default function App() {
           setClients(nextClients);
           setEventLineEditorDraft((prev) => ({ ...prev, primaryClientId: savedClient.id }));
           resumeEventLineModalAfterProject();
-          flash('success', isEditingProject ? '项目已更新，可继续回到事件线编辑。' : '项目已创建，已经自动带入当前事件线。');
+          flash('success', isEditingProject ? `${terminology.singularLabel}已更新，可继续回到事件线编辑。` : `${terminology.singularLabel}已创建，已经自动带入当前事件线。`);
           return;
         }
         setEventLineProjectResumeTarget(null);
@@ -12781,12 +12820,12 @@ export default function App() {
           setClients(clientItems);
           setCurrentClientId(savedClient.id);
           setWorkspace(null);
-          flash('success', isEditingProject ? '项目信息已更新' : '项目已创建，先导入已有资料，系统会自动分析归档并建立项目上下文。');
+          flash('success', isEditingProject ? `${terminology.singularLabel}信息已更新` : `${terminology.singularLabel}已创建，先导入已有资料，系统会自动分析归档并建立${terminology.singularLabel}上下文。`);
           return;
         }
-        flash('success', isEditingProject ? '项目信息已更新' : '项目已创建，先导入已有资料，系统会自动分析归档并建立项目上下文。');
+        flash('success', isEditingProject ? `${terminology.singularLabel}信息已更新` : `${terminology.singularLabel}已创建，先导入已有资料，系统会自动分析归档并建立${terminology.singularLabel}上下文。`);
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '保存项目失败');
+        flash('error', error instanceof Error ? error.message : `保存${terminology.singularLabel}失败`);
       }
     };
 
@@ -12807,9 +12846,9 @@ export default function App() {
     const confirmDeleteClient = async () => {
       if (!editingClientId) return;
       const targetClient = clients.find((client) => client.id === editingClientId);
-      const targetName = targetClient?.name || clientDraft.name.trim() || '该客户';
+      const targetName = targetClient?.name || clientDraft.name.trim() || `该${terminology.singularLabel}`;
       if (deleteClientConfirmInput.trim() !== targetName) {
-        flash('error', '项目名称不匹配，已取消删除');
+        flash('error', `${terminology.singularLabel}名称不匹配，已取消删除`);
         return;
       }
       try {
@@ -12838,9 +12877,9 @@ export default function App() {
             setWorkspace(null);
           }
         }
-        flash('success', '客户及其全部档案已删除');
+        flash('success', `${terminology.singularLabel}及其全部档案已删除`);
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除项目失败');
+        flash('error', error instanceof Error ? error.message : `删除${terminology.singularLabel}失败`);
       }
     };
 
@@ -12861,7 +12900,7 @@ export default function App() {
     const runWorkspaceFileSearch = async (rawQuery?: string) => {
       const query = (rawQuery ?? workspaceFileSearchQuery).trim();
       if (!currentClientId) {
-        flash('error', '请先选择客户');
+        flash('error', `请先选择${terminology.singularLabel}`);
         return;
       }
       if (!query) {
@@ -12890,7 +12929,7 @@ export default function App() {
 
     const handleImport = async (mode: 'folder' | 'file', paths: string[]) => {
       if (!currentClientId) {
-        flash('error', '请先选择客户');
+        flash('error', `请先选择${terminology.singularLabel}`);
         return;
       }
       if (backendCompatibilityError) {
@@ -12940,7 +12979,7 @@ export default function App() {
           setLatestImportFeedback({
             tone: 'success',
             text: `已完成 ${importedCount} 个文件的导入处理。`,
-            detail: '资料已经进入当前客户的工作区与知识库。',
+            detail: `资料已经进入当前${terminology.singularLabel}的${terminology.workspaceLabel}与知识库。`,
             timestamp: Date.now(),
           });
           flash('success', `已完成 ${importedCount} 个文件的导入处理`);
@@ -12966,7 +13005,7 @@ export default function App() {
       options?: { showDialog?: boolean; allowFallbackImport?: boolean },
     ) => {
       if (!currentClientId) {
-        flash('error', '请先选择客户');
+        flash('error', `请先选择${terminology.singularLabel}`);
         return 'error' as const;
       }
       if (backendCompatibilityError) {
@@ -13013,7 +13052,7 @@ export default function App() {
 
     const handleFillTemplate = async () => {
       if (!currentClientId) {
-        flash('error', '请先选择客户');
+        flash('error', `请先选择${terminology.singularLabel}`);
         return;
       }
       if (backendCompatibilityError) {
@@ -13035,7 +13074,7 @@ export default function App() {
 
     const openClientTextDocumentOverlay = () => {
       if (!currentClientId) {
-        flash('error', '请先选择项目');
+        flash('error', `请先选择${terminology.singularLabel}`);
         return;
       }
       setClientTextDocumentDraft({
@@ -13060,7 +13099,7 @@ export default function App() {
 
     const handleCreateClientTextDocument = async () => {
       if (!currentClientId) {
-        flash('error', '请先选择项目');
+        flash('error', `请先选择${terminology.singularLabel}`);
         return;
       }
       const content = clientTextDocumentDraft.content.trim();
@@ -13081,7 +13120,7 @@ export default function App() {
           content: '',
           titleEdited: false,
         });
-        flash('success', `已生成《${result.title}》并加入当前项目文档库`);
+        flash('success', `已生成《${result.title}》并加入当前${terminology.singularLabel}文档库`);
         void openPathBridge(result.path).catch(() => undefined);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '生成 Word 失败');
@@ -13367,7 +13406,7 @@ export default function App() {
         const result = await vectorizeAnswer(currentClientId, messageId);
         await refreshWorkspace(currentClientId);
         const opened = await openPathBridge(result.path).catch(() => false);
-        flash('success', opened ? `已生成并打开机读文档：${result.fileName}` : `已生成机读文档，并已归档到当前项目：${result.fileName}`);
+        flash('success', opened ? `已生成并打开机读文档：${result.fileName}` : `已生成机读文档，并已归档到当前${terminology.singularLabel}：${result.fileName}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '建立向量失败');
       } finally {
@@ -13408,7 +13447,7 @@ export default function App() {
                   <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#5B7BFE] transition-colors" />
                   <input
                     type="text"
-                    placeholder="搜索项目..."
+                    placeholder={`搜索${terminology.singularLabel}...`}
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
                     className="w-full bg-gray-50/80 border border-gray-100 rounded-full pl-10 pr-4 py-2 text-[13px] font-medium outline-none focus:bg-white focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10 transition-all placeholder-gray-400"
@@ -13417,15 +13456,15 @@ export default function App() {
                 <Button
                   className="h-11 w-11 shrink-0 rounded-[16px] p-0 border border-[#E5E5EA] bg-[#F2F2F7] text-[#6B7280] shadow-[0_1px_2px_rgba(0,0,0,0.05)] hover:bg-[#E9E9EE] hover:border-[#D1D5DB] hover:text-[#4B5563]"
                   onClick={() => openCreateClientModal()}
-                  aria-label="创建项目"
-                  title="创建项目"
+                  aria-label={`创建${terminology.singularLabel}`}
+                  title={`创建${terminology.singularLabel}`}
                 >
                   <Plus size={20} strokeWidth={2.4} />
                 </Button>
               </div>
 
               <div>
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">近期项目</p>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">{terminology.recentLabel}</p>
                 <div className="space-y-1.5">
                   {filteredClients.map((client) => (
                     <div
@@ -13451,7 +13490,7 @@ export default function App() {
                       <button
                         onClick={() => openEditClientModal(client)}
                         className="shrink-0 rounded-xl px-2 py-2 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE] hover:bg-white transition-colors"
-                        title={`编辑项目：${client.name}`}
+                        title={`编辑${terminology.singularLabel}：${client.name}`}
                       >
                         <PenTool size={14} />
                       </button>
@@ -13459,7 +13498,7 @@ export default function App() {
                   ))}
                   {filteredClients.length === 0 && (
                     <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-4 text-center">
-                      <p className="text-[12px] font-semibold text-gray-500">没有找到匹配的项目</p>
+                      <p className="text-[12px] font-semibold text-gray-500">没有找到匹配的{terminology.singularLabel}</p>
                       <button
                         onClick={() => {
                           setSearchQuery('');
@@ -13467,7 +13506,7 @@ export default function App() {
                         }}
                         className="mt-2 text-[12px] font-bold text-[#5B7BFE] hover:text-[#4a6be6]"
                       >
-                        清空搜索并创建项目
+                        清空搜索并创建{terminology.singularLabel}
                       </button>
                     </div>
                   )}
@@ -13673,14 +13712,14 @@ export default function App() {
                   <div className="w-16 h-16 xl:w-20 xl:h-20 bg-blue-50 rounded-full flex items-center justify-center mb-5">
                     <Briefcase size={30} className="text-[#5B7BFE]" strokeWidth={2} />
                   </div>
-                  <p className="text-[16px] font-bold text-gray-800 mb-2">还没有项目工作区</p>
+                  <p className="text-[16px] font-bold text-gray-800 mb-2">还没有{terminology.workspaceLabel}</p>
                   <p className="text-[12px] text-center max-w-md leading-relaxed text-gray-500 mb-6">
-                    先创建一个项目开始正式使用；如果只是想演示流程，也可以手动载入演示数据。
+                    先创建一个{terminology.singularLabel}开始正式使用；如果只是想演示流程，也可以手动载入演示数据。
                   </p>
                   <div className="flex items-center gap-3">
                     <Button primary onClick={() => openCreateClientModal()}>
                       <Plus size={16} />
-                      创建项目
+                      创建{terminology.singularLabel}
                     </Button>
                     <Button
                       onClick={() =>
@@ -13707,7 +13746,7 @@ export default function App() {
                   )}
                   {clientWorkspaceSurfaceMode === 'setup' && (
                     <ClientProjectSetupPage
-                      clientName={currentClient?.name || '当前项目'}
+                      clientName={currentClient?.name || `当前${terminology.singularLabel}`}
                       modules={workspace?.dnaModules || []}
                       projectModules={workspace?.projectModules || []}
                       projectFlows={workspace?.projectFlows || []}
@@ -13793,7 +13832,7 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="bg-white border border-dashed border-gray-200 rounded-2xl px-4 py-8 text-[12px] text-gray-400 text-center">
-                        <p>还没有生成文件卡。先导入客户资料，系统会自动扫描目录、生成文件卡和知识状态。</p>
+                        <p>还没有生成文件卡。先导入{terminology.singularLabel}资料，系统会自动扫描目录、生成文件卡和知识状态。</p>
                         {currentClientId && (
                           <div className="mt-4">
                             <button
@@ -13814,7 +13853,7 @@ export default function App() {
                       <div className="w-16 h-16 xl:w-20 xl:h-20 bg-blue-50 rounded-full flex items-center justify-center mb-5">
                         <Bot size={32} className="text-[#5B7BFE]" strokeWidth={2} />
                       </div>
-                      <p className="text-[15px] xl:text-[16px] font-bold text-gray-800 mb-2">已为您加载 {currentClient?.name || '当前客户'} 的业务大脑</p>
+                      <p className="text-[15px] xl:text-[16px] font-bold text-gray-800 mb-2">已为您加载 {currentClient?.name || `当前${terminology.singularLabel}`} 的业务大脑</p>
                       <p className="text-[12px] xl:text-[13px] text-center max-w-sm xl:max-w-md leading-relaxed text-gray-500">
                         {health?.ai.provider && health.ai.provider !== 'mock' && health.ai.ready
                           ? `本次对话已连接到 ${providerDisplayNames[health.ai.provider]} 结构化问答引擎。`
@@ -13848,7 +13887,7 @@ export default function App() {
                                     msg.failureReason === 'no_relevant_materials' &&
                                     ((knowledgeStatus?.totalDocuments || workspace?.documents.length || currentClient?.documentCount || 0) > 0) && (
                                       <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-[12px] font-bold text-amber-700">
-                                        这是一条历史结果：生成当时该客户资料尚未正式入库。当前资料已进入知识库，请重新提问以获取基于现有资料的正式回答。
+                                        这是一条历史结果：生成当时该{terminology.singularLabel}资料尚未正式入库。当前资料已进入知识库，请重新提问以获取基于现有资料的正式回答。
                                       </div>
                                     )}
                                   {msg.answerMode === 'grounded_answer' && (
@@ -13863,7 +13902,7 @@ export default function App() {
                                   )}
                                   {msg.answerMode === 'general_answer' && (
                                     <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-4 py-3 text-[12px] font-bold text-sky-700">
-                                      当前没有命中足够的原始材料，以下回答来自通用背景判断，不代表客户资料中的正式结论。
+                                      当前没有命中足够的原始材料，以下回答来自通用背景判断，不代表{terminology.singularLabel}资料中的正式结论。
                                     </div>
                                   )}
                                   {msg.answerMode === 'system_failure' && (
@@ -14024,7 +14063,7 @@ export default function App() {
                 )}
                 <textarea
                   className="w-full bg-transparent p-2.5 pl-4 text-[13px] xl:text-[14px] text-gray-800 outline-none resize-none min-h-[44px] xl:min-h-[50px] max-h-[120px] leading-relaxed placeholder-gray-400 font-medium"
-                  placeholder={`让 ${health?.ai.provider && health.ai.provider !== 'mock' && health.ai.ready ? providerDisplayNames[health.ai.provider] : 'AI'} 帮你推演 ${currentClient?.name || '当前客户'} 的业务问题...`}
+                  placeholder={`让 ${health?.ai.provider && health.ai.provider !== 'mock' && health.ai.ready ? providerDisplayNames[health.ai.provider] : 'AI'} 帮你推演 ${currentClient?.name || `当前${terminology.singularLabel}`} 的业务问题...`}
                   value={inputValue}
                   onChange={(event) => setInputValue(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
@@ -14249,7 +14288,7 @@ export default function App() {
                   type="button"
                   className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
                   onClick={() => setClientOverlayMode(null)}
-                  aria-label="关闭客户工作台弹窗"
+                  aria-label={`关闭${terminology.workspaceLabel}弹窗`}
                 >
                   <X size={16} />
                 </button>
@@ -14410,15 +14449,15 @@ export default function App() {
                 {clientOverlayMode === 'paste_document' && (
                   <div className="space-y-5">
                     <div className="rounded-2xl border border-blue-100 bg-blue-50/40 px-4 py-3">
-                      <p className="text-[13px] font-semibold text-[#33449a]">直接粘贴成项目文档</p>
+                      <p className="text-[13px] font-semibold text-[#33449a]">直接粘贴成{terminology.singularLabel}文档</p>
                       <p className="mt-1 text-[12px] leading-6 text-[#5d6aa6]">
-                        当前会自动关联到 {currentClient?.name || '当前项目'}，系统会根据正文先生成一个标题，你也可以手动修改，保存后会直接生成 Word 并进入这个项目的文档库。
+                        当前会自动关联到 {currentClient?.name || `当前${terminology.singularLabel}`}，系统会根据正文先生成一个标题，你也可以手动修改，保存后会直接生成 Word 并进入这个{terminology.singularLabel}的文档库。
                       </p>
                     </div>
 
                     <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">当前关联项目</p>
-                      <p className="mt-2 text-[14px] font-bold text-gray-900">{currentClient?.name || '未选择项目'}</p>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">当前关联{terminology.singularLabel}</p>
+                      <p className="mt-2 text-[14px] font-bold text-gray-900">{currentClient?.name || `未选择${terminology.singularLabel}`}</p>
                     </div>
 
                     <div className="space-y-4">
@@ -14661,7 +14700,7 @@ export default function App() {
                     )}
                   </div>
                   <p className="mt-3 text-[11px] leading-6 text-gray-400">
-                    系统会依次识别模板字段、检索客户资料、生成字段答案，并写回一份新的文档版本。
+                    系统会依次识别模板字段、检索{terminology.singularLabel}资料、生成字段答案，并写回一份新的文档版本。
                   </p>
                 </div>
 
@@ -14941,7 +14980,7 @@ export default function App() {
                   type="button"
                   className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
                   onClick={() => closeClientModal({ resumeEventLine: true })}
-                  aria-label="关闭项目弹窗"
+                  aria-label={`关闭${terminology.singularLabel}弹窗`}
                 >
                   <X size={16} />
                 </button>
@@ -14949,20 +14988,20 @@ export default function App() {
                   <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
                     <Briefcase size={16} strokeWidth={2.5} />
                   </div>
-                  {editingClientId ? '编辑项目' : '创建项目'}
+                  {editingClientId ? `编辑${terminology.singularLabel}` : `创建${terminology.singularLabel}`}
                 </h3>
               </div>
               <div className="p-8 space-y-5">
                 <div className="grid grid-cols-1 gap-4">
-                  <input value={clientDraft.name} onKeyDown={handleClientModalKeyDown} onChange={(event) => setClientDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="项目名称" className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" />
-                  <input value={clientDraft.alias} onKeyDown={handleClientModalKeyDown} onChange={(event) => setClientDraft((prev) => ({ ...prev, alias: event.target.value }))} placeholder="项目别名（选填）" className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" />
+                  <input value={clientDraft.name} onKeyDown={handleClientModalKeyDown} onChange={(event) => setClientDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder={`${terminology.singularLabel}名称`} className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" />
+                  <input value={clientDraft.alias} onKeyDown={handleClientModalKeyDown} onChange={(event) => setClientDraft((prev) => ({ ...prev, alias: event.target.value }))} placeholder={`${terminology.singularLabel}别名（选填）`} className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" />
                 </div>
                 <div className="rounded-[22px] border border-blue-100 bg-blue-50/70 px-4 py-4">
                   <p className="text-[13px] font-bold text-gray-900">创建后会立刻发生什么</p>
                   <div className="mt-2 space-y-1.5 text-[12px] leading-6 text-gray-600">
-                    <p>1. 这个项目会立刻出现在客户工作台搜索里。</p>
+                    <p>1. 这个{terminology.singularLabel}会立刻出现在{terminology.workspaceLabel}搜索里。</p>
                     <p>2. 创建成功后会直接进入资料导入引导页。</p>
-                    <p>3. 下一步先导入已有资料，系统会自动分析归档并建立项目上下文。</p>
+                    <p>3. 下一步先导入已有资料，系统会自动分析归档并建立{terminology.singularLabel}上下文。</p>
                   </div>
                 </div>
                 <p className="text-[11px] text-gray-400">按 Enter 可直接创建；创建后先导入已有资料即可开始正式建库。</p>
@@ -14974,7 +15013,7 @@ export default function App() {
                       onClick={() => void handleDeleteClient()}
                       className="text-[13px] font-bold text-rose-500 hover:text-rose-600 px-3 py-2 transition-colors"
                     >
-                      删除项目
+                      删除{terminology.singularLabel}
                     </button>
                   )}
                 </div>
@@ -14986,7 +15025,7 @@ export default function App() {
                   取消
                 </button>
                 <Button primary onClick={() => void submitClientModal()} className="px-6 shadow-md">
-                  {editingClientId ? '保存项目' : '创建项目'}
+                  {editingClientId ? `保存${terminology.singularLabel}` : `创建${terminology.singularLabel}`}
                 </Button>
                 </div>
               </div>
@@ -15009,16 +15048,16 @@ export default function App() {
                   >
                     <X size={16} />
                   </button>
-                  <div className="text-[16px] font-bold text-rose-700">确认删除客户</div>
+                  <div className="text-[16px] font-bold text-rose-700">确认删除{terminology.singularLabel}</div>
                 </div>
                 <p className="mt-2 text-[12px] leading-6 text-rose-600">
-                  这会删除当前客户的资料、工作区、问答记录和知识索引，且无法恢复。
+                  这会删除当前{terminology.singularLabel}的资料、{terminology.workspaceLabel}、问答记录和知识索引，且无法恢复。
                 </p>
               </div>
               <div className="px-7 py-6 space-y-4">
                 <p className="text-[13px] font-medium text-gray-600">
-                  请输入客户名称
-                  <span className="mx-1 font-bold text-gray-900">"{clients.find((client) => client.id === editingClientId)?.name || clientDraft.name.trim() || '该客户'}"</span>
+                  请输入{terminology.singularLabel}名称
+                  <span className="mx-1 font-bold text-gray-900">"{clients.find((client) => client.id === editingClientId)?.name || clientDraft.name.trim() || `该${terminology.singularLabel}`}"</span>
                   以确认删除。
                 </p>
                 <input
@@ -15031,7 +15070,7 @@ export default function App() {
                       void confirmDeleteClient();
                     }
                   }}
-                  placeholder="输入客户名称"
+                  placeholder={`输入${terminology.singularLabel}名称`}
                   className="w-full rounded-2xl border border-rose-200 bg-rose-50/40 px-4 py-3 text-[13px] font-bold outline-none focus:border-rose-300"
                 />
               </div>
@@ -15079,7 +15118,7 @@ export default function App() {
 
     const handleImportLegacyEntries = async () => {
       if (!legacyImportClientId) {
-        flash('error', '请先选择一个客户用于接收旧数据导入');
+        flash('error', `请先选择一个${terminology.singularLabel}用于接收旧数据导入`);
         return;
       }
       if (!importableLegacyEntries.length) {
@@ -15427,7 +15466,7 @@ export default function App() {
         const next = await updateClientWorkspaceSettings(clientWorkspaceDraft);
         setClientWorkspaceSettingsState(next);
         await loadLogsBlock();
-        flash('success', '客户工作台设置已保存');
+        flash('success', `${terminology.workspaceLabel}设置已保存`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
       }
@@ -15538,6 +15577,21 @@ export default function App() {
       }
     };
 
+    const handleSaveWorkObjectMode = async (mode: 'client' | 'project') => {
+      if (hasOrganizationTerminologyScope && currentSessionUser?.primaryRole !== 'admin') {
+        flash('info', '加入组织后，只有管理员可以调整术语模式。当前界面已按组织配置生效。');
+        return;
+      }
+      const target = hasOrganizationTerminologyScope ? 'organization' : 'local';
+      try {
+        await updateWorkObjectTerminology({ mode, target });
+        await Promise.all([loadSettingsBlock(), loadWorkObjectTerminologyBlock()]);
+        flash('success', target === 'organization' ? '组织术语已更新' : '本机术语已更新');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '保存术语模式失败');
+      }
+    };
+
     const sectionGroups: Array<{ group: string; items: Array<{ key: SettingsSectionKey; label: string; icon: typeof Settings; helper: string }> }> = [
       {
         group: '账户与服务',
@@ -15556,7 +15610,7 @@ export default function App() {
         group: '功能设置',
         items: [
           { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认清单、复盘规则' },
-          { key: 'client_workspace', label: '客户工作台', icon: Briefcase, helper: '聊天、会议、目标' },
+          { key: 'client_workspace', label: terminology.workspaceLabel, icon: Briefcase, helper: '聊天、会议、目标' },
           { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取与转任务' },
           { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
         ],
@@ -15775,6 +15829,52 @@ export default function App() {
           );
         })()}
 
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-[16px] font-bold text-gray-900">工作对象术语</h2>
+              <p className="text-[12px] text-gray-500 mt-1">
+                {hasOrganizationTerminologyScope
+                  ? (canEditWorkObjectMode
+                    ? '当前术语会作用于整个组织。保存后，所有组织成员都会统一看到同一种叫法。'
+                    : '当前已加入组织，术语由组织管理员统一维护。你这里看到的是组织当前正在生效的叫法。')
+                  : '当前默认按项目制显示；如需改成客户制，可以在这里手动切换。'}
+              </p>
+            </div>
+            <span className={`shrink-0 rounded-full px-3 py-1.5 text-[11px] font-bold ${hasOrganizationTerminologyScope ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-slate-50 text-slate-700 border border-slate-200'}`}>
+              {hasOrganizationTerminologyScope ? (canEditWorkObjectMode ? '组织配置' : '组织配置（只读）') : '本机配置'}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button
+              type="button"
+              onClick={() => void handleSaveWorkObjectMode('client')}
+              disabled={!canEditWorkObjectMode}
+              className={`rounded-2xl border p-4 text-left transition ${terminology.effectiveMode === 'client' ? 'border-blue-200 bg-blue-50/60' : 'border-gray-200 bg-gray-50 hover:border-gray-300'} disabled:opacity-60`}
+            >
+              <p className="text-[13px] font-bold text-gray-900">客户制</p>
+              <p className="mt-2 text-[12px] text-gray-500">适合围绕服务对象、合作对象来组织资料、事件线和任务。</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSaveWorkObjectMode('project')}
+              disabled={!canEditWorkObjectMode}
+              className={`rounded-2xl border p-4 text-left transition ${terminology.effectiveMode === 'project' ? 'border-blue-200 bg-blue-50/60' : 'border-gray-200 bg-gray-50 hover:border-gray-300'} disabled:opacity-60`}
+            >
+              <p className="text-[13px] font-bold text-gray-900">项目制</p>
+              <p className="mt-2 text-[12px] text-gray-500">适合围绕项目、计划、行动单元来组织资料与任务，也是当前默认模式。</p>
+            </button>
+          </div>
+          <p className="text-[12px] text-gray-500">
+            当前界面会显示为：{terminology.workspaceLabel}、{terminology.associateLabel}、{terminology.recentLabel}。
+          </p>
+          {hasOrganizationTerminologyScope && !canEditWorkObjectMode && (
+            <p className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
+              你已经加入组织，术语模式只能由管理员统一调整，本机不会再单独覆盖组织配置。
+            </p>
+          )}
+        </div>
+
         {isLocalSession ? (
           AccountProfileCard()
         ) : (
@@ -15818,8 +15918,8 @@ export default function App() {
               <p className="text-[12px] text-gray-700">{health?.ai.detail || '未加载'}</p>
             </div>
             <div className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
-              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">客户 / 任务</p>
-              <p className="text-[12px] text-gray-700">{health?.stats.clients || 0} 个客户，{health?.stats.tasks || 0} 条任务</p>
+              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">{terminology.statsLabel} / 任务</p>
+              <p className="text-[12px] text-gray-700">{health?.stats.workObjects || health?.stats.clients || 0} 个{terminology.statsLabel}，{health?.stats.tasks || 0} 条任务</p>
             </div>
             <div className="rounded-2xl bg-gray-50 border border-gray-100 p-4">
               <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-2">资讯 / 手册</p>
@@ -16074,11 +16174,11 @@ export default function App() {
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
-              <h2 className="text-[16px] font-bold text-gray-900">客户工作台全局规则</h2>
+              <h2 className="text-[16px] font-bold text-gray-900">{terminology.workspaceLabel}全局规则</h2>
               <p className="text-[12px] text-gray-500 mt-1">控制客户聊天、会议发布到任务和客户补充 DNA 的组织级规则。</p>
             </div>
             <Button primary onClick={() => void handleSaveClientWorkspaceSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存客户工作台设置
+              <Settings size={16} /> 保存{terminology.workspaceLabel}设置
             </Button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -16558,7 +16658,7 @@ export default function App() {
       '正在恢复登录状态…': 20,
       '正在读取系统设置…': 30,
       '正在载入核心模块数据…': 45,
-      '正在载入客户工作区…': 70,
+      [`正在载入${terminology.workspaceLabel}…`]: 70,
       '正在读取员工与组织数据…': 85,
       '正在切换到登录态…': 90,
       '启动完成': 100,

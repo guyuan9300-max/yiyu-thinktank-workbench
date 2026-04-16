@@ -1176,6 +1176,7 @@ def get_client_memory_status(db: Database, client_id: str) -> MemoryStatus:
             low_evidence += 1
     total = len(linked_event_lines)
     return MemoryStatus(
+        workObjectId=client_id,
         clientId=client_id,
         notebookCompleteness=_ratio(
             sum(

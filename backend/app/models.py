@@ -26,6 +26,7 @@ OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
 OrgTaskControlLevel = Literal["normal", "leader_control", "department_control", "organization_control"]
 OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organization_lead", "creator"]
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
+WorkObjectMode = Literal["client", "project"]
 DnaSourceLevel = Literal["organization", "client"]
 OrganizationDnaModuleKey = Literal["organization_intro", "business_intro", "team_intro", "market_intro"]
 FeishuReceiveIdType = Literal["open_id", "user_id", "email", "chat_id"]
@@ -66,6 +67,7 @@ class AppSettingsResponse(BaseModel):
     dataDir: str
     backupDir: str
     cloudApiUrl: str = "http://127.0.0.1:47830"
+    localWorkObjectMode: WorkObjectMode | None = None
     lastBackupAt: str | None = None
     foldersRootLabel: str
     aiConfigured: bool
@@ -276,6 +278,7 @@ class DepartmentOptionRecord(BaseModel):
 class OrgProfileRecord(BaseModel):
     organizationId: str
     name: str
+    workObjectMode: WorkObjectMode = "project"
     annualGoal: str = ""
     annualStrategyYear: str = ""
     annualStrategy: str = ""
@@ -284,6 +287,21 @@ class OrgProfileRecord(BaseModel):
     leaderUserId: str | None = None
     managementUserIds: list[str] = Field(default_factory=list)
     updatedAt: str
+
+
+class WorkObjectTerminologyStateRecord(BaseModel):
+    localMode: WorkObjectMode | None = None
+    organizationMode: WorkObjectMode | None = None
+    effectiveMode: WorkObjectMode = "project"
+    source: Literal["default", "local", "organization"] = "default"
+    lockedByOrganization: bool = False
+    needsOnboarding: bool = False
+    updatedAt: str
+
+
+class WorkObjectTerminologyUpdatePayload(BaseModel):
+    mode: WorkObjectMode
+    target: Literal["local", "organization"] = "local"
 
 
 class OrgQuarterPlanRecord(BaseModel):
@@ -572,7 +590,7 @@ class LegacyScanResponse(BaseModel):
     message: str
 
 
-class ClientMutationPayload(BaseModel):
+class WorkObjectMutationPayload(BaseModel):
     name: str
     alias: str
     domain: str
@@ -581,7 +599,10 @@ class ClientMutationPayload(BaseModel):
     stage: str
 
 
-class ClientSummary(BaseModel):
+ClientMutationPayload = WorkObjectMutationPayload
+
+
+class WorkObjectRecord(BaseModel):
     id: str
     name: str
     alias: str
@@ -595,8 +616,12 @@ class ClientSummary(BaseModel):
     lastActivityAt: str | None = None
 
 
-class ClientFolder(BaseModel):
+ClientSummary = WorkObjectRecord
+
+
+class WorkObjectFolder(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     label: str
     path: str
@@ -604,8 +629,12 @@ class ClientFolder(BaseModel):
     lastScannedAt: str | None = None
 
 
+ClientFolder = WorkObjectFolder
+
+
 class ImportRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     sourcePath: str
     mode: Literal["folder", "file"]
@@ -616,6 +645,7 @@ class ImportRecord(BaseModel):
 
 
 class ImportPayload(BaseModel):
+    workObjectId: str | None = None
     clientId: str
     mode: Literal["folder", "file"]
     paths: list[str]
@@ -633,6 +663,7 @@ class WorkspaceImportBackfillResponse(BaseModel):
 
 class DocumentRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     folderId: str | None = None
     title: str
@@ -710,6 +741,7 @@ class DocumentCardRecord(BaseModel):
 
 class GoalRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     title: str
     quarter: str
@@ -726,6 +758,7 @@ class GoalPayload(BaseModel):
 
 class DnaTerm(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     category: str
     canonicalName: str
@@ -899,6 +932,7 @@ class ClarificationRecord(BaseModel):
 
 
 class MemoryStatus(BaseModel):
+    workObjectId: str
     clientId: str
     notebookCompleteness: float = 0.0
     notebookConfidence: float = 0.0
@@ -933,6 +967,8 @@ class TaskRecord(BaseModel):
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
+    workObjectId: str | None = None
+    workObjectName: str | None = None
     clientId: str | None = None
     clientName: str | None = None
     eventLineId: str | None = None
@@ -968,6 +1004,7 @@ class TaskRecord(BaseModel):
 class TaskAttachmentRecord(BaseModel):
     id: str
     taskId: str
+    workObjectId: str
     clientId: str
     eventLineId: str | None = None
     documentId: str | None = None
@@ -996,6 +1033,8 @@ class TaskOrgContextRecord(BaseModel):
 
 
 class TaskProjectContextRecord(BaseModel):
+    workObjectId: str
+    workObjectName: str
     clientId: str
     clientName: str
     stage: str | None = None
@@ -1018,6 +1057,7 @@ class TaskProjectContextRecord(BaseModel):
 
 class ProjectModuleRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     name: str
     alias: str | None = None
@@ -1033,6 +1073,7 @@ class ProjectModuleRecord(BaseModel):
 
 class ProjectFlowRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     moduleId: str
     moduleName: str | None = None
@@ -1070,6 +1111,7 @@ class ProjectFlowDetailRecord(ProjectFlowRecord):
 
 class MeetingSummary(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     title: str
     stage: MeetingStage
@@ -1387,7 +1429,8 @@ class ProjectFlowPayload(BaseModel):
     riskPoints: list[str] = Field(default_factory=list)
 
 
-class ClientDnaModuleRecord(BaseModel):
+class WorkObjectDnaModuleRecord(BaseModel):
+    workObjectId: str
     clientId: str
     moduleKey: OrganizationDnaModuleKey
     title: str
@@ -1403,12 +1446,15 @@ class ClientDnaModuleRecord(BaseModel):
     hasDocument: bool = False
 
 
+ClientDnaModuleRecord = WorkObjectDnaModuleRecord
+
+
 class ClientDnaGeneratePayload(BaseModel):
     refreshGenerated: bool = False
 
 
 class ClientDnaModulesResponse(BaseModel):
-    modules: list[ClientDnaModuleRecord]
+    modules: list[WorkObjectDnaModuleRecord]
 
 
 class ClientWorkspaceSettingsRecord(BaseModel):
@@ -1900,6 +1946,8 @@ class EventLineRecord(BaseModel):
     evidenceCount: int = 0
     ownerId: str | None = None
     ownerName: str | None = None
+    primaryWorkObjectId: str | None = None
+    primaryWorkObjectName: str | None = None
     primaryClientId: str | None = None
     primaryClientName: str | None = None
     primaryDepartmentId: str | None = None
@@ -1973,6 +2021,7 @@ class EventLineCreatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
+    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] = Field(default_factory=list)
@@ -1991,6 +2040,7 @@ class EventLineUpdatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
+    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] | None = None
@@ -3530,6 +3580,7 @@ class FileReclassEventRecord(BaseModel):
 
 class KnowledgeJobRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     jobType: str
     status: Literal["queued", "running", "completed", "failed"]
@@ -3576,7 +3627,7 @@ class KnowledgeSearchResponse(BaseModel):
     previewSummary: str | None = None
 
 
-class ClientAnalysisEvidenceSummaryRecord(BaseModel):
+class WorkObjectAnalysisEvidenceSummaryRecord(BaseModel):
     summaryText: str = ""
     masterHitCount: int = 0
     surrogateHitCount: int = 0
@@ -3587,8 +3638,12 @@ class ClientAnalysisEvidenceSummaryRecord(BaseModel):
     evidenceList: list[KnowledgeSearchHitRecord] = Field(default_factory=list)
 
 
-class ClientAnalysisRunRecord(BaseModel):
+ClientAnalysisEvidenceSummaryRecord = WorkObjectAnalysisEvidenceSummaryRecord
+
+
+class WorkObjectAnalysisRunRecord(BaseModel):
     id: str
+    workObjectId: str
     clientId: str
     threadId: str
     userMessageId: str
@@ -3601,7 +3656,7 @@ class ClientAnalysisRunRecord(BaseModel):
     progressCeiling: float = 25.0
     stageLabel: str | None = None
     elapsedMs: float = 0.0
-    evidenceSummary: ClientAnalysisEvidenceSummaryRecord = Field(default_factory=ClientAnalysisEvidenceSummaryRecord)
+    evidenceSummary: WorkObjectAnalysisEvidenceSummaryRecord = Field(default_factory=WorkObjectAnalysisEvidenceSummaryRecord)
     longAnswerStatus: Literal["pending", "ready", "fallback", "failed"] = "pending"
     summaryStatus: Literal["pending", "ready", "fallback", "failed"] = "pending"
     longAnswer: str | None = None
@@ -3616,9 +3671,13 @@ class ClientAnalysisRunRecord(BaseModel):
     updatedAt: str
 
 
-class ClientWorkspaceResponse(BaseModel):
-    client: ClientSummary
-    folders: list[ClientFolder]
+ClientAnalysisRunRecord = WorkObjectAnalysisRunRecord
+
+
+class WorkObjectWorkspaceResponse(BaseModel):
+    workObject: WorkObjectRecord
+    client: WorkObjectRecord
+    folders: list[WorkObjectFolder]
     documents: list[DocumentRecord]
     documentCards: list[DocumentCardRecord] = Field(default_factory=list)
     imports: list[ImportRecord]
@@ -3629,16 +3688,19 @@ class ClientWorkspaceResponse(BaseModel):
     memoryDocCount: int = 0
     threads: list[ChatThread]
     recentMessages: list[ChatMessageRecord]
-    analysisRuns: list[ClientAnalysisRunRecord] = Field(default_factory=list)
+    analysisRuns: list[WorkObjectAnalysisRunRecord] = Field(default_factory=list)
     meetings: list[MeetingSummary]
     goals: list[GoalRecord]
-    dnaModules: list[ClientDnaModuleRecord] = Field(default_factory=list)
+    dnaModules: list[WorkObjectDnaModuleRecord] = Field(default_factory=list)
     projectModules: list[ProjectModuleRecord] = Field(default_factory=list)
     projectFlows: list[ProjectFlowRecord] = Field(default_factory=list)
     dnaTerms: list[DnaTerm]
     relatedTasks: list[TaskRecord]
     notebookSummary: OrganizationNotebookSnapshot | None = None
     memoryStatus: MemoryStatus | None = None
+
+
+ClientWorkspaceResponse = WorkObjectWorkspaceResponse
 
 
 class ClientNotebookResponse(BaseModel):

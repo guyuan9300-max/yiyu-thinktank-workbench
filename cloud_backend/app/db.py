@@ -331,6 +331,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS org_profiles (
                     organization_id TEXT PRIMARY KEY,
+                    work_object_mode TEXT NOT NULL DEFAULT 'project',
                     annual_goal TEXT NOT NULL DEFAULT '',
                     annual_strategy_year TEXT NOT NULL DEFAULT '',
                     annual_strategy_text TEXT NOT NULL DEFAULT '',
@@ -711,6 +712,7 @@ class Database:
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
+            self._ensure_column("org_profiles", "work_object_mode", "TEXT NOT NULL DEFAULT 'project'")
             self._ensure_column("org_profiles", "annual_strategy_year", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "annual_strategy_text", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "quarter_plans_json", "TEXT NOT NULL DEFAULT '[]'")

@@ -3140,6 +3140,7 @@ def fetch_recent_knowledge_jobs(db: Database, client_id: str, limit: int = 8) ->
     return [
         {
             "id": str(row["id"]),
+            "workObjectId": str(row["client_id"]),
             "clientId": str(row["client_id"]),
             "jobType": str(row["job_type"]),
             "status": str(row["status"]),

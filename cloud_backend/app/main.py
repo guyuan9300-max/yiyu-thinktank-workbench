@@ -75,6 +75,8 @@ from app.models import (
     OrgReportingLineRecord,
     OrgRoleTemplateRecord,
     OrgTaskControlRuleRecord,
+    WorkObjectTerminologyStateRecord,
+    WorkObjectTerminologyUpdatePayload,
     TaskOrgBackfillResultRecord,
     PersonalGrowthCardRecord,
     PlanNodeRecord,
@@ -339,6 +341,7 @@ def _org_profile_record(state: AppState, organization_id: str) -> OrgProfileReco
         return OrgProfileRecord(
             organizationId=organization_id,
             name=str(org_row["name"]),
+            workObjectMode="project",
             annualGoal="",
             annualStrategyYear="",
             annualStrategy="",
@@ -352,6 +355,7 @@ def _org_profile_record(state: AppState, organization_id: str) -> OrgProfileReco
     return OrgProfileRecord(
         organizationId=organization_id,
         name=str(org_row["name"]),
+        workObjectMode=str(profile_row["work_object_mode"] or "project"),
         annualGoal=str(profile_row["annual_goal"] or ""),
         annualStrategyYear=annual_strategy_year,
         annualStrategy=str(profile_row["annual_strategy_text"] or ""),
@@ -993,6 +997,7 @@ def _client_summary_record(row) -> ClientSummaryRecord:
     return ClientSummaryRecord(
         id=str(row["id"]),
         name=str(row["name"]),
+        workObjectId=str(row["id"]),
         alias=str(row["alias"]) if row["alias"] else None,
     )
 
@@ -1025,6 +1030,8 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
         ownerId=str(row["owner_id"]) if row["owner_id"] else None,
         ownerName=owner_name,
+        primaryWorkObjectId=_event_line_primary_client_id(row),
+        primaryWorkObjectName=primary_client_name,
         primaryClientId=_event_line_primary_client_id(row),
         primaryClientName=primary_client_name,
         primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
@@ -1761,12 +1768,13 @@ def _ensure_org_model_seed(state: AppState) -> None:
         db.execute(
             """
             INSERT INTO org_profiles(
-                organization_id, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
+                organization_id, work_object_mode, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
                 quarterly_focus_json, leader_user_id, management_user_ids_json, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 DEFAULT_ORG_ID,
+                "project",
                 "围绕战略陪伴、产品化交付和组织预测性管理建立稳定闭环。",
                 str(datetime.now().year),
                 "围绕战略陪伴闭环、知识底座产品化和组织预测性管理，建立全年清晰节奏。",
@@ -2204,12 +2212,13 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
     state.db.execute(
         """
         INSERT OR REPLACE INTO org_profiles(
-            organization_id, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
+            organization_id, work_object_mode, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
             quarterly_focus_json, leader_user_id, management_user_ids_json, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             organization_id,
+            payload.organization.workObjectMode,
             payload.organization.annualGoal.strip(),
             payload.organization.annualStrategyYear.strip(),
             payload.organization.annualStrategy.strip(),
@@ -6163,6 +6172,8 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         dueDate=row["due_date"],
         durationMinutes=int(row["duration_minutes"] or 60),
         scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),
+        workObjectId=str(row["client_id"]) if row["client_id"] else None,
+        workObjectName=client_name,
         clientId=str(row["client_id"]) if row["client_id"] else None,
         clientName=client_name,
         eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
@@ -7429,6 +7440,15 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def _work_object_route_alias_middleware(request: Request, call_next):
+        path = request.scope.get("path", "")
+        if isinstance(path, str) and path.startswith("/api/v1/work-objects"):
+            aliased_path = "/api/v1/clients" + path.removeprefix("/api/v1/work-objects")
+            request.scope["path"] = aliased_path
+            request.scope["raw_path"] = aliased_path.encode("utf-8")
+        return await call_next(request)
+
     data_dir = Path(os.environ.get("YIYU_CLOUD_DATA_DIR", Path.home() / "Library/Application Support/YiyuThinkTankCloud"))
     state = AppState(
         db=Database(data_dir / "cloud.db"),
@@ -8288,6 +8308,41 @@ def create_app() -> FastAPI:
     ) -> OrgModelProfileRecord:
         return _save_org_model_profile(state, current_user, payload)
 
+    @app.get("/api/v1/settings/work-object-terminology", response_model=WorkObjectTerminologyStateRecord)
+    def get_work_object_terminology(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> WorkObjectTerminologyStateRecord:
+        organization = _org_profile_record(state, current_user.organizationId)
+        return WorkObjectTerminologyStateRecord(
+            localMode=None,
+            organizationMode=organization.workObjectMode,
+            effectiveMode=organization.workObjectMode,
+            source="organization",
+            lockedByOrganization=True,
+            needsOnboarding=False,
+            updatedAt=organization.updatedAt,
+        )
+
+    @app.post("/api/v1/settings/work-object-terminology", response_model=WorkObjectTerminologyStateRecord)
+    def update_work_object_terminology(
+        payload: WorkObjectTerminologyUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+    ) -> WorkObjectTerminologyStateRecord:
+        state.db.execute(
+            "UPDATE org_profiles SET work_object_mode = ?, updated_at = ? WHERE organization_id = ?",
+            (payload.mode, now_iso(), current_user.organizationId),
+        )
+        organization = _org_profile_record(state, current_user.organizationId)
+        return WorkObjectTerminologyStateRecord(
+            localMode=None,
+            organizationMode=organization.workObjectMode,
+            effectiveMode=organization.workObjectMode,
+            source="organization",
+            lockedByOrganization=True,
+            needsOnboarding=False,
+            updatedAt=organization.updatedAt,
+        )
+
     @app.post("/api/v1/settings/org-model/backfill-task-links", response_model=TaskOrgBackfillResultRecord)
     def backfill_org_task_links(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
@@ -8344,13 +8399,14 @@ def create_app() -> FastAPI:
         event_line_id = (payload.id or "").strip() or new_id("eline")
         owner_id = payload.ownerId or current_user.id
         participant_ids = list(dict.fromkeys([owner_id, *[item for item in payload.participantIds if item]]))
+        primary_work_object_id = payload.primaryWorkObjectId or payload.primaryClientId
         department_name = None
         client_name = None
         if payload.primaryDepartmentId:
             department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (payload.primaryDepartmentId,))
             department_name = str(department_row["name"]) if department_row else None
-        if payload.primaryClientId:
-            client_row = _client_row_by_id(state, payload.primaryClientId, current_user.organizationId)
+        if primary_work_object_id:
+            client_row = _client_row_by_id(state, primary_work_object_id, current_user.organizationId)
             client_name = str(client_row["name"]) if client_row and client_row["name"] else None
         state.db.execute(
             """
@@ -8375,7 +8431,7 @@ def create_app() -> FastAPI:
                 payload.nextStep,
                 int(payload.evidenceCount or 0),
                 owner_id,
-                payload.primaryClientId,
+                primary_work_object_id,
                 client_name,
                 payload.primaryDepartmentId,
                 to_json(participant_ids),
@@ -8707,7 +8763,13 @@ def create_app() -> FastAPI:
             "next_step": payload.nextStep if "nextStep" in payload.model_fields_set else row["next_step"],
             "evidence_count": payload.evidenceCount if "evidenceCount" in payload.model_fields_set and payload.evidenceCount is not None else int(row["evidence_count"] or 0),
             "owner_id": payload.ownerId if "ownerId" in payload.model_fields_set else row["owner_id"],
-            "primary_client_id": payload.primaryClientId if "primaryClientId" in payload.model_fields_set else row["primary_client_id"],
+            "primary_client_id": (
+                payload.primaryWorkObjectId
+                if "primaryWorkObjectId" in payload.model_fields_set
+                else payload.primaryClientId
+                if "primaryClientId" in payload.model_fields_set
+                else row["primary_client_id"]
+            ),
             "primary_client_name": None,
             "primary_department_id": payload.primaryDepartmentId if "primaryDepartmentId" in payload.model_fields_set else row["primary_department_id"],
             "participant_ids_json": to_json(payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])),
@@ -9120,7 +9182,7 @@ def create_app() -> FastAPI:
             target=payload.target,
             question=payload.question,
             answer=payload.answer,
-            client_id=payload.clientId,
+            client_id=payload.workObjectId or payload.clientId,
             client_name=payload.clientName,
             task_id=payload.taskId,
             event_line_id=payload.eventLineId,
@@ -10267,7 +10329,7 @@ def create_app() -> FastAPI:
         for user_id in ([owner_id] if owner_id else []) + collaborator_ids:
             _get_user_or_404(state, user_id)
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
-        requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
+        requested_client_id = None if scope_mode == "PERSONAL_ONLY" else (payload.workObjectId or payload.clientId)
         requested_event_line_id = None if scope_mode == "PERSONAL_ONLY" else payload.eventLineId
         requested_project_module_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectModuleId
         requested_project_flow_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectFlowId
@@ -10440,7 +10502,13 @@ def create_app() -> FastAPI:
             next_project_module_id = None
             next_project_flow_id = None
         else:
-            next_client_id = payload.clientId if "clientId" in payload.model_fields_set else row["client_id"]
+            next_client_id = (
+                payload.workObjectId
+                if "workObjectId" in payload.model_fields_set
+                else payload.clientId
+                if "clientId" in payload.model_fields_set
+                else row["client_id"]
+            )
             next_event_line_id = payload.eventLineId if "eventLineId" in payload.model_fields_set else (str(row["event_line_id"]) if row["event_line_id"] else None)
             next_project_module_id = payload.projectModuleId if "projectModuleId" in payload.model_fields_set else row["project_module_id"]
             next_project_flow_id = payload.projectFlowId if "projectFlowId" in payload.model_fields_set else row["project_flow_id"]

@@ -156,6 +156,8 @@ import type {
   PushPreview,
   EventLineReportSnapshot,
   UnderstandingSnapshotV1,
+  WorkObjectTerminologyState,
+  WorkObjectTerminologyUpdatePayload,
 } from '../../shared/types';
 
 function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
@@ -274,6 +276,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   return response.json() as Promise<T>;
 }
+
+const WORK_OBJECTS_API_BASE = '/api/v1/work-objects';
+const workObjectPath = (suffix = '') => `${WORK_OBJECTS_API_BASE}${suffix}`;
 
 async function getCloudDirectAccess(forceRefresh = false): Promise<CloudDirectAccess> {
   if (!forceRefresh && cachedCloudDirectAccess) {
@@ -517,6 +522,17 @@ export async function getSettings() {
 
 export async function updateSettings(payload: SettingsPayload) {
   return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse }>('/api/v1/settings', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getWorkObjectTerminology() {
+  return request<WorkObjectTerminologyState>('/api/v1/settings/work-object-terminology');
+}
+
+export async function updateWorkObjectTerminology(payload: WorkObjectTerminologyUpdatePayload) {
+  return request<WorkObjectTerminologyState>('/api/v1/settings/work-object-terminology', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -821,45 +837,45 @@ export async function getMentionCandidates(query = '') {
 }
 
 export async function getClients() {
-  return request<ClientSummary[]>('/api/v1/clients');
+  return request<ClientSummary[]>(workObjectPath());
 }
 
 export async function createClient(payload: ClientMutationPayload) {
-  return request<ClientSummary>('/api/v1/clients', {
+  return request<ClientSummary>(workObjectPath(), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function updateClient(id: string, payload: ClientMutationPayload) {
-  return request<ClientSummary>(`/api/v1/clients/${id}`, {
+  return request<ClientSummary>(workObjectPath(`/${id}`), {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
 export async function deleteClient(id: string) {
-  return request<{ deleted: boolean }>(`/api/v1/clients/${id}`, {
+  return request<{ deleted: boolean }>(workObjectPath(`/${id}`), {
     method: 'DELETE',
   });
 }
 
 export async function deleteClientFolder(clientId: string, folderId: string) {
-  return request<{ deleted: boolean }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
+  return request<{ deleted: boolean }>(workObjectPath(`/${clientId}/folders/${folderId}`), {
     method: 'DELETE',
   });
 }
 
 export async function getClientWorkspace(id: string) {
-  return request<ClientWorkspace>(`/api/v1/clients/${id}/workspace`);
+  return request<ClientWorkspace>(workObjectPath(`/${id}/workspace`));
 }
 
 export async function getClientDnaDocuments(clientId: string) {
-  return request<ClientDnaModulesResponse>(`/api/v1/clients/${clientId}/dna-documents`);
+  return request<ClientDnaModulesResponse>(workObjectPath(`/${clientId}/dna-documents`));
 }
 
 export async function getClientDnaDocument(clientId: string, moduleKey: ClientDnaModule['moduleKey']) {
-  return request<ClientDnaModule>(`/api/v1/clients/${clientId}/dna-documents/${moduleKey}`);
+  return request<ClientDnaModule>(workObjectPath(`/${clientId}/dna-documents/${moduleKey}`));
 }
 
 export async function updateClientDnaDocument(
@@ -867,77 +883,77 @@ export async function updateClientDnaDocument(
   moduleKey: ClientDnaModule['moduleKey'],
   payload: OrganizationDnaUploadPayload,
 ) {
-  return request<ClientDnaModule>(`/api/v1/clients/${clientId}/dna-documents/${moduleKey}`, {
+  return request<ClientDnaModule>(workObjectPath(`/${clientId}/dna-documents/${moduleKey}`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function getClientProjectStructure(clientId: string) {
-  return request<ProjectStructureResponse>(`/api/v1/clients/${clientId}/project-structure`);
+  return request<ProjectStructureResponse>(workObjectPath(`/${clientId}/project-structure`));
 }
 
 export async function getProjectModuleDetail(clientId: string, moduleId: string) {
-  return request<ProjectModuleDetail>(`/api/v1/clients/${clientId}/project-modules/${moduleId}`);
+  return request<ProjectModuleDetail>(workObjectPath(`/${clientId}/project-modules/${moduleId}`));
 }
 
 export async function createProjectModule(clientId: string, payload: ProjectModulePayload) {
-  return request<ProjectModule>(`/api/v1/clients/${clientId}/project-modules`, {
+  return request<ProjectModule>(workObjectPath(`/${clientId}/project-modules`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function updateProjectModule(clientId: string, moduleId: string, payload: ProjectModulePayload) {
-  return request<ProjectModule>(`/api/v1/clients/${clientId}/project-modules/${moduleId}`, {
+  return request<ProjectModule>(workObjectPath(`/${clientId}/project-modules/${moduleId}`), {
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
 }
 
 export async function deleteProjectModule(clientId: string, moduleId: string) {
-  return request<{ status: string }>(`/api/v1/clients/${clientId}/project-modules/${moduleId}`, {
+  return request<{ status: string }>(workObjectPath(`/${clientId}/project-modules/${moduleId}`), {
     method: 'DELETE',
   });
 }
 
 export async function getProjectFlowDetail(clientId: string, flowId: string) {
-  return request<ProjectFlowDetail>(`/api/v1/clients/${clientId}/project-flows/${flowId}`);
+  return request<ProjectFlowDetail>(workObjectPath(`/${clientId}/project-flows/${flowId}`));
 }
 
 export async function createProjectFlow(clientId: string, payload: ProjectFlowPayload) {
-  return request<ProjectFlow>(`/api/v1/clients/${clientId}/project-flows`, {
+  return request<ProjectFlow>(workObjectPath(`/${clientId}/project-flows`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function updateProjectFlow(clientId: string, flowId: string, payload: ProjectFlowPayload) {
-  return request<ProjectFlow>(`/api/v1/clients/${clientId}/project-flows/${flowId}`, {
+  return request<ProjectFlow>(workObjectPath(`/${clientId}/project-flows/${flowId}`), {
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
 }
 
 export async function getClientKnowledgeStatus(clientId: string) {
-  return request<KnowledgeStatus>(`/api/v1/clients/${clientId}/knowledge/status`);
+  return request<KnowledgeStatus>(workObjectPath(`/${clientId}/knowledge/status`));
 }
 
 export async function searchClientKnowledge(clientId: string, prompt: string, threadId?: string) {
-  return request<KnowledgeSearchResult>(`/api/v1/clients/${clientId}/knowledge/search`, {
+  return request<KnowledgeSearchResult>(workObjectPath(`/${clientId}/knowledge/search`), {
     method: 'POST',
     body: JSON.stringify({ prompt, threadId }),
   });
 }
 
 export async function rebuildClientKnowledge(clientId: string) {
-  return request<KnowledgeJob>(`/api/v1/clients/${clientId}/knowledge/rebuild`, {
+  return request<KnowledgeJob>(workObjectPath(`/${clientId}/knowledge/rebuild`), {
     method: 'POST',
   });
 }
 
 export async function generateClientDnaCandidates(clientId: string, payload?: { refreshGenerated?: boolean }) {
-  return request<KnowledgeJob>(`/api/v1/clients/${clientId}/dna-documents/generate`, {
+  return request<KnowledgeJob>(workObjectPath(`/${clientId}/dna-documents/generate`), {
     method: 'POST',
     body: JSON.stringify({ refreshGenerated: payload?.refreshGenerated ?? false }),
   });
@@ -946,7 +962,13 @@ export async function generateClientDnaCandidates(clientId: string, payload?: { 
 export async function importPaths(clientId: string, mode: 'folder' | 'file', paths: string[], options?: { allowLegacy?: boolean }) {
   return request<ImportRecord[]>('/api/v1/imports', {
     method: 'POST',
-    body: JSON.stringify({ clientId, mode, paths, allowLegacy: options?.allowLegacy ?? false }),
+    body: JSON.stringify({
+      clientId,
+      workObjectId: clientId,
+      mode,
+      paths,
+      allowLegacy: options?.allowLegacy ?? false,
+    }),
   });
 }
 
@@ -957,7 +979,7 @@ export async function startClientMessage(
   searchId?: string,
   options?: RequestInit,
 ) {
-  return request<ChatStartResponse>(`/api/v1/clients/${clientId}/workspace/chat/start`, {
+  return request<ChatStartResponse>(workObjectPath(`/${clientId}/workspace/chat/start`), {
     method: 'POST',
     body: JSON.stringify({ prompt, threadId, searchId }),
     ...options,
@@ -965,146 +987,146 @@ export async function startClientMessage(
 }
 
 export async function getClientMessage(clientId: string, messageId: string) {
-  return request<ChatMessage>(`/api/v1/clients/${clientId}/workspace/chat/messages/${messageId}`);
+  return request<ChatMessage>(workObjectPath(`/${clientId}/workspace/chat/messages/${messageId}`));
 }
 
 export async function getClientChatThread(clientId: string, threadId: string) {
-  return request<ChatThreadDetailResponse>(`/api/v1/clients/${clientId}/workspace/chat/threads/${threadId}`);
+  return request<ChatThreadDetailResponse>(workObjectPath(`/${clientId}/workspace/chat/threads/${threadId}`));
 }
 
 export async function getClientAnalysisRun(clientId: string, runId: string) {
-  return request<ClientAnalysisRun>(`/api/v1/clients/${clientId}/analysis-runs/${runId}`);
+  return request<ClientAnalysisRun>(workObjectPath(`/${clientId}/analysis-runs/${runId}`));
 }
 
 export async function cancelClientAnalysisRun(clientId: string, runId: string) {
-  return request<ClientAnalysisRun>(`/api/v1/clients/${clientId}/analysis-runs/${runId}/cancel`, {
+  return request<ClientAnalysisRun>(workObjectPath(`/${clientId}/analysis-runs/${runId}/cancel`), {
     method: 'POST',
   });
 }
 
 export async function vectorizeAnswer(clientId: string, messageId: string) {
-  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(`/api/v1/clients/${clientId}/knowledge/vectorize-answer`, {
+  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(workObjectPath(`/${clientId}/knowledge/vectorize-answer`), {
     method: 'POST',
     body: JSON.stringify({ messageId }),
   });
 }
 
 export async function exportAnswer(clientId: string, messageId: string) {
-  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(`/api/v1/clients/${clientId}/knowledge/export-answer`, {
+  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(workObjectPath(`/${clientId}/knowledge/export-answer`), {
     method: 'POST',
     body: JSON.stringify({ messageId }),
   });
 }
 
 export async function createClientTextDocument(clientId: string, payload: { title?: string | null; content: string }) {
-  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(`/api/v1/clients/${clientId}/documents/from-text`, {
+  return request<{ clientId: string; documentId: string; title: string; fileName: string; path: string }>(workObjectPath(`/${clientId}/documents/from-text`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function startClientTemplateFill(clientId: string, templatePath: string) {
-  return request<ClientTemplateFillRun>(`/api/v1/clients/${clientId}/documents/fill-template/start`, {
+  return request<ClientTemplateFillRun>(workObjectPath(`/${clientId}/documents/fill-template/start`), {
     method: 'POST',
     body: JSON.stringify({ templatePath }),
   });
 }
 
 export async function getClientTemplateFillRun(clientId: string, runId: string) {
-  return request<ClientTemplateFillRun>(`/api/v1/clients/${clientId}/template-fill-runs/${runId}`);
+  return request<ClientTemplateFillRun>(workObjectPath(`/${clientId}/template-fill-runs/${runId}`));
 }
 
 export async function backfillClientWorkspaceImports(clientId: string) {
-  return request<WorkspaceImportBackfillResponse>(`/api/v1/clients/${clientId}/workspace/backfill-imports`, {
+  return request<WorkspaceImportBackfillResponse>(workObjectPath(`/${clientId}/workspace/backfill-imports`), {
     method: 'POST',
   });
 }
 
 export async function createMeeting(clientId: string, title: string, scheduledAt?: string) {
-  return request<MeetingPipelineResult>(`/api/v1/clients/${clientId}/meetings`, {
+  return request<MeetingPipelineResult>(workObjectPath(`/${clientId}/meetings`), {
     method: 'POST',
     body: JSON.stringify({ title, scheduledAt }),
   });
 }
 
 export async function getStrategicCockpit(clientId: string) {
-  return request<StrategicCockpitSnapshot>(`/api/v1/clients/${clientId}/strategic-cockpit`);
+  return request<StrategicCockpitSnapshot>(workObjectPath(`/${clientId}/strategic-cockpit`));
 }
 
 export async function confirmStrategicCockpit(clientId: string, payload: StrategicCockpitConfirmPayload) {
-  return request<StrategicCockpitSnapshot>(`/api/v1/clients/${clientId}/strategic-cockpit/confirm`, {
+  return request<StrategicCockpitSnapshot>(workObjectPath(`/${clientId}/strategic-cockpit/confirm`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function createStrategicMeetingPack(clientId: string) {
-  return request<MeetingPipelineResult>(`/api/v1/clients/${clientId}/strategic-cockpit/meeting-pack`, {
+  return request<MeetingPipelineResult>(workObjectPath(`/${clientId}/strategic-cockpit/meeting-pack`), {
     method: 'POST',
   });
 }
 
 export async function applyStrategicMeetingPack(clientId: string, meetingId: string) {
-  return request<StrategicCockpitSnapshot>(`/api/v1/clients/${clientId}/strategic-cockpit/meeting-pack/${meetingId}/apply`, {
+  return request<StrategicCockpitSnapshot>(workObjectPath(`/${clientId}/strategic-cockpit/meeting-pack/${meetingId}/apply`), {
     method: 'POST',
   });
 }
 
 export async function createClientFolder(clientId: string, label: string) {
-  return request<{ id: string; label: string; created: boolean }>(`/api/v1/clients/${clientId}/folders`, {
+  return request<{ id: string; label: string; created: boolean }>(workObjectPath(`/${clientId}/folders`), {
     method: 'POST',
     body: JSON.stringify({ label }),
   });
 }
 
 export async function renameClientFolder(clientId: string, folderId: string, label: string) {
-  return request<{ id: string; label: string }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
+  return request<{ id: string; label: string }>(workObjectPath(`/${clientId}/folders/${folderId}`), {
     method: 'PUT',
     body: JSON.stringify({ label }),
   });
 }
 
 export async function launchFeishuMeeting(clientId: string, payload: { title: string; scheduledAt?: string; sourceTaskId?: string | null }) {
-  return request<FeishuMeetingLaunchResult>(`/api/v1/clients/${clientId}/meetings/launch-feishu`, {
+  return request<FeishuMeetingLaunchResult>(workObjectPath(`/${clientId}/meetings/launch-feishu`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function ingestMeeting(clientId: string, meetingId: string, transcriptText: string, notes: string) {
-  return request<MeetingPipelineResult>(`/api/v1/clients/${clientId}/meetings/${meetingId}/ingest`, {
+  return request<MeetingPipelineResult>(workObjectPath(`/${clientId}/meetings/${meetingId}/ingest`), {
     method: 'POST',
     body: JSON.stringify({ transcriptText, notes }),
   });
 }
 
 export async function extractMeeting(clientId: string, meetingId: string) {
-  return request<MeetingPipelineResult>(`/api/v1/clients/${clientId}/meetings/${meetingId}/extract`, {
+  return request<MeetingPipelineResult>(workObjectPath(`/${clientId}/meetings/${meetingId}/extract`), {
     method: 'POST',
   });
 }
 
 export async function resolveMeeting(clientId: string, meetingId: string) {
-  return request<MeetingPipelineResult>(`/api/v1/clients/${clientId}/meetings/${meetingId}/resolve`, {
+  return request<MeetingPipelineResult>(workObjectPath(`/${clientId}/meetings/${meetingId}/resolve`), {
     method: 'POST',
   });
 }
 
 export async function publishMeeting(clientId: string, meetingId: string) {
-  return request<MeetingPipelineResult>(`/api/v1/clients/${clientId}/meetings/${meetingId}/publish`, {
+  return request<MeetingPipelineResult>(workObjectPath(`/${clientId}/meetings/${meetingId}/publish`), {
     method: 'POST',
   });
 }
 
 export async function createGoal(clientId: string, payload: { title: string; quarter: string; progress: number; ownerName: string }) {
-  return request<GoalRecord>(`/api/v1/clients/${clientId}/goals`, {
+  return request<GoalRecord>(workObjectPath(`/${clientId}/goals`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export async function upsertDna(clientId: string, payload: { category: string; canonicalName: string; aliases: string[]; description: string }) {
-  return request<DnaTerm>(`/api/v1/clients/${clientId}/dna`, {
+  return request<DnaTerm>(workObjectPath(`/${clientId}/dna`), {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -1232,7 +1254,10 @@ export async function uploadTaskAttachment(
 ) {
   const formData = new FormData();
   formData.append('file', payload.file);
-  if (payload.clientId) formData.append('clientId', payload.clientId);
+  if (payload.clientId) {
+    formData.append('clientId', payload.clientId);
+    formData.append('workObjectId', payload.clientId);
+  }
   if (payload.eventLineId) formData.append('eventLineId', payload.eventLineId);
   if (payload.taskTitle) formData.append('taskTitle', payload.taskTitle);
   return requestForm<Task>(`/api/v1/tasks/${taskId}/attachments`, formData, {

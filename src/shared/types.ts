@@ -32,6 +32,7 @@ export type TaskPlanLinkSource = 'ai' | 'manager' | 'rule';
 export type SupportRequestTargetScope = 'manager' | 'department' | 'organization' | 'cross_department';
 export type SupportRequestType = 'resource' | 'decision' | 'collaboration' | 'workload' | 'clarification';
 export type SupportRequestStatus = 'open' | 'accepted' | 'resolved' | 'dismissed';
+export type WorkObjectMode = 'client' | 'project';
 export type DnaSourceLevel = 'organization' | 'client';
 export type OrganizationDnaModuleKey = 'organization_intro' | 'business_intro' | 'team_intro' | 'market_intro';
 export type FeishuReceiveIdType = 'open_id' | 'user_id' | 'email' | 'chat_id';
@@ -61,6 +62,7 @@ export interface AppSettings {
   dataDir: string;
   backupDir: string;
   cloudApiUrl: string;
+  localWorkObjectMode?: WorkObjectMode | null;
   lastBackupAt?: string | null;
   foldersRootLabel: string;
   aiConfigured: boolean;
@@ -148,6 +150,7 @@ export interface DepartmentOption {
 export interface OrgProfileSettings {
   organizationId: string;
   name: string;
+  workObjectMode?: WorkObjectMode;
   annualGoal: string;
   annualStrategyYear: string;
   annualStrategy: string;
@@ -394,6 +397,7 @@ export interface HealthResponse {
   featureFlags: string[];
   dataDir: string;
   stats: {
+    workObjects?: number;
     clients: number;
     tasks: number;
     topics: number;
@@ -410,7 +414,7 @@ export interface HealthResponse {
   };
 }
 
-export interface ClientSummary {
+export interface WorkObjectRecord {
   id: string;
   name: string;
   alias: string;
@@ -424,8 +428,11 @@ export interface ClientSummary {
   lastActivityAt?: string | null;
 }
 
-export interface ClientFolder {
+export type ClientSummary = WorkObjectRecord;
+
+export interface WorkObjectFolder {
   id: string;
+  workObjectId: string;
   clientId: string;
   label: string;
   path: string;
@@ -433,8 +440,11 @@ export interface ClientFolder {
   lastScannedAt?: string | null;
 }
 
+export type ClientFolder = WorkObjectFolder;
+
 export interface DocumentRecord {
   id: string;
+  workObjectId?: string | null;
   clientId: string;
   folderId?: string | null;
   title: string;
@@ -470,6 +480,7 @@ export interface KnowledgeStatus {
 
 export interface OrganizationNotebookSnapshot {
   id: string;
+  workObjectId?: string | null;
   clientId: string;
   organizationIntro: string;
   collaborationRelationship: string;
@@ -534,6 +545,7 @@ export interface ClarificationRecord {
 }
 
 export interface MemoryStatus {
+  workObjectId?: string | null;
   clientId: string;
   notebookCompleteness: number;
   notebookConfidence: number;
@@ -555,6 +567,7 @@ export interface BackgroundReadiness {
 export interface DocumentCard {
   id: string;
   docId: string;
+  workObjectId?: string | null;
   clientId: string;
   documentId: string;
   title: string;
@@ -596,6 +609,7 @@ export interface DocumentCard {
 
 export interface ImportRecord {
   id: string;
+  workObjectId?: string | null;
   clientId: string;
   sourcePath: string;
   mode: 'folder' | 'file';
@@ -614,7 +628,7 @@ export interface WorkspaceImportBackfillResponse {
   skipped: number;
 }
 
-export interface ClientTemplateFillField {
+export interface WorkObjectTemplateFillField {
   label: string;
   value: string;
   status: 'filled' | 'missing';
@@ -629,7 +643,9 @@ export interface ClientTemplateFillField {
   reviewRequired?: boolean;
 }
 
-export interface ClientTemplateFillResponse {
+export type ClientTemplateFillField = WorkObjectTemplateFillField;
+
+export interface WorkObjectTemplateFillResponse {
   path: string;
   fileName: string;
   fieldCount: number;
@@ -637,11 +653,14 @@ export interface ClientTemplateFillResponse {
   missingCount: number;
   reviewFieldCount?: number;
   attachmentChecklist?: string[];
-  fields: ClientTemplateFillField[];
+  fields: WorkObjectTemplateFillField[];
 }
 
-export interface ClientTemplateFillRun {
+export type ClientTemplateFillResponse = WorkObjectTemplateFillResponse;
+
+export interface WorkObjectTemplateFillRun {
   id: string;
+  workObjectId: string;
   clientId: string;
   templateName: string;
   templatePath: string;
@@ -658,15 +677,18 @@ export interface ClientTemplateFillRun {
   currentFieldLabel?: string | null;
   evidenceTitles: string[];
   attachmentChecklist?: string[];
-  fields: ClientTemplateFillField[];
+  fields: WorkObjectTemplateFillField[];
   outputPath?: string | null;
   errorMessage?: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export type ClientTemplateFillRun = WorkObjectTemplateFillRun;
+
 export interface GoalRecord {
   id: string;
+  workObjectId: string;
   clientId: string;
   title: string;
   quarter: string;
@@ -676,6 +698,7 @@ export interface GoalRecord {
 
 export interface DnaTerm {
   id: string;
+  workObjectId: string;
   clientId: string;
   category: string;
   canonicalName: string;
@@ -728,6 +751,7 @@ export interface ChatMessage {
 
 export interface ChatThread {
   id: string;
+  workObjectId: string;
   clientId: string;
   title: string;
   createdAt: string;
@@ -772,6 +796,7 @@ export interface AmbiguityItem {
 
 export interface MeetingSummary {
   id: string;
+  workObjectId: string;
   clientId: string;
   title: string;
   stage: MeetingStage;
@@ -836,6 +861,8 @@ export interface Task {
   dueDate?: string | null;
   durationMinutes?: number;
   scopeMode?: TaskScopeMode;
+  workObjectId?: string | null;
+  workObjectName?: string | null;
   clientId?: string | null;
   clientName?: string | null;
   eventLineId?: string | null;
@@ -872,6 +899,7 @@ export interface Task {
 export interface TaskAttachment {
   id: string;
   taskId: string;
+  workObjectId: string;
   clientId: string;
   eventLineId?: string | null;
   documentId?: string | null;
@@ -902,6 +930,8 @@ export interface TaskOrgContext {
 }
 
 export interface TaskProjectContext {
+  workObjectId: string;
+  workObjectName: string;
   clientId: string;
   clientName: string;
   stage?: string | null;
@@ -942,6 +972,8 @@ export interface EventLine {
   evidenceCount: number;
   ownerId?: string | null;
   ownerName?: string | null;
+  primaryWorkObjectId?: string | null;
+  primaryWorkObjectName?: string | null;
   primaryClientId?: string | null;
   primaryClientName?: string | null;
   primaryDepartmentId?: string | null;
@@ -1062,6 +1094,7 @@ export interface EventLineMutationPayload {
   nextStep?: string | null;
   evidenceCount?: number | null;
   ownerId?: string | null;
+  primaryWorkObjectId?: string | null;
   primaryClientId?: string | null;
   primaryDepartmentId?: string | null;
   participantIds?: string[];
@@ -1084,6 +1117,7 @@ export interface EventLineClarificationDraftResult {
 
 export interface ProjectModule {
   id: string;
+  workObjectId: string;
   clientId: string;
   name: string;
   alias?: string | null;
@@ -1099,6 +1133,7 @@ export interface ProjectModule {
 
 export interface ProjectFlow {
   id: string;
+  workObjectId: string;
   clientId: string;
   moduleId: string;
   moduleName?: string | null;
@@ -2082,7 +2117,8 @@ export interface DnaReadinessQuestion {
   evidence?: string | null;
 }
 
-export interface ClientDnaModule {
+export interface WorkObjectDnaModule {
+  workObjectId: string;
   clientId: string;
   moduleKey: OrganizationDnaModuleKey;
   title: string;
@@ -2098,9 +2134,13 @@ export interface ClientDnaModule {
   hasDocument: boolean;
 }
 
-export interface ClientDnaModulesResponse {
-  modules: ClientDnaModule[];
+export type ClientDnaModule = WorkObjectDnaModule;
+
+export interface WorkObjectDnaModulesResponse {
+  modules: WorkObjectDnaModule[];
 }
+
+export type ClientDnaModulesResponse = WorkObjectDnaModulesResponse;
 
 export interface ClientDnaGeneratePayload {
   refreshGenerated?: boolean;
@@ -3152,7 +3192,7 @@ export interface GrowthValidationActionResponse {
   createdAt: string;
 }
 
-export interface ClientAnalysisEvidenceSummary {
+export interface WorkObjectAnalysisEvidenceSummary {
   summaryText: string;
   masterHitCount: number;
   surrogateHitCount: number;
@@ -3163,8 +3203,11 @@ export interface ClientAnalysisEvidenceSummary {
   evidenceList: KnowledgeSearchHit[];
 }
 
-export interface ClientAnalysisRun {
+export type ClientAnalysisEvidenceSummary = WorkObjectAnalysisEvidenceSummary;
+
+export interface WorkObjectAnalysisRun {
   id: string;
+  workObjectId: string;
   clientId: string;
   threadId: string;
   userMessageId: string;
@@ -3177,7 +3220,7 @@ export interface ClientAnalysisRun {
   progressCeiling: number;
   stageLabel?: string | null;
   elapsedMs: number;
-  evidenceSummary: ClientAnalysisEvidenceSummary;
+  evidenceSummary: WorkObjectAnalysisEvidenceSummary;
   longAnswerStatus: 'pending' | 'ready' | 'fallback' | 'failed';
   summaryStatus: 'pending' | 'ready' | 'fallback' | 'failed';
   longAnswer?: string | null;
@@ -3192,9 +3235,12 @@ export interface ClientAnalysisRun {
   updatedAt: string;
 }
 
-export interface ClientWorkspace {
-  client: ClientSummary;
-  folders: ClientFolder[];
+export type ClientAnalysisRun = WorkObjectAnalysisRun;
+
+export interface WorkObjectWorkspace {
+  workObject: WorkObjectRecord;
+  client: WorkObjectRecord;
+  folders: WorkObjectFolder[];
   documents: DocumentRecord[];
   documentCards: DocumentCard[];
   imports: ImportRecord[];
@@ -3205,15 +3251,17 @@ export interface ClientWorkspace {
   memoryDocCount: number;
   threads: ChatThread[];
   recentMessages: ChatMessage[];
-  analysisRuns: ClientAnalysisRun[];
+  analysisRuns: WorkObjectAnalysisRun[];
   meetings: MeetingSummary[];
   goals: GoalRecord[];
-  dnaModules: ClientDnaModule[];
+  dnaModules: WorkObjectDnaModule[];
   projectModules: ProjectModule[];
   projectFlows: ProjectFlow[];
   dnaTerms: DnaTerm[];
   relatedTasks: Task[];
 }
+
+export type ClientWorkspace = WorkObjectWorkspace;
 
 export interface FileReclassEvent {
   id: string;
@@ -3229,6 +3277,7 @@ export interface FileReclassEvent {
 
 export interface KnowledgeJob {
   id: string;
+  workObjectId: string;
   clientId: string;
   jobType: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
@@ -3307,6 +3356,7 @@ export interface LegacyScanReport {
 
 export interface DemoDataReport {
   loaded: boolean;
+  workObjects?: number;
   clients: number;
   documents: number;
   tasks: number;
@@ -3314,13 +3364,40 @@ export interface DemoDataReport {
   handbookEntries: number;
 }
 
-export interface ClientMutationPayload {
+export interface WorkObjectMutationPayload {
   name: string;
   alias: string;
   domain: string;
   type: string;
   intro: string;
   stage: string;
+}
+
+export type ClientMutationPayload = WorkObjectMutationPayload;
+
+export interface WorkObjectTerminologyState {
+  localMode?: WorkObjectMode | null;
+  organizationMode?: WorkObjectMode | null;
+  effectiveMode: WorkObjectMode;
+  source: 'default' | 'local' | 'organization';
+  lockedByOrganization: boolean;
+  needsOnboarding: boolean;
+  updatedAt: string;
+}
+
+export interface ResolvedTerminologyConfig extends WorkObjectTerminologyState {
+  singularLabel: string;
+  pluralLabel: string;
+  workspaceLabel: string;
+  recentLabel: string;
+  statsLabel: string;
+  associateLabel: string;
+  structureLabel: string;
+}
+
+export interface WorkObjectTerminologyUpdatePayload {
+  mode: WorkObjectMode;
+  target?: 'local' | 'organization';
 }
 
 export interface TaskMutationPayload {
