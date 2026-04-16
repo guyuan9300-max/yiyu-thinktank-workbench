@@ -217,6 +217,7 @@ import {
   getSystemAdminSettings,
   getTaskTagSuggestions,
   getTaskBoard,
+  getTaskLists,
   getTaskContextPreview,
   getTaskUnderstanding,
   getTaskSettings,
@@ -3735,6 +3736,7 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [updatingTaskStatusIds, setUpdatingTaskStatusIds] = useState<string[]>([]);
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
+  const [isTaskListsLoading, setIsTaskListsLoading] = useState(false);
   const [taskTags, setTaskTags] = useState<TaskTag[]>([]);
   const [activeSupportRequest, setActiveSupportRequest] = useState<SupportRequestRecord | null>(null);
   const [supportRequestActionBusy, setSupportRequestActionBusy] = useState(false);
@@ -3752,6 +3754,44 @@ export default function App() {
   useEffect(() => {
     setExpandedTaskIds((prev) => prev.filter((taskId) => tasks.some((task) => task.id === taskId)));
   }, [tasks]);
+
+  const mergeTaskListRecords = useCallback((primary: TaskList[], secondary: TaskList[] = []) => {
+    const mergedById = new Map<string, TaskList>();
+    [...primary, ...secondary].forEach((list) => {
+      if (!list?.id) return;
+      const existing = mergedById.get(list.id);
+      if (!existing) {
+        mergedById.set(list.id, list);
+        return;
+      }
+      mergedById.set(list.id, {
+        ...existing,
+        ...list,
+        archivedAt: list.archivedAt ?? existing.archivedAt ?? null,
+        scope: list.scope ?? existing.scope ?? 'org',
+      });
+    });
+    const normalizedScope = (scope?: string | null) => {
+      const value = (scope || '').trim().toLowerCase();
+      return value === 'personal' ? 'personal' : 'org';
+    };
+    const normalizedName = (name?: string | null) => String(name || '').trim().toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+    const mergedByName = new Map<string, TaskList>();
+    Array.from(mergedById.values()).forEach((list) => {
+      const key = `${normalizedScope(list.scope)}::${normalizedName(list.name) || list.id}`;
+      const existing = mergedByName.get(key);
+      if (!existing) {
+        mergedByName.set(key, list);
+        return;
+      }
+      const existingScore = (existing.isDefault ? 1000 : 0) - (existing.archivedAt ? 100 : 0);
+      const nextScore = (list.isDefault ? 1000 : 0) - (list.archivedAt ? 100 : 0);
+      if (nextScore > existingScore) {
+        mergedByName.set(key, list);
+      }
+    });
+    return Array.from(mergedByName.values());
+  }, []);
 
   const [loading, setLoading] = useState(true);
   const [loadingPhase, setLoadingPhase] = useState('正在初始化桌面界面…');
@@ -3807,7 +3847,6 @@ export default function App() {
     color: TASK_COLOR_OPTIONS[0],
     isDefault: false,
     archived: false,
-    scope: 'org' as 'org' | 'personal',
   });
   const [editingListId, setEditingListId] = useState<string | null>(null);
   const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
@@ -4405,11 +4444,32 @@ export default function App() {
 
   async function loadTaskBlock() {
     const response = await getTaskBoard();
+    let mergedLists = response.lists;
+    try {
+      const library = await getTaskLists();
+      mergedLists = mergeTaskListRecords(library.lists || [], response.lists || []);
+    } catch {
+      mergedLists = mergeTaskListRecords(response.lists || []);
+    }
     setTasks(response.tasks);
-    setTaskLists(response.lists);
+    setTaskLists(mergedLists);
     setTaskTags([]);
-    return response;
+    return {
+      ...response,
+      lists: mergedLists,
+    };
   }
+
+  const refreshTaskListLibrary = useCallback(async () => {
+    setIsTaskListsLoading(true);
+    try {
+      const response = await getTaskLists();
+      setTaskLists((prev) => mergeTaskListRecords(response.lists || [], prev));
+      return response.lists || [];
+    } finally {
+      setIsTaskListsLoading(false);
+    }
+  }, [mergeTaskListRecords]);
 
   function resetCloudBoundTaskViews() {
     setTasks([]);
@@ -4853,23 +4913,17 @@ export default function App() {
     };
   }, [authState.authenticated, currentClientId, currentSessionUser?.id]);
 
-    const activeTaskLists = useMemo(
-      () => taskLists.filter((item) => !item.archivedAt),
-      [taskLists],
-    );
-    const orgTaskLists = useMemo(
-      () => activeTaskLists.filter((item) => (item.scope || 'org') === 'org'),
-      [activeTaskLists],
-    );
-    const personalTaskLists = useMemo(
-      () => activeTaskLists.filter((item) => (item.scope || 'org') === 'personal'),
-      [activeTaskLists],
-    );
+    const normalizeTaskListScope = (scope?: string | null) => {
+      const normalized = (scope || '').trim().toLowerCase();
+      return normalized === 'personal' ? 'personal' : 'org';
+    };
+    const activeTaskLists = taskLists.filter((item) => !item.archivedAt);
+    const orgTaskLists = activeTaskLists.filter((item) => normalizeTaskListScope(item.scope) === 'org');
+    const personalTaskLists = activeTaskLists.filter((item) => normalizeTaskListScope(item.scope) === 'personal');
     const resolveDefaultListId = (scope: 'org' | 'personal') => {
       const listPool = scope === 'personal' ? personalTaskLists : orgTaskLists;
       return listPool.find((item) => item.isDefault)?.id || listPool[0]?.id || '';
     };
-    const seededPersonalListsRef = useRef(false);
     const seededOrgListsRef = useRef(false);
     const orgListBootstrapRef = useRef<Promise<TaskList | null> | null>(null);
 
@@ -4880,8 +4934,8 @@ export default function App() {
       if (!orgListBootstrapRef.current) {
         orgListBootstrapRef.current = (async () => {
           const created = await createTaskList({
-            name: '收集箱',
-            color: '#888681',
+            name: '客户项目',
+            color: '#5B7BFE',
             isDefault: true,
             scope: 'org',
           });
@@ -4908,26 +4962,6 @@ export default function App() {
       });
     }, [currentSessionUser?.id, orgTaskLists.length]);
 
-    useEffect(() => {
-      if (seededPersonalListsRef.current) return;
-      if (!currentSessionUser?.id) return;
-      if (personalTaskLists.length > 0) {
-        seededPersonalListsRef.current = true;
-        return;
-      }
-      seededPersonalListsRef.current = true;
-      const defaults = [
-        { name: '健身', color: '#5B7BFE', isDefault: true },
-        { name: '约会', color: '#EC4899', isDefault: false },
-        { name: '吃饭', color: '#F59E0B', isDefault: false },
-        { name: '学习', color: '#10B981', isDefault: false },
-      ];
-      Promise.all(defaults.map((item) => createTaskList({ ...item, scope: 'personal' })))
-        .then(() => loadTaskBlock())
-        .catch(() => {
-          // ignore seed failures; user can create manually in settings
-        });
-    }, [currentSessionUser?.id, personalTaskLists.length]);
   const activeTaskTags = useMemo(
     () => taskTags.filter((item) => !item.archivedAt),
     [taskTags],
@@ -5411,6 +5445,7 @@ export default function App() {
     setGrowthContextJump,
     setIsReviewHistoryOpen,
     setReviewHistory,
+    setSettingsSection,
     setTaskCalendarDate,
     setTaskSelectedDate,
     setTaskSelectedDay,
@@ -5419,6 +5454,8 @@ export default function App() {
     taskCalendarDate,
     taskCalendarDisplayMode,
     taskLists,
+    orgTaskLists,
+    personalTaskLists,
     taskSelectedDate,
     taskSelectedDay,
     taskTags,
@@ -5464,6 +5501,7 @@ export default function App() {
       setGrowthContextJump,
       setIsReviewHistoryOpen,
       setReviewHistory,
+      setSettingsSection,
       setTaskCalendarDate,
       setTaskSelectedDate,
       setTaskSelectedDay,
@@ -5472,6 +5510,8 @@ export default function App() {
       taskCalendarDate,
       taskCalendarDisplayMode,
       taskLists,
+      orgTaskLists,
+      personalTaskLists,
       taskSelectedDate,
       taskSelectedDay,
       taskTags,
@@ -5514,6 +5554,7 @@ export default function App() {
       setGrowthContextJump: typeof setGrowthContextJump;
       setIsReviewHistoryOpen: typeof setIsReviewHistoryOpen;
       setReviewHistory: typeof setReviewHistory;
+      setSettingsSection: typeof setSettingsSection;
       setTaskCalendarDate: typeof setTaskCalendarDate;
       setTaskSelectedDate: typeof setTaskSelectedDate;
       setTaskSelectedDay: typeof setTaskSelectedDay;
@@ -5522,6 +5563,8 @@ export default function App() {
       taskCalendarDate: typeof taskCalendarDate;
       taskCalendarDisplayMode: typeof taskCalendarDisplayMode;
       taskLists: typeof taskLists;
+      orgTaskLists: typeof orgTaskLists;
+      personalTaskLists: typeof personalTaskLists;
       taskSelectedDate: typeof taskSelectedDate;
       taskSelectedDay: typeof taskSelectedDay;
       taskTags: typeof taskTags;
@@ -5531,6 +5574,31 @@ export default function App() {
     };
     const isCloudSession = authState.sessionMode === 'cloud' || !isLocalDeviceSessionUser(currentSessionUser);
     const isLocalSession = !isCloudSession;
+    const resolveTaskViewDefaultListId = (scope: 'org' | 'personal') => {
+      const listPool = scope === 'personal' ? personalTaskLists : orgTaskLists;
+      return listPool.find((item) => item.isDefault)?.id || listPool[0]?.id || '';
+    };
+    const ensureTaskViewOrgTaskList = async () => {
+      if (orgTaskLists.length > 0) {
+        return orgTaskLists.find((item) => item.isDefault) || orgTaskLists[0] || null;
+      }
+      if (!orgListBootstrapRef.current) {
+        orgListBootstrapRef.current = (async () => {
+          const created = await createTaskList({
+            name: '客户项目',
+            color: '#5B7BFE',
+            isDefault: true,
+            scope: 'org',
+          });
+          await loadTaskBlock();
+          return created;
+        })()
+          .finally(() => {
+            orgListBootstrapRef.current = null;
+          });
+      }
+      return orgListBootstrapRef.current;
+    };
     const buildDefaultCollaborators = (): MentionCandidate[] => {
       if (!effectiveTaskSettings.autoAssignSelf || !currentSessionUser) return [];
       return [{
@@ -5544,6 +5612,7 @@ export default function App() {
     const [isTaskGroupOpen, setIsTaskGroupOpen] = useState(true);
     const [taskListFilter, setTaskListFilter] = useState<TaskListFilter>('all');
     const [taskParticipationFilter, setTaskParticipationFilter] = useState<TaskParticipationFilter>('all');
+    const [taskListNameFilter, setTaskListNameFilter] = useState('');
     const [taskListTimeSort, setTaskListTimeSort] = useState<TaskTimeSort>('newest');
     const [taskListTimeRangeFilter, setTaskListTimeRangeFilter] = useState<TaskTimeRangeFilter>('all');
     const [taskListCustomStartDate, setTaskListCustomStartDate] = useState('');
@@ -5562,7 +5631,7 @@ export default function App() {
       scopeModeTouched: false,
       title: '',
       desc: '',
-      listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
+      listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
       priority: effectiveTaskSettings.defaultPriority,
       priorityTouched: false,
       priorityReason: '系统会根据任务内容自动识别优先级，你可以手动调整。',
@@ -6091,17 +6160,30 @@ export default function App() {
 
     useEffect(() => {
       if (!isTaskModalOpen) return;
+      if (editingTask.scopeMode === 'PERSONAL_ONLY') return;
+      if (orgTaskLists.length > 0 || isTaskListsLoading) return;
+      void refreshTaskListLibrary().catch(() => undefined);
+    }, [
+      editingTask.scopeMode,
+      isTaskModalOpen,
+      isTaskListsLoading,
+      orgTaskLists.length,
+      refreshTaskListLibrary,
+    ]);
+
+    useEffect(() => {
+      if (!isTaskModalOpen) return;
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
         if (personalTaskLists.length === 0) return;
         if (personalTaskLists.some((item) => item.id === editingTask.listId)) return;
-        const fallbackListId = resolveDefaultListId('personal');
+        const fallbackListId = resolveTaskViewDefaultListId('personal');
         if (!fallbackListId) return;
         setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
         return;
       }
       if (orgTaskLists.length === 0) return;
       if (orgTaskLists.some((item) => item.id === editingTask.listId)) return;
-      const fallbackListId = resolveDefaultListId('org');
+      const fallbackListId = resolveTaskViewDefaultListId('org');
       if (!fallbackListId) return;
       setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
     }, [
@@ -6110,7 +6192,7 @@ export default function App() {
       isTaskModalOpen,
       orgTaskLists,
       personalTaskLists,
-      resolveDefaultListId,
+      resolveTaskViewDefaultListId,
     ]);
     const latestReview = reviewDashboard?.currentReview || null;
     const teamReport = reviewDashboard?.teamReport || null;
@@ -6234,7 +6316,7 @@ export default function App() {
     }, [isCloudSession]);
 
     const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
-    const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '收集箱';
+    const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '客户项目';
     const taskControlLevelLabel = (task: Task) => {
       const level = task.orgContext?.controlLevel;
       if (level === 'leader_control') return '负责人控制';
@@ -6341,6 +6423,9 @@ export default function App() {
     );
     const listTasks = useMemo(() => {
       let filtered = rawListTasks;
+      if (taskListNameFilter) {
+        filtered = filtered.filter((task) => (task.listName || getListName(task.listId)) === taskListNameFilter);
+      }
       if (activeFormalTaskView) {
         filtered = sortTasksByFormalView(
           filtered.filter((task) => taskMatchesFormalView(task, activeFormalTaskView)),
@@ -6359,7 +6444,7 @@ export default function App() {
         );
       }
       return sortTasksByTimeDirection(filtered, taskListTimeSort);
-    }, [activeFormalTaskView, rawListTasks, taskListTimeSort, taskSearchQuery]);
+    }, [activeFormalTaskView, rawListTasks, taskListNameFilter, taskListTimeSort, taskSearchQuery]);
     useEffect(() => {
       const availableIds = new Set(actionableInboxTasks.map((task) => task.id));
       setSelectedInboxIds((prev) => prev.filter((id) => availableIds.has(id)));
@@ -6446,6 +6531,51 @@ export default function App() {
       return list.name.toLowerCase().includes(normalizedTaskListQuery);
     });
     const hasExactTaskListMatch = visibleOrgTaskLists.some((list) => list.name.trim().toLowerCase() === normalizedTaskListQuery);
+    useEffect(() => {
+      if (typeof window === 'undefined') return;
+      (window as typeof window & { __YIYU_DEBUG_TASK_LISTS__?: Record<string, unknown> }).__YIYU_DEBUG_TASK_LISTS__ = {
+        isTaskModalOpen,
+        taskListsCount: taskLists.length,
+        taskListSamples: taskLists.slice(0, 20).map((item) => ({
+          id: item.id,
+          name: item.name,
+          scope: item.scope,
+          archivedAt: item.archivedAt,
+          isDefault: item.isDefault,
+        })),
+        activeTaskListsCount: activeTaskLists.length,
+        orgTaskListsCount: orgTaskLists.length,
+        orgTaskListNames: orgTaskLists.map((item) => `${item.scope}:${item.name}:${item.id}`),
+        visibleOrgTaskListsCount: visibleOrgTaskLists.length,
+        visibleOrgTaskListNames: visibleOrgTaskLists.map((item) => item.name),
+        selectedTaskListId: editingTask.listId,
+        selectedTaskListName: selectedTaskList?.name || null,
+        taskListQuery,
+        filteredTaskListOptionNames: filteredTaskListOptions.map((item) => item.name),
+      };
+    }, [
+      activeTaskLists.length,
+      editingTask.listId,
+      filteredTaskListOptions,
+      isTaskModalOpen,
+      orgTaskLists,
+      selectedTaskList?.name,
+      taskListQuery,
+      taskLists.length,
+      visibleOrgTaskLists,
+    ]);
+    useEffect(() => {
+      if (!isTaskListMenuOpen) {
+        setTaskListQuery(selectedTaskList?.name || '');
+      }
+    }, [isTaskListMenuOpen, selectedTaskList?.name]);
+    useEffect(() => {
+      if (!taskListNameFilter) return;
+      const exists = visibleOrgTaskLists.some((list) => list.name === taskListNameFilter);
+      if (!exists) {
+        setTaskListNameFilter('');
+      }
+    }, [taskListNameFilter, visibleOrgTaskLists]);
     const pendingTaskAttachmentKeys = new Set<string>();
     const pendingTaskAttachmentItems = pendingTaskAttachmentFiles.filter((file) => {
       const key = `${file.name}::${file.size}::${file.lastModified}`;
@@ -6785,6 +6915,15 @@ export default function App() {
       } finally {
         setIsCreatingTaskList(false);
       }
+    };
+    const handleTaskListQueryChange = (value: string) => {
+      setTaskListQuery(value);
+      setIsTaskListMenuOpen(true);
+    };
+    const handleSelectTaskList = (list: TaskList) => {
+      setEditingTask((prev) => ({ ...prev, listId: list.id }));
+      setTaskListQuery(list.name);
+      setIsTaskListMenuOpen(false);
     };
     const duePickerSummaryLabel = formatTaskDuePickerSummaryLabel(
       editingTask.startDate,
@@ -7569,12 +7708,12 @@ export default function App() {
           if (personalTaskLists.some((item) => item.id === editingTask.listId)) {
             return editingTask.listId;
           }
-          return resolveDefaultListId('personal') || editingTask.listId;
+          return resolveTaskViewDefaultListId('personal') || editingTask.listId;
         }
         if (orgTaskLists.some((item) => item.id === editingTask.listId)) {
           return editingTask.listId;
         }
-        return resolveDefaultListId('org') || editingTask.listId;
+        return resolveTaskViewDefaultListId('org') || editingTask.listId;
       })();
       const ownerId = editingTask.ownerId || null;
       const ownerName = ownerCollaborator?.fullName || '';
@@ -7606,7 +7745,7 @@ export default function App() {
         try {
           if (!isEditingTaskPersonal && orgTaskLists.length === 0) {
             try {
-              await ensureOrgTaskList();
+              await ensureTaskViewOrgTaskList();
             } catch {
               // 组织清单创建失败不阻断保存
             }
@@ -7941,7 +8080,7 @@ export default function App() {
           title: `${titlePrefix}${action.title}`,
           desc: descBody,
           priority: report.scopeType === 'org' ? 'high' : 'normal',
-          listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
+          listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
           dueDate: null,
           durationMinutes: 60,
           clientId: primaryClientId,
@@ -8057,7 +8196,7 @@ export default function App() {
         scopeModeTouched: false,
         title: '',
         desc: '',
-        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
+        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
         priority: effectiveTaskSettings.defaultPriority,
         priorityTouched: false,
         priorityReason: '系统会根据任务内容自动识别优先级，你可以手动调整。',
@@ -8929,6 +9068,21 @@ export default function App() {
                     </select>
                   </label>
                   <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
+                    <span>组织清单</span>
+                    <select
+                      value={taskListNameFilter}
+                      onChange={(event) => setTaskListNameFilter(event.target.value)}
+                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                    >
+                      <option value="">全部清单</option>
+                      {visibleOrgTaskLists.map((list) => (
+                        <option key={`task-list-filter-${list.id}`} value={list.name}>
+                          {list.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
                     <span>时间排序</span>
                     <select
                       value={taskListTimeSort}
@@ -8973,6 +9127,17 @@ export default function App() {
                       />
                     </>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('settings');
+                      setSettingsSection('tasks');
+                    }}
+                    className="inline-flex items-center gap-2 rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
+                  >
+                    <Layout size={14} />
+                    清单管理
+                  </button>
                 </div>
               </div>
               <div className={`space-y-3 transition-all duration-300 ${isTaskGroupOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none h-0 overflow-hidden'}`}>
@@ -11106,54 +11271,53 @@ export default function App() {
 
                     <TaskPropertyRow icon={<Layout size={16} />} label="任务清单">
                       <div ref={taskListDropdownRef} className="relative w-full">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!isTaskListMenuOpen) {
-                              setTaskListQuery('');
-                            }
-                            setIsTaskListMenuOpen((prev) => !prev);
-                          }}
-                          className="flex min-h-[40px] w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-[#5B7BFE]"
-                        >
-                          <span className={`truncate text-sm ${selectedTaskList ? 'text-gray-700' : 'text-gray-400'}`}>
-                            {selectedTaskList?.name || '搜索或创建任务清单'}
-                          </span>
-                          <ChevronDown
-                            size={16}
-                            className={`ml-2 flex-shrink-0 text-gray-400 transition-transform ${isTaskListMenuOpen ? 'rotate-180' : ''}`}
+                        <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 transition focus-within:border-[#5B7BFE] focus-within:ring-2 focus-within:ring-[#5B7BFE]/10">
+                          <Search size={14} className="shrink-0 text-gray-400" />
+                          <input
+                            value={taskListQuery}
+                            onChange={(event) => handleTaskListQueryChange(event.target.value)}
+                            onFocus={() => setIsTaskListMenuOpen(true)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                if (filteredTaskListOptions[0]) {
+                                  handleSelectTaskList(filteredTaskListOptions[0]);
+                                } else if (taskListQuery.trim() && !hasExactTaskListMatch) {
+                                  void handleCreateTaskListFromQuery();
+                                }
+                              }
+                            }}
+                            placeholder={isTaskListsLoading ? '正在加载清单…' : visibleOrgTaskLists.length > 0 ? '输入清单名称搜索' : '输入清单名称后直接创建'}
+                            className="w-full border-0 bg-transparent text-[14px] font-medium text-gray-800 outline-none"
                           />
-                        </button>
+                          {selectedTaskList ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingTask((prev) => ({ ...prev, listId: '' }));
+                                setTaskListQuery('');
+                                setIsTaskListMenuOpen(true);
+                              }}
+                              className="flex h-5 w-5 items-center justify-center rounded-full text-gray-400 transition hover:bg-slate-100 hover:text-gray-600"
+                              aria-label="清空已选清单"
+                            >
+                              <X size={12} />
+                            </button>
+                          ) : (
+                            <ChevronDown size={16} className={`shrink-0 text-gray-400 transition-transform ${isTaskListMenuOpen ? 'rotate-180' : ''}`} />
+                          )}
+                        </div>
                         {isTaskListMenuOpen && (
-                          <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
-                            <div className="flex items-center gap-2 rounded-md border border-gray-200 px-3 py-2">
-                              <Search size={14} className="text-gray-400" />
-                              <input
-                                value={taskListQuery}
-                                onChange={(event) => setTaskListQuery(event.target.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter' && taskListQuery.trim() && !hasExactTaskListMatch) {
-                                    event.preventDefault();
-                                    void handleCreateTaskListFromQuery();
-                                  }
-                                }}
-                                placeholder="输入清单名称搜索"
-                                className="w-full border-0 bg-transparent text-sm outline-none"
-                              />
-                            </div>
-                            <div className="mt-2 max-h-56 overflow-y-auto">
+                          <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border border-gray-200 bg-white p-2 shadow-lg">
+                            <div className="max-h-56 overflow-y-auto">
                               {filteredTaskListOptions.map((list) => (
                                 <button
                                   key={list.id}
                                   type="button"
-                                  className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
-                                  onClick={() => {
-                                    setEditingTask((prev) => ({ ...prev, listId: list.id }));
-                                    setTaskListQuery(list.name);
-                                    setIsTaskListMenuOpen(false);
-                                  }}
+                                  className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-50"
+                                  onClick={() => handleSelectTaskList(list)}
                                 >
-                                  <span className="truncate text-sm text-gray-700">{list.name}</span>
+                                  <span className="truncate">{list.name}</span>
                                   <div
                                     className={`ml-3 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border text-[12px] font-bold transition ${
                                       editingTask.listId === list.id
@@ -11166,7 +11330,9 @@ export default function App() {
                                 </button>
                               ))}
                               {filteredTaskListOptions.length === 0 && (
-                                <div className="px-3 py-2 text-xs text-gray-400">没有匹配的清单</div>
+                                <div className="px-3 py-2 text-xs text-gray-400">
+                                  {isTaskListsLoading ? '正在加载清单…' : '没有找到匹配清单'}
+                                </div>
                               )}
                             </div>
                             {taskListQuery.trim() && !hasExactTaskListMatch && (
@@ -11174,14 +11340,17 @@ export default function App() {
                                 type="button"
                                 onClick={() => void handleCreateTaskListFromQuery()}
                                 disabled={isCreatingTaskList}
-                                className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-blue-200 px-3 py-2 text-sm font-medium text-blue-600 transition hover:bg-blue-50 disabled:cursor-wait disabled:opacity-60"
+                                className="mt-2 inline-flex items-center gap-1 rounded-full border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-1 text-[11px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF] disabled:cursor-wait disabled:opacity-60"
                               >
-                                <Plus size={14} />
+                                <Layout size={12} />
                                 {isCreatingTaskList ? '正在创建…' : `创建清单“${taskListQuery.trim()}”`}
                               </button>
                             )}
                           </div>
                         )}
+                        <p className="mt-2 text-[12px] text-gray-400">
+                          输入清单名称可直接搜索；如果没有匹配项，可以直接创建清单。
+                        </p>
                       </div>
                     </TaskPropertyRow>
                   </div>
@@ -13770,7 +13939,7 @@ export default function App() {
                                         title: `${currentClient?.name || '客户'} · ${msg.structuredData?.actions?.slice(0, 18) || '跟进事项'}`,
                                         desc: msg.structuredData?.analysis || msg.content,
                                         priority: 'normal',
-                                        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
+                                        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
                                         dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
                                         ddl: '本周',
                                         ownerId: null,
@@ -14894,7 +15063,6 @@ export default function App() {
     const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
-    const canManagePersonalTaskList = Boolean(currentSessionUser?.id);
     const canManageSensitiveSettings = currentSessionUser?.primaryRole === 'admin';
     const isLocalSession = authState.sessionMode !== 'cloud';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
@@ -14906,7 +15074,7 @@ export default function App() {
     };
     const resetListManager = () => {
       setEditingListId(null);
-      setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false, scope: 'org' });
+      setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false });
     };
 
     const handleImportLegacyEntries = async () => {
@@ -15037,7 +15205,7 @@ export default function App() {
     };
 
     const handleSaveTaskList = async () => {
-      if (listManageDraft.scope === 'org' && !canManageOrgTaskList) {
+      if (!canManageOrgTaskList) {
         flash('error', '只有管理员可以维护组织清单');
         return;
       }
@@ -15053,14 +15221,14 @@ export default function App() {
             color: listManageDraft.color,
             isDefault: listManageDraft.isDefault,
             archived: listManageDraft.archived,
-            scope: listManageDraft.scope,
+            scope: 'org',
           });
         } else {
           await createTaskList({
             name: trimmedName,
             color: listManageDraft.color,
             isDefault: listManageDraft.isDefault,
-            scope: listManageDraft.scope,
+            scope: 'org',
           });
         }
         await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
@@ -15072,7 +15240,7 @@ export default function App() {
     };
 
     const handleToggleTaskListArchived = async (list: TaskList) => {
-      if ((list.scope || 'org') === 'org' && !canManageOrgTaskList) {
+      if (!canManageOrgTaskList) {
         flash('error', '只有管理员可以维护组织清单');
         return;
       }
@@ -15082,7 +15250,7 @@ export default function App() {
           color: list.color,
           isDefault: list.isDefault,
           archived: !list.archivedAt,
-          scope: list.scope || 'org',
+          scope: 'org',
         });
         await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
         flash('success', list.archivedAt ? '清单已恢复' : '清单已归档');
@@ -15092,7 +15260,7 @@ export default function App() {
     };
 
     const handleDeleteTaskList = async (list: TaskList) => {
-      if ((list.scope || 'org') === 'org' && !canManageOrgTaskList) {
+      if (!canManageOrgTaskList) {
         flash('error', '只有管理员可以删除组织清单');
         return;
       }
@@ -15845,16 +16013,16 @@ export default function App() {
           />
         )}
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="space-y-6">
           <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
             <div className="flex items-start justify-between gap-4 mb-4">
               <div>
                 <h2 className="text-[16px] font-bold text-gray-900">清单管理</h2>
-                <p className="text-[12px] text-gray-500 mt-1">组织清单由管理员治理，个人日程清单可自行维护。</p>
+                <p className="text-[12px] text-gray-500 mt-1">这里只维护组织清单。重复项可以删除，不想再用的清单也可以归档。</p>
               </div>
               {editingListId && <button type="button" className="text-[12px] font-bold text-gray-400 hover:text-gray-700" onClick={resetListManager}>取消编辑</button>}
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_120px_120px_auto] gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_140px_auto] gap-3">
               <input value={listManageDraft.name} onChange={(event) => setListManageDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="输入清单名称" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
               <select value={listManageDraft.color} onChange={(event) => setListManageDraft((prev) => ({ ...prev, color: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
                 {TASK_COLOR_OPTIONS.map((color) => (
@@ -15865,38 +16033,32 @@ export default function App() {
                 <option value="normal">普通清单</option>
                 <option value="default">默认清单</option>
               </select>
-              <select value={listManageDraft.scope} onChange={(event) => setListManageDraft((prev) => ({ ...prev, scope: event.target.value as 'org' | 'personal' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                <option value="org">组织任务</option>
-                <option value="personal">个人日程</option>
-              </select>
               <Button
                 primary
                 className="rounded-2xl"
                 onClick={() => void handleSaveTaskList()}
-                disabled={listManageDraft.scope === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}
+                disabled={!canManageOrgTaskList}
               >
                 {editingListId ? '保存清单' : '新建清单'}
               </Button>
             </div>
             <div className="mt-5 space-y-3 max-h-[320px] overflow-y-auto pr-1">
-              {taskLists.map((list) => (
+              {taskLists.filter((list) => (list.scope || 'org') === 'org').map((list) => (
                 <div key={list.id} className="border border-gray-100 rounded-2xl p-4 flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="w-3 h-3 rounded-full" style={{ backgroundColor: list.color }} />
                       <p className="text-[14px] font-bold text-gray-900">{list.name}</p>
-                      <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-slate-100 text-slate-600">
-                        {(list.scope || 'org') === 'personal' ? '个人日程' : '组织任务'}
-                      </span>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-slate-100 text-slate-600">组织清单</span>
                       {list.isDefault && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-blue-50 text-[#5B7BFE]">默认</span>}
                       {list.archivedAt && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">已归档</span>}
                     </div>
                     <p className="text-[12px] text-gray-500 mt-2">归档后不会再出现在新建任务和默认清单选项里。</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, color: list.color, isDefault: list.isDefault, archived: Boolean(list.archivedAt), scope: (list.scope || 'org') as 'org' | 'personal' }); }} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>编辑</Button>
-                    <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
-                    <Button onClick={() => void handleDeleteTaskList(list)} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>删除</Button>
+                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, color: list.color, isDefault: list.isDefault, archived: Boolean(list.archivedAt) }); }} disabled={!canManageOrgTaskList}>编辑</Button>
+                    <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={!canManageOrgTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
+                    <Button onClick={() => void handleDeleteTaskList(list)} disabled={!canManageOrgTaskList}>删除</Button>
                   </div>
                 </div>
               ))}

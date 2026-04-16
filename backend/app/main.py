@@ -460,6 +460,19 @@ DEMO_RADAR_IDS = ("radar_ai", "radar_fund")
 DEMO_CANDIDATE_IDS = ("cand_1", "cand_2")
 DEMO_HANDBOOK_IDS = ("hb_1",)
 DEMO_CHAT_MESSAGE_IDS = ("msg_seed_1",)
+DEFAULT_LOCAL_ORG_TASK_LIST_ID = "list-1"
+DEFAULT_LOCAL_ORG_TASK_LIST_NAME = "客户项目"
+DEFAULT_LOCAL_ORG_TASK_LIST_COLOR = "#5B7BFE"
+LOCAL_CANONICAL_ORG_TASK_LIST_SPECS: tuple[tuple[str, str, str, int, int], ...] = (
+    ("list-1", "客户项目", "#5B7BFE", 1, 1),
+    ("list-2", "产品研发", "#F59E0B", 2, 0),
+    ("list-3", "数据分析", "#10B981", 3, 0),
+    ("list-4", "组织管理", "#8B5CF6", 4, 0),
+    ("list-5", "品牌市场", "#EC4899", 5, 0),
+)
+LOCAL_CANONICAL_ORG_TASK_LIST_IDS = tuple(item[0] for item in LOCAL_CANONICAL_ORG_TASK_LIST_SPECS)
+REMOVED_LOCAL_ORG_TASK_LIST_NAMES = ("收集箱",)
+LEGACY_LOCAL_PERSONAL_TASK_LIST_NAMES = ("健身", "学习", "吃饭", "约会")
 BACKEND_FEATURE_FLAGS = [
     "knowledge.vectorize-answer",
     "knowledge.reclass-events",
@@ -1658,7 +1671,7 @@ def load_demo_dataset(state: AppState) -> DemoDataResponse:
     state.db.executemany(
         "INSERT INTO tasks(id, title, description, status, priority, list_id, owner_name, ddl, source_type, source_id, tags_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            ("task_seed_1", "准备周五跨部门复盘会", "梳理客户推进中的异常转化问题。", "inbox", "high", "list-0", "庆华", "周五", "manual", "client_cffc", to_json(["会议"]), timestamp, timestamp),
+            ("task_seed_1", "准备周五跨部门复盘会", "梳理客户推进中的异常转化问题。", "inbox", "high", DEFAULT_LOCAL_ORG_TASK_LIST_ID, "庆华", "周五", "manual", "client_cffc", to_json(["会议"]), timestamp, timestamp),
             ("task_seed_2", "梳理客户反馈的 10 个核心痛点", "提炼成客户工作台的重点议题。", "doing", "normal", "list-1", "一朔", "今天", "manual", "client_star", to_json(["待跟进"]), timestamp, timestamp),
         ],
     )
@@ -5877,13 +5890,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for item in payload.get("collaborators", []) if isinstance(item, dict)
         ]
-        list_id = str(payload.get("listId", "list-0"))
+        list_id = str(payload.get("listId", DEFAULT_LOCAL_ORG_TASK_LIST_ID))
         list_record = lists_by_id.get(
             list_id,
             TaskListRecord(
                 id=list_id,
-                name=str(payload.get("listName", "收集箱")),
-                color=str(payload.get("listColor", "#888681")),
+                name=str(payload.get("listName", DEFAULT_LOCAL_ORG_TASK_LIST_NAME)),
+                color=str(payload.get("listColor", DEFAULT_LOCAL_ORG_TASK_LIST_COLOR)),
                 sortOrder=0,
                 isDefault=False,
                 archivedAt=None,
@@ -6128,6 +6141,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return task
 
     def task_lists() -> list[TaskListRecord]:
+        normalize_local_task_lists(state)
         scope_where, scope_params = _local_scope_where("organization_id")
         rows = state.db.fetchall(
             f"""
@@ -12028,7 +12042,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     desc="来自会议抽取的行动项",
                     status="todo" if item["publish_status"] == "published" else "inbox",
                     priority="normal",
-                    listId="list-0",
+                    listId=DEFAULT_LOCAL_ORG_TASK_LIST_ID,
                     listName="会议草稿",
                     listColor="#888681",
                     ddl=str(item["due_date"]),
@@ -12857,7 +12871,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         timestamp = now_iso()
         task_id = new_id("task")
-        list_id = payload.listId or (_get_local_task_settings().defaultListId or "list-0")
+        list_id = payload.listId or (_get_local_task_settings().defaultListId or DEFAULT_LOCAL_ORG_TASK_LIST_ID)
         list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not list_row or list_row["archived_at"]:
             raise HTTPException(status_code=400, detail="任务清单无效")
@@ -21911,7 +21925,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if meeting.clientId != client_id:
             raise HTTPException(status_code=404, detail="Meeting not found")
         workspace_settings = get_client_workspace_settings()
-        default_list_id = workspace_settings.meetingPublishDefaultListId or _get_local_task_settings().defaultListId or "list-0"
+        default_list_id = workspace_settings.meetingPublishDefaultListId or _get_local_task_settings().defaultListId or DEFAULT_LOCAL_ORG_TASK_LIST_ID
         for item in state.db.fetchall("SELECT * FROM action_items WHERE meeting_id = ? AND publish_status != 'published'", (meeting_id,)):
             payload = TaskPayload(
                 title=str(item["title"]),
@@ -22008,14 +22022,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def create_task_list(payload: TaskListMutationPayload) -> TaskListRecord:
         session_user = get_cached_session_user()
         organization_id = session_user.organizationId if session_user else ""
-        if session_user and session_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
+        if session_user and session_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
         trimmed_name = payload.name.strip()
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
+        next_scope = "org"
+        existing_row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE scope = 'org' AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY is_default DESC, sort_order ASC, id ASC LIMIT 1",
+            (trimmed_name,),
+        )
+        if existing_row:
+            list_id = str(existing_row["id"])
+            next_is_default = bool(payload.isDefault)
+            if next_is_default:
+                state.db.execute("UPDATE task_lists SET is_default = 0 WHERE scope = 'org'")
+            state.db.execute(
+                """
+                UPDATE task_lists
+                SET color = ?, archived_at = NULL, is_default = CASE WHEN ? THEN 1 ELSE is_default END
+                WHERE id = ?
+                """,
+                (payload.color.strip(), 1 if next_is_default else 0, list_id),
+            )
+            row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+            assert row is not None
+            log_activity("task-list.update", "task_list", list_id, {"dedupedCreate": True, **payload.model_dump(exclude_none=True)})
+            if organization_id:
+                _update_sync_metadata("task_lists", list_id, sync_status="queued", pending_sync_action="update", last_sync_error="")
+                _queue_sync_action("task_list", list_id, "update")
+                _schedule_local_cloud_sync(force=True)
+            return _local_task_list_record(row)
         list_id = new_id("list")
-        next_scope = payload.scope or "org"
         is_default = bool(payload.isDefault) or state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = ?", (next_scope,)) == 0
         sort_order = payload.sortOrder if payload.sortOrder is not None else state.db.scalar("SELECT COALESCE(MAX(sort_order), -1) + 1 AS count FROM task_lists")
         if is_default:
@@ -22043,19 +22082,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         organization_id = session_user.organizationId if session_user else ""
         if session_user and session_user.primaryRole != "admin":
-            row_scope = None
-            row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
-            if row:
-                row_scope = str(row["scope"] or "org")
-            if (payload.scope or row_scope or "org") != "personal":
-                raise HTTPException(status_code=403, detail="Only admin can update public task lists")
+            raise HTTPException(status_code=403, detail="Only admin can update public task lists")
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
         trimmed_name = payload.name.strip()
         timestamp = now_iso()
         next_archived_at = str(row["archived_at"]) if row["archived_at"] else None
-        next_scope = payload.scope or str(row["scope"] or "org")
+        next_scope = "org"
+        duplicate_row = state.db.fetchone(
+            "SELECT id FROM task_lists WHERE scope = 'org' AND id != ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY is_default DESC, sort_order ASC, id ASC LIMIT 1",
+            (list_id, trimmed_name),
+        )
+        if duplicate_row:
+            raise HTTPException(status_code=400, detail="已存在同名清单，请直接使用或删除重复项")
         if payload.archived is True:
             active_list_count = state.db.scalar(
                 "SELECT COUNT(1) AS count FROM task_lists WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')",
@@ -22119,9 +22159,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         organization_id = session_user.organizationId if session_user else ""
         if session_user and session_user.primaryRole != "admin":
-            row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (list_id,))
-            if not row or str(row["scope"] or "org") != "personal":
-                raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
+            raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
@@ -24187,7 +24225,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 title=str(row["title"]),
                 desc=str(row["summary"]),
                 priority="normal",
-                listId="list-0",
+                listId=DEFAULT_LOCAL_ORG_TASK_LIST_ID,
                 ddl="本周",
                 ownerName=current_operator_row()["name"],
                 tags=["选题"],
@@ -25043,7 +25081,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if line
                 ),
                 priority="normal",
-                listId=task_settings.defaultListId or "list-0",
+                listId=task_settings.defaultListId or DEFAULT_LOCAL_ORG_TASK_LIST_ID,
                 ownerName=user_name,
                 tags=["成长练习", recommendation.abilityLabel],
                 sourceType="growth_recommendation",
@@ -25097,7 +25135,8 @@ def backfill_local_task_tag_ids(state: AppState) -> None:
         (timestamp, timestamp),
     )
     state.db.execute(
-        "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
+        "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''",
+        (DEFAULT_LOCAL_ORG_TASK_LIST_ID,),
     )
     for row in state.db.fetchall("SELECT id, tags_json, tag_ids_json FROM tasks"):
         tag_ids = _parse_json_list(row["tag_ids_json"])
@@ -25123,6 +25162,169 @@ def backfill_local_task_tag_ids(state: AppState) -> None:
     )
 
 
+def normalize_local_task_lists(state: AppState) -> None:
+    timestamp = now_iso()
+    if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists") == 0:
+        return
+
+    def has_table(table_name: str) -> bool:
+        row = state.db.fetchone(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        )
+        return row is not None
+
+    for list_id, name, color, sort_order, is_default in LOCAL_CANONICAL_ORG_TASK_LIST_SPECS:
+        existing = state.db.fetchone("SELECT id FROM task_lists WHERE id = ?", (list_id,))
+        if existing:
+            state.db.execute(
+                """
+                UPDATE task_lists
+                SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = 'org', archived_at = NULL
+                WHERE id = ?
+                """,
+                (name, color, sort_order, is_default, list_id),
+            )
+        else:
+            state.db.execute(
+                """
+                INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at)
+                VALUES(?, ?, ?, ?, ?, 'org', NULL)
+                """,
+                (list_id, name, color, sort_order, is_default),
+            )
+
+    def normalized_name(value: str | None) -> str:
+        return " ".join(str(value or "").strip().split()).lower()
+
+    canonical_name_to_id = {
+        normalized_name(name): list_id
+        for list_id, name, _color, _sort_order, _is_default in LOCAL_CANONICAL_ORG_TASK_LIST_SPECS
+    }
+    replacement_map: dict[str, str] = {}
+    removed_ids = set()
+
+    org_rows = state.db.fetchall(
+        """
+        SELECT id, name, sort_order, is_default, archived_at
+        FROM task_lists
+        WHERE scope = 'org'
+        ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
+        """
+    )
+    grouped_rows: dict[str, list] = {}
+    for row in org_rows:
+        key = normalized_name(row["name"])
+        if not key:
+            continue
+        grouped_rows.setdefault(key, []).append(row)
+
+    for key, rows in grouped_rows.items():
+        if len(rows) <= 1:
+            continue
+        canonical_id = canonical_name_to_id.get(key)
+        preferred_row = None
+        if canonical_id:
+            preferred_row = next((row for row in rows if str(row["id"]) == canonical_id), None)
+        if preferred_row is None:
+            preferred_row = sorted(
+                rows,
+                key=lambda row: (
+                    0 if bool(int(row["is_default"] or 0)) else 1,
+                    0 if not row["archived_at"] else 1,
+                    int(row["sort_order"] or 0),
+                    str(row["id"]),
+                ),
+            )[0]
+        preferred_id = str(preferred_row["id"])
+        for row in rows:
+            source_id = str(row["id"])
+            if source_id == preferred_id:
+                continue
+            replacement_map[source_id] = preferred_id
+            removed_ids.add(source_id)
+
+    for row in state.db.fetchall("SELECT id FROM task_lists WHERE scope = 'personal'"):
+        source_id = str(row["id"])
+        replacement_map[source_id] = DEFAULT_LOCAL_ORG_TASK_LIST_ID
+        removed_ids.add(source_id)
+
+    removed_rows = state.db.fetchall(
+        f"""
+        SELECT id
+        FROM task_lists
+        WHERE scope = 'org'
+          AND (
+            id = 'list-0'
+            OR name IN ({', '.join('?' for _ in (*REMOVED_LOCAL_ORG_TASK_LIST_NAMES, *LEGACY_LOCAL_PERSONAL_TASK_LIST_NAMES))})
+          )
+        """,
+        (*REMOVED_LOCAL_ORG_TASK_LIST_NAMES, *LEGACY_LOCAL_PERSONAL_TASK_LIST_NAMES),
+    )
+    for row in removed_rows:
+        source_id = str(row["id"])
+        replacement_map[source_id] = DEFAULT_LOCAL_ORG_TASK_LIST_ID
+        removed_ids.add(source_id)
+
+    for source_id, target_id in replacement_map.items():
+        state.db.execute(
+            "UPDATE tasks SET list_id = ?, updated_at = ? WHERE list_id = ?",
+            (target_id, timestamp, source_id),
+        )
+        if has_table("task_settings"):
+            state.db.execute(
+                "UPDATE task_settings SET default_list_id = ? WHERE default_list_id = ?",
+                (target_id, source_id),
+            )
+        if has_table("client_workspace_settings"):
+            state.db.execute(
+                """
+                UPDATE client_workspace_settings
+                SET meeting_publish_default_list_id = ?
+                WHERE meeting_publish_default_list_id = ?
+                """,
+                (target_id, source_id),
+            )
+
+    if removed_ids:
+        placeholders = ", ".join("?" for _ in removed_ids)
+        state.db.execute(f"DELETE FROM task_lists WHERE id IN ({placeholders})", tuple(sorted(removed_ids)))
+
+    if has_table("task_settings"):
+        state.db.execute(
+            """
+            UPDATE task_settings
+            SET default_list_id = ?
+            WHERE default_list_id IS NULL
+               OR default_list_id = ''
+               OR default_list_id = 'list-0'
+               OR default_list_id NOT IN (SELECT id FROM task_lists WHERE scope = 'org')
+            """,
+            (DEFAULT_LOCAL_ORG_TASK_LIST_ID,),
+        )
+    if has_table("client_workspace_settings"):
+        state.db.execute(
+            """
+            UPDATE client_workspace_settings
+            SET meeting_publish_default_list_id = ?
+            WHERE meeting_publish_default_list_id IS NULL
+               OR meeting_publish_default_list_id = ''
+               OR meeting_publish_default_list_id = 'list-0'
+               OR meeting_publish_default_list_id NOT IN (SELECT id FROM task_lists WHERE scope = 'org')
+            """,
+            (DEFAULT_LOCAL_ORG_TASK_LIST_ID,),
+        )
+    state.db.execute(
+        """
+        UPDATE task_lists
+        SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
+        WHERE scope = 'org'
+          AND (is_default IS NULL OR is_default = '' OR is_default NOT IN (0, 1))
+        """,
+        (DEFAULT_LOCAL_ORG_TASK_LIST_ID,),
+    )
+
+
 def seed_defaults(state: AppState) -> None:
     timestamp = now_iso()
     state.db.set_setting("folders_root_label", state.db.get_setting("folders_root_label", "桌面客户资料"))
@@ -25144,27 +25346,11 @@ def seed_defaults(state: AppState) -> None:
         state.db.executemany(
             "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
             [
-                ("list-0", "收集箱", "#888681", 0, 1, "org"),
-                ("list-1", "客户推进", "#5B7BFE", 1, 0, "org"),
-                ("list-2", "研究洞察", "#F59E0B", 2, 0, "org"),
-                ("list-3", "交付沉淀", "#10B981", 3, 0, "org"),
-                ("plist-1", "健身", "#5B7BFE", 10, 1, "personal"),
-                ("plist-2", "约会", "#EC4899", 11, 0, "personal"),
-                ("plist-3", "吃饭", "#F59E0B", 12, 0, "personal"),
-                ("plist-4", "学习", "#10B981", 13, 0, "personal"),
+                *[(list_id, name, color, sort_order, is_default, "org") for list_id, name, color, sort_order, is_default in LOCAL_CANONICAL_ORG_TASK_LIST_SPECS],
             ],
         )
     state.db.execute("UPDATE task_lists SET scope = 'org' WHERE scope IS NULL OR scope = ''")
-    if state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = 'personal'") == 0:
-        state.db.executemany(
-            "INSERT INTO task_lists(id, name, color, sort_order, is_default, scope, archived_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
-            [
-                ("plist-1", "健身", "#5B7BFE", 10, 1, "personal"),
-                ("plist-2", "约会", "#EC4899", 11, 0, "personal"),
-                ("plist-3", "吃饭", "#F59E0B", 12, 0, "personal"),
-                ("plist-4", "学习", "#10B981", 13, 0, "personal"),
-            ],
-        )
+    normalize_local_task_lists(state)
     if state.db.scalar("SELECT COUNT(1) AS count FROM task_tags") == 0:
         state.db.executemany(
             "INSERT INTO task_tags(id, name, scope, color, owner_operator_id, created_by, created_at, updated_at, archived_at) VALUES(?, ?, 'org', ?, '', '系统', ?, ?, NULL)",
@@ -25183,9 +25369,9 @@ def seed_defaults(state: AppState) -> None:
                 operator_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, 'list-0', 'normal', 'today', 'calendar', 'manual', 0, 'work', 1, ?)
+            ) VALUES(?, ?, 'normal', 'today', 'calendar', 'manual', 0, 'work', 1, ?)
             """,
-            [(str(row["id"]), timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
+            [(str(row["id"]), DEFAULT_LOCAL_ORG_TASK_LIST_ID, timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM analysis_templates") == 0:
         state.db.executemany(

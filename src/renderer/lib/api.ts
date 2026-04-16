@@ -1114,6 +1114,10 @@ export async function getTaskBoard() {
   return request<{ tasks: Task[]; lists: TaskList[]; tags: TaskTag[] }>('/api/v1/tasks');
 }
 
+export async function getTaskLists() {
+  return request<{ lists: TaskList[] }>('/api/v1/task-lists');
+}
+
 export async function createSupportRequest(payload: SupportRequestCreatePayload) {
   return request<SupportRequestRecord>('/api/v1/support-requests', {
     method: 'POST',

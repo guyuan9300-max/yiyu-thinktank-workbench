@@ -19,8 +19,7 @@ PRESSURE_SEED_SOURCE_TYPE = "pressure_seed_doc_v2"
 DEFAULT_SEED_PASSWORD = "Simulate123!"
 
 TASK_LIST_SPECS: tuple[tuple[str, str, str, int, int], ...] = (
-    ("list-0", "收集箱", "#888681", 0, 1),
-    ("list-1", "客户项目", "#5B7BFE", 1, 0),
+    ("list-1", "客户项目", "#5B7BFE", 1, 1),
     ("list-2", "产品研发", "#F59E0B", 2, 0),
     ("list-3", "数据分析", "#10B981", 3, 0),
     ("list-4", "组织管理", "#8B5CF6", 4, 0),
@@ -228,8 +227,10 @@ def _ensure_task_lists(db: Database, organization_id: str) -> None:
                 """,
                 (list_id, organization_id, name, color, sort_order, is_default),
             )
-    db.execute("UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE 0 END WHERE organization_id = ?", (organization_id,))
-    db.execute("UPDATE task_lists SET archived_at = ? WHERE organization_id = ? AND id NOT IN ('list-0','list-1','list-2','list-3','list-4','list-5')", (timestamp, organization_id))
+    db.execute("UPDATE task_lists SET is_default = CASE WHEN id = 'list-1' THEN 1 ELSE 0 END WHERE organization_id = ?", (organization_id,))
+    db.execute("UPDATE tasks SET list_id = 'list-1' WHERE organization_id = ? AND list_id = 'list-0'", (organization_id,))
+    db.execute("DELETE FROM task_lists WHERE organization_id = ? AND (id = 'list-0' OR name = '收集箱')", (organization_id,))
+    db.execute("UPDATE task_lists SET archived_at = ? WHERE organization_id = ? AND id NOT IN ('list-1','list-2','list-3','list-4','list-5')", (timestamp, organization_id))
 
 
 def _upsert_ceo_account(db: Database, organization_id: str, user_id: str, full_name: str) -> None:

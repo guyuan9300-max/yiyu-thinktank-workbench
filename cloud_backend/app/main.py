@@ -134,6 +134,18 @@ APP_NAME = "益语智库中心任务后端"
 APP_VERSION = "0.1.0"
 DEFAULT_ORG_ID = "org_yiyu_default"
 DEFAULT_ADMIN_EMAIL = DEFAULT_BOOTSTRAP_ADMIN_EMAIL
+DEFAULT_ORG_TASK_LIST_ID = "list-1"
+DEFAULT_ORG_TASK_LIST_NAME = "客户项目"
+DEFAULT_ORG_TASK_LIST_COLOR = "#5B7BFE"
+CANONICAL_ORG_TASK_LIST_SPECS: tuple[tuple[str, str, str, int, int], ...] = (
+    ("list-1", "客户项目", "#5B7BFE", 1, 1),
+    ("list-2", "产品研发", "#F59E0B", 2, 0),
+    ("list-3", "数据分析", "#10B981", 3, 0),
+    ("list-4", "组织管理", "#8B5CF6", 4, 0),
+    ("list-5", "品牌市场", "#EC4899", 5, 0),
+)
+CANONICAL_ORG_TASK_LIST_IDS = tuple(item[0] for item in CANONICAL_ORG_TASK_LIST_SPECS)
+LEGACY_PERSONAL_TASK_LIST_NAMES = ("健身", "学习", "吃饭", "约会")
 ALLOWED_APPROVER_ROLES: tuple[PrimaryRole, ...] = ("admin",)
 ORG_QUARTERS: tuple[str, ...] = ("Q1", "Q2", "Q3", "Q4")
 TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS: tuple[str, ...] = ("startDate", "dueDate", "durationMinutes", "ownerId", "collaboratorIds")
@@ -2071,12 +2083,7 @@ def _ensure_seed_data(state: AppState) -> None:
                 (new_id("role"), bound_user_id, primary_role, timestamp),
             )
 
-    for list_id, name, color, sort_order, is_default in [
-        ("list-0", "收集箱", "#888681", 0, 1),
-        ("list-1", "Q3 营销", "#5B7BFE", 1, 0),
-        ("list-2", "用户体验", "#F59E0B", 2, 0),
-        ("list-3", "商业化", "#10B981", 3, 0),
-    ]:
+    for list_id, name, color, sort_order, is_default in CANONICAL_ORG_TASK_LIST_SPECS:
         db.execute(
             """
             INSERT OR IGNORE INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
@@ -2126,9 +2133,9 @@ def _ensure_seed_data(state: AppState) -> None:
                 user_id, organization_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, ?, 'list-0', 'normal', 'today', 'list', 'manual', 0, 'work', 1, ?)
+            ) VALUES(?, ?, ?, 'normal', 'today', 'list', 'manual', 0, 'work', 1, ?)
             """,
-            (seed_user_id, DEFAULT_ORG_ID, timestamp),
+            (seed_user_id, DEFAULT_ORG_ID, DEFAULT_ORG_TASK_LIST_ID, timestamp),
         )
 
     for unit_id, parent_id, name, unit_type, leader_user_id in [
@@ -5063,7 +5070,7 @@ class FeishuNotificationService:
                 dedupe_key = f"overdue_digest:{organization_id}:{user_id}:{today_key}"
                 if self._any_dedupe_record(dedupe_key=dedupe_key):
                     continue
-                overdue_tasks = self._collect_overdue_tasks_for_user(
+                overdue_tasks = self._collect_newly_overdue_tasks_for_user(
                     organization_id=organization_id,
                     user_id=user_id,
                     reference_time=current_time,
@@ -5074,24 +5081,25 @@ class FeishuNotificationService:
                 earliest = overdue_tasks[0]["dueText"]
                 card = _build_feishu_readonly_card(
                     template="red",
-                    title=f"逾期任务提醒｜{len(overdue_tasks)} 项",
-                    headline=f"{user_name}，你有 {len(overdue_tasks)} 项任务已逾期",
+                    title=f"次日逾期提醒｜{len(overdue_tasks)} 项",
+                    headline=f"{user_name}，你有 {len(overdue_tasks)} 项昨天到期的任务仍未完成",
                     core_lines=[
-                        f"逾期总数：{len(overdue_tasks)}",
-                        f"最早逾期：{earliest}",
+                        f"本次提醒：仅提醒昨天到期且今天仍未完成的任务",
+                        f"最早截止：{earliest}",
                     ],
                     secondary_blocks=[
                         ("待处理任务", [f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]]),
                     ],
-                    footer="请回到益语智库处理或调整截止时间。",
+                    footer="这是该任务逾期后的唯一一次提醒，请回到益语智库处理或调整截止时间。",
                 )
                 text = "\n".join(
                     [
-                        "【益语智库】今日逾期提醒",
-                        f"逾期总数：{len(overdue_tasks)}",
-                        f"最早逾期：{earliest}",
+                        "【益语智库】次日逾期提醒",
+                        "本次仅提醒昨天到期且今天仍未完成的任务",
+                        f"任务数：{len(overdue_tasks)}",
+                        f"最早截止：{earliest}",
                         *[f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]],
-                        "请回到益语智库处理或调整截止时间。",
+                        "这是该任务逾期后的唯一一次提醒，请回到益语智库处理或调整截止时间。",
                     ]
                 )
                 self._send_prepared_notification(
@@ -5438,7 +5446,7 @@ class FeishuNotificationService:
             payload={"changedFields": changed_fields},
         )
 
-    def _collect_overdue_tasks_for_user(self, *, organization_id: str, user_id: str, reference_time: datetime) -> list[dict[str, str]]:
+    def _collect_newly_overdue_tasks_for_user(self, *, organization_id: str, user_id: str, reference_time: datetime) -> list[dict[str, str]]:
         rows = self.state.db.fetchall(
             """
             SELECT DISTINCT t.id, t.title, t.due_date
@@ -5455,7 +5463,7 @@ class FeishuNotificationService:
         overdue: list[dict[str, str]] = []
         for row in rows:
             due_value = str(row["due_date"]) if row["due_date"] else None
-            if not _is_due_date_overdue_by_day(due_value, reference_time.date()):
+            if not _is_due_date_newly_overdue_by_day(due_value, reference_time.date()):
                 continue
             overdue.append(
                 {
@@ -5783,6 +5791,14 @@ def _is_due_date_overdue_by_day(value: str | None, today: datetime.date | None =
         return False
     reference_date = today or datetime.now().date()
     return due_date < reference_date
+
+
+def _is_due_date_newly_overdue_by_day(value: str | None, today: datetime.date | None = None) -> bool:
+    due_date = _parse_date_only(value)
+    if not due_date:
+        return False
+    reference_date = today or datetime.now().date()
+    return due_date == (reference_date - timedelta(days=1))
 
 
 def _task_tag_record(row) -> TaskTagRecord:
@@ -6139,8 +6155,8 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         description=str(row["description"]),
         creatorId=str(row["creator_id"]),
         creatorName=str(creator["full_name"]),
-        listName=str(list_row["name"]) if list_row else "收集箱",
-        listColor=str(list_row["color"]) if list_row else "#888681",
+        listName=str(list_row["name"]) if list_row else DEFAULT_ORG_TASK_LIST_NAME,
+        listColor=str(list_row["color"]) if list_row else DEFAULT_ORG_TASK_LIST_COLOR,
         ownerId=str(row["owner_id"]) if row["owner_id"] else None,
         ownerName=str(owner["full_name"]) if owner else None,
         startDate=str(row["start_date"]) if row["start_date"] else None,
@@ -7085,6 +7101,144 @@ def _dashboard_for_user(state: AppState, current_user: SessionUser, week_label: 
     )
 
 
+def _normalize_org_task_lists(state: AppState, organization_id: str) -> None:
+    timestamp = now_iso()
+    for list_id, name, color, sort_order, is_default in CANONICAL_ORG_TASK_LIST_SPECS:
+        existing = state.db.fetchone(
+            "SELECT id FROM task_lists WHERE organization_id = ? AND id = ?",
+            (organization_id, list_id),
+        )
+        if existing:
+            state.db.execute(
+                """
+                UPDATE task_lists
+                SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = 'org', archived_at = NULL
+                WHERE organization_id = ? AND id = ?
+                """,
+                (name, color, sort_order, is_default, organization_id, list_id),
+            )
+        else:
+            state.db.execute(
+                """
+                INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+                VALUES(?, ?, ?, ?, ?, ?, 'org', NULL)
+                """,
+                (list_id, organization_id, name, color, sort_order, is_default),
+            )
+
+    def normalized_name(value: str | None) -> str:
+        return " ".join(str(value or "").strip().split()).lower()
+
+    canonical_name_to_id = {
+        normalized_name(name): list_id
+        for list_id, name, _color, _sort_order, _is_default in CANONICAL_ORG_TASK_LIST_SPECS
+    }
+    replacement_map: dict[str, str] = {}
+    removed_ids = set()
+
+    org_rows = state.db.fetchall(
+        """
+        SELECT id, name, sort_order, is_default, archived_at
+        FROM task_lists
+        WHERE organization_id = ? AND scope = 'org'
+        ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
+        """,
+        (organization_id,),
+    )
+    grouped_rows: dict[str, list] = {}
+    for row in org_rows:
+        key = normalized_name(row["name"])
+        if not key:
+            continue
+        grouped_rows.setdefault(key, []).append(row)
+
+    for key, rows in grouped_rows.items():
+        if len(rows) <= 1:
+            continue
+        canonical_id = canonical_name_to_id.get(key)
+        preferred_row = None
+        if canonical_id:
+            preferred_row = next((row for row in rows if str(row["id"]) == canonical_id), None)
+        if preferred_row is None:
+            preferred_row = sorted(
+                rows,
+                key=lambda row: (
+                    0 if bool(int(row["is_default"] or 0)) else 1,
+                    0 if not row["archived_at"] else 1,
+                    int(row["sort_order"] or 0),
+                    str(row["id"]),
+                ),
+            )[0]
+        preferred_id = str(preferred_row["id"])
+        for row in rows:
+            source_id = str(row["id"])
+            if source_id == preferred_id:
+                continue
+            replacement_map[source_id] = preferred_id
+            removed_ids.add(source_id)
+
+    removed_rows = state.db.fetchall(
+        """
+        SELECT id
+        FROM task_lists
+        WHERE organization_id = ?
+          AND (
+            scope = 'personal'
+            OR (
+              scope = 'org'
+              AND (
+                id = 'list-0'
+                OR name = '收集箱'
+                OR name IN (?, ?, ?, ?)
+              )
+            )
+          )
+        """,
+        (organization_id, *LEGACY_PERSONAL_TASK_LIST_NAMES),
+    )
+    for row in removed_rows:
+        source_id = str(row["id"])
+        replacement_map[source_id] = DEFAULT_ORG_TASK_LIST_ID
+        removed_ids.add(source_id)
+
+    for source_id, target_id in replacement_map.items():
+        state.db.execute(
+            "UPDATE tasks SET list_id = ?, updated_at = ? WHERE organization_id = ? AND list_id = ?",
+            (target_id, timestamp, organization_id, source_id),
+        )
+        state.db.execute(
+            "UPDATE task_settings SET default_list_id = ? WHERE organization_id = ? AND default_list_id = ?",
+            (target_id, organization_id, source_id),
+        )
+
+    if removed_ids:
+        placeholders = ", ".join("?" for _ in removed_ids)
+        state.db.execute(
+            f"DELETE FROM task_lists WHERE organization_id = ? AND id IN ({placeholders})",
+            (organization_id, *sorted(removed_ids)),
+        )
+    state.db.execute(
+        "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = 'org' AND id IN (?, ?, ?, ?, ?)",
+        (DEFAULT_ORG_TASK_LIST_ID, organization_id, *CANONICAL_ORG_TASK_LIST_IDS),
+    )
+    state.db.execute(
+        """
+        UPDATE task_settings
+        SET default_list_id = ?
+        WHERE organization_id = ?
+          AND (
+            default_list_id IS NULL
+            OR default_list_id = ''
+            OR default_list_id = 'list-0'
+            OR default_list_id NOT IN (
+              SELECT id FROM task_lists WHERE organization_id = ? AND scope = 'org'
+            )
+          )
+        """,
+        (DEFAULT_ORG_TASK_LIST_ID, organization_id, organization_id),
+    )
+
+
 def _backfill_task_tag_ids(state: AppState) -> None:
     timestamp = now_iso()
     state.db.execute(
@@ -7099,12 +7253,14 @@ def _backfill_task_tag_ids(state: AppState) -> None:
         """,
     )
     state.db.execute(
-        "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
+        "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''",
+        (DEFAULT_ORG_TASK_LIST_ID,),
     )
     org_row = state.db.fetchone("SELECT id FROM organizations ORDER BY created_at ASC LIMIT 1")
     if not org_row:
         return
     org_id = str(org_row["id"])
+    _normalize_org_task_lists(state, org_id)
     fallback_user = state.db.fetchone("SELECT * FROM employee_accounts WHERE organization_id = ? ORDER BY created_at ASC LIMIT 1", (org_id,))
     if not fallback_user:
         return
@@ -9816,33 +9972,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def get_task_lists(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskListLibraryResponse:
+        _normalize_org_task_lists(state, current_user.organizationId)
         state.db.execute(
             "UPDATE task_lists SET scope = 'org' WHERE organization_id = ? AND (scope IS NULL OR scope = '')",
             (current_user.organizationId,),
         )
-        if state.db.scalar(
-            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = 'personal'",
-            (current_user.organizationId,),
-        ) == 0:
-            timestamp = now_iso()
-            for name, color, sort_order, is_default in [
-                ("健身", "#5B7BFE", 10, 1),
-                ("约会", "#EC4899", 11, 0),
-                ("吃饭", "#F59E0B", 12, 0),
-                ("学习", "#10B981", 13, 0),
-            ]:
-                list_id = new_id("list")
-                state.db.execute(
-                    """
-                    INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
-                    VALUES(?, ?, ?, ?, ?, ?, 'personal', NULL)
-                    """,
-                    (list_id, current_user.organizationId, name, color, sort_order, is_default),
-                )
-            state.db.execute(
-                "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = 'personal' AND id NOT IN (SELECT id FROM task_lists WHERE organization_id = ? AND scope = 'personal' ORDER BY sort_order ASC LIMIT 1)",
-                (current_user.organizationId, current_user.organizationId),
-            )
         rows = state.db.fetchall(
             """
             SELECT *
@@ -9862,14 +9996,43 @@ def create_app() -> FastAPI:
         payload: TaskListMutationPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskListRecord:
-        if current_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
+        if current_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
         trimmed_name = payload.name.strip()
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
         list_id = (payload.id or "").strip() or new_id("list")
-        next_scope = payload.scope or "org"
+        next_scope = "org"
+        existing_row = state.db.fetchone(
+            """
+            SELECT *
+            FROM task_lists
+            WHERE organization_id = ? AND scope = 'org' AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+            ORDER BY is_default DESC, sort_order ASC, id ASC
+            LIMIT 1
+            """,
+            (current_user.organizationId, trimmed_name),
+        )
+        if existing_row:
+            existing_id = str(existing_row["id"])
+            next_is_default = bool(payload.isDefault)
+            if next_is_default:
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = 'org'",
+                    (current_user.organizationId,),
+                )
+            state.db.execute(
+                """
+                UPDATE task_lists
+                SET color = ?, archived_at = NULL, is_default = CASE WHEN ? THEN 1 ELSE is_default END
+                WHERE id = ?
+                """,
+                (payload.color.strip(), 1 if next_is_default else 0, existing_id),
+            )
+            row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (existing_id,))
+            assert row is not None
+            return _task_list_record(row)
         is_default = bool(payload.isDefault) or state.db.scalar(
             "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
             (current_user.organizationId, next_scope),
@@ -9906,10 +10069,22 @@ def create_app() -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
-        if current_user.primaryRole != "admin" and (payload.scope or str(row["scope"] or "org")) != "personal":
+        if current_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="Only admin can update public task lists")
+        duplicate_row = state.db.fetchone(
+            """
+            SELECT id
+            FROM task_lists
+            WHERE organization_id = ? AND scope = 'org' AND id != ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+            ORDER BY is_default DESC, sort_order ASC, id ASC
+            LIMIT 1
+            """,
+            (current_user.organizationId, list_id, payload.name.strip()),
+        )
+        if duplicate_row:
+            raise HTTPException(status_code=400, detail="已存在同名清单，请直接使用或删除重复项")
         next_archived_at = str(row["archived_at"]) if row["archived_at"] else None
-        next_scope = payload.scope or str(row["scope"] or "org")
+        next_scope = "org"
         if payload.archived is True:
             active_list_count = state.db.scalar(
                 "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ? AND (archived_at IS NULL OR archived_at = '')",
@@ -9975,7 +10150,7 @@ def create_app() -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
-        if current_user.primaryRole != "admin" and str(row["scope"] or "org") != "personal":
+        if current_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
         task_count = state.db.scalar(
             "SELECT COUNT(1) AS count FROM tasks WHERE organization_id = ? AND list_id = ?",
