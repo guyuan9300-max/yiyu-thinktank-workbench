@@ -976,6 +976,31 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_project_flows_client_module_updated
                     ON project_flows(client_id, module_id, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS task_group_templates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL DEFAULT 'local',
+                    work_object_id TEXT,
+                    name TEXT NOT NULL,
+                    scenario_desc TEXT NOT NULL DEFAULT '',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    legacy_module_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_scope_updated
+                    ON task_group_templates(organization_id, scope, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
+                    ON task_group_templates(legacy_module_id);
+
                 CREATE TABLE IF NOT EXISTS task_notes (
                     id TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL UNIQUE,
@@ -1642,6 +1667,55 @@ class Database:
             self._ensure_column("event_lines", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_group_templates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL DEFAULT 'local',
+                    work_object_id TEXT,
+                    name TEXT NOT NULL,
+                    scenario_desc TEXT NOT NULL DEFAULT '',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    legacy_module_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
+                )
+                """
+            )
+            self._ensure_column("task_group_templates", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "scope", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("task_group_templates", "work_object_id", "TEXT")
+            self._ensure_column("task_group_templates", "scenario_desc", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "steps_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("task_group_templates", "legacy_module_id", "TEXT")
+            self._ensure_column("task_group_templates", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("task_group_templates", "cloud_id", "TEXT")
+            self._ensure_column("task_group_templates", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_scope_updated
+                ON task_group_templates(organization_id, scope, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
+                ON task_group_templates(legacy_module_id)
+                """
+            )
             self._ensure_column("event_line_activities", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_line_activities", "is_key", "INTEGER NOT NULL DEFAULT 0")
             # Backfill is_key: key events = task created, manual note, attachment

@@ -1155,6 +1155,88 @@ export interface ProjectStructureResponse {
   flows: ProjectFlow[];
 }
 
+export type TaskGroupTemplateScope = 'local' | 'organization';
+
+export interface TaskGroupTemplateStepAttachment {
+  name: string;
+  size?: number;
+}
+
+export interface TaskGroupTemplateStep {
+  title: string;
+  description: string;
+  daysAfterPrevious: number;
+  durationDays: number;
+  priority: Priority;
+  ownerId?: string;
+  ownerName?: string;
+  collaboratorIds?: string[];
+  collaboratorNames?: string[];
+  attachments?: TaskGroupTemplateStepAttachment[];
+}
+
+export interface TaskGroupTemplateRecord {
+  id: string;
+  name: string;
+  scenarioDesc: string;
+  scope: TaskGroupTemplateScope;
+  workObjectId?: string | null;
+  clientId?: string | null;
+  legacyModuleId?: string | null;
+  steps: TaskGroupTemplateStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskGroupTemplatePayload {
+  name: string;
+  scenarioDesc?: string;
+  scope?: TaskGroupTemplateScope;
+  workObjectId?: string | null;
+  steps: TaskGroupTemplateStep[];
+}
+
+export type TaskGroupTemplateEventLineMode = 'none' | 'existing' | 'create';
+
+export interface TaskGroupTemplateApplyEventLineDraft {
+  name: string;
+  kind?: EventLineKind;
+  primaryWorkObjectId?: string | null;
+  primaryClientId?: string | null;
+  ownerId?: string | null;
+  participantIds?: string[];
+}
+
+export interface TaskGroupTemplateApplyStepOverride {
+  stepIndex: number;
+  title?: string;
+  description?: string;
+  ownerId?: string;
+  ownerName?: string;
+  collaboratorIds?: string[];
+  collaboratorNames?: string[];
+  priority?: Priority;
+  durationDays?: number;
+  daysAfterPrevious?: number;
+}
+
+export interface ApplyTaskGroupTemplatePayload {
+  startDateTime: string;
+  listId: string;
+  workObjectId?: string | null;
+  clientId?: string | null;
+  eventLineMode: TaskGroupTemplateEventLineMode;
+  eventLineId?: string | null;
+  eventLineDraft?: TaskGroupTemplateApplyEventLineDraft | null;
+  stepOverrides?: TaskGroupTemplateApplyStepOverride[];
+}
+
+export interface ApplyTaskGroupTemplateResult {
+  createdTaskIds: string[];
+  createdEventLineId?: string | null;
+  createdCount: number;
+}
+
 export interface ProjectModuleDetail extends ProjectModule {
   relatedTaskIds: string[];
   relatedTaskTitles: string[];

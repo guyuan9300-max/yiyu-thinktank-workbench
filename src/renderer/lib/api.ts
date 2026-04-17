@@ -138,9 +138,13 @@ import type {
   StrategicCockpitConfirmPayload,
   StrategicCockpitSnapshot,
   StrategicLineDetail,
+  ApplyTaskGroupTemplatePayload,
+  ApplyTaskGroupTemplateResult,
   TaskViewDefinition,
   TaskViewMutationPayload,
   TaskViewsResponse,
+  TaskGroupTemplatePayload,
+  TaskGroupTemplateRecord,
   WeeklyReviewPayload,
   LearningRecommendation,
   LocalInputMemory,
@@ -1224,6 +1228,37 @@ export async function deleteTaskTag(id: string) {
 
 export async function createTask(payload: TaskMutationPayload) {
   return request<Task>('/api/v1/tasks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listTaskGroupTemplates() {
+  return request<{ templates: TaskGroupTemplateRecord[] }>('/api/v1/task-group-templates');
+}
+
+export async function createTaskGroupTemplate(payload: TaskGroupTemplatePayload) {
+  return request<TaskGroupTemplateRecord>('/api/v1/task-group-templates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTaskGroupTemplate(id: string, payload: TaskGroupTemplatePayload) {
+  return request<TaskGroupTemplateRecord>(`/api/v1/task-group-templates/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTaskGroupTemplate(id: string) {
+  return request<{ deleted: boolean }>(`/api/v1/task-group-templates/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function applyTaskGroupTemplate(id: string, payload: ApplyTaskGroupTemplatePayload) {
+  return request<ApplyTaskGroupTemplateResult>(`/api/v1/task-group-templates/${id}/apply`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });

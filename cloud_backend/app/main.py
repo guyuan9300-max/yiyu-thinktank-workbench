@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -78,6 +79,8 @@ from app.models import (
     WorkObjectTerminologyStateRecord,
     WorkObjectTerminologyUpdatePayload,
     TaskOrgBackfillResultRecord,
+    TaskGroupTemplatePayload,
+    TaskGroupTemplateRecord,
     PersonalGrowthCardRecord,
     PlanNodeRecord,
     PrimaryRole,
@@ -5835,6 +5838,146 @@ def _task_list_record(row) -> TaskListRecord:
     )
 
 
+def _normalize_task_group_template_steps(raw_steps: object) -> list[dict[str, object]]:
+    if not isinstance(raw_steps, list):
+        return []
+    normalized: list[dict[str, object]] = []
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        raw_days_after = item.get("daysAfterPrevious", item.get("relativeDays", 0))
+        try:
+            days_after_previous = max(0, int(raw_days_after or 0))
+        except (TypeError, ValueError):
+            days_after_previous = 0
+        raw_duration_days = item.get("durationDays")
+        if raw_duration_days is None:
+            raw_duration_minutes = item.get("durationMinutes")
+            try:
+                duration_days = max(0.5, round((float(raw_duration_minutes or 1440) / 1440.0) * 2) / 2)
+            except (TypeError, ValueError):
+                duration_days = 1.0
+        else:
+            try:
+                duration_days = max(0.5, round(float(raw_duration_days) * 2) / 2)
+            except (TypeError, ValueError):
+                duration_days = 1.0
+        collaborator_names: list[str] = []
+        raw_collaborator_names = item.get("collaboratorNames")
+        if isinstance(raw_collaborator_names, list):
+            collaborator_names = [
+                str(name).strip()
+                for name in raw_collaborator_names
+                if str(name).strip()
+            ]
+        collaborator_ids: list[str] = []
+        raw_collaborator_ids = item.get("collaboratorIds")
+        if isinstance(raw_collaborator_ids, list):
+            collaborator_ids = [
+                str(identifier).strip()
+                for identifier in raw_collaborator_ids
+                if str(identifier).strip()
+            ]
+        attachments: list[dict[str, object]] = []
+        raw_attachments = item.get("attachments")
+        if isinstance(raw_attachments, list):
+            for attachment in raw_attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                name = str(attachment.get("name") or "").strip()
+                if not name:
+                    continue
+                next_attachment: dict[str, object] = {"name": name}
+                size = attachment.get("size")
+                try:
+                    if size is not None:
+                        next_attachment["size"] = int(size)
+                except (TypeError, ValueError):
+                    pass
+                attachments.append(next_attachment)
+        normalized.append(
+            {
+                "title": title,
+                "description": str(item.get("description") or "").strip(),
+                "daysAfterPrevious": days_after_previous,
+                "durationDays": duration_days,
+                "priority": "high" if str(item.get("priority") or "").strip().lower() == "high" else "normal",
+                "ownerId": str(item.get("ownerId") or "").strip() or None,
+                "ownerName": str(item.get("ownerName") or "").strip() or None,
+                "collaboratorIds": collaborator_ids,
+                "collaboratorNames": collaborator_names,
+                "attachments": attachments,
+            }
+        )
+    return normalized
+
+
+def _task_group_template_record(row) -> TaskGroupTemplateRecord:
+    scope = str(row["scope"] or "organization")
+    work_object_id = str(row["work_object_id"]) if row["work_object_id"] else None
+    return TaskGroupTemplateRecord(
+        id=str(row["id"]),
+        name=str(row["name"] or ""),
+        scenarioDesc=str(row["scenario_desc"] or ""),
+        scope="organization" if scope == "organization" else "local",
+        workObjectId=work_object_id,
+        clientId=work_object_id,
+        legacyModuleId=str(row["legacy_module_id"]) if row["legacy_module_id"] else None,
+        steps=_normalize_task_group_template_steps(from_json(row["steps_json"], [])),  # type: ignore[arg-type]
+        createdAt=str(row["created_at"] or now_iso()),
+        updatedAt=str(row["updated_at"] or row["created_at"] or now_iso()),
+    )
+
+
+def _migrate_legacy_task_group_templates(state: AppState, organization_id: str) -> None:
+    try:
+        legacy_rows = state.db.fetchall(
+            """
+            SELECT id, client_id, name, goal, template_tasks_json, created_at, updated_at
+            FROM project_modules
+            WHERE organization_id = ? AND template_tasks_json IS NOT NULL AND TRIM(template_tasks_json) != ''
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            (organization_id,),
+        )
+    except sqlite3.OperationalError:
+        legacy_rows = []
+    for legacy_row in legacy_rows:
+        legacy_module_id = str(legacy_row["id"])
+        existing = state.db.fetchone(
+            "SELECT id FROM task_group_templates WHERE organization_id = ? AND legacy_module_id = ?",
+            (organization_id, legacy_module_id),
+        )
+        if existing:
+            continue
+        parsed = from_json(legacy_row["template_tasks_json"], {})
+        steps = _normalize_task_group_template_steps(parsed.get("tasks") if isinstance(parsed, dict) else [])
+        if not steps:
+            continue
+        timestamp = str(legacy_row["updated_at"] or legacy_row["created_at"] or now_iso())
+        state.db.execute(
+            """
+            INSERT INTO task_group_templates(
+                id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at
+            ) VALUES(?, ?, 'organization', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("tgtpl"),
+                organization_id,
+                str(legacy_row["client_id"]) if legacy_row["client_id"] else None,
+                str(legacy_row["name"] or "未命名任务组模板"),
+                str(legacy_row["goal"] or ""),
+                to_json(steps),
+                legacy_module_id,
+                str(legacy_row["created_at"] or timestamp),
+                timestamp,
+            ),
+        )
+
+
 def _default_list_id(state: AppState, organization_id: str) -> str | None:
     row = state.db.fetchone(
         "SELECT id FROM task_lists WHERE organization_id = ? AND is_default = 1 ORDER BY sort_order ASC LIMIT 1",
@@ -10031,6 +10174,113 @@ def create_app() -> FastAPI:
                 (next_record.defaultListId, current_user.organizationId),
             )
         return _get_task_settings(state, current_user)
+
+    @app.get("/api/v1/task-group-templates")
+    def list_task_group_templates(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, list[TaskGroupTemplateRecord]]:
+        _migrate_legacy_task_group_templates(state, current_user.organizationId)
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM task_group_templates
+            WHERE organization_id = ?
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            (current_user.organizationId,),
+        )
+        return {"templates": [_task_group_template_record(row) for row in rows]}
+
+    @app.post("/api/v1/task-group-templates", response_model=TaskGroupTemplateRecord)
+    def create_task_group_template(
+        payload: TaskGroupTemplatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskGroupTemplateRecord:
+        _migrate_legacy_task_group_templates(state, current_user.organizationId)
+        steps = _normalize_task_group_template_steps([item.model_dump() for item in payload.steps])
+        if not steps:
+            raise HTTPException(status_code=400, detail="至少需要保留一条模板步骤")
+        timestamp = now_iso()
+        template_id = new_id("tgtpl")
+        state.db.execute(
+            """
+            INSERT INTO task_group_templates(
+                id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at
+            ) VALUES(?, ?, 'organization', ?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (
+                template_id,
+                current_user.organizationId,
+                str(payload.workObjectId or "").strip() or None,
+                payload.name.strip(),
+                str(payload.scenarioDesc or "").strip(),
+                to_json(steps),
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone(
+            "SELECT * FROM task_group_templates WHERE id = ? AND organization_id = ?",
+            (template_id, current_user.organizationId),
+        )
+        assert row is not None
+        return _task_group_template_record(row)
+
+    @app.patch("/api/v1/task-group-templates/{template_id}", response_model=TaskGroupTemplateRecord)
+    def update_task_group_template(
+        template_id: str,
+        payload: TaskGroupTemplatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskGroupTemplateRecord:
+        row = state.db.fetchone(
+            "SELECT * FROM task_group_templates WHERE id = ? AND organization_id = ?",
+            (template_id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="任务组模板不存在")
+        steps = _normalize_task_group_template_steps([item.model_dump() for item in payload.steps])
+        if not steps:
+            raise HTTPException(status_code=400, detail="至少需要保留一条模板步骤")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE task_group_templates
+            SET work_object_id = ?, name = ?, scenario_desc = ?, steps_json = ?, updated_at = ?
+            WHERE id = ? AND organization_id = ?
+            """,
+            (
+                str(payload.workObjectId or "").strip() or None,
+                payload.name.strip(),
+                str(payload.scenarioDesc or "").strip(),
+                to_json(steps),
+                timestamp,
+                template_id,
+                current_user.organizationId,
+            ),
+        )
+        updated = state.db.fetchone(
+            "SELECT * FROM task_group_templates WHERE id = ? AND organization_id = ?",
+            (template_id, current_user.organizationId),
+        )
+        assert updated is not None
+        return _task_group_template_record(updated)
+
+    @app.delete("/api/v1/task-group-templates/{template_id}")
+    def delete_task_group_template(
+        template_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, bool]:
+        row = state.db.fetchone(
+            "SELECT id FROM task_group_templates WHERE id = ? AND organization_id = ?",
+            (template_id, current_user.organizationId),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="任务组模板不存在")
+        state.db.execute(
+            "DELETE FROM task_group_templates WHERE id = ? AND organization_id = ?",
+            (template_id, current_user.organizationId),
+        )
+        return {"deleted": True}
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def get_task_lists(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskListLibraryResponse:

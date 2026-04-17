@@ -1095,6 +1095,76 @@ class ProjectStructureResponse(BaseModel):
     flows: list[ProjectFlowRecord] = Field(default_factory=list)
 
 
+class TaskGroupTemplateStepAttachment(BaseModel):
+    name: str
+    size: int | None = None
+
+
+class TaskGroupTemplateStep(BaseModel):
+    title: str
+    description: str = ""
+    daysAfterPrevious: int = 0
+    durationDays: float = 1.0
+    priority: Priority = "normal"
+    ownerId: str | None = None
+    ownerName: str | None = None
+    collaboratorIds: list[str] = Field(default_factory=list)
+    collaboratorNames: list[str] = Field(default_factory=list)
+    attachments: list[TaskGroupTemplateStepAttachment] = Field(default_factory=list)
+
+
+class TaskGroupTemplateRecord(BaseModel):
+    id: str
+    name: str
+    scenarioDesc: str = ""
+    scope: Literal["local", "organization"] = "local"
+    workObjectId: str | None = None
+    clientId: str | None = None
+    legacyModuleId: str | None = None
+    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class ApplyTaskGroupTemplateEventLineDraft(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
+    primaryWorkObjectId: str | None = None
+    primaryClientId: str | None = None
+    ownerId: str | None = None
+    participantIds: list[str] = Field(default_factory=list)
+
+
+class TaskGroupTemplateApplyStepOverride(BaseModel):
+    stepIndex: int = Field(ge=0)
+    title: str | None = None
+    description: str | None = None
+    ownerId: str | None = None
+    ownerName: str | None = None
+    collaboratorIds: list[str] | None = None
+    collaboratorNames: list[str] | None = None
+    priority: Priority | None = None
+    durationDays: float | None = Field(default=None, ge=0.5)
+    daysAfterPrevious: int | None = Field(default=None, ge=0)
+
+
+class ApplyTaskGroupTemplatePayload(BaseModel):
+    startDateTime: str
+    listId: str = Field(min_length=1)
+    workObjectId: str | None = None
+    clientId: str | None = None
+    eventLineMode: Literal["none", "existing", "create"] = "none"
+    eventLineId: str | None = None
+    eventLineDraft: ApplyTaskGroupTemplateEventLineDraft | None = None
+    stepOverrides: list[TaskGroupTemplateApplyStepOverride] = Field(default_factory=list)
+
+
+class ApplyTaskGroupTemplateResult(BaseModel):
+    createdTaskIds: list[str] = Field(default_factory=list)
+    createdEventLineId: str | None = None
+    createdCount: int = 0
+
+
 class ProjectModuleDetailRecord(ProjectModuleRecord):
     relatedTaskIds: list[str] = Field(default_factory=list)
     relatedTaskTitles: list[str] = Field(default_factory=list)
@@ -1414,6 +1484,15 @@ class ProjectModulePayload(BaseModel):
     deliverables: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     templateTasksJson: str | None = None
+
+
+class TaskGroupTemplatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    scenarioDesc: str = ""
+    scope: Literal["local", "organization"] | None = None
+    workObjectId: str | None = None
+    clientId: str | None = None
+    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
 
 
 class ProjectFlowPayload(BaseModel):

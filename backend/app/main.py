@@ -268,7 +268,12 @@ from app.models import (
     SupportRequestCreatePayload,
     SupportRequestRecord,
     SupportRequestResolvePayload,
+    ApplyTaskGroupTemplatePayload,
+    ApplyTaskGroupTemplateResult,
     TaskTagLibraryResponse,
+    TaskGroupTemplatePayload,
+    TaskGroupTemplateRecord,
+    TaskGroupTemplateStep,
     TaskTagMutationPayload,
     TaskTagRecord,
     TaskUpdatePayload,
@@ -4703,6 +4708,254 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def build_project_structure(client_id: str) -> ProjectStructureResponse:
         return ProjectStructureResponse(modules=list_project_modules(client_id), flows=list_project_flows(client_id))
+
+    def _normalize_task_group_template_steps(raw_steps: object) -> list[TaskGroupTemplateStep]:
+        if not isinstance(raw_steps, list):
+            return []
+        normalized: list[TaskGroupTemplateStep] = []
+        for index, item in enumerate(raw_steps):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            description = str(item.get("description") or "").strip()
+            raw_days_after = item.get("daysAfterPrevious", item.get("relativeDays", 0))
+            try:
+                days_after_previous = max(0, int(raw_days_after or 0))
+            except (TypeError, ValueError):
+                days_after_previous = 0
+            raw_duration_days = item.get("durationDays")
+            if raw_duration_days is None:
+                raw_duration_minutes = item.get("durationMinutes")
+                try:
+                    duration_days = max(0.5, round((float(raw_duration_minutes or 1440) / 1440.0) * 2) / 2)
+                except (TypeError, ValueError):
+                    duration_days = 1.0
+            else:
+                try:
+                    duration_days = max(0.5, round(float(raw_duration_days) * 2) / 2)
+                except (TypeError, ValueError):
+                    duration_days = 1.0
+            collaborator_names: list[str] = []
+            raw_collaborator_names = item.get("collaboratorNames")
+            if isinstance(raw_collaborator_names, list):
+                collaborator_names = [
+                    str(name).strip()
+                    for name in raw_collaborator_names
+                    if str(name).strip()
+                ]
+            collaborator_ids: list[str] = []
+            raw_collaborator_ids = item.get("collaboratorIds")
+            if isinstance(raw_collaborator_ids, list):
+                collaborator_ids = [
+                    str(identifier).strip()
+                    for identifier in raw_collaborator_ids
+                    if str(identifier).strip()
+                ]
+            attachments: list[dict[str, object]] = []
+            raw_attachments = item.get("attachments")
+            if isinstance(raw_attachments, list):
+                for attachment in raw_attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    name = str(attachment.get("name") or "").strip()
+                    if not name:
+                        continue
+                    entry: dict[str, object] = {"name": name}
+                    size = attachment.get("size")
+                    try:
+                        if size is not None:
+                            entry["size"] = int(size)
+                    except (TypeError, ValueError):
+                        pass
+                    attachments.append(entry)
+            normalized.append(
+                TaskGroupTemplateStep(
+                    title=title,
+                    description=description,
+                    daysAfterPrevious=days_after_previous,
+                    durationDays=duration_days,
+                    priority="high" if str(item.get("priority") or "").strip().lower() == "high" else "normal",
+                    ownerId=str(item.get("ownerId") or "").strip() or None,
+                    ownerName=str(item.get("ownerName") or "").strip() or None,
+                    collaboratorIds=collaborator_ids,
+                    collaboratorNames=collaborator_names,
+                    attachments=attachments,
+                )
+            )
+        return normalized
+
+    def _task_group_template_record(row) -> TaskGroupTemplateRecord:
+        steps = _normalize_task_group_template_steps(from_json(row["steps_json"], []))
+        scope = str(row["scope"] or ("organization" if str(row["organization_id"] or "").strip() else "local"))
+        work_object_id = str(row["work_object_id"]) if row["work_object_id"] else None
+        legacy_module_id = str(row["legacy_module_id"]) if row["legacy_module_id"] else None
+        return TaskGroupTemplateRecord(
+            id=str(row["id"]),
+            name=str(row["name"] or ""),
+            scenarioDesc=str(row["scenario_desc"] or ""),
+            scope="organization" if scope == "organization" else "local",
+            workObjectId=work_object_id,
+            clientId=work_object_id,
+            legacyModuleId=legacy_module_id,
+            steps=steps,
+            createdAt=str(row["created_at"] or now_iso()),
+            updatedAt=str(row["updated_at"] or row["created_at"] or now_iso()),
+        )
+
+    def _local_task_group_template_row(template_id: str):
+        return state.db.fetchone("SELECT * FROM task_group_templates WHERE id = ?", (template_id,))
+
+    def _list_visible_task_group_template_rows() -> list[sqlite3.Row]:
+        organization_id, _ = _current_local_scope()
+        if organization_id:
+            return state.db.fetchall(
+                """
+                SELECT *
+                FROM task_group_templates
+                WHERE COALESCE(organization_id, '') IN ('', ?)
+                ORDER BY CASE scope WHEN 'organization' THEN 0 ELSE 1 END,
+                         updated_at DESC,
+                         created_at DESC
+                """,
+                (organization_id,),
+            )
+        return state.db.fetchall(
+            """
+            SELECT *
+            FROM task_group_templates
+            WHERE COALESCE(organization_id, '') = ''
+            ORDER BY updated_at DESC, created_at DESC
+            """
+        )
+
+    def _local_task_group_template_payload(row) -> dict[str, object]:
+        record = _task_group_template_record(row)
+        return {
+            "id": record.id,
+            "name": record.name,
+            "scenarioDesc": record.scenarioDesc,
+            "scope": record.scope,
+            "workObjectId": record.workObjectId,
+            "clientId": record.clientId,
+            "legacyModuleId": record.legacyModuleId,
+            "steps": [step.model_dump() for step in record.steps],
+            "createdAt": record.createdAt,
+            "updatedAt": record.updatedAt,
+        }
+
+    def _migrate_legacy_task_group_templates() -> None:
+        organization_id, _ = _current_local_scope()
+        scope = "organization" if organization_id else "local"
+        legacy_rows = state.db.fetchall(
+            """
+            SELECT id, client_id, name, goal, template_tasks_json, created_at, updated_at
+            FROM project_modules
+            WHERE template_tasks_json IS NOT NULL AND TRIM(template_tasks_json) != ''
+            ORDER BY updated_at DESC, created_at DESC
+            """
+        )
+        for legacy_row in legacy_rows:
+            legacy_module_id = str(legacy_row["id"])
+            existing = state.db.fetchone(
+                "SELECT id FROM task_group_templates WHERE legacy_module_id = ?",
+                (legacy_module_id,),
+            )
+            if existing:
+                continue
+            parsed = from_json(legacy_row["template_tasks_json"], {})
+            raw_steps = parsed.get("tasks") if isinstance(parsed, dict) else []
+            steps = _normalize_task_group_template_steps(raw_steps)
+            if not steps:
+                continue
+            timestamp = str(legacy_row["updated_at"] or legacy_row["created_at"] or now_iso())
+            template_id = new_id("tgtpl")
+            state.db.execute(
+                """
+                INSERT INTO task_group_templates(
+                    id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at,
+                    sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', '', '')
+                """,
+                (
+                    template_id,
+                    organization_id,
+                    scope,
+                    str(legacy_row["client_id"]) if legacy_row["client_id"] else None,
+                    str(legacy_row["name"] or "未命名任务组模板"),
+                    str(legacy_row["goal"] or ""),
+                    to_json([step.model_dump() for step in steps]),
+                    legacy_module_id,
+                    str(legacy_row["created_at"] or timestamp),
+                    timestamp,
+                    "synced" if organization_id else "local",
+                ),
+            )
+
+    def _match_org_user_id_by_name(owner_name: str | None, organization_id: str) -> tuple[str | None, str]:
+        normalized_name = str(owner_name or "").strip()
+        if not normalized_name:
+            return None, ""
+        if not organization_id:
+            return None, ""
+        try:
+            row = state.db.fetchone(
+                """
+                SELECT id, full_name
+                FROM employee_accounts
+                WHERE organization_id = ? AND LOWER(TRIM(full_name)) = LOWER(TRIM(?))
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (organization_id, normalized_name),
+            )
+        except sqlite3.OperationalError:
+            row = None
+        if not row:
+            try:
+                payload = cloud_request("GET", f"/api/v1/employees/mention-candidates?q={quote(normalized_name)}")
+                if isinstance(payload, list):
+                    for item in payload:
+                        if not isinstance(item, dict):
+                            continue
+                        full_name = str(item.get("fullName") or "").strip()
+                        if full_name.lower() == normalized_name.lower():
+                            user_id = str(item.get("id") or "").strip()
+                            if user_id:
+                                return user_id, full_name or normalized_name
+            except Exception:
+                pass
+            return None, ""
+        return str(row["id"]), str(row["full_name"] or normalized_name)
+
+    def _match_org_user_ids_by_names(collaborator_names: list[str] | None, organization_id: str) -> tuple[list[str], list[str]]:
+        matched_ids: list[str] = []
+        matched_names: list[str] = []
+        seen_ids: set[str] = set()
+        seen_names: set[str] = set()
+        for raw_name in collaborator_names or []:
+            user_id, matched_name = _match_org_user_id_by_name(raw_name, organization_id)
+            final_name = matched_name or str(raw_name or "").strip()
+            if user_id and user_id not in seen_ids:
+                seen_ids.add(user_id)
+                matched_ids.append(user_id)
+            if final_name and final_name not in seen_names:
+                seen_names.add(final_name)
+                matched_names.append(final_name)
+        return matched_ids, matched_names
+
+    def _normalize_template_anchor_datetime(value: str) -> datetime:
+        raw = value.strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="请选择首任务开始时间")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            raw = f"{raw}T09:00"
+        normalized = raw.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="首任务开始时间格式无效") from exc
 
     def get_project_module_detail(client_id: str, module_id: str) -> ProjectModuleDetailRecord:
         module_row = state.db.fetchone(
@@ -15549,6 +15802,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         "task_tag": "task_tags",
         "task": "tasks",
         "event_line": "event_lines",
+        "task_group_template": "task_group_templates",
         "weekly_review": "weekly_reviews",
     }
 
@@ -15747,6 +16001,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _local_review_row(review_id: str):
         return state.db.fetchone("SELECT * FROM weekly_reviews WHERE id = ?", (review_id,))
 
+    def _local_task_group_template_row_for_sync(template_id: str):
+        return state.db.fetchone("SELECT * FROM task_group_templates WHERE id = ?", (template_id,))
+
     def _local_task_list_payload(row) -> dict[str, object]:
         return {
             "id": str(row["id"]),
@@ -15863,6 +16120,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "personalGrowthNote": str(row["personal_growth_note"] or ""),
             "personalPrivateNote": "",
         }
+
+    def _upsert_local_task_group_template_from_cloud(payload: dict[str, object], organization_id: str) -> None:
+        timestamp = now_iso()
+        steps = _normalize_task_group_template_steps(payload.get("steps"))
+        remote_id = str(payload.get("id") or "").strip()
+        if not remote_id:
+            return
+        scope = str(payload.get("scope") or "organization")
+        state.db.execute(
+            """
+            INSERT INTO task_group_templates(
+                id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                scope = excluded.scope,
+                work_object_id = excluded.work_object_id,
+                name = excluded.name,
+                scenario_desc = excluded.scenario_desc,
+                steps_json = excluded.steps_json,
+                legacy_module_id = excluded.legacy_module_id,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                remote_id,
+                organization_id if scope == "organization" else "",
+                "organization" if scope == "organization" else "local",
+                str(payload.get("workObjectId") or payload.get("clientId") or "").strip() or None,
+                str(payload.get("name") or ""),
+                str(payload.get("scenarioDesc") or ""),
+                to_json([step.model_dump() for step in steps]),
+                str(payload.get("legacyModuleId") or "").strip() or None,
+                str(payload.get("createdAt") or timestamp),
+                str(payload.get("updatedAt") or timestamp),
+                remote_id,
+                to_json(payload),
+                timestamp,
+                str(payload.get("updatedAt") or timestamp),
+            ),
+        )
+
+    def _process_outbox_task_group_template(
+        outbox_row,
+        remote_templates_by_id: dict[str, dict[str, object]],
+        organization_id: str,
+    ) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        action = str(outbox_row["action"])
+        local_row = _local_task_group_template_row_for_sync(entity_id)
+        remote_payload = remote_templates_by_id.get(entity_id)
+        if action == "delete":
+            if remote_payload:
+                cloud_request("DELETE", f"/api/v1/task-group-templates/{entity_id}")
+            _clear_sync_action("task_group_template", entity_id)
+            return
+        if local_row is None:
+            _clear_sync_action("task_group_template", entity_id)
+            return
+        payload = _local_task_group_template_payload(local_row)
+        if _sync_remote_version_changed(local_row, str(remote_payload.get("updatedAt") or "")) and _row_has_pending_local_change(local_row):
+            _record_sync_conflict(
+                "task_group_template",
+                entity_id,
+                cloud_id=str(remote_payload.get("id") or entity_id) if remote_payload else entity_id,
+                local_version=str(local_row["updated_at"] or ""),
+                cloud_version=str(remote_payload.get("updatedAt") or "") if remote_payload else "",
+                local_payload=payload,
+                cloud_payload=remote_payload or {},
+                detail="这条任务组模板在本地和云端都被修改了，请手工决定保留哪一版。",
+            )
+            return
+        response = cloud_request(
+            "PATCH" if remote_payload else "POST",
+            f"/api/v1/task-group-templates/{entity_id}" if remote_payload else "/api/v1/task-group-templates",
+            json_body=payload,
+        )
+        if isinstance(response, dict):
+            _upsert_local_task_group_template_from_cloud(response, organization_id)
+        _clear_sync_action("task_group_template", entity_id)
 
     def _upsert_local_task_list_from_cloud(payload: dict[str, object], organization_id: str) -> None:
         timestamp = now_iso()
@@ -16518,17 +16863,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         tags_payload = cloud_request("GET", "/api/v1/task-tags")
         tasks_payload = cloud_request("GET", "/api/v1/tasks")
         event_lines_payload = cloud_request("GET", "/api/v1/event-lines")
+        task_group_templates_payload = cloud_request("GET", "/api/v1/task-group-templates")
         remote_reviews_by_week = _fetch_remote_review_payloads()
 
         remote_lists = lists_payload.get("lists", []) if isinstance(lists_payload, dict) and isinstance(lists_payload.get("lists"), list) else []
         remote_tags = tags_payload.get("tags", []) if isinstance(tags_payload, dict) and isinstance(tags_payload.get("tags"), list) else []
         remote_tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) and isinstance(tasks_payload.get("tasks"), list) else []
         remote_event_lines = event_lines_payload if isinstance(event_lines_payload, list) else []
+        remote_task_group_templates = task_group_templates_payload.get("templates", []) if isinstance(task_group_templates_payload, dict) and isinstance(task_group_templates_payload.get("templates"), list) else []
 
         remote_lists_by_id = {str(item.get("id")): item for item in remote_lists if isinstance(item, dict) and str(item.get("id") or "").strip()}
         remote_tags_by_id = {str(item.get("id")): item for item in remote_tags if isinstance(item, dict) and str(item.get("id") or "").strip()}
         remote_tasks_by_id = {str(item.get("id")): item for item in remote_tasks if isinstance(item, dict) and str(item.get("id") or "").strip()}
         remote_event_lines_by_id = {str(item.get("id")): item for item in remote_event_lines if isinstance(item, dict) and str(item.get("id") or "").strip()}
+        remote_task_group_templates_by_id = {str(item.get("id")): item for item in remote_task_group_templates if isinstance(item, dict) and str(item.get("id") or "").strip()}
 
         outbox_rows = state.db.fetchall(
             "SELECT * FROM sync_outbox ORDER BY queued_at ASC, updated_at ASC"
@@ -16546,6 +16894,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     _process_outbox_task_tag(outbox_row, remote_tags_by_id, organization_id)
                 elif entity_type == "weekly_review":
                     _process_outbox_weekly_review(outbox_row, remote_reviews_by_week, organization_id, user_id)
+                elif entity_type == "task_group_template":
+                    _process_outbox_task_group_template(outbox_row, remote_task_group_templates_by_id, organization_id)
             except HTTPException as exc:
                 state.db.execute(
                     """
@@ -16568,11 +16918,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         tags_payload = cloud_request("GET", "/api/v1/task-tags")
         tasks_payload = cloud_request("GET", "/api/v1/tasks")
         event_lines_payload = cloud_request("GET", "/api/v1/event-lines")
+        task_group_templates_payload = cloud_request("GET", "/api/v1/task-group-templates")
         remote_reviews_by_week = _fetch_remote_review_payloads()
         remote_lists = lists_payload.get("lists", []) if isinstance(lists_payload, dict) and isinstance(lists_payload.get("lists"), list) else []
         remote_tags = tags_payload.get("tags", []) if isinstance(tags_payload, dict) and isinstance(tags_payload.get("tags"), list) else []
         remote_tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) and isinstance(tasks_payload.get("tasks"), list) else []
         remote_event_lines = event_lines_payload if isinstance(event_lines_payload, list) else []
+        remote_task_group_templates = task_group_templates_payload.get("templates", []) if isinstance(task_group_templates_payload, dict) and isinstance(task_group_templates_payload.get("templates"), list) else []
 
         for item in remote_lists:
             if isinstance(item, dict):
@@ -16602,6 +16954,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             else:
                 _upsert_local_event_line_from_cloud(item, organization_id, None)
+        for item in remote_task_group_templates:
+            if not isinstance(item, dict):
+                continue
+            local_row = _local_task_group_template_row_for_sync(str(item.get("id")))
+            if local_row and _row_has_pending_local_change(local_row) and _sync_remote_version_changed(local_row, str(item.get("updatedAt") or "")):
+                continue
+            _upsert_local_task_group_template_from_cloud(item, organization_id)
         for review_payload in remote_reviews_by_week.values():
             if isinstance(review_payload, dict):
                 _upsert_local_review_from_cloud(review_payload, organization_id, user_id)
@@ -16657,11 +17016,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 lists_payload = cloud_request("GET", "/api/v1/task-lists")
                 tags_payload = cloud_request("GET", "/api/v1/task-tags")
                 tasks_payload = cloud_request("GET", "/api/v1/tasks")
+                task_group_templates_payload = cloud_request("GET", "/api/v1/task-group-templates")
             except HTTPException:
                 return False
             remote_lists = lists_payload.get("lists", []) if isinstance(lists_payload, dict) and isinstance(lists_payload.get("lists"), list) else []
             remote_tags = tags_payload.get("tags", []) if isinstance(tags_payload, dict) and isinstance(tags_payload.get("tags"), list) else []
             remote_tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) and isinstance(tasks_payload.get("tasks"), list) else []
+            remote_task_group_templates = task_group_templates_payload.get("templates", []) if isinstance(task_group_templates_payload, dict) and isinstance(task_group_templates_payload.get("templates"), list) else []
             for item in remote_lists:
                 if isinstance(item, dict):
                     _upsert_local_task_list_from_cloud(item, organization_id)
@@ -16671,6 +17032,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for item in remote_tasks:
                 if isinstance(item, dict):
                     _upsert_local_task_from_cloud(item, organization_id)
+            for item in remote_task_group_templates:
+                if isinstance(item, dict):
+                    _upsert_local_task_group_template_from_cloud(item, organization_id)
             try:
                 remote_reviews_by_week = _fetch_remote_review_payloads()
             except HTTPException:
@@ -22109,6 +22473,221 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 except HTTPException:
                     pass
         return TaskBoardResponse(tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)), lists=task_lists(), tags=task_tags())
+
+    @app.get("/api/v1/task-group-templates")
+    def list_task_group_templates() -> dict[str, list[TaskGroupTemplateRecord]]:
+        _migrate_legacy_task_group_templates()
+        if has_active_cloud_session():
+            if _has_local_cloud_sync_snapshot():
+                _schedule_local_cloud_sync()
+            else:
+                _try_bootstrap_local_cloud_snapshot()
+        return {
+            "templates": [_task_group_template_record(row) for row in _list_visible_task_group_template_rows()],
+        }
+
+    @app.post("/api/v1/task-group-templates", response_model=TaskGroupTemplateRecord)
+    def create_task_group_template(payload: TaskGroupTemplatePayload) -> TaskGroupTemplateRecord:
+        _migrate_legacy_task_group_templates()
+        session_user = get_cached_session_user()
+        organization_id = session_user.organizationId if session_user else ""
+        scope = "organization" if organization_id else "local"
+        timestamp = now_iso()
+        template_id = new_id("tgtpl")
+        steps = _normalize_task_group_template_steps([item.model_dump() for item in payload.steps])
+        if not steps:
+            raise HTTPException(status_code=400, detail="至少需要保留一条模板步骤")
+        work_object_id = (payload.workObjectId or "").strip() or None
+        state.db.execute(
+            """
+            INSERT INTO task_group_templates(
+                id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at,
+                sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, '', '', '', ?, '')
+            """,
+            (
+                template_id,
+                organization_id if scope == "organization" else "",
+                scope,
+                work_object_id,
+                payload.name.strip(),
+                str(payload.scenarioDesc or "").strip(),
+                to_json([step.model_dump() for step in steps]),
+                timestamp,
+                timestamp,
+                "queued" if scope == "organization" else "local",
+                "create" if scope == "organization" else "",
+            ),
+        )
+        created_row = _local_task_group_template_row(template_id)
+        assert created_row is not None
+        if scope == "organization":
+            _queue_sync_action("task_group_template", template_id, "create")
+            _schedule_local_cloud_sync(force=True)
+        return _task_group_template_record(created_row)
+
+    @app.patch("/api/v1/task-group-templates/{template_id}", response_model=TaskGroupTemplateRecord)
+    def update_task_group_template(template_id: str, payload: TaskGroupTemplatePayload) -> TaskGroupTemplateRecord:
+        _migrate_legacy_task_group_templates()
+        row = _local_task_group_template_row(template_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="任务组模板不存在")
+        steps = _normalize_task_group_template_steps([item.model_dump() for item in payload.steps])
+        if not steps:
+            raise HTTPException(status_code=400, detail="至少需要保留一条模板步骤")
+        scope = str(row["scope"] or "local")
+        organization_id = str(row["organization_id"] or "")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE task_group_templates
+            SET work_object_id = ?, name = ?, scenario_desc = ?, steps_json = ?, updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = ''
+            WHERE id = ?
+            """,
+            (
+                (payload.workObjectId or "").strip() or None,
+                payload.name.strip(),
+                str(payload.scenarioDesc or "").strip(),
+                to_json([step.model_dump() for step in steps]),
+                timestamp,
+                "queued" if scope == "organization" else str(row["sync_status"] or "local"),
+                "update" if scope == "organization" else str(row["pending_sync_action"] or ""),
+                template_id,
+            ),
+        )
+        updated_row = _local_task_group_template_row(template_id)
+        assert updated_row is not None
+        if scope == "organization" and organization_id:
+            _queue_sync_action("task_group_template", template_id, "update")
+            _schedule_local_cloud_sync(force=True)
+        return _task_group_template_record(updated_row)
+
+    @app.delete("/api/v1/task-group-templates/{template_id}")
+    def delete_task_group_template(template_id: str) -> dict[str, bool]:
+        row = _local_task_group_template_row(template_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="任务组模板不存在")
+        scope = str(row["scope"] or "local")
+        organization_id = str(row["organization_id"] or "")
+        state.db.execute("DELETE FROM task_group_templates WHERE id = ?", (template_id,))
+        if scope == "organization" and organization_id:
+            _queue_sync_action("task_group_template", template_id, "delete", {"id": template_id})
+            _schedule_local_cloud_sync(force=True)
+        return {"deleted": True}
+
+    @app.post("/api/v1/task-group-templates/{template_id}/apply", response_model=ApplyTaskGroupTemplateResult)
+    def apply_task_group_template(template_id: str, payload: ApplyTaskGroupTemplatePayload) -> ApplyTaskGroupTemplateResult:
+        try:
+            _migrate_legacy_task_group_templates()
+            template_row = _local_task_group_template_row(template_id)
+            if not template_row:
+                raise HTTPException(status_code=404, detail="任务组模板不存在")
+            template_record = _task_group_template_record(template_row)
+            if not template_record.steps:
+                raise HTTPException(status_code=400, detail="当前模板还没有可用步骤")
+            override_map = {item.stepIndex: item for item in payload.stepOverrides}
+            anchor_dt = _normalize_template_anchor_datetime(payload.startDateTime)
+            session_user = get_cached_session_user()
+            organization_id = session_user.organizationId if session_user else ""
+            work_object_id = (payload.workObjectId or payload.clientId or template_record.workObjectId or "").strip() or None
+            created_event_line_id: str | None = None
+            if payload.eventLineMode == "existing":
+                created_event_line_id = (payload.eventLineId or "").strip() or None
+                if not created_event_line_id:
+                    raise HTTPException(status_code=400, detail="请选择要关联的事件线")
+            elif payload.eventLineMode == "create":
+                if payload.eventLineDraft is None or not payload.eventLineDraft.name.strip():
+                    raise HTTPException(status_code=400, detail="请填写新建事件线名称")
+                participant_ids = list(dict.fromkeys([item for item in payload.eventLineDraft.participantIds if item]))
+                event_line_record = create_event_line(
+                    EventLineCreatePayload(
+                        name=payload.eventLineDraft.name.strip(),
+                        kind=payload.eventLineDraft.kind,
+                        ownerId=payload.eventLineDraft.ownerId,
+                        participantIds=participant_ids,
+                        primaryWorkObjectId=payload.eventLineDraft.primaryWorkObjectId or payload.eventLineDraft.primaryClientId or work_object_id,
+                        primaryClientId=payload.eventLineDraft.primaryClientId or payload.eventLineDraft.primaryWorkObjectId or work_object_id,
+                    )
+                )
+                created_event_line_id = event_line_record.id
+
+            created_task_ids: list[str] = []
+            previous_due_dt = anchor_dt
+            for index, step in enumerate(template_record.steps):
+                override = override_map.get(index)
+                resolved_title = (override.title if override and override.title is not None else step.title).strip()
+                if not resolved_title:
+                    continue
+                resolved_description = (override.description if override and override.description is not None else step.description).strip()
+                resolved_priority = override.priority if override and override.priority is not None else step.priority
+                resolved_duration_days = override.durationDays if override and override.durationDays is not None else step.durationDays
+                resolved_days_after_previous = override.daysAfterPrevious if override and override.daysAfterPrevious is not None else step.daysAfterPrevious
+                resolved_owner_id = (override.ownerId if override and override.ownerId is not None else step.ownerId or "").strip()
+                resolved_owner_name = (override.ownerName if override and override.ownerName is not None else step.ownerName or "").strip()
+                resolved_collaborator_ids = override.collaboratorIds if override and override.collaboratorIds is not None else step.collaboratorIds
+                resolved_collaborator_names = override.collaboratorNames if override and override.collaboratorNames is not None else step.collaboratorNames
+                if index == 0:
+                    start_dt = anchor_dt
+                else:
+                    start_dt = previous_due_dt + timedelta(days=max(0, int(resolved_days_after_previous or 0)))
+                duration_minutes = max(15, int(round(float(resolved_duration_days or 1) * 1440)))
+                due_dt = start_dt + timedelta(minutes=duration_minutes)
+                owner_id = resolved_owner_id or None
+                matched_owner_name = resolved_owner_name
+                if not owner_id and resolved_owner_name:
+                    owner_id, matched_owner_name = _match_org_user_id_by_name(resolved_owner_name, organization_id)
+                collaborator_ids = [str(item).strip() for item in (resolved_collaborator_ids or []) if str(item).strip()]
+                if collaborator_ids:
+                    collaborator_ids = list(dict.fromkeys(collaborator_ids))
+                else:
+                    collaborator_ids, _matched_collaborator_names = _match_org_user_ids_by_names(resolved_collaborator_names, organization_id)
+                task_payload = TaskPayload(
+                    title=resolved_title,
+                    desc=resolved_description,
+                    priority=resolved_priority,
+                    listId=payload.listId,
+                    startDate=start_dt.isoformat(timespec="minutes"),
+                    dueDate=due_dt.isoformat(timespec="minutes"),
+                    durationMinutes=duration_minutes,
+                    scopeMode="COLLAB_SHARED",
+                    clientId=work_object_id,
+                    eventLineId=created_event_line_id,
+                    ddl=due_dt.date().isoformat(),
+                    ownerId=owner_id,
+                    ownerName=matched_owner_name,
+                    collaboratorIds=collaborator_ids,
+                    tagIds=[],
+                    tags=[],
+                    sourceType="task_group_template",
+                    sourceId=template_record.id,
+                )
+                created_task = create_task(task_payload)
+                collaborator_name_map = {
+                    collaborator_ids[position]: resolved_collaborator_names[position]
+                    for position in range(min(len(collaborator_ids), len(resolved_collaborator_names or [])))
+                    if collaborator_ids[position]
+                }
+                if owner_id and matched_owner_name:
+                    collaborator_name_map.setdefault(owner_id, matched_owner_name)
+                for collaborator_id, full_name in collaborator_name_map.items():
+                    if not full_name:
+                        continue
+                    state.db.execute(
+                        "UPDATE task_collaborators SET full_name = ? WHERE task_id = ? AND user_id = ?",
+                        (full_name, created_task.id, collaborator_id),
+                    )
+                created_task_ids.append(created_task.id)
+                previous_due_dt = due_dt
+            return ApplyTaskGroupTemplateResult(
+                createdTaskIds=created_task_ids,
+                createdEventLineId=created_event_line_id,
+                createdCount=len(created_task_ids),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"应用任务组模板失败：{exc}") from exc
 
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def list_task_lists() -> TaskListLibraryResponse:

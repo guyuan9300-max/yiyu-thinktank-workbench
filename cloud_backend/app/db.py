@@ -176,6 +176,25 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_clients_org_updated
                     ON clients(organization_id, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS task_group_templates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'organization',
+                    work_object_id TEXT,
+                    name TEXT NOT NULL,
+                    scenario_desc TEXT NOT NULL DEFAULT '',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    legacy_module_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_org_updated
+                    ON task_group_templates(organization_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
+                    ON task_group_templates(legacy_module_id);
+
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,
@@ -712,6 +731,41 @@ class Database:
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_group_templates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'organization',
+                    work_object_id TEXT,
+                    name TEXT NOT NULL,
+                    scenario_desc TEXT NOT NULL DEFAULT '',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    legacy_module_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
+                )
+                """
+            )
+            self._ensure_column("task_group_templates", "scope", "TEXT NOT NULL DEFAULT 'organization'")
+            self._ensure_column("task_group_templates", "work_object_id", "TEXT")
+            self._ensure_column("task_group_templates", "scenario_desc", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_group_templates", "steps_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("task_group_templates", "legacy_module_id", "TEXT")
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_org_updated
+                ON task_group_templates(organization_id, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
+                ON task_group_templates(legacy_module_id)
+                """
+            )
             self._ensure_column("org_profiles", "work_object_mode", "TEXT NOT NULL DEFAULT 'project'")
             self._ensure_column("org_profiles", "annual_strategy_year", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "annual_strategy_text", "TEXT NOT NULL DEFAULT ''")

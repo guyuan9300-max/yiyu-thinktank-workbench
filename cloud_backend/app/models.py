@@ -691,6 +691,46 @@ class TaskBoardResponse(BaseModel):
     commonTags: list[str]
 
 
+class TaskGroupTemplateStepAttachment(BaseModel):
+    name: str
+    size: int | None = None
+
+
+class TaskGroupTemplateStep(BaseModel):
+    title: str
+    description: str = ""
+    daysAfterPrevious: int = 0
+    durationDays: float = 1.0
+    priority: Priority = "normal"
+    ownerId: str | None = None
+    ownerName: str | None = None
+    collaboratorIds: list[str] = Field(default_factory=list)
+    collaboratorNames: list[str] = Field(default_factory=list)
+    attachments: list[TaskGroupTemplateStepAttachment] = Field(default_factory=list)
+
+
+class TaskGroupTemplateRecord(BaseModel):
+    id: str
+    name: str
+    scenarioDesc: str = ""
+    scope: Literal["local", "organization"] = "organization"
+    workObjectId: str | None = None
+    clientId: str | None = None
+    legacyModuleId: str | None = None
+    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class TaskGroupTemplatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    scenarioDesc: str = ""
+    scope: Literal["local", "organization"] | None = None
+    workObjectId: str | None = None
+    clientId: str | None = None
+    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
+
+
 class TaskCreatePayload(BaseModel):
     id: str | None = None
     title: str

@@ -124,6 +124,9 @@ import type {
   TaskContextPreview,
   TaskSmartBrief,
   TaskList,
+  TaskGroupTemplateEventLineMode,
+  TaskGroupTemplatePayload,
+  TaskGroupTemplateRecord,
   TaskMutationPayload,
   TaskProjectContext,
   TaskSettings,
@@ -167,10 +170,12 @@ import {
   createMeeting,
   createSupportRequest,
   createTask,
+  createTaskGroupTemplate,
   createTaskList,
   createTaskTag,
   createWeeklyReview,
   deleteTask,
+  deleteTaskGroupTemplate,
   deleteTaskList,
   deleteTaskTag,
   deleteEventLine,
@@ -218,6 +223,7 @@ import {
   getSystemAdminSettings,
   getTaskTagSuggestions,
   getTaskBoard,
+  listTaskGroupTemplates,
   getTaskLists,
   getWorkObjectTerminology,
   getTaskContextPreview,
@@ -283,6 +289,7 @@ import {
   upsertFundraisingWritingNorm,
   updateAgentWeeklyPlan,
   updateTaskList,
+  updateTaskGroupTemplate,
   updateTaskSettings,
   updateTaskTag,
   updateTask,
@@ -294,6 +301,7 @@ import {
   exportAnswer,
   startClientTemplateFill,
   getClientTemplateFillRun,
+  applyTaskGroupTemplate,
   backfillClientWorkspaceImports,
   pullSelectedFromMain,
   selectCollabRepo,
@@ -421,6 +429,29 @@ type TaskEventLineCreateDraftState = {
   recentDecision: string;
 };
 
+type TaskGroupTemplateStepOverrideDraft = {
+  stepIndex: number;
+  title: string;
+  ownerId: string;
+  ownerName: string;
+  collaboratorIds: string[];
+  collaboratorNames: string[];
+  priority: 'low' | 'normal' | 'high';
+  durationDays: number;
+  daysAfterPrevious: number;
+};
+
+type TaskGroupTemplateApplyDraftState = {
+  startDate: string;
+  startTime: string;
+  listId: string;
+  workObjectId: string;
+  eventLineMode: TaskGroupTemplateEventLineMode;
+  eventLineId: string;
+  eventLineName: string;
+  stepOverrides: TaskGroupTemplateStepOverrideDraft[];
+};
+
 type CollabDialogState =
   | {
       mode: 'push';
@@ -457,6 +488,32 @@ function buildTaskEventLineCreateDraft(): TaskEventLineCreateDraftState {
     currentBlocker: '',
     nextStep: '',
     recentDecision: '',
+  };
+}
+
+function buildTaskGroupTemplateApplyDraft(
+  template: TaskGroupTemplateRecord,
+  defaults?: Partial<TaskGroupTemplateApplyDraftState>,
+): TaskGroupTemplateApplyDraftState {
+  return {
+    startDate: defaults?.startDate || formatDateOnlyValue(new Date()),
+    startTime: defaults?.startTime || TASK_DEFAULT_DUE_TIME,
+    listId: defaults?.listId || '',
+    workObjectId: defaults?.workObjectId ?? (template.workObjectId || template.clientId || ''),
+    eventLineMode: defaults?.eventLineMode || 'none',
+    eventLineId: defaults?.eventLineId || '',
+    eventLineName: defaults?.eventLineName || `${template.name}执行线`,
+    stepOverrides: template.steps.map((step, index) => ({
+      stepIndex: index,
+      title: step.title || '',
+      ownerId: step.ownerId || '',
+      ownerName: step.ownerName || '',
+      collaboratorIds: step.collaboratorIds || [],
+      collaboratorNames: step.collaboratorNames || [],
+      priority: step.priority,
+      durationDays: step.durationDays,
+      daysAfterPrevious: step.daysAfterPrevious,
+    })),
   };
 }
 
@@ -5780,11 +5837,19 @@ export default function App() {
     const [isSavingEventLineEditor, setIsSavingEventLineEditor] = useState(false);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
+    const [taskGroupTemplates, setTaskGroupTemplates] = useState<TaskGroupTemplateRecord[]>([]);
+    const [isTaskGroupTemplatesLoading, setIsTaskGroupTemplatesLoading] = useState(false);
     const [isTemplateEditorOpen, setIsTemplateEditorOpen] = useState(false);
     const [templateEditorMode, setTemplateEditorMode] = useState<'create' | 'edit'>('create');
     const [templateEditorInitialData, setTemplateEditorInitialData] = useState<TemplateData | null>(null);
+    const [taskGroupTemplateEditingWorkObjectId, setTaskGroupTemplateEditingWorkObjectId] = useState('');
     const [isTemplateListOpen, setIsTemplateListOpen] = useState(false);
     const [templateListEditingModuleId, setTemplateListEditingModuleId] = useState<string | null>(null);
+    const [taskGroupTemplateApplyTarget, setTaskGroupTemplateApplyTarget] = useState<TaskGroupTemplateRecord | null>(null);
+    const [taskGroupTemplateApplyDraft, setTaskGroupTemplateApplyDraft] = useState<TaskGroupTemplateApplyDraftState | null>(null);
+    const [taskGroupTemplateCollaboratorMenuStep, setTaskGroupTemplateCollaboratorMenuStep] = useState<number | null>(null);
+    const [isApplyingTaskGroupTemplate, setIsApplyingTaskGroupTemplate] = useState(false);
+    const [recentlyCreatedTaskIds, setRecentlyCreatedTaskIds] = useState<string[]>([]);
     const [taskContextPreview, setTaskContextPreview] = useState<TaskContextPreview | null>(null);
     const [isTaskContextPreviewLoading, setIsTaskContextPreviewLoading] = useState(false);
     const [taskSmartBriefs, setTaskSmartBriefs] = useState<Record<string, TaskSmartBrief>>({});
@@ -6351,6 +6416,21 @@ export default function App() {
         .then((items) => setEventLineMemberOptions(items))
         .catch(() => setEventLineMemberOptions([]));
     }, [isCloudSession]);
+
+    const loadTaskGroupTemplateBlock = useCallback(async () => {
+      setIsTaskGroupTemplatesLoading(true);
+      try {
+        const response = await listTaskGroupTemplates();
+        setTaskGroupTemplates(response.templates || []);
+        return response.templates || [];
+      } finally {
+        setIsTaskGroupTemplatesLoading(false);
+      }
+    }, []);
+
+    useEffect(() => {
+      void loadTaskGroupTemplateBlock().catch(() => setTaskGroupTemplates([]));
+    }, [authState.sessionMode, currentSessionUser?.id, currentSessionUser?.organizationId, loadTaskGroupTemplateBlock]);
 
     const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
     const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '组织任务';
@@ -7467,49 +7547,228 @@ export default function App() {
     };
 
     const handleCreateProjectModuleFromTask = () => {
-      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
-        flash('error', '个人日程不进入任务模板。');
-        return;
-      }
       setTemplateEditorMode('create');
       setTemplateEditorInitialData(null);
+      setTemplateListEditingModuleId(null);
+      setTaskGroupTemplateEditingWorkObjectId('');
       setIsTemplateEditorOpen(true);
     };
 
     const handleSaveTemplate = async (data: TemplateData) => {
       setIsTemplateEditorOpen(false);
-      const targetClientId = editingTask.clientId || organizationClientId || clients[0]?.id;
-      console.warn('[template-save] editingTask.clientId=', JSON.stringify(editingTask.clientId), 'organizationClientId=', organizationClientId, 'targetClientId=', targetClientId);
-      if (!targetClientId) {
-        flash('error', `没有可用的${terminology.pluralLabel}，无法保存模板。`);
-        return;
-      }
       setIsCreatingTaskProjectModule(true);
       try {
-        console.warn('[template-save] calling createProjectModule', targetClientId, data.name);
-        const created = await createProjectModule(targetClientId, {
+        const payload: TaskGroupTemplatePayload = {
           name: data.name,
-          goal: data.scenarioDesc || undefined,
-          templateTasksJson: JSON.stringify({ tasks: data.tasks, options: data.options }),
-        });
-        const structure = await getClientProjectStructure(targetClientId);
-        setProjectStructureCache((prev) => ({ ...prev, [targetClientId]: structure }));
-        setEditingTask((prev) => ({
-          ...prev,
-          projectModuleId: created.id,
-          projectModuleTouched: true,
-          projectModuleReason: `已新建模板：${created.name}（${data.tasks.length} 条预设任务）。`,
-          projectFlowId: '',
-          projectFlowTouched: false,
-          projectFlowReason: '',
-        }));
-        flash('success', `任务模板"${data.name}"已创建`);
+          scenarioDesc: data.scenarioDesc || '',
+          workObjectId: taskGroupTemplateEditingWorkObjectId || null,
+          steps: data.tasks.map((task) => ({
+            title: task.title,
+            description: task.description,
+            daysAfterPrevious: task.daysAfterPrevious,
+            durationDays: task.durationDays,
+            priority: task.priority,
+            ownerId: task.ownerId || undefined,
+            ownerName: task.ownerName || undefined,
+            collaboratorIds: task.collaboratorIds || [],
+            collaboratorNames: task.collaboratorNames || [],
+            attachments: task.attachments || [],
+          })),
+        };
+        const saved = templateListEditingModuleId
+          ? await updateTaskGroupTemplate(templateListEditingModuleId, payload)
+          : await createTaskGroupTemplate(payload);
+        await loadTaskGroupTemplateBlock();
+        setTemplateListEditingModuleId(saved.id);
+        setTaskGroupTemplateEditingWorkObjectId(saved.workObjectId || saved.clientId || '');
+        flash('success', `${templateListEditingModuleId ? '已更新' : '已创建'}任务组模板“${saved.name}”`);
       } catch (error) {
-        console.error('[template-save] FAILED', error);
-        flash('error', error instanceof Error ? error.message : '任务模板创建失败');
+        flash('error', error instanceof Error ? error.message : '任务组模板保存失败');
       } finally {
         setIsCreatingTaskProjectModule(false);
       }
+    };
+
+    const handleEditTaskGroupTemplate = useCallback((template: TaskGroupTemplateRecord) => {
+      setTemplateEditorMode('edit');
+      setTemplateListEditingModuleId(template.id);
+      setTaskGroupTemplateEditingWorkObjectId(template.workObjectId || template.clientId || '');
+      setTemplateEditorInitialData({
+        name: template.name,
+        scenarioDesc: template.scenarioDesc || '',
+        tasks: template.steps.map((step, index) => ({
+          id: `${template.id}-${index}`,
+          title: step.title,
+          description: step.description,
+          daysAfterPrevious: step.daysAfterPrevious,
+          durationDays: step.durationDays,
+          priority: step.priority,
+          ownerId: step.ownerId || '',
+          ownerName: step.ownerName,
+          collaboratorIds: step.collaboratorIds || [],
+          collaboratorNames: step.collaboratorNames || [],
+          attachments: step.attachments || [],
+        })),
+        options: { autoCreateEventLine: false, aiFillEmpty: false },
+      });
+      setIsTemplateEditorOpen(true);
+    }, []);
+
+    const handleDeleteTaskGroupTemplateRecord = useCallback(async (template: TaskGroupTemplateRecord) => {
+      if (!window.confirm(`确认删除任务组模板“${template.name}”？`)) return;
+      try {
+        await deleteTaskGroupTemplate(template.id);
+        await loadTaskGroupTemplateBlock();
+        flash('success', `已删除任务组模板“${template.name}”`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '任务组模板删除失败');
+      }
+    }, []);
+
+    const openTaskGroupTemplateApply = useCallback(async (template: TaskGroupTemplateRecord) => {
+      let defaultListId = resolveDefaultListId('org');
+      if (!defaultListId) {
+        try {
+          const ensuredList = await ensureTaskViewOrgTaskList();
+          defaultListId = ensuredList?.id || '';
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '任务清单初始化失败');
+          return;
+        }
+      }
+      setIsTemplateListOpen(false);
+      setTaskGroupTemplateCollaboratorMenuStep(null);
+      setTaskGroupTemplateApplyTarget(template);
+      setTaskGroupTemplateApplyDraft(
+        buildTaskGroupTemplateApplyDraft(template, {
+          listId: defaultListId,
+          workObjectId: template.workObjectId || template.clientId || editingTask.clientId || organizationClientId || '',
+        }),
+      );
+    }, [editingTask.clientId, ensureTaskViewOrgTaskList, flash, organizationClientId, resolveDefaultListId]);
+
+    const handleApplyTaskGroupTemplateSubmit = useCallback(async () => {
+      if (!taskGroupTemplateApplyTarget || !taskGroupTemplateApplyDraft) return;
+      let resolvedListId = taskGroupTemplateApplyDraft.listId;
+      if (!resolvedListId) {
+        try {
+          const ensuredList = await ensureTaskViewOrgTaskList();
+          resolvedListId = ensuredList?.id || '';
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '任务清单初始化失败');
+          return;
+        }
+      }
+      if (!resolvedListId) {
+        flash('error', '请先选择任务清单。');
+        return;
+      }
+      if (taskGroupTemplateApplyDraft.eventLineMode === 'existing' && !taskGroupTemplateApplyDraft.eventLineId) {
+        flash('error', '请选择要关联的事件线。');
+        return;
+      }
+      if (taskGroupTemplateApplyDraft.eventLineMode === 'create' && !taskGroupTemplateApplyDraft.eventLineName.trim()) {
+        flash('error', '请先填写事件线名称。');
+        return;
+      }
+      setIsApplyingTaskGroupTemplate(true);
+      try {
+        const result = await applyTaskGroupTemplate(taskGroupTemplateApplyTarget.id, {
+          startDateTime: combineTaskDateTime(
+            taskGroupTemplateApplyDraft.startDate,
+            taskGroupTemplateApplyDraft.startTime || TASK_DEFAULT_DUE_TIME,
+            { includeTime: true },
+          ),
+          listId: resolvedListId,
+          workObjectId: taskGroupTemplateApplyDraft.workObjectId || null,
+          eventLineMode: taskGroupTemplateApplyDraft.eventLineMode,
+          eventLineId: taskGroupTemplateApplyDraft.eventLineMode === 'existing'
+            ? taskGroupTemplateApplyDraft.eventLineId
+            : null,
+          eventLineDraft: taskGroupTemplateApplyDraft.eventLineMode === 'create'
+            ? {
+                name: taskGroupTemplateApplyDraft.eventLineName.trim(),
+                kind: taskGroupTemplateApplyDraft.workObjectId ? 'project_line' : 'custom',
+                primaryWorkObjectId: taskGroupTemplateApplyDraft.workObjectId || null,
+                ownerId: currentSessionUser?.id || null,
+              }
+            : null,
+          stepOverrides: taskGroupTemplateApplyDraft.stepOverrides.map((step) => ({
+            stepIndex: step.stepIndex,
+            title: step.title,
+            ownerId: step.ownerId || undefined,
+            ownerName: step.ownerName || undefined,
+            collaboratorIds: step.collaboratorIds || [],
+            collaboratorNames: step.collaboratorNames || [],
+            priority: step.priority,
+            durationDays: step.durationDays,
+            daysAfterPrevious: step.daysAfterPrevious,
+          })),
+        });
+        setTaskGroupTemplateApplyTarget(null);
+        setTaskGroupTemplateApplyDraft(null);
+        setTaskGroupTemplateCollaboratorMenuStep(null);
+        setIsTemplateListOpen(false);
+        setActiveTab('tasks');
+        setTaskViewMode('list');
+        setRecentlyCreatedTaskIds(result.createdTaskIds || []);
+        window.setTimeout(() => {
+          setRecentlyCreatedTaskIds((current) =>
+            current.filter((taskId) => !(result.createdTaskIds || []).includes(taskId)),
+          );
+        }, 6000);
+        await loadTaskBlock();
+        if (result.createdEventLineId) {
+          await loadEventLines();
+        }
+        flash('success', `已创建 ${result.createdCount} 条任务`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '应用任务组模板失败');
+      } finally {
+        setIsApplyingTaskGroupTemplate(false);
+      }
+    }, [currentSessionUser?.id, ensureTaskViewOrgTaskList, flash, loadEventLines, taskGroupTemplateApplyDraft, taskGroupTemplateApplyTarget]);
+
+    const toggleTaskGroupTemplateApplyCollaborator = (stepIndex: number, candidate: MentionCandidate) => {
+      setTaskGroupTemplateApplyDraft((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          stepOverrides: prev.stepOverrides.map((item) => {
+            if (item.stepIndex !== stepIndex) return item;
+            const existingIds = item.collaboratorIds || [];
+            const existing = item.collaboratorNames || [];
+            const selected = existingIds.includes(candidate.id);
+            return {
+              ...item,
+              collaboratorIds: selected
+                ? existingIds.filter((id) => id !== candidate.id)
+                : [...existingIds, candidate.id],
+              collaboratorNames: selected
+                ? existing.filter((name) => name !== candidate.fullName)
+                : [...existing, candidate.fullName],
+            };
+          }),
+        };
+      });
+    };
+
+    const removeTaskGroupTemplateApplyCollaborator = (stepIndex: number, identifier: string) => {
+      setTaskGroupTemplateApplyDraft((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          stepOverrides: prev.stepOverrides.map((item) => (
+            item.stepIndex === stepIndex
+              ? {
+                ...item,
+                collaboratorIds: (item.collaboratorIds || []).filter((id) => id !== identifier),
+                collaboratorNames: (item.collaboratorNames || []).filter((_, index) => (item.collaboratorIds || [])[index] !== identifier),
+              }
+              : item
+          )),
+        };
+      });
     };
 
     const handleCreateProjectFlowFromTask = async () => {
@@ -9026,17 +9285,32 @@ export default function App() {
               ))}
             </div>
           </div>
-          <Button
-            primary
-            className="px-6 h-[48px] rounded-2xl"
-            disabled={isTaskInteractionBlocked}
-            onClick={() => {
-              requestCreateTaskEditor();
-            }}
-          >
-            <Plus size={16} />
-            新建任务
-          </Button>
+          <div className="flex items-center gap-3">
+            {taskViewMode === 'list' && (
+              <Button
+                className="px-5 h-[48px] rounded-2xl"
+                disabled={isTaskInteractionBlocked}
+                onClick={() => {
+                  void loadTaskGroupTemplateBlock();
+                  setIsTemplateListOpen(true);
+                }}
+              >
+                <LayoutTemplate size={16} />
+                从模板创建
+              </Button>
+            )}
+            <Button
+              primary
+              className="px-6 h-[48px] rounded-2xl"
+              disabled={isTaskInteractionBlocked}
+              onClick={() => {
+                requestCreateTaskEditor();
+              }}
+            >
+              <Plus size={16} />
+              新建任务
+            </Button>
+          </div>
         </div>
 
         <div ref={taskViewportRef} className={`flex-1 min-w-0 overflow-y-auto scrollbar-hide ${isTaskInteractionBlocked ? 'pointer-events-none' : ''}`}>
@@ -9242,6 +9516,7 @@ export default function App() {
                   const listColor = getListColor(task.listId);
                   const taskPriorityMeta = taskPriorityUi(task.priority);
                   const isExpanded = expandedTaskIds.includes(task.id);
+                  const isRecentlyCreatedFromTemplate = recentlyCreatedTaskIds.includes(task.id);
                   const isStatusUpdating = updatingTaskStatusIds.includes(task.id);
                   const canToggleCompletion = taskCanToggleCompletion(task, currentSessionUser?.id);
                   const taskTimelineLabel = formatTaskTimelineLabel(task);
@@ -9257,7 +9532,9 @@ export default function App() {
                     <div
                       key={task.id}
                       className={`bg-white border rounded-2xl p-4 shadow-sm transition-all duration-300 group flex items-start gap-3.5 ${
-                        isExpanded
+                        isRecentlyCreatedFromTemplate
+                          ? 'border-[#5B7BFE] shadow-[0_12px_32px_rgba(91,123,254,0.16)] bg-[#F8FAFF]'
+                          : isExpanded
                           ? 'border-blue-100 shadow-md'
                           : 'border-gray-100 hover:shadow-md hover:border-blue-100'
                       } cursor-pointer`}
@@ -10570,103 +10847,91 @@ export default function App() {
 
         {isTemplateListOpen && (
           <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setIsTemplateListOpen(false)}>
-            <div className="bg-white w-full max-w-xl rounded-2xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-              {/* Header */}
+            <div className="bg-white w-full max-w-5xl rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-                <h2 className="text-lg font-semibold text-gray-800 tracking-wide">共享模板</h2>
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-800 tracking-wide">任务组模板</h2>
+                  <p className="mt-1 text-[12px] text-gray-400">从一个模板批量生成一组普通任务，可选关联已有事件线或新建事件线。</p>
+                </div>
                 <button onClick={() => setIsTemplateListOpen(false)} className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors">
                   <X size={20} />
                 </button>
               </div>
-              {/* Body */}
-              <div className="p-6 overflow-y-auto max-h-[60vh] space-y-4 bg-gray-50/50">
-                {taskProjectModuleOptions.length === 0 && (
-                  <p className="text-center text-sm text-gray-400 py-12">当前{terminology.singularLabel}下还没有共享模板</p>
+              <div className="p-6 overflow-y-auto space-y-6 bg-gray-50/50">
+                {isTaskGroupTemplatesLoading ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-400">
+                    正在载入任务组模板…
+                  </div>
+                ) : (
+                  <>
+                    {[
+                      { key: 'organization', title: '组织共享模板', description: '当前已加入组织时，这里的模板会默认给整个组织复用。' },
+                      { key: 'local', title: '本机模板', description: '未入组织或本机模式下保存的模板，只在当前设备可见。' },
+                    ].map((group) => {
+                      const templates = taskGroupTemplates
+                        .filter((item) => item.scope === group.key)
+                        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+                      if (templates.length === 0) return null;
+                      return (
+                        <div key={group.key} className="space-y-3">
+                          <div>
+                            <p className="text-[14px] font-bold text-slate-800">{group.title}</p>
+                            <p className="mt-1 text-[12px] text-slate-400">{group.description}</p>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {templates.map((template) => (
+                              <div key={template.id} className="rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <p className="truncate text-[15px] font-bold text-slate-800">{template.name}</p>
+                                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-600">
+                                        {template.steps.length} 步
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 text-[12px] leading-6 text-slate-500 line-clamp-2">
+                                      {template.scenarioDesc || '未填写适用场景说明。'}
+                                    </p>
+                                  </div>
+                                  <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">
+                                    {template.scope === 'organization' ? '组织' : '本机'}
+                                  </span>
+                                </div>
+                                <div className="mt-4 flex flex-wrap items-center gap-2">
+                                  <Button primary onClick={() => openTaskGroupTemplateApply(template)}>
+                                    从模板创建
+                                  </Button>
+                                  <Button onClick={() => handleEditTaskGroupTemplate(template)}>
+                                    编辑
+                                  </Button>
+                                  <Button onClick={() => void handleDeleteTaskGroupTemplateRecord(template)}>
+                                    删除
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {taskGroupTemplates.length === 0 && (
+                      <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-10 text-center">
+                        <p className="text-[14px] font-bold text-slate-700">还没有任务组模板</p>
+                        <p className="mt-2 text-[12px] leading-6 text-slate-400">
+                          先建一个常用任务组模板，后面就能按模板一口气创建整组任务。
+                        </p>
+                      </div>
+                    )}
+                  </>
                 )}
-                {taskProjectModuleOptions.map((mod) => {
-                  const parsed = mod.templateTasksJson ? (() => { try { return JSON.parse(mod.templateTasksJson); } catch { return null; } })() : null;
-                  const stepCount = (parsed?.tasks || []).length;
-                  const isSelected = editingTask.projectModuleId === mod.id;
-                  return (
-                    <div
-                      key={mod.id}
-                      onClick={() => {
-                        setEditingTask((prev) => ({ ...prev, projectModuleId: mod.id, projectModuleTouched: true, projectModuleReason: `已选择共享模板：${mod.name}`, projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
-                        setIsTemplateListOpen(false);
-                      }}
-                      className={`group relative bg-white p-5 rounded-xl border transition-all duration-200 cursor-pointer ${isSelected ? 'border-blue-500 shadow-[0_0_0_1px_rgba(59,130,246,1)]' : 'border-gray-200 hover:border-blue-300 hover:shadow-md'}`}
-                    >
-                      {isSelected && (
-                        <div className="absolute top-4 right-4 text-blue-500">
-                          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-                        </div>
-                      )}
-                      <div className="pr-10">
-                        <div className="flex items-center gap-3 mb-2">
-                          <h3 className={`text-base font-medium ${isSelected ? 'text-blue-700' : 'text-gray-800'}`}>{mod.name}</h3>
-                          <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-xs rounded font-medium border border-blue-100/50">
-                            {stepCount > 0 ? `${stepCount} 个步骤` : '暂无步骤'}
-                          </span>
-                        </div>
-                        <p className="text-sm text-gray-500 leading-relaxed line-clamp-2" title={mod.goal || ''}>{mod.goal || '暂无描述'}</p>
-                      </div>
-                      {/* Hover actions */}
-                      <div className="absolute bottom-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => {
-                            setTemplateEditorMode('edit');
-                            setTemplateListEditingModuleId(mod.id);
-                            setTemplateEditorInitialData({
-                              name: mod.name,
-                              scenarioDesc: mod.goal || '',
-                              tasks: parsed?.tasks || [],
-                              options: parsed?.options || { autoCreateEventLine: true, aiFillEmpty: false },
-                            });
-                            setIsTemplateListOpen(false);
-                            setIsTemplateEditorOpen(true);
-                          }}
-                          className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                          title="编辑"
-                        >
-                          <Pencil size={16} />
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (!window.confirm(`确认删除模板"${mod.name}"？`)) return;
-                            const clientId = editingTask.clientId || organizationClientId;
-                            if (!clientId) return;
-                            void (async () => {
-                              try {
-                                await deleteProjectModule(clientId, mod.id);
-                                const structure = await getClientProjectStructure(clientId);
-                                setProjectStructureCache((prev) => ({ ...prev, [clientId]: structure }));
-                                if (editingTask.projectModuleId === mod.id) {
-                                  setEditingTask((prev) => ({ ...prev, projectModuleId: '', projectModuleTouched: true, projectModuleReason: '', projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }));
-                                }
-                                flash('success', `模板"${mod.name}"已删除`);
-                              } catch (err) {
-                                flash('error', err instanceof Error ? err.message : '删除失败');
-                              }
-                            })();
-                          }}
-                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                          title="删除"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
               </div>
-              {/* Footer */}
               <div className="p-4 border-t border-gray-100 bg-white">
                 <button
-                  onClick={() => { setIsTemplateListOpen(false); void handleCreateProjectModuleFromTask(); }}
+                  onClick={() => void handleCreateProjectModuleFromTask()}
                   className="w-full py-2.5 flex items-center justify-center gap-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-medium transition-colors"
                 >
                   <Plus size={18} />
-                  <span>新建模板</span>
+                  <span>新建任务组模板</span>
                 </button>
               </div>
             </div>
@@ -10679,7 +10944,325 @@ export default function App() {
             initialData={templateEditorInitialData}
             onClose={() => setIsTemplateEditorOpen(false)}
             onSave={(data) => void handleSaveTemplate(data)}
+            memberOptions={eventLineMemberOptions}
           />
+        )}
+
+        {taskGroupTemplateApplyTarget && taskGroupTemplateApplyDraft && (
+          <div
+            className="fixed inset-0 z-[97] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+            onClick={() => {
+              if (isApplyingTaskGroupTemplate) return;
+              setTaskGroupTemplateCollaboratorMenuStep(null);
+              setTaskGroupTemplateApplyTarget(null);
+              setTaskGroupTemplateApplyDraft(null);
+            }}
+          >
+            <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[88vh]" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-800 tracking-wide">从模板创建任务</h2>
+                  <p className="mt-1 text-[12px] text-gray-400">模板：{taskGroupTemplateApplyTarget.name}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (isApplyingTaskGroupTemplate) return;
+                    setTaskGroupTemplateCollaboratorMenuStep(null);
+                    setTaskGroupTemplateApplyTarget(null);
+                    setTaskGroupTemplateApplyDraft(null);
+                  }}
+                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="overflow-y-auto p-6 space-y-6 bg-gray-50/50">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="text-[13px] font-bold text-slate-800">首任务开始时间</p>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <input
+                        type="date"
+                        value={taskGroupTemplateApplyDraft.startDate}
+                        onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, startDate: event.target.value } : prev)}
+                        className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                      />
+                      <input
+                        type="time"
+                        value={taskGroupTemplateApplyDraft.startTime}
+                        onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, startTime: event.target.value || TASK_DEFAULT_DUE_TIME } : prev)}
+                        className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                      />
+                    </div>
+                    <p className="mt-2 text-[11px] leading-5 text-slate-400">如果只选日期不改时间，这组任务会从当天 09:00 开始链式排期。</p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="text-[13px] font-bold text-slate-800">创建落点</p>
+                    <div className="mt-3 space-y-3">
+                      <label className="block">
+                        <span className="mb-1 block text-[12px] font-medium text-slate-500">任务清单</span>
+                        <select
+                          value={taskGroupTemplateApplyDraft.listId}
+                          onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, listId: event.target.value } : prev)}
+                          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                        >
+                          <option value="">请选择任务清单</option>
+                          {activeTaskLists.map((list) => (
+                            <option key={list.id} value={list.id}>
+                              {list.name}
+                            </option>
+                          ))}
+                        </select>
+                        {!taskGroupTemplateApplyDraft.listId && (
+                          <p className="mt-2 text-[11px] leading-5 text-slate-400">
+                            如果当前还没有组织任务清单，系统会在应用模板时自动补一条默认清单。
+                          </p>
+                        )}
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[12px] font-medium text-slate-500">关联{terminology.singularLabel}（事件线）</span>
+                        <select
+                          value={taskGroupTemplateApplyDraft.workObjectId}
+                          onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, workObjectId: event.target.value } : prev)}
+                          className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                        >
+                          <option value="">不关联{terminology.singularLabel}</option>
+                          {taskClientOptions.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-2 text-[11px] leading-5 text-slate-400">
+                          这里主要用于把本次任务组和事件线放进同一个{terminology.singularLabel}上下文里；如果还没有对应{terminology.singularLabel}，也可以先留空。
+                        </p>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[13px] font-bold text-slate-800">事件线衔接</p>
+                      <p className="mt-1 text-[11px] leading-5 text-slate-400">这一步是可选的。你可以只创建任务组，也可以顺手挂到已有事件线，或新建一条事件线。</p>
+                    </div>
+                    <select
+                      value={taskGroupTemplateApplyDraft.eventLineMode}
+                      onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? {
+                        ...prev,
+                        eventLineMode: event.target.value as TaskGroupTemplateEventLineMode,
+                        eventLineId: event.target.value === 'existing' ? prev.eventLineId : '',
+                      } : prev)}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                    >
+                      <option value="none">不关联事件线</option>
+                      <option value="existing">关联已有事件线</option>
+                      <option value="create">新建事件线</option>
+                    </select>
+                  </div>
+                  {taskGroupTemplateApplyDraft.eventLineMode === 'existing' && (
+                    <div className="mt-4">
+                      <select
+                        value={taskGroupTemplateApplyDraft.eventLineId}
+                        onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, eventLineId: event.target.value } : prev)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                      >
+                        <option value="">请选择已有事件线</option>
+                        {sortedEventLines
+                          .filter((line) => !taskGroupTemplateApplyDraft.workObjectId || (line.primaryClientId || '') === taskGroupTemplateApplyDraft.workObjectId)
+                          .map((line) => (
+                            <option key={line.id} value={line.id}>
+                              {formatTaskEventLineOptionLabel(line)}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+                  {taskGroupTemplateApplyDraft.eventLineMode === 'create' && (
+                    <div className="mt-4">
+                      <input
+                        type="text"
+                        value={taskGroupTemplateApplyDraft.eventLineName}
+                        onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, eventLineName: event.target.value } : prev)}
+                        placeholder="输入要新建的事件线名称"
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[13px] font-bold text-slate-800">逐条微调步骤</p>
+                      <p className="mt-1 text-[11px] leading-5 text-slate-400">这里调整的是本次应用结果，不会直接改掉原模板。</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">
+                      {taskGroupTemplateApplyDraft.stepOverrides.length} 步
+                    </span>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {taskGroupTemplateApplyDraft.stepOverrides.map((step, index) => (
+                      <div key={`${taskGroupTemplateApplyTarget.id}-${step.stepIndex}`} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
+                        <div className="flex items-center gap-3">
+                          <span className="text-[11px] font-bold text-slate-400">步骤 {index + 1}</span>
+                          <input
+                            type="text"
+                            value={step.title}
+                            onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? {
+                              ...prev,
+                              stepOverrides: prev.stepOverrides.map((item) => item.stepIndex === step.stepIndex ? { ...item, title: event.target.value } : item),
+                            } : prev)}
+                            className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                            placeholder="任务标题"
+                          />
+                        </div>
+                        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-medium text-slate-500">负责人</span>
+                            <select
+                              value={step.ownerId}
+                              onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? {
+                                ...prev,
+                                stepOverrides: prev.stepOverrides.map((item) => item.stepIndex === step.stepIndex
+                                  ? {
+                                    ...item,
+                                    ownerId: event.target.value,
+                                    ownerName: eventLineMemberOptions.find((candidate) => candidate.id === event.target.value)?.fullName || '',
+                                  }
+                                  : item),
+                              } : prev)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                            >
+                              <option value="">留空则待指定</option>
+                              {eventLineMemberOptions.map((item) => (
+                                <option key={`template-owner-${item.id}`} value={item.id}>
+                                  {item.fullName}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="block">
+                            <span className="mb-1 block text-[11px] font-medium text-slate-500">协作者</span>
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() => setTaskGroupTemplateCollaboratorMenuStep((current) => current === step.stepIndex ? null : step.stepIndex)}
+                                className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-sm outline-none transition ${
+                                  (step.collaboratorNames || []).length > 0
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'border-slate-200 bg-white text-slate-500 hover:border-emerald-300'
+                                }`}
+                              >
+                                <span className="truncate">
+                                  {(step.collaboratorNames || []).length > 0
+                                    ? `已选 ${(step.collaboratorNames || []).length} 人`
+                                    : '选择协作者'}
+                                </span>
+                                <ChevronDown size={14} />
+                              </button>
+                              {taskGroupTemplateCollaboratorMenuStep === step.stepIndex && (
+                                <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl">
+                                  {eventLineMemberOptions.map((item) => {
+                                    const selected = (step.collaboratorIds || []).includes(item.id);
+                                    return (
+                                      <button
+                                        key={`template-collab-${step.stepIndex}-${item.id}`}
+                                        type="button"
+                                        onClick={() => toggleTaskGroupTemplateApplyCollaborator(step.stepIndex, item)}
+                                        className={`flex w-full items-center justify-between px-3 py-2 text-left text-[12px] hover:bg-emerald-50 ${selected ? 'font-bold text-emerald-700' : 'text-slate-700'}`}
+                                      >
+                                        <span>{item.fullName}</span>
+                                        {selected ? <Check size={14} /> : null}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                            {(step.collaboratorNames || []).length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {(step.collaboratorNames || []).map((name, index) => (
+                                  <button
+                                    key={`template-collab-chip-${step.stepIndex}-${(step.collaboratorIds || [])[index] || name}`}
+                                    type="button"
+                                    onClick={() => removeTaskGroupTemplateApplyCollaborator(step.stepIndex, (step.collaboratorIds || [])[index] || name)}
+                                    className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 transition hover:bg-emerald-100"
+                                    title={`移除协作者 ${name}`}
+                                  >
+                                    <span>{name}</span>
+                                    <span>×</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-medium text-slate-500">优先级</span>
+                            <select
+                              value={step.priority}
+                              onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? {
+                                ...prev,
+                                stepOverrides: prev.stepOverrides.map((item) => item.stepIndex === step.stepIndex ? { ...item, priority: event.target.value as 'low' | 'normal' | 'high' } : item),
+                              } : prev)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                            >
+                              <option value="low">低</option>
+                              <option value="normal">普通</option>
+                              <option value="high">高</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-medium text-slate-500">上一步后几天开始</span>
+                            <input
+                              type="number"
+                              min="0"
+                              value={step.daysAfterPrevious}
+                              onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? {
+                                ...prev,
+                                stepOverrides: prev.stepOverrides.map((item) => item.stepIndex === step.stepIndex ? { ...item, daysAfterPrevious: Number(event.target.value) || 0 } : item),
+                              } : prev)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                            />
+                            <span className="mt-1 block text-[10px] text-slate-400">单位：天，默认以上一步结束时间为起点。</span>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-medium text-slate-500">耗时</span>
+                            <input
+                              type="number"
+                              min="0.5"
+                              step="0.5"
+                              value={step.durationDays}
+                              onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? {
+                                ...prev,
+                                stepOverrides: prev.stepOverrides.map((item) => item.stepIndex === step.stepIndex ? { ...item, durationDays: Number(event.target.value) || 0.5 } : item),
+                              } : prev)}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
+                            />
+                            <span className="mt-1 block text-[10px] text-slate-400">1 天按 24 小时算，1.5 天会排成 36 小时。</span>
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-gray-100 bg-white px-6 py-4">
+                <p className="text-[12px] leading-5 text-gray-400">负责人暂时留空也可以创建；待后续指定负责人时，再按现有规则触发提醒。</p>
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => {
+                    setTaskGroupTemplateCollaboratorMenuStep(null);
+                    setTaskGroupTemplateApplyTarget(null);
+                    setTaskGroupTemplateApplyDraft(null);
+                  }}>取消</Button>
+                  <Button primary onClick={() => void handleApplyTaskGroupTemplateSubmit()} disabled={isApplyingTaskGroupTemplate}>
+                    {isApplyingTaskGroupTemplate ? '正在创建…' : '应用模板'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {activeEventLine && isEventLineEditorOpen && (
@@ -11417,46 +12000,6 @@ export default function App() {
                       )}
                     </div>
                   </div>
-
-                  <div className="border-b border-gray-100 p-5">
-                    <div className="space-y-3">
-                      <TaskPropertyRow icon={<Layout size={16} />} label="共享模板">
-                        <div className="flex w-full items-center gap-2">
-                          <span className="flex-1 truncate text-sm text-gray-500">
-                            {editingTask.projectModuleId
-                              ? taskProjectModuleOptions.find((m) => m.id === editingTask.projectModuleId)?.name || '已选择共享模板'
-                              : '未选择共享模板'}
-                          </span>
-                          {editingTask.projectModuleId && !isEditingTaskPersonal && (
-                            <button
-                              type="button"
-                              onClick={() => setEditingTask((prev) => ({ ...prev, projectModuleId: '', projectModuleTouched: true, projectModuleReason: '', projectFlowId: '', projectFlowTouched: true, projectFlowReason: '' }))}
-                              title="取消选择"
-                              className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-                            >
-                              <X size={12} />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const clientId = editingTask.clientId || organizationClientId;
-                              if (clientId) {
-                                void ensureTaskProjectStructureLoaded(clientId);
-                              }
-                              setIsTemplateListOpen(true);
-                            }}
-                            disabled={isEditingTaskPersonal}
-                            title="选择或管理模板"
-                            className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-200 text-gray-500 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
-                          >
-                            <Plus size={13} />
-                          </button>
-                        </div>
-                      </TaskPropertyRow>
-                    </div>
-                  </div>
-
                 </div>
               </div>
 
