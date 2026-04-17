@@ -18,6 +18,8 @@ type ImportFeedback = {
 
 type ClientProjectSetupPageProps = {
   clientName: string;
+  workObjectLabel?: string;
+  workspaceLabel?: string;
   modules: ClientDnaModule[];
   projectModules: ProjectModule[];
   projectFlows: ProjectFlow[];
@@ -54,6 +56,8 @@ function formatModuleTime(value?: string | null) {
 
 export function ClientProjectSetupPage({
   clientName,
+  workObjectLabel = '项目',
+  workspaceLabel = '项目工作台',
   sourceDocumentCount,
   isKnowledgeBuilding,
   knowledgeStatus,
@@ -74,10 +78,10 @@ export function ClientProjectSetupPage({
       ? '正在建库与扫描'
       : '资料已入库';
   const scanStatusDescription = !hasSourceDocuments
-    ? '先把过去已有的 Word、PDF、Markdown、PPT、纪要与方案导进来，系统才会开始理解这个客户。'
+    ? `先把过去已有的 Word、PDF、Markdown、PPT、纪要与方案导进来，系统才会开始理解这个${workObjectLabel}。`
     : isKnowledgeBuilding
       ? '系统正在把原始资料转换为可引用的知识结构。你可以继续追加资料，不需要停下来等。'
-      : '原始资料已经进入知识库。你现在可以进入客户工作台继续问答，也可以继续补充资料。';
+      : `原始资料已经进入知识库。你现在可以进入${workspaceLabel}继续问答，也可以继续补充资料。`;
   const latestJobProcessed = latestKnowledgeJob?.processedItems || 0;
   const latestJobTotal = latestKnowledgeJob?.totalItems || 0;
   const hasVisibleProgress = isImportSubmitting || isTemplateFilling || isKnowledgeBuilding || latestJobTotal > 0;
@@ -102,13 +106,13 @@ export function ClientProjectSetupPage({
           ? '资料已准备完成'
           : '等待导入资料';
   const progressHint = isTemplateFilling
-    ? '系统会结合当前客户知识库自动填写模板，完成后直接打开生成文件。'
+    ? `系统会结合当前${workObjectLabel}知识库自动填写模板，完成后直接打开生成文件。`
     : isImportSubmitting
       ? '资料已接收，正在开始扫描、归档和建库。你可以继续停留在这里观察进度。'
       : isKnowledgeBuilding
         ? '后台正在持续处理资料，进度会自动刷新。你也可以继续追加资料。'
       : hasSourceDocuments
-        ? '已经可以进入客户工作台继续提问。'
+        ? `已经可以进入${workspaceLabel}继续提问。`
         : '导入任意一批已有资料后，这里会开始显示动态进度。';
   const shouldShowLiveProgress = hasVisibleProgress;
   const latestImportToneClasses = latestImportFeedback?.tone === 'error'
@@ -124,13 +128,13 @@ export function ClientProjectSetupPage({
           <div className="max-w-[760px]">
             <div className="inline-flex items-center gap-2 rounded-full bg-white/85 px-3 py-1 text-[11px] font-bold text-[#5B7BFE] shadow-sm">
               <Sparkles size={13} />
-              项目资料导入引导
+              {workObjectLabel}资料导入引导
             </div>
             <h3 className="mt-4 text-[24px] font-bold leading-tight text-gray-900">
               {clientName} 已创建成功，第一步先导入已有资料
             </h3>
             <p className="mt-3 max-w-[700px] text-[13px] leading-7 text-gray-600">
-              这里不再要求你先写四张 Markdown 资料卡。先把过去已有的 Word、PDF、Markdown、PPT、纪要和方案导进来，系统会自动分析、归档、建库，再把这些资料变成客户工作台、任务、会议和学习系统可共用的项目上下文。
+              这里不再要求你先写四张 Markdown 资料卡。先把过去已有的 Word、PDF、Markdown、PPT、纪要和方案导进来，系统会自动分析、归档、建库，再把这些资料变成{workspaceLabel}、任务、会议和学习系统可共用的{workObjectLabel}上下文。
             </p>
           </div>
           <div className="rounded-[24px] border border-white/80 bg-white/90 px-5 py-4 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
@@ -140,7 +144,7 @@ export function ClientProjectSetupPage({
               <span className="pb-1 text-[12px] font-semibold text-[#5B7BFE]">份资料</span>
             </div>
             <p className="mt-2 text-[12px] leading-6 text-gray-500">
-              {hasSourceDocuments ? '资料已经进入这位客户的知识库。' : '现在还没有导入原始资料。'}
+              {hasSourceDocuments ? `资料已经进入这个${workObjectLabel}的知识库。` : '现在还没有导入原始资料。'}
             </p>
           </div>
         </div>
@@ -180,7 +184,7 @@ export function ClientProjectSetupPage({
               支持 Word、PDF、Markdown、PPT、纪要、方案等原始资料，导入后会自动分析类型并归档。
             </div>
             <div className="rounded-2xl bg-[#F8FAFF] px-4 py-3 text-[12px] leading-6 text-gray-600">
-              系统会把资料加工成客户工作台可检索的知识结构，而不是先要求你手工补背景卡。
+              系统会把资料加工成{workspaceLabel}可检索的知识结构，而不是先要求你手工补背景卡。
             </div>
             <div className="rounded-2xl bg-[#F8FAFF] px-4 py-3 text-[12px] leading-6 text-gray-600">
               资料入库后，你可以直接进入工作台继续提问，后续再补 DNA 或人工修正都来得及。
@@ -291,13 +295,13 @@ export function ClientProjectSetupPage({
         {[
           {
             icon: ClipboardList,
-            title: '客户工作台',
+            title: workspaceLabel,
             copy: '资料入库后，问答会优先基于这些原始资料做正式分析，不再先要求手工补卡。',
           },
           {
             icon: CalendarClock,
             title: '会议与任务',
-            copy: '后续的会议纪要、任务理解和复盘会自动挂到这个客户的资料上下文里。',
+            copy: `后续的会议纪要、任务理解和复盘会自动挂到这个${workObjectLabel}的资料上下文里。`,
           },
           {
             icon: CheckCircle2,

@@ -36,7 +36,7 @@ function buildSummaryChips(
   const chips: string[] = [];
   if (categoryLabel) chips.push(categoryLabel);
   if (eventLineName) chips.push(`事件线 · ${eventLineName}`);
-  if (projectContext?.clientName) chips.push(`项目 · ${projectContext.clientName}`);
+  if (projectContext?.clientName) chips.push(`关联对象 · ${projectContext.clientName}`);
   if (eventLineStage) chips.push(`线索阶段 · ${eventLineStage}`);
   else if (projectContext?.stage) chips.push(`阶段 · ${projectContext.stage}`);
   if (projectContext?.projectModuleName) chips.push(`模块 · ${projectContext.projectModuleName}`);
@@ -248,7 +248,7 @@ function buildContextRisk(
     return `${anchor || '这条任务'}仍卡在确认链，推进速度受复核影响`;
   }
   if (hasSpecificScope && orgContext?.isCrossDepartment) return `${anchor || '这条任务'}需要跨部门同步，节奏容易受他方反馈影响`;
-  if (hasSpecificScope && projectContext?.infoCompleteness === 'low') return `${anchor || '这条任务'}的项目资料仍偏薄，判断深度和交付精度都受影响`;
+  if (hasSpecificScope && projectContext?.infoCompleteness === 'low') return `${anchor || '这条任务'}的关联资料仍偏薄，判断深度和交付精度都受影响`;
   if (projectContext?.riskSummary && hasSpecificScope) return prefixWithAnchor(anchor, projectContext.riskSummary);
   return '';
 }

@@ -39,6 +39,7 @@ type Props = {
   mode: 'create' | 'edit';
   draft: EventLineEditorDraft;
   detail?: EventLineDetail | null;
+  workObjectLabel?: string;
   projectOptions: EventLineProjectOption[];
   memberOptions: MentionCandidate[];
   canDelete: boolean;
@@ -55,7 +56,7 @@ type Props = {
 };
 
 const EVENT_LINE_KIND_OPTIONS: Array<{ value: EventLineKind; label: string }> = [
-  { value: 'project_line', label: '项目推进' },
+  { value: 'project_line', label: '主线推进' },
   { value: 'issue_line', label: '问题处理' },
   { value: 'coordination_line', label: '协同推进' },
   { value: 'case_line', label: '案例沉淀' },
@@ -116,6 +117,7 @@ export default function EventLineEditorModal({
   mode,
   draft,
   detail,
+  workObjectLabel = '工作对象',
   projectOptions,
   memberOptions,
   canDelete,
@@ -229,14 +231,14 @@ export default function EventLineEditorModal({
               {mode === 'create' ? '新建事件线' : '编辑事件线'}
             </p>
             <h2 className="mt-1 truncate text-[22px] font-bold text-gray-900">
-              {mode === 'create' ? '按项目创建新的推进主线' : draft.name || detail?.eventLine.name || '未命名事件线'}
+              {mode === 'create' ? `按${workObjectLabel}创建新的推进主线` : draft.name || detail?.eventLine.name || '未命名事件线'}
             </h2>
             {detail ? (
               <p className="mt-1 text-[12px] text-gray-500">
                 当前状态：{EVENT_LINE_STATUS_LABELS[detail.eventLine.status] || detail.eventLine.status}
               </p>
             ) : (
-              <p className="mt-1 text-[12px] text-gray-500">这里直接填写名称、类型、关联项目和主要负责人。</p>
+              <p className="mt-1 text-[12px] text-gray-500">这里直接填写名称、类型、关联{workObjectLabel}和主要负责人。</p>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -293,7 +295,7 @@ export default function EventLineEditorModal({
 
                 <label className="mt-4 block">
                   <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="block text-[12px] font-bold text-gray-500">关联项目</span>
+                    <span className="block text-[12px] font-bold text-gray-500">关联{workObjectLabel}</span>
                   </div>
                   <div className="relative" ref={projectDropdownRef}>
                     <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 transition focus-within:border-[#5B7BFE] focus-within:ring-2 focus-within:ring-[#5B7BFE]/10">
@@ -312,7 +314,7 @@ export default function EventLineEditorModal({
                             }
                           }
                         }}
-                        placeholder={projectOptions.length > 0 ? '输入项目名称搜索' : '输入项目名称后直接创建'}
+                        placeholder={projectOptions.length > 0 ? `输入${workObjectLabel}名称搜索` : `输入${workObjectLabel}名称后直接创建`}
                         className="w-full border-0 bg-transparent text-[14px] font-medium text-gray-800 outline-none"
                       />
                       {selectedProject ? (
@@ -324,7 +326,7 @@ export default function EventLineEditorModal({
                             setIsProjectMenuOpen(true);
                           }}
                           className="flex h-5 w-5 items-center justify-center rounded-full text-gray-400 transition hover:bg-slate-100 hover:text-gray-600"
-                          aria-label="清空已选项目"
+                          aria-label={`清空已选${workObjectLabel}`}
                         >
                           <X size={12} />
                         </button>
@@ -350,7 +352,7 @@ export default function EventLineEditorModal({
                             );
                           })}
                           {filteredProjects.length === 0 ? (
-                            <div className="px-3 py-2 text-xs text-gray-400">没有找到匹配项目</div>
+                            <div className="px-3 py-2 text-xs text-gray-400">没有找到匹配的{workObjectLabel}</div>
                           ) : null}
                         </div>
                         {onCreateProject && projectQuery.trim() && !filteredProjects.some((item) => item.label === projectQuery.trim()) ? (
@@ -361,14 +363,14 @@ export default function EventLineEditorModal({
                             className="mt-2 inline-flex items-center gap-1 rounded-full border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-1 text-[11px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF] disabled:cursor-wait disabled:opacity-60"
                           >
                             <Briefcase size={12} />
-                            {isProjectCreating ? `正在创建“${projectQuery.trim()}”` : `创建项目“${projectQuery.trim()}”`}
+                            {isProjectCreating ? `正在创建“${projectQuery.trim()}”` : `创建${workObjectLabel}“${projectQuery.trim()}”`}
                           </button>
                         ) : null}
                       </div>
                     ) : null}
                   </div>
                   <p className="mt-2 text-[12px] text-gray-400">
-                    输入项目名称可直接搜索；如果没有匹配项，可以直接用当前输入创建项目。
+                    输入{workObjectLabel}名称可直接搜索；如果没有匹配项，可以直接用当前输入创建{workObjectLabel}。
                   </p>
                 </label>
 

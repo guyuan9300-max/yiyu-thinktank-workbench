@@ -480,7 +480,7 @@ function entryTypeLabel(xpType: string) {
 
 function contextTabLabel(tab?: string | null) {
   if (tab === 'tasks') return '任务与日历';
-  if (tab === 'client_workspace') return '客户工作台';
+  if (tab === 'client_workspace') return '工作台';
   if (tab === 'strategic_accompaniment') return '战略陪伴';
   if (tab === 'growth_handbook' || tab === 'growth') return '成长手册';
   return '相关模块';

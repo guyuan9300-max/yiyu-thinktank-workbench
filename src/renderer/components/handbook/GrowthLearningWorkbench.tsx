@@ -193,7 +193,7 @@ const EMPTY_TASK: WorkbenchTask = {
   urgencyColor: 'text-slate-500 bg-slate-100',
   phase: '信息核对',
   risks: ['系统需要真实任务、事件线或成长推荐才能推导具体动作，请先创建一条业务对象。'],
-  nextAdvice: '先在任务与日历创建一条任务，或在客户工作台发布会议 / 行动项，任务学习页就会自动补全上下文。',
+  nextAdvice: '先在任务与日历创建一条任务，或在工作台发布会议 / 行动项，任务学习页就会自动补全上下文。',
   robotReady: false,
   robotReasons: ['需要先有真实业务对象和阶段信息，机器人才能判断是否适合接手标准动作。'],
   recommendationId: null,
@@ -638,7 +638,7 @@ function buildWorkbenchTaskFromTask(task: Task): WorkbenchTask {
       label: task.clientName,
       subtitle: task.projectContext?.stage || task.businessCategory || '项目工作台',
       tab: 'client_workspace',
-      statusLabel: '客户项目',
+      statusLabel: '关联对象',
     });
   }
   const projectModuleId = task.projectContext?.projectModuleId || task.projectModuleId;
@@ -744,7 +744,7 @@ function sourceKindLabel(sourceKind: string) {
     project_context: '项目背景',
     ai_supplement: 'AI 补位',
     task_material: '任务材料',
-    client_workspace: '客户工作台',
+    client_workspace: '工作台',
     event_line: '事件线',
     strategic_focus: '战略焦点',
   };
@@ -948,7 +948,7 @@ function buildLearningSummaryFallback(task: WorkbenchTask, sourceMode: GrowthWor
     return {
       headline: '学习导航等待真实任务接入',
       whyItMatters: '系统需要真实任务、项目上下文或成长信号才能给出负责任的学习判断。',
-      immediateMove: '前往任务与日历、客户工作台或战略陪伴创建一条真实对象，学习导航将自动激活。',
+      immediateMove: '前往任务与日历、工作台或战略陪伴创建一条真实对象，学习导航将自动激活。',
       generator: 'rules',
       confidence: 'low',
     };
@@ -1648,7 +1648,7 @@ export function GrowthLearningWorkbench({
         {!tasks.length ? (
           <div className="mb-4 rounded-[24px] border border-dashed border-slate-200 bg-white px-5 py-8 text-center shadow-sm">
             <p className="text-[13px] font-bold text-slate-500">学习导航等待内容接入</p>
-            <p className="mt-1 text-[12px] text-slate-400">在任务与日历创建任务、在客户工作台发起会议动作，或在战略陪伴添加成长推荐后，学习导航将自动补全阶段、风险和动作。</p>
+            <p className="mt-1 text-[12px] text-slate-400">在任务与日历创建任务、在工作台发起会议动作，或在战略陪伴添加成长推荐后，学习导航将自动补全阶段、风险和动作。</p>
           </div>
         ) : null}
         <div className="flex gap-4">
@@ -1660,7 +1660,7 @@ export function GrowthLearningWorkbench({
               <div className="mb-2 flex items-center gap-2">
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">当前聚焦执行</span>
                 <span className="text-sm text-slate-500">
-                  {activeTask.project || '客户项目'} · 处在 <strong className="font-medium text-blue-600">{activeTask.phase}</strong> 阶段
+                  {activeTask.project || '关联对象'} · 处在 <strong className="font-medium text-blue-600">{activeTask.phase}</strong> 阶段
                 </span>
               </div>
               <h2 className="mb-6 text-2xl font-bold text-slate-900">{activeTask.title}</h2>

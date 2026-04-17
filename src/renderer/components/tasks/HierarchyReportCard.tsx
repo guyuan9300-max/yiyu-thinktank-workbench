@@ -551,7 +551,7 @@ export function HierarchyReportCard({
                         <span className="ml-2 text-emerald-700/80">#{actionResult.objectId}</span>
                       </p>
                       {actionResult.targetClientName ? (
-                        <p className="text-emerald-700/80">关联项目：{actionResult.targetClientName}</p>
+                        <p className="text-emerald-700/80">关联工作对象：{actionResult.targetClientName}</p>
                       ) : null}
                       {actionResult.targetEventLineName ? (
                         <p className="text-emerald-700/80">关联事件线：{actionResult.targetEventLineName}</p>

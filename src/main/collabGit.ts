@@ -623,11 +623,11 @@ function summarizeRendererEffect(targetPath: string) {
   if (normalized.startsWith('src/renderer/components/client_workspace/')) {
     return {
       id: 'renderer-client-workspace',
-      title: '客户工作台的页面表现会变化',
-      summary: '客户工作台里的区域结构、入口或交互可能会更新。',
+      title: '工作台模块的页面表现会变化',
+      summary: '工作台里的区域结构、入口或交互可能会更新。',
       visibility: 'visible' as const,
       scopeLabel: '界面可见',
-      detail: '客户工作台相关组件有改动，同步后建议优先打开该模块确认。',
+      detail: '工作台相关组件有改动，同步后建议优先打开该模块确认。',
     };
   }
   if (normalized.startsWith('src/renderer/components/strategic_accompaniment/')) {

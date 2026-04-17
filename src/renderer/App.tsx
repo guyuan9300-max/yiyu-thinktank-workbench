@@ -1481,7 +1481,7 @@ const LiveThinkingTrace = React.memo(function LiveThinkingTrace({
     const nextEntries = [
       `阶段更新：${run.stageLabel || '正在处理当前问题'}`,
       `已定位原始证据 ${rawEvidenceCount} 条，背景线索 ${backgroundCount} 条。`,
-      `联网补充 ${webCount} 条${dnaCount ? `，客户 DNA 背景 ${dnaCount} 项` : ''}。`,
+      `联网补充 ${webCount} 条${dnaCount ? `，补充 DNA 背景 ${dnaCount} 项` : ''}。`,
       ...liveQuestions.map((item) => `当前正在追问：${item}`),
     ];
     if (trace.analysisPlan) {
@@ -5682,13 +5682,13 @@ export default function App() {
       clientId: '',
       clientTouched: false,
       clientConfidence: 'none',
-      clientReason: '可选：手动选择项目，或先关联事件线后自动回填。',
+      clientReason: `可选：手动选择${terminology.singularLabel}，或先关联事件线后自动回填。`,
       eventLineId: '',
       eventLineTouched: false,
       eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
       projectModuleId: '',
       projectModuleTouched: false,
-      projectModuleReason: '可选：把任务挂到项目下的具体任务模块。',
+      projectModuleReason: `可选：把任务挂到当前${terminology.singularLabel}下的具体${terminology.structureLabel}。`,
       projectFlowId: '',
       projectFlowTouched: false,
       projectFlowReason: '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
@@ -6689,8 +6689,8 @@ export default function App() {
         const matchedClient = clients.find((client) => (client.id || '').trim() === clientId);
         const matchedLabel = (matchedClient?.name || '').trim();
         const cloudLabel = item.primaryClientName?.trim();
-        const nextLabel = matchedLabel || cloudLabel || '未命名项目';
-        if (!labelById.has(clientId) || labelById.get(clientId) === '未命名项目') {
+        const nextLabel = matchedLabel || cloudLabel || `未命名${terminology.singularLabel}`;
+        if (!labelById.has(clientId) || labelById.get(clientId) === `未命名${terminology.singularLabel}`) {
           labelById.set(clientId, nextLabel);
         }
       });
@@ -6775,7 +6775,7 @@ export default function App() {
           clientTouched: shouldAutofillClient ? true : prev.clientTouched,
           clientConfidence: shouldAutofillClient ? 'manual' : prev.clientConfidence,
           clientReason: shouldAutofillClient
-            ? `已根据事件线自动回填项目：${selectedClientLabel}。`
+            ? `已根据事件线自动回填${terminology.singularLabel}：${selectedClientLabel}。`
             : prev.clientReason,
           eventLineId,
           eventLineTouched: true,
@@ -6784,7 +6784,7 @@ export default function App() {
             : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
           projectModuleId: clientChanged ? '' : prev.projectModuleId,
           projectModuleTouched: clientChanged ? false : prev.projectModuleTouched,
-          projectModuleReason: clientChanged ? '可选：把任务挂到项目下的具体任务模块。' : prev.projectModuleReason,
+          projectModuleReason: clientChanged ? `可选：把任务挂到当前${terminology.singularLabel}下的具体${terminology.structureLabel}。` : prev.projectModuleReason,
           projectFlowId: clientChanged ? '' : prev.projectFlowId,
           projectFlowTouched: clientChanged ? false : prev.projectFlowTouched,
           projectFlowReason: clientChanged ? '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。' : prev.projectFlowReason,
@@ -7102,7 +7102,7 @@ export default function App() {
       const existingClient = clients.find((item) => item.name.trim().toLowerCase() === normalizedName.toLowerCase());
       if (existingClient) {
         setEventLineEditorDraft((prev) => ({ ...prev, primaryClientId: existingClient.id }));
-        flash('success', `已关联现有项目“${existingClient.name}”`);
+        flash('success', `已关联现有${terminology.singularLabel}“${existingClient.name}”`);
         return;
       }
       try {
@@ -7481,7 +7481,7 @@ export default function App() {
       const targetClientId = editingTask.clientId || organizationClientId || clients[0]?.id;
       console.warn('[template-save] editingTask.clientId=', JSON.stringify(editingTask.clientId), 'organizationClientId=', organizationClientId, 'targetClientId=', targetClientId);
       if (!targetClientId) {
-        flash('error', '没有可用的客户/项目，无法保存模板。');
+        flash('error', `没有可用的${terminology.pluralLabel}，无法保存模板。`);
         return;
       }
       setIsCreatingTaskProjectModule(true);
@@ -8056,7 +8056,7 @@ export default function App() {
       try {
         if (action.actionType === 'meeting') {
           if (!primaryClientId) {
-            flash('error', '这条动作卡还没有挂接项目背景，暂时不能直接发起会议。');
+            flash('error', `这条动作卡还没有挂接${terminology.singularLabel}背景，暂时不能直接发起会议。`);
             return;
           }
           const result = await launchFeishuMeeting(primaryClientId, {
@@ -8168,7 +8168,7 @@ export default function App() {
       if (result.objectType === 'meeting' && result.targetClientId) {
         setCurrentClientId(result.targetClientId);
         await refreshWorkspace(result.targetClientId);
-        flash('success', `已定位到 ${result.targetClientName || '对应项目'} 工作台，可继续查看会议草稿。`);
+        flash('success', `已定位到 ${result.targetClientName || `对应${terminology.singularLabel}`} ${terminology.workspaceLabel}，可继续查看会议草稿。`);
         return;
       }
 
@@ -8249,13 +8249,13 @@ export default function App() {
         clientId: '',
         clientTouched: false,
         clientConfidence: 'none',
-        clientReason: '可选：手动选择项目，或先关联事件线后自动回填。',
+        clientReason: `可选：手动选择${terminology.singularLabel}，或先关联事件线后自动回填。`,
         eventLineId: '',
         eventLineTouched: false,
         eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
         projectModuleId: '',
         projectModuleTouched: false,
-        projectModuleReason: '可选：把任务挂到项目下的具体任务模块。',
+        projectModuleReason: `可选：把任务挂到当前${terminology.singularLabel}下的具体${terminology.structureLabel}。`,
         projectFlowId: '',
         projectFlowTouched: false,
         projectFlowReason: '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
@@ -8386,7 +8386,7 @@ export default function App() {
         eventLineReason: task.eventLineName ? `当前任务已挂到事件线"${task.eventLineName}"。` : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
         projectModuleId: task.projectModuleId || '',
         projectModuleTouched: Boolean(task.projectModuleId),
-        projectModuleReason: task.projectModuleName ? `当前任务已挂到模块"${task.projectModuleName}"。` : '可选：把任务挂到项目下的具体任务模块。',
+        projectModuleReason: task.projectModuleName ? `当前任务已挂到模块"${task.projectModuleName}"。` : `可选：把任务挂到当前${terminology.singularLabel}下的具体${terminology.structureLabel}。`,
         projectFlowId: task.projectFlowId || '',
         projectFlowTouched: Boolean(task.projectFlowId),
         projectFlowReason: task.projectFlowName ? `当前任务已挂到流程"${task.projectFlowName}"。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
@@ -10689,6 +10689,7 @@ export default function App() {
             draft={eventLineEditorDraft}
             projectOptions={eventLineEditorProjectOptions}
             memberOptions={eventLineMemberOptions}
+            workObjectLabel={terminology.singularLabel}
             canDelete={currentSessionUser?.primaryRole === 'admin'}
             isSaving={isSavingEventLineEditor}
             onClose={() => {
@@ -10719,6 +10720,7 @@ export default function App() {
             draft={eventLineEditorDraft}
             projectOptions={eventLineEditorProjectOptions}
             memberOptions={eventLineMemberOptions}
+            workObjectLabel={terminology.singularLabel}
             canDelete={false}
             isSaving={isCreatingEventLine}
             onClose={() => setIsEventLineCreateOpen(false)}
@@ -11755,7 +11757,16 @@ export default function App() {
         )}
       </div>
     );
-  }, []);
+  }, [
+    terminology.effectiveMode,
+    terminology.singularLabel,
+    terminology.pluralLabel,
+    terminology.workspaceLabel,
+    terminology.associateLabel,
+    terminology.recentLabel,
+    terminology.statsLabel,
+    terminology.structureLabel,
+  ]);
 
   const ClientWorkspaceView = () => {
     const currentClient = clients.find((client) => client.id === currentClientId) || clients[0];
@@ -11896,7 +11907,7 @@ export default function App() {
       const run = async () => {
         if (context.objectType === 'client') {
           await openClientContext(context.objectId);
-          flash('success', `已切到项目「${context.label}」`);
+          flash('success', `已切到${terminology.singularLabel}「${context.label}」`);
           clearRequest();
           return;
         }
@@ -12649,7 +12660,7 @@ export default function App() {
         await loadClientBlock(currentClientId);
         flash(
           'success',
-          `已从现有客户目录补录 ${result.imported} 份资料${result.skipped ? `，跳过 ${result.skipped} 份已存在文件` : ''}`,
+          `已从现有${terminology.singularLabel}目录补录 ${result.imported} 份资料${result.skipped ? `，跳过 ${result.skipped} 份已存在文件` : ''}`,
         );
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '回填现有目录失败');
@@ -13666,7 +13677,7 @@ export default function App() {
                         )}
                       </div>
                     ))}
-                    {workspace?.folders.length === 0 && <div className="text-[12px] text-gray-400 py-2">还没有绑定任何客户目录。</div>}
+                    {workspace?.folders.length === 0 && <div className="text-[12px] text-gray-400 py-2">还没有绑定任何{terminology.singularLabel}目录。</div>}
                   </>
                 )}
               </div>
@@ -13680,7 +13691,7 @@ export default function App() {
                   <Briefcase size={16} strokeWidth={2.5} />
                 </div>
                 <div className="min-w-0">
-                  <h2 className="text-[16px] xl:text-[18px] font-bold text-gray-900 truncate">{currentClient?.name || '未选择客户'}</h2>
+                  <h2 className="text-[16px] xl:text-[18px] font-bold text-gray-900 truncate">{currentClient?.name || `未选择${terminology.singularLabel}`}</h2>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -13747,6 +13758,8 @@ export default function App() {
                   {clientWorkspaceSurfaceMode === 'setup' && (
                     <ClientProjectSetupPage
                       clientName={currentClient?.name || `当前${terminology.singularLabel}`}
+                      workObjectLabel={terminology.singularLabel}
+                      workspaceLabel={terminology.workspaceLabel}
                       modules={workspace?.dnaModules || []}
                       projectModules={workspace?.projectModules || []}
                       projectFlows={workspace?.projectFlows || []}
@@ -14508,9 +14521,9 @@ export default function App() {
                 {clientOverlayMode === 'dna' && (
                   <div className="space-y-5">
                     <div className="rounded-2xl border border-blue-100 bg-blue-50/40 px-4 py-3">
-                      <p className="text-[13px] font-semibold text-[#33449a]">客户 DNA 四文档</p>
+                      <p className="text-[13px] font-semibold text-[#33449a]">{`${terminology.singularLabel} DNA 四文档`}</p>
                       <p className="mt-1 text-[12px] leading-6 text-[#5d6aa6]">
-                        组织介绍、项目介绍、团队介绍、市场背景介绍会在问答时先作为背景底稿进入思考过程，用来帮助理解客户，但不会作为正式引证。
+                        组织介绍、项目介绍、团队介绍、市场背景介绍会在问答时先作为背景底稿进入思考过程，用来帮助理解当前{terminology.singularLabel}，但不会作为正式引证。
                       </p>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -15134,7 +15147,7 @@ export default function App() {
           { allowLegacy: true },
         );
         await Promise.all([loadLogsBlock(), legacyImportClientId === currentClientId ? refreshWorkspace(legacyImportClientId) : Promise.resolve()]);
-        flash('success', `已向目标客户导入 ${imported.reduce((sum, item) => sum + item.importedCount, 0)} 份旧数据文件`);
+        flash('success', `已向目标${terminology.singularLabel}导入 ${imported.reduce((sum, item) => sum + item.importedCount, 0)} 份旧数据文件`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '旧数据导入失败');
       } finally {
@@ -15949,7 +15962,7 @@ export default function App() {
                 <p className="text-[12px] text-gray-500">{legacyScanResult.message}</p>
                 <div className="flex flex-col md:flex-row gap-3">
                   <select value={legacyImportClientId} onChange={(event) => setLegacyImportClientId(event.target.value)} className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                    <option value="">选择导入目标客户</option>
+                    <option value="">{`选择导入目标${terminology.singularLabel}`}</option>
                     {clients.map((client) => (
                       <option key={client.id} value={client.id}>{client.name}</option>
                     ))}
@@ -16006,7 +16019,7 @@ export default function App() {
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
           <h2 className="text-[16px] font-bold text-gray-900">组织 DNA</h2>
           <p className="text-[12px] text-gray-500 mt-2 leading-relaxed">
-            这里是整个软件的组织级知识主库。系统在 AI 型能力中会优先注入这层上下文，再叠加客户补充 DNA 和当前模块材料。
+            这里是整个软件的组织级知识主库。系统在 AI 型能力中会优先注入这层上下文，再叠加{terminology.singularLabel}补充 DNA 和当前模块材料。
           </p>
         </div>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -16175,7 +16188,7 @@ export default function App() {
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
               <h2 className="text-[16px] font-bold text-gray-900">{terminology.workspaceLabel}全局规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">控制客户聊天、会议发布到任务和客户补充 DNA 的组织级规则。</p>
+              <p className="text-[12px] text-gray-500 mt-1">控制{terminology.workspaceLabel}聊天、会议发布到任务和{terminology.singularLabel}补充 DNA 的组织级规则。</p>
             </div>
             <Button primary onClick={() => void handleSaveClientWorkspaceSettings()} disabled={!canEditBusinessSettings}>
               <Settings size={16} /> 保存{terminology.workspaceLabel}设置
@@ -16203,7 +16216,7 @@ export default function App() {
               <option value="normal">会议任务默认普通优先级</option>
               <option value="high">会议任务默认高优先级</option>
             </select>
-            <input value={clientWorkspaceDraft.clientDnaModeLabel} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, clientDnaModeLabel: event.target.value }))} placeholder="客户 DNA 显示文案" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none md:col-span-2" disabled={!canEditBusinessSettings} />
+            <input value={clientWorkspaceDraft.clientDnaModeLabel} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, clientDnaModeLabel: event.target.value }))} placeholder={`${terminology.singularLabel} DNA 显示文案`} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none md:col-span-2" disabled={!canEditBusinessSettings} />
           </div>
         </div>
       </div>
@@ -16645,7 +16658,7 @@ export default function App() {
   if (loading) {
     const VALUE_MESSAGES = [
       '让每一天的工作都留下痕迹，变成成长',
-      '任务、客户、会议、复盘——一个界面掌控全局',
+      `任务、${terminology.singularLabel}、会议、复盘——一个界面掌控全局`,
       '本地优先，断网也能正常工作',
       'AI 不是替代你，是陪你一起想、一起做',
       '从经验到方法，从方法到可复用的组织资产',
@@ -16823,7 +16836,7 @@ export default function App() {
             <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">当前登录</p>
               <p className="text-[13px] font-bold text-gray-800">{isLocalSession ? '本机模式' : currentSessionUser.fullName}</p>
-              <p className="text-[11px] text-gray-500 mt-1">{isLocalSession ? `未连接云端 · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.clients || 0} 客户` : `${currentSessionUser.primaryRole} · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.clients || 0} 客户`}</p>
+              <p className="text-[11px] text-gray-500 mt-1">{isLocalSession ? `未连接云端 · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.workObjects ?? health?.stats.clients ?? 0} ${terminology.pluralLabel}` : `${currentSessionUser.primaryRole} · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.workObjects ?? health?.stats.clients ?? 0} ${terminology.pluralLabel}`}</p>
               {isLocalSession ? (
                 <button
                   className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
