@@ -998,6 +998,154 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_org_feishu_query_logs_sender
                     ON org_feishu_query_logs(sender_open_id, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS org_dingtalk_finance_integrations (
+                    organization_id TEXT PRIMARY KEY,
+                    app_key TEXT NOT NULL DEFAULT '',
+                    app_secret_encrypted TEXT NOT NULL DEFAULT '',
+                    encryption_nonce TEXT NOT NULL DEFAULT '',
+                    sync_enabled INTEGER NOT NULL DEFAULT 1,
+                    mapped_template_names_json TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    configured_by TEXT,
+                    configured_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    last_validation_status TEXT NOT NULL DEFAULT 'idle',
+                    last_validation_message TEXT NOT NULL DEFAULT '',
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS expense_import_sources (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    source_system TEXT NOT NULL DEFAULT 'dingtalk_finance',
+                    source_instance_id TEXT NOT NULL,
+                    source_template_code TEXT,
+                    source_template_name TEXT,
+                    source_title TEXT NOT NULL,
+                    applicant_user_name TEXT NOT NULL DEFAULT '',
+                    amount REAL,
+                    currency TEXT NOT NULL DEFAULT 'CNY',
+                    submitted_at TEXT,
+                    approved_at TEXT,
+                    approval_status TEXT NOT NULL DEFAULT 'unknown',
+                    source_url TEXT,
+                    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+                    imported_evidence_id TEXT,
+                    last_imported_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, source_system, source_instance_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_expense_import_sources_org_updated
+                    ON expense_import_sources(organization_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS expense_import_jobs (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    work_object_id TEXT,
+                    source_system TEXT NOT NULL DEFAULT 'dingtalk_finance',
+                    job_type TEXT NOT NULL DEFAULT 'metadata_sync',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    query_payload_json TEXT NOT NULL DEFAULT '{}',
+                    result_summary_json TEXT NOT NULL DEFAULT '{}',
+                    error_message TEXT,
+                    created_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS expense_evidences (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    work_object_id TEXT,
+                    source_system TEXT NOT NULL DEFAULT 'dingtalk_finance',
+                    source_instance_id TEXT NOT NULL,
+                    source_template_code TEXT,
+                    source_template_name TEXT,
+                    source_title TEXT NOT NULL,
+                    display_title TEXT NOT NULL,
+                    applicant_user_name TEXT NOT NULL DEFAULT '',
+                    amount REAL,
+                    currency TEXT NOT NULL DEFAULT 'CNY',
+                    submitted_at TEXT,
+                    approved_at TEXT,
+                    approval_status TEXT NOT NULL DEFAULT 'unknown',
+                    source_url TEXT,
+                    normalized_category TEXT,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    summary TEXT NOT NULL DEFAULT '',
+                    last_imported_at TEXT,
+                    created_by_user_id TEXT,
+                    updated_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, source_system, source_instance_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL,
+                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
+                    FOREIGN KEY(updated_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_expense_evidences_org_work_object
+                    ON expense_evidences(organization_id, work_object_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS expense_evidence_attachments (
+                    id TEXT PRIMARY KEY,
+                    expense_evidence_id TEXT NOT NULL,
+                    source_file_id TEXT,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    download_status TEXT NOT NULL DEFAULT 'not_fetched',
+                    ocr_status TEXT NOT NULL DEFAULT 'pending',
+                    ocr_summary TEXT,
+                    storage_path TEXT,
+                    preview_url TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(expense_evidence_id) REFERENCES expense_evidences(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_expense_evidence_attachments_evidence
+                    ON expense_evidence_attachments(expense_evidence_id, created_at ASC);
+
+                CREATE TABLE IF NOT EXISTS event_line_expense_evidence_links (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    event_line_id TEXT NOT NULL,
+                    expense_evidence_id TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    linked_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(event_line_id, expense_evidence_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
+                    FOREIGN KEY(expense_evidence_id) REFERENCES expense_evidences(id) ON DELETE CASCADE,
+                    FOREIGN KEY(linked_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_line_expense_links_event_line
+                    ON event_line_expense_evidence_links(event_line_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS task_expense_evidence_links (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    expense_evidence_id TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    linked_by_user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(task_id, expense_evidence_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(expense_evidence_id) REFERENCES expense_evidences(id) ON DELETE CASCADE,
+                    FOREIGN KEY(linked_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_expense_links_task
+                    ON task_expense_evidence_links(task_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS event_line_attachments (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,
@@ -1071,6 +1219,10 @@ class Database:
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
                 """
             )
+            self._ensure_column("org_dingtalk_finance_integrations", "operator_mobile", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_dingtalk_finance_integrations", "resolved_operator_user_id", "TEXT")
+            self._ensure_column("expense_evidence_attachments", "source_space_id", "TEXT")
+            self._ensure_column("expense_evidence_attachments", "source_file_type", "TEXT")
             self.conn.execute(
                 """
                 UPDATE employee_accounts

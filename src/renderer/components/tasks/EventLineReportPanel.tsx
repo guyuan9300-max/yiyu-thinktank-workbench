@@ -257,9 +257,16 @@ type Props = {
   backendBaseUrl: string;
   onClose: () => void;
   onExportWord: (draft: ReportDraft) => void;
+  onOpenTaskExpenseEvidence?: (task: Task) => void;
 };
 
-export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onClose, onExportWord }: Props) {
+export default function EventLineReportPanel({
+  eventLineId,
+  backendBaseUrl,
+  onClose,
+  onExportWord,
+  onOpenTaskExpenseEvidence,
+}: Props) {
   const [snapshot, setSnapshot] = useState<EventLineReportSnapshot | null>(null);
   const [uploadProgressByActivity, setUploadProgressByActivity] = useState<Record<string, { current: number; total: number; fileName: string; error?: string }>>({});
   const [exportProgress, setExportProgress] = useState<{ stage: string; detail: string } | null>(null);
@@ -607,10 +614,28 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
                         // Cloud returns "description", local uses "desc"
                         const taskDesc = task?.desc || (task as Record<string, unknown> | undefined)?.description as string | undefined;
                         if (!task || !taskDesc) return null;
+                        const linkedEvidenceCount = task.expenseEvidenceLinks?.length || 0;
                         return (
                           <div className="mt-1 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                            <p className="text-[11px] font-medium text-slate-500">{task.title}</p>
-                            <p className="mt-0.5 text-[11px] leading-4 text-slate-400 whitespace-pre-wrap">{taskDesc}</p>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] font-medium text-slate-500">{task.title}</p>
+                                <p className="mt-0.5 text-[11px] leading-4 text-slate-400 whitespace-pre-wrap">{taskDesc}</p>
+                              </div>
+                              {onOpenTaskExpenseEvidence ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenTaskExpenseEvidence(task)}
+                                  className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[#D7E0FF] bg-white px-2.5 py-1 text-[10px] font-bold text-[#5B7BFE] transition hover:border-[#5B7BFE] hover:bg-[#F8FAFF]"
+                                >
+                                  <FileBadge size={11} />
+                                  关联票据
+                                  <span className="rounded-full bg-[#EEF3FF] px-1.5 py-0.5 text-[9px] text-[#4A63CF]">
+                                    {linkedEvidenceCount}
+                                  </span>
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         );
                       })()}

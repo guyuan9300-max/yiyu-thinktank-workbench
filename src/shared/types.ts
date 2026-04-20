@@ -891,6 +891,7 @@ export interface Task {
   memoryHints?: string[];
   backgroundReadiness?: BackgroundReadiness | null;
   linkedFactsPreview?: MemoryFact[];
+  expenseEvidenceLinks?: TaskExpenseEvidenceLink[];
   syncStatus?: 'local' | 'syncing' | 'synced' | 'pending' | 'error' | null;
   createdAt: string;
   updatedAt: string;
@@ -1003,6 +1004,7 @@ export interface EventLineDetail {
   eventLine: EventLine;
   tasks: Task[];
   activities: EventLineActivity[];
+  expenseEvidenceLinks: EventLineExpenseEvidenceLink[];
   memorySnapshot?: EventLineMemorySnapshot | null;
   predictionReadiness?: number | null;
   clarificationNeeds?: string[];
@@ -2538,6 +2540,197 @@ export interface FeishuDeliveryProfilePayload {
   mobile?: string | null;
 }
 
+export interface OrgDingtalkFinanceIntegration {
+  organizationId?: string | null;
+  organizationName?: string | null;
+  appKey: string;
+  operatorMobile: string;
+  resolvedOperatorUserId?: string | null;
+  enabled: boolean;
+  hasAppSecret: boolean;
+  syncEnabled: boolean;
+  mappedTemplateNames: string[];
+  configuredBy?: string | null;
+  configuredAt?: string | null;
+  updatedAt: string;
+  lastValidationStatus: 'idle' | 'success' | 'failed';
+  lastValidationMessage?: string | null;
+}
+
+export interface OrgDingtalkFinanceIntegrationPayload {
+  appKey?: string | null;
+  appSecret?: string | null;
+  operatorMobile?: string | null;
+  clearAppSecret?: boolean;
+  syncEnabled?: boolean;
+  mappedTemplateNames?: string[];
+}
+
+export interface ExpenseImportSource {
+  id: string;
+  organizationId: string;
+  sourceSystem: 'dingtalk_finance';
+  sourceInstanceId: string;
+  sourceTemplateCode?: string | null;
+  sourceTemplateName?: string | null;
+  sourceTitle: string;
+  applicantUserName: string;
+  amount?: number | null;
+  currency: string;
+  submittedAt?: string | null;
+  approvedAt?: string | null;
+  approvalStatus: string;
+  sourceUrl?: string | null;
+  attachments: ExpenseEvidenceAttachmentImportPayload[];
+  rawPayload: Record<string, unknown>;
+  importedEvidenceId?: string | null;
+  lastImportedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpenseImportSearchPayload {
+  query?: string;
+  applicantUserName?: string;
+  approvalStatus?: string | null;
+  submittedFrom?: string | null;
+  submittedTo?: string | null;
+  includeImported?: boolean;
+  limit?: number;
+}
+
+export interface ExpenseImportSearchResponse {
+  items: ExpenseImportSource[];
+  total: number;
+  message?: string | null;
+}
+
+export interface ExpenseEvidenceAttachmentImportPayload {
+  sourceFileId?: string | null;
+  sourceSpaceId?: string | null;
+  sourceFileType?: string | null;
+  fileName: string;
+  mimeType?: string | null;
+  sizeBytes?: number;
+  previewUrl?: string | null;
+}
+
+export interface ExpenseEvidenceImportItemPayload {
+  sourceInstanceId: string;
+  sourceTemplateCode?: string | null;
+  sourceTemplateName?: string | null;
+  sourceTitle: string;
+  applicantUserName?: string;
+  amount?: number | null;
+  currency?: string;
+  submittedAt?: string | null;
+  approvedAt?: string | null;
+  approvalStatus?: string;
+  sourceUrl?: string | null;
+  displayTitle?: string | null;
+  normalizedCategory?: string | null;
+  tags?: string[];
+  summary?: string;
+  attachments?: ExpenseEvidenceAttachmentImportPayload[];
+  rawPayload?: Record<string, unknown>;
+}
+
+export interface ExpenseEvidenceImportPayload {
+  items: ExpenseEvidenceImportItemPayload[];
+}
+
+export interface ExpenseEvidenceAttachment {
+  id: string;
+  expenseEvidenceId: string;
+  sourceFileId?: string | null;
+  sourceSpaceId?: string | null;
+  sourceFileType?: string | null;
+  fileName: string;
+  mimeType?: string | null;
+  sizeBytes: number;
+  downloadStatus: 'not_fetched' | 'fetched' | 'failed';
+  ocrStatus: 'pending' | 'done' | 'failed' | 'skipped';
+  ocrSummary?: string | null;
+  storagePath?: string | null;
+  previewUrl?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpenseEvidenceRecord {
+  id: string;
+  organizationId: string;
+  workObjectId?: string | null;
+  sourceSystem: 'dingtalk_finance';
+  sourceInstanceId: string;
+  sourceTemplateCode?: string | null;
+  sourceTemplateName?: string | null;
+  sourceTitle: string;
+  displayTitle: string;
+  applicantUserName: string;
+  amount?: number | null;
+  currency: string;
+  submittedAt?: string | null;
+  approvedAt?: string | null;
+  approvalStatus: string;
+  sourceUrl?: string | null;
+  normalizedCategory?: string | null;
+  tags: string[];
+  summary: string;
+  lastImportedAt?: string | null;
+  createdByUserId?: string | null;
+  updatedByUserId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  attachments: ExpenseEvidenceAttachment[];
+}
+
+export interface ExpenseEvidenceUpdatePayload {
+  workObjectId?: string | null;
+  displayTitle?: string | null;
+  normalizedCategory?: string | null;
+  tags?: string[] | null;
+  summary?: string | null;
+}
+
+export interface ExpenseEvidenceImportResult {
+  imported: ExpenseEvidenceRecord[];
+  importedCount: number;
+  skippedCount: number;
+}
+
+export interface EventLineExpenseEvidenceLink {
+  id: string;
+  eventLineId: string;
+  evidenceId: string;
+  note: string;
+  linkedByUserId?: string | null;
+  linkedByUserName?: string | null;
+  createdAt: string;
+  evidence?: ExpenseEvidenceRecord | null;
+}
+
+export interface EventLineExpenseEvidenceLinkPayload {
+  evidenceId: string;
+  note?: string;
+}
+
+export interface TaskExpenseEvidenceLink {
+  id: string;
+  taskId: string;
+  evidenceId: string;
+  note: string;
+  linkedByUserId?: string | null;
+  linkedByUserName?: string | null;
+  createdAt: string;
+  evidence?: ExpenseEvidenceRecord | null;
+}
+
+export interface TaskExpenseEvidenceLinkPayload {
+  evidenceId: string;
+  note?: string;
+}
+
 export interface FeishuMemberAuthorization {
   linked: boolean;
   readyForAuthorization: boolean;
@@ -3341,6 +3534,7 @@ export interface WorkObjectWorkspace {
   projectFlows: ProjectFlow[];
   dnaTerms: DnaTerm[];
   relatedTasks: Task[];
+  expenseEvidences?: ExpenseEvidenceRecord[];
 }
 
 export type ClientWorkspace = WorkObjectWorkspace;

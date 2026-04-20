@@ -86,9 +86,14 @@ import type {
   EventLine,
   EventLineClarificationDraftResult,
   EventLineDetail,
+  ExpenseEvidenceImportPayload,
+  ExpenseEvidenceRecord,
+  ExpenseImportSearchPayload,
   FeishuDeliveryProfile,
   OrgFeishuIntegration,
   OrgFeishuIntegrationPayload,
+  OrgDingtalkFinanceIntegration,
+  OrgDingtalkFinanceIntegrationPayload,
   GrowthContextLink,
   HandbookEntry,
   HandbookSettings,
@@ -122,6 +127,7 @@ import type {
   Task,
   TaskAttachmentRecord,
   TaskContextPreview,
+  TaskExpenseEvidenceLink,
   TaskSmartBrief,
   TaskList,
   TaskGroupTemplateEventLineMode,
@@ -200,6 +206,7 @@ import {
   getClientWorkspace,
   getClientProjectStructure,
   deleteProjectModule,
+  fetchExpenseEvidenceAttachments,
   getProjectFlowDetail,
   getProjectModuleDetail,
   getEmployees,
@@ -213,6 +220,7 @@ import {
   getLocalInputMemory,
   getMentionCandidates,
   getOrganizationDna,
+  getOrgDingtalkFinanceIntegration,
   getOrgModelProfile,
   getReviewHistory,
   getReviewGovernanceSettings,
@@ -223,6 +231,12 @@ import {
   getSystemAdminSettings,
   getTaskTagSuggestions,
   getTaskBoard,
+  importExpenseEvidences,
+  linkEventLineExpenseEvidence,
+  linkTaskExpenseEvidence,
+  listEventLineExpenseEvidences,
+  listTaskExpenseEvidences,
+  listExpenseEvidences,
   listTaskGroupTemplates,
   getTaskLists,
   getWorkObjectTerminology,
@@ -259,9 +273,11 @@ import {
   runAnalysis,
   saveAiInputMemory,
   saveCloudAuthInputMemory,
+  saveOrgDingtalkFinanceIntegration,
   saveFeishuDeliveryProfile,
   saveFeishuInputMemory,
   scanLegacy,
+  searchExpenseEvidenceImports,
   searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
@@ -295,6 +311,8 @@ import {
   updateTask,
   updateWorkObjectTerminology,
   uploadTaskAttachment,
+  unlinkEventLineExpenseEvidence,
+  unlinkTaskExpenseEvidence,
   updateTopicsSettings,
   upsertDna,
   vectorizeAnswer,
@@ -339,7 +357,9 @@ import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './co
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { BrandLogoMark, BrandLogoSettingsCard } from './components/settings/BrandLogoSettingsCard';
+import { DingtalkFinanceIntegrationPanel } from './components/settings/DingtalkFinanceIntegrationPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
+import { ExpenseEvidenceModal } from './components/work_objects/ExpenseEvidenceModal';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
@@ -462,6 +482,15 @@ type CollabDialogState =
       preview: PullPreview;
     }
   | null;
+
+type ExpenseEvidenceModalContext = {
+  workObjectId: string;
+  workObjectName: string;
+  eventLineId?: string | null;
+  eventLineName?: string | null;
+  taskId?: string | null;
+  taskTitle?: string | null;
+};
 
 function buildEventLineClarificationDraft(
   eventLine?: Pick<EventLine, 'summary' | 'stage' | 'intent' | 'currentBlocker' | 'nextStep' | 'recentDecision'> | null,
@@ -798,6 +827,31 @@ const DEFAULT_FEISHU_DELIVERY_PROFILE: FeishuDeliveryProfile = {
   lastVerifiedAt: null,
   lastError: null,
   blockedReason: '连接云端并加入组织后，才能启用飞书任务提醒。',
+};
+
+const DEFAULT_ORG_DINGTALK_FINANCE_INTEGRATION: OrgDingtalkFinanceIntegration = {
+  organizationId: null,
+  organizationName: null,
+  appKey: '',
+  operatorMobile: '',
+  resolvedOperatorUserId: null,
+  enabled: false,
+  hasAppSecret: false,
+  syncEnabled: false,
+  mappedTemplateNames: [],
+  configuredBy: null,
+  configuredAt: null,
+  updatedAt: '',
+  lastValidationStatus: 'idle',
+  lastValidationMessage: '连接云端并加入或创建组织后，才能启用钉钉票据导入。',
+};
+
+const DEFAULT_EXPENSE_IMPORT_SEARCH_DRAFT: ExpenseImportSearchPayload = {
+  query: '',
+  applicantUserName: '',
+  approvalStatus: null,
+  includeImported: false,
+  limit: 20,
 };
 
 const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
@@ -3790,6 +3844,8 @@ export default function App() {
   const [isSavingOrgFeishuIntegration, setIsSavingOrgFeishuIntegration] = useState(false);
   const [feishuDeliveryProfileState, setFeishuDeliveryProfileState] = useState<FeishuDeliveryProfile>(DEFAULT_FEISHU_DELIVERY_PROFILE);
   const [isSavingFeishuDeliveryProfile, setIsSavingFeishuDeliveryProfile] = useState(false);
+  const [orgDingtalkFinanceIntegrationState, setOrgDingtalkFinanceIntegrationState] = useState<OrgDingtalkFinanceIntegration>(DEFAULT_ORG_DINGTALK_FINANCE_INTEGRATION);
+  const [isSavingOrgDingtalkFinanceIntegration, setIsSavingOrgDingtalkFinanceIntegration] = useState(false);
 
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [currentClientId, setCurrentClientId] = useState<string>('');
@@ -4356,6 +4412,12 @@ export default function App() {
     return response;
   }
 
+  async function loadOrgDingtalkFinanceIntegrationBlock() {
+    const response = await getOrgDingtalkFinanceIntegration();
+    setOrgDingtalkFinanceIntegrationState(response);
+    return response;
+  }
+
   async function loadTaskSettingsBlock() {
     const response = await getTaskSettings();
     setTaskSettingsState(response);
@@ -4667,6 +4729,14 @@ export default function App() {
               }),
           },
           {
+            name: 'org-dingtalk-finance-integration',
+            run: () =>
+              loadOrgDingtalkFinanceIntegrationBlock().catch(() => {
+                setOrgDingtalkFinanceIntegrationState(DEFAULT_ORG_DINGTALK_FINANCE_INTEGRATION);
+                return DEFAULT_ORG_DINGTALK_FINANCE_INTEGRATION;
+              }),
+          },
+          {
             name: 'system-admin-settings',
             run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud'),
           },
@@ -4752,6 +4822,7 @@ export default function App() {
         setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
         setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
         setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
+        setOrgDingtalkFinanceIntegrationState(DEFAULT_ORG_DINGTALK_FINANCE_INTEGRATION);
         setSettingsSectionLoaded({
           overview: true,
           org_dna: false,
@@ -5835,6 +5906,16 @@ export default function App() {
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
     const [isSavingEventLineEditor, setIsSavingEventLineEditor] = useState(false);
+    const [isExpenseEvidenceModalOpen, setIsExpenseEvidenceModalOpen] = useState(false);
+    const [expenseEvidenceContext, setExpenseEvidenceContext] = useState<ExpenseEvidenceModalContext | null>(null);
+    const [expenseEvidenceQuery, setExpenseEvidenceQuery] = useState('');
+    const [expenseEvidenceRecords, setExpenseEvidenceRecords] = useState<ExpenseEvidenceRecord[]>([]);
+    const [isLoadingExpenseEvidenceRecords, setIsLoadingExpenseEvidenceRecords] = useState(false);
+    const [expenseEvidenceImportSearchDraft, setExpenseEvidenceImportSearchDraft] = useState<ExpenseImportSearchPayload>(DEFAULT_EXPENSE_IMPORT_SEARCH_DRAFT);
+    const [expenseEvidenceImportSearchResult, setExpenseEvidenceImportSearchResult] = useState<ExpenseImportSearchResponse | null>(null);
+    const [isExpenseEvidenceImportSearchLoading, setIsExpenseEvidenceImportSearchLoading] = useState(false);
+    const [selectedExpenseEvidenceImportIds, setSelectedExpenseEvidenceImportIds] = useState<string[]>([]);
+    const [linkedExpenseEvidenceIds, setLinkedExpenseEvidenceIds] = useState<string[]>([]);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
     const [taskGroupTemplates, setTaskGroupTemplates] = useState<TaskGroupTemplateRecord[]>([]);
@@ -7311,6 +7392,261 @@ export default function App() {
       setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
       flash('success', '备注已添加');
     };
+
+    const filteredExpenseEvidenceRecords = useMemo(() => {
+      const needle = expenseEvidenceQuery.trim().toLowerCase();
+      if (!needle) return expenseEvidenceRecords;
+      return expenseEvidenceRecords.filter((item) => {
+        const haystacks = [
+          item.displayTitle,
+          item.sourceTitle,
+          item.applicantUserName,
+          item.normalizedCategory,
+          item.summary,
+          ...(item.tags || []),
+        ]
+          .filter(Boolean)
+          .map((value) => String(value).toLowerCase());
+        return haystacks.some((value) => value.includes(needle));
+      });
+    }, [expenseEvidenceQuery, expenseEvidenceRecords]);
+
+    const loadExpenseEvidenceRecordsForContext = useCallback(async (workObjectId: string, query = '') => {
+      setIsLoadingExpenseEvidenceRecords(true);
+      try {
+        const records = await listExpenseEvidences(workObjectId, { query, limit: 200 });
+        setExpenseEvidenceRecords(records);
+        return records;
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '票据池读取失败');
+        setExpenseEvidenceRecords([]);
+        return [];
+      } finally {
+        setIsLoadingExpenseEvidenceRecords(false);
+      }
+    }, [flash]);
+
+    const loadLinkedExpenseEvidenceIds = useCallback(async (context?: ExpenseEvidenceModalContext | null) => {
+      if (!context?.eventLineId && !context?.taskId) {
+        setLinkedExpenseEvidenceIds([]);
+        return [];
+      }
+      try {
+        if (context?.taskId) {
+          const links = await listTaskExpenseEvidences(context.taskId);
+          setLinkedExpenseEvidenceIds(links.map((item) => item.evidenceId));
+          return links;
+        }
+        if (context?.eventLineId) {
+          const links = await listEventLineExpenseEvidences(context.eventLineId);
+          setLinkedExpenseEvidenceIds(links.map((item) => item.evidenceId));
+          return links;
+        }
+        setLinkedExpenseEvidenceIds([]);
+        return [];
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '票据关联读取失败');
+        setLinkedExpenseEvidenceIds([]);
+        return [];
+      }
+    }, [flash]);
+
+    const refreshActiveEventLineAfterEvidenceChange = useCallback(async (eventLineId?: string | null) => {
+      if (!eventLineId || activeEventLine?.eventLine.id !== eventLineId) return;
+      const refreshed = await getEventLine(eventLineId);
+      setActiveEventLine(refreshed);
+      setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
+    }, [activeEventLine?.eventLine.id]);
+
+    const closeExpenseEvidenceModal = useCallback(() => {
+      setIsExpenseEvidenceModalOpen(false);
+      setExpenseEvidenceContext(null);
+      setExpenseEvidenceQuery('');
+      setExpenseEvidenceImportSearchDraft(DEFAULT_EXPENSE_IMPORT_SEARCH_DRAFT);
+      setExpenseEvidenceImportSearchResult(null);
+      setSelectedExpenseEvidenceImportIds([]);
+      setLinkedExpenseEvidenceIds([]);
+    }, []);
+
+    const openExpenseEvidenceModal = useCallback(async (context: ExpenseEvidenceModalContext) => {
+      if (!context.workObjectId) {
+        flash('error', `请先关联${terminology.singularLabel}，再整理票据证明。`);
+        return;
+      }
+      setExpenseEvidenceContext(context);
+      setExpenseEvidenceQuery('');
+      setExpenseEvidenceImportSearchDraft(DEFAULT_EXPENSE_IMPORT_SEARCH_DRAFT);
+      setExpenseEvidenceImportSearchResult(null);
+      setSelectedExpenseEvidenceImportIds([]);
+      setLinkedExpenseEvidenceIds([]);
+      setIsExpenseEvidenceModalOpen(true);
+      void Promise.all([
+        loadOrgDingtalkFinanceIntegrationBlock().catch(() => DEFAULT_ORG_DINGTALK_FINANCE_INTEGRATION),
+        loadExpenseEvidenceRecordsForContext(context.workObjectId),
+        loadLinkedExpenseEvidenceIds(context),
+      ]);
+    }, [flash, loadExpenseEvidenceRecordsForContext, loadLinkedExpenseEvidenceIds, terminology.singularLabel]);
+
+    const handleRunExpenseEvidenceImportSearch = useCallback(async () => {
+      if (!expenseEvidenceContext?.workObjectId) return;
+      setIsExpenseEvidenceImportSearchLoading(true);
+      try {
+        const result = await searchExpenseEvidenceImports(expenseEvidenceContext.workObjectId, expenseEvidenceImportSearchDraft);
+        setExpenseEvidenceImportSearchResult(result);
+        setSelectedExpenseEvidenceImportIds([]);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '可导入票据搜索失败');
+      } finally {
+        setIsExpenseEvidenceImportSearchLoading(false);
+      }
+    }, [expenseEvidenceContext?.workObjectId, expenseEvidenceImportSearchDraft, flash]);
+
+    const handleImportSelectedExpenseEvidence = useCallback(async () => {
+      if (!expenseEvidenceContext?.workObjectId || !expenseEvidenceImportSearchResult) return;
+      const selectedItems = expenseEvidenceImportSearchResult.items.filter(
+        (item) => selectedExpenseEvidenceImportIds.includes(item.sourceInstanceId) && !item.importedEvidenceId,
+      );
+      if (selectedItems.length === 0) {
+        flash('info', '请先勾选要导入的票据记录。');
+        return;
+      }
+      const payload: ExpenseEvidenceImportPayload = {
+        items: selectedItems.map((item) => ({
+          sourceInstanceId: item.sourceInstanceId,
+          sourceTemplateCode: item.sourceTemplateCode,
+          sourceTemplateName: item.sourceTemplateName,
+          sourceTitle: item.sourceTitle,
+          applicantUserName: item.applicantUserName,
+          amount: item.amount,
+          currency: item.currency,
+          submittedAt: item.submittedAt,
+          approvedAt: item.approvedAt,
+          approvalStatus: item.approvalStatus,
+          sourceUrl: item.sourceUrl,
+          attachments: item.attachments,
+          rawPayload: item.rawPayload,
+        })),
+      };
+      try {
+        const result = await importExpenseEvidences(expenseEvidenceContext.workObjectId, payload);
+        flash('success', `已导入 ${result.importedCount} 条票据记录`);
+        setSelectedExpenseEvidenceImportIds([]);
+        await loadExpenseEvidenceRecordsForContext(expenseEvidenceContext.workObjectId);
+        await handleRunExpenseEvidenceImportSearch();
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '票据导入失败');
+      }
+    }, [
+      expenseEvidenceContext?.workObjectId,
+      expenseEvidenceImportSearchResult,
+      flash,
+      handleRunExpenseEvidenceImportSearch,
+      loadExpenseEvidenceRecordsForContext,
+      selectedExpenseEvidenceImportIds,
+    ]);
+
+    const handleFetchExpenseEvidenceAttachments = useCallback(async (evidenceId: string) => {
+      try {
+        const updated = await fetchExpenseEvidenceAttachments(evidenceId);
+        setExpenseEvidenceRecords((prev) => prev.map((item) => (item.id === evidenceId ? updated : item)));
+        flash('success', '已更新该票据的附件抓取状态');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '票据附件抓取失败');
+      }
+    }, [flash]);
+
+    const handleLinkExpenseEvidenceToEventLine = useCallback(async (evidenceId: string) => {
+      const eventLineId = expenseEvidenceContext?.eventLineId;
+      if (!eventLineId) return;
+      try {
+        await linkEventLineExpenseEvidence(eventLineId, { evidenceId });
+        await Promise.all([
+          loadLinkedExpenseEvidenceIds(expenseEvidenceContext),
+          refreshActiveEventLineAfterEvidenceChange(eventLineId),
+        ]);
+        flash('success', '票据已关联到当前事件线');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '票据关联失败');
+      }
+    }, [expenseEvidenceContext, flash, loadLinkedExpenseEvidenceIds, refreshActiveEventLineAfterEvidenceChange]);
+
+    const handleUnlinkExpenseEvidenceFromEventLine = useCallback(async (evidenceId: string) => {
+      const eventLineId = expenseEvidenceContext?.eventLineId;
+      if (!eventLineId) return;
+      try {
+        await unlinkEventLineExpenseEvidence(eventLineId, evidenceId);
+        await Promise.all([
+          loadLinkedExpenseEvidenceIds(expenseEvidenceContext),
+          refreshActiveEventLineAfterEvidenceChange(eventLineId),
+        ]);
+        flash('success', '票据已从当前事件线解除关联');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '解除票据关联失败');
+      }
+    }, [expenseEvidenceContext, flash, loadLinkedExpenseEvidenceIds, refreshActiveEventLineAfterEvidenceChange]);
+
+    const handleLinkExpenseEvidenceToTask = useCallback(async (evidenceId: string) => {
+      const taskId = expenseEvidenceContext?.taskId;
+      const eventLineId = expenseEvidenceContext?.eventLineId;
+      if (!taskId) return;
+      try {
+        await linkTaskExpenseEvidence(taskId, { evidenceId });
+        await Promise.all([
+          loadLinkedExpenseEvidenceIds(expenseEvidenceContext),
+          refreshActiveEventLineAfterEvidenceChange(eventLineId),
+        ]);
+        flash('success', '票据已关联到当前任务');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '票据关联失败');
+      }
+    }, [expenseEvidenceContext, flash, loadLinkedExpenseEvidenceIds, refreshActiveEventLineAfterEvidenceChange]);
+
+    const handleUnlinkExpenseEvidenceFromTask = useCallback(async (evidenceId: string) => {
+      const taskId = expenseEvidenceContext?.taskId;
+      const eventLineId = expenseEvidenceContext?.eventLineId;
+      if (!taskId) return;
+      try {
+        await unlinkTaskExpenseEvidence(taskId, evidenceId);
+        await Promise.all([
+          loadLinkedExpenseEvidenceIds(expenseEvidenceContext),
+          refreshActiveEventLineAfterEvidenceChange(eventLineId),
+        ]);
+        flash('success', '票据已从当前任务解除关联');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '解除票据关联失败');
+      }
+    }, [expenseEvidenceContext, flash, loadLinkedExpenseEvidenceIds, refreshActiveEventLineAfterEvidenceChange]);
+
+    const handleBulkUnlinkEventLineExpenseEvidence = useCallback(
+      async (items: Array<{ scope: 'eventLine' | 'task'; evidenceId: string; taskId?: string | null }>) => {
+        const eventLineId = activeEventLine?.eventLine.id;
+        if (!eventLineId || items.length === 0) return;
+        try {
+          await Promise.all(
+            items.map((item) =>
+              item.scope === 'task' && item.taskId
+                ? unlinkTaskExpenseEvidence(item.taskId, item.evidenceId)
+                : unlinkEventLineExpenseEvidence(eventLineId, item.evidenceId),
+            ),
+          );
+          await refreshActiveEventLineAfterEvidenceChange(eventLineId);
+          if (isExpenseEvidenceModalOpen) {
+            await loadLinkedExpenseEvidenceIds(expenseEvidenceContext);
+          }
+          flash('success', `已解除 ${items.length} 条票据关联`);
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '批量解除票据关联失败');
+        }
+      },
+      [
+        activeEventLine?.eventLine.id,
+        expenseEvidenceContext,
+        flash,
+        isExpenseEvidenceModalOpen,
+        loadLinkedExpenseEvidenceIds,
+        refreshActiveEventLineAfterEvidenceChange,
+      ],
+    );
 
     const handleSaveEventLineClarification = async () => {
       if (!activeEventLine) return;
@@ -11293,6 +11629,24 @@ export default function App() {
               openTaskEditor(task);
             }}
             onOpenMeeting={handleOpenEventLineMeeting}
+            expenseEvidenceLinks={activeEventLine.expenseEvidenceLinks}
+            onOpenTaskExpenseEvidence={(task) => {
+              const workObjectId = task.workObjectId || task.clientId || activeEventLine.eventLine.primaryClientId || '';
+              void openExpenseEvidenceModal({
+                workObjectId,
+                workObjectName:
+                  task.workObjectName ||
+                  task.clientName ||
+                  activeEventLine.eventLine.primaryClientName ||
+                  clients.find((item) => item.id === workObjectId)?.name ||
+                  `当前${terminology.singularLabel}`,
+                eventLineId: activeEventLine.eventLine.id,
+                eventLineName: activeEventLine.eventLine.name,
+                taskId: task.id,
+                taskTitle: task.title,
+              });
+            }}
+            onBulkUnlinkExpenseEvidence={(items) => handleBulkUnlinkEventLineExpenseEvidence(items)}
             onAddNote={handleAddEventLineNoteFromEditor}
           />
         )}
@@ -11318,6 +11672,25 @@ export default function App() {
             eventLineId={reportEventLineId}
             backendBaseUrl={window.yiyuWorkbench?.backendBaseUrl || 'http://127.0.0.1:47829'}
             onClose={() => setReportEventLineId(null)}
+            onOpenTaskExpenseEvidence={(task) => {
+              const workObjectId = task.workObjectId || task.clientId || activeEventLine?.eventLine.primaryClientId || '';
+              void openExpenseEvidenceModal({
+                workObjectId,
+                workObjectName:
+                  task.workObjectName ||
+                  task.clientName ||
+                  activeEventLine?.eventLine.primaryClientName ||
+                  clients.find((item) => item.id === workObjectId)?.name ||
+                  `当前${terminology.singularLabel}`,
+                eventLineId: reportEventLineId,
+                eventLineName:
+                  activeEventLine?.eventLine.name ||
+                  eventLines.find((detail) => detail.eventLine.id === reportEventLineId)?.eventLine.name ||
+                  '当前事件线',
+                taskId: task.id,
+                taskTitle: task.title,
+              });
+            }}
             onExportWord={(draft) => {
               void (async () => {
                 try {
@@ -11340,6 +11713,55 @@ export default function App() {
             }}
           />
         )}
+
+        <ExpenseEvidenceModal
+          open={isExpenseEvidenceModalOpen && Boolean(expenseEvidenceContext)}
+          workObjectLabel={terminology.singularLabel}
+          workObjectName={expenseEvidenceContext?.workObjectName || `当前${terminology.singularLabel}`}
+          eventLineName={expenseEvidenceContext?.eventLineName || null}
+          taskTitle={expenseEvidenceContext?.taskTitle || null}
+          integration={orgDingtalkFinanceIntegrationState}
+          integrationLoading={false}
+          evidenceItems={filteredExpenseEvidenceRecords}
+          evidenceLoading={isLoadingExpenseEvidenceRecords}
+          existingQuery={expenseEvidenceQuery}
+          onExistingQueryChange={setExpenseEvidenceQuery}
+          onRefreshEvidence={() => {
+            if (!expenseEvidenceContext?.workObjectId) return;
+            void loadExpenseEvidenceRecordsForContext(expenseEvidenceContext.workObjectId);
+          }}
+          importSearchDraft={expenseEvidenceImportSearchDraft}
+          onImportSearchDraftChange={(patch) => setExpenseEvidenceImportSearchDraft((prev) => ({ ...prev, ...patch }))}
+          importSearchResult={expenseEvidenceImportSearchResult}
+          importSearchLoading={isExpenseEvidenceImportSearchLoading}
+          selectedImportSourceIds={selectedExpenseEvidenceImportIds}
+          onToggleImportSource={(sourceInstanceId) =>
+            setSelectedExpenseEvidenceImportIds((prev) =>
+              prev.includes(sourceInstanceId)
+                ? prev.filter((item) => item !== sourceInstanceId)
+                : [...prev, sourceInstanceId],
+            )
+          }
+          onRunImportSearch={() => void handleRunExpenseEvidenceImportSearch()}
+          onImportSelected={() => void handleImportSelectedExpenseEvidence()}
+          onFetchAttachments={(evidenceId) => void handleFetchExpenseEvidenceAttachments(evidenceId)}
+          linkedEvidenceIds={linkedExpenseEvidenceIds}
+          onLinkEvidence={
+            expenseEvidenceContext?.taskId
+              ? (evidenceId) => void handleLinkExpenseEvidenceToTask(evidenceId)
+              : expenseEvidenceContext?.eventLineId
+                ? (evidenceId) => void handleLinkExpenseEvidenceToEventLine(evidenceId)
+                : undefined
+          }
+          onUnlinkEvidence={
+            expenseEvidenceContext?.taskId
+              ? (evidenceId) => void handleUnlinkExpenseEvidenceFromTask(evidenceId)
+              : expenseEvidenceContext?.eventLineId
+                ? (evidenceId) => void handleUnlinkExpenseEvidenceFromEventLine(evidenceId)
+                : undefined
+          }
+          onClose={closeExpenseEvidenceModal}
+        />
 
         {activeSupportRequest && (
           <div
@@ -14239,6 +14661,21 @@ export default function App() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <div className="hidden lg:flex gap-2">
+                  {currentClient ? (
+                    <button
+                      onClick={() =>
+                        void openExpenseEvidenceModal({
+                          workObjectId: currentClient.id,
+                          workObjectName: currentClient.name,
+                        })
+                      }
+                      className="flex items-center gap-2 text-[12px] font-bold px-3 py-1.5 rounded-xl border border-amber-200 bg-amber-50 text-amber-700 shadow-sm transition-all duration-300 cursor-pointer select-none hover:bg-amber-100 active:scale-95"
+                      title="打开当前工作对象的票据证明池"
+                    >
+                      <FileBadge size={14} />
+                      票据证明
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => setClientOverlayMode('dna')}
                     className={`flex items-center gap-2 text-[12px] font-bold px-3 py-1.5 rounded-xl border shadow-sm transition-all duration-300 cursor-pointer select-none active:scale-95 ${clientDnaStatus.className}`}
@@ -14334,6 +14771,13 @@ export default function App() {
                       }}
                       onCreateProjectFlow={(payload) => {
                         void handleCreateProjectFlow(payload);
+                      }}
+                      onOpenExpenseEvidence={() => {
+                        if (!currentClient) return;
+                        void openExpenseEvidenceModal({
+                          workObjectId: currentClient.id,
+                          workObjectName: currentClient.name,
+                        });
                       }}
                       onOpenDnaPanel={() => setClientOverlayMode('dna')}
                       onContinueWorkspace={() => setClientWorkspaceSurfaceMode('workspace')}
@@ -16108,6 +16552,21 @@ export default function App() {
       }
     };
 
+    const handleSaveOrgDingtalkFinanceIntegration = async (payload: OrgDingtalkFinanceIntegrationPayload) => {
+      setIsSavingOrgDingtalkFinanceIntegration(true);
+      try {
+        const next = await saveOrgDingtalkFinanceIntegration(payload);
+        setOrgDingtalkFinanceIntegrationState(next);
+        await loadLogsBlock();
+        flash('success', next.enabled ? '组织钉钉财务接入已验证并保存' : (next.lastValidationMessage || '组织钉钉财务接入已保存'));
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '组织钉钉财务接入保存失败');
+        throw error;
+      } finally {
+        setIsSavingOrgDingtalkFinanceIntegration(false);
+      }
+    };
+
     const handleSaveFeishuInputMemory = async (payload: LocalInputMemory['feishuIntegration']) => {
       const nextLocalInputMemory = await saveFeishuInputMemory({
         rememberInputs: payload.rememberInputs,
@@ -16452,6 +16911,17 @@ export default function App() {
           onSaveIntegration={handleSaveOrgFeishuIntegration}
           onSaveRememberedInputs={handleSaveFeishuInputMemory}
           onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
+          onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
+          onOpenCloudAuth={() => openCloudAuthModal('login')}
+        />
+
+        <DingtalkFinanceIntegrationPanel
+          sessionMode={authState.sessionMode === 'cloud' ? 'cloud' : 'local'}
+          membership={orgMembershipState}
+          integration={orgDingtalkFinanceIntegrationState}
+          saveBusy={isSavingOrgDingtalkFinanceIntegration}
+          canManage={canManageSensitiveSettings}
+          onSaveIntegration={handleSaveOrgDingtalkFinanceIntegration}
           onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
           onOpenCloudAuth={() => openCloudAuthModal('login')}
         />

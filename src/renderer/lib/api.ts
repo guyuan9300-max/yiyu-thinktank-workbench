@@ -41,6 +41,12 @@ import type {
   EmployeeRecord,
   EmployeeRejectPayload,
   EmployeeDepartmentPayload,
+  ExpenseEvidenceImportPayload,
+  ExpenseEvidenceImportResult,
+  ExpenseEvidenceRecord,
+  ExpenseEvidenceUpdatePayload,
+  ExpenseImportSearchPayload,
+  ExpenseImportSearchResponse,
   FeishuBotSettings,
   FeishuMeetingLaunchResult,
   FeishuBotSettingsPayload,
@@ -53,6 +59,8 @@ import type {
   EventLineClarificationDraftPayload,
   EventLineClarificationDraftResult,
   EventLineDetail,
+  EventLineExpenseEvidenceLink,
+  EventLineExpenseEvidenceLinkPayload,
   EventLineMutationPayload,
   GoalRecord,
   GrowthLedgerResponse,
@@ -95,6 +103,8 @@ import type {
   Task,
   TaskActivityRecord,
   TaskContextPreview,
+  TaskExpenseEvidenceLink,
+  TaskExpenseEvidenceLinkPayload,
   TaskSmartBrief,
   TaskTag,
   TaskTagMutationPayload,
@@ -131,6 +141,8 @@ import type {
   OrgFeishuIntegration,
   OrgFeishuIntegrationPayload,
   OrgMembershipSummary,
+  OrgDingtalkFinanceIntegration,
+  OrgDingtalkFinanceIntegrationPayload,
   RunComparison,
   SupportRequestCreatePayload,
   SupportRequestResolvePayload,
@@ -1314,6 +1326,90 @@ export async function createEventLine(payload: EventLineMutationPayload) {
 
 export async function getEventLine(id: string) {
   return request<EventLineDetail>(`/api/v1/event-lines/${id}`);
+}
+
+export async function getOrgDingtalkFinanceIntegration() {
+  return request<OrgDingtalkFinanceIntegration>('/api/v1/org-integrations/dingtalk-finance');
+}
+
+export async function saveOrgDingtalkFinanceIntegration(payload: OrgDingtalkFinanceIntegrationPayload) {
+  return request<OrgDingtalkFinanceIntegration>('/api/v1/org-integrations/dingtalk-finance/validate-and-save', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listExpenseEvidences(workObjectId: string, params?: { query?: string; limit?: number }) {
+  const search = new URLSearchParams();
+  if (params?.query?.trim()) search.set('query', params.query.trim());
+  if (typeof params?.limit === 'number') search.set('limit', String(params.limit));
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<ExpenseEvidenceRecord[]>(`/api/v1/work-objects/${encodeURIComponent(workObjectId)}/expense-evidences${suffix}`);
+}
+
+export async function searchExpenseEvidenceImports(workObjectId: string, payload: ExpenseImportSearchPayload) {
+  return request<ExpenseImportSearchResponse>(`/api/v1/work-objects/${encodeURIComponent(workObjectId)}/expense-evidences/import-search`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function importExpenseEvidences(workObjectId: string, payload: ExpenseEvidenceImportPayload) {
+  return request<ExpenseEvidenceImportResult>(`/api/v1/work-objects/${encodeURIComponent(workObjectId)}/expense-evidences/import`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getExpenseEvidence(evidenceId: string) {
+  return request<ExpenseEvidenceRecord>(`/api/v1/expense-evidences/${encodeURIComponent(evidenceId)}`);
+}
+
+export async function updateExpenseEvidence(evidenceId: string, payload: ExpenseEvidenceUpdatePayload) {
+  return request<ExpenseEvidenceRecord>(`/api/v1/expense-evidences/${encodeURIComponent(evidenceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchExpenseEvidenceAttachments(evidenceId: string) {
+  return request<ExpenseEvidenceRecord>(`/api/v1/expense-evidences/${encodeURIComponent(evidenceId)}/attachments/fetch`, {
+    method: 'POST',
+  });
+}
+
+export async function listEventLineExpenseEvidences(eventLineId: string) {
+  return request<EventLineExpenseEvidenceLink[]>(`/api/v1/event-lines/${encodeURIComponent(eventLineId)}/expense-evidences`);
+}
+
+export async function linkEventLineExpenseEvidence(eventLineId: string, payload: EventLineExpenseEvidenceLinkPayload) {
+  return request<EventLineExpenseEvidenceLink>(`/api/v1/event-lines/${encodeURIComponent(eventLineId)}/expense-evidences/link`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function unlinkEventLineExpenseEvidence(eventLineId: string, evidenceId: string) {
+  return request<{ deleted: boolean }>(`/api/v1/event-lines/${encodeURIComponent(eventLineId)}/expense-evidences/${encodeURIComponent(evidenceId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listTaskExpenseEvidences(taskId: string) {
+  return request<TaskExpenseEvidenceLink[]>(`/api/v1/tasks/${encodeURIComponent(taskId)}/expense-evidences`);
+}
+
+export async function linkTaskExpenseEvidence(taskId: string, payload: TaskExpenseEvidenceLinkPayload) {
+  return request<TaskExpenseEvidenceLink>(`/api/v1/tasks/${encodeURIComponent(taskId)}/expense-evidences/link`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function unlinkTaskExpenseEvidence(taskId: string, evidenceId: string) {
+  return request<{ deleted: boolean }>(`/api/v1/tasks/${encodeURIComponent(taskId)}/expense-evidences/${encodeURIComponent(evidenceId)}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function getEventLineReportSnapshot(id: string) {

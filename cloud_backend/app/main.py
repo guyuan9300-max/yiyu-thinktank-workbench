@@ -39,6 +39,8 @@ from app.models import (
     EventLineActivityRecord,
     EventLineCreatePayload,
     EventLineDetailRecord,
+    EventLineExpenseEvidenceLinkPayload,
+    EventLineExpenseEvidenceLinkRecord,
     EventLineImportBatchPayload,
     EventLineImportItemResult,
     EventLineImportResultRecord,
@@ -66,6 +68,8 @@ from app.models import (
     OrgDepartmentPlanItemRecord,
     OrgDepartmentPlanRecord,
     OrgDepartmentQuarterPlanRecord,
+    OrgDingtalkFinanceIntegrationRecord,
+    OrgDingtalkFinanceIntegrationSavePayload,
     OrgEmployeeBindingRecord,
     OrgFocusItemRecord,
     OrgMembershipSummaryRecord,
@@ -112,6 +116,8 @@ from app.models import (
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
     TaskOrgContextRecord,
+    TaskExpenseEvidenceLinkPayload,
+    TaskExpenseEvidenceLinkRecord,
     TaskRecord,
     TaskReturnPayload,
     TaskSettingsPayload,
@@ -119,6 +125,14 @@ from app.models import (
     TaskTagLibraryResponse,
     TaskTagMutationPayload,
     TaskTagRecord,
+    ExpenseEvidenceImportPayload,
+    ExpenseEvidenceImportResult,
+    ExpenseEvidenceAttachmentRecord,
+    ExpenseEvidenceRecord,
+    ExpenseEvidenceUpdatePayload,
+    ExpenseImportSearchPayload,
+    ExpenseImportSearchResponse,
+    ExpenseImportSourceRecord,
     TaskPlanLinkRecord,
     TaskPlanLinkUpsertPayload,
     TaskUpdatePayload,
@@ -1207,8 +1221,9 @@ def _event_line_detail_record(state: AppState, row, viewer_id: str | None = None
     )
     return EventLineDetailRecord(
         eventLine=event_line,
-        tasks=[_task_record(state, item, viewer_id) for item in task_rows],
+        tasks=[_task_record(state, item, viewer_id, include_expense_evidence_links=True) for item in task_rows],
         activities=[_event_line_activity_record(state, item) for item in activity_rows],
+        expenseEvidenceLinks=_event_line_expense_link_records(state, event_line.id),
     )
 
 
@@ -2752,6 +2767,473 @@ def _org_feishu_decrypt(state: AppState, encrypted_b64: str, nonce_b64: str, org
     return cipher.decrypt(nonce, cipher_text, None).decode("utf-8")
 
 
+def _org_dingtalk_encrypt(state: AppState, plain_text: str, organization_id: str) -> tuple[str, str]:
+    import base64
+    from hashlib import sha256
+    from os import urandom
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    key = sha256(f"{state.secret_key}:{organization_id}:dingtalk_config".encode()).digest()
+    nonce = urandom(12)
+    cipher = AESGCM(key)
+    cipher_text = cipher.encrypt(nonce, plain_text.encode("utf-8"), None)
+    return base64.b64encode(cipher_text).decode(), base64.b64encode(nonce).decode()
+
+
+def _org_dingtalk_decrypt(state: AppState, encrypted_b64: str, nonce_b64: str, organization_id: str) -> str:
+    import base64
+    from hashlib import sha256
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    if not encrypted_b64 or not nonce_b64:
+        return ""
+    key = sha256(f"{state.secret_key}:{organization_id}:dingtalk_config".encode()).digest()
+    cipher = AESGCM(key)
+    cipher_text = base64.b64decode(encrypted_b64)
+    nonce = base64.b64decode(nonce_b64)
+    return cipher.decrypt(nonce, cipher_text, None).decode("utf-8")
+
+
+def _normalize_phone_number(raw_value: str | None) -> str:
+    digits = "".join(ch for ch in str(raw_value or "") if ch.isdigit())
+    if digits.startswith("86") and len(digits) > 11:
+        digits = digits[2:]
+    return digits
+
+
+def _dingtalk_api_headers(access_token: str, *, use_legacy_query_token: bool = False) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if not use_legacy_query_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+        headers["x-acs-dingtalk-access-token"] = access_token
+    return headers
+
+
+def _extract_nested_values(payload: object, key_name: str) -> list[object]:
+    matches: list[object] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == key_name:
+                matches.append(value)
+            matches.extend(_extract_nested_values(value, key_name))
+    elif isinstance(payload, list):
+        for item in payload:
+            matches.extend(_extract_nested_values(item, key_name))
+    return matches
+
+
+def _extract_first_non_empty(payload: dict[str, object], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _dingtalk_raise_for_error(response_payload: object, *, fallback_message: str) -> dict[str, object]:
+    if not isinstance(response_payload, dict):
+        raise HTTPException(status_code=502, detail=fallback_message)
+    errcode = response_payload.get("errcode")
+    success = response_payload.get("success")
+    if (errcode not in (None, 0, "0")) or success is False:
+        message = str(response_payload.get("errmsg") or response_payload.get("message") or fallback_message)
+        raise HTTPException(status_code=502, detail=message)
+    return cast(dict[str, object], response_payload)
+
+
+def _dingtalk_fetch_app_access_token(app_key: str, app_secret: str) -> str:
+    import httpx
+
+    timeout = httpx.Timeout(18.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(
+            "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+            json={"appKey": app_key, "appSecret": app_secret},
+            headers={"Content-Type": "application/json"},
+        )
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        if response.status_code == 200 and isinstance(payload, dict):
+            token = str(payload.get("accessToken") or payload.get("access_token") or "").strip()
+            if token:
+                return token
+
+        legacy_response = client.get(
+            "https://oapi.dingtalk.com/gettoken",
+            params={"appkey": app_key, "appsecret": app_secret},
+        )
+        legacy_payload = legacy_response.json() if legacy_response.headers.get("content-type", "").startswith("application/json") else {}
+        normalized = _dingtalk_raise_for_error(legacy_payload, fallback_message="获取钉钉 accessToken 失败。")
+        token = str(normalized.get("access_token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=502, detail="钉钉 accessToken 返回为空。")
+        return token
+
+
+def _dingtalk_get_user_id_by_mobile(access_token: str, mobile: str) -> str:
+    import httpx
+
+    timeout = httpx.Timeout(18.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(
+            "https://oapi.dingtalk.com/topapi/v2/user/getbymobile",
+            params={"access_token": access_token},
+            json={"mobile": mobile, "support_exclusive_account_search": True},
+            headers=_dingtalk_api_headers(access_token, use_legacy_query_token=True),
+        )
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    normalized = _dingtalk_raise_for_error(payload, fallback_message="根据手机号查询钉钉操作人失败。")
+    result = normalized.get("result")
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="钉钉未返回有效的操作人信息。")
+    user_id = str(result.get("userid") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=502, detail="钉钉未返回可用的操作人 userId。")
+    return user_id
+
+
+def _dingtalk_list_manageable_templates(access_token: str, operator_user_id: str) -> list[dict[str, object]]:
+    import httpx
+
+    timeout = httpx.Timeout(20.0, connect=5.0)
+    templates: list[dict[str, object]] = []
+    next_token: str | None = None
+    with httpx.Client(timeout=timeout) as client:
+        for _ in range(10):
+            params: dict[str, object] = {"userId": operator_user_id, "maxResults": 100}
+            if next_token:
+                params["nextToken"] = next_token
+            response = client.get(
+                "https://api.dingtalk.com/v1.0/workflow/processes/managements/templates",
+                params=params,
+                headers=_dingtalk_api_headers(access_token),
+            )
+            payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            if response.status_code >= 400:
+                detail = payload.get("message") if isinstance(payload, dict) else None
+                raise HTTPException(status_code=502, detail=str(detail or "获取钉钉可管理审批模板失败。"))
+            result = payload.get("result") if isinstance(payload, dict) else None
+            bucket: list[dict[str, object]] = []
+            if isinstance(result, dict):
+                for key in ("templates", "templateList", "items", "records"):
+                    value = result.get(key)
+                    if isinstance(value, list):
+                        bucket = [item for item in value if isinstance(item, dict)]
+                        break
+                if not bucket:
+                    bucket = [item for item in _extract_nested_values(result, "processCode") if isinstance(item, dict)]
+                next_token = str(result.get("nextToken") or "").strip() or None
+            elif isinstance(payload, dict):
+                maybe_list = payload.get("result")
+                if isinstance(maybe_list, list):
+                    bucket = [item for item in maybe_list if isinstance(item, dict)]
+            templates.extend(bucket)
+            if not next_token or not bucket:
+                break
+    deduped: dict[str, dict[str, object]] = {}
+    for item in templates:
+        process_code = str(item.get("processCode") or item.get("process_code") or "").strip()
+        if process_code:
+            deduped[process_code] = item
+    return list(deduped.values())
+
+
+def _dingtalk_list_process_instance_ids(
+    access_token: str,
+    *,
+    process_code: str,
+    operator_user_id: str,
+    start_time_ms: int,
+    end_time_ms: int,
+    size: int,
+) -> list[str]:
+    import httpx
+
+    timeout = httpx.Timeout(20.0, connect=5.0)
+    instance_ids: list[str] = []
+    cursor = 0
+    with httpx.Client(timeout=timeout) as client:
+        for _ in range(10):
+            response = client.post(
+                "https://oapi.dingtalk.com/topapi/processinstance/listids",
+                params={"access_token": access_token},
+                json={
+                    "process_code": process_code,
+                    "start_time": start_time_ms,
+                    "end_time": end_time_ms,
+                    "size": max(1, min(size, 20)),
+                    "cursor": cursor,
+                    "userid_list": operator_user_id,
+                },
+                headers=_dingtalk_api_headers(access_token, use_legacy_query_token=True),
+            )
+            payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            normalized = _dingtalk_raise_for_error(payload, fallback_message="获取钉钉审批实例列表失败。")
+            result = normalized.get("result")
+            if not isinstance(result, dict):
+                break
+            current_ids = [str(item).strip() for item in result.get("list", []) if str(item).strip()]
+            instance_ids.extend(current_ids)
+            next_cursor = result.get("next_cursor")
+            if next_cursor in (None, "", cursor) or not current_ids or len(instance_ids) >= size:
+                break
+            try:
+                cursor = int(next_cursor)
+            except Exception:
+                break
+    return list(dict.fromkeys(instance_ids[:size]))
+
+
+def _dingtalk_get_process_instance_detail(access_token: str, process_instance_id: str) -> dict[str, object]:
+    import httpx
+
+    timeout = httpx.Timeout(20.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(
+            "https://api.dingtalk.com/v1.0/workflow/processInstances",
+            params={"processInstanceId": process_instance_id},
+            headers=_dingtalk_api_headers(access_token),
+        )
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    if response.status_code >= 400:
+        detail = payload.get("message") if isinstance(payload, dict) else None
+        raise HTTPException(status_code=502, detail=str(detail or "获取钉钉审批实例详情失败。"))
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="钉钉审批实例详情返回格式异常。")
+    return result
+
+
+def _dingtalk_parse_json_like(raw_value: object) -> object:
+    if isinstance(raw_value, (dict, list)):
+        return raw_value
+    text = str(raw_value or "").strip()
+    if not text:
+        return text
+    if text[:1] not in ("{", "["):
+        return text
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _dingtalk_extract_amount(detail: dict[str, object]) -> float | None:
+    candidates: list[str] = []
+    for component in detail.get("formComponentValues", []) if isinstance(detail.get("formComponentValues"), list) else []:
+        if not isinstance(component, dict):
+            continue
+        name = str(component.get("name") or component.get("bizAlias") or "").strip()
+        value = component.get("value")
+        if any(keyword in name for keyword in ("金额", "总额", "报销", "合计", "amount", "fee")):
+            candidates.append(str(value or ""))
+    for candidate in candidates:
+        match = re.search(r"-?\d+(?:\.\d+)?", candidate.replace(",", ""))
+        if match:
+            try:
+                return float(match.group(0))
+            except Exception:
+                continue
+    return None
+
+
+def _dingtalk_extract_attachments(detail: dict[str, object]) -> list[dict[str, object]]:
+    attachments: list[dict[str, object]] = []
+
+    def visit(value: object, *, field_name: str = "") -> None:
+        if isinstance(value, dict):
+            file_id = _extract_first_non_empty(value, ("fileId", "file_id", "id"))
+            file_name = _extract_first_non_empty(value, ("fileName", "file_name", "name"))
+            file_type = _extract_first_non_empty(value, ("fileType", "file_type", "type"))
+            space_id = _extract_first_non_empty(value, ("spaceId", "space_id"))
+            preview_url = _extract_first_non_empty(value, ("previewUrl", "preview_url", "downloadUrl", "download_uri"))
+            size_bytes = value.get("fileSize") or value.get("size") or value.get("sizeBytes") or 0
+            has_attachment_shape = bool(file_id or (field_name and any(keyword in field_name for keyword in ("附件", "票据", "发票", "图片", "file")) and file_name))
+            if has_attachment_shape:
+                attachments.append(
+                    {
+                        "sourceFileId": file_id,
+                        "sourceSpaceId": space_id,
+                        "sourceFileType": file_type,
+                        "fileName": file_name or field_name or "未命名附件",
+                        "mimeType": mimetypes.guess_type(file_name or "")[0] if file_name else None,
+                        "sizeBytes": int(size_bytes or 0),
+                        "previewUrl": preview_url,
+                    }
+                )
+            for nested_key, nested_value in value.items():
+                visit(nested_value, field_name=nested_key)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, field_name=field_name)
+        else:
+            parsed = _dingtalk_parse_json_like(value)
+            if parsed is not value:
+                visit(parsed, field_name=field_name)
+
+    form_values = detail.get("formComponentValues", [])
+    if isinstance(form_values, list):
+        for component in form_values:
+            if not isinstance(component, dict):
+                continue
+            name = str(component.get("name") or component.get("bizAlias") or "附件").strip()
+            visit(component.get("value"), field_name=name)
+            visit(component.get("extValue"), field_name=name)
+    visit(detail.get("operationRecords"), field_name="operationRecords")
+
+    deduped: dict[tuple[str, str], dict[str, object]] = {}
+    for item in attachments:
+        key = (str(item.get("sourceFileId") or ""), str(item.get("fileName") or ""))
+        deduped[key] = item
+    return list(deduped.values())
+
+
+def _dingtalk_normalize_approval_status(detail: dict[str, object]) -> str:
+    raw_candidates = [
+        str(detail.get("status") or "").strip().lower(),
+        str(detail.get("result") or "").strip().lower(),
+        str(detail.get("approvalResult") or "").strip().lower(),
+    ]
+    raw = " ".join(item for item in raw_candidates if item)
+    if any(token in raw for token in ("terminate", "refuse", "reject", "deny")):
+        return "rejected"
+    if any(token in raw for token in ("finish", "completed", "agree", "approved", "pass", "success")):
+        return "approved"
+    if any(token in raw for token in ("running", "process", "pending", "new", "start")):
+        return "processing"
+    return "unknown"
+
+
+def _dingtalk_build_source_url(detail: dict[str, object], process_instance_id: str) -> str | None:
+    for key in ("pcUrl", "pc_url", "pcLink", "mobileUrl", "url"):
+        value = detail.get(key)
+        if value:
+            text = str(value).strip()
+            if text:
+                return text
+    if process_instance_id:
+        return f"https://www.dingtalk.com/"
+    return None
+
+
+def _dingtalk_normalize_import_source(
+    detail: dict[str, object],
+    *,
+    organization_id: str,
+    process_instance_id: str,
+    source_template_code: str | None,
+    source_template_name: str | None,
+) -> dict[str, object]:
+    title = _extract_first_non_empty(detail, ("title", "processTitle", "name")) or f"审批 {process_instance_id}"
+    applicant = _extract_first_non_empty(detail, ("originatorName", "originatorRealName", "originatorUserName", "originatorUserid", "originatorUserId")) or ""
+    amount = _dingtalk_extract_amount(detail)
+    attachments = _dingtalk_extract_attachments(detail)
+    submitted_at = _extract_first_non_empty(detail, ("createTime", "createdTime", "submittedAt", "gmtCreate"))
+    approved_at = _extract_first_non_empty(detail, ("finishTime", "completedTime", "approvedAt", "gmtFinished"))
+    approval_status = _dingtalk_normalize_approval_status(detail)
+    source_url = _dingtalk_build_source_url(detail, process_instance_id)
+    return {
+        "id": new_id("expense_src"),
+        "organization_id": organization_id,
+        "source_instance_id": process_instance_id,
+        "source_template_code": source_template_code,
+        "source_template_name": source_template_name,
+        "source_title": title,
+        "applicant_user_name": applicant,
+        "amount": amount,
+        "currency": "CNY",
+        "submitted_at": submitted_at,
+        "approved_at": approved_at,
+        "approval_status": approval_status,
+        "source_url": source_url,
+        "raw_payload_json": to_json({**detail, "attachments": attachments}),
+    }
+
+
+def _expense_evidence_attachment_public_url(attachment_id: str) -> str:
+    return f"/api/public/expense-evidence-attachments/{attachment_id}"
+
+
+def _ocr_expense_image_attachment(state: AppState, attachment_path: Path, mime_type: str) -> tuple[str, str | None]:
+    import base64
+    import httpx
+
+    ark_key = os.getenv("ARK_API_KEY", "").strip() or os.getenv("VOLCENGINE_API_KEY", "").strip()
+    if not ark_key:
+        return "skipped", "OCR 未配置 API Key"
+    img_b64 = base64.b64encode(attachment_path.read_bytes()).decode()
+    try:
+        response = httpx.post(
+            "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+            headers={"Authorization": f"Bearer {ark_key}", "Content-Type": "application/json"},
+            json={
+                "model": os.getenv("YIYU_OCR_MODEL", "ep-m-20260326120641-m4lf6"),
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是票据识别助手。请识别图片中的票据内容，用一行简要概括：类型、金额、日期、付款方/收款方（如果能识别的话）。只返回纯文本，不要 JSON。",
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}},
+                            {"type": "text", "text": "请识别这张票据的内容"},
+                        ],
+                    },
+                ],
+                "max_tokens": 200,
+            },
+            timeout=20.0,
+        )
+        if response.status_code != 200:
+            return "failed", f"OCR 识别失败 (HTTP {response.status_code})"
+        payload = response.json()
+        choices = payload.get("choices") if isinstance(payload, dict) else None
+        if not isinstance(choices, list) or not choices:
+            return "failed", "OCR 返回为空"
+        summary = str(choices[0].get("message", {}).get("content") or "").strip()
+        return ("done", summary or "OCR 已执行，但未提取到有效摘要")
+    except Exception as exc:
+        return "failed", f"OCR 识别失败: {exc}"
+
+
+def _dingtalk_fetch_attachment_download_uri(access_token: str, *, process_instance_id: str, file_id: str) -> str:
+    import httpx
+
+    timeout = httpx.Timeout(20.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(
+            "https://api.dingtalk.com/v1.0/workflow/processInstances/spaces/files/urls/download",
+            headers=_dingtalk_api_headers(access_token),
+            json={"processInstanceId": process_instance_id, "fileId": file_id},
+        )
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    if response.status_code >= 400:
+        detail = payload.get("message") if isinstance(payload, dict) else None
+        raise HTTPException(status_code=502, detail=str(detail or "获取钉钉审批附件下载地址失败。"))
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="钉钉审批附件下载地址返回异常。")
+    download_uri = str(result.get("downloadUri") or "").strip()
+    if not download_uri:
+        raise HTTPException(status_code=502, detail="钉钉审批附件下载地址为空。")
+    return download_uri
+
+
+def _dingtalk_download_attachment_bytes(download_uri: str) -> bytes:
+    import httpx
+
+    if download_uri.startswith("#"):
+        raise HTTPException(status_code=502, detail="钉钉返回了占位附件地址，请先在审批详情里确认文件可下载。")
+    timeout = httpx.Timeout(timeout=None, connect=8.0, read=60.0, write=20.0, pool=20.0)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(download_uri)
+        response.raise_for_status()
+        return response.content
+
+
 def _org_membership_summary(state: AppState, current_user: SessionUser) -> OrgMembershipSummaryRecord:
     if not current_user.organizationId:
         return OrgMembershipSummaryRecord(hasOrganization=False)
@@ -2862,6 +3344,208 @@ def _org_feishu_integration_record(state: AppState, current_user: SessionUser, r
         lastValidationMessage=last_validation_message,
         recentAudits=_org_feishu_audit_records(state, membership.organizationId),
     )
+
+
+def _org_dingtalk_finance_integration_record(state: AppState, current_user: SessionUser) -> OrgDingtalkFinanceIntegrationRecord:
+    membership = _org_membership_summary(state, current_user)
+    if not membership.hasOrganization or not membership.organizationId:
+        return OrgDingtalkFinanceIntegrationRecord(
+            organizationId=None,
+            organizationName=None,
+            updatedAt=now_iso(),
+            lastValidationStatus="idle",
+            lastValidationMessage="你还没有加入任何组织。票据证明导入依赖组织级钉钉财务接入。",
+        )
+    row = state.db.fetchone(
+        "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
+        (membership.organizationId,),
+    )
+    if not row:
+        return OrgDingtalkFinanceIntegrationRecord(
+            organizationId=membership.organizationId,
+            organizationName=membership.organizationName,
+            updatedAt=now_iso(),
+            lastValidationStatus="idle",
+            lastValidationMessage="当前组织尚未接通钉钉财务。完成接入后，票据证明池才可开始导入审批票据。",
+        )
+    configured_by = None
+    if row["configured_by"]:
+        actor_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["configured_by"]),))
+        configured_by = str(actor_row["full_name"]) if actor_row and actor_row["full_name"] else str(row["configured_by"])
+    return OrgDingtalkFinanceIntegrationRecord(
+        organizationId=membership.organizationId,
+        organizationName=membership.organizationName,
+        appKey=str(row["app_key"] or ""),
+        operatorMobile=str(row["operator_mobile"] or ""),
+        resolvedOperatorUserId=str(row["resolved_operator_user_id"]) if row["resolved_operator_user_id"] else None,
+        enabled=bool(row["enabled"]),
+        hasAppSecret=bool(row["app_secret_encrypted"]),
+        syncEnabled=bool(row["sync_enabled"]),
+        mappedTemplateNames=[str(item).strip() for item in from_json(row["mapped_template_names_json"], []) if str(item).strip()],
+        configuredBy=configured_by,
+        configuredAt=str(row["configured_at"]) if row["configured_at"] else None,
+        updatedAt=str(row["updated_at"]),
+        lastValidationStatus=str(row["last_validation_status"] or "idle"),
+        lastValidationMessage=str(row["last_validation_message"] or "") or None,
+    )
+
+
+def _expense_evidence_attachment_records(state: AppState, evidence_id: str) -> list[ExpenseEvidenceAttachmentRecord]:
+    rows = state.db.fetchall(
+        "SELECT * FROM expense_evidence_attachments WHERE expense_evidence_id = ? ORDER BY created_at ASC",
+        (evidence_id,),
+    )
+    return [
+        ExpenseEvidenceAttachmentRecord(
+            id=str(row["id"]),
+            expenseEvidenceId=str(row["expense_evidence_id"]),
+            sourceFileId=str(row["source_file_id"]) if row["source_file_id"] else None,
+            sourceSpaceId=str(row["source_space_id"]) if row["source_space_id"] else None,
+            sourceFileType=str(row["source_file_type"]) if row["source_file_type"] else None,
+            fileName=str(row["file_name"]),
+            mimeType=str(row["mime_type"]) if row["mime_type"] else None,
+            sizeBytes=int(row["size_bytes"] or 0),
+            downloadStatus=str(row["download_status"] or "not_fetched"),
+            ocrStatus=str(row["ocr_status"] or "pending"),
+            ocrSummary=str(row["ocr_summary"]) if row["ocr_summary"] else None,
+            storagePath=str(row["storage_path"]) if row["storage_path"] else None,
+            previewUrl=str(row["preview_url"]) if row["preview_url"] else None,
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+        for row in rows
+    ]
+
+
+def _expense_evidence_record(state: AppState, row, *, include_attachments: bool = False) -> ExpenseEvidenceRecord:
+    return ExpenseEvidenceRecord(
+        id=str(row["id"]),
+        organizationId=str(row["organization_id"]),
+        workObjectId=str(row["work_object_id"]) if row["work_object_id"] else None,
+        sourceInstanceId=str(row["source_instance_id"]),
+        sourceTemplateCode=str(row["source_template_code"]) if row["source_template_code"] else None,
+        sourceTemplateName=str(row["source_template_name"]) if row["source_template_name"] else None,
+        sourceTitle=str(row["source_title"]),
+        displayTitle=str(row["display_title"]),
+        applicantUserName=str(row["applicant_user_name"] or ""),
+        amount=float(row["amount"]) if row["amount"] is not None else None,
+        currency=str(row["currency"] or "CNY"),
+        submittedAt=str(row["submitted_at"]) if row["submitted_at"] else None,
+        approvedAt=str(row["approved_at"]) if row["approved_at"] else None,
+        approvalStatus=str(row["approval_status"] or "unknown"),
+        sourceUrl=str(row["source_url"]) if row["source_url"] else None,
+        normalizedCategory=str(row["normalized_category"]) if row["normalized_category"] else None,
+        tags=[str(item).strip() for item in from_json(row["tags_json"], []) if str(item).strip()],
+        summary=str(row["summary"] or ""),
+        lastImportedAt=str(row["last_imported_at"]) if row["last_imported_at"] else None,
+        createdByUserId=str(row["created_by_user_id"]) if row["created_by_user_id"] else None,
+        updatedByUserId=str(row["updated_by_user_id"]) if row["updated_by_user_id"] else None,
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+        attachments=_expense_evidence_attachment_records(state, str(row["id"])) if include_attachments else [],
+    )
+
+
+def _expense_import_source_record(row) -> ExpenseImportSourceRecord:
+    raw_payload = cast(dict[str, object], from_json(row["raw_payload_json"], {}))
+    raw_attachments = raw_payload.get("attachments") if isinstance(raw_payload, dict) else None
+    attachment_records = []
+    if isinstance(raw_attachments, list):
+        for item in raw_attachments:
+            if not isinstance(item, dict):
+                continue
+            attachment_records.append(
+                {
+                    "sourceFileId": str(item.get("sourceFileId") or item.get("source_file_id") or "") or None,
+                    "sourceSpaceId": str(item.get("sourceSpaceId") or item.get("source_space_id") or "") or None,
+                    "sourceFileType": str(item.get("sourceFileType") or item.get("source_file_type") or "") or None,
+                    "fileName": str(item.get("fileName") or item.get("file_name") or "未命名附件"),
+                    "mimeType": str(item.get("mimeType") or item.get("mime_type") or "") or None,
+                    "sizeBytes": int(item.get("sizeBytes") or item.get("size_bytes") or 0),
+                    "previewUrl": str(item.get("previewUrl") or item.get("preview_url") or "") or None,
+                }
+            )
+    return ExpenseImportSourceRecord(
+        id=str(row["id"]),
+        organizationId=str(row["organization_id"]),
+        sourceInstanceId=str(row["source_instance_id"]),
+        sourceTemplateCode=str(row["source_template_code"]) if row["source_template_code"] else None,
+        sourceTemplateName=str(row["source_template_name"]) if row["source_template_name"] else None,
+        sourceTitle=str(row["source_title"]),
+        applicantUserName=str(row["applicant_user_name"] or ""),
+        amount=float(row["amount"]) if row["amount"] is not None else None,
+        currency=str(row["currency"] or "CNY"),
+        submittedAt=str(row["submitted_at"]) if row["submitted_at"] else None,
+        approvedAt=str(row["approved_at"]) if row["approved_at"] else None,
+        approvalStatus=str(row["approval_status"] or "unknown"),
+        sourceUrl=str(row["source_url"]) if row["source_url"] else None,
+        attachments=attachment_records,
+        rawPayload=raw_payload,
+        importedEvidenceId=str(row["imported_evidence_id"]) if row["imported_evidence_id"] else None,
+        lastImportedAt=str(row["last_imported_at"]) if row["last_imported_at"] else None,
+        createdAt=str(row["created_at"]),
+        updatedAt=str(row["updated_at"]),
+    )
+
+
+def _event_line_expense_link_records(state: AppState, event_line_id: str) -> list[EventLineExpenseEvidenceLinkRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT link.*, user.full_name AS linked_by_name
+        FROM event_line_expense_evidence_links link
+        LEFT JOIN employee_accounts user ON user.id = link.linked_by_user_id
+        WHERE link.event_line_id = ?
+        ORDER BY link.created_at DESC
+        """,
+        (event_line_id,),
+    )
+    result: list[EventLineExpenseEvidenceLinkRecord] = []
+    for row in rows:
+        evidence_row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (str(row["expense_evidence_id"]),))
+        evidence = _expense_evidence_record(state, evidence_row) if evidence_row else None
+        result.append(
+            EventLineExpenseEvidenceLinkRecord(
+                id=str(row["id"]),
+                eventLineId=str(row["event_line_id"]),
+                evidenceId=str(row["expense_evidence_id"]),
+                note=str(row["note"] or ""),
+                linkedByUserId=str(row["linked_by_user_id"]) if row["linked_by_user_id"] else None,
+                linkedByUserName=str(row["linked_by_name"]) if row["linked_by_name"] else None,
+                createdAt=str(row["created_at"]),
+                evidence=evidence,
+            )
+        )
+    return result
+
+
+def _task_expense_link_records(state: AppState, task_id: str) -> list[TaskExpenseEvidenceLinkRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT link.*, user.full_name AS linked_by_name
+        FROM task_expense_evidence_links link
+        LEFT JOIN employee_accounts user ON user.id = link.linked_by_user_id
+        WHERE link.task_id = ?
+        ORDER BY link.created_at DESC
+        """,
+        (task_id,),
+    )
+    result: list[TaskExpenseEvidenceLinkRecord] = []
+    for row in rows:
+        evidence_row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (str(row["expense_evidence_id"]),))
+        evidence = _expense_evidence_record(state, evidence_row) if evidence_row else None
+        result.append(
+            TaskExpenseEvidenceLinkRecord(
+                id=str(row["id"]),
+                taskId=str(row["task_id"]),
+                evidenceId=str(row["expense_evidence_id"]),
+                note=str(row["note"] or ""),
+                linkedByUserId=str(row["linked_by_user_id"]) if row["linked_by_user_id"] else None,
+                linkedByUserName=str(row["linked_by_name"]) if row["linked_by_name"] else None,
+                createdAt=str(row["created_at"]),
+                evidence=evidence,
+            )
+        )
+    return result
 
 
 def _normalize_feishu_mobile(raw_value: str | None) -> str:
@@ -6239,7 +6923,13 @@ def _task_note_text(state: AppState, task_id: str) -> str | None:
     return str(note_row["note"]) if note_row and note_row["note"] else None
 
 
-def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskRecord:
+def _task_record(
+    state: AppState,
+    row,
+    viewer_id: str | None = None,
+    *,
+    include_expense_evidence_links: bool = False,
+) -> TaskRecord:
     creator = _get_user_or_404(state, str(row["creator_id"]))
     owner = _get_user_or_404(state, str(row["owner_id"])) if row["owner_id"] else None
     list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (str(row["list_id"]),))
@@ -6337,6 +7027,7 @@ def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskReco
         evidenceCount=max(evidence_count, len(attachments)),
         tags=[_task_tag_record(tr) for tr in _tag_rows_by_ids(state, [str(i) for i in from_json(row["tag_ids_json"], []) if i])] if row["tag_ids_json"] else [],
         attachments=attachments,
+        expenseEvidenceLinks=_task_expense_link_records(state, str(row["id"])) if include_expense_evidence_links else [],
         collaborators=collaborators,
         collaborationSummary=_collaboration_summary(collaborators),
         viewerInboxStatus=viewer_status,
@@ -8006,6 +8697,112 @@ def create_app() -> FastAPI:
         )
         return _org_feishu_integration_record(state, current_user, request)
 
+    @app.get("/api/v1/org-integrations/dingtalk-finance", response_model=OrgDingtalkFinanceIntegrationRecord)
+    def get_org_dingtalk_finance_integration(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgDingtalkFinanceIntegrationRecord:
+        return _org_dingtalk_finance_integration_record(state, current_user)
+
+    @app.post("/api/v1/org-integrations/dingtalk-finance/validate-and-save", response_model=OrgDingtalkFinanceIntegrationRecord)
+    def validate_and_save_org_dingtalk_finance_integration(
+        payload: OrgDingtalkFinanceIntegrationSavePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> OrgDingtalkFinanceIntegrationRecord:
+        membership = _org_membership_summary(state, current_user)
+        if not membership.hasOrganization or not membership.organizationId:
+            raise HTTPException(status_code=400, detail="钉钉票据导入需要组织信息，请先加入组织或创建组织。")
+
+        existing = state.db.fetchone(
+            "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
+            (membership.organizationId,),
+        )
+        app_key = str(payload.appKey or "").strip() if payload.appKey is not None else str(existing["app_key"] or "") if existing else ""
+        operator_mobile = _normalize_phone_number(
+            payload.operatorMobile if payload.operatorMobile is not None else str(existing["operator_mobile"] or "") if existing else ""
+        )
+        app_secret = ""
+        if existing and existing["app_secret_encrypted"] and not payload.clearAppSecret:
+            try:
+                app_secret = _org_dingtalk_decrypt(
+                    state,
+                    str(existing["app_secret_encrypted"]),
+                    str(existing["encryption_nonce"]),
+                    membership.organizationId,
+                )
+            except Exception:
+                app_secret = ""
+        if payload.appSecret and payload.appSecret.strip():
+            app_secret = payload.appSecret.strip()
+
+        if not app_key:
+            raise HTTPException(status_code=400, detail="请先填写钉钉 AppKey。")
+        if not app_secret:
+            raise HTTPException(status_code=400, detail="请先填写钉钉 AppSecret。")
+        if not operator_mobile:
+            raise HTTPException(status_code=400, detail="请先填写一个有审批查看权限的钉钉手机号。")
+
+        access_token = _dingtalk_fetch_app_access_token(app_key, app_secret)
+        resolved_operator_user_id = _dingtalk_get_user_id_by_mobile(access_token, operator_mobile)
+        manageable_templates = _dingtalk_list_manageable_templates(access_token, resolved_operator_user_id)
+        mapped_names = [item.strip() for item in payload.mappedTemplateNames if item.strip()]
+        if mapped_names:
+            manageable_names = {
+                str(item.get("name") or item.get("templateName") or item.get("processName") or "").strip()
+                for item in manageable_templates
+                if isinstance(item, dict)
+            }
+            missing_names = [name for name in mapped_names if name not in manageable_names]
+            if len(missing_names) == len(mapped_names):
+                raise HTTPException(
+                    status_code=400,
+                    detail="当前操作人在钉钉里找不到这些审批模板，请确认模板名称和审批管理权限。",
+                )
+
+        encrypted_secret, encryption_nonce = _org_dingtalk_encrypt(state, app_secret, membership.organizationId)
+        timestamp = now_iso()
+        message = (
+            f"钉钉财务接入验证成功。当前操作人已识别为 {resolved_operator_user_id}，"
+            f"可管理 {len(manageable_templates)} 个审批模板。"
+        )
+        state.db.execute(
+            """
+            INSERT INTO org_dingtalk_finance_integrations(
+                organization_id, app_key, app_secret_encrypted, encryption_nonce, operator_mobile, resolved_operator_user_id, sync_enabled,
+                mapped_template_names_json, enabled, configured_by, configured_at, updated_at,
+                last_validation_status, last_validation_message
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'success', ?)
+            ON CONFLICT(organization_id) DO UPDATE SET
+                app_key = excluded.app_key,
+                app_secret_encrypted = excluded.app_secret_encrypted,
+                encryption_nonce = excluded.encryption_nonce,
+                operator_mobile = excluded.operator_mobile,
+                resolved_operator_user_id = excluded.resolved_operator_user_id,
+                sync_enabled = excluded.sync_enabled,
+                mapped_template_names_json = excluded.mapped_template_names_json,
+                enabled = 1,
+                configured_by = excluded.configured_by,
+                configured_at = COALESCE(org_dingtalk_finance_integrations.configured_at, excluded.configured_at),
+                updated_at = excluded.updated_at,
+                last_validation_status = excluded.last_validation_status,
+                last_validation_message = excluded.last_validation_message
+            """,
+            (
+                membership.organizationId,
+                app_key,
+                encrypted_secret,
+                encryption_nonce,
+                operator_mobile,
+                resolved_operator_user_id,
+                1 if payload.syncEnabled else 0,
+                to_json(mapped_names),
+                current_user.id,
+                timestamp,
+                timestamp,
+                message,
+            ),
+        )
+        return _org_dingtalk_finance_integration_record(state, current_user)
+
     @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
     def get_feishu_delivery_profile(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
@@ -8530,6 +9327,655 @@ def create_app() -> FastAPI:
             (current_user.organizationId,),
         )
         return [_client_summary_record(row) for row in rows]
+
+    @app.get("/api/v1/work-objects/{work_object_id}/expense-evidences", response_model=list[ExpenseEvidenceRecord])
+    def list_expense_evidences(
+        work_object_id: str,
+        query: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=200),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[ExpenseEvidenceRecord]:
+        _client_row_by_id(state, work_object_id, current_user.organizationId)
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM expense_evidences
+            WHERE organization_id = ?
+              AND work_object_id = ?
+              AND (
+                ? = ''
+                OR display_title LIKE ?
+                OR source_title LIKE ?
+                OR applicant_user_name LIKE ?
+                OR normalized_category LIKE ?
+              )
+            ORDER BY COALESCE(approved_at, submitted_at, updated_at) DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (
+                current_user.organizationId,
+                work_object_id,
+                query.strip(),
+                f"%{query.strip()}%",
+                f"%{query.strip()}%",
+                f"%{query.strip()}%",
+                f"%{query.strip()}%",
+                limit,
+            ),
+        )
+        return [_expense_evidence_record(state, row) for row in rows]
+
+    @app.post("/api/v1/work-objects/{work_object_id}/expense-evidences/import-search", response_model=ExpenseImportSearchResponse)
+    def search_importable_expense_evidences(
+        work_object_id: str,
+        payload: ExpenseImportSearchPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpenseImportSearchResponse:
+        _client_row_by_id(state, work_object_id, current_user.organizationId)
+        integration = state.db.fetchone(
+            "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
+            (current_user.organizationId,),
+        )
+        if not integration or not bool(integration["enabled"]):
+            return ExpenseImportSearchResponse(
+                items=[],
+                total=0,
+                message="当前组织尚未接通钉钉财务，因此这里只能返回空结果。接通后，这里将承接票据元数据搜索与导入。",
+            )
+        app_key = str(integration["app_key"] or "").strip()
+        app_secret = _org_dingtalk_decrypt(
+            state,
+            str(integration["app_secret_encrypted"] or ""),
+            str(integration["encryption_nonce"] or ""),
+            current_user.organizationId,
+        )
+        operator_user_id = str(integration["resolved_operator_user_id"] or "").strip()
+        if not app_key or not app_secret or not operator_user_id:
+            raise HTTPException(status_code=400, detail="当前组织的钉钉财务接入尚未完成完整验证，请先回系统设置重新验证保存。")
+
+        access_token = _dingtalk_fetch_app_access_token(app_key, app_secret)
+        manageable_templates = _dingtalk_list_manageable_templates(access_token, operator_user_id)
+        mapped_names = [str(item).strip() for item in from_json(integration["mapped_template_names_json"], []) if str(item).strip()]
+        selected_templates = manageable_templates
+        if mapped_names:
+            selected_templates = [
+                item
+                for item in manageable_templates
+                if str(item.get("name") or item.get("templateName") or item.get("processName") or "").strip() in mapped_names
+            ]
+
+        query_text = payload.query.strip().lower()
+        applicant_query = payload.applicantUserName.strip().lower()
+        submitted_from = payload.submittedFrom or (datetime.now() - timedelta(days=180)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        submitted_to = payload.submittedTo or datetime.now().replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
+        start_time_ms = int(datetime.fromisoformat(submitted_from).timestamp() * 1000)
+        end_time_ms = int(datetime.fromisoformat(submitted_to).timestamp() * 1000)
+        desired_limit = max(1, min(payload.limit, 100))
+        collected_rows: list[dict[str, object]] = []
+
+        for template in selected_templates[:12]:
+            process_code = str(template.get("processCode") or template.get("process_code") or "").strip()
+            if not process_code:
+                continue
+            template_name = str(template.get("name") or template.get("templateName") or template.get("processName") or "").strip() or None
+            instance_ids = _dingtalk_list_process_instance_ids(
+                access_token,
+                process_code=process_code,
+                operator_user_id=operator_user_id,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+                size=min(max(desired_limit * 2, 20), 60),
+            )
+            for process_instance_id in instance_ids:
+                detail = _dingtalk_get_process_instance_detail(access_token, process_instance_id)
+                normalized = _dingtalk_normalize_import_source(
+                    detail,
+                    organization_id=current_user.organizationId,
+                    process_instance_id=process_instance_id,
+                    source_template_code=process_code,
+                    source_template_name=template_name,
+                )
+                haystack = " ".join(
+                    [
+                        str(normalized.get("source_title") or ""),
+                        str(normalized.get("applicant_user_name") or ""),
+                        str(normalized.get("source_template_name") or ""),
+                    ]
+                ).lower()
+                if query_text and query_text not in haystack:
+                    continue
+                if applicant_query and applicant_query not in str(normalized.get("applicant_user_name") or "").lower():
+                    continue
+                if payload.approvalStatus and str(normalized.get("approval_status") or "") != payload.approvalStatus:
+                    continue
+                collected_rows.append(normalized)
+                if len(collected_rows) >= desired_limit:
+                    break
+            if len(collected_rows) >= desired_limit:
+                break
+
+        timestamp = now_iso()
+        upserted_ids: list[str] = []
+        for item in collected_rows:
+            existing_source = state.db.fetchone(
+                """
+                SELECT id, imported_evidence_id
+                FROM expense_import_sources
+                WHERE organization_id = ? AND source_system = 'dingtalk_finance' AND source_instance_id = ?
+                """,
+                (current_user.organizationId, str(item["source_instance_id"])),
+            )
+            source_id = str(existing_source["id"]) if existing_source else new_id("expense_src")
+            state.db.execute(
+                """
+                INSERT INTO expense_import_sources(
+                    id, organization_id, source_system, source_instance_id, source_template_code, source_template_name,
+                    source_title, applicant_user_name, amount, currency, submitted_at, approved_at, approval_status,
+                    source_url, raw_payload_json, imported_evidence_id, last_imported_at, created_at, updated_at
+                ) VALUES(?, ?, 'dingtalk_finance', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(organization_id, source_system, source_instance_id) DO UPDATE SET
+                    source_template_code = excluded.source_template_code,
+                    source_template_name = excluded.source_template_name,
+                    source_title = excluded.source_title,
+                    applicant_user_name = excluded.applicant_user_name,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    submitted_at = excluded.submitted_at,
+                    approved_at = excluded.approved_at,
+                    approval_status = excluded.approval_status,
+                    source_url = excluded.source_url,
+                    raw_payload_json = excluded.raw_payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    source_id,
+                    current_user.organizationId,
+                    str(item["source_instance_id"]),
+                    item.get("source_template_code"),
+                    item.get("source_template_name"),
+                    str(item["source_title"]),
+                    str(item.get("applicant_user_name") or ""),
+                    item.get("amount"),
+                    str(item.get("currency") or "CNY"),
+                    item.get("submitted_at"),
+                    item.get("approved_at"),
+                    str(item.get("approval_status") or "unknown"),
+                    item.get("source_url"),
+                    item.get("raw_payload_json"),
+                    str(existing_source["imported_evidence_id"]) if existing_source and existing_source["imported_evidence_id"] else None,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            upserted_ids.append(source_id)
+
+        rows = state.db.fetchall(
+            f"""
+            SELECT *
+            FROM expense_import_sources
+            WHERE organization_id = ?
+              AND id IN ({",".join("?" for _ in upserted_ids) if upserted_ids else "''"})
+            ORDER BY COALESCE(approved_at, submitted_at, updated_at) DESC, updated_at DESC
+            """,
+            (current_user.organizationId, *upserted_ids) if upserted_ids else (current_user.organizationId,),
+        )
+        items = [_expense_import_source_record(row) for row in rows][:desired_limit]
+        message = None
+        if not items:
+            message = "这次没有从钉钉里搜到匹配的审批记录，请缩小时间范围、检查模板映射或确认当前操作人的审批权限。"
+        return ExpenseImportSearchResponse(items=items, total=len(items), message=message)
+
+    @app.post("/api/v1/work-objects/{work_object_id}/expense-evidences/import", response_model=ExpenseEvidenceImportResult)
+    def import_expense_evidences(
+        work_object_id: str,
+        payload: ExpenseEvidenceImportPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpenseEvidenceImportResult:
+        _client_row_by_id(state, work_object_id, current_user.organizationId)
+        timestamp = now_iso()
+        imported: list[ExpenseEvidenceRecord] = []
+        skipped = 0
+
+        for item in payload.items:
+            existing_row = state.db.fetchone(
+                """
+                SELECT *
+                FROM expense_evidences
+                WHERE organization_id = ? AND source_system = 'dingtalk_finance' AND source_instance_id = ?
+                """,
+                (current_user.organizationId, item.sourceInstanceId),
+            )
+            evidence_id = str(existing_row["id"]) if existing_row else new_id("expense")
+            display_title = (item.displayTitle or "").strip() or item.sourceTitle.strip()
+            normalized_category = (item.normalizedCategory or "").strip() or None
+            summary = item.summary.strip()
+            tags = [tag.strip() for tag in item.tags if tag.strip()]
+            state.db.execute(
+                """
+                INSERT INTO expense_evidences(
+                    id, organization_id, work_object_id, source_system, source_instance_id, source_template_code,
+                    source_template_name, source_title, display_title, applicant_user_name, amount, currency,
+                    submitted_at, approved_at, approval_status, source_url, normalized_category, tags_json,
+                    summary, last_imported_at, created_by_user_id, updated_by_user_id, created_at, updated_at
+                ) VALUES(?, ?, ?, 'dingtalk_finance', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    work_object_id = excluded.work_object_id,
+                    source_template_code = excluded.source_template_code,
+                    source_template_name = excluded.source_template_name,
+                    source_title = excluded.source_title,
+                    display_title = excluded.display_title,
+                    applicant_user_name = excluded.applicant_user_name,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    submitted_at = excluded.submitted_at,
+                    approved_at = excluded.approved_at,
+                    approval_status = excluded.approval_status,
+                    source_url = excluded.source_url,
+                    normalized_category = excluded.normalized_category,
+                    tags_json = excluded.tags_json,
+                    summary = excluded.summary,
+                    last_imported_at = excluded.last_imported_at,
+                    updated_by_user_id = excluded.updated_by_user_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    evidence_id,
+                    current_user.organizationId,
+                    work_object_id,
+                    item.sourceInstanceId,
+                    item.sourceTemplateCode,
+                    item.sourceTemplateName,
+                    item.sourceTitle.strip(),
+                    display_title,
+                    item.applicantUserName.strip(),
+                    item.amount,
+                    item.currency.strip() or "CNY",
+                    item.submittedAt,
+                    item.approvedAt,
+                    item.approvalStatus.strip() or "unknown",
+                    item.sourceUrl,
+                    normalized_category,
+                    to_json(tags),
+                    summary,
+                    timestamp,
+                    current_user.id if not existing_row else str(existing_row["created_by_user_id"] or current_user.id),
+                    current_user.id,
+                    str(existing_row["created_at"]) if existing_row and existing_row["created_at"] else timestamp,
+                    timestamp,
+                ),
+            )
+            state.db.execute(
+                """
+                INSERT INTO expense_import_sources(
+                    id, organization_id, source_system, source_instance_id, source_template_code, source_template_name,
+                    source_title, applicant_user_name, amount, currency, submitted_at, approved_at, approval_status,
+                    source_url, raw_payload_json, imported_evidence_id, last_imported_at, created_at, updated_at
+                ) VALUES(?, ?, 'dingtalk_finance', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(organization_id, source_system, source_instance_id) DO UPDATE SET
+                    source_template_code = excluded.source_template_code,
+                    source_template_name = excluded.source_template_name,
+                    source_title = excluded.source_title,
+                    applicant_user_name = excluded.applicant_user_name,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    submitted_at = excluded.submitted_at,
+                    approved_at = excluded.approved_at,
+                    approval_status = excluded.approval_status,
+                    source_url = excluded.source_url,
+                    raw_payload_json = excluded.raw_payload_json,
+                    imported_evidence_id = excluded.imported_evidence_id,
+                    last_imported_at = excluded.last_imported_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    new_id("expense_src"),
+                    current_user.organizationId,
+                    item.sourceInstanceId,
+                    item.sourceTemplateCode,
+                    item.sourceTemplateName,
+                    item.sourceTitle.strip(),
+                    item.applicantUserName.strip(),
+                    item.amount,
+                    item.currency.strip() or "CNY",
+                    item.submittedAt,
+                    item.approvedAt,
+                    item.approvalStatus.strip() or "unknown",
+                    item.sourceUrl,
+                    to_json(item.rawPayload),
+                    evidence_id,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            for attachment in item.attachments:
+                existing_attachment = state.db.fetchone(
+                    """
+                    SELECT id
+                    FROM expense_evidence_attachments
+                    WHERE expense_evidence_id = ?
+                      AND COALESCE(source_file_id, '') = ?
+                      AND file_name = ?
+                    """,
+                    (evidence_id, attachment.sourceFileId or "", attachment.fileName),
+                )
+                attachment_id = str(existing_attachment["id"]) if existing_attachment else new_id("expense_att")
+                state.db.execute(
+                    """
+                    INSERT INTO expense_evidence_attachments(
+                        id, expense_evidence_id, source_file_id, source_space_id, source_file_type, file_name, mime_type, size_bytes, download_status,
+                        ocr_status, ocr_summary, storage_path, preview_url, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'not_fetched', 'pending', NULL, NULL, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        source_file_id = excluded.source_file_id,
+                        source_space_id = excluded.source_space_id,
+                        source_file_type = excluded.source_file_type,
+                        file_name = excluded.file_name,
+                        mime_type = excluded.mime_type,
+                        size_bytes = excluded.size_bytes,
+                        preview_url = excluded.preview_url,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        attachment_id,
+                        evidence_id,
+                        attachment.sourceFileId,
+                        attachment.sourceSpaceId,
+                        attachment.sourceFileType,
+                        attachment.fileName.strip(),
+                        attachment.mimeType,
+                        max(int(attachment.sizeBytes or 0), 0),
+                        attachment.previewUrl,
+                        str(existing_row["created_at"]) if existing_row and existing_row["created_at"] else timestamp,
+                        timestamp,
+                    ),
+                )
+            evidence_row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (evidence_id,))
+            if evidence_row:
+                imported.append(_expense_evidence_record(state, evidence_row, include_attachments=True))
+            else:
+                skipped += 1
+
+        return ExpenseEvidenceImportResult(imported=imported, importedCount=len(imported), skippedCount=skipped)
+
+    @app.get("/api/v1/expense-evidences/{evidence_id}", response_model=ExpenseEvidenceRecord)
+    def get_expense_evidence(
+        evidence_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpenseEvidenceRecord:
+        row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?", (evidence_id, current_user.organizationId))
+        if not row:
+            raise HTTPException(status_code=404, detail="票据记录不存在。")
+        return _expense_evidence_record(state, row, include_attachments=True)
+
+    @app.patch("/api/v1/expense-evidences/{evidence_id}", response_model=ExpenseEvidenceRecord)
+    def update_expense_evidence(
+        evidence_id: str,
+        payload: ExpenseEvidenceUpdatePayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpenseEvidenceRecord:
+        row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?", (evidence_id, current_user.organizationId))
+        if not row:
+            raise HTTPException(status_code=404, detail="票据记录不存在。")
+        merged_work_object_id = payload.workObjectId if "workObjectId" in payload.model_fields_set else row["work_object_id"]
+        if merged_work_object_id:
+            _client_row_by_id(state, str(merged_work_object_id), current_user.organizationId)
+        state.db.execute(
+            """
+            UPDATE expense_evidences
+            SET work_object_id = ?, display_title = ?, normalized_category = ?, tags_json = ?, summary = ?, updated_by_user_id = ?, updated_at = ?
+            WHERE id = ? AND organization_id = ?
+            """,
+            (
+                merged_work_object_id,
+                (payload.displayTitle if "displayTitle" in payload.model_fields_set and payload.displayTitle is not None else str(row["display_title"])).strip(),
+                (payload.normalizedCategory if "normalizedCategory" in payload.model_fields_set else row["normalized_category"]) or None,
+                to_json(payload.tags if payload.tags is not None else from_json(row["tags_json"], [])),
+                (payload.summary if "summary" in payload.model_fields_set and payload.summary is not None else str(row["summary"] or "")).strip(),
+                current_user.id,
+                now_iso(),
+                evidence_id,
+                current_user.organizationId,
+            ),
+        )
+        refreshed = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (evidence_id,))
+        return _expense_evidence_record(state, refreshed, include_attachments=True)
+
+    @app.post("/api/v1/expense-evidences/{evidence_id}/attachments/fetch", response_model=ExpenseEvidenceRecord)
+    def fetch_expense_evidence_attachments(
+        evidence_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ExpenseEvidenceRecord:
+        row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?", (evidence_id, current_user.organizationId))
+        if not row:
+            raise HTTPException(status_code=404, detail="票据记录不存在。")
+        integration = state.db.fetchone(
+            "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
+            (current_user.organizationId,),
+        )
+        if not integration or not bool(integration["enabled"]):
+            raise HTTPException(status_code=400, detail="当前组织尚未接通钉钉财务，无法抓取票据附件。")
+        app_key = str(integration["app_key"] or "").strip()
+        app_secret = _org_dingtalk_decrypt(
+            state,
+            str(integration["app_secret_encrypted"] or ""),
+            str(integration["encryption_nonce"] or ""),
+            current_user.organizationId,
+        )
+        if not app_key or not app_secret:
+            raise HTTPException(status_code=400, detail="当前组织的钉钉财务密钥不完整，请先回系统设置重新验证保存。")
+        access_token = _dingtalk_fetch_app_access_token(app_key, app_secret)
+        timestamp = now_iso()
+        attachment_rows = state.db.fetchall(
+            "SELECT * FROM expense_evidence_attachments WHERE expense_evidence_id = ? ORDER BY created_at ASC",
+            (evidence_id,),
+        )
+        attachment_dir = state.data_dir / "expense-evidence-attachments" / current_user.organizationId / evidence_id
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        for attachment_row in attachment_rows:
+            attachment_id = str(attachment_row["id"])
+            file_name = str(attachment_row["file_name"] or "未命名附件")
+            source_file_id = str(attachment_row["source_file_id"] or "").strip()
+            mime_type = str(attachment_row["mime_type"] or "") or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+            if not source_file_id:
+                state.db.execute(
+                    """
+                    UPDATE expense_evidence_attachments
+                    SET download_status = 'failed',
+                        ocr_status = 'skipped',
+                        ocr_summary = '钉钉未返回可下载的 fileId',
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (timestamp, attachment_id),
+                )
+                continue
+            try:
+                download_uri = _dingtalk_fetch_attachment_download_uri(
+                    access_token,
+                    process_instance_id=str(row["source_instance_id"]),
+                    file_id=source_file_id,
+                )
+                content = _dingtalk_download_attachment_bytes(download_uri)
+                safe_name = safe_filename(file_name)
+                target_path = attachment_dir / f"{attachment_id}_{safe_name}"
+                target_path.write_bytes(content)
+                relative_path = str(target_path.relative_to(state.data_dir))
+                preview_url = _expense_evidence_attachment_public_url(attachment_id)
+                ocr_status = "skipped"
+                ocr_summary = None
+                if mime_type.startswith("image/"):
+                    ocr_status, ocr_summary = _ocr_expense_image_attachment(state, target_path, mime_type)
+                state.db.execute(
+                    """
+                    UPDATE expense_evidence_attachments
+                    SET mime_type = ?,
+                        size_bytes = ?,
+                        download_status = 'fetched',
+                        ocr_status = ?,
+                        ocr_summary = ?,
+                        storage_path = ?,
+                        preview_url = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        mime_type,
+                        len(content),
+                        ocr_status,
+                        ocr_summary,
+                        relative_path,
+                        preview_url,
+                        timestamp,
+                        attachment_id,
+                    ),
+                )
+            except Exception as exc:
+                state.db.execute(
+                    """
+                    UPDATE expense_evidence_attachments
+                    SET download_status = 'failed',
+                        ocr_status = 'failed',
+                        ocr_summary = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (str(exc), timestamp, attachment_id),
+                )
+        refreshed = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (evidence_id,))
+        return _expense_evidence_record(state, refreshed, include_attachments=True)
+
+    @app.get("/api/v1/event-lines/{event_line_id}/expense-evidences", response_model=list[EventLineExpenseEvidenceLinkRecord])
+    def list_event_line_expense_evidences(
+        event_line_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[EventLineExpenseEvidenceLinkRecord]:
+        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        return _event_line_expense_link_records(state, event_line_id)
+
+    @app.post("/api/v1/event-lines/{event_line_id}/expense-evidences/link", response_model=EventLineExpenseEvidenceLinkRecord)
+    def link_expense_evidence_to_event_line(
+        event_line_id: str,
+        payload: EventLineExpenseEvidenceLinkPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> EventLineExpenseEvidenceLinkRecord:
+        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        evidence_row = state.db.fetchone(
+            "SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?",
+            (payload.evidenceId, current_user.organizationId),
+        )
+        if not evidence_row:
+            raise HTTPException(status_code=404, detail="票据记录不存在。")
+        link_row = state.db.fetchone(
+            "SELECT * FROM event_line_expense_evidence_links WHERE event_line_id = ? AND expense_evidence_id = ?",
+            (event_line_id, payload.evidenceId),
+        )
+        link_id = str(link_row["id"]) if link_row else new_id("expense_link")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO event_line_expense_evidence_links(id, organization_id, event_line_id, expense_evidence_id, note, linked_by_user_id, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_line_id, expense_evidence_id) DO UPDATE SET
+                note = excluded.note,
+                linked_by_user_id = excluded.linked_by_user_id
+            """,
+            (
+                link_id,
+                current_user.organizationId,
+                event_line_id,
+                payload.evidenceId,
+                payload.note.strip(),
+                current_user.id,
+                timestamp,
+            ),
+        )
+        return _event_line_expense_link_records(state, event_line_id)[0]
+
+    @app.delete("/api/v1/event-lines/{event_line_id}/expense-evidences/{evidence_id}")
+    def unlink_expense_evidence_from_event_line(
+        event_line_id: str,
+        evidence_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, bool]:
+        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        state.db.execute(
+            """
+            DELETE FROM event_line_expense_evidence_links
+            WHERE organization_id = ? AND event_line_id = ? AND expense_evidence_id = ?
+            """,
+            (current_user.organizationId, event_line_id, evidence_id),
+        )
+        return {"deleted": True}
+
+    @app.get("/api/v1/tasks/{task_id}/expense-evidences", response_model=list[TaskExpenseEvidenceLinkRecord])
+    def list_task_expense_evidences(
+        task_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[TaskExpenseEvidenceLinkRecord]:
+        row = _task_row_or_404(state, task_id)
+        if str(row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        return _task_expense_link_records(state, task_id)
+
+    @app.post("/api/v1/tasks/{task_id}/expense-evidences/link", response_model=TaskExpenseEvidenceLinkRecord)
+    def link_expense_evidence_to_task(
+        task_id: str,
+        payload: TaskExpenseEvidenceLinkPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskExpenseEvidenceLinkRecord:
+        row = _task_row_or_404(state, task_id)
+        if str(row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        evidence_row = state.db.fetchone(
+            "SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?",
+            (payload.evidenceId, current_user.organizationId),
+        )
+        if not evidence_row:
+            raise HTTPException(status_code=404, detail="票据记录不存在。")
+        link_row = state.db.fetchone(
+            "SELECT * FROM task_expense_evidence_links WHERE task_id = ? AND expense_evidence_id = ?",
+            (task_id, payload.evidenceId),
+        )
+        link_id = str(link_row["id"]) if link_row else new_id("task_expense_link")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO task_expense_evidence_links(id, organization_id, task_id, expense_evidence_id, note, linked_by_user_id, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, expense_evidence_id) DO UPDATE SET
+                note = excluded.note,
+                linked_by_user_id = excluded.linked_by_user_id
+            """,
+            (
+                link_id,
+                current_user.organizationId,
+                task_id,
+                payload.evidenceId,
+                payload.note.strip(),
+                current_user.id,
+                timestamp,
+            ),
+        )
+        return _task_expense_link_records(state, task_id)[0]
+
+    @app.delete("/api/v1/tasks/{task_id}/expense-evidences/{evidence_id}")
+    def unlink_expense_evidence_from_task(
+        task_id: str,
+        evidence_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> dict[str, bool]:
+        row = _task_row_or_404(state, task_id)
+        if str(row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        state.db.execute(
+            """
+            DELETE FROM task_expense_evidence_links
+            WHERE organization_id = ? AND task_id = ? AND expense_evidence_id = ?
+            """,
+            (current_user.organizationId, task_id, evidence_id),
+        )
+        return {"deleted": True}
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(
@@ -9682,6 +11128,20 @@ def create_app() -> FastAPI:
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
         attachment_path = state.data_dir / str(row["path"])
+        if not attachment_path.exists() or not attachment_path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
+        return FileResponse(attachment_path, media_type=media_type, filename=attachment_path.name)
+
+    @app.get("/api/public/expense-evidence-attachments/{attachment_id}")
+    def get_public_expense_evidence_attachment(attachment_id: str) -> FileResponse:
+        row = state.db.fetchone("SELECT * FROM expense_evidence_attachments WHERE id = ?", (attachment_id,))
+        if row is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        storage_path = str(row["storage_path"] or "").strip()
+        if not storage_path:
+            raise HTTPException(status_code=404, detail="File not found")
+        attachment_path = state.data_dir / storage_path
         if not attachment_path.exists() or not attachment_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")

@@ -989,6 +989,7 @@ class TaskRecord(BaseModel):
     tags: list["TaskTagRecord"] = Field(default_factory=list)
     note: str | None = None
     attachments: list["TaskAttachmentRecord"] = Field(default_factory=list)
+    expenseEvidenceLinks: list["TaskExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     collaborators: list["TaskCollaboratorRecord"] = Field(default_factory=list)
     collaborationSummary: dict[str, int] = Field(default_factory=dict)
     viewerInboxStatus: CollaboratorInboxStatus | None = None
@@ -1910,6 +1911,197 @@ class FeishuDeliveryProfileSavePayload(BaseModel):
     mobile: str | None = None
 
 
+class OrgDingtalkFinanceIntegrationRecord(BaseModel):
+    organizationId: str | None = None
+    organizationName: str | None = None
+    appKey: str = ""
+    operatorMobile: str = ""
+    resolvedOperatorUserId: str | None = None
+    enabled: bool = False
+    hasAppSecret: bool = False
+    syncEnabled: bool = True
+    mappedTemplateNames: list[str] = Field(default_factory=list)
+    configuredBy: str | None = None
+    configuredAt: str | None = None
+    updatedAt: str
+    lastValidationStatus: Literal["idle", "success", "failed"] = "idle"
+    lastValidationMessage: str | None = None
+
+
+class OrgDingtalkFinanceIntegrationSavePayload(BaseModel):
+    appKey: str | None = None
+    appSecret: str | None = None
+    operatorMobile: str | None = None
+    clearAppSecret: bool = False
+    syncEnabled: bool = True
+    mappedTemplateNames: list[str] = Field(default_factory=list)
+
+
+class ExpenseImportSourceRecord(BaseModel):
+    id: str
+    organizationId: str
+    sourceSystem: Literal["dingtalk_finance"] = "dingtalk_finance"
+    sourceInstanceId: str
+    sourceTemplateCode: str | None = None
+    sourceTemplateName: str | None = None
+    sourceTitle: str
+    applicantUserName: str = ""
+    amount: float | None = None
+    currency: str = "CNY"
+    submittedAt: str | None = None
+    approvedAt: str | None = None
+    approvalStatus: str = "unknown"
+    sourceUrl: str | None = None
+    attachments: list["ExpenseEvidenceAttachmentImportPayload"] = Field(default_factory=list)
+    rawPayload: dict[str, object] = Field(default_factory=dict)
+    importedEvidenceId: str | None = None
+    lastImportedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ExpenseImportSearchPayload(BaseModel):
+    query: str = ""
+    applicantUserName: str = ""
+    approvalStatus: str | None = None
+    submittedFrom: str | None = None
+    submittedTo: str | None = None
+    includeImported: bool = True
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class ExpenseImportSearchResponse(BaseModel):
+    items: list[ExpenseImportSourceRecord] = Field(default_factory=list)
+    total: int = 0
+    message: str | None = None
+
+
+class ExpenseEvidenceAttachmentImportPayload(BaseModel):
+    sourceFileId: str | None = None
+    sourceSpaceId: str | None = None
+    sourceFileType: str | None = None
+    fileName: str = Field(min_length=1)
+    mimeType: str | None = None
+    sizeBytes: int = 0
+    previewUrl: str | None = None
+
+
+class ExpenseEvidenceImportItemPayload(BaseModel):
+    sourceInstanceId: str = Field(min_length=1)
+    sourceTemplateCode: str | None = None
+    sourceTemplateName: str | None = None
+    sourceTitle: str = Field(min_length=1)
+    applicantUserName: str = ""
+    amount: float | None = None
+    currency: str = "CNY"
+    submittedAt: str | None = None
+    approvedAt: str | None = None
+    approvalStatus: str = "unknown"
+    sourceUrl: str | None = None
+    displayTitle: str | None = None
+    normalizedCategory: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    summary: str = ""
+    attachments: list[ExpenseEvidenceAttachmentImportPayload] = Field(default_factory=list)
+    rawPayload: dict[str, object] = Field(default_factory=dict)
+
+
+class ExpenseEvidenceImportPayload(BaseModel):
+    items: list[ExpenseEvidenceImportItemPayload] = Field(default_factory=list)
+
+
+class ExpenseEvidenceAttachmentRecord(BaseModel):
+    id: str
+    expenseEvidenceId: str
+    sourceFileId: str | None = None
+    sourceSpaceId: str | None = None
+    sourceFileType: str | None = None
+    fileName: str
+    mimeType: str | None = None
+    sizeBytes: int = 0
+    downloadStatus: Literal["not_fetched", "fetched", "failed"] = "not_fetched"
+    ocrStatus: Literal["pending", "done", "failed", "skipped"] = "pending"
+    ocrSummary: str | None = None
+    storagePath: str | None = None
+    previewUrl: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ExpenseEvidenceRecord(BaseModel):
+    id: str
+    organizationId: str
+    workObjectId: str | None = None
+    sourceSystem: Literal["dingtalk_finance"] = "dingtalk_finance"
+    sourceInstanceId: str
+    sourceTemplateCode: str | None = None
+    sourceTemplateName: str | None = None
+    sourceTitle: str
+    displayTitle: str
+    applicantUserName: str = ""
+    amount: float | None = None
+    currency: str = "CNY"
+    submittedAt: str | None = None
+    approvedAt: str | None = None
+    approvalStatus: str = "unknown"
+    sourceUrl: str | None = None
+    normalizedCategory: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    summary: str = ""
+    lastImportedAt: str | None = None
+    createdByUserId: str | None = None
+    updatedByUserId: str | None = None
+    createdAt: str
+    updatedAt: str
+    attachments: list[ExpenseEvidenceAttachmentRecord] = Field(default_factory=list)
+
+
+class ExpenseEvidenceUpdatePayload(BaseModel):
+    workObjectId: str | None = None
+    displayTitle: str | None = None
+    normalizedCategory: str | None = None
+    tags: list[str] | None = None
+    summary: str | None = None
+
+
+class ExpenseEvidenceImportResult(BaseModel):
+    imported: list[ExpenseEvidenceRecord] = Field(default_factory=list)
+    importedCount: int = 0
+    skippedCount: int = 0
+
+
+class EventLineExpenseEvidenceLinkRecord(BaseModel):
+    id: str
+    eventLineId: str
+    evidenceId: str
+    note: str = ""
+    linkedByUserId: str | None = None
+    linkedByUserName: str | None = None
+    createdAt: str
+    evidence: ExpenseEvidenceRecord | None = None
+
+
+class EventLineExpenseEvidenceLinkPayload(BaseModel):
+    evidenceId: str = Field(min_length=1)
+    note: str = ""
+
+
+class TaskExpenseEvidenceLinkRecord(BaseModel):
+    id: str
+    taskId: str
+    evidenceId: str
+    note: str = ""
+    linkedByUserId: str | None = None
+    linkedByUserName: str | None = None
+    createdAt: str
+    evidence: ExpenseEvidenceRecord | None = None
+
+
+class TaskExpenseEvidenceLinkPayload(BaseModel):
+    evidenceId: str = Field(min_length=1)
+    note: str = ""
+
+
 class AiTagSuggestionPayload(BaseModel):
     title: str
     desc: str = ""
@@ -2056,6 +2248,7 @@ class EventLineDetailRecord(BaseModel):
     eventLine: EventLineRecord
     tasks: list[TaskRecord] = Field(default_factory=list)
     activities: list[EventLineActivityRecord] = Field(default_factory=list)
+    expenseEvidenceLinks: list["EventLineExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     memorySnapshot: EventLineMemorySnapshot | None = None
     predictionReadiness: float | None = None
     clarificationNeeds: list[str] = Field(default_factory=list)

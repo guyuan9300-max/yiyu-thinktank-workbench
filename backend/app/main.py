@@ -185,6 +185,8 @@ from app.models import (
     EventLineContextFactRecord,
     EventLineCreatePayload,
     EventLineDetailRecord,
+    EventLineExpenseEvidenceLinkPayload,
+    EventLineExpenseEvidenceLinkRecord,
     EventLineJudgmentRecord,
     EventLineProjectFilterOptionRecord,
     EventLineOpportunityCardRecord,
@@ -195,6 +197,8 @@ from app.models import (
     EventLineUpdatePayload,
     OperatorRecord,
     OrgDepartmentRecord,
+    OrgDingtalkFinanceIntegrationRecord,
+    OrgDingtalkFinanceIntegrationSavePayload,
     OrgEmployeeBindingRecord,
     OrgFeishuIntegrationRecord,
     OrgFeishuIntegrationSavePayload,
@@ -257,6 +261,8 @@ from app.models import (
     TaskPlanLinkRecord,
     TaskPlanLinkUpsertPayload,
     TaskPayload,
+    TaskExpenseEvidenceLinkPayload,
+    TaskExpenseEvidenceLinkRecord,
     TaskRecord,
     TaskRejectPayload,
     TaskSettingsPayload,
@@ -270,6 +276,12 @@ from app.models import (
     SupportRequestResolvePayload,
     ApplyTaskGroupTemplatePayload,
     ApplyTaskGroupTemplateResult,
+    ExpenseEvidenceImportPayload,
+    ExpenseEvidenceImportResult,
+    ExpenseEvidenceRecord,
+    ExpenseEvidenceUpdatePayload,
+    ExpenseImportSearchPayload,
+    ExpenseImportSearchResponse,
     TaskTagLibraryResponse,
     TaskGroupTemplatePayload,
     TaskGroupTemplateRecord,
@@ -6304,6 +6316,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id=client_id,
             event_line_id=event_line_id,
         )
+        expense_evidence_links = [
+            TaskExpenseEvidenceLinkRecord(**item)
+            for item in payload.get("expenseEvidenceLinks", [])
+            if isinstance(item, dict)
+        ]
         return TaskRecord(
             id=str(payload.get("id")),
             title=str(payload.get("title", "")),
@@ -6340,6 +6357,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             tags=[build_cloud_task_tag(item) for item in payload.get("tags", []) if isinstance(item, dict)],
             note=resolved_note,
             attachments=attachments,
+            expenseEvidenceLinks=expense_evidence_links,
             collaborators=collaborators,
             collaborationSummary=payload.get("collaborationSummary") if isinstance(payload.get("collaborationSummary"), dict) else {},
             viewerInboxStatus=viewer_status if isinstance(viewer_status, str) else None,
@@ -6763,6 +6781,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         event_line_payload = payload.get("eventLine")
         tasks_payload = payload.get("tasks")
         activities_payload = payload.get("activities")
+        expense_links_payload = payload.get("expenseEvidenceLinks")
         event_line = (
             build_cloud_event_line(event_line_payload)
             if isinstance(event_line_payload, dict)
@@ -6797,6 +6816,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             eventLine=event_line,
             tasks=[build_cloud_task(item, {}) for item in tasks_payload if isinstance(item, dict)] if isinstance(tasks_payload, list) else [],
             activities=combined_activities,
+            expenseEvidenceLinks=[
+                EventLineExpenseEvidenceLinkRecord(**item)
+                for item in expense_links_payload
+                if isinstance(item, dict)
+            ] if isinstance(expense_links_payload, list) else [],
             memorySnapshot=memory_response.eventLineMemorySnapshot,
             predictionReadiness=memory_response.eventLineMemorySnapshot.predictionReadiness if memory_response.eventLineMemorySnapshot else None,
             clarificationNeeds=memory_response.clarificationNeeds,
@@ -6818,6 +6842,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             eventLine=build_event_line(row),
             tasks=tasks,
             activities=[build_event_line_activity(item) for item in activity_rows],
+            expenseEvidenceLinks=[],
             memorySnapshot=memory_response.eventLineMemorySnapshot,
             predictionReadiness=memory_response.eventLineMemorySnapshot.predictionReadiness if memory_response.eventLineMemorySnapshot else None,
             clarificationNeeds=memory_response.clarificationNeeds,
@@ -17537,6 +17562,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid org feishu payload")
         return OrgFeishuIntegrationRecord(**response)
 
+    @app.get("/api/v1/org-integrations/dingtalk-finance", response_model=OrgDingtalkFinanceIntegrationRecord)
+    def get_org_dingtalk_finance_integration() -> OrgDingtalkFinanceIntegrationRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return OrgDingtalkFinanceIntegrationRecord(
+                organizationId=None,
+                organizationName=None,
+                updatedAt=now_iso(),
+                lastValidationStatus="idle",
+                lastValidationMessage="连接云端并加入或创建组织后，才能启用钉钉票据导入。",
+            )
+        payload = cloud_request("GET", "/api/v1/org-integrations/dingtalk-finance")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid org dingtalk finance payload")
+        return OrgDingtalkFinanceIntegrationRecord(**payload)
+
+    @app.post("/api/v1/org-integrations/dingtalk-finance/validate-and-save", response_model=OrgDingtalkFinanceIntegrationRecord)
+    def validate_and_save_org_dingtalk_finance_integration(
+        payload: OrgDingtalkFinanceIntegrationSavePayload,
+    ) -> OrgDingtalkFinanceIntegrationRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="连接云端并加入或创建组织后，才能启用钉钉票据导入。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/org-integrations/dingtalk-finance/validate-and-save",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid org dingtalk finance payload")
+        return OrgDingtalkFinanceIntegrationRecord(**response)
+
     @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
     def get_feishu_delivery_profile() -> FeishuDeliveryProfileRecord:
         if not get_cloud_token() and not get_cloud_refresh_token():
@@ -17786,6 +17841,138 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             scope_params,
         )
         return [build_event_line(row) for row in rows]
+
+    @app.get("/api/v1/work-objects/{work_object_id}/expense-evidences", response_model=list[ExpenseEvidenceRecord])
+    def list_work_object_expense_evidences(work_object_id: str, query: str = Query(default=""), limit: int = Query(default=50, ge=1, le=200)) -> list[ExpenseEvidenceRecord]:
+        if not has_active_cloud_session():
+            return []
+        payload = cloud_request(
+            "GET",
+            f"/api/v1/work-objects/{work_object_id}/expense-evidences",
+            query_params={"query": query, "limit": limit},
+        )
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Invalid expense evidences payload")
+        return [ExpenseEvidenceRecord(**item) for item in payload if isinstance(item, dict)]
+
+    @app.post("/api/v1/work-objects/{work_object_id}/expense-evidences/import-search", response_model=ExpenseImportSearchResponse)
+    def search_work_object_expense_imports(work_object_id: str, payload: ExpenseImportSearchPayload) -> ExpenseImportSearchResponse:
+        if not has_active_cloud_session():
+            return ExpenseImportSearchResponse(items=[], total=0, message="连接云端后才能搜索可导入的票据元数据。")
+        response = cloud_request(
+            "POST",
+            f"/api/v1/work-objects/{work_object_id}/expense-evidences/import-search",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid expense import search payload")
+        return ExpenseImportSearchResponse(**response)
+
+    @app.post("/api/v1/work-objects/{work_object_id}/expense-evidences/import", response_model=ExpenseEvidenceImportResult)
+    def import_work_object_expense_evidences(work_object_id: str, payload: ExpenseEvidenceImportPayload) -> ExpenseEvidenceImportResult:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能导入票据证明。")
+        response = cloud_request(
+            "POST",
+            f"/api/v1/work-objects/{work_object_id}/expense-evidences/import",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid expense import payload")
+        return ExpenseEvidenceImportResult(**response)
+
+    @app.get("/api/v1/expense-evidences/{evidence_id}", response_model=ExpenseEvidenceRecord)
+    def get_expense_evidence(evidence_id: str) -> ExpenseEvidenceRecord:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能查看票据证明详情。")
+        payload = cloud_request("GET", f"/api/v1/expense-evidences/{evidence_id}")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid expense evidence payload")
+        return ExpenseEvidenceRecord(**payload)
+
+    @app.patch("/api/v1/expense-evidences/{evidence_id}", response_model=ExpenseEvidenceRecord)
+    def update_expense_evidence(evidence_id: str, payload: ExpenseEvidenceUpdatePayload) -> ExpenseEvidenceRecord:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能更新票据证明。")
+        response = cloud_request(
+            "PATCH",
+            f"/api/v1/expense-evidences/{evidence_id}",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid expense evidence payload")
+        return ExpenseEvidenceRecord(**response)
+
+    @app.post("/api/v1/expense-evidences/{evidence_id}/attachments/fetch", response_model=ExpenseEvidenceRecord)
+    def fetch_expense_evidence_attachments(evidence_id: str) -> ExpenseEvidenceRecord:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能补抓票据附件。")
+        response = cloud_request("POST", f"/api/v1/expense-evidences/{evidence_id}/attachments/fetch")
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid expense evidence payload")
+        return ExpenseEvidenceRecord(**response)
+
+    @app.get("/api/v1/event-lines/{event_line_id}/expense-evidences", response_model=list[EventLineExpenseEvidenceLinkRecord])
+    def list_event_line_expense_evidences(event_line_id: str) -> list[EventLineExpenseEvidenceLinkRecord]:
+        if not has_active_cloud_session():
+            return []
+        payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}/expense-evidences")
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Invalid event line expense evidence payload")
+        return [EventLineExpenseEvidenceLinkRecord(**item) for item in payload if isinstance(item, dict)]
+
+    @app.post("/api/v1/event-lines/{event_line_id}/expense-evidences/link", response_model=EventLineExpenseEvidenceLinkRecord)
+    def link_event_line_expense_evidence(event_line_id: str, payload: EventLineExpenseEvidenceLinkPayload) -> EventLineExpenseEvidenceLinkRecord:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能关联票据证明。")
+        response = cloud_request(
+            "POST",
+            f"/api/v1/event-lines/{event_line_id}/expense-evidences/link",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid event line expense evidence link payload")
+        return EventLineExpenseEvidenceLinkRecord(**response)
+
+    @app.delete("/api/v1/event-lines/{event_line_id}/expense-evidences/{evidence_id}")
+    def unlink_event_line_expense_evidence(event_line_id: str, evidence_id: str) -> dict[str, bool]:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能解除票据关联。")
+        response = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}/expense-evidences/{evidence_id}")
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid event line expense evidence unlink payload")
+        return {"deleted": bool(response.get("deleted"))}
+
+    @app.get("/api/v1/tasks/{task_id}/expense-evidences", response_model=list[TaskExpenseEvidenceLinkRecord])
+    def list_task_expense_evidences(task_id: str) -> list[TaskExpenseEvidenceLinkRecord]:
+        if not has_active_cloud_session():
+            return []
+        payload = cloud_request("GET", f"/api/v1/tasks/{task_id}/expense-evidences")
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Invalid task expense evidence payload")
+        return [TaskExpenseEvidenceLinkRecord(**item) for item in payload if isinstance(item, dict)]
+
+    @app.post("/api/v1/tasks/{task_id}/expense-evidences/link", response_model=TaskExpenseEvidenceLinkRecord)
+    def link_task_expense_evidence(task_id: str, payload: TaskExpenseEvidenceLinkPayload) -> TaskExpenseEvidenceLinkRecord:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能关联票据证明。")
+        response = cloud_request(
+            "POST",
+            f"/api/v1/tasks/{task_id}/expense-evidences/link",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid task expense evidence link payload")
+        return TaskExpenseEvidenceLinkRecord(**response)
+
+    @app.delete("/api/v1/tasks/{task_id}/expense-evidences/{evidence_id}")
+    def unlink_task_expense_evidence(task_id: str, evidence_id: str) -> dict[str, bool]:
+        if not has_active_cloud_session():
+            raise HTTPException(status_code=400, detail="连接云端后才能解除票据关联。")
+        response = cloud_request("DELETE", f"/api/v1/tasks/{task_id}/expense-evidences/{evidence_id}")
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid task expense evidence unlink payload")
+        return {"deleted": bool(response.get("deleted"))}
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(payload: EventLineCreatePayload) -> EventLineRecord:

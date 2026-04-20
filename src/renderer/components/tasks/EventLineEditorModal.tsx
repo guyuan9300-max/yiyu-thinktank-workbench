@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type {
   EventLineDetail,
+  EventLineExpenseEvidenceLink,
   EventLineKind,
   MentionCandidate,
   Task,
@@ -52,6 +53,9 @@ type Props = {
   onOpenReport?: () => void;
   onOpenTask?: (task: Task) => void;
   onOpenMeeting?: (meetingId: string, label: string) => void;
+  expenseEvidenceLinks?: EventLineExpenseEvidenceLink[];
+  onOpenTaskExpenseEvidence?: (task: Task) => void;
+  onBulkUnlinkExpenseEvidence?: (items: Array<{ scope: 'eventLine' | 'task'; evidenceId: string; taskId?: string | null }>) => Promise<void> | void;
   onAddNote?: (text: string) => Promise<void>;
 };
 
@@ -130,6 +134,9 @@ export default function EventLineEditorModal({
   onOpenReport,
   onOpenTask,
   onOpenMeeting,
+  expenseEvidenceLinks,
+  onOpenTaskExpenseEvidence,
+  onBulkUnlinkExpenseEvidence,
   onAddNote,
 }: Props) {
   const projectDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -140,6 +147,8 @@ export default function EventLineEditorModal({
   const [memberQuery, setMemberQuery] = useState('');
   const [noteText, setNoteText] = useState('');
   const [isNoteBusy, setIsNoteBusy] = useState(false);
+  const [selectedExpenseLinkKeys, setSelectedExpenseLinkKeys] = useState<string[]>([]);
+  const [isBulkExpenseBusy, setIsBulkExpenseBusy] = useState(false);
 
   const memberMap = useMemo(
     () => new Map(memberOptions.map((item) => [item.id, item])),
@@ -165,7 +174,37 @@ export default function EventLineEditorModal({
   const readiness = formatPredictionReadiness(detail);
   const clarificationNeeds = deriveClarificationNeeds(detail);
   const relatedMeetings = deriveMeetingSummaries(detail);
+  const visibleExpenseEvidenceLinks = expenseEvidenceLinks || detail?.expenseEvidenceLinks || [];
+  const combinedExpenseEvidenceEntries = useMemo(() => {
+    const directEntries = visibleExpenseEvidenceLinks.map((link) => ({
+      key: `eventLine:${link.evidenceId}`,
+      scope: 'eventLine' as const,
+      evidenceId: link.evidenceId,
+      taskId: null,
+      taskTitle: null,
+      note: link.note || '',
+      createdAt: link.createdAt,
+      evidence: link.evidence || null,
+    }));
+    const taskEntries = (detail?.tasks || []).flatMap((task) =>
+      (task.expenseEvidenceLinks || []).map((link) => ({
+        key: `task:${task.id}:${link.evidenceId}`,
+        scope: 'task' as const,
+        evidenceId: link.evidenceId,
+        taskId: task.id,
+        taskTitle: task.title,
+        note: link.note || '',
+        createdAt: link.createdAt,
+        evidence: link.evidence || null,
+      })),
+    );
+    return [...taskEntries, ...directEntries];
+  }, [detail?.tasks, visibleExpenseEvidenceLinks]);
   const memorySummary = detail?.memorySnapshot?.currentWork || detail?.eventLine.summary || '还没有形成稳定的记忆摘要，可先补一句当前在推进什么。';
+
+  useEffect(() => {
+    setSelectedExpenseLinkKeys([]);
+  }, [detail?.eventLine.id]);
 
   useEffect(() => {
     if (!isProjectMenuOpen) {
@@ -216,6 +255,25 @@ export default function EventLineEditorModal({
       setIsProjectMenuOpen(false);
     } finally {
       setIsProjectCreating(false);
+    }
+  };
+
+  const handleBulkUnlink = async () => {
+    if (!onBulkUnlinkExpenseEvidence || selectedExpenseLinkKeys.length === 0) return;
+    const payload = combinedExpenseEvidenceEntries
+      .filter((item) => selectedExpenseLinkKeys.includes(item.key))
+      .map((item) => ({
+        scope: item.scope,
+        evidenceId: item.evidenceId,
+        taskId: item.taskId,
+      }));
+    if (payload.length === 0) return;
+    setIsBulkExpenseBusy(true);
+    try {
+      await onBulkUnlinkExpenseEvidence(payload);
+      setSelectedExpenseLinkKeys([]);
+    } finally {
+      setIsBulkExpenseBusy(false);
     }
   };
 
@@ -568,24 +626,110 @@ export default function EventLineEditorModal({
                 {detail?.tasks?.length ? (
                   <div className="space-y-2">
                     {detail.tasks.slice(0, 8).map((task) => (
-                      <button
+                      <div
                         key={task.id}
-                        type="button"
-                        onClick={() => onOpenTask?.(task)}
-                        className="w-full rounded-2xl border border-gray-100 bg-white px-4 py-3 text-left transition hover:border-[#D7E0FF] hover:bg-[#F8FAFF]"
+                        className="rounded-2xl border border-gray-100 bg-white px-4 py-3 transition hover:border-[#D7E0FF] hover:bg-[#F8FAFF]"
                       >
-                        <p className="text-[14px] font-bold text-gray-900">{task.title}</p>
-                        <p className="mt-1 text-[12px] text-gray-500">
-                          {task.ownerName || '未指定负责人'}
-                          {task.dueDate ? ` · ${formatDateTime(task.dueDate)}` : ''}
-                        </p>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenTask?.(task)}
+                          className="w-full text-left"
+                        >
+                          <p className="text-[14px] font-bold text-gray-900">{task.title}</p>
+                          <p className="mt-1 text-[12px] text-gray-500">
+                            {task.ownerName || '未指定负责人'}
+                            {task.dueDate ? ` · ${formatDateTime(task.dueDate)}` : ''}
+                          </p>
+                        </button>
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <span className="text-[11px] text-gray-400">
+                            已关联 {(task.expenseEvidenceLinks || []).length} 条票据
+                          </span>
+                          {onOpenTaskExpenseEvidence ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenTaskExpenseEvidence(task)}
+                              className="inline-flex items-center gap-2 rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
+                            >
+                              <Search size={13} />
+                              关联票据
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 ) : (
                   <p className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-4 text-[13px] leading-6 text-gray-400">
                     这条事件线下还没有关联任务。后续只要任务挂进来，这里就会自动汇总。
                   </p>
+                )}
+              </section>
+
+              <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <FileBadge size={16} className="text-[#5B7BFE]" />
+                    <h3 className="text-[15px] font-bold text-gray-900">票据证明</h3>
+                  </div>
+                  {selectedExpenseLinkKeys.length > 0 && onBulkUnlinkExpenseEvidence ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleBulkUnlink()}
+                      disabled={isBulkExpenseBusy}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-700 transition hover:bg-amber-100 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <X size={13} />
+                      {isBulkExpenseBusy ? '处理中...' : `取消关联所选（${selectedExpenseLinkKeys.length}）`}
+                    </button>
+                  ) : null}
+                </div>
+                {combinedExpenseEvidenceEntries.length === 0 ? (
+                  <p className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-4 text-[13px] leading-6 text-gray-400">
+                    当前还没有关联票据。请在上方具体任务里按需关联票据；这里会汇总显示所有已关联票据，并支持批量取消关联。
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {combinedExpenseEvidenceEntries.slice(0, 12).map((entry) => {
+                      const evidence = entry.evidence;
+                      const checked = selectedExpenseLinkKeys.includes(entry.key);
+                      return (
+                        <label
+                          key={entry.key}
+                          className="flex items-start gap-3 rounded-2xl border border-gray-100 bg-white px-4 py-3 transition hover:border-[#D7E0FF] hover:bg-[#F8FAFF]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setSelectedExpenseLinkKeys((prev) =>
+                                checked ? prev.filter((item) => item !== entry.key) : [...prev, entry.key],
+                              )
+                            }
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="min-w-0 flex-1 truncate text-[14px] font-bold text-gray-900">
+                                {evidence?.displayTitle || evidence?.sourceTitle || '未命名票据'}
+                              </p>
+                              <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${entry.scope === 'task' ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-emerald-50 text-emerald-700'}`}>
+                                {entry.scope === 'task' ? `任务 · ${entry.taskTitle || '未命名任务'}` : '直接关联到事件线'}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[12px] text-gray-500">
+                              {evidence?.applicantUserName || '申请人待补'}
+                              {typeof evidence?.amount === 'number' ? ` · ${evidence.amount.toFixed(2)} ${evidence.currency || 'CNY'}` : ''}
+                              {evidence?.normalizedCategory ? ` · ${evidence.normalizedCategory}` : ''}
+                            </p>
+                            {entry.note ? (
+                              <p className="mt-2 text-[12px] leading-6 text-gray-500">{entry.note}</p>
+                            ) : null}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
                 )}
               </section>
 

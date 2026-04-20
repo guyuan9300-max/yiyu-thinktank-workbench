@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, CalendarClock, CheckCircle2, ClipboardList, FolderOpen, Sparkles, UploadCloud } from 'lucide-react';
+import { ArrowRight, CalendarClock, CheckCircle2, ClipboardList, FileBadge, FolderOpen, Sparkles, UploadCloud } from 'lucide-react';
 
 import type { ClientDnaModule, KnowledgeJob, KnowledgeStatus, ProjectFlow, ProjectFlowPayload, ProjectModule, ProjectModulePayload } from '../../../shared/types';
 
@@ -38,6 +38,7 @@ type ClientProjectSetupPageProps = {
   onUploadModule: (moduleKey: ClientDnaModule['moduleKey']) => void;
   onCreateProjectModule: (payload: ProjectModulePayload) => void;
   onCreateProjectFlow: (payload: ProjectFlowPayload) => void;
+  onOpenExpenseEvidence: () => void;
   onOpenDnaPanel: () => void;
   onContinueWorkspace: () => void;
 };
@@ -68,6 +69,7 @@ export function ClientProjectSetupPage({
   onImportFiles,
   onImportFolder,
   onGenerateCandidates,
+  onOpenExpenseEvidence,
   onContinueWorkspace,
 }: ClientProjectSetupPageProps) {
   const hasSourceDocuments = sourceDocumentCount > 0;
@@ -202,6 +204,14 @@ export function ClientProjectSetupPage({
                 重新扫描资料
               </button>
             )}
+            <button
+              type="button"
+              onClick={onOpenExpenseEvidence}
+              className="inline-flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] font-bold text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100"
+            >
+              <FileBadge size={15} />
+              打开票据证明
+            </button>
             <button
               type="button"
               onClick={onContinueWorkspace}
