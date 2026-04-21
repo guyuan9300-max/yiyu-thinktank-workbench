@@ -1474,6 +1474,10 @@ export async function confirmTask(id: string) {
   return request<Task>(`/api/v1/tasks/${id}/confirm`, { method: 'POST' });
 }
 
+export async function markTaskNotificationRead(id: string) {
+  return request<Task>(`/api/v1/tasks/${id}/notifications/read`, { method: 'POST' });
+}
+
 export async function rejectTask(id: string, reason: string) {
   return request<Task>(`/api/v1/tasks/${id}/reject`, {
     method: 'POST',

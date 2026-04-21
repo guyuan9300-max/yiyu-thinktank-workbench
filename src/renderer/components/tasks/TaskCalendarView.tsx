@@ -65,9 +65,8 @@ const DAY_TIMELINE_SLOT_MINUTES = 15;
 const DAY_TIMELINE_SLOT_HEIGHT = 14;
 const DAY_TIMELINE_DEFAULT_DURATION_MINUTES = 60;
 const DAY_TIMELINE_DEFAULT_START_MINUTE = 8 * 60;
+const DAY_TIMELINE_SCROLL_END_PADDING = DAY_TIMELINE_SLOT_HEIGHT * 12;
 const DAY_MINUTES = 24 * 60;
-const WEEK_MAX_VISIBLE_COLUMNS = 2;
-
 type WeekCreateSelection = {
   dayKey: number;
   dayDate: Date;
@@ -98,11 +97,7 @@ type WeekTaskDisplayItem =
   | {
       kind: 'aggregate';
       key: string;
-      hiddenItems: TimedWeekTask[];
-      startMinute: number;
-      endMinute: number;
-      column: number;
-      columnCount: number;
+      clusterItems: TimedWeekTask[];
       summary: string;
     };
 
@@ -198,23 +193,24 @@ function isTransportItineraryTask(task: Task) {
 }
 
 function calendarTaskAccentColor(task: Task) {
-  if (isTransportItineraryTask(task)) return '#16A34A';
-  return task.listColor;
+  if (task.priority === 'high') return '#EF4444';
+  if (task.priority === 'low') return '#9CA3AF';
+  return '#5B7BFE';
 }
 
 function calendarChipStyle(task: Task) {
+  const accentColor = calendarTaskAccentColor(task);
   if (task.status === 'done') {
     return {
       color: '#94A3B8',
       backgroundColor: '#F8FAFC',
-      borderColor: '#E2E8F0',
+      borderColor: accentColor,
     };
   }
-  const accentColor = calendarTaskAccentColor(task);
   return {
     color: accentColor,
-    backgroundColor: `${accentColor}14`,
-    borderColor: `${accentColor}22`,
+    backgroundColor: '#FFFFFF',
+    borderColor: accentColor,
   };
 }
 
@@ -281,46 +277,25 @@ function buildWeekTaskDisplayItems(items: TimedWeekTask[]) {
         if (left.endMinute !== right.endMinute) return left.endMinute - right.endMinute;
         return left.lane - right.lane;
       });
-      const hasOverflow = sortedClusterItems.some((item) => item.laneCount > WEEK_MAX_VISIBLE_COLUMNS);
-      if (!hasOverflow) {
+      if (sortedClusterItems.length <= 1) {
         sortedClusterItems.forEach((taskItem) => {
           displayItems.push({
             kind: 'task',
             taskItem,
-            column: Math.min(taskItem.lane, WEEK_MAX_VISIBLE_COLUMNS - 1),
-            columnCount: Math.min(taskItem.laneCount, WEEK_MAX_VISIBLE_COLUMNS),
+            column: 0,
+            columnCount: 1,
           });
         });
         return;
       }
 
-      sortedClusterItems
-        .filter((taskItem) => taskItem.lane === 0)
-        .forEach((taskItem) => {
-          displayItems.push({
-            kind: 'task',
-            taskItem,
-            column: 0,
-            columnCount: WEEK_MAX_VISIBLE_COLUMNS,
-          });
-        });
-
-      const hiddenItems = sortedClusterItems.filter((taskItem) => taskItem.lane >= 1);
-      if (hiddenItems.length > 0) {
-        const startMinute = Math.min(...hiddenItems.map((item) => item.startMinute));
-        const endMinute = Math.max(...hiddenItems.map((item) => item.endMinute));
-        const hiddenTitles = hiddenItems.map((item) => item.task.title).filter(Boolean);
-        displayItems.push({
-          kind: 'aggregate',
-          key: `aggregate-${clusterId}`,
-          hiddenItems,
-          startMinute,
-          endMinute,
-          column: 1,
-          columnCount: WEEK_MAX_VISIBLE_COLUMNS,
-          summary: hiddenTitles.slice(0, 4).join('、'),
-        });
-      }
+      const clusterTitles = sortedClusterItems.map((item) => item.task.title).filter(Boolean);
+      displayItems.push({
+        kind: 'aggregate',
+        key: `aggregate-${clusterId}`,
+        clusterItems: sortedClusterItems,
+        summary: clusterTitles.slice(0, 4).join('、'),
+      });
     });
 
   return displayItems;
@@ -357,6 +332,7 @@ export function TaskCalendarView({
   const [resizingTaskId, setResizingTaskId] = useState<string | null>(null);
   const [resizePreviewMinutes, setResizePreviewMinutes] = useState<number | null>(null);
   const [weekCreateSelection, setWeekCreateSelection] = useState<WeekCreateSelection | null>(null);
+  const [weekAggregateIndexes, setWeekAggregateIndexes] = useState<Record<string, number>>({});
   const [visibleWeekPageIndex, setVisibleWeekPageIndex] = useState(1);
   const [isWeekPaging, setIsWeekPaging] = useState(false);
   const resizePreviewRef = useRef<number | null>(null);
@@ -585,6 +561,10 @@ export function TaskCalendarView({
       cleanupWeekCreateInteraction();
     };
   }, [cleanupWeekCreateInteraction]);
+
+  useEffect(() => {
+    setWeekAggregateIndexes({});
+  }, [selectedDate, visibleWeekPageIndex]);
 
   const timelineSlotMinutes = useMemo(
     () => Array.from({ length: (24 * 60) / DAY_TIMELINE_SLOT_MINUTES }, (_, index) => index * DAY_TIMELINE_SLOT_MINUTES),
@@ -826,7 +806,7 @@ export function TaskCalendarView({
         weekPagerIdleTimerRef.current = null;
       }
     };
-  }, [calendarDisplayMode, weekStartKey]);
+  }, [calendarDisplayMode, weekPages, weekStartKey]);
 
   useEffect(() => {
     if (calendarDisplayMode !== 'week' || isWeekPaging) return;
@@ -852,7 +832,9 @@ export function TaskCalendarView({
     if (!pager) return;
     weekPagerVerticalSyncRef.current = true;
     pager.querySelectorAll<HTMLElement>('[data-week-scroll="true"]').forEach((node) => {
-      if (node !== source) node.scrollTop = source.scrollTop;
+      if (node !== source && Math.abs(node.scrollTop - source.scrollTop) > 1) {
+        node.scrollTop = source.scrollTop;
+      }
     });
     window.requestAnimationFrame(() => {
       weekPagerVerticalSyncRef.current = false;
@@ -901,7 +883,9 @@ export function TaskCalendarView({
   };
 
   const handleWeekScrollWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    if (Math.abs(event.deltaX) <= Math.abs(event.deltaY) || Math.abs(event.deltaX) < 6) return;
+    const horizontalIntent = Math.abs(event.deltaX);
+    const verticalIntent = Math.abs(event.deltaY);
+    if (horizontalIntent < 24 || horizontalIntent <= verticalIntent * 1.4) return;
     const pager = weekPagerRef.current;
     if (!pager) return;
     weekPagerGestureDeadlineRef.current = Date.now() + 280;
@@ -1311,11 +1295,13 @@ export function TaskCalendarView({
                     </div>
 
                     <div
-                      className="max-h-[860px] overflow-y-auto"
+                      className="relative max-h-[860px] overflow-y-auto overscroll-contain"
                       data-week-scroll="true"
+                      data-week-page-key={page.key}
                       onScroll={handleWeekVerticalScroll}
                     >
-                      <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] bg-white">
+                      <div style={{ paddingBottom: `${DAY_TIMELINE_SCROLL_END_PADDING}px` }}>
+                        <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] bg-white">
                         <div className="border-r border-gray-100">
                           {timelineSlotMinutes.map((minute) => {
                             const isHourLine = minute % 60 === 0;
@@ -1402,44 +1388,106 @@ export function TaskCalendarView({
                             )}
                             {(weekDisplayItemsByDay.get(dayIndex) || []).map((displayItem) => {
                               const horizontalInset = 8;
-                              const width = `calc((100% - ${horizontalInset * 2}px) / ${displayItem.columnCount})`;
-                              const left = `calc(${horizontalInset}px + (${displayItem.column} * ((100% - ${horizontalInset * 2}px) / ${displayItem.columnCount})))`;
+                              const width = `calc(100% - ${horizontalInset * 2}px)`;
+                              const left = `${horizontalInset}px`;
 
                               if (displayItem.kind === 'aggregate') {
-                                const top = (displayItem.startMinute / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT;
-                                const height = Math.max(40, ((displayItem.endMinute - displayItem.startMinute) / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT - 4);
-                                const aggregateTitle = displayItem.summary
-                                  ? `还有 ${displayItem.hiddenItems.length} 条重叠任务：${displayItem.summary}`
-                                  : `还有 ${displayItem.hiddenItems.length} 条重叠任务`;
+                                const clusterCount = displayItem.clusterItems.length;
+                                const currentIndex = Math.max(0, Math.min(clusterCount - 1, weekAggregateIndexes[displayItem.key] ?? 0));
+                                const currentItem = displayItem.clusterItems[currentIndex];
+                                const aggregateTask = currentItem.task;
+                                const aggregateAccent = calendarChipStyle(aggregateTask);
+                                const aggregateTop = (currentItem.startMinute / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT;
+                                const aggregateHeight = Math.max(72, ((currentItem.endMinute - currentItem.startMinute) / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT - 4);
+                                const aggregateTimeLabel = `${formatMinuteOfDay(currentItem.startMinute)}-${formatMinuteOfDay(currentItem.endMinute)}`;
+                                const aggregateTitle = `重叠任务 ${currentIndex + 1}/${clusterCount}`;
+                                const aggregateBorderColor = aggregateTask.status === 'done' ? '#CBD5E1' : aggregateAccent.borderColor;
+                                const aggregateTextColor = aggregateTask.status === 'done' ? '#64748B' : aggregateAccent.color;
+                                const aggregateBackgroundColor = aggregateTask.status === 'done' ? '#F1F5F9' : '#FFFFFF';
                                 return (
-                                  <button
+                                  <div
                                     key={displayItem.key}
-                                    type="button"
-                                    className="group absolute rounded-2xl border border-dashed border-[#93C5FD] bg-[#EFF6FF] px-3 py-2 text-left text-[#1D4ED8] shadow-sm transition hover:bg-[#DBEAFE]"
+                                    className="group absolute rounded-2xl border px-2.5 py-2 text-left shadow-sm transition"
                                     style={{
-                                      top: `${top + 2}px`,
+                                      top: `${aggregateTop + 2}px`,
                                       left,
                                       width,
-                                      minHeight: `${height}px`,
+                                      minHeight: `${aggregateHeight}px`,
+                                      color: aggregateTextColor,
+                                      backgroundColor: aggregateBackgroundColor,
+                                      borderColor: aggregateBorderColor,
                                       zIndex: 1,
                                     }}
                                     onMouseDown={(event) => {
                                       event.stopPropagation();
                                     }}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onCalendarNotice?.('info', aggregateTitle);
-                                    }}
-                                    title={aggregateTitle}
-                                    aria-label={aggregateTitle}
                                   >
-                                    <div className="flex h-full min-h-full flex-col justify-center gap-1">
-                                      <span className="text-[11px] font-bold">+{displayItem.hiddenItems.length}</span>
-                                      <span className="line-clamp-2 text-[10px] font-medium leading-4 opacity-80">
-                                        {displayItem.summary || '更多重叠任务'}
-                                      </span>
+                                    <div className="flex h-full flex-col gap-1">
+                                      <div className="flex items-center justify-between gap-1">
+                                        <div className="flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            className="flex h-4 w-4 items-center justify-center rounded-[4px] border border-current bg-white/90 hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setWeekAggregateIndexes((prev) => ({
+                                                ...prev,
+                                                [displayItem.key]: Math.max(0, currentIndex - 1),
+                                              }));
+                                            }}
+                                            disabled={currentIndex === 0}
+                                            aria-label="查看上一条重叠任务"
+                                          >
+                                            <ChevronLeft size={9} strokeWidth={2.5} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="flex h-4 w-4 items-center justify-center rounded-[4px] border border-current bg-white/90 hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setWeekAggregateIndexes((prev) => ({
+                                                ...prev,
+                                                [displayItem.key]: Math.min(clusterCount - 1, currentIndex + 1),
+                                              }));
+                                            }}
+                                            disabled={currentIndex >= clusterCount - 1}
+                                            aria-label="查看下一条重叠任务"
+                                          >
+                                            <ChevronRight size={9} strokeWidth={2.5} />
+                                          </button>
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-[9px] font-bold opacity-80">{aggregateTitle}</span>
+                                          <button
+                                            type="button"
+                                            className={`flex h-4 w-4 items-center justify-center rounded-[4px] border bg-white/90 hover:bg-white ${aggregateTask.status === 'done' ? 'border-[#CBD5E1] text-[#64748B]' : 'border-current'}`}
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              void onToggleTaskStatus(aggregateTask.id);
+                                            }}
+                                            title={aggregateTask.status === 'done' ? '取消完成' : '标记完成'}
+                                            aria-label={aggregateTask.status === 'done' ? `取消完成 ${aggregateTask.title}` : `完成 ${aggregateTask.title}`}
+                                          >
+                                            <Check size={9} strokeWidth={3} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="flex h-4 w-4 items-center justify-center rounded-[4px] border border-current bg-white/90 hover:bg-white"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              onOpenTaskEditor(aggregateTask);
+                                            }}
+                                            title={`编辑 ${aggregateTask.title}`}
+                                            aria-label={`编辑 ${aggregateTask.title}`}
+                                          >
+                                            <Pencil size={9} strokeWidth={2.5} />
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <div className="text-[10px] font-semibold opacity-80">{aggregateTimeLabel}</div>
+                                      <div className={`text-[12px] font-bold leading-4 break-words line-clamp-3 ${aggregateTask.status === 'done' ? 'line-through opacity-70' : ''}`}>{aggregateTask.title}</div>
                                     </div>
-                                  </button>
+                                  </div>
                                 );
                               }
 
@@ -1477,7 +1525,7 @@ export function TaskCalendarView({
                                     top: `${top + 2}px`,
                                     left,
                                     width,
-                                    minHeight: `${height}px`,
+                                    minHeight: `${Math.max(72, height)}px`,
                                     color: chipStyle.color,
                                     backgroundColor: task.status === 'done' ? '#F8FAFC' : '#FFFFFF',
                                     borderColor: chipStyle.borderColor,
@@ -1490,41 +1538,41 @@ export function TaskCalendarView({
                                   title={`${effectiveTimeLabel} ${task.title}`}
                                   aria-label={`${effectiveTimeLabel} ${task.title}`}
                                 >
-                                  <div className="pr-10">
+                                  <div className="flex h-full flex-col gap-1">
+                                    <div className="flex items-center justify-end gap-1">
+                                      <button
+                                        type="button"
+                                        className={`flex h-4 w-4 items-center justify-center rounded-[4px] border bg-white/90 hover:bg-white ${task.status === 'done' ? 'border-[#CBD5E1] text-[#64748B]' : 'border-current'}`}
+                                        onMouseDown={(event) => {
+                                          event.stopPropagation();
+                                        }}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          void onToggleTaskStatus(task.id);
+                                        }}
+                                        title={task.status === 'done' ? '取消完成' : '标记完成'}
+                                        aria-label={task.status === 'done' ? `取消完成 ${task.title}` : `完成 ${task.title}`}
+                                      >
+                                        <Check size={9} strokeWidth={3} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="flex h-4 w-4 items-center justify-center rounded-[4px] border border-current bg-white/90 hover:bg-white"
+                                        onMouseDown={(event) => {
+                                          event.stopPropagation();
+                                        }}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          onOpenTaskEditor(task);
+                                        }}
+                                        title={`编辑 ${task.title}`}
+                                        aria-label={`编辑 ${task.title}`}
+                                      >
+                                        <Pencil size={9} strokeWidth={2.5} />
+                                      </button>
+                                    </div>
                                     <div className="text-[10px] font-semibold opacity-80">{effectiveTimeLabel}</div>
-                                    <div className="mt-1 text-[12px] font-bold leading-4 line-clamp-2 break-words">{task.title}</div>
-                                  </div>
-                                  <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
-                                    <button
-                                      type="button"
-                                      className={`flex h-4 w-4 items-center justify-center rounded-[4px] border bg-white/90 hover:bg-white ${task.status === 'done' ? 'border-[#CBD5E1] text-[#64748B]' : 'border-current'}`}
-                                      onMouseDown={(event) => {
-                                        event.stopPropagation();
-                                      }}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        void onToggleTaskStatus(task.id);
-                                      }}
-                                      title={task.status === 'done' ? '取消完成' : '标记完成'}
-                                      aria-label={task.status === 'done' ? `取消完成 ${task.title}` : `完成 ${task.title}`}
-                                    >
-                                      <Check size={9} strokeWidth={3} />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="flex h-4 w-4 items-center justify-center rounded-[4px] border border-current bg-white/90 hover:bg-white"
-                                      onMouseDown={(event) => {
-                                        event.stopPropagation();
-                                      }}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        onOpenTaskEditor(task);
-                                      }}
-                                      title={`编辑 ${task.title}`}
-                                      aria-label={`编辑 ${task.title}`}
-                                    >
-                                      <Pencil size={9} strokeWidth={2.5} />
-                                    </button>
+                                    <div className="text-[12px] font-bold leading-4 line-clamp-3 break-words">{task.title}</div>
                                   </div>
                                   <div
                                     className={`absolute inset-x-0 bottom-0 flex h-5 cursor-ns-resize items-end justify-center rounded-b-2xl transition-opacity ${isResizing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
@@ -1544,6 +1592,7 @@ export function TaskCalendarView({
                             })}
                           </div>
                         ))}
+                        </div>
                       </div>
                     </div>
                   </div>

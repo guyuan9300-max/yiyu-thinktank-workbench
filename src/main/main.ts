@@ -29,13 +29,15 @@ const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
 const APP_DISPLAY_NAME = '益语智库自用平台';
 const APP_BUNDLE_ID = 'com.yiyu.selfworkbench';
+const WORKBENCH_DATA_DIR_NAME = 'YiyuThinkTankWorkbench';
 const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.md');
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
-const fixedUserDataPath = path.join(app.getPath('appData'), 'YiyuThinkTankWorkbench');
+const fixedUserDataPath = path.join(app.getPath('appData'), WORKBENCH_DATA_DIR_NAME);
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
 const runtimeUiDir = path.join(fixedUserDataPath, 'runtime', 'ui');
 const electronLaunchLogPath = path.join(runtimeLogsDir, 'electron-launch.log');
 const collabRebuildLogPath = path.join(runtimeLogsDir, 'collab-rebuild.log');
+const runtimeManifestPath = path.join(runtimeLogsDir, 'runtime-manifest.json');
 const emergencyBootstrapLogPath = '/tmp/yiyu-thinktank-electron-bootstrap.log';
 const savedApplicationStatePath = path.join(app.getPath('home'), 'Library', 'Saved Application State', `${APP_BUNDLE_ID}.savedState`);
 app.setName(APP_DISPLAY_NAME);
@@ -50,6 +52,27 @@ type RuntimeSyncMetadata = {
   fingerprint: string;
   syncedAt: string;
   project: 'backend' | 'cloud_backend';
+};
+
+type RuntimeLaunchManifest = {
+  writtenAt: string;
+  appVersion: string;
+  isPackaged: boolean;
+  pid: number;
+  executablePath: string;
+  appPath: string;
+  userDataPath: string;
+  appDbPath: string;
+  runtimeLogsDir: string;
+  backendUrl: string;
+  cloudBackendUrl: string;
+  remoteCloudBackendUrl: string | null;
+  usingRemoteCloudBackend: boolean;
+  backendPort: number;
+  cloudBackendPort: number;
+  rendererPort: number;
+  backendRuntimeVenv?: string;
+  cloudBackendRuntimeVenv?: string;
 };
 
 let mainWindow: BrowserWindow | null = null;
@@ -122,6 +145,34 @@ function logElectronInfo(message: string) {
 function logElectronError(message: string) {
   console.error(message);
   appendElectronLaunchLog('ERROR', message);
+}
+
+function writeRuntimeLaunchManifest(extra: Partial<RuntimeLaunchManifest> = {}) {
+  try {
+    fs.mkdirSync(runtimeLogsDir, { recursive: true });
+    const manifest: RuntimeLaunchManifest = {
+      writtenAt: new Date().toISOString(),
+      appVersion: app.getVersion(),
+      isPackaged: app.isPackaged,
+      pid: process.pid,
+      executablePath: app.getPath('exe'),
+      appPath: app.getAppPath(),
+      userDataPath: fixedUserDataPath,
+      appDbPath: path.join(fixedUserDataPath, 'app.db'),
+      runtimeLogsDir,
+      backendUrl: backendUrl(),
+      cloudBackendUrl: cloudBackendUrl(),
+      remoteCloudBackendUrl: remoteCloudBackendUrl(),
+      usingRemoteCloudBackend: shouldUseRemoteCloudBackend(),
+      backendPort,
+      cloudBackendPort,
+      rendererPort,
+      ...extra,
+    };
+    fs.writeFileSync(runtimeManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+  } catch {
+    // Diagnostics should never block app startup.
+  }
 }
 
 function rememberBackendLogLine(line: string) {
@@ -1373,6 +1424,10 @@ app.whenReady().then(async () => {
   const runtimeRoot = path.join(app.getPath('userData'), 'runtime');
   backendRuntimeVenv = path.join(runtimeRoot, 'backend-venv');
   cloudBackendRuntimeVenv = path.join(runtimeRoot, 'cloud-backend-venv');
+  writeRuntimeLaunchManifest({
+    backendRuntimeVenv,
+    cloudBackendRuntimeVenv,
+  });
   try {
     await ensureProjectRuntime('backend', backendRuntimeVenv);
     if (!usingRemoteCloudBackend) {
@@ -1719,4 +1774,3 @@ ipcMain.handle('yiyu-workbench:saveFileAs', async (_event, sourcePath: string, s
   await fs.promises.copyFile(resolvedSourcePath, filePath);
   return filePath;
 });
-

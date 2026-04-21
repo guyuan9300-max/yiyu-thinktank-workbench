@@ -105,6 +105,7 @@ class Database:
                     organization_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     scope TEXT NOT NULL DEFAULT 'org',
@@ -241,6 +242,19 @@ class Database:
                     FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS task_list_links (
+                    task_id TEXT NOT NULL,
+                    list_id TEXT NOT NULL,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (task_id, list_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
+                    ON task_list_links(list_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS mention_history (
                     actor_id TEXT NOT NULL,
                     mentioned_user_id TEXT NOT NULL,
@@ -277,6 +291,7 @@ class Database:
                     next_step TEXT,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     owner_id TEXT,
+                    owner_ids_json TEXT NOT NULL DEFAULT '[]',
                     primary_client_id TEXT,
                     primary_client_name TEXT,
                     primary_department_id TEXT,
@@ -731,6 +746,31 @@ class Database:
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
+            self._ensure_column("task_lists", "description", "TEXT NOT NULL DEFAULT ''")
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS task_list_links (
+                    task_id TEXT NOT NULL,
+                    list_id TEXT NOT NULL,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (task_id, list_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
+                    ON task_list_links(list_id, updated_at DESC);
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO task_list_links(task_id, list_id, order_index, created_at, updated_at)
+                SELECT id, list_id, 0, COALESCE(created_at, ''), COALESCE(updated_at, '')
+                FROM tasks
+                WHERE TRIM(COALESCE(list_id, '')) <> ''
+                """
+            )
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_group_templates (
@@ -813,9 +853,11 @@ class Database:
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("event_lines", "primary_client_name", "TEXT")
+            self._ensure_column("event_lines", "owner_name", "TEXT")
             self._ensure_column("event_lines", "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
             self._ensure_column("event_lines", "closed_at", "TEXT")
             self._ensure_column("event_lines", "closed_by_user_id", "TEXT")
+            self._ensure_column("event_lines", "owner_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self.conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS task_attachments (

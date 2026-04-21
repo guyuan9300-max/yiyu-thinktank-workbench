@@ -998,6 +998,100 @@ def _event_line_primary_client_name(row) -> str | None:
     return value or None
 
 
+def _event_line_linked_task_member_ids(state: AppState, organization_id: str, event_line_id: str) -> list[str]:
+    seen: set[str] = set()
+    member_ids: list[str] = []
+    owner_rows = state.db.fetchall(
+        """
+        SELECT DISTINCT owner_id
+        FROM tasks
+        WHERE event_line_id = ?
+          AND organization_id = ?
+          AND owner_id IS NOT NULL
+          AND owner_id != ''
+        """,
+        (event_line_id, organization_id),
+    )
+    for row in owner_rows:
+        candidate = str(row["owner_id"] or "").strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            member_ids.append(candidate)
+    collaborator_rows = state.db.fetchall(
+        """
+        SELECT DISTINCT tc.user_id
+        FROM task_collaborators tc
+        JOIN tasks t ON t.id = tc.task_id
+        WHERE t.event_line_id = ?
+          AND t.organization_id = ?
+          AND tc.user_id IS NOT NULL
+          AND tc.user_id != ''
+        """,
+        (event_line_id, organization_id),
+    )
+    for row in collaborator_rows:
+        candidate = str(row["user_id"] or "").strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            member_ids.append(candidate)
+    return member_ids
+
+
+def _event_line_resolved_owner_ids(row) -> list[str]:
+    raw_owner_ids = from_json(row["owner_ids_json"], []) if "owner_ids_json" in row.keys() else []
+    owner_ids = [str(item).strip() for item in raw_owner_ids if str(item).strip()]
+    fallback = str(row["owner_id"] or "").strip() if row["owner_id"] else ""
+    if fallback and fallback not in owner_ids:
+        owner_ids.insert(0, fallback)
+    return owner_ids
+
+
+def _event_line_resolved_owner_names(state: AppState, row) -> list[str]:
+    names: list[str] = []
+    for owner_id in _event_line_resolved_owner_ids(row):
+        owner_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (owner_id,))
+        name = str(owner_row["full_name"]).strip() if owner_row and owner_row["full_name"] else ""
+        if name and name not in names:
+            names.append(name)
+    fallback = (
+        str(row["owner_name"] or "").strip()
+        if "owner_name" in row.keys() and row["owner_name"]
+        else ""
+    )
+    if fallback and fallback not in names:
+        names.insert(0, fallback)
+    return names
+
+
+def _event_line_resolved_participant_ids(state: AppState, row) -> list[str]:
+    owner_ids = set(_event_line_resolved_owner_ids(row))
+    seen: set[str] = set()
+    participant_ids: list[str] = []
+    for candidate in [
+        *[str(item).strip() for item in from_json(row["participant_ids_json"], []) if str(item).strip()],
+        *_event_line_linked_task_member_ids(state, str(row["organization_id"]), str(row["id"])),
+    ]:
+        if not candidate or candidate in seen or candidate in owner_ids:
+            continue
+        seen.add(candidate)
+        participant_ids.append(candidate)
+    return participant_ids
+
+
+def _can_view_event_line(state: AppState, row, current_user: SessionUser) -> bool:
+    if current_user.primaryRole == "admin":
+        return True
+    if current_user.id in _event_line_resolved_owner_ids(row):
+        return True
+    return current_user.id in _event_line_resolved_participant_ids(state, row)
+
+
+def _assert_event_line_view_permission(state: AppState, row, current_user: SessionUser) -> None:
+    if _can_view_event_line(state, row, current_user):
+        return
+    raise HTTPException(status_code=403, detail="当前事件线仅主要负责人和参与者可查看。")
+
+
 def _client_row_by_id(state: AppState, client_id: str | None, organization_id: str | None = None):
     normalized = (client_id or "").strip()
     if not normalized:
@@ -1020,10 +1114,8 @@ def _client_summary_record(row) -> ClientSummaryRecord:
 
 
 def _event_line_record(state: AppState, row) -> EventLineRecord:
-    owner_name = None
-    if row["owner_id"]:
-        owner_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["owner_id"]),))
-        owner_name = str(owner_row["full_name"]) if owner_row else None
+    owner_ids = _event_line_resolved_owner_ids(row)
+    owner_names = _event_line_resolved_owner_names(state, row)
     department_name = None
     if row["primary_department_id"]:
         department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (str(row["primary_department_id"]),))
@@ -1031,12 +1123,23 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
     activity_count = int(state.db.scalar("SELECT COUNT(1) FROM event_line_activities WHERE event_line_id = ?", (str(row["id"]),)) or 0)
     client_row = _client_row_by_id(state, _event_line_primary_client_id(row), str(row["organization_id"]))
     primary_client_name = _event_line_primary_client_name(row) or (str(client_row["name"]) if client_row and client_row["name"] else None)
+    visibility_scope = (
+        str(row["visibility_scope"])
+        if "visibility_scope" in row.keys() and row["visibility_scope"]
+        else "project_public"
+    )
+    closed_at = str(row["closed_at"]) if "closed_at" in row.keys() and row["closed_at"] else None
+    closed_by_user_id = (
+        str(row["closed_by_user_id"])
+        if "closed_by_user_id" in row.keys() and row["closed_by_user_id"]
+        else None
+    )
     return EventLineRecord(
         id=str(row["id"]),
         name=str(row["name"]),
         kind=str(row["kind"] or "custom"),
         status=str(row["status"] or "active"),
-        visibilityScope=str(row["visibility_scope"]) if row["visibility_scope"] else "project_public",
+        visibilityScope=visibility_scope,
         businessCategory=str(row["business_category"]) if row["business_category"] else None,
         stage=str(row["stage"]) if row["stage"] else None,
         summary=str(row["summary"]) if row["summary"] else None,
@@ -1045,17 +1148,19 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         recentDecision=str(row["recent_decision"]) if row["recent_decision"] else None,
         nextStep=str(row["next_step"]) if row["next_step"] else None,
         evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
-        ownerId=str(row["owner_id"]) if row["owner_id"] else None,
-        ownerName=owner_name,
+        ownerId=owner_ids[0] if owner_ids else (str(row["owner_id"]) if row["owner_id"] else None),
+        ownerName=owner_names[0] if owner_names else None,
+        ownerIds=owner_ids,
+        ownerNames=owner_names,
         primaryWorkObjectId=_event_line_primary_client_id(row),
         primaryWorkObjectName=primary_client_name,
         primaryClientId=_event_line_primary_client_id(row),
         primaryClientName=primary_client_name,
         primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
         primaryDepartmentName=department_name,
-        participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
-        closedAt=str(row["closed_at"]) if row["closed_at"] else None,
-        closedByUserId=str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
+        participantIds=_event_line_resolved_participant_ids(state, row),
+        closedAt=closed_at,
+        closedByUserId=closed_by_user_id,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
@@ -6515,10 +6620,65 @@ def _task_list_record(row) -> TaskListRecord:
         id=str(row["id"]),
         name=str(row["name"]),
         color=str(row["color"]),
+        description=str(row["description"]) if "description" in row.keys() and row["description"] else None,
         sortOrder=int(row["sort_order"] or 0),
         isDefault=bool(int(row["is_default"] or 0)),
         scope=str(row["scope"] or "org"),
         archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
+    )
+
+
+def _normalize_task_list_ids(raw_list_ids: list[str] | None, primary_list_id: str | None = None) -> list[str]:
+    ordered: list[str] = []
+    for candidate in [primary_list_id, *(raw_list_ids or [])]:
+        normalized = str(candidate or "").strip()
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+    return ordered
+
+
+def _task_list_rows_by_ids(state: AppState, list_ids: list[str]) -> list:
+    if not list_ids:
+        return []
+    rows = state.db.fetchall(
+        f"SELECT * FROM task_lists WHERE id IN ({_sql_placeholders(list_ids)})",
+        tuple(list_ids),
+    )
+    by_id = {str(row["id"]): row for row in rows}
+    return [by_id[list_id] for list_id in list_ids if list_id in by_id]
+
+
+def _task_list_records_for_task(state: AppState, task_id: str, primary_list_id: str | None = None) -> list[TaskListRecord]:
+    link_rows = state.db.fetchall(
+        """
+        SELECT l.*
+        FROM task_list_links link
+        JOIN task_lists l ON l.id = link.list_id
+        WHERE link.task_id = ?
+        ORDER BY link.order_index ASC, l.sort_order ASC, l.name COLLATE NOCASE ASC
+        """,
+        (task_id,),
+    )
+    if link_rows:
+        return [_task_list_record(row) for row in link_rows]
+    return []
+
+
+def _replace_task_list_links(state: AppState, task_id: str, list_ids: list[str]) -> None:
+    normalized_ids = _normalize_task_list_ids(list_ids)
+    timestamp = now_iso()
+    state.db.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
+    if not normalized_ids:
+        return
+    state.db.executemany(
+        """
+        INSERT INTO task_list_links(task_id, list_id, order_index, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?)
+        """,
+        [
+            (task_id, list_id, index, timestamp, timestamp)
+            for index, list_id in enumerate(normalized_ids)
+        ],
     )
 
 
@@ -6678,7 +6838,7 @@ def _default_list_id(state: AppState, organization_id: str) -> str | None:
 
 def _default_task_settings(state: AppState, current_user: SessionUser) -> TaskSettingsRecord:
     return TaskSettingsRecord(
-        defaultListId=_default_list_id(state, current_user.organizationId),
+        defaultListId=None,
         defaultPriority="normal",
         defaultDueDatePreset="today",
         defaultViewMode="list",
@@ -6933,6 +7093,7 @@ def _task_record(
     creator = _get_user_or_404(state, str(row["creator_id"]))
     owner = _get_user_or_404(state, str(row["owner_id"])) if row["owner_id"] else None
     list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (str(row["list_id"]),))
+    list_records = _task_list_records_for_task(state, str(row["id"]), str(row["list_id"]))
     collaborators = _collaborators_for_task(state, str(row["id"]))
     attachments = _task_attachments_for_task(state, str(row["id"]))
     viewer_status = next((item.inboxStatus for item in collaborators if item.userId == viewer_id), None)
@@ -6999,6 +7160,8 @@ def _task_record(
         creatorName=str(creator["full_name"]),
         listName=str(list_row["name"]) if list_row else DEFAULT_ORG_TASK_LIST_NAME,
         listColor=str(list_row["color"]) if list_row else DEFAULT_ORG_TASK_LIST_COLOR,
+        listIds=[item.id for item in list_records],
+        listNames=[item.name for item in list_records],
         ownerId=str(row["owner_id"]) if row["owner_id"] else None,
         ownerName=str(owner["full_name"]) if owner else None,
         startDate=str(row["start_date"]) if row["start_date"] else None,
@@ -9311,7 +9474,7 @@ def create_app() -> FastAPI:
             """,
             (current_user.organizationId,),
         )
-        return [_event_line_record(state, row) for row in rows]
+        return [_event_line_record(state, row) for row in rows if _can_view_event_line(state, row, current_user)]
 
     @app.get("/api/v1/clients", response_model=list[ClientSummaryRecord])
     def list_clients(
@@ -9982,12 +10145,25 @@ def create_app() -> FastAPI:
         payload: EventLineCreatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineRecord:
-        if payload.ownerId:
-            _get_user_or_404(state, payload.ownerId)
+        owner_ids = list(
+            dict.fromkeys(
+                [
+                    str(item).strip()
+                    for item in (
+                        payload.ownerIds
+                        if payload.ownerIds
+                        else [payload.ownerId] if payload.ownerId else [current_user.id]
+                    )
+                    if str(item).strip()
+                ],
+            ),
+        )
+        for owner_candidate in owner_ids:
+            _get_user_or_404(state, owner_candidate)
         timestamp = now_iso()
         event_line_id = (payload.id or "").strip() or new_id("eline")
-        owner_id = payload.ownerId or current_user.id
-        participant_ids = list(dict.fromkeys([owner_id, *[item for item in payload.participantIds if item]]))
+        owner_id = owner_ids[0] if owner_ids else current_user.id
+        participant_ids = [item for item in dict.fromkeys([item for item in payload.participantIds if item]) if item not in owner_ids]
         primary_work_object_id = payload.primaryWorkObjectId or payload.primaryClientId
         department_name = None
         client_name = None
@@ -10000,9 +10176,9 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id,
+                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id, owner_ids_json,
                 primary_client_id, primary_client_name, primary_department_id, participant_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
@@ -10020,6 +10196,7 @@ def create_app() -> FastAPI:
                 payload.nextStep,
                 int(payload.evidenceCount or 0),
                 owner_id,
+                to_json(owner_ids),
                 primary_work_object_id,
                 client_name,
                 payload.primaryDepartmentId,
@@ -10091,18 +10268,29 @@ def create_app() -> FastAPI:
                 )
                 continue
 
-            owner_id = _resolve_org_user_id(item.ownerId, current_user.id) or current_user.id
+            owner_ids = list(
+                dict.fromkeys(
+                    [
+                        _resolve_org_user_id(candidate, current_user.id)
+                        for candidate in (
+                            item.ownerIds
+                            if item.ownerIds
+                            else [item.ownerId] if item.ownerId else [current_user.id]
+                        )
+                    ],
+                ),
+            )
+            owner_ids = [candidate for candidate in owner_ids if candidate]
+            owner_id = owner_ids[0] if owner_ids else current_user.id
             closed_by_user_id = _resolve_org_user_id(item.closedByUserId)
             participant_ids: list[str] = []
             seen_participants: set[str] = set()
-            for candidate in [owner_id, *item.participantIds]:
+            for candidate in item.participantIds:
                 resolved = _resolve_org_user_id(candidate)
-                if not resolved or resolved in seen_participants:
+                if not resolved or resolved in owner_ids or resolved in seen_participants:
                     continue
                 participant_ids.append(resolved)
                 seen_participants.add(resolved)
-            if not participant_ids:
-                participant_ids = [owner_id]
 
             resolved_department_id = _resolve_department_id(item.primaryDepartmentId)
             client_id = (item.primaryClientId or "").strip() or None
@@ -10116,10 +10304,10 @@ def create_app() -> FastAPI:
                 """
                 INSERT INTO event_lines(
                     id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent,
-                    current_blocker, recent_decision, next_step, evidence_count, owner_id,
+                    current_blocker, recent_decision, next_step, evidence_count, owner_id, owner_ids_json,
                     primary_client_id, primary_client_name, primary_department_id, participant_ids_json,
                     closed_at, closed_by_user_id, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.id,
@@ -10137,6 +10325,7 @@ def create_app() -> FastAPI:
                     item.nextStep,
                     max(int(item.evidenceCount or 0), 0),
                     owner_id,
+                    to_json(owner_ids),
                     client_id,
                     client_name,
                     resolved_department_id,
@@ -10212,6 +10401,7 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineDetailRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_view_permission(state, row, current_user)
         return _event_line_detail_record(state, row, current_user.id)
 
     def _has_event_line_attachments_table() -> bool:
@@ -10226,6 +10416,7 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineReportSnapshotRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        _assert_event_line_view_permission(state, row, current_user)
         event_line = _event_line_record(state, row)
         activity_rows = state.db.fetchall(
             "SELECT * FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at ASC",
@@ -10255,7 +10446,7 @@ def create_app() -> FastAPI:
                 """,
                 (event_line_id, current_user.organizationId),
             )
-        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
+        participant_ids = _event_line_resolved_participant_ids(state, row)
         participant_names = []
         for uid in participant_ids:
             user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
@@ -10337,8 +10528,29 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        if payload.ownerId:
-            _get_user_or_404(state, payload.ownerId)
+        previous_status = str(row["status"] or "active")
+        incoming_owner_ids = (
+            payload.ownerIds
+            if payload.ownerIds
+            else [payload.ownerId] if payload.ownerId else None
+        )
+        if incoming_owner_ids:
+            for owner_candidate in incoming_owner_ids:
+                _get_user_or_404(state, owner_candidate)
+        merged_owner_ids = list(
+            dict.fromkeys(
+                [
+                    str(item).strip()
+                    for item in (
+                        incoming_owner_ids
+                        if incoming_owner_ids is not None
+                        else _event_line_resolved_owner_ids(row)
+                    )
+                    if str(item).strip()
+                ],
+            ),
+        )
+        merged_owner_id = merged_owner_ids[0] if merged_owner_ids else None
         merged = {
             "name": payload.name.strip() if payload.name is not None else str(row["name"]),
             "kind": payload.kind or str(row["kind"] or "custom"),
@@ -10351,7 +10563,8 @@ def create_app() -> FastAPI:
             "recent_decision": payload.recentDecision if "recentDecision" in payload.model_fields_set else row["recent_decision"],
             "next_step": payload.nextStep if "nextStep" in payload.model_fields_set else row["next_step"],
             "evidence_count": payload.evidenceCount if "evidenceCount" in payload.model_fields_set and payload.evidenceCount is not None else int(row["evidence_count"] or 0),
-            "owner_id": payload.ownerId if "ownerId" in payload.model_fields_set else row["owner_id"],
+            "owner_id": merged_owner_id if ("ownerId" in payload.model_fields_set or "ownerIds" in payload.model_fields_set) else row["owner_id"],
+            "owner_ids_json": to_json(merged_owner_ids),
             "primary_client_id": (
                 payload.primaryWorkObjectId
                 if "primaryWorkObjectId" in payload.model_fields_set
@@ -10361,14 +10574,22 @@ def create_app() -> FastAPI:
             ),
             "primary_client_name": None,
             "primary_department_id": payload.primaryDepartmentId if "primaryDepartmentId" in payload.model_fields_set else row["primary_department_id"],
-            "participant_ids_json": to_json(payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])),
+            "participant_ids_json": to_json(
+                [
+                    item
+                    for item in dict.fromkeys(
+                        payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])
+                    )
+                    if item and item not in merged_owner_ids
+                ]
+            ),
         }
         client_row = _client_row_by_id(state, merged["primary_client_id"], current_user.organizationId)
         merged["primary_client_name"] = str(client_row["name"]) if client_row and client_row["name"] else None
         state.db.execute(
             """
             UPDATE event_lines
-            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
+            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, owner_ids_json = ?, primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -10384,6 +10605,7 @@ def create_app() -> FastAPI:
                 merged["next_step"],
                 merged["evidence_count"],
                 merged["owner_id"],
+                merged["owner_ids_json"],
                 merged["primary_client_id"],
                 merged["primary_client_name"],
                 merged["primary_department_id"],
@@ -10407,24 +10629,83 @@ def create_app() -> FastAPI:
             },
         )
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
+        next_status = str(row["status"] or "active")
+        if next_status != previous_status and next_status in {"paused", "blocked", "done"}:
+            _notify_event_line_operation(
+                row,
+                current_user,
+                {"paused": "暂停", "blocked": "阻塞", "done": "完成"}[next_status],
+                now_iso(),
+            )
         return _event_line_record(state, row)
 
     def _can_manage_event_line(current_user: SessionUser, row) -> bool:
-        """Check if user can close/manage this event line: creator, their manager, or admin."""
+        """Only admins and explicitly configured main owners can manage an event line."""
         if current_user.primaryRole == "admin":
             return True
-        owner_id = str(row["owner_id"]) if row["owner_id"] else None
-        if owner_id == current_user.id:
-            return True
-        # Check if current user is the manager of the creator
-        if owner_id:
-            is_manager = state.db.fetchone(
-                "SELECT 1 FROM reporting_lines WHERE manager_user_id = ? AND report_user_id = ? AND effective_to IS NULL",
-                (current_user.id, owner_id),
-            )
-            if is_manager:
-                return True
-        return False
+        resolved_owner_ids = _event_line_resolved_owner_ids(row)
+        return current_user.id in resolved_owner_ids
+
+    def _notify_event_line_operation(row, current_user: SessionUser, operation_label: str, timestamp: str) -> None:
+        main_owner_names = _event_line_resolved_owner_names(state, row)
+        participant_ids = _event_line_resolved_participant_ids(state, row)
+        participant_names: list[str] = []
+        for uid in participant_ids:
+            user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
+            if user_row and user_row["full_name"]:
+                full_name = str(user_row["full_name"]).strip()
+                if full_name and full_name not in participant_names:
+                    participant_names.append(full_name)
+        notify_user_ids = [
+            uid
+            for uid in dict.fromkeys([current_user.id, *_event_line_resolved_owner_ids(row), *participant_ids])
+            if uid
+        ]
+        if not notify_user_ids:
+            return
+        list_id = _default_list_id(state, current_user.organizationId)
+        if not list_id:
+            return
+        operator_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (current_user.id,))
+        operator_name = str(operator_row["full_name"]) if operator_row and operator_row["full_name"] else current_user.id
+        event_line_name = str(row["name"] or "未命名事件线")
+        notify_title = f"事件线{operation_label}：{event_line_name}"
+        notify_desc = "\n".join([
+            f"事件线标题：{event_line_name}",
+            f"事件线操作：{operation_label}",
+            f"操作者：{operator_name}",
+            f"操作时间：{timestamp[:16].replace('T', ' ')}",
+            f"主要负责人：{'、'.join(main_owner_names) if main_owner_names else '未设置'}",
+            f"参与者：{'、'.join(participant_names) if participant_names else '暂无'}",
+        ])
+        notify_task_id = new_id("task")
+        state.db.execute(
+            """
+            INSERT INTO tasks(
+                id, organization_id, title, description, creator_id, owner_id, priority, list_id,
+                progress_status, source_type, source_id, scope_mode, event_line_id,
+                tags_json, tag_ids_json, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, 'normal', ?, 'inbox', 'event_line_notification', ?, 'COLLAB_SHARED', ?, '[]', '[]', ?, ?)
+            """,
+            (
+                notify_task_id,
+                current_user.organizationId,
+                notify_title,
+                notify_desc,
+                current_user.id,
+                current_user.id,
+                list_id,
+                str(row["id"]),
+                str(row["id"]),
+                timestamp,
+                timestamp,
+            ),
+        )
+        collab_rows = [(notify_task_id, uid, idx, 0, "accepted", None, timestamp, timestamp) for idx, uid in enumerate(notify_user_ids)]
+        state.db.executemany(
+            "INSERT INTO task_collaborators(task_id, user_id, order_index, is_owner, inbox_status, handled_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            collab_rows,
+        )
 
     @app.post("/api/v1/event-lines/{event_line_id}/close")
     def close_event_line(
@@ -10435,42 +10716,14 @@ def create_app() -> FastAPI:
         if str(row["status"]) in ("done", "archived"):
             return {"status": str(row["status"])}
         if not _can_manage_event_line(current_user, row):
-            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以结束事件线。")
+            raise HTTPException(status_code=403, detail="只有管理员和主要负责人可以结束事件线。")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
             (timestamp, current_user.id, timestamp, event_line_id, current_user.organizationId),
         )
         _record_event_line_activity(state, event_line_id, "manual_note", event_line_id, current_user.id, "结束事件线", "事件线已归档")
-        # Send notification to all participants
-        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item)]
-        notify_user_ids = [uid for uid in participant_ids if uid != current_user.id]
-        if notify_user_ids:
-            operator_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (current_user.id,))
-            operator_name = str(operator_row["full_name"]) if operator_row else current_user.id
-            event_line_name = str(row["name"])
-            notify_title = f"事件线已结束：{event_line_name}"
-            notify_desc = f"{operator_name} 于 {timestamp[:10]} 结束了事件线「{event_line_name}」"
-            list_id = _default_list_id(state, current_user.organizationId)
-            if list_id:
-                notify_task_id = new_id("task")
-                state.db.execute(
-                    """
-                    INSERT INTO tasks(
-                        id, organization_id, title, description, creator_id, owner_id, priority, list_id,
-                        progress_status, source_type, source_id, scope_mode, event_line_id,
-                        tags_json, tag_ids_json, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, 'normal', ?, 'inbox', 'event_line_notification', ?, 'COLLAB_SHARED', ?, '[]', '[]', ?, ?)
-                    """,
-                    (notify_task_id, current_user.organizationId, notify_title, notify_desc,
-                     current_user.id, current_user.id, list_id, event_line_id, event_line_id, timestamp, timestamp),
-                )
-                collab_rows = [(notify_task_id, uid, idx, 0, "pending", None, timestamp, timestamp)
-                               for idx, uid in enumerate(notify_user_ids)]
-                state.db.executemany(
-                    "INSERT INTO task_collaborators(task_id, user_id, order_index, is_owner, inbox_status, handled_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                    collab_rows,
-                )
+        _notify_event_line_operation(row, current_user, "完成", timestamp)
         return {"status": "archived"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/reopen")
@@ -10480,7 +10733,7 @@ def create_app() -> FastAPI:
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         if not _can_manage_event_line(current_user, row):
-            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以重新打开事件线。")
+            raise HTTPException(status_code=403, detail="只有管理员和主要负责人可以重新打开事件线。")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ? WHERE id = ? AND organization_id = ?",
@@ -10495,17 +10748,10 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        # Only admin can delete event lines
-        if current_user.primaryRole != "admin":
-            raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
-        # Can only delete event lines with zero associated tasks
-        task_count = int(state.db.scalar(
-            "SELECT COUNT(1) FROM tasks WHERE event_line_id = ? AND organization_id = ?",
-            (event_line_id, current_user.organizationId),
-        ) or 0)
-        if task_count > 0:
-            raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
+        if not _can_manage_event_line(current_user, row):
+            raise HTTPException(status_code=403, detail="只有管理员和主要负责人可以删除事件线。")
         counts = _event_line_dependency_counts(state, event_line_id, current_user.organizationId)
+        _notify_event_line_operation(row, current_user, "删除", now_iso())
         state.db.execute(
             "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ? AND organization_id = ?",
             (now_iso(), event_line_id, current_user.organizationId),
@@ -11797,10 +12043,10 @@ def create_app() -> FastAPI:
             state.db.execute(
                 """
                 UPDATE task_lists
-                SET color = ?, archived_at = NULL, is_default = CASE WHEN ? THEN 1 ELSE is_default END
+                SET color = ?, description = ?, archived_at = NULL, is_default = CASE WHEN ? THEN 1 ELSE is_default END
                 WHERE id = ?
                 """,
-                (payload.color.strip(), 1 if next_is_default else 0, existing_id),
+                ((payload.color or str(existing_row["color"]) or "#5B7BFE").strip(), str(payload.description or ""), 1 if next_is_default else 0, existing_id),
             )
             row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (existing_id,))
             assert row is not None
@@ -11820,10 +12066,19 @@ def create_app() -> FastAPI:
             )
         state.db.execute(
             """
-            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO task_lists(id, organization_id, name, color, description, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
-            (list_id, current_user.organizationId, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
+            (
+                list_id,
+                current_user.organizationId,
+                trimmed_name,
+                (payload.color or "#5B7BFE").strip(),
+                str(payload.description or ""),
+                sort_order,
+                1 if is_default else 0,
+                next_scope,
+            ),
         )
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert row is not None
@@ -11878,12 +12133,13 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             UPDATE task_lists
-            SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
+            SET name = ?, color = ?, description = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
             WHERE id = ?
             """,
             (
                 payload.name.strip(),
-                payload.color.strip(),
+                (payload.color or str(row["color"]) or "#5B7BFE").strip(),
+                str(payload.description or row["description"] or ""),
                 payload.sortOrder if payload.sortOrder is not None else int(row["sort_order"] or 0),
                 1 if next_is_default else 0,
                 next_scope,
@@ -11924,27 +12180,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Task list not found")
         if current_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
-        task_count = state.db.scalar(
-            "SELECT COUNT(1) AS count FROM tasks WHERE organization_id = ? AND list_id = ?",
+        linked_task_rows = state.db.fetchall("SELECT DISTINCT task_id FROM task_list_links WHERE list_id = ?", (list_id,))
+        for linked_task_row in linked_task_rows:
+            task_id = str(linked_task_row["task_id"])
+            remaining_ids = [
+                item.id
+                for item in _task_list_records_for_task(state, task_id)
+                if item.id != list_id
+            ]
+            next_list_ids = remaining_ids
+            _replace_task_list_links(state, task_id, next_list_ids)
+            next_primary_list_id = next_list_ids[0] if next_list_ids else None
+            state.db.execute(
+                "UPDATE tasks SET list_id = ?, updated_at = ? WHERE id = ?",
+                (next_primary_list_id, now_iso(), task_id),
+            )
+        state.db.execute("DELETE FROM task_list_links WHERE list_id = ?", (list_id,))
+        state.db.execute(
+            "UPDATE task_settings SET default_list_id = NULL WHERE organization_id = ? AND default_list_id = ?",
             (current_user.organizationId, list_id),
         )
-        if task_count > 0:
-            raise HTTPException(status_code=400, detail="该清单已有任务，请先归档，不支持直接删除")
-        if state.db.scalar(
-            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
-            (current_user.organizationId, str(row["scope"] or "org")),
-        ) <= 1:
-            raise HTTPException(status_code=400, detail="至少保留一个清单")
-        if bool(int(row["is_default"] or 0)):
-            fallback_row = state.db.fetchone(
-                "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
-                (current_user.organizationId, str(row["scope"] or "org"), list_id),
-            )
-            if fallback_row:
-                state.db.execute(
-                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = ?",
-                    (str(fallback_row["id"]), current_user.organizationId, str(row["scope"] or "org")),
-                )
         state.db.execute("DELETE FROM task_lists WHERE id = ?", (list_id,))
         return {"deleted": True}
 
@@ -12023,11 +12278,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_task(payload: TaskCreatePayload, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
-        list_row = state.db.fetchone(
-            "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
-            (payload.listId, current_user.organizationId),
-        )
-        if not list_row or list_row["archived_at"]:
+        normalized_list_ids = _normalize_task_list_ids(payload.listIds, payload.listId)
+        primary_list_id = normalized_list_ids[0] if normalized_list_ids else ""
+        list_rows = _task_list_rows_by_ids(state, normalized_list_ids)
+        if len(list_rows) != len(normalized_list_ids) or any(item["archived_at"] for item in list_rows):
             raise HTTPException(status_code=400, detail="Invalid task list")
         collaborator_ids = [item for item in payload.collaboratorIds if item]
         owner_id = (payload.ownerId or "").strip() or None
@@ -12091,7 +12345,7 @@ def create_app() -> FastAPI:
                 requested_project_flow_id,
                 scope_mode,
                 payload.priority,
-                payload.listId,
+                primary_list_id,
                 payload.sourceType,
                 payload.sourceId,
                 business_category,
@@ -12105,6 +12359,7 @@ def create_app() -> FastAPI:
                 timestamp,
             ),
         )
+        _replace_task_list_links(state, task_id, normalized_list_ids)
         state.db.executemany(
             """
             INSERT INTO task_collaborators(
@@ -12173,6 +12428,12 @@ def create_app() -> FastAPI:
         next_owner_id = (payload.ownerId or "").strip() if owner_field_touched and payload.ownerId else None
         if not owner_field_touched:
             next_owner_id = str(row["owner_id"]) if row["owner_id"] else None
+        list_ids_field_touched = "listIds" in payload.model_fields_set
+        list_id_field_touched = "listId" in payload.model_fields_set
+        normalized_list_ids = _normalize_task_list_ids(
+            payload.listIds if list_ids_field_touched else None,
+            payload.listId if list_id_field_touched else None,
+        )
         next_collaborator_ids = [item for item in (payload.collaboratorIds if payload.collaboratorIds is not None else existing_collaborator_ids) if item]
         if next_owner_id and next_owner_id in next_collaborator_ids:
             next_collaborator_ids = [next_owner_id] + [item for item in next_collaborator_ids if item != next_owner_id]
@@ -12198,7 +12459,11 @@ def create_app() -> FastAPI:
         )
         owner_changed = owner_field_touched and next_owner_id != previous_owner_id
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
-        if payload.listId:
+        if normalized_list_ids:
+            list_rows = _task_list_rows_by_ids(state, normalized_list_ids)
+            if len(list_rows) != len(normalized_list_ids) or any(item["archived_at"] for item in list_rows):
+                raise HTTPException(status_code=400, detail="Invalid task list")
+        elif payload.listId:
             list_row = state.db.fetchone(
                 "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
                 (payload.listId, current_user.organizationId),
@@ -12253,7 +12518,11 @@ def create_app() -> FastAPI:
             "title": payload.title or row["title"],
             "description": payload.description if payload.description is not None else row["description"],
             "priority": payload.priority or row["priority"],
-            "list_id": payload.listId or row["list_id"],
+            "list_id": normalized_list_ids[0] if normalized_list_ids else (
+                ""
+                if list_ids_field_touched or list_id_field_touched
+                else row["list_id"]
+            ),
             "start_date": payload.startDate if payload.startDate is not None else row["start_date"],
             "due_date": payload.dueDate if payload.dueDate is not None else row["due_date"],
             "duration_minutes": payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
@@ -12282,7 +12551,7 @@ def create_app() -> FastAPI:
                 merged["title"],
                 merged["description"],
                 merged["priority"],
-                merged["list_id"],
+                merged["list_id"] or None,
                 merged["start_date"],
                 merged["due_date"],
                 merged["duration_minutes"],
@@ -12303,6 +12572,11 @@ def create_app() -> FastAPI:
                 now_iso(),
                 task_id,
             ),
+        )
+        _replace_task_list_links(
+            state,
+            task_id,
+            normalized_list_ids if (list_ids_field_touched or list_id_field_touched) else [str(merged["list_id"] or "").strip()],
         )
         if payload.collaboratorIds is not None or owner_field_touched:
             state.db.execute("UPDATE tasks SET owner_id = ?, updated_at = ? WHERE id = ?", (next_owner_id, now_iso(), task_id))
@@ -12623,6 +12897,40 @@ def create_app() -> FastAPI:
                     "UPDATE tasks SET progress_status = 'done', updated_at = ? WHERE id = ?", (timestamp, task_id),
                 )
         _record_activity(state, task_id, current_user.id, "accepted", {"userId": user_id})
+        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+
+    @app.post("/api/v1/tasks/{task_id}/notifications/read", response_model=TaskRecord)
+    def mark_notification_read(
+        task_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskRecord:
+        task_row = _task_row_or_404(state, task_id)
+        if str(task_row["organization_id"]) != current_user.organizationId:
+            raise HTTPException(status_code=404, detail="通知不存在。")
+        if str(task_row["source_type"] or "") != "event_line_notification":
+            raise HTTPException(status_code=400, detail="当前记录不是系统通知。")
+        row = state.db.fetchone("SELECT * FROM task_collaborators WHERE task_id = ? AND user_id = ?", (task_id, current_user.id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Notification recipient not found")
+        timestamp = now_iso()
+        state.db.execute(
+            "UPDATE task_collaborators SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
+            (timestamp, timestamp, task_id, current_user.id),
+        )
+        unread_row = state.db.fetchone(
+            "SELECT 1 FROM task_collaborators WHERE task_id = ? AND handled_at IS NULL",
+            (task_id,),
+        )
+        if unread_row is None:
+            state.db.execute(
+                "UPDATE tasks SET progress_status = 'done', updated_at = ? WHERE id = ?",
+                (timestamp, task_id),
+            )
+        else:
+            state.db.execute(
+                "UPDATE tasks SET progress_status = 'inbox', updated_at = ? WHERE id = ?",
+                (timestamp, task_id),
+            )
         return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/return", response_model=TaskRecord)

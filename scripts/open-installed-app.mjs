@@ -6,9 +6,12 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 
 const APP_NAME = '益语智库自用平台.app';
+const WORKBENCH_DATA_DIR_NAME = 'YiyuThinkTankWorkbench';
 const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const installedApp = path.join(os.homedir(), 'Applications', APP_NAME);
 const binaryPath = path.join(installedApp, 'Contents', 'MacOS', '益语智库自用平台');
+const userDataPath = path.join(os.homedir(), 'Library', 'Application Support', WORKBENCH_DATA_DIR_NAME);
+const runtimeManifestPath = path.join(userDataPath, 'runtime', 'logs', 'runtime-manifest.json');
 const rawElectronPattern = `${projectRoot}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \\.`;
 const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
 
@@ -54,6 +57,7 @@ await sleep(4000);
 
 if (countAppProcesses() >= 2) {
   console.log('[open-installed-app] launched via open -a');
+  console.log(`[open-installed-app] runtime manifest: ${runtimeManifestPath}`);
   run('osascript', ['-e', 'tell application "益语智库自用平台" to activate'], { stdio: 'ignore' });
   process.exit(0);
 }
@@ -73,3 +77,4 @@ const child = spawn('script', ['-q', '/dev/null', binaryPath], {
 });
 child.unref();
 console.log(`[open-installed-app] launched via script+binary (pid: ${child.pid})`);
+console.log(`[open-installed-app] runtime manifest: ${runtimeManifestPath}`);

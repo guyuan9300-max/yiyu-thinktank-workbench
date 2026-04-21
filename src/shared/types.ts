@@ -828,6 +828,7 @@ export interface TaskList {
   id: string;
   name: string;
   color: string;
+  description?: string | null;
   sortOrder: number;
   isDefault: boolean;
   scope?: 'org' | 'personal';
@@ -856,6 +857,8 @@ export interface Task {
   listId: string;
   listName: string;
   listColor: string;
+  listIds?: string[];
+  listNames?: string[];
   ddl: string;
   startDate?: string | null;
   dueDate?: string | null;
@@ -973,6 +976,8 @@ export interface EventLine {
   evidenceCount: number;
   ownerId?: string | null;
   ownerName?: string | null;
+  ownerIds?: string[];
+  ownerNames?: string[];
   primaryWorkObjectId?: string | null;
   primaryWorkObjectName?: string | null;
   primaryClientId?: string | null;
@@ -1096,6 +1101,7 @@ export interface EventLineMutationPayload {
   nextStep?: string | null;
   evidenceCount?: number | null;
   ownerId?: string | null;
+  ownerIds?: string[];
   primaryWorkObjectId?: string | null;
   primaryClientId?: string | null;
   primaryDepartmentId?: string | null;
@@ -3681,6 +3687,7 @@ export interface TaskMutationPayload {
   desc: string;
   priority: Priority;
   listId: string;
+  listIds?: string[];
   startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
@@ -3812,7 +3819,8 @@ export interface TaskTagMutationPayload {
 
 export interface TaskListMutationPayload {
   name: string;
-  color: string;
+  description?: string | null;
+  color?: string;
   isDefault?: boolean;
   scope?: 'org' | 'personal';
   archived?: boolean;

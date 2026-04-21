@@ -256,6 +256,7 @@ import {
   login,
   ingestMeeting,
   logout,
+  markTaskNotificationRead,
   processPendingConsultationKnowledgeRequests,
   previewPullFromMain,
   previewPushToMain,
@@ -551,6 +552,8 @@ function buildEmptyEventLineEditorDraft(defaults?: Partial<EventLineEditorDraft>
     name: '',
     kind: 'project_line',
     primaryClientId: '',
+    ownerId: '',
+    ownerIds: [],
     summary: '',
     stage: '本周推进',
     currentBlocker: '',
@@ -562,10 +565,17 @@ function buildEmptyEventLineEditorDraft(defaults?: Partial<EventLineEditorDraft>
 }
 
 function buildEventLineEditorDraftFromDetail(detail: EventLineDetail): EventLineEditorDraft {
+  const ownerIds = detail.eventLine.ownerIds?.length
+    ? detail.eventLine.ownerIds
+    : detail.eventLine.ownerId
+      ? [detail.eventLine.ownerId]
+      : [];
   return {
     name: detail.eventLine.name || '',
     kind: detail.eventLine.kind || 'project_line',
     primaryClientId: detail.eventLine.primaryClientId || '',
+    ownerId: ownerIds[0] || detail.eventLine.ownerId || '',
+    ownerIds,
     summary: detail.eventLine.summary || '',
     stage: detail.eventLine.stage || '',
     currentBlocker: detail.eventLine.currentBlocker || '',
@@ -582,6 +592,7 @@ type TaskEditorState = {
   title: string;
   desc: string;
   listId: string;
+  listIds: string[];
   priority: 'low' | 'normal' | 'high';
   priorityTouched: boolean;
   priorityReason: string;
@@ -2078,13 +2089,11 @@ function getTint(hexColor: string) {
   return `${hexColor}1A`;
 }
 
-function resolveTaskSettings(taskSettings: TaskSettings | null, lists: TaskList[]): TaskSettings {
-  const activeLists = lists.filter((item) => !item.archivedAt);
-  const defaultListId = activeLists.find((item) => item.isDefault)?.id || activeLists[0]?.id || null;
+function resolveTaskSettings(taskSettings: TaskSettings | null, _lists: TaskList[]): TaskSettings {
   return {
     ...DEFAULT_TASK_SETTINGS,
     ...taskSettings,
-    defaultListId: taskSettings?.defaultListId || defaultListId,
+    defaultListId: taskSettings?.defaultListId ?? null,
   };
 }
 
@@ -2098,6 +2107,147 @@ function defaultDdlFromPreset(preset: TaskSettings['defaultDueDatePreset']) {
 
 function formatDateOnlyValue(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+type InlineChineseDatePickerFieldProps = {
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+};
+
+function InlineChineseDatePickerField({ value, placeholder, onChange }: InlineChineseDatePickerFieldProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [pickerMonth, setPickerMonth] = useState(() => {
+    const parsed = parseTaskDateValue(value);
+    const base = parsed || new Date();
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const parsed = parseTaskDateValue(value);
+    const base = parsed || new Date();
+    setPickerMonth(new Date(base.getFullYear(), base.getMonth(), 1));
+  }, [isOpen, value]);
+
+  const calendarCells = useMemo(() => buildCalendarCells(pickerMonth), [pickerMonth]);
+  const todayValue = formatDateOnlyValue(new Date());
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="inline-flex min-w-[144px] items-center justify-between gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none transition hover:border-[#C9D6FF] hover:text-[#5B7BFE]"
+      >
+        <span className={value ? 'text-gray-800' : 'text-gray-400'}>{value || placeholder}</span>
+        <CalendarIcon size={14} className="text-gray-400" />
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 top-full z-[180] mt-2 w-[280px] rounded-[24px] border border-[#E7EAF3] bg-white p-4 shadow-[0_24px_60px_rgba(15,23,42,0.16)]">
+          <div className="mb-4 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setPickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+              aria-label="上个月"
+            >
+              <ChevronLeft size={15} />
+            </button>
+            <span className="text-[15px] font-bold text-gray-900">{formatMonthTitle(pickerMonth)}</span>
+            <button
+              type="button"
+              onClick={() => setPickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+              aria-label="下个月"
+            >
+              <ChevronRight size={15} />
+            </button>
+          </div>
+          <div className="grid grid-cols-7 gap-y-2 text-center text-[11px] font-bold text-gray-400">
+            {['一', '二', '三', '四', '五', '六', '日'].map((label) => (
+              <span key={label}>{label}</span>
+            ))}
+          </div>
+          <div className="mt-2 grid grid-cols-7 gap-y-1">
+            {calendarCells.map((cell, index) => {
+              if (!cell.date || !cell.day) {
+                return <span key={`picker-empty-${index}`} className="h-9" />;
+              }
+              const cellValue = formatDateOnlyValue(cell.date);
+              const isSelected = value === cellValue;
+              const isToday = cellValue === todayValue;
+              return (
+                <button
+                  key={cellValue}
+                  type="button"
+                  onClick={() => {
+                    onChange(cellValue);
+                    setIsOpen(false);
+                  }}
+                  className={`mx-auto flex h-9 w-9 items-center justify-center rounded-xl text-[13px] font-bold transition-colors ${
+                    isSelected
+                      ? 'bg-[#3F74FF] text-white shadow-[0_10px_20px_rgba(63,116,255,0.22)]'
+                      : isToday
+                        ? 'text-[#E5477A] hover:bg-rose-50'
+                        : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {cell.day}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-4 flex items-center justify-between">
+            <button
+              type="button"
+              className="text-[13px] font-bold text-gray-400 transition-colors hover:text-gray-700"
+              onClick={() => {
+                onChange('');
+                setIsOpen(false);
+              }}
+            >
+              清除
+            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="text-[13px] font-bold text-[#5B7BFE] transition-colors hover:text-[#3F74FF]"
+                onClick={() => {
+                  onChange(todayValue);
+                  setPickerMonth(new Date());
+                  setIsOpen(false);
+                }}
+              >
+                今天
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-[#5B7BFE] px-4 py-2 text-[13px] font-bold text-white shadow-[0_10px_24px_rgba(91,123,254,0.22)]"
+                onClick={() => setIsOpen(false)}
+              >
+                确定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function formatTimeOnlyValue(date: Date) {
@@ -2219,6 +2369,37 @@ function formatTaskDueLabel(value?: string | null) {
 
 function formatTaskTimelineLabel(task: Pick<Task, 'startDate' | 'dueDate' | 'durationMinutes' | 'ddl'>) {
   return formatUnifiedTaskTimelineLabel(task);
+}
+
+type EventLineNotificationSummary = {
+  eventLineTitle: string;
+  operation: string;
+  operator: string;
+  operatedAt: string;
+  mainOwners: string;
+  participants: string;
+};
+
+function parseEventLineNotificationSummary(task: Pick<Task, 'sourceType' | 'title' | 'desc'>): EventLineNotificationSummary | null {
+  if (task.sourceType !== 'event_line_notification') return null;
+  const rawLines = String(task.desc || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const values = new Map<string, string>();
+  rawLines.forEach((line) => {
+    const [label, ...rest] = line.split('：');
+    if (!label || rest.length === 0) return;
+    values.set(label.trim(), rest.join('：').trim());
+  });
+  return {
+    eventLineTitle: values.get('事件线标题') || task.title || '未命名事件线',
+    operation: values.get('事件线操作') || '状态更新',
+    operator: values.get('操作者') || '未标记',
+    operatedAt: values.get('操作时间') || '',
+    mainOwners: values.get('主要负责人') || '未设置',
+    participants: values.get('参与者') || '暂无',
+  };
 }
 
 function formatTaskDuePickerDateLabel(datePart?: string | null) {
@@ -2374,6 +2555,7 @@ type TaskListFilter = 'doing' | 'done' | 'overdue' | 'all';
 type TaskParticipationFilter = 'all' | 'personal' | 'collab';
 type TaskTimeSort = 'newest' | 'oldest';
 type TaskTimeRangeFilter = 'all' | 'last3days' | 'lastMonth' | 'lastHalfYear' | 'custom';
+const TASK_LIST_FILTER_NONE = '__no_list__';
 
 const TASK_LIST_FILTER_OPTIONS: Array<{ value: TaskListFilter; label: string }> = [
   { value: 'doing', label: '待推进' },
@@ -3987,9 +4169,7 @@ export default function App() {
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [listManageDraft, setListManageDraft] = useState({
     name: '',
-    color: TASK_COLOR_OPTIONS[0],
-    isDefault: false,
-    archived: false,
+    description: '',
   });
   const [editingListId, setEditingListId] = useState<string | null>(null);
   const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
@@ -5787,6 +5967,7 @@ export default function App() {
     const [inboxCustomStartDate, setInboxCustomStartDate] = useState('');
     const [inboxCustomEndDate, setInboxCustomEndDate] = useState('');
     const [taskSearchQuery, setTaskSearchQuery] = useState('');
+    const [expandedInboxTaskIds, setExpandedInboxTaskIds] = useState<string[]>([]);
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     const [isDuePickerOpen, setIsDuePickerOpen] = useState(false);
     const [duePickerMonth, setDuePickerMonth] = useState(() => getTodayCalendarState().calendarDate);
@@ -5796,7 +5977,8 @@ export default function App() {
       scopeModeTouched: false,
       title: '',
       desc: '',
-      listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
+      listId: '',
+      listIds: [],
       priority: effectiveTaskSettings.defaultPriority,
       priorityTouched: false,
       priorityReason: '系统会根据任务内容自动识别优先级，你可以手动调整。',
@@ -5889,6 +6071,7 @@ export default function App() {
     const [isEventLineCreateOpen, setIsEventLineCreateOpen] = useState(false);
     const [eventLineProjectResumeTarget, setEventLineProjectResumeTarget] = useState<'create' | 'edit' | null>(null);
     const [eventLineEditorDraft, setEventLineEditorDraft] = useState<EventLineEditorDraft>(buildEmptyEventLineEditorDraft());
+    const [eventLineEditorSaveNotice, setEventLineEditorSaveNotice] = useState<string | null>(null);
     const [reportEventLineId, setReportEventLineId] = useState<string | null>(null);
     const [eventLineClarificationDraft, setEventLineClarificationDraft] = useState<EventLineClarificationState>(buildEventLineClarificationDraft(null));
     const [isEventLineClarifyMode, setIsEventLineClarifyMode] = useState(false);
@@ -6358,19 +6541,24 @@ export default function App() {
       if (!isTaskModalOpen) return;
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
         if (personalTaskLists.length === 0) return;
-        if (personalTaskLists.some((item) => item.id === editingTask.listId)) return;
         const fallbackListId = resolveTaskViewDefaultListId('personal');
-        if (!fallbackListId) return;
-        setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
+        const nextListIds = Array.from(new Set((editingTask.listIds || []).filter((listId) => personalTaskLists.some((item) => item.id === listId))));
+        const nextPrimaryListId = nextListIds[0] || fallbackListId || '';
+        const normalizedListIds = nextListIds.length > 0 ? nextListIds : (nextPrimaryListId ? [nextPrimaryListId] : []);
+        if (editingTask.listId === nextPrimaryListId && JSON.stringify(editingTask.listIds) === JSON.stringify(normalizedListIds)) return;
+        setEditingTask((prev) => ({ ...prev, listId: nextPrimaryListId, listIds: normalizedListIds }));
         return;
       }
       if (orgTaskLists.length === 0) return;
-      if (orgTaskLists.some((item) => item.id === editingTask.listId)) return;
       const fallbackListId = resolveTaskViewDefaultListId('org');
-      if (!fallbackListId) return;
-      setEditingTask((prev) => (prev.listId === fallbackListId ? prev : { ...prev, listId: fallbackListId }));
+      const nextListIds = Array.from(new Set((editingTask.listIds || []).filter((listId) => orgTaskLists.some((item) => item.id === listId))));
+      const nextPrimaryListId = nextListIds[0] || fallbackListId || '';
+      const normalizedListIds = nextListIds.length > 0 ? nextListIds : (nextPrimaryListId ? [nextPrimaryListId] : []);
+      if (editingTask.listId === nextPrimaryListId && JSON.stringify(editingTask.listIds) === JSON.stringify(normalizedListIds)) return;
+      setEditingTask((prev) => ({ ...prev, listId: nextPrimaryListId, listIds: normalizedListIds }));
     }, [
       editingTask.listId,
+      editingTask.listIds,
       editingTask.scopeMode,
       isTaskModalOpen,
       orgTaskLists,
@@ -6514,7 +6702,11 @@ export default function App() {
     }, [authState.sessionMode, currentSessionUser?.id, currentSessionUser?.organizationId, loadTaskGroupTemplateBlock]);
 
     const getListColor = (listId: string) => taskLists.find((list) => list.id === listId)?.color || '#888681';
-    const getListName = (listId: string) => taskLists.find((list) => list.id === listId)?.name || '组织任务';
+    const getListName = (listId: string) => {
+      const normalizedId = (listId || '').trim();
+      if (!normalizedId) return '';
+      return taskLists.find((list) => list.id === normalizedId)?.name || '';
+    };
     const taskControlLevelLabel = (task: Task) => {
       const level = task.orgContext?.controlLevel;
       if (level === 'leader_control') return '负责人控制';
@@ -6522,6 +6714,17 @@ export default function App() {
       if (level === 'organization_control') return '机构控制';
       return '';
     };
+
+    const canManageEventLine = useCallback((eventLine?: Pick<EventLine, 'ownerId' | 'ownerIds'> | null) => {
+      if (!eventLine || !currentSessionUser?.id) return false;
+      if (currentSessionUser.primaryRole === 'admin') return true;
+      const ownerIds = eventLine.ownerIds?.length
+        ? eventLine.ownerIds
+        : eventLine.ownerId
+          ? [eventLine.ownerId]
+          : [];
+      return ownerIds.includes(currentSessionUser.id);
+    }, [currentSessionUser?.id, currentSessionUser?.primaryRole]);
 
     const canReviewTask = (task: Task) => {
       if (!task.orgContext?.needsReview || !currentSessionUser?.id) return false;
@@ -6566,11 +6769,22 @@ export default function App() {
       [inboxCustomEndDate, inboxCustomStartDate, inboxTimeRangeFilter, inboxTimeSort, outboundPendingTasks],
     );
     const actionableInboxTasks = useMemo(
-      () => [...inboundConfirmableTasks, ...inboundNotificationTasks],
-      [inboundConfirmableTasks, inboundNotificationTasks],
+      () => [...inboundConfirmableTasks],
+      [inboundConfirmableTasks],
     );
-    const activeTaskListFilterLabel = TASK_LIST_FILTER_OPTIONS.find((item) => item.value === taskListFilter)?.label || '全部';
-    const activeTaskParticipationFilterLabel = TASK_PARTICIPATION_FILTER_OPTIONS.find((item) => item.value === taskParticipationFilter)?.label || '全部任务';
+    const inboxBadgeCount = inboundPendingTasks.length + outboundPendingTasks.length;
+    const inboxFeedItems = useMemo(() => {
+      const items = [
+        ...inboundConfirmableTasks.map((task) => ({ task, kind: 'confirmable' as const })),
+        ...filteredOutboundPendingTasks.map((task) => ({ task, kind: 'outbound' as const })),
+        ...inboundNotificationTasks.map((task) => ({ task, kind: 'notification' as const })),
+      ];
+      return items.sort((left, right) => {
+        const leftTime = new Date(left.task.updatedAt || left.task.createdAt || 0).getTime();
+        const rightTime = new Date(right.task.updatedAt || right.task.createdAt || 0).getTime();
+        return inboxTimeSort === 'oldest' ? leftTime - rightTime : rightTime - leftTime;
+      });
+    }, [filteredOutboundPendingTasks, inboxTimeSort, inboundConfirmableTasks, inboundNotificationTasks]);
     const activeFormalTaskView = useMemo(() => {
       if (drillTaskViewOverride?.targetType === 'task_view') {
         return {
@@ -6622,7 +6836,15 @@ export default function App() {
     const listTasks = useMemo(() => {
       let filtered = rawListTasks;
       if (taskListNameFilter) {
-        filtered = filtered.filter((task) => (task.listName || getListName(task.listId)) === taskListNameFilter);
+        filtered = filtered.filter((task) => {
+          const names = Array.from(new Set((task.listNames && task.listNames.length > 0
+            ? task.listNames
+            : [task.listName || getListName(task.listId)]).filter(Boolean)));
+          if (taskListNameFilter === TASK_LIST_FILTER_NONE) {
+            return names.length === 0;
+          }
+          return names.includes(taskListNameFilter);
+        });
       }
       if (activeFormalTaskView) {
         filtered = sortTasksByFormalView(
@@ -6647,6 +6869,10 @@ export default function App() {
       const availableIds = new Set(actionableInboxTasks.map((task) => task.id));
       setSelectedInboxIds((prev) => prev.filter((id) => availableIds.has(id)));
     }, [actionableInboxTasks]);
+    useEffect(() => {
+      const availableIds = new Set(inboxFeedItems.map((item) => item.task.id));
+      setExpandedInboxTaskIds((prev) => prev.filter((id) => availableIds.has(id)));
+    }, [inboxFeedItems]);
     const baseCalendarTasks = tasks.filter((task) => {
       if (task.status === 'rejected') return false;
       if (hidePersonalTasks && task.scopeMode === 'PERSONAL_ONLY') return false;
@@ -6703,7 +6929,10 @@ export default function App() {
       : editingTask.collaborators;
     const collaboratorNames = editingTask.collaborators.map((item) => item.fullName);
     const selectedTaskTags = taskTags.filter((tag) => editingTask.tagIds.includes(tag.id));
-    const selectedTaskList = orgTaskLists.find((list) => list.id === editingTask.listId) || null;
+    const selectedTaskListIds = useMemo(
+      () => Array.from(new Set((editingTask.listIds || []).filter(Boolean))),
+      [editingTask.listIds],
+    );
     const visibleOrgTaskLists = useMemo(() => {
       const uniqueByName = new Map<string, TaskList>();
       orgTaskLists.forEach((list) => {
@@ -6713,8 +6942,8 @@ export default function App() {
           uniqueByName.set(key, list);
           return;
         }
-        if (current.id === editingTask.listId) return;
-        if (list.id === editingTask.listId || (!current.isDefault && list.isDefault)) {
+        if (selectedTaskListIds.includes(current.id)) return;
+        if (selectedTaskListIds.includes(list.id) || (!current.isDefault && list.isDefault)) {
           uniqueByName.set(key, list);
         }
       });
@@ -6722,7 +6951,13 @@ export default function App() {
         if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
         return left.name.localeCompare(right.name, 'zh-Hans-CN');
       });
-    }, [editingTask.listId, orgTaskLists]);
+    }, [orgTaskLists, selectedTaskListIds]);
+    const selectedTaskLists = useMemo(
+      () => selectedTaskListIds
+        .map((listId) => visibleOrgTaskLists.find((list) => list.id === listId) || orgTaskLists.find((list) => list.id === listId) || null)
+        .filter((list): list is TaskList => Boolean(list)),
+      [orgTaskLists, selectedTaskListIds, visibleOrgTaskLists],
+    );
     const normalizedTaskListQuery = taskListQuery.trim().toLowerCase();
     const filteredTaskListOptions = visibleOrgTaskLists.filter((list) => {
       if (!normalizedTaskListQuery) return true;
@@ -6746,29 +6981,30 @@ export default function App() {
         orgTaskListNames: orgTaskLists.map((item) => `${item.scope}:${item.name}:${item.id}`),
         visibleOrgTaskListsCount: visibleOrgTaskLists.length,
         visibleOrgTaskListNames: visibleOrgTaskLists.map((item) => item.name),
-        selectedTaskListId: editingTask.listId,
-        selectedTaskListName: selectedTaskList?.name || null,
+        selectedTaskListIds,
+        selectedTaskListNames: selectedTaskLists.map((item) => item.name),
         taskListQuery,
         filteredTaskListOptionNames: filteredTaskListOptions.map((item) => item.name),
       };
     }, [
       activeTaskLists.length,
-      editingTask.listId,
       filteredTaskListOptions,
       isTaskModalOpen,
       orgTaskLists,
-      selectedTaskList?.name,
+      selectedTaskListIds,
+      selectedTaskLists,
       taskListQuery,
       taskLists.length,
       visibleOrgTaskLists,
     ]);
     useEffect(() => {
       if (!isTaskListMenuOpen) {
-        setTaskListQuery(selectedTaskList?.name || '');
+        setTaskListQuery('');
       }
-    }, [isTaskListMenuOpen, selectedTaskList?.name]);
+    }, [isTaskListMenuOpen]);
     useEffect(() => {
       if (!taskListNameFilter) return;
+      if (taskListNameFilter === TASK_LIST_FILTER_NONE) return;
       const exists = visibleOrgTaskLists.some((list) => list.name === taskListNameFilter);
       if (!exists) {
         setTaskListNameFilter('');
@@ -6877,9 +7113,19 @@ export default function App() {
         .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
     }, [clients, eventLineProjectOptions]);
     const filteredEventLines = useMemo(() => {
-      if (eventLineProjectFilterId === '__all__') return sortedEventLines;
-      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === eventLineProjectFilterId);
-    }, [eventLineProjectFilterId, sortedEventLines]);
+      const visibleEventLines = sortedEventLines.filter((item) => {
+        if (!currentSessionUser) return false;
+        if (currentSessionUser.primaryRole === 'admin') return true;
+        const visibleUserIds = new Set([
+          ...(item.participantIds || []).filter(Boolean),
+          ...(item.ownerIds || []).filter(Boolean),
+          item.ownerId || '',
+        ]);
+        return visibleUserIds.has(currentSessionUser.id);
+      });
+      if (eventLineProjectFilterId === '__all__') return visibleEventLines;
+      return visibleEventLines.filter((item) => (item.primaryClientId || '').trim() === eventLineProjectFilterId);
+    }, [currentSessionUser, eventLineProjectFilterId, sortedEventLines]);
     useEffect(() => {
       if (typeof window === 'undefined') return;
       if (eventLineProjectFilterId === '__all__') {
@@ -7102,13 +7348,20 @@ export default function App() {
       try {
         const created = await createTaskList({
           name: trimmedName,
-          color: TASK_COLOR_OPTIONS[0],
+          description: null,
           scope: 'org',
         });
         await loadTaskBlock();
-        setEditingTask((prev) => ({ ...prev, listId: created.id }));
-        setTaskListQuery(created.name);
-        setIsTaskListMenuOpen(false);
+        setEditingTask((prev) => {
+          const nextListIds = Array.from(new Set([...(prev.listIds || []), created.id]));
+          return {
+            ...prev,
+            listId: nextListIds[0] || created.id,
+            listIds: nextListIds,
+          };
+        });
+        setTaskListQuery('');
+        setIsTaskListMenuOpen(true);
         flash('success', `已创建清单“${created.name}”`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '清单创建失败');
@@ -7121,9 +7374,19 @@ export default function App() {
       setIsTaskListMenuOpen(true);
     };
     const handleSelectTaskList = (list: TaskList) => {
-      setEditingTask((prev) => ({ ...prev, listId: list.id }));
-      setTaskListQuery(list.name);
-      setIsTaskListMenuOpen(false);
+      setEditingTask((prev) => {
+        const exists = (prev.listIds || []).includes(list.id);
+        const nextListIds = exists
+          ? (prev.listIds || []).filter((item) => item !== list.id)
+          : [...(prev.listIds || []), list.id];
+        return {
+          ...prev,
+          listId: nextListIds[0] || '',
+          listIds: nextListIds,
+        };
+      });
+      setTaskListQuery('');
+      setIsTaskListMenuOpen(true);
     };
     const duePickerSummaryLabel = formatTaskDuePickerSummaryLabel(
       editingTask.startDate,
@@ -7228,6 +7491,7 @@ export default function App() {
 
     const openEventLineDetail = async (eventLineId: string, options?: { clarify?: boolean }) => {
       setIsEventLineBusy(true);
+      setEventLineEditorSaveNotice(null);
       try {
         const detail = await getEventLine(eventLineId);
         setActiveEventLine(detail);
@@ -7245,11 +7509,13 @@ export default function App() {
 
     const handleOpenEventLineCreate = () => {
       const defaultClientId = eventLineProjectFilterId !== '__all__' ? eventLineProjectFilterId : '';
-      const defaultParticipantIds = currentSessionUser?.id ? [currentSessionUser.id] : [];
+      const defaultOwnerId = currentSessionUser?.id || '';
+      setEventLineEditorSaveNotice(null);
       setEventLineEditorDraft(buildEmptyEventLineEditorDraft({
         primaryClientId: defaultClientId,
         kind: defaultClientId ? 'project_line' : 'custom',
-        participantIds: defaultParticipantIds,
+        ownerId: defaultOwnerId,
+        ownerIds: defaultOwnerId ? [defaultOwnerId] : [],
       }));
       setIsEventLineCreateOpen(true);
     };
@@ -7286,7 +7552,38 @@ export default function App() {
 
     const handleSaveEventLineEditor = async () => {
       if (!activeEventLine) return;
-      const participantIds = Array.from(new Set(eventLineEditorDraft.participantIds.filter(Boolean)));
+      const ownerIds = Array.from(
+        new Set(
+          (
+            eventLineEditorDraft.ownerIds?.length
+              ? eventLineEditorDraft.ownerIds
+              : eventLineEditorDraft.ownerId
+                ? [eventLineEditorDraft.ownerId]
+                : activeEventLine.eventLine.ownerIds?.length
+                  ? activeEventLine.eventLine.ownerIds
+                  : activeEventLine.eventLine.ownerId
+                    ? [activeEventLine.eventLine.ownerId]
+                    : currentSessionUser?.id
+                      ? [currentSessionUser.id]
+                      : []
+          ).filter(Boolean),
+        ),
+      );
+      const linkedParticipantIds = new Set<string>();
+      activeEventLine.tasks.forEach((task) => {
+        if (task.ownerId) linkedParticipantIds.add(task.ownerId);
+        task.collaborators.forEach((item) => {
+          if (item.id) linkedParticipantIds.add(item.id);
+        });
+      });
+      const participantIds = Array.from(
+        new Set(
+          eventLineEditorDraft.participantIds
+            .filter(Boolean)
+            .filter((id) => !linkedParticipantIds.has(id) && !ownerIds.includes(id)),
+        ),
+      );
+      const ownerId = ownerIds[0] || null;
       setIsSavingEventLineEditor(true);
       try {
         const updated = await updateEventLine(activeEventLine.eventLine.id, {
@@ -7299,13 +7596,14 @@ export default function App() {
           recentDecision: eventLineEditorDraft.recentDecision.trim() || null,
           nextStep: eventLineEditorDraft.nextStep.trim() || null,
           participantIds,
-          ownerId: participantIds[0] || currentSessionUser?.id || activeEventLine.eventLine.ownerId || null,
+          ownerIds,
+          ownerId,
         });
         setEventLines((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
         const refreshed = await getEventLine(updated.id);
         setActiveEventLine(refreshed);
         setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
-        flash('success', '事件线已更新');
+        setEventLineEditorSaveNotice('事件线已保存，最新改动已经同步到当前详情。');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线保存失败');
       } finally {
@@ -7313,8 +7611,23 @@ export default function App() {
       }
     };
 
+    const handleMarkNotificationRead = async (taskId: string) => {
+      if (!taskId) return false;
+      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, taskId])));
+      try {
+        await markTaskNotificationRead(taskId);
+        await loadTaskBlock();
+        flash('success', '通知已标记为已阅。');
+        return true;
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '通知状态更新失败');
+        return false;
+      } finally {
+        setTransitioningInboxTaskIds((prev) => prev.filter((id) => id !== taskId));
+      }
+    };
+
     const handleCreateEventLineFromWorkspace = async () => {
-      const participantIds = Array.from(new Set(eventLineEditorDraft.participantIds.filter(Boolean)));
       if (!eventLineEditorDraft.name.trim()) {
         flash('error', '请先填写事件线名称。');
         return;
@@ -7331,8 +7644,15 @@ export default function App() {
           currentBlocker: eventLineEditorDraft.currentBlocker.trim() || null,
           recentDecision: eventLineEditorDraft.recentDecision.trim() || null,
           nextStep: eventLineEditorDraft.nextStep.trim() || null,
-          participantIds,
-          ownerId: participantIds[0] || currentSessionUser?.id || null,
+          participantIds: [],
+          ownerIds: eventLineEditorDraft.ownerIds?.length
+            ? eventLineEditorDraft.ownerIds
+            : eventLineEditorDraft.ownerId
+              ? [eventLineEditorDraft.ownerId]
+              : currentSessionUser?.id
+                ? [currentSessionUser.id]
+                : [],
+          ownerId: eventLineEditorDraft.ownerIds?.[0] || eventLineEditorDraft.ownerId || currentSessionUser?.id || null,
         });
         setEventLines((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
         setIsEventLineCreateOpen(false);
@@ -7770,9 +8090,10 @@ export default function App() {
           currentBlocker: taskEventLineCreateDraft.currentBlocker.trim() || null,
           nextStep: taskEventLineCreateDraft.nextStep.trim() || null,
           recentDecision: taskEventLineCreateDraft.recentDecision.trim() || null,
+          ownerIds: currentSessionUser?.id ? [currentSessionUser.id] : [],
           ownerId: currentSessionUser?.id || null,
           primaryClientId: editingTask.clientId || null,
-          participantIds: editingTask.collaborators.map((item) => item.id),
+          participantIds: [],
         });
         setEventLines((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
         setEditingTask((prev) => ({
@@ -7962,43 +8283,19 @@ export default function App() {
     }, []);
 
     const openTaskGroupTemplateApply = useCallback(async (template: TaskGroupTemplateRecord) => {
-      let defaultListId = resolveDefaultListId('org');
-      if (!defaultListId) {
-        try {
-          const ensuredList = await ensureTaskViewOrgTaskList();
-          defaultListId = ensuredList?.id || '';
-        } catch (error) {
-          flash('error', error instanceof Error ? error.message : '任务清单初始化失败');
-          return;
-        }
-      }
       setIsTemplateListOpen(false);
       setTaskGroupTemplateCollaboratorMenuStep(null);
       setTaskGroupTemplateApplyTarget(template);
       setTaskGroupTemplateApplyDraft(
         buildTaskGroupTemplateApplyDraft(template, {
-          listId: defaultListId,
+          listId: '',
           workObjectId: template.workObjectId || template.clientId || editingTask.clientId || organizationClientId || '',
         }),
       );
-    }, [editingTask.clientId, ensureTaskViewOrgTaskList, flash, organizationClientId, resolveDefaultListId]);
+    }, [editingTask.clientId, organizationClientId]);
 
     const handleApplyTaskGroupTemplateSubmit = useCallback(async () => {
       if (!taskGroupTemplateApplyTarget || !taskGroupTemplateApplyDraft) return;
-      let resolvedListId = taskGroupTemplateApplyDraft.listId;
-      if (!resolvedListId) {
-        try {
-          const ensuredList = await ensureTaskViewOrgTaskList();
-          resolvedListId = ensuredList?.id || '';
-        } catch (error) {
-          flash('error', error instanceof Error ? error.message : '任务清单初始化失败');
-          return;
-        }
-      }
-      if (!resolvedListId) {
-        flash('error', '请先选择任务清单。');
-        return;
-      }
       if (taskGroupTemplateApplyDraft.eventLineMode === 'existing' && !taskGroupTemplateApplyDraft.eventLineId) {
         flash('error', '请选择要关联的事件线。');
         return;
@@ -8015,7 +8312,7 @@ export default function App() {
             taskGroupTemplateApplyDraft.startTime || TASK_DEFAULT_DUE_TIME,
             { includeTime: true },
           ),
-          listId: resolvedListId,
+          listId: taskGroupTemplateApplyDraft.listId || '',
           workObjectId: taskGroupTemplateApplyDraft.workObjectId || null,
           eventLineMode: taskGroupTemplateApplyDraft.eventLineMode,
           eventLineId: taskGroupTemplateApplyDraft.eventLineMode === 'existing'
@@ -8151,7 +8448,9 @@ export default function App() {
       options: {
         taskId: string;
         listId: string;
+        listIds: string[];
         listName: string;
+        listNames: string[];
         listColor: string;
         ownerId: string | null;
         ownerName: string;
@@ -8207,6 +8506,8 @@ export default function App() {
         listId: options.listId,
         listName: options.listName,
         listColor: options.listColor,
+        listIds: options.listIds,
+        listNames: options.listNames,
         ddl: payload.ddl,
         startDate: payload.startDate ?? null,
         dueDate: payload.dueDate ?? null,
@@ -8337,18 +8638,25 @@ export default function App() {
       const resolvedDdl = combinedDueDate
         ? duePickerSummaryLabel
         : (editingTask.ddl.trim() || '待确认');
+      const availableLists = isEditingTaskPersonal ? personalTaskLists : orgTaskLists;
+      const normalizedDraftListIds = Array.from(
+        new Set((editingTask.listIds || []).filter((listId) => availableLists.some((item) => item.id === listId))),
+      );
       const resolvedListId = (() => {
         if (isEditingTaskPersonal) {
-          if (personalTaskLists.some((item) => item.id === editingTask.listId)) {
-            return editingTask.listId;
+          if (normalizedDraftListIds.length > 0) {
+            return normalizedDraftListIds[0];
           }
           return resolveTaskViewDefaultListId('personal') || editingTask.listId;
         }
-        if (orgTaskLists.some((item) => item.id === editingTask.listId)) {
-          return editingTask.listId;
+        if (normalizedDraftListIds.length > 0) {
+          return normalizedDraftListIds[0];
         }
         return resolveTaskViewDefaultListId('org') || editingTask.listId;
       })();
+      const resolvedListIds = normalizedDraftListIds.length > 0
+        ? normalizedDraftListIds
+        : (resolvedListId ? [resolvedListId] : []);
       const ownerId = editingTask.ownerId || null;
       const ownerName = ownerCollaborator?.fullName || '';
       const payload: TaskMutationPayload = {
@@ -8357,6 +8665,7 @@ export default function App() {
         desc: editingTask.desc.trim(),
         priority: editingTask.priority,
         listId: resolvedListId,
+        listIds: resolvedListIds,
         startDate: combinedStartDate || null,
         dueDate: combinedDueDate || null,
         durationMinutes: editingTask.durationMinutes,
@@ -8714,7 +9023,7 @@ export default function App() {
           title: `${titlePrefix}${action.title}`,
           desc: descBody,
           priority: report.scopeType === 'org' ? 'high' : 'normal',
-          listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
+          listId: '',
           dueDate: null,
           durationMinutes: 60,
           clientId: primaryClientId,
@@ -8830,7 +9139,8 @@ export default function App() {
         scopeModeTouched: false,
         title: '',
         desc: '',
-        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
+        listId: '',
+        listIds: [],
         priority: effectiveTaskSettings.defaultPriority,
         priorityTouched: false,
         priorityReason: '系统会根据任务内容自动识别优先级，你可以手动调整。',
@@ -8962,6 +9272,9 @@ export default function App() {
         title: task.title,
         desc: task.desc,
         listId: task.listId,
+        listIds: task.listIds && task.listIds.length > 0
+          ? task.listIds
+          : (task.listId ? [task.listId] : []),
         priority: task.priority,
         priorityTouched: true,
         priorityReason: '保留当前优先级，你可以手动调整。',
@@ -9600,7 +9913,11 @@ export default function App() {
               >
                 <Inbox size={16} className={taskViewMode === 'inbox' ? 'text-[#5B7BFE]' : 'text-gray-400'} />
                 协作收件箱
-                {(inboundPendingTasks.length > 0 || outboundPendingTasks.length > 0) && <span className="absolute top-1.5 right-2 w-2 h-2 bg-rose-500 rounded-full" />}
+                {inboxBadgeCount > 0 && (
+                  <span className="ml-1 inline-flex min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                    {inboxBadgeCount}
+                  </span>
+                )}
               </button>
                 {[
                   { id: 'list', label: '任务列表' },
@@ -9666,7 +9983,7 @@ export default function App() {
                     <div className={`p-1 rounded-md transition-all ${isTaskGroupOpen ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400 group-hover:bg-gray-100'}`}>
                       <ChevronDown size={14} className={`transition-transform duration-300 ${isTaskGroupOpen ? '' : '-rotate-90'}`} />
                     </div>
-                    <span className="text-[14px] font-bold text-gray-800">{activeFormalTaskView?.name || `${activeTaskParticipationFilterLabel} · ${activeTaskListFilterLabel}`}</span>
+                    <span className="text-[14px] font-bold text-gray-800">任务数量</span>
                     <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
                       {listTasks.length}
                     </span>
@@ -9680,7 +9997,7 @@ export default function App() {
                       value={taskSearchQuery}
                       onChange={(e) => setTaskSearchQuery(e.target.value)}
                       placeholder="搜索任务..."
-                      className="w-[120px] bg-transparent text-[12px] font-bold text-gray-800 outline-none placeholder:text-gray-400 placeholder:font-normal"
+                      className="w-[260px] bg-transparent text-[12px] font-bold text-gray-800 outline-none placeholder:text-gray-400 placeholder:font-normal"
                     />
                     {taskSearchQuery && (
                       <button type="button" onClick={() => setTaskSearchQuery('')} className="text-gray-300 hover:text-gray-500">
@@ -9689,7 +10006,7 @@ export default function App() {
                     )}
                   </div>
                   <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>展示</span>
+                    <span>完成情况</span>
                     <select
                       value={taskListFilter}
                       onChange={(event) => setTaskListFilter(event.target.value as TaskListFilter)}
@@ -9717,13 +10034,14 @@ export default function App() {
                     </select>
                   </label>
                   <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>组织清单</span>
+                    <span>任务清单</span>
                     <select
                       value={taskListNameFilter}
                       onChange={(event) => setTaskListNameFilter(event.target.value)}
                       className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
                     >
                       <option value="">全部清单</option>
+                      <option value={TASK_LIST_FILTER_NONE}>无清单</option>
                       {visibleOrgTaskLists.map((list) => (
                         <option key={`task-list-filter-${list.id}`} value={list.name}>
                           {list.name}
@@ -9761,18 +10079,16 @@ export default function App() {
                   </label>
                   {taskListTimeRangeFilter === 'custom' && (
                     <>
-                      <input
-                        type="date"
+                      <InlineChineseDatePickerField
                         value={taskListCustomStartDate}
-                        onChange={(event) => setTaskListCustomStartDate(event.target.value)}
-                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                        onChange={setTaskListCustomStartDate}
+                        placeholder="开始日期"
                       />
                       <span className="text-[12px] font-bold text-gray-300">至</span>
-                      <input
-                        type="date"
+                      <InlineChineseDatePickerField
                         value={taskListCustomEndDate}
-                        onChange={(event) => setTaskListCustomEndDate(event.target.value)}
-                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                        onChange={setTaskListCustomEndDate}
+                        placeholder="结束日期"
                       />
                     </>
                   )}
@@ -9955,9 +10271,24 @@ export default function App() {
                               <Clock size={12} /> 待 {task.collaborationSummary.pending || 0} 人确认
                             </span>
                           )}
-                          <span className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors" style={{ color: listColor, backgroundColor: getTint(listColor) }}>
-                            <FolderDot size={12} /> 清单：{getListName(task.listId)}
-                          </span>
+                          {(Array.from(new Set((task.listNames && task.listNames.length > 0
+                            ? task.listNames
+                            : [task.listName || getListName(task.listId)]).filter(Boolean))).length > 0
+                            ? Array.from(new Set((task.listNames && task.listNames.length > 0
+                              ? task.listNames
+                              : [task.listName || getListName(task.listId)]).filter(Boolean)))
+                            : ['无清单']).map((listName) => {
+                            const chipColor = taskLists.find((list) => list.name === listName)?.color || listColor;
+                            return (
+                              <span
+                                key={`${task.id}-${listName}`}
+                                className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors"
+                                style={{ color: chipColor, backgroundColor: getTint(chipColor) }}
+                              >
+                                <FolderDot size={12} /> {listName}
+                              </span>
+                            );
+                          })}
                           {task.projectContext?.clientName && (
                             <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-blue-50 text-blue-700">
                               {task.projectContext.clientName}
@@ -10073,7 +10404,9 @@ export default function App() {
                 <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
                   <div>
                     <h2 className="text-[18px] font-bold text-gray-900">协作收件箱</h2>
-                    <p className="text-[12px] text-gray-500 mt-1">这里会分开展示待确认任务和系统通知，也会保留你已发出、正等待对方确认的协作任务。</p>
+                    <p className="text-[12px] text-gray-500 mt-1">
+                      这里统一显示需要你确认、已发出待他人确认，以及系统协作通知。待确认任务一旦确认接受，就会进入任务列表；自己发起的协作任务会同时保存在任务列表，确认完成后收件箱不再显示该任务，以免消息堆积。
+                    </p>
                   </div>
                   {actionableInboxTasks.length > 0 && (
                     <div className="flex items-center gap-2">
@@ -10115,35 +10448,73 @@ export default function App() {
                   </label>
                   {inboxTimeRangeFilter === 'custom' && (
                     <>
-                      <input
-                        type="date"
+                      <InlineChineseDatePickerField
                         value={inboxCustomStartDate}
-                        onChange={(event) => setInboxCustomStartDate(event.target.value)}
-                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                        onChange={setInboxCustomStartDate}
+                        placeholder="开始日期"
                       />
                       <span className="text-[12px] font-bold text-gray-300">至</span>
-                      <input
-                        type="date"
+                      <InlineChineseDatePickerField
                         value={inboxCustomEndDate}
-                        onChange={(event) => setInboxCustomEndDate(event.target.value)}
-                        className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-800 outline-none"
+                        onChange={setInboxCustomEndDate}
+                        placeholder="结束日期"
                       />
                     </>
                   )}
                 </div>
                 <div className="space-y-3">
-                  {(inboundConfirmableTasks.length > 0 || filteredOutboundPendingTasks.length > 0) && (
-                    <>
-                      <div className="rounded-2xl border border-amber-100 bg-amber-50/50 px-4 py-3">
-                        <p className="text-[12px] font-bold text-amber-700">待确认任务</p>
-                      </div>
-                      {inboundConfirmableTasks.length > 0 && (
-                        <div className="rounded-2xl border border-blue-100 bg-blue-50/40 px-4 py-3">
-                          <p className="text-[12px] font-bold text-blue-700">待你确认</p>
-                        </div>
-                      )}
-                      {inboundConfirmableTasks.map((task) => (
-                        <div key={task.id} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                  {inboxFeedItems.map(({ task, kind }) => {
+                    const isExpanded = expandedInboxTaskIds.includes(task.id);
+                    const isSelectable = kind === 'confirmable';
+                    const notificationSummary = parseEventLineNotificationSummary(task);
+                    const pendingParticipantNames = Array.from(
+                      new Set(
+                        task.collaborators
+                          .filter((item) => item.inboxStatus === 'pending')
+                          .map((item) => ({
+                            id: (item.userId || item.id || '').trim(),
+                            name: (item.fullName || '').trim(),
+                          }))
+                          .filter((item) => item.name)
+                          .filter((item) => {
+                            const creatorId = (task.creatorId || '').trim();
+                            const creatorName = (task.creatorName || '').trim();
+                            if (creatorId && item.id && item.id === creatorId) return false;
+                            if (creatorName && item.name === creatorName) return false;
+                            if (kind === 'outbound' && currentSessionUser?.id && item.id && item.id === currentSessionUser.id) return false;
+                            if (kind === 'outbound' && currentSessionUser?.fullName && item.name === currentSessionUser.fullName) return false;
+                            return true;
+                          })
+                          .map((item) => item.name),
+                      ),
+                    );
+                    const pendingCount = pendingParticipantNames.length;
+                    const creatorLabel =
+                      notificationSummary?.operator
+                      || task.creatorName
+                      || (kind === 'outbound' ? currentSessionUser?.fullName : null)
+                      || '未标记';
+                    const statusBadge =
+                      kind === 'notification'
+                        ? { label: '系统通知', className: 'bg-sky-50 text-sky-700' }
+                        : kind === 'outbound'
+                          ? { label: pendingCount > 0 ? `待 ${pendingCount} 人确认` : '已发出', className: 'bg-amber-50 text-amber-700' }
+                          : { label: '待你确认', className: 'bg-blue-50 text-[#5B7BFE]' };
+                    const notificationTimeLabel = new Date(task.createdAt).toLocaleString('zh-CN', {
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      hour12: false,
+                    });
+                    return (
+                      <div
+                        key={`${kind}-${task.id}`}
+                        className={`border rounded-2xl px-4 py-4 shadow-sm transition-all duration-300 flex items-start gap-3 ${
+                          isExpanded ? 'border-blue-100 shadow-md bg-[#FBFCFF]' : 'border-gray-100 bg-white hover:border-blue-100 hover:shadow-md'
+                        }`}
+                      >
+                        {isSelectable ? (
                           <input
                             type="checkbox"
                             checked={selectedInboxIds.includes(task.id)}
@@ -10154,131 +10525,128 @@ export default function App() {
                             }}
                             className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
                           />
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                              <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${task.priority === 'high' ? 'bg-rose-50 text-rose-600' : 'bg-gray-100 text-gray-500'}`}>{task.priority}</span>
-                            </div>
-                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
-                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{formatTaskTimelineLabel(task)}</span>
-                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
-                            </div>
-                            {task.collaborators.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {task.collaborators.map((item) => (
-                                  <span
-                                    key={item.userId}
-                                    className={`px-2 py-1 rounded-md text-[10px] font-bold ${
-                                      item.inboxStatus === 'accepted'
-                                        ? 'bg-emerald-50 text-emerald-600'
-                                        : item.inboxStatus === 'returned'
-                                          ? 'bg-rose-50 text-rose-600'
-                                          : 'bg-gray-100 text-gray-500'
-                                    }`}
-                                  >
-                                    {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待处理'}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            <Button onClick={() => void handleConfirmTasks([task.id])}>确认</Button>
-                            <Button
-                              onClick={() => {
-                                setRejectingTaskIds([task.id]);
-                                setIsRejectModalOpen(true);
-                              }}
-                            >
-                              退回
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                      {filteredOutboundPendingTasks.length > 0 && (
-                        <div className="rounded-2xl border border-amber-100 bg-amber-50/40 px-4 py-3">
-                          <p className="text-[12px] font-bold text-amber-700">等待对方确认</p>
-                        </div>
-                      )}
-                      {filteredOutboundPendingTasks.map((task) => (
-                        <div key={`outbound-${task.id}`} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
+                        ) : (
                           <div className="mt-1 h-4 w-4 rounded-full border border-amber-300 bg-amber-50" />
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                              <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700">
-                                待 {task.collaborationSummary.pending || 0} 人确认
-                              </span>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${statusBadge.className}`}>{statusBadge.label}</span>
+                                <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
+                              </div>
+                              {!isExpanded && (
+                                <p className="mt-2 text-[12px] text-gray-500 line-clamp-2">
+                                  {kind === 'notification'
+                                    ? notificationSummary
+                                      ? `${notificationSummary.operation} · 主要负责人：${notificationSummary.mainOwners}`
+                                      : (task.desc || '来自内部协作系统的提醒。')
+                                    : (task.desc || '点击展开可查看任务详情与协作状态。')}
+                                </p>
+                              )}
                             </div>
-                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '你发起的协作任务正在等待对方确认。'}</p>
-                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{formatTaskTimelineLabel(task)}</span>
-                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {task.collaborators.map((item) => (
-                                <span
-                                  key={item.userId}
-                                  className={`px-2 py-1 rounded-md text-[10px] font-bold ${
-                                    item.inboxStatus === 'accepted'
-                                      ? 'bg-emerald-50 text-emerald-600'
-                                      : item.inboxStatus === 'returned'
-                                        ? 'bg-rose-50 text-rose-600'
-                                        : 'bg-amber-50 text-amber-700'
-                                  }`}
+                            <div className="flex items-center gap-2 shrink-0">
+                              {kind === 'confirmable' && (
+                                <>
+                                  <Button onClick={() => void handleConfirmTasks([task.id])}>确认</Button>
+                                  <Button
+                                    onClick={() => {
+                                      setRejectingTaskIds([task.id]);
+                                      setIsRejectModalOpen(true);
+                                    }}
+                                  >
+                                    退回
+                                  </Button>
+                                </>
+                              )}
+                              {kind === 'notification' && task.eventLineId ? (
+                                <Button
+                                  onClick={async () => {
+                                    const detail = await openEventLineDetail(task.eventLineId!);
+                                    if (detail) {
+                                      await handleMarkNotificationRead(task.id);
+                                    }
+                                  }}
                                 >
-                                  {item.fullName} · {item.inboxStatus === 'accepted' ? '已接收' : item.inboxStatus === 'returned' ? '已退回' : '待确认'}
-                                </span>
-                              ))}
+                                  查看事件线
+                                </Button>
+                              ) : kind === 'notification' ? (
+                                <Button onClick={() => void handleMarkNotificationRead(task.id)}>查看通知</Button>
+                              ) : null}
+                              {kind === 'outbound' && <Button onClick={() => openTaskEditor(task)}>查看任务</Button>}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExpandedInboxTaskIds((prev) =>
+                                    prev.includes(task.id) ? prev.filter((item) => item !== task.id) : [...prev, task.id],
+                                  );
+                                }}
+                                className={`inline-flex items-center justify-center rounded-full border border-gray-200 bg-gray-50 p-1.5 text-gray-400 transition-transform hover:border-[#C9D6FF] hover:text-[#5B7BFE] ${isExpanded ? 'rotate-180' : ''}`}
+                                aria-label={isExpanded ? '收起任务卡片' : '展开任务卡片'}
+                              >
+                                <ChevronDown size={14} />
+                              </button>
                             </div>
                           </div>
-                          <div className="flex flex-col gap-2">
-                            <Button onClick={() => openTaskEditor(task)}>查看任务</Button>
+                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-medium">
+                            <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">
+                              {kind === 'notification' ? `通知时间 ${notificationTimeLabel}` : formatTaskTimelineLabel(task)}
+                            </span>
                           </div>
+                          <div className="mt-2 space-y-1 text-[11px] font-medium">
+                            <div className="rounded-xl bg-blue-50 px-3 py-2 text-[#5B7BFE]">
+                              {kind === 'notification'
+                                ? `操作者：${creatorLabel}`
+                                : `发起人：${creatorLabel}`}
+                            </div>
+                            {kind === 'notification' && notificationSummary ? (
+                              <>
+                                <div className="rounded-xl bg-sky-50 px-3 py-2 text-sky-700">
+                                  事件线操作：{notificationSummary.operation}
+                                </div>
+                                <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600">
+                                  主要负责人：{notificationSummary.mainOwners}
+                                </div>
+                                <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600">
+                                  参与者：{notificationSummary.participants}
+                                </div>
+                              </>
+                            ) : null}
+                            {kind !== 'notification' ? (
+                              <div className="rounded-xl bg-amber-50 px-3 py-2 text-amber-700">
+                                待确认：{pendingParticipantNames.length > 0 ? pendingParticipantNames.join('、') : '无'}
+                              </div>
+                            ) : null}
+                          </div>
+                          {isExpanded && (
+                            <div className="mt-3 border-t border-gray-100 pt-3 space-y-3">
+                              {kind === 'notification' && notificationSummary ? (
+                                <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-[12px] leading-6 text-sky-700">
+                                  <div>事件线标题：{notificationSummary.eventLineTitle}</div>
+                                  <div>事件线操作：{notificationSummary.operation}</div>
+                                  <div>操作者：{notificationSummary.operator}</div>
+                                  <div>操作时间：{notificationSummary.operatedAt || notificationTimeLabel}</div>
+                                  <div>主要负责人：{notificationSummary.mainOwners}</div>
+                                  <div>参与者：{notificationSummary.participants}</div>
+                                </div>
+                              ) : (
+                                <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
+                                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">{kind === 'notification' ? '通知内容' : '任务说明'}</p>
+                                  <p className="mt-2 text-[12px] leading-6 text-gray-600 whitespace-pre-wrap">{task.desc || (kind === 'notification' ? '来自内部协作系统的提醒。' : '暂无详细说明。')}</p>
+                                </div>
+                              )}
+                              {kind === 'notification' && task.eventLineId ? (
+                                <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-[12px] leading-6 text-sky-700">
+                                  这是一条只读系统通知。查看事件线后，这条通知会自动标记为已阅，不会进入待确认任务。
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
                         </div>
-                      ))}
-                    </>
-                  )}
-                  {inboundNotificationTasks.length > 0 && (
-                    <>
-                      <div className="rounded-2xl border border-sky-100 bg-sky-50/50 px-4 py-3">
-                        <p className="text-[12px] font-bold text-sky-700">系统通知</p>
                       </div>
-                      {inboundNotificationTasks.map((task) => (
-                        <div key={`notice-${task.id}`} className="border border-gray-100 rounded-2xl px-4 py-4 flex items-start gap-3">
-                          <input
-                            type="checkbox"
-                            checked={selectedInboxIds.includes(task.id)}
-                            onChange={(event) => {
-                              setSelectedInboxIds((prev) =>
-                                event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
-                              );
-                            }}
-                            className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
-                          />
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-blue-50 text-blue-600">通知</span>
-                              <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                            </div>
-                            <p className="text-[12px] text-gray-500 mb-2">{task.desc || '来自内部协作系统的新事项。'}</p>
-                            <div className="flex flex-wrap gap-2 text-[11px] font-medium">
-                              <span className="bg-gray-50 text-gray-500 px-2 py-1 rounded-md">{task.ownerName}</span>
-                              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{formatTaskTimelineLabel(task)}</span>
-                              {task.creatorName && <span className="bg-blue-50 text-[#5B7BFE] px-2 py-1 rounded-md">发起人：{task.creatorName}</span>}
-                            </div>
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            <Button onClick={() => void handleConfirmTasks([task.id])}>收到</Button>
-                          </div>
-                        </div>
-                      ))}
-                    </>
-                  )}
-                  {inboundConfirmableTasks.length === 0 && filteredOutboundPendingTasks.length === 0 && inboundNotificationTasks.length === 0 && (
+                    );
+                  })}
+                  {inboxFeedItems.length === 0 && (
                     <div className="text-center py-16 text-gray-400">
                       <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
                         <Inbox className="w-5 h-5 text-emerald-500" />
@@ -10371,7 +10739,7 @@ export default function App() {
                   <div>
                     <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                     <p className="mt-1 text-[12px] text-gray-500">
-                      按{terminology.singularLabel}查看事件线；卡片主体进入汇报预览，右侧直接切状态、归档、编辑或删除。
+                      按{terminology.singularLabel}查看事件线；卡片主体进入汇报预览，右侧可直接切状态、编辑或删除。仅管理员和主要负责人可操作；参与者仍可查看、关联票据与导出汇报。
                     </p>
                   </div>
                 </div>
@@ -10443,6 +10811,7 @@ export default function App() {
               <div className="space-y-3">
                 {filteredEventLines.map((el) => {
                   const taskCount = tasks.filter((t) => t.eventLineId === el.id).length;
+                  const eventLineManageable = canManageEventLine(el);
                   const participantNames = (el.participantIds || [])
                     .map((id) => eventLineMemberLabelById.get(id))
                     .filter((value): value is string => Boolean(value));
@@ -10462,11 +10831,16 @@ export default function App() {
                             <p className="mt-1 text-[12px] leading-5 text-gray-500 line-clamp-2">{el.summary}</p>
                           )}
                           <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{{ active: '进行中', blocked: '受阻', paused: '暂停', done: '已完成', archived: '已归档' }[el.status] || el.status}</span>
+                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700">{{ active: '进行中', blocked: '受阻', paused: '暂停', done: '已完成', archived: '已完成' }[el.status] || el.status}</span>
                             {el.stage && <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-700">{el.stage}</span>}
                             <span className="rounded-full bg-slate-100 px-2.5 py-1 font-semibold text-slate-600">
-                              {participantNames.length > 0 ? `主要负责人 · ${participantNames.join('、')}` : (el.ownerName ? `主要负责人 · ${el.ownerName}` : '未设置主要负责人')}
+                              {(el.ownerNames?.length ? el.ownerNames.join('、') : el.ownerName) ? `主要负责人 · ${el.ownerNames?.length ? el.ownerNames.join('、') : el.ownerName}` : '未设置主要负责人'}
                             </span>
+                            {participantNames.length > 0 ? (
+                              <span className="rounded-full bg-slate-50 px-2.5 py-1 font-semibold text-slate-500">
+                                {`参与者 · ${participantNames.join('、')}`}
+                              </span>
+                            ) : null}
                             {el.primaryClientName && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{el.primaryClientName}</span>}
                             <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
                           </div>
@@ -10474,43 +10848,26 @@ export default function App() {
                         <div className="shrink-0 flex flex-col items-end gap-2">
                           <div className="pt-1 text-[11px] text-gray-400">{el.updatedAt.slice(0, 10)}</div>
                           <div className="flex flex-wrap justify-end gap-2">
-                            {el.status === 'archived' ? (
-                              <button
-                                type="button"
-                                className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-bold text-emerald-600 transition hover:bg-emerald-100 disabled:opacity-60"
-                                onClick={() => void handleReopenEventLine(el)}
-                                disabled={isDeletingEventLine}
-                              >
-                                取消归档
-                              </button>
-                            ) : (
-                              <select
-                                value={el.status}
-                                onChange={(event) => void handleEventLineStatusChange(el, event.target.value as 'active' | 'paused' | 'blocked' | 'done')}
-                                disabled={isDeletingEventLine}
-                                className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-700 outline-none transition hover:border-[#5B7BFE] focus:border-[#5B7BFE]"
-                              >
-                                <option value="active">进行中</option>
-                                <option value="paused">暂停</option>
-                                <option value="blocked">阻塞</option>
-                                <option value="done">完成</option>
-                              </select>
-                            )}
-                            <button
-                              type="button"
-                              className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-bold text-amber-600 transition hover:bg-amber-100 disabled:opacity-50"
-                              onClick={() => void handleCloseEventLine(el)}
-                              disabled={isDeletingEventLine || el.status === 'archived' || el.status !== 'done'}
-                              title={el.status !== 'done' ? '只有完成状态下才可归档' : '归档事件线'}
+                            <select
+                              value={el.status === 'archived' ? 'done' : el.status}
+                              onChange={(event) => void handleEventLineStatusChange(el, event.target.value as 'active' | 'paused' | 'blocked' | 'done')}
+                              disabled={isDeletingEventLine || !eventLineManageable}
+                              title={eventLineManageable ? '切换事件线状态' : '只有管理员和主要负责人可以切换事件线状态'}
+                              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-700 outline-none transition hover:border-[#5B7BFE] focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
                             >
-                              归档
-                            </button>
+                              <option value="active">进行中</option>
+                              <option value="paused">暂停</option>
+                              <option value="blocked">阻塞</option>
+                              <option value="done">完成</option>
+                            </select>
                           </div>
                           <div className="flex flex-wrap justify-end gap-2">
                           <button
                             type="button"
                             className="rounded-xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
                             onClick={() => void openEventLineDetail(el.id)}
+                            disabled={!eventLineManageable}
+                            title={eventLineManageable ? '编辑事件线' : '只有管理员和主要负责人可以编辑事件线'}
                           >
                             编辑
                           </button>
@@ -10518,8 +10875,8 @@ export default function App() {
                               type="button"
                               className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-50"
                               onClick={() => void handleDeleteEventLine(el)}
-                              disabled={isDeletingEventLine || currentSessionUser?.primaryRole !== 'admin'}
-                              title={currentSessionUser?.primaryRole !== 'admin' ? '只有管理员可以删除事件线' : '删除事件线'}
+                              disabled={isDeletingEventLine || !eventLineManageable}
+                              title={eventLineManageable ? '删除事件线' : '只有管理员和主要负责人可以删除事件线'}
                             >
                               删除
                             </button>
@@ -10745,7 +11102,7 @@ export default function App() {
                                         <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-400">
                                           <span>{reviewTaskDateLabel(task)}</span>
                                           <span>·</span>
-                                          <span>清单：{task.listName}</span>
+                                          <span>清单：{Array.from(new Set((task.listNames && task.listNames.length > 0 ? task.listNames : [task.listName || getListName(task.listId)]).filter(Boolean))).join('、') || '无清单'}</span>
                                           {rowNote.trim() ? (
                                             <>
                                               <span>·</span>
@@ -10950,7 +11307,7 @@ export default function App() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-[13px] font-bold text-gray-900">{task.title}</p>
-                            <p className="mt-1 text-[11px] leading-5 text-gray-500">{formatTaskTimelineLabel(task)} · 清单：{task.listName}</p>
+                            <p className="mt-1 text-[11px] leading-5 text-gray-500">{formatTaskTimelineLabel(task)} · 清单：{Array.from(new Set((task.listNames && task.listNames.length > 0 ? task.listNames : [task.listName || getListName(task.listId)]).filter(Boolean))).join('、') || '无清单'}</p>
                           </div>
                           <button
                             type="button"
@@ -11342,7 +11699,7 @@ export default function App() {
                           onChange={(event) => setTaskGroupTemplateApplyDraft((prev) => prev ? { ...prev, listId: event.target.value } : prev)}
                           className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#5B7BFE]"
                         >
-                          <option value="">请选择任务清单</option>
+                          <option value="">不指定清单（创建后为无清单）</option>
                           {activeTaskLists.map((list) => (
                             <option key={list.id} value={list.id}>
                               {list.name}
@@ -11351,7 +11708,7 @@ export default function App() {
                         </select>
                         {!taskGroupTemplateApplyDraft.listId && (
                           <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                            如果当前还没有组织任务清单，系统会在应用模板时自动补一条默认清单。
+                            这批任务会直接以“无清单”创建；后续如需归类，再在任务列表里补挂清单即可。
                           </p>
                         )}
                       </label>
@@ -11609,13 +11966,18 @@ export default function App() {
             projectOptions={eventLineEditorProjectOptions}
             memberOptions={eventLineMemberOptions}
             workObjectLabel={terminology.singularLabel}
-            canDelete={currentSessionUser?.primaryRole === 'admin'}
+            canDelete={canManageEventLine(activeEventLine.eventLine)}
             isSaving={isSavingEventLineEditor}
+            saveNotice={eventLineEditorSaveNotice}
             onClose={() => {
+              setEventLineEditorSaveNotice(null);
               setIsEventLineEditorOpen(false);
               setActiveEventLine(null);
             }}
-            onChange={(patch) => setEventLineEditorDraft((prev) => ({ ...prev, ...patch }))}
+            onChange={(patch) => {
+              setEventLineEditorSaveNotice(null);
+              setEventLineEditorDraft((prev) => ({ ...prev, ...patch }));
+            }}
             onSubmit={() => void handleSaveEventLineEditor()}
             onCreateProject={handleQuickCreateEventLineProject}
             onDelete={() => void handleDeleteEventLine(activeEventLine.eventLine)}
@@ -11660,8 +12022,14 @@ export default function App() {
             workObjectLabel={terminology.singularLabel}
             canDelete={false}
             isSaving={isCreatingEventLine}
-            onClose={() => setIsEventLineCreateOpen(false)}
-            onChange={(patch) => setEventLineEditorDraft((prev) => ({ ...prev, ...patch }))}
+            onClose={() => {
+              setEventLineEditorSaveNotice(null);
+              setIsEventLineCreateOpen(false);
+            }}
+            onChange={(patch) => {
+              setEventLineEditorSaveNotice(null);
+              setEventLineEditorDraft((prev) => ({ ...prev, ...patch }));
+            }}
             onSubmit={() => void handleCreateEventLineFromWorkspace()}
             onCreateProject={handleQuickCreateEventLineProject}
           />
@@ -12317,41 +12685,57 @@ export default function App() {
 
                     <TaskPropertyRow icon={<Layout size={16} />} label="任务清单">
                       <div ref={taskListDropdownRef} className="relative w-full">
-                        <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 transition focus-within:border-[#5B7BFE] focus-within:ring-2 focus-within:ring-[#5B7BFE]/10">
-                          <Search size={14} className="shrink-0 text-gray-400" />
-                          <input
-                            value={taskListQuery}
-                            onChange={(event) => handleTaskListQueryChange(event.target.value)}
-                            onFocus={() => setIsTaskListMenuOpen(true)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                if (filteredTaskListOptions[0]) {
-                                  handleSelectTaskList(filteredTaskListOptions[0]);
-                                } else if (taskListQuery.trim() && !hasExactTaskListMatch) {
-                                  void handleCreateTaskListFromQuery();
-                                }
-                              }
-                            }}
-                            placeholder={isTaskListsLoading ? '正在加载清单…' : visibleOrgTaskLists.length > 0 ? '输入清单名称搜索' : '输入清单名称后直接创建'}
-                            className="w-full border-0 bg-transparent text-[14px] font-medium text-gray-800 outline-none"
-                          />
-                          {selectedTaskList ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingTask((prev) => ({ ...prev, listId: '' }));
-                                setTaskListQuery('');
-                                setIsTaskListMenuOpen(true);
-                              }}
-                              className="flex h-5 w-5 items-center justify-center rounded-full text-gray-400 transition hover:bg-slate-100 hover:text-gray-600"
-                              aria-label="清空已选清单"
-                            >
-                              <X size={12} />
-                            </button>
-                          ) : (
-                            <ChevronDown size={16} className={`shrink-0 text-gray-400 transition-transform ${isTaskListMenuOpen ? 'rotate-180' : ''}`} />
+                        <div className="rounded-2xl border border-gray-200 bg-white px-3 py-2 transition focus-within:border-[#5B7BFE] focus-within:ring-2 focus-within:ring-[#5B7BFE]/10">
+                          {selectedTaskLists.length > 0 && (
+                            <div className="mb-2 flex flex-wrap gap-2">
+                              {selectedTaskLists.map((list) => (
+                                <span
+                                  key={`selected-task-list-${list.id}`}
+                                  className="inline-flex items-center gap-1 rounded-full border border-[#D7E0FF] bg-[#F8FAFF] px-2.5 py-1 text-[11px] font-bold text-[#5B7BFE]"
+                                >
+                                  {list.name}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingTask((prev) => {
+                                        const nextListIds = (prev.listIds || []).filter((item) => item !== list.id);
+                                        return {
+                                          ...prev,
+                                          listId: nextListIds[0] || '',
+                                          listIds: nextListIds,
+                                        };
+                                      });
+                                    }}
+                                    className="flex h-4 w-4 items-center justify-center rounded-full text-[#5B7BFE]/70 transition hover:bg-[#E8EEFF] hover:text-[#5B7BFE]"
+                                    aria-label={`移除清单 ${list.name}`}
+                                  >
+                                    <X size={11} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
                           )}
+                          <div className="flex items-center gap-2">
+                            <Search size={14} className="shrink-0 text-gray-400" />
+                            <input
+                              value={taskListQuery}
+                              onChange={(event) => handleTaskListQueryChange(event.target.value)}
+                              onFocus={() => setIsTaskListMenuOpen(true)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  if (filteredTaskListOptions[0]) {
+                                    handleSelectTaskList(filteredTaskListOptions[0]);
+                                  } else if (taskListQuery.trim() && !hasExactTaskListMatch) {
+                                    void handleCreateTaskListFromQuery();
+                                  }
+                                }
+                              }}
+                              placeholder={isTaskListsLoading ? '正在加载清单…' : visibleOrgTaskLists.length > 0 ? '输入清单名称搜索或直接创建' : '输入清单名称后直接创建'}
+                              className="w-full border-0 bg-transparent text-[14px] font-medium text-gray-800 outline-none"
+                            />
+                            <ChevronDown size={16} className={`shrink-0 text-gray-400 transition-transform ${isTaskListMenuOpen ? 'rotate-180' : ''}`} />
+                          </div>
                         </div>
                         {isTaskListMenuOpen && (
                           <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border border-gray-200 bg-white p-2 shadow-lg">
@@ -12366,7 +12750,7 @@ export default function App() {
                                   <span className="truncate">{list.name}</span>
                                   <div
                                     className={`ml-3 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border text-[12px] font-bold transition ${
-                                      editingTask.listId === list.id
+                                      selectedTaskListIds.includes(list.id)
                                         ? 'border-[#5B7BFE] bg-[#5B7BFE] text-white'
                                         : 'border-gray-300 bg-white text-transparent'
                                     }`}
@@ -12395,7 +12779,7 @@ export default function App() {
                           </div>
                         )}
                         <p className="mt-2 text-[12px] text-gray-400">
-                          输入清单名称可直接搜索；如果没有匹配项，可以直接创建清单。
+                          这里支持多选。输入清单名称可直接搜索；如果没有匹配项，可以直接创建清单。
                         </p>
                       </div>
                     </TaskPropertyRow>
@@ -13637,8 +14021,8 @@ export default function App() {
       const paths = await selectFilesBridge();
       const filePath = paths[0];
       if (!filePath) return;
-      if (!/\.md(?:own)?$/i.test(filePath)) {
-        flash('error', '这里只允许上传 .md 或 .markdown 文件');
+      if (!/\.(?:md|markdown|docx)$/i.test(filePath)) {
+        flash('error', '这里只允许上传 .md、.markdown 或 .docx 文件');
         return;
       }
       setClientDnaSavingKey(moduleKey);
@@ -14978,7 +15362,7 @@ export default function App() {
                                         title: `${currentClient?.name || '客户'} · ${msg.structuredData?.actions?.slice(0, 18) || '跟进事项'}`,
                                         desc: msg.structuredData?.analysis || msg.content,
                                         priority: 'normal',
-                                        listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1',
+                                        listId: '',
                                         dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset) || null,
                                         ddl: '本周',
                                         ownerId: null,
@@ -16113,7 +16497,7 @@ export default function App() {
     };
     const resetListManager = () => {
       setEditingListId(null);
-      setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false });
+      setListManageDraft({ name: '', description: '' });
     };
 
     const handleImportLegacyEntries = async () => {
@@ -16183,7 +16567,7 @@ export default function App() {
     const handleSaveTaskSettings = async () => {
       try {
         const next = await updateTaskSettings({
-          defaultListId: taskSettingsDraft.defaultListId || null,
+          defaultListId: null,
           defaultPriority: taskSettingsDraft.defaultPriority,
           defaultDueDatePreset: taskSettingsDraft.defaultDueDatePreset,
           defaultViewMode: taskSettingsDraft.defaultViewMode,
@@ -16257,16 +16641,13 @@ export default function App() {
         if (editingListId) {
           await updateTaskList(editingListId, {
             name: trimmedName,
-            color: listManageDraft.color,
-            isDefault: listManageDraft.isDefault,
-            archived: listManageDraft.archived,
+            description: listManageDraft.description.trim() || null,
             scope: 'org',
           });
         } else {
           await createTaskList({
             name: trimmedName,
-            color: listManageDraft.color,
-            isDefault: listManageDraft.isDefault,
+            description: listManageDraft.description.trim() || null,
             scope: 'org',
           });
         }
@@ -16286,8 +16667,7 @@ export default function App() {
       try {
         await updateTaskList(list.id, {
           name: list.name,
-          color: list.color,
-          isDefault: list.isDefault,
+          description: list.description || null,
           archived: !list.archivedAt,
           scope: 'org',
         });
@@ -16303,7 +16683,7 @@ export default function App() {
         flash('error', '只有管理员可以删除组织清单');
         return;
       }
-      if (!window.confirm(`确认删除清单"${list.name}"？只有未被任务使用的清单才能删除。`)) {
+      if (!window.confirm(`确认删除清单“${list.name}”？相关任务会移除与该清单的关联；删除后不会再自动补任何默认清单。`)) {
         return;
       }
       try {
@@ -16624,7 +17004,7 @@ export default function App() {
       {
         group: '功能设置',
         items: [
-          { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认清单、复盘规则' },
+          { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '任务清单、复盘规则' },
           { key: 'client_workspace', label: terminology.workspaceLabel, icon: Briefcase, helper: '聊天、会议、目标' },
           { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取与转任务' },
           { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
@@ -17080,18 +17460,13 @@ export default function App() {
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
               <h2 className="text-[16px] font-bold text-gray-900">任务默认规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">统一任务默认清单、优先级、日期策略、视图偏好和复盘入口。</p>
+              <p className="text-[12px] text-gray-500 mt-1">统一任务优先级、日期策略、视图偏好和复盘入口。</p>
             </div>
             <Button primary onClick={() => void handleSaveTaskSettings()} disabled={!canEditBusinessSettings}>
               <Settings size={16} /> 保存任务设置
             </Button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <select value={taskSettingsDraft.defaultListId || ''} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              {orgTaskLists.map((list) => (
-                <option key={list.id} value={list.id}>{list.name}</option>
-              ))}
-            </select>
             <select value={taskSettingsDraft.defaultPriority} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultPriority: event.target.value as TaskSettings['defaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
               <option value="low">默认低优先级</option>
               <option value="normal">默认普通优先级</option>
@@ -17144,21 +17519,13 @@ export default function App() {
             <div className="flex items-start justify-between gap-4 mb-4">
               <div>
                 <h2 className="text-[16px] font-bold text-gray-900">清单管理</h2>
-                <p className="text-[12px] text-gray-500 mt-1">这里只维护组织清单。重复项可以删除，不想再用的清单也可以归档。</p>
+                <p className="text-[12px] text-gray-500 mt-1">这里只维护任务清单名称和简介。删除清单后，其下任务会自动变成无清单。</p>
               </div>
               {editingListId && <button type="button" className="text-[12px] font-bold text-gray-400 hover:text-gray-700" onClick={resetListManager}>取消编辑</button>}
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_140px_auto] gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_auto] gap-3">
               <input value={listManageDraft.name} onChange={(event) => setListManageDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="输入清单名称" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
-              <select value={listManageDraft.color} onChange={(event) => setListManageDraft((prev) => ({ ...prev, color: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                {TASK_COLOR_OPTIONS.map((color) => (
-                  <option key={color} value={color}>{color}</option>
-                ))}
-              </select>
-              <select value={listManageDraft.isDefault ? 'default' : 'normal'} onChange={(event) => setListManageDraft((prev) => ({ ...prev, isDefault: event.target.value === 'default' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                <option value="normal">普通清单</option>
-                <option value="default">默认清单</option>
-              </select>
+              <input value={listManageDraft.description} onChange={(event) => setListManageDraft((prev) => ({ ...prev, description: event.target.value }))} placeholder="输入清单简介（选填）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
               <Button
                 primary
                 className="rounded-2xl"
@@ -17173,16 +17540,13 @@ export default function App() {
                 <div key={list.id} className="border border-gray-100 rounded-2xl p-4 flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: list.color }} />
                       <p className="text-[14px] font-bold text-gray-900">{list.name}</p>
-                      <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-slate-100 text-slate-600">组织清单</span>
-                      {list.isDefault && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-blue-50 text-[#5B7BFE]">默认</span>}
                       {list.archivedAt && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">已归档</span>}
                     </div>
-                    <p className="text-[12px] text-gray-500 mt-2">归档后不会再出现在新建任务和默认清单选项里。</p>
+                    <p className="text-[12px] text-gray-500 mt-2">{list.description?.trim() || '暂无简介。'}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, color: list.color, isDefault: list.isDefault, archived: Boolean(list.archivedAt) }); }} disabled={!canManageOrgTaskList}>编辑</Button>
+                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, description: list.description || '' }); }} disabled={!canManageOrgTaskList}>编辑</Button>
                     <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={!canManageOrgTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
                     <Button onClick={() => void handleDeleteTaskList(list)} disabled={!canManageOrgTaskList}>删除</Button>
                   </div>
@@ -17219,7 +17583,7 @@ export default function App() {
             <input value={clientWorkspaceDraft.defaultMeetingTitlePrefix} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, defaultMeetingTitlePrefix: event.target.value }))} placeholder="会议标题默认前缀" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
             <input value={clientWorkspaceDraft.defaultGoalQuarter} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, defaultGoalQuarter: event.target.value }))} placeholder="目标默认季度，例如 2026 Q2" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
             <select value={clientWorkspaceDraft.meetingPublishDefaultListId || ''} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="">跟随任务默认清单</option>
+              <option value="">不额外指定清单</option>
               {activeTaskLists.map((list) => (
                 <option key={list.id} value={list.id}>{list.name}</option>
               ))}

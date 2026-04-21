@@ -962,6 +962,8 @@ class TaskRecord(BaseModel):
     listId: str
     listName: str
     listColor: str
+    listIds: list[str] = Field(default_factory=list)
+    listNames: list[str] = Field(default_factory=list)
     ddl: str
     startDate: str | None = None
     dueDate: str | None = None
@@ -1235,6 +1237,7 @@ class TaskListRecord(BaseModel):
     id: str
     name: str
     color: str
+    description: str | None = None
     sortOrder: int = 0
     isDefault: bool = False
     scope: Literal["org", "personal"] = "org"
@@ -1330,6 +1333,7 @@ class TaskPayload(BaseModel):
     desc: str = ""
     priority: Priority = "normal"
     listId: str
+    listIds: list[str] = Field(default_factory=list)
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
@@ -1359,6 +1363,7 @@ class TaskUpdatePayload(BaseModel):
     status: TaskStatus | None = None
     priority: Priority | None = None
     listId: str | None = None
+    listIds: list[str] | None = None
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int | None = None
@@ -1423,7 +1428,8 @@ class TaskTagMutationPayload(BaseModel):
 
 class TaskListMutationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=30)
-    color: str = Field(min_length=4, max_length=16)
+    description: str | None = None
+    color: str | None = Field(default=None, min_length=4, max_length=16)
     isDefault: bool | None = None
     scope: Literal["org", "personal"] | None = None
     archived: bool | None = None
@@ -2217,6 +2223,8 @@ class EventLineRecord(BaseModel):
     evidenceCount: int = 0
     ownerId: str | None = None
     ownerName: str | None = None
+    ownerIds: list[str] = Field(default_factory=list)
+    ownerNames: list[str] = Field(default_factory=list)
     primaryWorkObjectId: str | None = None
     primaryWorkObjectName: str | None = None
     primaryClientId: str | None = None
@@ -2293,6 +2301,7 @@ class EventLineCreatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
+    ownerIds: list[str] = Field(default_factory=list)
     primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
@@ -2312,6 +2321,7 @@ class EventLineUpdatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
+    ownerIds: list[str] | None = None
     primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
@@ -4084,6 +4094,8 @@ class ClientTextDocumentResponse(BaseModel):
     title: str
     fileName: str
     path: str
+    sourceType: str | None = None
+    surrogateMdPath: str | None = None
 
 
 class ClientTemplateFillFieldRecord(BaseModel):

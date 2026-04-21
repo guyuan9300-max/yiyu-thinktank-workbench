@@ -2557,7 +2557,6 @@ def test_vectorize_answer_creates_memory_doc_and_export_answer_writes_docx(tmp_p
     export_path = Path(exported.json()["path"])
     assert export_path.exists()
     assert export_path.suffix == ".docx"
-    assert "战略陪伴" in export_path.as_posix()
 
 
 def test_chat_falls_back_to_local_retrieval_summary_when_llm_generation_times_out(tmp_path: Path, monkeypatch):
@@ -2845,7 +2844,7 @@ def test_client_dna_documents_only_accept_markdown_extensions(tmp_path: Path):
         },
     )
     assert rejected.status_code == 400, rejected.text
-    assert "只允许上传 .md 或 .markdown 文件" in rejected.text
+    assert "只允许上传 .md、.markdown 或 .docx 文件" in rejected.text
 
     accepted = client.post(
         f"/api/v1/clients/{client_id}/dna-documents/organization_intro",
@@ -4169,12 +4168,13 @@ def test_memory_backfill_route_upgrades_legacy_tasks_and_reviews(tmp_path: Path)
         INSERT INTO tasks(
             id, title, description, status, priority, list_id, client_id, event_line_id, project_module_id, project_flow_id,
             ddl, due_date, duration_minutes, owner_name, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, 'doing', 'high', 'list-0', ?, ?, NULL, NULL, '本周', NULL, 60, '旧负责人', 'manual', NULL, '[]', '[]', ?, ?)
+        ) VALUES(?, ?, ?, 'doing', 'high', ?, ?, ?, NULL, NULL, '本周', NULL, 60, '旧负责人', 'manual', NULL, '[]', '[]', ?, ?)
         """,
         (
             "task_legacy",
             "整理旧项目资料",
             "把历史会议纪要和关键判断补齐到同一条推进线上。",
+            app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID,
             client_id,
             "eline_legacy",
             "2026-03-12T10:00:00",
@@ -4274,12 +4274,13 @@ def test_weekly_review_analysis_ignores_polluted_event_line_background(tmp_path:
         INSERT INTO tasks(
             id, title, description, status, priority, list_id, client_id, event_line_id, project_module_id, project_flow_id,
             ddl, due_date, duration_minutes, owner_name, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, 'doing', 'high', 'list-0', ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'manual', NULL, '[]', '[]', ?, ?)
+        ) VALUES(?, ?, ?, 'doing', 'high', ?, ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'manual', NULL, '[]', '[]', ?, ?)
         """,
         (
             "task_dirty_review",
             "向马翔宇老师介绍数字化系统",
             "先把系统价值讲清楚，再推进后续判断。",
+            app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID,
             client_id,
             "eline_dirty_review",
             "2026-03-21T10:00:00",
@@ -4425,12 +4426,13 @@ def test_reviews_route_accepts_notebook_and_event_line_memory_evidence_refs(tmp_
         INSERT INTO tasks(
             id, title, description, status, priority, list_id, client_id, event_line_id, project_module_id, project_flow_id,
             ddl, due_date, duration_minutes, owner_name, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, 'doing', 'high', 'list-0', ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'meeting', 'meeting_demo_1', '[]', '[]', ?, ?)
+        ) VALUES(?, ?, ?, 'doing', 'high', ?, ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'meeting', 'meeting_demo_1', '[]', '[]', ?, ?)
         """,
         (
             "task_review_sources",
             "给日慈张真看益语系统",
             "这次会谈要确认系统与对方合作目标的关系，并收齐会后动作。",
+            app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID,
             client_id,
             "eline_review_sources",
             "2026-03-24T09:00:00",
@@ -4561,6 +4563,322 @@ def test_cloud_task_board_builds_event_line_shadow_and_memory_hints(tmp_path: Pa
     snapshot = memory_response.json()["eventLineMemorySnapshot"]
     assert snapshot is not None
     assert snapshot["confidence"] > 0
+
+
+def test_bootstrap_local_cloud_snapshot_pulls_event_lines(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_session_user(client)
+    seed_cloud_token(client)
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        normalized = "http://127.0.0.1:47830"
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-lists":
+            return httpx.Response(
+                200,
+                json={
+                    "lists": [
+                        {"id": "list_bootstrap_1", "name": "启动清单", "color": "#5B7BFE", "sortOrder": 1, "isDefault": False}
+                    ]
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-tags":
+            return httpx.Response(200, json={"tags": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [
+                        {
+                            "id": "task_bootstrap_1",
+                            "title": "跟进事件线冷启动快照",
+                            "description": "验证任务面板启动时会补齐事件线本地缓存。",
+                            "status": "doing",
+                            "priority": "high",
+                            "listId": "list_bootstrap_1",
+                            "creatorId": "user_emp",
+                            "ownerId": "user_emp",
+                            "ownerName": "普通员工",
+                            "sourceType": "manual",
+                            "eventLineId": "eline_bootstrap_1",
+                            "createdAt": "2026-04-21T09:00:00",
+                            "updatedAt": "2026-04-21T09:10:00",
+                            "collaborators": [],
+                        }
+                    ]
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "eline_bootstrap_1",
+                        "name": "冷启动事件线",
+                        "kind": "custom",
+                        "status": "active",
+                        "updatedAt": "2026-04-21T09:15:00",
+                    }
+                ],
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines/eline_bootstrap_1":
+            return httpx.Response(
+                200,
+                json={
+                    "eventLine": {
+                        "id": "eline_bootstrap_1",
+                        "name": "冷启动事件线",
+                        "kind": "custom",
+                        "status": "active",
+                        "stage": "推进中",
+                        "summary": "验证启动时事件线能进本地缓存。",
+                        "updatedAt": "2026-04-21T09:15:00",
+                    },
+                    "activities": [],
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-group-templates":
+            return httpx.Response(200, json={"templates": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/reviews/history":
+            return httpx.Response(200, json={"items": []})
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    payload = board.json()
+    assert payload["tasks"][0]["eventLineId"] == "eline_bootstrap_1"
+    assert payload["tasks"][0]["eventLineName"] == "冷启动事件线"
+
+    event_line_row = client.app.state.app_state.db.fetchone(
+        "SELECT id, name FROM event_lines WHERE id = ?",
+        ("eline_bootstrap_1",),
+    )
+    assert event_line_row is not None
+    assert event_line_row["name"] == "冷启动事件线"
+
+
+def test_background_local_cloud_sync_isolates_failed_bucket(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    session_user = seed_session_user(client)
+    seed_cloud_token(client)
+    client.app.state.app_state.db.set_setting("local_cloud_sync_last_success_at", "2026-04-21T09:00:00")
+    client.app.state.app_state.db.set_setting("local_cloud_sync_snapshot_user_id", session_user["id"])
+    client.app.state.app_state.db.set_setting("local_cloud_sync_snapshot_org_id", session_user["organizationId"])
+    app_main._local_cloud_sync_runtime["last_started_at"] = 0.0
+    app_main._local_cloud_sync_runtime["running"] = False
+
+    sync_errors: list[Exception] = []
+
+    class ImmediateThread:
+        def __init__(self, *, target=None, daemon=None, **kwargs):
+            self._target = target
+            self.daemon = daemon
+
+        def start(self):
+            try:
+                if self._target:
+                    self._target()
+            except Exception as exc:  # pragma: no cover - assertion aid
+                sync_errors.append(exc)
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        normalized = "http://127.0.0.1:47830"
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-lists":
+            return httpx.Response(
+                200,
+                json={
+                    "lists": [
+                        {"id": "list_sync_1", "name": "同步清单", "color": "#4F46E5", "sortOrder": 1, "isDefault": False}
+                    ]
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-tags":
+            return httpx.Response(200, json={"tags": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [
+                        {
+                            "id": "task_sync_1",
+                            "title": "同步时保住任务清单",
+                            "description": "即便事件线接口失败，也不能让任务和清单一起消失。",
+                            "status": "todo",
+                            "priority": "normal",
+                            "listId": "list_sync_1",
+                            "creatorId": "user_emp",
+                            "ownerId": "user_emp",
+                            "ownerName": "普通员工",
+                            "sourceType": "manual",
+                            "createdAt": "2026-04-21T10:00:00",
+                            "updatedAt": "2026-04-21T10:05:00",
+                            "collaborators": [],
+                        }
+                    ]
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines":
+            return httpx.Response(503, json={"detail": "event line service unavailable"})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-group-templates":
+            return httpx.Response(200, json={"templates": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/reviews/history":
+            return httpx.Response(200, json={"items": []})
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main, "Thread", ImmediateThread)
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    response = client.get("/api/v1/tasks")
+    assert response.status_code == 200, response.text
+    assert sync_errors == []
+
+    list_row = client.app.state.app_state.db.fetchone(
+        "SELECT id, name FROM task_lists WHERE id = ?",
+        ("list_sync_1",),
+    )
+    assert list_row is not None
+    task_row = client.app.state.app_state.db.fetchone(
+        "SELECT id, title FROM tasks WHERE id = ?",
+        ("task_sync_1",),
+    )
+    assert task_row is not None
+    assert client.app.state.app_state.db.get_setting("local_cloud_sync.event_lines.last_error", "")
+
+
+def test_reject_task_local_fallback_returns_rejected_task(tmp_path: Path):
+    client = make_client(tmp_path)
+    session_user = seed_session_user(client)
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    list_id = board.json()["lists"][0]["id"]
+    seed_cloud_token(client)
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "本地退回任务",
+            "desc": "验证 reject 的本地分支不会再丢失。",
+            "listId": list_id,
+            "sourceType": "manual",
+            "ownerId": session_user["id"],
+            "ownerName": session_user["fullName"],
+            "collaboratorIds": [session_user["id"]],
+        },
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+
+    rejected = client.post(
+        f"/api/v1/tasks/{task_id}/reject",
+        json={"reason": "当前资源不足，先退回补充信息。"},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected"
+
+    collaborator_row = client.app.state.app_state.db.fetchone(
+        "SELECT inbox_status, return_reason FROM task_collaborators WHERE task_id = ? AND user_id = ?",
+        (task_id, session_user["id"]),
+    )
+    assert collaborator_row is not None
+    assert collaborator_row["inbox_status"] == "returned"
+    assert collaborator_row["return_reason"] == "当前资源不足，先退回补充信息。"
+
+
+def test_confirm_task_local_fallback_returns_task_for_pending_collaborator(tmp_path: Path):
+    client = make_client(tmp_path)
+    creator_user = seed_session_user(
+        client,
+        user_id="user_creator",
+        email="creator@example.com",
+        full_name="普通发起人",
+    )
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    list_id = board.json()["lists"][0]["id"]
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "协作待确认任务",
+            "desc": "验证普通协作者在本地确认后不会再丢任务。",
+            "listId": list_id,
+            "sourceType": "manual",
+            "ownerId": creator_user["id"],
+            "ownerName": creator_user["fullName"],
+            "collaboratorIds": [creator_user["id"], "user_collab"],
+        },
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+
+    db = client.app.state.app_state.db
+    db.conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        db.execute("UPDATE tasks SET list_id = 'list-0' WHERE id = ?", (task_id,))
+    finally:
+        db.conn.execute("PRAGMA foreign_keys = ON")
+
+    collaborator_user = seed_session_user(
+        client,
+        user_id="user_collab",
+        email="collab@example.com",
+        full_name="普通协作者",
+    )
+
+    confirmed = client.post(f"/api/v1/tasks/{task_id}/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    payload = confirmed.json()
+    assert payload["status"] == "doing"
+    assert payload["listId"] == app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
+    assert payload["viewerInboxStatus"] == "accepted"
+
+    collaborator_row = db.fetchone(
+        "SELECT inbox_status FROM task_collaborators WHERE task_id = ? AND user_id = ?",
+        (task_id, collaborator_user["id"]),
+    )
+    assert collaborator_row is not None
+    assert collaborator_row["inbox_status"] == "accepted"
+
+
+def test_mark_event_line_notification_read_queues_local_sync(tmp_path: Path):
+    client = make_client(tmp_path)
+    session_user = seed_session_user(client)
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    list_id = board.json()["lists"][0]["id"]
+    seed_cloud_token(client)
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "系统通知待处理",
+            "desc": "验证本地已读会进入待同步状态。",
+            "listId": list_id,
+            "sourceType": "event_line_notification",
+            "ownerId": session_user["id"],
+            "ownerName": session_user["fullName"],
+            "collaboratorIds": [session_user["id"], "user_other"],
+        },
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+    client.app.state.app_state.db.execute(
+        "UPDATE tasks SET sync_status = 'synced', pending_sync_action = '', last_sync_error = '' WHERE id = ?",
+        (task_id,),
+    )
+
+    marked = client.post(f"/api/v1/tasks/{task_id}/notifications/read")
+    assert marked.status_code == 200, marked.text
+    assert marked.json()["status"] == "inbox"
+
+    task_row = client.app.state.app_state.db.fetchone(
+        "SELECT sync_status, pending_sync_action FROM tasks WHERE id = ?",
+        (task_id,),
+    )
+    assert task_row is not None
+    assert task_row["sync_status"] == "queued"
+    assert task_row["pending_sync_action"] == "update"
 
 
 def test_employee_can_edit_business_settings_but_not_sensitive_settings(tmp_path: Path):

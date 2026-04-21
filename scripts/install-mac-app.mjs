@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 
 const APP_NAME = '益语智库自用平台.app';
 const APP_BASENAME = APP_NAME.replace(/\.app$/, '');
+const WORKBENCH_DATA_DIR_NAME = 'YiyuThinkTankWorkbench';
 const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const sourceApp = process.argv[2]
   ? path.resolve(process.argv[2])
@@ -15,13 +16,14 @@ const userApplicationsDir = path.join(os.homedir(), 'Applications');
 const targetApp = path.join(userApplicationsDir, APP_NAME);
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
 const stagingApp = path.join(userApplicationsDir, `.${APP_BASENAME}.installing-${timestamp}.app`);
-const backupRoot = path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'install-backups');
+const runtimeRoot = path.join(os.homedir(), 'Library', 'Application Support', WORKBENCH_DATA_DIR_NAME, 'runtime');
+const backupRoot = path.join(runtimeRoot, 'install-backups');
 const backupApp = path.join(backupRoot, `益语智库自用平台.old-${timestamp}.app`);
 const legacyCandidates = [
   '/Applications/益语智库.app',
   path.join(os.homedir(), 'Desktop', APP_NAME),
-  path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron', '益语智库工作台.app'),
-  path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron-dist', '益语智库工作台.app'),
+  path.join(runtimeRoot, 'local-electron', '益语智库工作台.app'),
+  path.join(runtimeRoot, 'local-electron-dist', '益语智库工作台.app'),
 ];
 
 function fail(message) {

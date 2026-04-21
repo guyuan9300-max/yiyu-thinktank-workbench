@@ -1422,6 +1422,10 @@ def get_task_memory_enrichment(
         score = min(1.0, score + 0.12)
     if missing_slots:
         score = max(0.0, score - 0.1)
+    if normalized_client_id and task_facts:
+        score = max(score, 0.4)
+    if normalized_event_line_id and (event_line_snapshot or matched_event_line_facts or task_reference_facts):
+        score = max(score, 0.46)
     level: str = "high" if score >= 0.75 else "medium" if score >= 0.45 else "low"
     readiness = BackgroundReadiness(
         score=round(score, 2),

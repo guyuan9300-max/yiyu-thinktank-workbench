@@ -28,6 +28,8 @@ export type EventLineEditorDraft = {
   name: string;
   kind: EventLineKind;
   primaryClientId: string;
+  ownerId: string;
+  ownerIds: string[];
   summary: string;
   stage: string;
   currentBlocker: string;
@@ -45,6 +47,7 @@ type Props = {
   memberOptions: MentionCandidate[];
   canDelete: boolean;
   isSaving: boolean;
+  saveNotice?: string | null;
   onClose: () => void;
   onChange: (patch: Partial<EventLineEditorDraft>) => void;
   onSubmit: () => void;
@@ -72,7 +75,7 @@ const EVENT_LINE_STATUS_LABELS: Record<string, string> = {
   paused: '暂停',
   blocked: '阻塞',
   done: '完成',
-  archived: '已归档',
+  archived: '已完成',
 };
 
 function formatDateTime(iso?: string | null) {
@@ -126,6 +129,7 @@ export default function EventLineEditorModal({
   memberOptions,
   canDelete,
   isSaving,
+  saveNotice,
   onClose,
   onChange,
   onSubmit,
@@ -163,9 +167,17 @@ export default function EventLineEditorModal({
     if (!needle) return projectOptions;
     return projectOptions.filter((item) => item.label.toLowerCase().includes(needle));
   }, [projectOptions, projectQuery]);
-  const selectedMembers = draft.participantIds
+  const selectedOwnerIds = useMemo(() => {
+    const seed = draft.ownerIds?.length ? draft.ownerIds : draft.ownerId ? [draft.ownerId] : [];
+    return Array.from(new Set(seed.filter(Boolean)));
+  }, [draft.ownerId, draft.ownerIds]);
+  const selectedOwners = selectedOwnerIds
     .map((id) => memberMap.get(id))
     .filter((item): item is MentionCandidate => Boolean(item));
+  const selectedParticipants = (detail?.eventLine.participantIds || draft.participantIds)
+    .map((id) => memberMap.get(id))
+    .filter((item): item is MentionCandidate => Boolean(item))
+    .filter((item) => !selectedOwnerIds.includes(item.id));
   const filteredMembers = memberOptions.filter((item) => {
     const needle = memberQuery.trim().toLowerCase();
     if (!needle) return true;
@@ -223,12 +235,13 @@ export default function EventLineEditorModal({
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, []);
 
-  const toggleMember = (candidate: MentionCandidate) => {
-    const exists = draft.participantIds.includes(candidate.id);
+  const toggleOwner = (candidate: MentionCandidate) => {
+    const nextOwnerIds = selectedOwnerIds.includes(candidate.id)
+      ? selectedOwnerIds.filter((id) => id !== candidate.id)
+      : [...selectedOwnerIds, candidate.id];
     onChange({
-      participantIds: exists
-        ? draft.participantIds.filter((item) => item !== candidate.id)
-        : [...draft.participantIds, candidate.id],
+      ownerIds: nextOwnerIds,
+      ownerId: nextOwnerIds[0] || '',
     });
   };
 
@@ -322,6 +335,11 @@ export default function EventLineEditorModal({
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-6">
+          {saveNotice ? (
+            <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-[13px] font-medium text-emerald-700">
+              {saveNotice}
+            </div>
+          ) : null}
           <div className="grid gap-6 lg:grid-cols-[1.12fr_0.88fr]">
             <div className="space-y-5">
               <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm">
@@ -441,33 +459,41 @@ export default function EventLineEditorModal({
                       className="flex min-h-[48px] w-full items-center justify-between rounded-2xl border border-gray-200 bg-white px-4 py-3 text-left transition hover:border-[#5B7BFE]"
                     >
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                        {selectedMembers.length > 0 ? (
-                          selectedMembers.map((member) => (
-                            <span key={member.id} className="inline-flex max-w-full items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-[13px] text-gray-700">
-                              <span className="truncate">{member.fullName}</span>
+                        {selectedOwners.length > 0 ? (
+                          selectedOwners.map((owner) => (
+                            <span key={owner.id} className="inline-flex max-w-full items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-[13px] text-gray-700">
+                              <span className="truncate">{owner.fullName}</span>
                               <span
                                 role="button"
                                 tabIndex={0}
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  toggleMember(member);
+                                  const nextOwnerIds = selectedOwnerIds.filter((id) => id !== owner.id);
+                                  onChange({
+                                    ownerIds: nextOwnerIds,
+                                    ownerId: nextOwnerIds[0] || '',
+                                  });
                                 }}
                                 onKeyDown={(event) => {
                                   if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault();
                                     event.stopPropagation();
-                                    toggleMember(member);
+                                    const nextOwnerIds = selectedOwnerIds.filter((id) => id !== owner.id);
+                                    onChange({
+                                      ownerIds: nextOwnerIds,
+                                      ownerId: nextOwnerIds[0] || '',
+                                    });
                                   }
                                 }}
                                 className="flex h-4 w-4 items-center justify-center rounded-full text-gray-400 hover:bg-slate-200 hover:text-gray-600"
-                                aria-label={`移除主要负责人${member.fullName}`}
+                                aria-label={`移除主要负责人${owner.fullName}`}
                               >
                                 <X size={12} />
                               </span>
                             </span>
                           ))
                         ) : (
-                          <span className="text-[14px] text-gray-400">可多选，建议至少选 1 位主要负责人</span>
+                          <span className="text-[14px] text-gray-400">可选择多位主要负责人</span>
                         )}
                       </div>
                       <ChevronDown size={16} className={`ml-2 text-gray-400 transition-transform ${isMemberMenuOpen ? 'rotate-180' : ''}`} />
@@ -487,12 +513,12 @@ export default function EventLineEditorModal({
                           {filteredMembers.length === 0 ? (
                             <div className="px-3 py-2 text-xs text-gray-400">暂无匹配成员</div>
                           ) : filteredMembers.map((member) => {
-                            const checked = draft.participantIds.includes(member.id);
+                            const checked = selectedOwnerIds.includes(member.id);
                             return (
                               <button
                                 key={member.id}
                                 type="button"
-                                onClick={() => toggleMember(member)}
+                                onClick={() => toggleOwner(member)}
                                 className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-gray-700 transition hover:bg-gray-50"
                               >
                                 <span>{member.fullName}{member.isSelf ? '（自己）' : ''}</span>
@@ -505,6 +531,24 @@ export default function EventLineEditorModal({
                         </div>
                       </div>
                     ) : null}
+                  </div>
+                  <p className="mt-2 text-[12px] text-gray-400">参与者会根据关联任务的负责人和协作者自动补齐，但不会覆盖这里手动设置的主要负责人。</p>
+                </div>
+
+                <div className="mt-4">
+                  <span className="mb-2 block text-[12px] font-bold text-gray-500">参与者</span>
+                  <div className="rounded-2xl border border-dashed border-gray-200 bg-slate-50/70 px-4 py-3">
+                    <div className="flex flex-wrap gap-2">
+                      {selectedParticipants.length > 0 ? (
+                        selectedParticipants.map((member) => (
+                          <span key={member.id} className="inline-flex max-w-full items-center rounded-full bg-white px-3 py-1 text-[13px] text-gray-600 shadow-sm">
+                            <span className="truncate">{member.fullName}</span>
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-[13px] text-gray-400">当前还没有参与者。后续只要任务关联到这条事件线，相关负责人和协作者会自动出现在这里。</span>
+                      )}
+                    </div>
                   </div>
                 </div>
 

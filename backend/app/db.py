@@ -644,6 +644,7 @@ class Database:
                     organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     scope TEXT NOT NULL DEFAULT 'org',
@@ -764,6 +765,19 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_task_collaborators_user
                     ON task_collaborators(user_id, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS task_list_links (
+                    task_id TEXT NOT NULL,
+                    list_id TEXT NOT NULL,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (task_id, list_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
+                    ON task_list_links(list_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS event_lines (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL DEFAULT '',
@@ -779,6 +793,7 @@ class Database:
                     next_step TEXT,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     owner_id TEXT,
+                    owner_ids_json TEXT NOT NULL DEFAULT '[]',
                     owner_name TEXT,
                     primary_client_id TEXT,
                     primary_client_name TEXT,
@@ -1606,6 +1621,7 @@ class Database:
             self._ensure_column("task_lists", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_lists", "description", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "creator_id", "TEXT NOT NULL DEFAULT ''")
@@ -1652,6 +1668,30 @@ class Database:
                 )
                 """
             )
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS task_list_links (
+                    task_id TEXT NOT NULL,
+                    list_id TEXT NOT NULL,
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (task_id, list_id),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
+                    ON task_list_links(list_id, updated_at DESC);
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO task_list_links(task_id, list_id, order_index, created_at, updated_at)
+                SELECT id, list_id, 0, COALESCE(created_at, ''), COALESCE(updated_at, '')
+                FROM tasks
+                WHERE TRIM(COALESCE(list_id, '')) <> ''
+                """
+            )
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
@@ -1667,6 +1707,7 @@ class Database:
             self._ensure_column("event_lines", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_lines", "owner_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_group_templates (
