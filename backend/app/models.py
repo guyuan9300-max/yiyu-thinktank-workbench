@@ -1328,6 +1328,15 @@ class TaskActivityRecord(BaseModel):
     createdAt: str
 
 
+class TaskNotificationBatchReadPayload(BaseModel):
+    taskIds: list[str] = Field(default_factory=list)
+
+
+class TaskNotificationBatchReadResponse(BaseModel):
+    taskIds: list[str] = Field(default_factory=list)
+    updatedCount: int = 0
+
+
 class TaskPayload(BaseModel):
     title: str
     desc: str = ""

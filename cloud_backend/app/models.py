@@ -926,6 +926,15 @@ class TaskGroupTemplatePayload(BaseModel):
     steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
 
 
+class TaskNotificationBatchReadPayload(BaseModel):
+    taskIds: list[str] = Field(default_factory=list)
+
+
+class TaskNotificationBatchReadResponse(BaseModel):
+    taskIds: list[str] = Field(default_factory=list)
+    updatedCount: int = 0
+
+
 class TaskCreatePayload(BaseModel):
     id: str | None = None
     title: str

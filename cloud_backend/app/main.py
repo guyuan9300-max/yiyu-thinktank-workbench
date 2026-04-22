@@ -112,6 +112,8 @@ from app.models import (
     TaskListMutationPayload,
     TaskListRecord,
     TaskNotePayload,
+    TaskNotificationBatchReadPayload,
+    TaskNotificationBatchReadResponse,
     OrgAiConfigRecord,
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
@@ -5882,25 +5884,23 @@ class FeishuNotificationService:
                 earliest = overdue_tasks[0]["dueText"]
                 card = _build_feishu_readonly_card(
                     template="red",
-                    title=f"次日逾期提醒｜{len(overdue_tasks)} 项",
+                    title=f"逾期提醒｜{len(overdue_tasks)} 项",
                     headline=f"{user_name}，你有 {len(overdue_tasks)} 项昨天到期的任务仍未完成",
                     core_lines=[
-                        f"本次提醒：仅提醒昨天到期且今天仍未完成的任务",
                         f"最早截止：{earliest}",
                     ],
                     secondary_blocks=[
                         ("待处理任务", [f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]]),
                     ],
-                    footer="这是该任务逾期后的唯一一次提醒，请回到益语智库处理或调整截止时间。",
+                    footer="请回到益语智库处理或调整截止时间。",
                 )
                 text = "\n".join(
                     [
-                        "【益语智库】次日逾期提醒",
-                        "本次仅提醒昨天到期且今天仍未完成的任务",
+                        "【益语智库】逾期提醒",
                         f"任务数：{len(overdue_tasks)}",
                         f"最早截止：{earliest}",
                         *[f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]],
-                        "这是该任务逾期后的唯一一次提醒，请回到益语智库处理或调整截止时间。",
+                        "请回到益语智库处理或调整截止时间。",
                     ]
                 )
                 self._send_prepared_notification(
@@ -12932,6 +12932,21 @@ def create_app() -> FastAPI:
                 (timestamp, task_id),
             )
         return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
+
+    @app.post("/api/v1/tasks/notifications/read-batch", response_model=TaskNotificationBatchReadResponse)
+    def mark_notifications_read_batch(
+        payload: TaskNotificationBatchReadPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskNotificationBatchReadResponse:
+        task_ids = [task_id.strip() for task_id in payload.taskIds if task_id and task_id.strip()]
+        normalized_ids = list(dict.fromkeys(task_ids))
+        if not normalized_ids:
+            return TaskNotificationBatchReadResponse(taskIds=[], updatedCount=0)
+        updated_ids: list[str] = []
+        for task_id in normalized_ids:
+            mark_notification_read(task_id, current_user)
+            updated_ids.append(task_id)
+        return TaskNotificationBatchReadResponse(taskIds=updated_ids, updatedCount=len(updated_ids))
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/return", response_model=TaskRecord)
     def return_task(

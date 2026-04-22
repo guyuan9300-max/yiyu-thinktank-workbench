@@ -4881,6 +4881,51 @@ def test_mark_event_line_notification_read_queues_local_sync(tmp_path: Path):
     assert task_row["pending_sync_action"] == "update"
 
 
+def test_mark_event_line_notifications_read_batch_queues_local_sync(tmp_path: Path):
+    client = make_client(tmp_path)
+    session_user = seed_session_user(client)
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    list_id = board.json()["lists"][0]["id"]
+    seed_cloud_token(client)
+
+    task_ids: list[str] = []
+    for index in range(2):
+        created = client.post(
+            "/api/v1/tasks",
+            json={
+                "title": f"批量系统通知 {index + 1}",
+                "desc": "验证批量已阅会统一进入待同步状态。",
+                "listId": list_id,
+                "sourceType": "event_line_notification",
+                "ownerId": session_user["id"],
+                "ownerName": session_user["fullName"],
+                "collaboratorIds": [session_user["id"], f"user_other_{index}"],
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_ids.append(created.json()["id"])
+        client.app.state.app_state.db.execute(
+            "UPDATE tasks SET sync_status = 'synced', pending_sync_action = '', last_sync_error = '' WHERE id = ?",
+            (created.json()["id"],),
+        )
+
+    marked = client.post("/api/v1/tasks/notifications/read-batch", json={"taskIds": task_ids})
+    assert marked.status_code == 200, marked.text
+    payload = marked.json()
+    assert payload["updatedCount"] == 2
+    assert payload["taskIds"] == task_ids
+
+    rows = client.app.state.app_state.db.fetchall(
+        "SELECT id, sync_status, pending_sync_action FROM tasks WHERE id IN (?, ?) ORDER BY created_at ASC",
+        (task_ids[0], task_ids[1]),
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row["sync_status"] == "queued"
+        assert row["pending_sync_action"] == "update"
+
+
 def test_employee_can_edit_business_settings_but_not_sensitive_settings(tmp_path: Path):
     client = make_client(tmp_path)
     client.app.state.app_state.db.set_setting(

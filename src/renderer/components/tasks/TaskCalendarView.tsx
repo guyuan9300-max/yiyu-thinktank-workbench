@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 import type { Task } from '../../../shared/types';
-import { formatMonthTitle } from '../../../shared/calendar';
+import { buildCalendarCells, formatMonthTitle } from '../../../shared/calendar';
 import { getChinaCalendarMarkers, type ChinaCalendarMarker } from '../../../shared/china-calendar';
 import {
   assignTimedTaskLanes,
@@ -47,8 +47,6 @@ type TaskCalendarViewProps = {
   onApproveTaskReview: (taskId: string) => Promise<void>;
   onReturnTaskReview: (taskId: string) => Promise<void>;
   isTaskOverdue: (task: Task, today?: Date) => boolean;
-  showCollaborativeTasks: boolean;
-  onToggleCollaborativeTasks: () => void;
 };
 
 const sourceTypeLabels: Record<string, string> = {
@@ -65,8 +63,10 @@ const DAY_TIMELINE_SLOT_MINUTES = 15;
 const DAY_TIMELINE_SLOT_HEIGHT = 14;
 const DAY_TIMELINE_DEFAULT_DURATION_MINUTES = 60;
 const DAY_TIMELINE_DEFAULT_START_MINUTE = 8 * 60;
-const DAY_TIMELINE_SCROLL_END_PADDING = DAY_TIMELINE_SLOT_HEIGHT * 12;
+const DAY_TIMELINE_SCROLL_END_PADDING = DAY_TIMELINE_SLOT_HEIGHT * 3;
 const DAY_MINUTES = 24 * 60;
+const MONTH_TIMELINE_WEEKS_BEFORE = 78;
+const MONTH_TIMELINE_WEEKS_AFTER = 78;
 type WeekCreateSelection = {
   dayKey: number;
   dayDate: Date;
@@ -131,6 +131,12 @@ function buildSelectionRange(anchorMinute: number, currentMinute: number): { sta
     startMinute: currentMinute,
     endMinute: Math.min(anchorMinute + DAY_TIMELINE_SLOT_MINUTES, 24 * 60),
   };
+}
+
+function normalizeWheelDelta(event: React.WheelEvent<HTMLDivElement>) {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 18;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * 72;
+  return event.deltaY;
 }
 
 function isSameDay(left: Date, right: Date) {
@@ -320,8 +326,6 @@ export function TaskCalendarView({
   onApproveTaskReview: _onApproveTaskReview,
   onReturnTaskReview: _onReturnTaskReview,
   isTaskOverdue,
-  showCollaborativeTasks,
-  onToggleCollaborativeTasks,
 }: TaskCalendarViewProps) {
   const [isJumpPickerOpen, setIsJumpPickerOpen] = useState(false);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
@@ -335,6 +339,7 @@ export function TaskCalendarView({
   const [weekAggregateIndexes, setWeekAggregateIndexes] = useState<Record<string, number>>({});
   const [visibleWeekPageIndex, setVisibleWeekPageIndex] = useState(1);
   const [isWeekPaging, setIsWeekPaging] = useState(false);
+  const [jumpPickerMonth, setJumpPickerMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const resizePreviewRef = useRef<number | null>(null);
   const resizeDraftRef = useRef<{ taskId: string; startY: number; startMinute: number; baseDuration: number } | null>(null);
   const weekCreateDraftRef = useRef<{
@@ -350,6 +355,8 @@ export function TaskCalendarView({
   const weekPagerIdleTimerRef = useRef<number | null>(null);
   const weekPagerVerticalSyncRef = useRef(false);
   const weekPagerGestureDeadlineRef = useRef(0);
+  const jumpPickerRef = useRef<HTMLDivElement | null>(null);
+  const monthWeekAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const today = useMemo(() => new Date(), []);
   const taskDateForCalendar = resolveTaskCalendarDate;
   const visibleTasks = useMemo(
@@ -402,11 +409,15 @@ export function TaskCalendarView({
     );
   }, [activeMonthDate, visibleTasks]);
 
+  const monthScrollAnchorKey = useMemo(
+    () => formatDateInputValue(startOfWeek(selectedDate)),
+    [selectedDate],
+  );
+
   const monthTimelineWeeks = useMemo(() => {
-    const firstRenderedMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1);
-    const rangeStart = startOfWeek(firstRenderedMonth);
-    const lastRenderedDay = new Date(firstRenderedMonth.getFullYear(), firstRenderedMonth.getMonth() + 1, 0);
-    const rangeEnd = addDays(lastRenderedDay, 6 - ((lastRenderedDay.getDay() + 6) % 7));
+    const anchorWeekStart = startOfWeek(selectedDate);
+    const rangeStart = addDays(anchorWeekStart, -7 * MONTH_TIMELINE_WEEKS_BEFORE);
+    const rangeEnd = addDays(anchorWeekStart, 7 * MONTH_TIMELINE_WEEKS_AFTER + 6);
     const weeks: Array<{
       key: string;
       days: Array<{
@@ -428,7 +439,7 @@ export function TaskCalendarView({
       });
     }
     return weeks;
-  }, [calendarDate, monthTasksByDateKey]);
+  }, [monthTasksByDateKey, selectedDate]);
 
   const weekStartDate = useMemo(() => startOfWeek(selectedDate), [selectedDate]);
   const weekPages = useMemo(() => {
@@ -504,6 +515,41 @@ export function TaskCalendarView({
   }, [calendarDisplayMode, selectedDate]);
 
   useEffect(() => {
+    if (!isJumpPickerOpen) return;
+    setJumpPickerMonth(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+  }, [isJumpPickerOpen, selectedDate]);
+
+  useEffect(() => {
+    if (!isJumpPickerOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!jumpPickerRef.current?.contains(event.target as Node)) {
+        setIsJumpPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isJumpPickerOpen]);
+
+  const scrollMonthTimelineToDate = useCallback((date: Date, behavior: ScrollBehavior = 'auto') => {
+    const anchorKey = formatDateInputValue(startOfWeek(date));
+    const anchorNode = monthWeekAnchorRefs.current[anchorKey];
+    if (!anchorNode) return;
+    anchorNode.scrollIntoView({ block: 'start', behavior });
+  }, []);
+
+  useEffect(() => {
+    if (calendarDisplayMode !== 'month') return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollMonthTimelineToDate(selectedDate);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [calendarDisplayMode, monthScrollAnchorKey, scrollMonthTimelineToDate, selectedDate]);
+
+  useEffect(() => {
     if (!resizingTaskId || !resizeDraftRef.current) return;
 
     const handleMouseMove = (event: MouseEvent) => {
@@ -574,6 +620,11 @@ export function TaskCalendarView({
     () => timelineSlotMinutes.filter((minute) => minute % 60 === 0),
     [timelineSlotMinutes],
   );
+  const timelineBoundaryMinutes = useMemo(
+    () => [...hourLineMinutes, DAY_MINUTES],
+    [hourLineMinutes],
+  );
+  const dayTimelineHeight = timelineSlotMinutes.length * DAY_TIMELINE_SLOT_HEIGHT;
 
   const monthStats = useMemo(() => {
     return {
@@ -605,8 +656,8 @@ export function TaskCalendarView({
     };
   }, [isTaskOverdue, today, visibleWeekPage]);
 
-  const handleDateJump = (value: string) => {
-    const nextDate = new Date(value);
+  const handleDateJump = (value: string | Date) => {
+    const nextDate = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(nextDate.getTime())) return;
     onSelectDate(nextDate);
     onAlignCalendarDate(nextDate);
@@ -759,6 +810,11 @@ export function TaskCalendarView({
 
   const handleGoToToday = () => {
     onGoToToday();
+    if (calendarDisplayMode === 'month') {
+      window.requestAnimationFrame(() => {
+        scrollMonthTimelineToDate(today, 'smooth');
+      });
+    }
   };
 
   const handleCreateTaskFromWeekSlot = useCallback(
@@ -841,6 +897,22 @@ export function TaskCalendarView({
     });
   };
 
+  const handleWeekTimelineWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (calendarDisplayMode !== 'week' || event.ctrlKey || event.metaKey) return;
+    const deltaY = normalizeWheelDelta(event);
+    if (Math.abs(deltaY) < Math.abs(event.deltaX) || deltaY === 0) return;
+    const container = event.currentTarget;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (maxScrollTop <= 0) return;
+    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, container.scrollTop + deltaY));
+    if (Math.abs(nextScrollTop - container.scrollTop) < 0.5) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    container.scrollTop = nextScrollTop;
+  };
+
   const finalizeWeekPagerScroll = () => {
     const pager = weekPagerRef.current;
     if (!pager) return;
@@ -882,17 +954,6 @@ export function TaskCalendarView({
     }, 120);
   };
 
-  const handleWeekScrollWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    const horizontalIntent = Math.abs(event.deltaX);
-    const verticalIntent = Math.abs(event.deltaY);
-    if (horizontalIntent < 24 || horizontalIntent <= verticalIntent * 1.4) return;
-    const pager = weekPagerRef.current;
-    if (!pager) return;
-    weekPagerGestureDeadlineRef.current = Date.now() + 280;
-    pager.scrollLeft += event.deltaX;
-    event.preventDefault();
-  };
-
   const handleWeekTaskSelect = (event?: React.MouseEvent) => {
     event?.preventDefault();
     event?.stopPropagation();
@@ -902,9 +963,9 @@ export function TaskCalendarView({
   const periodTitle = calendarDisplayMode === 'week' ? visibleWeekPage.title : formatMonthTitle(activeMonthDate);
 
   return (
-    <div className="w-full min-w-0 grid grid-cols-1 gap-6 items-start transition-all xl:grid-cols-[minmax(0,1fr)]">
-      <div className="min-w-0 w-full bg-white border border-gray-200 rounded-[32px] shadow-sm overflow-hidden">
-        <div className="flex flex-col gap-3 px-5 lg:px-6 py-4 border-b border-gray-100">
+    <div className="w-full min-w-0 grid h-full grid-cols-1 items-stretch gap-6 transition-all xl:grid-cols-[minmax(0,1fr)]">
+      <div className="min-w-0 w-full bg-white border border-gray-200 rounded-[32px] shadow-sm overflow-hidden flex h-full min-h-0 flex-col">
+        <div className="shrink-0 bg-white flex flex-col gap-3 px-5 lg:px-6 py-4 border-b border-gray-100">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-3">
@@ -932,30 +993,7 @@ export function TaskCalendarView({
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2 self-start lg:self-auto">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={showCollaborativeTasks}
-                aria-label={showCollaborativeTasks ? '隐藏个人任务' : '显示全部任务'}
-                onClick={onToggleCollaborativeTasks}
-                className="group relative flex items-center overflow-visible"
-              >
-                <span className="pointer-events-none absolute left-0 top-1/2 -translate-x-[calc(100%+8px)] -translate-y-1/2 text-[11px] font-medium text-gray-400 whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100 group-active:opacity-100">
-                  {showCollaborativeTasks ? '隐藏个人任务' : '显示全部任务'}
-                </span>
-                <span
-                  className={`relative inline-flex h-6 w-10 items-center rounded-full transition-colors duration-200 ${
-                    showCollaborativeTasks ? 'bg-[#5B7BFE]' : 'bg-gray-300'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
-                      showCollaborativeTasks ? 'translate-x-5' : 'translate-x-1'
-                    }`}
-                  />
-                </span>
-              </button>
-              <div className="relative flex items-center gap-2">
+              <div ref={jumpPickerRef} className="relative flex items-center gap-2">
               <button
                 type="button"
                 className="h-9 w-9 rounded-xl border border-gray-200 text-gray-500 hover:text-[#5B7BFE] hover:border-blue-100 transition-colors"
@@ -991,24 +1029,78 @@ export function TaskCalendarView({
               </button>
 
               {isJumpPickerOpen && (
-                <div className="absolute top-11 right-0 z-20 w-[280px] rounded-[24px] border border-gray-200 bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.12)]">
-                  <p className="text-[12px] font-bold text-gray-500 mb-3">跳到任意日期</p>
-                  <input
-                    type="date"
-                    value={formatDateInputValue(selectedDate)}
-                    onChange={(event) => handleDateJump(event.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
-                  />
-                  <button
-                    type="button"
-                    className="mt-3 w-full rounded-2xl bg-[#5B7BFE] text-white text-[13px] font-bold h-11 shadow-[0_6px_18px_rgba(91,123,254,0.28)]"
-                    onClick={() => {
-                      handleGoToToday();
-                      setIsJumpPickerOpen(false);
-                    }}
-                  >
-                    回到今天
-                  </button>
+                <div className="absolute top-11 right-0 z-20 w-[296px] rounded-[24px] border border-gray-200 bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.12)]">
+                  <div className="mb-4 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setJumpPickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
+                      className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                      aria-label="上个月"
+                    >
+                      <ChevronLeft size={15} />
+                    </button>
+                    <div className="text-center">
+                      <p className="text-[11px] font-semibold tracking-[0.08em] text-gray-400">跳到任意日期</p>
+                      <p className="mt-1 text-[15px] font-bold text-gray-900">{formatMonthTitle(jumpPickerMonth)}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setJumpPickerMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
+                      className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                      aria-label="下个月"
+                    >
+                      <ChevronRight size={15} />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-7 gap-y-2 text-center text-[11px] font-bold text-gray-400">
+                    {['一', '二', '三', '四', '五', '六', '日'].map((label) => (
+                      <span key={label}>{label}</span>
+                    ))}
+                  </div>
+                  <div className="mt-2 grid grid-cols-7 gap-y-1">
+                    {buildCalendarCells(jumpPickerMonth).map((cell, index) => {
+                      if (!cell.date || !cell.day) {
+                        return <span key={`jump-empty-${index}`} className="h-9" />;
+                      }
+                      const isSelected = isSameDay(cell.date, selectedDate);
+                      const isToday = isSameDay(cell.date, today);
+                      return (
+                        <button
+                          key={formatDateInputValue(cell.date)}
+                          type="button"
+                          onClick={() => handleDateJump(cell.date)}
+                          className={`mx-auto flex h-9 w-9 items-center justify-center rounded-xl text-[13px] font-bold transition-colors ${
+                            isSelected
+                              ? 'bg-[#3F74FF] text-white shadow-[0_10px_20px_rgba(63,116,255,0.22)]'
+                              : isToday
+                                ? 'text-[#E5477A] hover:bg-rose-50'
+                                : 'text-gray-700 hover:bg-gray-100'
+                          }`}
+                        >
+                          {cell.day}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-4 flex items-center justify-between">
+                    <button
+                      type="button"
+                      className="text-[13px] font-bold text-[#5B7BFE] transition-colors hover:text-[#3F74FF]"
+                      onClick={() => {
+                        handleGoToToday();
+                        setIsJumpPickerOpen(false);
+                      }}
+                    >
+                      回到今天
+                    </button>
+                    <button
+                      type="button"
+                      className="text-[13px] font-bold text-gray-400 transition-colors hover:text-gray-700"
+                      onClick={() => setIsJumpPickerOpen(false)}
+                    >
+                      关闭
+                    </button>
+                  </div>
                 </div>
               )}
               </div>
@@ -1018,16 +1110,22 @@ export function TaskCalendarView({
         </div>
 
         {calendarDisplayMode === 'month' ? (
-          <>
-            <div className="grid grid-cols-7 text-center text-[13px] font-bold text-gray-400 px-5 lg:px-6 pt-4 pb-3">
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="shrink-0 grid grid-cols-7 text-center text-[13px] font-bold text-gray-400 px-5 lg:px-6 pt-4 pb-3 bg-white border-b border-gray-100">
               {['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((day) => (
                 <div key={day}>{day}</div>
               ))}
             </div>
 
-            <div>
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
               {monthTimelineWeeks.map((week) => (
-                <div key={week.key} className="grid w-full grid-cols-7">
+                <div
+                  key={week.key}
+                  ref={(node) => {
+                    monthWeekAnchorRefs.current[week.key] = node;
+                  }}
+                  className="grid w-full grid-cols-7"
+                >
                   {week.days.map(({ date: cellDate, dayTasks }) => {
                     const isActiveSelection = isSameDay(cellDate, selectedDate);
                     const isToday = isSameDay(cellDate, today);
@@ -1237,26 +1335,25 @@ export function TaskCalendarView({
                 </div>
               ))}
             </div>
-          </>
+          </div>
         ) : (
-          <div className="border-t border-gray-100">
+          <div className="flex min-h-0 flex-1 flex-col border-t border-gray-100">
             <div
               ref={weekPagerRef}
-              className="overflow-x-auto overscroll-x-contain snap-x snap-proximity"
+              className="flex-1 min-h-0 overflow-x-auto overscroll-x-contain snap-x snap-proximity"
               onScroll={handleWeekPagerScroll}
             >
-              <div className="flex min-w-full">
+              <div className="flex h-full min-w-full">
                 {weekPages.map((page) => (
                   <div
                     key={page.key}
-                    className={`min-w-full snap-center transition-opacity duration-200 ${
+                    className={`flex min-h-0 min-w-full flex-col snap-center transition-opacity duration-200 ${
                       isWeekPaging
                         ? page === visibleWeekPage
                           ? 'opacity-100'
                           : 'opacity-75'
                         : 'opacity-100'
                     }`}
-                    onWheel={handleWeekScrollWheel}
                   >
                     <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] border-b border-gray-100 bg-white">
                       <div />
@@ -1295,14 +1392,18 @@ export function TaskCalendarView({
                     </div>
 
                     <div
-                      className="relative max-h-[860px] overflow-y-auto overscroll-contain"
+                      className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain"
                       data-week-scroll="true"
                       data-week-page-key={page.key}
+                      onWheelCapture={handleWeekTimelineWheel}
                       onScroll={handleWeekVerticalScroll}
                     >
                       <div style={{ paddingBottom: `${DAY_TIMELINE_SCROLL_END_PADDING}px` }}>
                         <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] bg-white">
-                        <div className="border-r border-gray-100">
+                        <div
+                          className="relative border-r border-gray-100"
+                          style={{ height: `${dayTimelineHeight}px` }}
+                        >
                           {timelineSlotMinutes.map((minute) => {
                             const isHourLine = minute % 60 === 0;
                             return (
@@ -1315,15 +1416,23 @@ export function TaskCalendarView({
                               </div>
                             );
                           })}
+                          <div
+                            className="pointer-events-none absolute inset-x-0 border-t border-gray-200"
+                            style={{ top: `${dayTimelineHeight}px` }}
+                          >
+                            <span className="absolute -top-2 right-2 text-[10px] font-semibold text-gray-400">
+                              24:00
+                            </span>
+                          </div>
                         </div>
                         {page.days.map((day, dayIndex) => (
                           <div
                             key={`${page.key}-column-${day.toISOString()}`}
                             className="relative border-r last:border-r-0 border-gray-100"
-                            style={{ height: `${timelineSlotMinutes.length * DAY_TIMELINE_SLOT_HEIGHT}px` }}
+                            style={{ height: `${dayTimelineHeight}px` }}
                             data-week-day-key={day.getTime()}
                           >
-                            {hourLineMinutes.map((minute) => (
+                            {timelineBoundaryMinutes.map((minute) => (
                               <div
                                 key={`${page.key}-hour-line-${day.toISOString()}-${minute}`}
                                 className="pointer-events-none absolute left-0 right-0 border-t border-gray-200"

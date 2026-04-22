@@ -1147,3 +1147,67 @@ def test_org_model_backfill_restores_missing_task_links_for_existing_tasks():
     restored = app.state.app_state.db.fetchone("SELECT * FROM task_org_links WHERE task_id = ?", (task_id,))
     assert restored is not None
     assert str(restored["department_id"]) == "dept_customer_service"
+
+
+def test_event_line_notifications_can_be_marked_read_in_batch():
+    app = create_app()
+    client = TestClient(app)
+
+    admin_headers = auth_headers(client)
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    created_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "批量已阅事件线通知",
+            "kind": "project_line",
+            "status": "active",
+            "ownerId": "user_admin",
+            "primaryClientId": "client_demo_yellow_river",
+            "participantIds": ["user_admin", "user_qinghua"],
+        },
+        headers=admin_headers,
+    )
+    assert created_line.status_code == 200, created_line.text
+    event_line_id = created_line.json()["id"]
+
+    closed = client.post(f"/api/v1/event-lines/{event_line_id}/close", headers=admin_headers)
+    assert closed.status_code == 200, closed.text
+
+    notification_rows = app.state.app_state.db.fetchall(
+        "SELECT id, progress_status FROM tasks WHERE source_type = 'event_line_notification' AND event_line_id = ? ORDER BY created_at ASC",
+        (event_line_id,),
+    )
+    assert len(notification_rows) == 1
+    notification_id = str(notification_rows[0]["id"])
+    assert str(notification_rows[0]["progress_status"]) == "inbox"
+
+    marked = client.post(
+        "/api/v1/tasks/notifications/read-batch",
+        json={"taskIds": [notification_id]},
+        headers=admin_headers,
+    )
+    assert marked.status_code == 200, marked.text
+    payload = marked.json()
+    assert payload["updatedCount"] == 1
+    assert payload["taskIds"] == [notification_id]
+
+    intermediate = app.state.app_state.db.fetchone(
+        "SELECT progress_status FROM tasks WHERE id = ?",
+        (notification_id,),
+    )
+    assert intermediate is not None
+    assert str(intermediate["progress_status"]) == "inbox"
+
+    qinghua_marked = client.post(
+        "/api/v1/tasks/notifications/read-batch",
+        json={"taskIds": [notification_id]},
+        headers=qinghua_headers,
+    )
+    assert qinghua_marked.status_code == 200, qinghua_marked.text
+
+    refreshed = app.state.app_state.db.fetchone(
+        "SELECT progress_status FROM tasks WHERE id = ?",
+        (notification_id,),
+    )
+    assert refreshed is not None
+    assert str(refreshed["progress_status"]) == "done"

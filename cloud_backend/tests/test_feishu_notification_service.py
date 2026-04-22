@@ -141,6 +141,7 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
 
     sent_cards: list[dict[str, object]] = []
     configure_send_mocks(monkeypatch, sent_cards)
+    list_id = client.get("/api/v1/tasks", headers=headers).json()["lists"][0]["id"]
 
     created = client.post(
         "/api/v1/tasks",
@@ -148,9 +149,9 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
             "title": "逾期测试任务",
             "description": "",
             "priority": "normal",
-            "listId": "list-0",
-            "startDate": "2026-04-09",
-            "dueDate": "2026-04-09T09:00",
+            "listId": list_id,
+            "startDate": "2026-04-12",
+            "dueDate": "2026-04-12T09:00",
             "collaboratorIds": [user["id"]],
             "ownerId": user["id"],
         },
@@ -167,6 +168,10 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
 
     assert len(sent_cards) == 1
     assert sent_cards[0]["card"]["header"]["template"] == "red"
+    assert sent_cards[0]["card"]["header"]["title"]["content"] == "逾期提醒｜1 项"
+    card_elements = sent_cards[0]["card"]["elements"]
+    assert all("仅提醒昨天到期且今天仍未完成的任务" not in str(item) for item in card_elements)
+    assert all("唯一一次提醒" not in str(item) for item in card_elements)
 
     rows = client.app.state.app_state.db.fetchall(
         "SELECT * FROM org_feishu_notifications WHERE message_type = 'overdue_digest' ORDER BY created_at ASC"
@@ -183,6 +188,7 @@ def test_overdue_digest_waits_until_next_day_for_date_only_deadlines(tmp_path, m
 
     sent_cards: list[dict[str, object]] = []
     configure_send_mocks(monkeypatch, sent_cards)
+    list_id = client.get("/api/v1/tasks", headers=headers).json()["lists"][0]["id"]
 
     created = client.post(
         "/api/v1/tasks",
@@ -190,7 +196,7 @@ def test_overdue_digest_waits_until_next_day_for_date_only_deadlines(tmp_path, m
             "title": "今天截止但按整天处理",
             "description": "",
             "priority": "normal",
-            "listId": "list-0",
+            "listId": list_id,
             "dueDate": "2026-04-13",
             "collaboratorIds": [user["id"]],
             "ownerId": user["id"],

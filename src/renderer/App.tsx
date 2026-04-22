@@ -257,6 +257,7 @@ import {
   ingestMeeting,
   logout,
   markTaskNotificationRead,
+  markTaskNotificationsRead,
   processPendingConsultationKnowledgeRequests,
   previewPullFromMain,
   previewPushToMain,
@@ -2400,6 +2401,10 @@ function parseEventLineNotificationSummary(task: Pick<Task, 'sourceType' | 'titl
     mainOwners: values.get('主要负责人') || '未设置',
     participants: values.get('参与者') || '暂无',
   };
+}
+
+function taskIsSystemNotification(task: Pick<Task, 'sourceType'>) {
+  return task.sourceType === 'event_line_notification';
 }
 
 function formatTaskDuePickerDateLabel(datePart?: string | null) {
@@ -6118,6 +6123,7 @@ export default function App() {
     const [isTaskContextPreviewLoading, setIsTaskContextPreviewLoading] = useState(false);
     const [taskSmartBriefs, setTaskSmartBriefs] = useState<Record<string, TaskSmartBrief>>({});
     const [selectedInboxIds, setSelectedInboxIds] = useState<string[]>([]);
+    const [selectedNotificationIds, setSelectedNotificationIds] = useState<string[]>([]);
     const [transitioningInboxTaskIds, setTransitioningInboxTaskIds] = useState<string[]>([]);
     const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
     const [rejectingTaskIds, setRejectingTaskIds] = useState<string[]>([]);
@@ -6298,7 +6304,6 @@ export default function App() {
       swallowTaskModalCloseEvents(640);
       setIsTaskModalOpen(false);
     };
-    const [hidePersonalTasks, setHidePersonalTasks] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
     const [activeReviewTab, setActiveReviewTab] = useState<'overview' | 'events' | 'signals' | 'ai'>('overview');
     const [reviewPerspective, setReviewPerspective] = useState<'global' | 'ceo' | 'department' | 'personal'>('global');
@@ -6805,7 +6810,7 @@ export default function App() {
       }
       return null;
     }, [drillTaskViewOverride]);
-    const baseListTasks = tasks.filter((task) => task.status !== 'rejected' && task.status !== 'inbox');
+    const baseListTasks = tasks.filter((task) => task.status !== 'rejected' && task.status !== 'inbox' && !taskIsSystemNotification(task));
     const participationFilteredTasks = baseListTasks.filter((task) => taskMatchesParticipationFilter(task, taskParticipationFilter));
     const taskBucketCounts = useMemo(
       () => ({
@@ -6870,12 +6875,16 @@ export default function App() {
       setSelectedInboxIds((prev) => prev.filter((id) => availableIds.has(id)));
     }, [actionableInboxTasks]);
     useEffect(() => {
+      const availableIds = new Set(inboundNotificationTasks.map((task) => task.id));
+      setSelectedNotificationIds((prev) => prev.filter((id) => availableIds.has(id)));
+    }, [inboundNotificationTasks]);
+    useEffect(() => {
       const availableIds = new Set(inboxFeedItems.map((item) => item.task.id));
       setExpandedInboxTaskIds((prev) => prev.filter((id) => availableIds.has(id)));
     }, [inboxFeedItems]);
     const baseCalendarTasks = tasks.filter((task) => {
       if (task.status === 'rejected') return false;
-      if (hidePersonalTasks && task.scopeMode === 'PERSONAL_ONLY') return false;
+      if (taskIsSystemNotification(task)) return false;
       return true;
     });
     const calendarTasks = useMemo(() => {
@@ -6886,6 +6895,7 @@ export default function App() {
       );
     }, [activeFormalTaskView, baseCalendarTasks]);
     const isAllSelected = actionableInboxTasks.length > 0 && selectedInboxIds.length === actionableInboxTasks.length;
+    const isAllNotificationsSelected = inboundNotificationTasks.length > 0 && selectedNotificationIds.length === inboundNotificationTasks.length;
 
     const tasksById = new Map(tasks.map((task) => [task.id, task]));
     const buildReviewRows = (items: WeeklyReviewTaskEntry[]): ReviewTaskRow[] =>
@@ -7611,19 +7621,25 @@ export default function App() {
       }
     };
 
-    const handleMarkNotificationRead = async (taskId: string) => {
-      if (!taskId) return false;
-      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, taskId])));
+    const handleMarkNotificationsRead = async (idsToRead: string[]) => {
+      const taskIds = Array.from(new Set(idsToRead)).filter(Boolean);
+      if (taskIds.length === 0) return false;
+      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...taskIds])));
+      setSelectedNotificationIds((prev) => prev.filter((id) => !taskIds.includes(id)));
       try {
-        await markTaskNotificationRead(taskId);
+        if (taskIds.length === 1) {
+          await markTaskNotificationRead(taskIds[0]);
+        } else {
+          await markTaskNotificationsRead(taskIds);
+        }
         await loadTaskBlock();
-        flash('success', '通知已标记为已阅。');
+        flash('success', taskIds.length === 1 ? '通知已标记为已阅。' : `已阅 ${taskIds.length} 条通知。`);
         return true;
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '通知状态更新失败');
         return false;
       } finally {
-        setTransitioningInboxTaskIds((prev) => prev.filter((id) => id !== taskId));
+        setTransitioningInboxTaskIds((prev) => prev.filter((id) => !taskIds.includes(id)));
       }
     };
 
@@ -9966,7 +9982,10 @@ export default function App() {
           </div>
         </div>
 
-        <div ref={taskViewportRef} className={`flex-1 min-w-0 overflow-y-auto scrollbar-hide ${isTaskInteractionBlocked ? 'pointer-events-none' : ''}`}>
+        <div
+          ref={taskViewportRef}
+          className={`flex-1 min-w-0 ${taskViewMode === 'calendar' ? 'overflow-hidden' : 'overflow-y-auto'} scrollbar-hide ${isTaskInteractionBlocked ? 'pointer-events-none' : ''}`}
+        >
           {taskViewMode === 'list' && (
             <div className="max-w-3xl">
               {isLocalSession && baseListTasks.length === 0 && (
@@ -10408,12 +10427,28 @@ export default function App() {
                       这里统一显示需要你确认、已发出待他人确认，以及系统协作通知。待确认任务一旦确认接受，就会进入任务列表；自己发起的协作任务会同时保存在任务列表，确认完成后收件箱不再显示该任务，以免消息堆积。
                     </p>
                   </div>
-                  {actionableInboxTasks.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <Button onClick={() => setSelectedInboxIds(isAllSelected ? [] : actionableInboxTasks.map((task) => task.id))}>{isAllSelected ? '取消全选' : '全选'}</Button>
-                      <Button primary onClick={() => void handleConfirmTasks(selectedInboxIds.length ? selectedInboxIds : actionableInboxTasks.map((task) => task.id))}>
-                        确认接收
-                      </Button>
+                  {(actionableInboxTasks.length > 0 || inboundNotificationTasks.length > 0) && (
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {actionableInboxTasks.length > 0 && (
+                        <>
+                          <Button onClick={() => setSelectedInboxIds(isAllSelected ? [] : actionableInboxTasks.map((task) => task.id))}>
+                            {isAllSelected ? '取消全选任务' : '全选任务'}
+                          </Button>
+                          <Button primary onClick={() => void handleConfirmTasks(selectedInboxIds.length ? selectedInboxIds : actionableInboxTasks.map((task) => task.id))}>
+                            确认接收
+                          </Button>
+                        </>
+                      )}
+                      {inboundNotificationTasks.length > 0 && (
+                        <>
+                          <Button onClick={() => setSelectedNotificationIds(isAllNotificationsSelected ? [] : inboundNotificationTasks.map((task) => task.id))}>
+                            {isAllNotificationsSelected ? '取消全选通知' : '全选通知'}
+                          </Button>
+                          <Button onClick={() => void handleMarkNotificationsRead(selectedNotificationIds.length ? selectedNotificationIds : inboundNotificationTasks.map((task) => task.id))}>
+                            批量已阅
+                          </Button>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -10465,7 +10500,8 @@ export default function App() {
                 <div className="space-y-3">
                   {inboxFeedItems.map(({ task, kind }) => {
                     const isExpanded = expandedInboxTaskIds.includes(task.id);
-                    const isSelectable = kind === 'confirmable';
+                    const isTaskSelectable = kind === 'confirmable';
+                    const isNotificationSelectable = kind === 'notification';
                     const notificationSummary = parseEventLineNotificationSummary(task);
                     const pendingParticipantNames = Array.from(
                       new Set(
@@ -10514,7 +10550,7 @@ export default function App() {
                           isExpanded ? 'border-blue-100 shadow-md bg-[#FBFCFF]' : 'border-gray-100 bg-white hover:border-blue-100 hover:shadow-md'
                         }`}
                       >
-                        {isSelectable ? (
+                        {isTaskSelectable ? (
                           <input
                             type="checkbox"
                             checked={selectedInboxIds.includes(task.id)}
@@ -10524,6 +10560,17 @@ export default function App() {
                               );
                             }}
                             className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+                          />
+                        ) : isNotificationSelectable ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedNotificationIds.includes(task.id)}
+                            onChange={(event) => {
+                              setSelectedNotificationIds((prev) =>
+                                event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
+                              );
+                            }}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400"
                           />
                         ) : (
                           <div className="mt-1 h-4 w-4 rounded-full border border-amber-300 bg-amber-50" />
@@ -10560,18 +10607,21 @@ export default function App() {
                                 </>
                               )}
                               {kind === 'notification' && task.eventLineId ? (
-                                <Button
-                                  onClick={async () => {
-                                    const detail = await openEventLineDetail(task.eventLineId!);
-                                    if (detail) {
-                                      await handleMarkNotificationRead(task.id);
-                                    }
-                                  }}
-                                >
-                                  查看事件线
-                                </Button>
+                                <>
+                                  <Button
+                                    onClick={async () => {
+                                      const detail = await openEventLineDetail(task.eventLineId!);
+                                      if (detail) {
+                                        await handleMarkNotificationsRead([task.id]);
+                                      }
+                                    }}
+                                  >
+                                    查看事件线
+                                  </Button>
+                                  <Button onClick={() => void handleMarkNotificationsRead([task.id])}>已阅</Button>
+                                </>
                               ) : kind === 'notification' ? (
-                                <Button onClick={() => void handleMarkNotificationRead(task.id)}>查看通知</Button>
+                                <Button onClick={() => void handleMarkNotificationsRead([task.id])}>已阅</Button>
                               ) : null}
                               {kind === 'outbound' && <Button onClick={() => openTaskEditor(task)}>查看任务</Button>}
                               <button
@@ -10665,7 +10715,7 @@ export default function App() {
           )}
 
           {taskViewMode === 'calendar' && (
-            <div className="space-y-3">
+            <div className="h-full min-h-0 flex flex-col">
               {isLocalSession && calendarTasks.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-white/90 px-5 py-12 text-center">
                   <p className="text-[14px] font-bold text-slate-700">当前是本机模式</p>
@@ -10693,8 +10743,6 @@ export default function App() {
                   onApproveTaskReview={handleApproveTaskReview}
                   onReturnTaskReview={handleReturnTaskReview}
                   isTaskOverdue={isTaskOverdue}
-                  showCollaborativeTasks={hidePersonalTasks}
-                  onToggleCollaborativeTasks={() => setHidePersonalTasks((prev) => !prev)}
                 />
               )}
             </div>

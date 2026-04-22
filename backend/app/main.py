@@ -253,6 +253,8 @@ from app.models import (
     MemoryBackfillResultRecord,
     NarrativeAnalysisRecord,
     TaskNotePayload,
+    TaskNotificationBatchReadPayload,
+    TaskNotificationBatchReadResponse,
     TaskContextRefreshResultRecord,
     TaskEventLineBootstrapResultRecord,
     TaskOrgBackfillResultRecord,
@@ -24889,6 +24891,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if synced_row is None:
             raise HTTPException(status_code=404, detail="Notification not found after local update")
         return build_task(synced_row)
+
+    @app.post("/api/v1/tasks/notifications/read-batch", response_model=TaskNotificationBatchReadResponse)
+    def mark_task_notifications_read_batch(payload: TaskNotificationBatchReadPayload) -> TaskNotificationBatchReadResponse:
+        task_ids = [task_id.strip() for task_id in payload.taskIds if task_id and task_id.strip()]
+        normalized_ids = list(dict.fromkeys(task_ids))
+        if not normalized_ids:
+            return TaskNotificationBatchReadResponse(taskIds=[], updatedCount=0)
+        updated_ids: list[str] = []
+        for task_id in normalized_ids:
+            mark_task_notification_read(task_id)
+            updated_ids.append(task_id)
+        return TaskNotificationBatchReadResponse(taskIds=updated_ids, updatedCount=len(updated_ids))
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
