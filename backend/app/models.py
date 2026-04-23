@@ -958,6 +958,7 @@ class TaskRecord(BaseModel):
     status: TaskStatus
     creatorId: str | None = None
     creatorName: str | None = None
+    creatorDisplayName: str | None = None
     priority: Priority
     listId: str
     listName: str
@@ -981,6 +982,7 @@ class TaskRecord(BaseModel):
     projectFlowName: str | None = None
     ownerId: str | None = None
     ownerName: str
+    ownerDisplayName: str | None = None
     sourceType: str
     sourceId: str | None = None
     businessCategory: str | None = None
@@ -994,7 +996,10 @@ class TaskRecord(BaseModel):
     expenseEvidenceLinks: list["TaskExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     collaborators: list["TaskCollaboratorRecord"] = Field(default_factory=list)
     collaborationSummary: dict[str, int] = Field(default_factory=dict)
+    pendingParticipantNames: list[str] = Field(default_factory=list)
     viewerInboxStatus: CollaboratorInboxStatus | None = None
+    viewerCanConfirm: bool = False
+    viewerCanReject: bool = False
     orgContext: "TaskOrgContextRecord | None" = None
     projectContext: "TaskProjectContextRecord | None" = None
     memoryHints: list[str] = Field(default_factory=list)
@@ -1153,7 +1158,7 @@ class TaskGroupTemplateApplyStepOverride(BaseModel):
 
 class ApplyTaskGroupTemplatePayload(BaseModel):
     startDateTime: str
-    listId: str = Field(min_length=1)
+    listId: str = ""
     workObjectId: str | None = None
     clientId: str | None = None
     eventLineMode: Literal["none", "existing", "create"] = "none"
@@ -1307,6 +1312,35 @@ class TaskBoardResponse(BaseModel):
     commonTags: list[str] = Field(default_factory=list)
 
 
+class InboxNotificationRecord(BaseModel):
+    id: str
+    kind: Literal["event_line_operation"] = "event_line_operation"
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    operationLabel: str
+    actorId: str | None = None
+    actorName: str
+    title: str
+    summary: str
+    mainOwnerNames: list[str] = Field(default_factory=list)
+    participantNames: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    operatedAt: str
+    viewerReadAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class InboxNotificationListResponse(BaseModel):
+    notifications: list[InboxNotificationRecord] = Field(default_factory=list)
+
+
+class InboxAggregateResponse(BaseModel):
+    pendingTasks: list[TaskRecord] = Field(default_factory=list)
+    systemNotifications: list[InboxNotificationRecord] = Field(default_factory=list)
+    outboundPendingTasks: list[TaskRecord] = Field(default_factory=list)
+
+
 class TaskCollaboratorRecord(BaseModel):
     userId: str
     fullName: str
@@ -1337,6 +1371,15 @@ class TaskNotificationBatchReadResponse(BaseModel):
     updatedCount: int = 0
 
 
+class InboxNotificationBatchReadPayload(BaseModel):
+    notificationIds: list[str] = Field(default_factory=list)
+
+
+class InboxNotificationBatchReadResponse(BaseModel):
+    notificationIds: list[str] = Field(default_factory=list)
+    updatedCount: int = 0
+
+
 class TaskPayload(BaseModel):
     title: str
     desc: str = ""
@@ -1355,6 +1398,7 @@ class TaskPayload(BaseModel):
     ownerId: str | None = None
     ownerName: str = ""
     collaboratorIds: list[str] = Field(default_factory=list)
+    collaboratorNames: list[str] = Field(default_factory=list)
     tagIds: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     sourceType: str = "manual"
@@ -1385,6 +1429,7 @@ class TaskUpdatePayload(BaseModel):
     ownerId: str | None = None
     ownerName: str | None = None
     collaboratorIds: list[str] | None = None
+    collaboratorNames: list[str] | None = None
     tagIds: list[str] | None = None
     tags: list[str] | None = None
     businessCategory: str | None = None

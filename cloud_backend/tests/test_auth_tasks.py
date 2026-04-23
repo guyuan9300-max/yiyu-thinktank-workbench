@@ -1173,41 +1173,220 @@ def test_event_line_notifications_can_be_marked_read_in_batch():
     closed = client.post(f"/api/v1/event-lines/{event_line_id}/close", headers=admin_headers)
     assert closed.status_code == 200, closed.text
 
+    legacy_rows = app.state.app_state.db.fetchall(
+        "SELECT id FROM tasks WHERE source_type = 'event_line_notification' AND event_line_id = ?",
+        (event_line_id,),
+    )
+    assert legacy_rows == []
+
     notification_rows = app.state.app_state.db.fetchall(
-        "SELECT id, progress_status FROM tasks WHERE source_type = 'event_line_notification' AND event_line_id = ? ORDER BY created_at ASC",
+        "SELECT id FROM event_line_notifications WHERE event_line_id = ? ORDER BY created_at ASC",
         (event_line_id,),
     )
     assert len(notification_rows) == 1
     notification_id = str(notification_rows[0]["id"])
-    assert str(notification_rows[0]["progress_status"]) == "inbox"
+
+    admin_inbox = client.get("/api/v1/inbox/notifications", headers=admin_headers)
+    assert admin_inbox.status_code == 200, admin_inbox.text
+    assert [item["id"] for item in admin_inbox.json()["notifications"]] == [notification_id]
+
+    qinghua_inbox = client.get("/api/v1/inbox/notifications", headers=qinghua_headers)
+    assert qinghua_inbox.status_code == 200, qinghua_inbox.text
+    assert [item["id"] for item in qinghua_inbox.json()["notifications"]] == [notification_id]
+
+    pending_task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "聚合收件箱待确认任务",
+            "description": "验证待确认任务和系统通知可以同时出现。",
+            "priority": "normal",
+            "listId": "",
+            "ownerId": "user_qinghua",
+            "collaboratorIds": ["user_qinghua"],
+        },
+        headers=admin_headers,
+    )
+    assert pending_task.status_code == 200, pending_task.text
+    pending_task_id = pending_task.json()["id"]
+
+    qinghua_aggregate = client.get("/api/v1/inbox", headers=qinghua_headers)
+    assert qinghua_aggregate.status_code == 200, qinghua_aggregate.text
+    qinghua_payload = qinghua_aggregate.json()
+    assert [item["id"] for item in qinghua_payload["pendingTasks"]] == [pending_task_id]
+    assert [item["id"] for item in qinghua_payload["systemNotifications"]] == [notification_id]
+    assert qinghua_payload["outboundPendingTasks"] == []
+
+    admin_aggregate = client.get("/api/v1/inbox", headers=admin_headers)
+    assert admin_aggregate.status_code == 200, admin_aggregate.text
+    admin_payload = admin_aggregate.json()
+    assert admin_payload["pendingTasks"] == []
+    assert [item["id"] for item in admin_payload["systemNotifications"]] == [notification_id]
+    assert [item["id"] for item in admin_payload["outboundPendingTasks"]] == [pending_task_id]
 
     marked = client.post(
-        "/api/v1/tasks/notifications/read-batch",
-        json={"taskIds": [notification_id]},
+        "/api/v1/inbox/notifications/read-batch",
+        json={"notificationIds": [notification_id]},
         headers=admin_headers,
     )
     assert marked.status_code == 200, marked.text
     payload = marked.json()
     assert payload["updatedCount"] == 1
-    assert payload["taskIds"] == [notification_id]
+    assert payload["notificationIds"] == [notification_id]
 
-    intermediate = app.state.app_state.db.fetchone(
-        "SELECT progress_status FROM tasks WHERE id = ?",
-        (notification_id,),
+    admin_receipt = app.state.app_state.db.fetchone(
+        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
+        (notification_id, "user_admin"),
     )
-    assert intermediate is not None
-    assert str(intermediate["progress_status"]) == "inbox"
+    assert admin_receipt is not None
+    assert admin_receipt["read_at"]
+
+    qinghua_receipt = app.state.app_state.db.fetchone(
+        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
+        (notification_id, "user_qinghua"),
+    )
+    assert qinghua_receipt is not None
+    assert qinghua_receipt["read_at"] is None
+
+    admin_inbox_after = client.get("/api/v1/inbox/notifications", headers=admin_headers)
+    assert admin_inbox_after.status_code == 200, admin_inbox_after.text
+    assert admin_inbox_after.json()["notifications"] == []
+
+    qinghua_inbox_after = client.get("/api/v1/inbox/notifications", headers=qinghua_headers)
+    assert qinghua_inbox_after.status_code == 200, qinghua_inbox_after.text
+    assert [item["id"] for item in qinghua_inbox_after.json()["notifications"]] == [notification_id]
 
     qinghua_marked = client.post(
-        "/api/v1/tasks/notifications/read-batch",
-        json={"taskIds": [notification_id]},
+        "/api/v1/inbox/notifications/read-batch",
+        json={"notificationIds": [notification_id]},
         headers=qinghua_headers,
     )
     assert qinghua_marked.status_code == 200, qinghua_marked.text
 
     refreshed = app.state.app_state.db.fetchone(
-        "SELECT progress_status FROM tasks WHERE id = ?",
-        (notification_id,),
+        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
+        (notification_id, "user_qinghua"),
     )
     assert refreshed is not None
-    assert str(refreshed["progress_status"]) == "done"
+    assert refreshed["read_at"]
+
+
+def test_recompleted_event_line_generates_a_new_notification():
+    app = create_app()
+    client = TestClient(app)
+
+    admin_headers = auth_headers(client)
+    created_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "重新完成会再通知",
+            "kind": "project_line",
+            "status": "active",
+            "ownerId": "user_admin",
+            "primaryClientId": "client_demo_yellow_river",
+            "participantIds": ["user_admin", "user_qinghua"],
+        },
+        headers=admin_headers,
+    )
+    assert created_line.status_code == 200, created_line.text
+    event_line_id = created_line.json()["id"]
+
+    closed = client.post(f"/api/v1/event-lines/{event_line_id}/close", headers=admin_headers)
+    assert closed.status_code == 200, closed.text
+
+    reopened = client.post(f"/api/v1/event-lines/{event_line_id}/reopen", headers=admin_headers)
+    assert reopened.status_code == 200, reopened.text
+
+    completed_again = client.patch(
+        f"/api/v1/event-lines/{event_line_id}",
+        json={"status": "done"},
+        headers=admin_headers,
+    )
+    assert completed_again.status_code == 200, completed_again.text
+
+    notification_rows = app.state.app_state.db.fetchall(
+        "SELECT operation_label FROM event_line_notifications WHERE event_line_id = ? ORDER BY created_at ASC",
+        (event_line_id,),
+    )
+    assert len(notification_rows) == 2
+    assert [str(row["operation_label"]) for row in notification_rows] == ["完成", "完成"]
+
+
+def test_inbox_task_record_exposes_stable_collaboration_display_fields():
+    app = create_app()
+    client = TestClient(app)
+
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    admin_headers = auth_headers(client)
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "非管理员发起的待确认任务",
+            "description": "验证协作身份展示字段。",
+            "priority": "normal",
+            "listId": "",
+            "ownerId": "user_admin",
+            "collaboratorIds": ["user_admin", "user_qinghua"],
+        },
+        headers=qinghua_headers,
+    )
+    assert created.status_code == 200, created.text
+
+    admin_inbox = client.get("/api/v1/inbox", headers=admin_headers)
+    assert admin_inbox.status_code == 200, admin_inbox.text
+    payload = admin_inbox.json()
+    assert len(payload["pendingTasks"]) == 1
+    task = payload["pendingTasks"][0]
+    assert task["creatorId"] == "user_qinghua"
+    assert task["creatorDisplayName"] == task["creatorName"]
+    assert task["ownerId"] == "user_admin"
+    assert task["ownerDisplayName"] == task["ownerName"]
+    assert task["pendingParticipantNames"] == [task["ownerDisplayName"]]
+    assert task["viewerInboxStatus"] == "pending"
+    assert task["viewerCanConfirm"] is True
+    assert task["viewerCanReject"] is True
+
+    qinghua_inbox = client.get("/api/v1/inbox", headers=qinghua_headers)
+    assert qinghua_inbox.status_code == 200, qinghua_inbox.text
+    outbound_payload = qinghua_inbox.json()
+    assert len(outbound_payload["outboundPendingTasks"]) == 1
+    outbound_task = outbound_payload["outboundPendingTasks"][0]
+    assert outbound_task["creatorDisplayName"] == outbound_task["creatorName"]
+    assert outbound_task["pendingParticipantNames"] == [outbound_task["ownerDisplayName"]]
+    assert outbound_task["viewerCanConfirm"] is False
+    assert outbound_task["viewerCanReject"] is False
+
+
+def test_task_can_be_created_without_any_list():
+    app = create_app()
+    client = TestClient(app)
+
+    admin_headers = auth_headers(client)
+    settings = client.get("/api/v1/settings/tasks", headers=admin_headers)
+    assert settings.status_code == 200, settings.text
+    assert settings.json()["defaultListId"] is None
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "无清单任务",
+            "description": "创建后保持无清单。",
+            "priority": "normal",
+            "listId": "",
+            "listIds": [],
+            "ownerId": "user_admin",
+        },
+        headers=admin_headers,
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["listId"] == ""
+    assert payload["listName"] == ""
+    assert payload["listIds"] == []
+    assert payload["listNames"] == []
+
+    set_default = client.post("/api/v1/settings/tasks", json={"defaultListId": "list-1"}, headers=admin_headers)
+    assert set_default.status_code == 200, set_default.text
+    assert set_default.json()["defaultListId"] == "list-1"
+    clear_default = client.post("/api/v1/settings/tasks", json={"defaultListId": None}, headers=admin_headers)
+    assert clear_default.status_code == 200, clear_default.text
+    assert clear_default.json()["defaultListId"] is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import threading
@@ -718,7 +719,7 @@ class Database:
                     description TEXT NOT NULL,
                     status TEXT NOT NULL,
                     priority TEXT NOT NULL,
-                    list_id TEXT NOT NULL,
+                    list_id TEXT,
                     creator_id TEXT NOT NULL DEFAULT '',
                     owner_id TEXT,
                     owner_name TEXT NOT NULL,
@@ -826,6 +827,50 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS event_line_notifications (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL DEFAULT '',
+                    event_line_id TEXT NOT NULL,
+                    event_line_name TEXT NOT NULL DEFAULT '',
+                    operation_label TEXT NOT NULL DEFAULT '',
+                    actor_id TEXT,
+                    actor_name TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    main_owner_names_json TEXT NOT NULL DEFAULT '[]',
+                    participant_names_json TEXT NOT NULL DEFAULT '[]',
+                    operated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'local',
+                    cloud_id TEXT,
+                    cloud_payload_json TEXT NOT NULL DEFAULT '',
+                    last_synced_at TEXT NOT NULL DEFAULT '',
+                    last_cloud_version TEXT NOT NULL DEFAULT '',
+                    pending_sync_action TEXT NOT NULL DEFAULT '',
+                    last_sync_error TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_line_notifications_org_created
+                    ON event_line_notifications(organization_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_event_line_notifications_line_created
+                    ON event_line_notifications(event_line_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS event_line_notification_receipts (
+                    notification_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL DEFAULT '',
+                    user_id TEXT NOT NULL,
+                    full_name TEXT NOT NULL DEFAULT '',
+                    email TEXT NOT NULL DEFAULT '',
+                    read_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (notification_id, user_id),
+                    FOREIGN KEY(notification_id) REFERENCES event_line_notifications(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_line_notification_receipts_user
+                    ON event_line_notification_receipts(user_id, read_at, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS organization_notebook_snapshots (
                     id TEXT PRIMARY KEY,
@@ -1648,6 +1693,8 @@ class Database:
             self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self._repair_stale_task_legacy_references()
+            self._migrate_tasks_allow_empty_list_id()
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_collaborators (
@@ -1708,6 +1755,13 @@ class Database:
             self._ensure_column("event_lines", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "owner_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("event_line_notifications", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
+            self._ensure_column("event_line_notifications", "cloud_id", "TEXT")
+            self._ensure_column("event_line_notifications", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_line_notifications", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_line_notifications", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_line_notifications", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("event_line_notifications", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_group_templates (
@@ -1917,6 +1971,8 @@ class Database:
                 )
                 """
             )
+            self._backfill_legacy_event_line_notifications()
+            self._delete_legacy_event_line_notification_tasks()
             self.conn.commit()
 
     def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
@@ -1927,6 +1983,182 @@ class Database:
         if column_name in existing:
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _rewrite_schema_sql(self, updates: list[tuple[str, str, str]]) -> None:
+        if not updates:
+            return
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        self.conn.execute("PRAGMA writable_schema=ON")
+        for obj_type, name, sql in updates:
+            self.conn.execute(
+                "UPDATE sqlite_master SET sql = ? WHERE type = ? AND name = ?",
+                (sql, obj_type, name),
+            )
+        self.conn.execute("PRAGMA writable_schema=OFF")
+        current_version = int(self.conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
+        self.conn.execute(f"PRAGMA schema_version = {current_version + 1}")
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys=ON")
+
+    def _repair_stale_task_legacy_references(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT type, name, sql
+            FROM sqlite_master
+            WHERE sql IS NOT NULL AND sql LIKE '%tasks_legacy_list_id%'
+            """
+        ).fetchall()
+        updates: list[tuple[str, str, str]] = []
+        for row in rows:
+            raw_sql = str(row["sql"] or "")
+            if "tasks_legacy_list_id" not in raw_sql:
+                continue
+            updates.append(
+                (
+                    str(row["type"]),
+                    str(row["name"]),
+                    raw_sql.replace("tasks_legacy_list_id", "tasks"),
+                )
+            )
+        self._rewrite_schema_sql(updates)
+
+    def _migrate_tasks_allow_empty_list_id(self) -> None:
+        task_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+        ).fetchone()
+        if task_row is None:
+            return
+        task_sql = str(task_row["sql"] or "")
+        if "list_id TEXT NOT NULL" not in task_sql:
+            return
+        self._rewrite_schema_sql(
+            [("table", "tasks", task_sql.replace("list_id TEXT NOT NULL", "list_id TEXT"))]
+        )
+
+    def _parse_legacy_event_line_notification(self, title: str, description: str) -> dict[str, object]:
+        values: dict[str, str] = {}
+        for raw_line in description.splitlines():
+            line = raw_line.strip()
+            if not line or "：" not in line:
+                continue
+            label, value = line.split("：", 1)
+            label = label.strip()
+            value = value.strip()
+            if label and value:
+                values[label] = value
+        operation = values.get("事件线操作", "").strip()
+        if not operation:
+            match = re.match(r"^事件线(.+?)：", title.strip())
+            if match:
+                operation = match.group(1).strip()
+        return {
+            "event_line_name": values.get("事件线标题", "").strip(),
+            "operation_label": operation,
+            "actor_name": values.get("操作者", "").strip(),
+            "operated_at": values.get("操作时间", "").strip(),
+            "main_owner_names": [item.strip() for item in values.get("主要负责人", "").split("、") if item.strip()],
+            "participant_names": [item.strip() for item in values.get("参与者", "").split("、") if item.strip()],
+        }
+
+    def _backfill_legacy_event_line_notifications(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE source_type = 'event_line_notification'
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+        for row in rows:
+            notification_id = str(row["id"] or "").strip()
+            if not notification_id:
+                continue
+            existing = self.conn.execute(
+                "SELECT 1 FROM event_line_notifications WHERE id = ?",
+                (notification_id,),
+            ).fetchone()
+            if existing is not None:
+                continue
+            parsed = self._parse_legacy_event_line_notification(
+                str(row["title"] or ""),
+                str(row["description"] or ""),
+            )
+            event_line_id = str(row["event_line_id"] or row["source_id"] or "").strip()
+            if not event_line_id:
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO event_line_notifications(
+                    id, organization_id, event_line_id, event_line_name, operation_label, actor_id, actor_name,
+                    title, summary, metadata_json, main_owner_names_json, participant_names_json, operated_at,
+                    created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version,
+                    pending_sync_action, last_sync_error
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, 'synced', ?, '{}', ?, ?, '', '')
+                """,
+                (
+                    notification_id,
+                    str(row["organization_id"] or ""),
+                    event_line_id,
+                    str(parsed["event_line_name"] or ""),
+                    str(parsed["operation_label"] or ""),
+                    str(row["creator_id"] or "") or None,
+                    str(parsed["actor_name"] or ""),
+                    str(row["title"] or ""),
+                    str(row["description"] or ""),
+                    json.dumps(parsed["main_owner_names"], ensure_ascii=False),
+                    json.dumps(parsed["participant_names"], ensure_ascii=False),
+                    str(parsed["operated_at"] or row["created_at"] or row["updated_at"] or ""),
+                    str(row["created_at"] or ""),
+                    str(row["updated_at"] or row["created_at"] or ""),
+                    notification_id,
+                    str(row["updated_at"] or row["created_at"] or ""),
+                    str(row["updated_at"] or row["created_at"] or ""),
+                ),
+            )
+            collaborator_rows = self.conn.execute(
+                """
+                SELECT user_id, full_name, email, handled_at, created_at, updated_at
+                FROM task_collaborators
+                WHERE task_id = ?
+                ORDER BY order_index ASC
+                """,
+                (notification_id,),
+            ).fetchall()
+            for collaborator_row in collaborator_rows:
+                self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO event_line_notification_receipts(
+                        notification_id, organization_id, user_id, full_name, email, read_at, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        notification_id,
+                        str(row["organization_id"] or ""),
+                        str(collaborator_row["user_id"] or ""),
+                        str(collaborator_row["full_name"] or ""),
+                        str(collaborator_row["email"] or ""),
+                        str(collaborator_row["handled_at"]) if collaborator_row["handled_at"] else None,
+                        str(collaborator_row["created_at"] or row["created_at"] or ""),
+                        str(collaborator_row["updated_at"] or row["updated_at"] or row["created_at"] or ""),
+                    ),
+                )
+
+    def _delete_legacy_event_line_notification_tasks(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT id
+            FROM tasks
+            WHERE source_type = 'event_line_notification'
+            """
+        ).fetchall()
+        legacy_task_ids = [str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()]
+        for task_id in legacy_task_ids:
+            self.conn.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
+            self.conn.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
+            self.conn.execute("DELETE FROM task_notes WHERE task_id = ?", (task_id,))
+            self.conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
+            self.conn.execute("DELETE FROM weekly_review_task_entries WHERE task_id = ?", (task_id,))
+            self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
     def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None:
         with self._lock:

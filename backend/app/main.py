@@ -148,6 +148,11 @@ from app.models import (
     HealthResponse,
     ImportPayload,
     ImportRecord,
+    InboxAggregateResponse,
+    InboxNotificationBatchReadPayload,
+    InboxNotificationBatchReadResponse,
+    InboxNotificationListResponse,
+    InboxNotificationRecord,
     WorkspaceImportBackfillResponse,
     LegacyScanEntry,
     LegacyScanRequest,
@@ -253,8 +258,6 @@ from app.models import (
     MemoryBackfillResultRecord,
     NarrativeAnalysisRecord,
     TaskNotePayload,
-    TaskNotificationBatchReadPayload,
-    TaskNotificationBatchReadResponse,
     TaskContextRefreshResultRecord,
     TaskEventLineBootstrapResultRecord,
     TaskOrgBackfillResultRecord,
@@ -704,6 +707,7 @@ _LOCAL_CLOUD_SYNC_BUCKETS = (
     "task_lists",
     "task_tags",
     "tasks",
+    "notifications",
     "event_lines",
     "task_group_templates",
     "reviews",
@@ -712,6 +716,7 @@ _LOCAL_CLOUD_SYNC_CORE_BUCKETS = (
     "task_lists",
     "task_tags",
     "tasks",
+    "notifications",
     "event_lines",
     "task_group_templates",
 )
@@ -719,12 +724,14 @@ _LOCAL_CLOUD_SYNC_BUCKET_LABELS = {
     "task_lists": "任务清单",
     "task_tags": "任务标签",
     "tasks": "任务",
+    "notifications": "系统通知",
     "event_lines": "事件线",
     "task_group_templates": "任务组模板",
     "reviews": "周复盘",
 }
 _SYNC_ENTITY_BUCKET = {
     "task": "tasks",
+    "event_line_notification": "notifications",
     "event_line": "event_lines",
     "task_list": "task_lists",
     "task_tag": "task_tags",
@@ -2835,6 +2842,93 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return None
         return str(row["full_name"])
 
+    def _provided_task_collaborator_name_map(
+        collaborator_ids: list[str] | None,
+        collaborator_names: list[str] | None,
+        *,
+        owner_id: str | None = None,
+        owner_name: str | None = None,
+    ) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        normalized_ids = [str(item).strip() for item in (collaborator_ids or []) if str(item).strip()]
+        normalized_names = collaborator_names or []
+        for index, collaborator_id in enumerate(normalized_ids):
+            if index >= len(normalized_names):
+                continue
+            candidate = str(normalized_names[index] or "").strip()
+            if candidate:
+                mapping[collaborator_id] = candidate
+        normalized_owner_id = str(owner_id or "").strip()
+        normalized_owner_name = str(owner_name or "").strip()
+        if normalized_owner_id and normalized_owner_name and normalized_owner_id not in mapping:
+            mapping[normalized_owner_id] = normalized_owner_name
+        return mapping
+
+    def _resolve_local_task_collaborator_full_name(
+        collaborator_id: str,
+        *,
+        provided_name_map: dict[str, str] | None = None,
+        owner_id: str | None = None,
+        owner_name: str | None = None,
+        session_user: SessionUser | None = None,
+    ) -> str:
+        normalized_id = str(collaborator_id or "").strip()
+        if not normalized_id:
+            return ""
+        if provided_name_map and normalized_id in provided_name_map and str(provided_name_map[normalized_id]).strip():
+            return str(provided_name_map[normalized_id]).strip()
+        normalized_owner_id = str(owner_id or "").strip()
+        normalized_owner_name = str(owner_name or "").strip()
+        if normalized_owner_id and normalized_id == normalized_owner_id and normalized_owner_name:
+            return normalized_owner_name
+        if session_user and normalized_id == session_user.id and session_user.fullName:
+            return session_user.fullName
+        return (_lookup_local_employee_full_name(normalized_id) or "").strip()
+
+    def _task_collaboration_display(
+        *,
+        creator_id: str | None,
+        creator_name: str | None,
+        owner_id: str | None,
+        owner_name: str | None,
+        collaborators: list[TaskCollaboratorRecord],
+        viewer_id: str | None,
+        viewer_status: CollaboratorInboxStatus | None,
+    ) -> tuple[str | None, str | None, list[str], bool, bool]:
+        collaborator_name_by_id = {
+            str(item.userId or "").strip(): str(item.fullName or "").strip()
+            for item in collaborators
+            if str(item.userId or "").strip() and str(item.fullName or "").strip()
+        }
+        normalized_creator_id = str(creator_id or "").strip()
+        normalized_owner_id = str(owner_id or "").strip()
+        creator_display_name = (
+            str(creator_name or "").strip()
+            or collaborator_name_by_id.get(normalized_creator_id)
+            or None
+        )
+        owner_display_name = (
+            str(owner_name or "").strip()
+            or collaborator_name_by_id.get(normalized_owner_id)
+            or None
+        )
+        pending_participant_names = list(
+            dict.fromkeys(
+                str(item.fullName or "").strip()
+                for item in collaborators
+                if item.inboxStatus == "pending" and str(item.fullName or "").strip()
+            )
+        )
+        viewer_can_confirm = bool(viewer_id and viewer_status == "pending")
+        viewer_can_reject = viewer_can_confirm
+        return (
+            creator_display_name,
+            owner_display_name,
+            pending_participant_names,
+            viewer_can_confirm,
+            viewer_can_reject,
+        )
+
     def _normalize_work_object_mode(value: object) -> Literal["client", "project"] | None:
         normalized = str(value or "").strip().lower()
         if normalized in {"client", "project"}:
@@ -2934,7 +3028,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _default_client_workspace_settings() -> ClientWorkspaceSettingsRecord:
         return ClientWorkspaceSettingsRecord(
-            meetingPublishDefaultListId=_local_default_list_id(),
+            meetingPublishDefaultListId=None,
             meetingPublishDefaultPriority="normal",
             updatedAt=now_iso(),
         )
@@ -6001,7 +6095,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return
         badge_map = {badge.id: badge for category in board.categories for badge in category.badges}
         synced_key = f"feishu_badge_notified_unlock_ids:{user_id}"
-        synced_ids = set(from_json(state.db.get_setting(synced_key, "[]")) or [])
+        synced_ids = set(from_json(state.db.get_setting(synced_key, "[]"), []) or [])
         unlock_rows = state.db.fetchall(
             """
             SELECT id, badge_id, badge_name, xp, unlocked_at
@@ -6424,37 +6518,72 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for item in payload.get("collaborators", []) if isinstance(item, dict)
         ]
-        list_id = normalize_legacy_task_list_id(str(payload.get("listId", DEFAULT_LOCAL_ORG_TASK_LIST_ID)))
+        viewer_user = get_cached_session_user()
+        list_id = normalize_legacy_task_list_id(str(payload.get("listId", "")))
         list_ids = _normalize_task_list_ids(
             [str(item) for item in payload.get("listIds", []) if str(item).strip()]
             if isinstance(payload.get("listIds"), list)
             else [],
             list_id,
         )
-        list_record = lists_by_id.get(
-            list_id,
-            TaskListRecord(
-                id=list_id,
-                name=str(payload.get("listName", DEFAULT_LOCAL_ORG_TASK_LIST_NAME)),
-                color=str(payload.get("listColor", DEFAULT_LOCAL_ORG_TASK_LIST_COLOR)),
-                description=None,
-                sortOrder=0,
-                isDefault=False,
-                archivedAt=None,
-            ),
+        list_record = (
+            lists_by_id.get(
+                list_id,
+                TaskListRecord(
+                    id=list_id,
+                    name=str(payload.get("listName", "")),
+                    color=str(payload.get("listColor", "")),
+                    description=None,
+                    sortOrder=0,
+                    isDefault=False,
+                    archivedAt=None,
+                ),
+            )
+            if list_id
+            else None
         )
         list_records = [
-            lists_by_id.get(list_item_id, TaskListRecord(id=list_item_id, name=list_record.name, color=list_record.color, description=None))
+            lists_by_id.get(
+                list_item_id,
+                TaskListRecord(
+                    id=list_item_id,
+                    name=list_record.name if list_record else str(payload.get("listName", "")),
+                    color=list_record.color if list_record else str(payload.get("listColor", "")),
+                    description=None,
+                ),
+            )
             for list_item_id in list_ids
-        ] or [list_record]
+        ]
         progress_status = str(payload.get("progressStatus", "todo"))
         viewer_status = payload.get("viewerInboxStatus")
         source_type = str(payload.get("sourceType", "manual"))
-        is_event_line_notification = source_type == "event_line_notification" and progress_status == "inbox"
         task_status = (
             "inbox"
-            if (viewer_status == "pending" or is_event_line_notification)
+            if viewer_status == "pending"
             else ("doing" if progress_status == "inbox" else progress_status)
+        )
+        (
+            creator_display_name,
+            owner_display_name,
+            pending_participant_names,
+            viewer_can_confirm,
+            viewer_can_reject,
+        ) = _task_collaboration_display(
+            creator_id=str(payload.get("creatorId")) if payload.get("creatorId") else None,
+            creator_name=(
+                str(payload.get("creatorDisplayName") or "").strip()
+                or str(payload.get("creatorName") or "").strip()
+                or None
+            ),
+            owner_id=str(payload.get("ownerId")) if payload.get("ownerId") else None,
+            owner_name=(
+                str(payload.get("ownerDisplayName") or "").strip()
+                or str(payload.get("ownerName") or "").strip()
+                or None
+            ),
+            collaborators=collaborators,
+            viewer_id=viewer_user.id if viewer_user else None,
+            viewer_status=viewer_status if isinstance(viewer_status, str) else None,
         )
         org_context_payload = payload.get("orgContext")
         org_context = (
@@ -6556,10 +6685,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             status=task_status,  # type: ignore[arg-type]
             creatorId=str(payload.get("creatorId")) if payload.get("creatorId") else None,
             creatorName=str(payload.get("creatorName")) if payload.get("creatorName") else None,
+            creatorDisplayName=creator_display_name,
             priority=str(payload.get("priority", "normal")),  # type: ignore[arg-type]
-            listId=list_record.id,
-            listName=list_record.name,
-            listColor=list_record.color,
+            listId=list_record.id if list_record else "",
+            listName=list_record.name if list_record else "",
+            listColor=list_record.color if list_record else "",
             listIds=[item.id for item in list_records],
             listNames=[item.name for item in list_records],
             ddl=task_due_label(payload.get("dueDate") if isinstance(payload.get("dueDate"), str) else None),
@@ -6577,6 +6707,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             projectFlowName=project_flow.name if project_flow else None,
             ownerId=str(payload.get("ownerId")) if payload.get("ownerId") else None,
             ownerName=str(payload.get("ownerName") or ""),
+            ownerDisplayName=owner_display_name,
             sourceType=source_type,
             sourceId=str(payload.get("sourceId")) if payload.get("sourceId") else None,
             businessCategory=business_category,
@@ -6590,7 +6721,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             expenseEvidenceLinks=expense_evidence_links,
             collaborators=collaborators,
             collaborationSummary=payload.get("collaborationSummary") if isinstance(payload.get("collaborationSummary"), dict) else {},
+            pendingParticipantNames=(
+                [str(item).strip() for item in payload.get("pendingParticipantNames", []) if str(item).strip()]
+                if isinstance(payload.get("pendingParticipantNames"), list)
+                else pending_participant_names
+            ),
             viewerInboxStatus=viewer_status if isinstance(viewer_status, str) else None,
+            viewerCanConfirm=bool(payload.get("viewerCanConfirm")) if "viewerCanConfirm" in payload else viewer_can_confirm,
+            viewerCanReject=bool(payload.get("viewerCanReject")) if "viewerCanReject" in payload else viewer_can_reject,
             orgContext=org_context,
             projectContext=project_context,
             memoryHints=memory_hints,
@@ -6599,6 +6737,295 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             createdAt=str(payload.get("createdAt", now_iso())),
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
+
+    def build_cloud_notification(payload: dict[str, object]) -> InboxNotificationRecord:
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        return InboxNotificationRecord(
+            id=str(payload.get("id", "")),
+            eventLineId=str(payload.get("eventLineId")) if payload.get("eventLineId") else None,
+            eventLineName=str(payload.get("eventLineName")) if payload.get("eventLineName") else None,
+            operationLabel=str(payload.get("operationLabel") or ""),
+            actorId=str(payload.get("actorId")) if payload.get("actorId") else None,
+            actorName=str(payload.get("actorName") or ""),
+            title=str(payload.get("title") or ""),
+            summary=str(payload.get("summary") or ""),
+            mainOwnerNames=[
+                str(item).strip()
+                for item in payload.get("mainOwnerNames", [])
+                if isinstance(payload.get("mainOwnerNames"), list) and str(item).strip()
+            ],
+            participantNames=[
+                str(item).strip()
+                for item in payload.get("participantNames", [])
+                if isinstance(payload.get("participantNames"), list) and str(item).strip()
+            ],
+            metadata=metadata,
+            operatedAt=str(payload.get("operatedAt") or payload.get("createdAt") or now_iso()),
+            viewerReadAt=str(payload.get("viewerReadAt")) if payload.get("viewerReadAt") else None,
+            createdAt=str(payload.get("createdAt", now_iso())),
+            updatedAt=str(payload.get("updatedAt", now_iso())),
+        )
+
+    def build_notification(row) -> InboxNotificationRecord:
+        metadata = from_json(row["metadata_json"], {})
+        return InboxNotificationRecord(
+            id=str(row["id"]),
+            eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
+            eventLineName=str(row["event_line_name"] or "") or None,
+            operationLabel=str(row["operation_label"] or ""),
+            actorId=str(row["actor_id"]) if row["actor_id"] else None,
+            actorName=str(row["actor_name"] or ""),
+            title=str(row["title"] or ""),
+            summary=str(row["summary"] or ""),
+            mainOwnerNames=[str(item).strip() for item in from_json(row["main_owner_names_json"], []) if str(item).strip()],
+            participantNames=[str(item).strip() for item in from_json(row["participant_names_json"], []) if str(item).strip()],
+            metadata=metadata if isinstance(metadata, dict) else {},
+            operatedAt=str(row["operated_at"] or row["created_at"] or now_iso()),
+            viewerReadAt=str(row["viewer_read_at"]) if "viewer_read_at" in row.keys() and row["viewer_read_at"] else None,
+            createdAt=str(row["created_at"] or now_iso()),
+            updatedAt=str(row["updated_at"] or row["created_at"] or now_iso()),
+        )
+
+    def _local_event_line_notification_row(notification_id: str):
+        return state.db.fetchone("SELECT * FROM event_line_notifications WHERE id = ?", (notification_id,))
+
+    def _local_event_line_notification_row_by_any_identity(notification_id: str, cloud_id: str | None = None):
+        normalized_id = str(notification_id or "").strip()
+        normalized_cloud_id = str(cloud_id or "").strip()
+        if normalized_id:
+            row = _local_event_line_notification_row(normalized_id)
+            if row is not None:
+                return row
+        if normalized_cloud_id:
+            return state.db.fetchone(
+                """
+                SELECT *
+                FROM event_line_notifications
+                WHERE cloud_id = ? OR id = ?
+                ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, updated_at DESC
+                LIMIT 1
+                """,
+                (normalized_cloud_id, normalized_cloud_id, normalized_cloud_id),
+            )
+        return None
+
+    def _notification_receipt_row(notification_id: str, user_id: str):
+        return state.db.fetchone(
+            """
+            SELECT *
+            FROM event_line_notification_receipts
+            WHERE notification_id = ? AND user_id = ?
+            """,
+            (notification_id, user_id),
+        )
+
+    def _notification_row_for_viewer(notification_id: str, user_id: str, organization_id: str):
+        return state.db.fetchone(
+            """
+            SELECT n.*, r.read_at AS viewer_read_at
+            FROM event_line_notifications n
+            JOIN event_line_notification_receipts r ON r.notification_id = n.id
+            WHERE n.id = ?
+              AND r.user_id = ?
+              AND (COALESCE(n.organization_id, '') = ? OR COALESCE(n.organization_id, '') = '')
+            """,
+            (notification_id, user_id, organization_id),
+        )
+
+    def _list_local_unread_notifications_for_viewer(user_id: str, organization_id: str) -> list[InboxNotificationRecord]:
+        rows = state.db.fetchall(
+            """
+            SELECT n.*, r.read_at AS viewer_read_at
+            FROM event_line_notifications n
+            JOIN event_line_notification_receipts r ON r.notification_id = n.id
+            WHERE r.user_id = ?
+              AND r.read_at IS NULL
+              AND (COALESCE(n.organization_id, '') = ? OR COALESCE(n.organization_id, '') = '')
+            ORDER BY n.operated_at DESC, n.updated_at DESC, n.created_at DESC
+            """,
+            (user_id, organization_id),
+        )
+        return [build_notification(row) for row in rows]
+
+    def _reconcile_local_unread_notifications_with_remote(remote_ids: list[str], organization_id: str, user_id: str) -> None:
+        local_rows = state.db.fetchall(
+            """
+            SELECT n.id
+            FROM event_line_notifications n
+            JOIN event_line_notification_receipts r ON r.notification_id = n.id
+            WHERE r.user_id = ?
+              AND r.read_at IS NULL
+              AND (COALESCE(n.organization_id, '') = ? OR COALESCE(n.organization_id, '') = '')
+              AND COALESCE(n.sync_status, 'local') = 'synced'
+            """,
+            (user_id, organization_id),
+        )
+        remote_id_set = {item for item in remote_ids if item}
+        timestamp = now_iso()
+        for row in local_rows:
+            notification_id = str(row["id"] or "").strip()
+            if notification_id and notification_id not in remote_id_set:
+                state.db.execute(
+                    """
+                    UPDATE event_line_notification_receipts
+                    SET read_at = COALESCE(read_at, ?), updated_at = ?
+                    WHERE notification_id = ? AND user_id = ?
+                    """,
+                    (timestamp, timestamp, notification_id, user_id),
+                )
+
+    def _upsert_local_event_line_notification_from_cloud(
+        payload: dict[str, object],
+        organization_id: str,
+        *,
+        user_id: str,
+        user_full_name: str | None = None,
+        user_email: str | None = None,
+    ) -> None:
+        timestamp = now_iso()
+        remote_id = str(payload.get("id") or "").strip()
+        if not remote_id:
+            return
+        existing_row = _local_event_line_notification_row_by_any_identity(remote_id, remote_id)
+        local_id = str(existing_row["id"]) if existing_row else remote_id
+        existing_receipt = _notification_receipt_row(local_id, user_id)
+        pending_read = existing_row is not None and str(existing_row["pending_sync_action"] or "").strip() == "read"
+        incoming_viewer_read_at = str(payload.get("viewerReadAt")) if payload.get("viewerReadAt") else None
+        preserved_read_at = (
+            str(existing_receipt["read_at"])
+            if pending_read and existing_receipt and existing_receipt["read_at"] and not incoming_viewer_read_at
+            else incoming_viewer_read_at
+        )
+        state.db.execute(
+            """
+            INSERT INTO event_line_notifications(
+                id, organization_id, event_line_id, event_line_name, operation_label, actor_id, actor_name,
+                title, summary, metadata_json, main_owner_names_json, participant_names_json, operated_at,
+                created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version,
+                pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, '', '')
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                event_line_id = excluded.event_line_id,
+                event_line_name = excluded.event_line_name,
+                operation_label = excluded.operation_label,
+                actor_id = excluded.actor_id,
+                actor_name = excluded.actor_name,
+                title = excluded.title,
+                summary = excluded.summary,
+                metadata_json = excluded.metadata_json,
+                main_owner_names_json = excluded.main_owner_names_json,
+                participant_names_json = excluded.participant_names_json,
+                operated_at = excluded.operated_at,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                sync_status = 'synced',
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = '',
+                last_sync_error = ''
+            """,
+            (
+                local_id,
+                organization_id,
+                str(payload.get("eventLineId") or ""),
+                str(payload.get("eventLineName") or ""),
+                str(payload.get("operationLabel") or ""),
+                str(payload.get("actorId")) if payload.get("actorId") else None,
+                str(payload.get("actorName") or ""),
+                str(payload.get("title") or ""),
+                str(payload.get("summary") or ""),
+                to_json(payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}),
+                to_json([str(item).strip() for item in payload.get("mainOwnerNames", []) if isinstance(payload.get("mainOwnerNames"), list) and str(item).strip()]),
+                to_json([str(item).strip() for item in payload.get("participantNames", []) if isinstance(payload.get("participantNames"), list) and str(item).strip()]),
+                str(payload.get("operatedAt") or payload.get("createdAt") or timestamp),
+                str(payload.get("createdAt") or timestamp),
+                str(payload.get("updatedAt") or timestamp),
+                remote_id,
+                to_json(payload),
+                timestamp,
+                str(payload.get("updatedAt") or payload.get("createdAt") or timestamp),
+            ),
+        )
+        state.db.execute(
+            """
+            INSERT INTO event_line_notification_receipts(
+                notification_id, organization_id, user_id, full_name, email, read_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(notification_id, user_id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                full_name = excluded.full_name,
+                email = excluded.email,
+                read_at = excluded.read_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                local_id,
+                organization_id,
+                user_id,
+                user_full_name or (str(existing_receipt["full_name"]) if existing_receipt and existing_receipt["full_name"] else ""),
+                user_email or (str(existing_receipt["email"]) if existing_receipt and existing_receipt["email"] else ""),
+                preserved_read_at,
+                str(payload.get("createdAt") or timestamp),
+                str(payload.get("updatedAt") or timestamp),
+            ),
+        )
+
+    _cloud_inbox_notification_cache: dict[str, object] = {
+        "data": None,
+        "ts": 0.0,
+        "user_id": "",
+        "organization_id": "",
+    }
+
+    def _clear_cloud_inbox_notification_cache() -> None:
+        _cloud_inbox_notification_cache["data"] = None
+        _cloud_inbox_notification_cache["ts"] = 0.0
+        _cloud_inbox_notification_cache["user_id"] = ""
+        _cloud_inbox_notification_cache["organization_id"] = ""
+
+    def cloud_inbox_notifications() -> InboxNotificationListResponse:
+        session_user = get_cached_session_user()
+        if not session_user or not get_cloud_token():
+            return InboxNotificationListResponse(notifications=[])
+        now = time.time()
+        if (
+            _cloud_inbox_notification_cache["data"] is not None
+            and now - float(_cloud_inbox_notification_cache["ts"] or 0.0) < 15
+            and str(_cloud_inbox_notification_cache.get("user_id") or "") == session_user.id
+            and str(_cloud_inbox_notification_cache.get("organization_id") or "") == session_user.organizationId
+        ):
+            return InboxNotificationListResponse(
+                notifications=list(_cloud_inbox_notification_cache["data"]),  # type: ignore[arg-type]
+            )
+        payload = cloud_request("GET", "/api/v1/inbox/notifications")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid inbox notification payload")
+        notifications = [
+            build_cloud_notification(item)
+            for item in payload.get("notifications", [])
+            if isinstance(item, dict)
+        ]
+        for notification in notifications:
+            _upsert_local_event_line_notification_from_cloud(
+                notification.model_dump(),
+                session_user.organizationId,
+                user_id=session_user.id,
+                user_full_name=session_user.fullName,
+                user_email=session_user.email,
+            )
+        _reconcile_local_unread_notifications_with_remote(
+            [item.id for item in notifications],
+            session_user.organizationId,
+            session_user.id,
+        )
+        _cloud_inbox_notification_cache["data"] = notifications
+        _cloud_inbox_notification_cache["ts"] = now
+        _cloud_inbox_notification_cache["user_id"] = session_user.id
+        _cloud_inbox_notification_cache["organization_id"] = session_user.organizationId
+        return InboxNotificationListResponse(notifications=notifications)
 
     _cloud_task_board_cache: dict[str, object] = {
         "data": None,
@@ -6612,6 +7039,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _cloud_task_board_cache["ts"] = 0.0
         _cloud_task_board_cache["user_id"] = ""
         _cloud_task_board_cache["organization_id"] = ""
+
+    def _task_waits_for_others_for_user(task: TaskRecord, user_id: str | None) -> bool:
+        if not user_id:
+            return False
+        if task.ownerId != user_id and task.creatorId != user_id:
+            return False
+        try:
+            pending_count = int(task.collaborationSummary.get("pending", 0))
+        except Exception:
+            pending_count = 0
+        return pending_count > 0
+
+    def _aggregate_inbox_from_tasks(
+        tasks: list[TaskRecord],
+        notifications: list[InboxNotificationRecord],
+        user_id: str,
+    ) -> InboxAggregateResponse:
+        pending_tasks = [
+            task
+            for task in tasks
+            if task.status == "inbox" and task.viewerInboxStatus == "pending"
+        ]
+        outbound_pending_tasks = [
+            task
+            for task in tasks
+            if task.status != "rejected"
+            and task.status != "inbox"
+            and _task_waits_for_others_for_user(task, user_id)
+        ]
+        return InboxAggregateResponse(
+            pendingTasks=pending_tasks,
+            systemNotifications=notifications,
+            outboundPendingTasks=outbound_pending_tasks,
+        )
 
     def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
         """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
@@ -6681,7 +7142,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if isinstance(item, dict)
         ]
         lists_by_id = {item.id: item for item in lists}
-        tasks = [build_cloud_task(item, lists_by_id) for item in payload.get("tasks", []) if isinstance(item, dict)]
+        tasks = [
+            build_cloud_task(item, lists_by_id)
+            for item in payload.get("tasks", [])
+            if isinstance(item, dict) and str(item.get("sourceType") or "") != "event_line_notification"
+        ]
         cloud_tags = [build_cloud_task_tag(item) for item in payload.get("tags", []) if isinstance(item, dict)]
         cloud_common_tags = [str(item) for item in payload.get("commonTags", []) if isinstance(item, str)]
         result = TaskBoardResponse(tasks=tasks, lists=lists, tags=cloud_tags, commonTags=cloud_common_tags)
@@ -6691,6 +7156,66 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _cloud_task_board_cache["user_id"] = session_user.id if session_user else ""
         _cloud_task_board_cache["organization_id"] = session_user.organizationId if session_user else ""
         return result
+
+    def cloud_inbox_aggregate() -> InboxAggregateResponse:
+        session_user = get_cached_session_user()
+        if not session_user or not get_cloud_token():
+            return InboxAggregateResponse()
+        try:
+            payload = cloud_request("GET", "/api/v1/inbox")
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+            board = cloud_task_board()
+            notifications = cloud_inbox_notifications().notifications
+            return _aggregate_inbox_from_tasks(board.tasks, notifications, session_user.id)
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid inbox payload")
+        board = cloud_task_board()
+        lists_by_id = {item.id: item for item in board.lists}
+        pending_payloads = [
+            item
+            for item in payload.get("pendingTasks", [])
+            if isinstance(item, dict) and str(item.get("sourceType") or "") != "event_line_notification"
+        ]
+        outbound_payloads = [
+            item
+            for item in payload.get("outboundPendingTasks", [])
+            if isinstance(item, dict) and str(item.get("sourceType") or "") != "event_line_notification"
+        ]
+        pending_tasks = [
+            build_cloud_task(item, lists_by_id)
+            for item in pending_payloads
+        ]
+        outbound_pending_tasks = [
+            build_cloud_task(item, lists_by_id)
+            for item in outbound_payloads
+        ]
+        notifications = [
+            build_cloud_notification(item)
+            for item in payload.get("systemNotifications", [])
+            if isinstance(item, dict)
+        ]
+        for task_payload in [*pending_payloads, *outbound_payloads]:
+            _upsert_local_task_from_cloud(task_payload, session_user.organizationId)
+        for notification in notifications:
+            _upsert_local_event_line_notification_from_cloud(
+                notification.model_dump(),
+                session_user.organizationId,
+                user_id=session_user.id,
+                user_full_name=session_user.fullName,
+                user_email=session_user.email,
+            )
+        _reconcile_local_unread_notifications_with_remote(
+            [item.id for item in notifications],
+            session_user.organizationId,
+            session_user.id,
+        )
+        return InboxAggregateResponse(
+            pendingTasks=pending_tasks,
+            systemNotifications=notifications,
+            outboundPendingTasks=outbound_pending_tasks,
+        )
 
     def fetch_cloud_task_by_id(task_id: str) -> TaskRecord:
         board = cloud_task_board()
@@ -6792,20 +7317,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (str(row["id"]),),
         )
-        collaborators = [
-            TaskCollaboratorRecord(
-                userId=str(item["user_id"]),
-                fullName=str(item["full_name"] or ""),
-                email=str(item["email"] or ""),
-                orderIndex=int(item["order_index"] or index),
-                isOwner=bool(int(item["is_owner"] or 0)),
-                inboxStatus=str(item["inbox_status"] or "pending"),  # type: ignore[arg-type]
-                returnReason=str(item["return_reason"]) if item["return_reason"] else None,
-                handledAt=str(item["handled_at"]) if item["handled_at"] else None,
-            )
-            for index, item in enumerate(collaborator_rows)
-        ]
         viewer_user = get_cached_session_user()
+        collaborators: list[TaskCollaboratorRecord] = []
+        for index, item in enumerate(collaborator_rows):
+            collaborator_id = str(item["user_id"] or "")
+            full_name = str(item["full_name"] or "").strip()
+            if not full_name:
+                full_name = _resolve_local_task_collaborator_full_name(
+                    collaborator_id,
+                    owner_id=str(row["owner_id"]) if row["owner_id"] else None,
+                    owner_name=str(row["owner_name"] or "") if "owner_name" in row.keys() else None,
+                    session_user=viewer_user,
+                )
+            collaborators.append(
+                TaskCollaboratorRecord(
+                    userId=collaborator_id,
+                    fullName=full_name,
+                    email=str(item["email"] or ""),
+                    orderIndex=int(item["order_index"] or index),
+                    isOwner=bool(int(item["is_owner"] or 0)),
+                    inboxStatus=str(item["inbox_status"] or "pending"),  # type: ignore[arg-type]
+                    returnReason=str(item["return_reason"]) if item["return_reason"] else None,
+                    handledAt=str(item["handled_at"]) if item["handled_at"] else None,
+                )
+            )
         viewer_status = None
         if viewer_user:
             viewer_status = next(
@@ -6828,11 +7363,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     creator_name = str(cloud_payload.get("creatorName"))
         progress_status = str(row["progress_status"] or row["status"] or "todo")
         source_type = str(row["source_type"] or "manual")
-        is_event_line_notification = source_type == "event_line_notification" and progress_status == "inbox"
         task_status = (
             "inbox"
-            if (viewer_status == "pending" or is_event_line_notification)
+            if viewer_status == "pending"
             else ("doing" if progress_status == "inbox" else progress_status)
+        )
+        (
+            creator_display_name,
+            owner_display_name,
+            pending_participant_names,
+            viewer_can_confirm,
+            viewer_can_reject,
+        ) = _task_collaboration_display(
+            creator_id=creator_id,
+            creator_name=creator_name,
+            owner_id=str(row["owner_id"]) if "owner_id" in row.keys() and row["owner_id"] else None,
+            owner_name=str(row["owner_name"] or "") if "owner_name" in row.keys() else None,
+            collaborators=collaborators,
+            viewer_id=viewer_user.id if viewer_user else None,
+            viewer_status=viewer_status,
         )
         local_tag_rows = _local_tag_rows_by_ids(state.db, _parse_json_list(row["tag_ids_json"]))
         list_id = normalize_legacy_task_list_id(
@@ -6855,6 +7404,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             status=task_status,  # type: ignore[arg-type]
             creatorId=creator_id,
             creatorName=creator_name,
+            creatorDisplayName=creator_display_name,
             priority=str(row["priority"]),  # type: ignore[arg-type]
             listId=list_id,
             listName=list_name,
@@ -6876,6 +7426,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             projectFlowName=project_flow.name if project_flow else None,
             ownerId=str(row["owner_id"]) if "owner_id" in row.keys() and row["owner_id"] else None,
             ownerName=str(row["owner_name"]),
+            ownerDisplayName=owner_display_name,
             sourceType=source_type,
             sourceId=str(row["source_id"]) if row["source_id"] else None,
             businessCategory=business_category,
@@ -6893,7 +7444,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "accepted": sum(1 for item in collaborators if item.inboxStatus == "accepted"),
                 "returned": sum(1 for item in collaborators if item.inboxStatus == "returned"),
             },
+            pendingParticipantNames=pending_participant_names,
             viewerInboxStatus=viewer_status,
+            viewerCanConfirm=viewer_can_confirm,
+            viewerCanReject=viewer_can_reject,
             projectContext=project_context,
             memoryHints=memory_hints,
             backgroundReadiness=background_readiness,
@@ -6992,6 +7546,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM tasks
             WHERE event_line_id = ?
               AND (? = '' OR organization_id = ?)
+              AND COALESCE(source_type, '') != 'event_line_notification'
               AND owner_id IS NOT NULL
               AND owner_id != ''
             """,
@@ -7009,6 +7564,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             JOIN tasks t ON t.id = tc.task_id
             WHERE t.event_line_id = ?
               AND (? = '' OR t.organization_id = ?)
+              AND COALESCE(t.source_type, '') != 'event_line_notification'
               AND tc.user_id IS NOT NULL
               AND tc.user_id != ''
             """,
@@ -7398,7 +7954,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             LEFT JOIN task_lists l ON l.id = t.list_id
             LEFT JOIN clients c ON c.id = t.client_id
         """
-        clauses = [scope_where, visibility_where]
+        clauses = [scope_where, visibility_where, "COALESCE(t.source_type, '') != 'event_line_notification'"]
         if where_clause:
             clauses.append(where_clause)
         query += f" WHERE {' AND '.join(clauses)}"
@@ -12752,9 +13308,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     desc="来自会议抽取的行动项",
                     status="todo" if item["publish_status"] == "published" else "inbox",
                     priority="normal",
-                    listId=DEFAULT_LOCAL_ORG_TASK_LIST_ID,
-                    listName="会议草稿",
-                    listColor="#888681",
+                    listId="",
+                    listName="",
+                    listColor="",
                     ddl=str(item["due_date"]),
                     ownerName=str(item["owner_name"]),
                     sourceType="meeting",
@@ -13613,6 +14169,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         owner_id = payload.ownerId or None
         if owner_id and owner_id not in collaborator_ids:
             collaborator_ids = [owner_id, *collaborator_ids]
+        collaborator_name_map = _provided_task_collaborator_name_map(
+            collaborator_ids,
+            payload.collaboratorNames,
+            owner_id=owner_id,
+            owner_name=payload.ownerName,
+        )
         resolved_tags = normalize_local_task_tags(payload.tagIds, payload.tags)
         state.db.execute(
             """
@@ -13669,7 +14231,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         for index, collaborator_id in enumerate(collaborator_ids or ([owner_id] if owner_id else [])):
             if not collaborator_id:
                 continue
-            full_name = session_user.fullName if session_user and collaborator_id == session_user.id else ""
+            full_name = _resolve_local_task_collaborator_full_name(
+                collaborator_id,
+                provided_name_map=collaborator_name_map,
+                owner_id=owner_id,
+                owner_name=payload.ownerName,
+                session_user=session_user,
+            )
             email = session_user.email if session_user and collaborator_id == session_user.id else ""
             state.db.execute(
                 """
@@ -16217,6 +16785,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         "task_list": "task_lists",
         "task_tag": "task_tags",
         "task": "tasks",
+        "event_line_notification": "event_line_notifications",
         "event_line": "event_lines",
         "task_group_template": "task_group_templates",
         "weekly_review": "weekly_reviews",
@@ -16810,7 +17379,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )
 
+    def _delete_local_legacy_event_line_notification_task(task_id: str) -> None:
+        normalized_id = task_id.strip()
+        if not normalized_id:
+            return
+        state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (normalized_id,))
+        state.db.execute("DELETE FROM task_list_links WHERE task_id = ?", (normalized_id,))
+        state.db.execute("DELETE FROM task_notes WHERE task_id = ?", (normalized_id,))
+        state.db.execute("DELETE FROM task_attachments WHERE task_id = ?", (normalized_id,))
+        state.db.execute("DELETE FROM weekly_review_task_entries WHERE task_id = ?", (normalized_id,))
+        state.db.execute("DELETE FROM tasks WHERE id = ?", (normalized_id,))
+
+    def _delete_all_local_legacy_event_line_notification_tasks() -> None:
+        rows = state.db.fetchall(
+            "SELECT id FROM tasks WHERE COALESCE(source_type, '') = 'event_line_notification'"
+        )
+        for row in rows:
+            _delete_local_legacy_event_line_notification_task(str(row["id"] or ""))
+
     def _upsert_local_task_from_cloud(payload: dict[str, object], organization_id: str) -> None:
+        if str(payload.get("sourceType") or "").strip() == "event_line_notification":
+            _delete_local_legacy_event_line_notification_task(str(payload.get("id") or ""))
+            return
         timestamp = now_iso()
         owner_name = str(payload.get("ownerName") or "")
         tags_payload = [item for item in payload.get("tags", []) if isinstance(item, dict)] if isinstance(payload.get("tags"), list) else []
@@ -17194,6 +17784,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _upsert_local_task_from_cloud(response, organization_id)
         _clear_sync_action("task", entity_id)
 
+    def _process_outbox_event_line_notification(
+        outbox_row,
+        organization_id: str,
+        user_id: str,
+        user_full_name: str | None,
+        user_email: str | None,
+    ) -> None:
+        entity_id = str(outbox_row["entity_id"])
+        action = str(outbox_row["action"] or "")
+        local_row = _local_event_line_notification_row(entity_id)
+        if local_row is None:
+            _clear_sync_action("event_line_notification", entity_id)
+            return
+        remote_id = str(local_row["cloud_id"] or "").strip() or entity_id
+        if action != "read":
+            _clear_sync_action("event_line_notification", entity_id)
+            return
+        response = cloud_request("POST", f"/api/v1/inbox/notifications/{remote_id}/read")
+        if isinstance(response, dict):
+            _upsert_local_event_line_notification_from_cloud(
+                response,
+                organization_id,
+                user_id=user_id,
+                user_full_name=user_full_name,
+                user_email=user_email,
+            )
+        _clear_sync_action("event_line_notification", entity_id)
+
     def _process_outbox_event_line(
         outbox_row,
         remote_event_lines_by_id: dict[str, dict[str, object]],
@@ -17523,6 +18141,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         outbox_row,
                         snapshot.get("tasks_by_id") if isinstance(snapshot.get("tasks_by_id"), dict) else {},
                         organization_id,
+                    )
+                elif entity_type == "event_line_notification":
+                    session_user = get_cached_session_user()
+                    _process_outbox_event_line_notification(
+                        outbox_row,
+                        organization_id,
+                        user_id,
+                        session_user.fullName if session_user else _lookup_local_employee_full_name(user_id),
+                        session_user.email if session_user else None,
                     )
                 elif entity_type == "event_line":
                     _process_outbox_event_line(
@@ -20368,6 +20995,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         organization_id = str(row["organization_id"] or "") if "organization_id" in row.keys() else ""
         if has_active_cloud_session() and session_user and organization_id == session_user.organizationId:
+            previous_status = str(row["status"] or "active")
             response = cloud_request(
                 "PATCH",
                 f"/api/v1/event-lines/{event_line_id}",
@@ -20375,6 +21003,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if not isinstance(response, dict):
                 raise HTTPException(status_code=502, detail="Invalid event line payload")
+            _clear_cloud_inbox_notification_cache()
             try:
                 detail_payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
                 if isinstance(detail_payload, dict):
@@ -20389,7 +21018,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             session_user.organizationId,
                             detail_payload.get("activities") if isinstance(detail_payload.get("activities"), list) else None,
                         )
-                        return build_cloud_event_line(event_line_payload)
+                        updated_event_line = build_cloud_event_line(event_line_payload)
+                        if previous_status != updated_event_line.status and updated_event_line.status in {"paused", "blocked", "done"}:
+                            _clear_cloud_inbox_notification_cache()
+                        return updated_event_line
             except Exception:
                 pass
             _upsert_local_event_line_from_cloud(response, session_user.organizationId, None)
@@ -20481,6 +21113,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             response = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/close")
             if not isinstance(response, dict):
                 raise HTTPException(status_code=502, detail="Invalid event line close payload")
+            _clear_cloud_inbox_notification_cache()
             try:
                 detail_payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
                 if isinstance(detail_payload, dict):
@@ -20509,6 +21142,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/event-lines/{event_line_id}/reopen")
     def reopen_event_line(event_line_id: str) -> dict:
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        if has_active_cloud_session():
+            response = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/reopen")
+            if not isinstance(response, dict):
+                raise HTTPException(status_code=502, detail="Invalid event line reopen payload")
+            _clear_cloud_inbox_notification_cache()
+            try:
+                detail_payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+                if isinstance(detail_payload, dict):
+                    event_line_payload = (
+                        detail_payload.get("eventLine")
+                        if isinstance(detail_payload.get("eventLine"), dict)
+                        else detail_payload
+                    )
+                    if isinstance(event_line_payload, dict):
+                        _upsert_local_event_line_from_cloud(
+                            event_line_payload,
+                            get_cached_session_user().organizationId if get_cached_session_user() else "",
+                            detail_payload.get("activities") if isinstance(detail_payload.get("activities"), list) else None,
+                        )
+            except Exception:
+                pass
+            return {"status": str(response.get("status") or "active")}
         if row:
             timestamp = now_iso()
             organization_id = str(row["organization_id"] or "") if "organization_id" in row.keys() else ""
@@ -21017,13 +21672,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def update_task_settings(payload: TaskSettingsPayload) -> TaskSettingsRecord:
         ensure_business_settings_editable()
         if get_cloud_token():
-            response = cloud_request("POST", "/api/v1/settings/tasks", json_body=payload.model_dump(exclude_none=True))
+            response = cloud_request("POST", "/api/v1/settings/tasks", json_body=payload.model_dump(exclude_unset=True))
             if not isinstance(response, dict):
                 raise HTTPException(status_code=502, detail="Invalid task settings payload")
             return TaskSettingsRecord(**response)
         operator_id = str(current_operator_row()["id"])
         current = _get_local_task_settings(operator_id)
-        next_default_list_id = payload.defaultListId if payload.defaultListId is not None else current.defaultListId
+        default_list_touched = "defaultListId" in payload.model_fields_set
+        next_default_list_id = payload.defaultListId if default_list_touched else current.defaultListId
         if next_default_list_id:
             list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (next_default_list_id,))
             if not list_row or list_row["archived_at"]:
@@ -23460,7 +24116,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if meeting.clientId != client_id:
             raise HTTPException(status_code=404, detail="Meeting not found")
         workspace_settings = get_client_workspace_settings()
-        default_list_id = workspace_settings.meetingPublishDefaultListId or _get_local_task_settings().defaultListId or DEFAULT_LOCAL_ORG_TASK_LIST_ID
+        default_list_id = workspace_settings.meetingPublishDefaultListId or _get_local_task_settings().defaultListId or ""
         for item in state.db.fetchall("SELECT * FROM action_items WHERE meeting_id = ? AND publish_status != 'published'", (meeting_id,)):
             payload = TaskPayload(
                 title=str(item["title"]),
@@ -24251,9 +24907,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if next_owner_id and next_owner_id not in collaborator_ids:
                     collaborator_ids = [next_owner_id, *collaborator_ids]
                 collaborator_ids = list(dict.fromkeys(collaborator_ids))
+                existing_collaborator_rows = _local_task_collaborator_rows(task_id)
+                existing_name_map = {
+                    str(item["user_id"] or "").strip(): str(item["full_name"] or "").strip()
+                    for item in existing_collaborator_rows
+                    if str(item["user_id"] or "").strip() and str(item["full_name"] or "").strip()
+                }
+                provided_name_map = _provided_task_collaborator_name_map(
+                    collaborator_ids,
+                    payload.collaboratorNames,
+                    owner_id=next_owner_id,
+                    owner_name=str(merged["owner_name"] or ""),
+                )
+                for collaborator_id, full_name in existing_name_map.items():
+                    if collaborator_id not in provided_name_map:
+                        provided_name_map[collaborator_id] = full_name
                 state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
                 for index, collaborator_id in enumerate(collaborator_ids):
-                    full_name = session_user.fullName if session_user and collaborator_id == session_user.id else ""
+                    full_name = _resolve_local_task_collaborator_full_name(
+                        collaborator_id,
+                        provided_name_map=provided_name_map,
+                        owner_id=next_owner_id,
+                        owner_name=str(merged["owner_name"] or ""),
+                        session_user=session_user,
+                    )
                     email = session_user.email if session_user and collaborator_id == session_user.id else ""
                     state.db.execute(
                         """
@@ -24840,69 +25517,101 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Task not found after local reject")
         return build_task(synced_row)
 
-    @app.post("/api/v1/tasks/{task_id}/notifications/read", response_model=TaskRecord)
-    def mark_task_notification_read(task_id: str) -> TaskRecord:
+    @app.get("/api/v1/inbox", response_model=InboxAggregateResponse)
+    def list_collaboration_inbox() -> InboxAggregateResponse:
+        user = get_cached_session_user()
+        if not user:
+            return InboxAggregateResponse()
+        _delete_all_local_legacy_event_line_notification_tasks()
+        if has_active_cloud_session():
+            try:
+                return cloud_inbox_aggregate()
+            except HTTPException:
+                pass
+        local_tasks = fetch_tasks()
+        notifications = _list_local_unread_notifications_for_viewer(user.id, user.organizationId)
+        return _aggregate_inbox_from_tasks(local_tasks, notifications, user.id)
+
+    @app.get("/api/v1/inbox/notifications", response_model=InboxNotificationListResponse)
+    def list_inbox_notifications() -> InboxNotificationListResponse:
+        user = get_cached_session_user()
+        if not user:
+            return InboxNotificationListResponse(notifications=[])
+        _delete_all_local_legacy_event_line_notification_tasks()
+        if has_active_cloud_session():
+            try:
+                return cloud_inbox_notifications()
+            except HTTPException:
+                pass
+        return InboxNotificationListResponse(
+            notifications=_list_local_unread_notifications_for_viewer(user.id, user.organizationId),
+        )
+
+    @app.post("/api/v1/inbox/notifications/{notification_id}/read", response_model=InboxNotificationRecord)
+    def mark_inbox_notification_read(notification_id: str) -> InboxNotificationRecord:
         timestamp = now_iso()
         user = get_cached_session_user()
-        task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        if not task_row:
-            raise HTTPException(status_code=404, detail="Task not found")
-        if str(task_row["source_type"] or "") != "event_line_notification":
-            raise HTTPException(status_code=400, detail="当前任务不是系统通知。")
-        organization_id = str(task_row["organization_id"] or "").strip()
+        if not user:
+            raise HTTPException(status_code=403, detail="当前未连接云端协作账号。")
+        notification_row = _local_event_line_notification_row_by_any_identity(notification_id, notification_id)
+        if notification_row is None:
+            raise HTTPException(status_code=404, detail="Notification not found")
+        organization_id = str(notification_row["organization_id"] or "").strip()
+        receipt_row = _notification_receipt_row(str(notification_row["id"]), user.id)
+        if receipt_row is None:
+            raise HTTPException(status_code=404, detail="Notification recipient not found")
+        remote_notification_id = str(notification_row["cloud_id"] or "").strip() or str(notification_row["id"])
         if (
-            user
-            and get_cloud_token()
-            and str(task_row["cloud_id"] or "").strip()
-            and str(task_row["organization_id"] or "").strip() == str(user.organizationId or "").strip()
+            get_cloud_token()
+            and organization_id
+            and organization_id == str(user.organizationId or "").strip()
         ):
-            remote_task_id = str(task_row["cloud_id"] or "").strip() or task_id
-            response = cloud_request("POST", f"/api/v1/tasks/{remote_task_id}/notifications/read")
+            response = cloud_request("POST", f"/api/v1/inbox/notifications/{remote_notification_id}/read")
             if not isinstance(response, dict):
                 raise HTTPException(status_code=502, detail="Invalid cloud notification payload")
-            _upsert_local_task_from_cloud(response, user.organizationId)
-            synced_row = _local_task_row_by_any_identity(task_id, remote_task_id)
-            if synced_row is None:
-                raise HTTPException(status_code=404, detail="Notification not found after cloud sync")
-            return build_task(synced_row)
-        if user:
+            _upsert_local_event_line_notification_from_cloud(
+                response,
+                user.organizationId,
+                user_id=user.id,
+                user_full_name=user.fullName,
+                user_email=user.email,
+            )
+        else:
             state.db.execute(
-                "UPDATE task_collaborators SET inbox_status = 'accepted', handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
-                (timestamp, timestamp, task_id, user.id),
+                """
+                UPDATE event_line_notification_receipts
+                SET read_at = COALESCE(read_at, ?), updated_at = ?
+                WHERE notification_id = ? AND user_id = ?
+                """,
+                (timestamp, timestamp, str(notification_row["id"]), user.id),
             )
-            pending_unread = state.db.fetchone(
-                "SELECT 1 FROM task_collaborators WHERE task_id = ? AND handled_at IS NULL",
-                (task_id,),
-            )
-            if not pending_unread:
-                state.db.execute(
-                    "UPDATE tasks SET progress_status = 'done', status = 'done', updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = '' WHERE id = ?",
-                    (timestamp, "queued" if organization_id else str(task_row["sync_status"] or "local"), "update" if organization_id else str(task_row["pending_sync_action"] or ""), task_id),
-                )
-            else:
-                state.db.execute(
-                    "UPDATE tasks SET progress_status = 'inbox', status = 'inbox', updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = '' WHERE id = ?",
-                    (timestamp, "queued" if organization_id else str(task_row["sync_status"] or "local"), "update" if organization_id else str(task_row["pending_sync_action"] or ""), task_id),
-                )
             if organization_id:
-                _queue_sync_action("task", task_id, "update")
+                _update_sync_metadata(
+                    "event_line_notifications",
+                    str(notification_row["id"]),
+                    sync_status="queued",
+                    pending_sync_action="read",
+                    last_sync_error="",
+                )
+                _queue_sync_action("event_line_notification", str(notification_row["id"]), "read")
                 _schedule_local_cloud_sync(force=True)
-        synced_row = _local_task_row_by_any_identity(task_id, str(task_row["cloud_id"] or "") if task_row else None)
-        if synced_row is None:
+        _clear_cloud_inbox_notification_cache()
+        refreshed_row = _notification_row_for_viewer(str(notification_row["id"]), user.id, user.organizationId)
+        if refreshed_row is None:
             raise HTTPException(status_code=404, detail="Notification not found after local update")
-        return build_task(synced_row)
+        return build_notification(refreshed_row)
 
-    @app.post("/api/v1/tasks/notifications/read-batch", response_model=TaskNotificationBatchReadResponse)
-    def mark_task_notifications_read_batch(payload: TaskNotificationBatchReadPayload) -> TaskNotificationBatchReadResponse:
-        task_ids = [task_id.strip() for task_id in payload.taskIds if task_id and task_id.strip()]
-        normalized_ids = list(dict.fromkeys(task_ids))
+    @app.post("/api/v1/inbox/notifications/read-batch", response_model=InboxNotificationBatchReadResponse)
+    def mark_inbox_notifications_read_batch(payload: InboxNotificationBatchReadPayload) -> InboxNotificationBatchReadResponse:
+        notification_ids = [notification_id.strip() for notification_id in payload.notificationIds if notification_id and notification_id.strip()]
+        normalized_ids = list(dict.fromkeys(notification_ids))
         if not normalized_ids:
-            return TaskNotificationBatchReadResponse(taskIds=[], updatedCount=0)
+            return InboxNotificationBatchReadResponse(notificationIds=[], updatedCount=0)
         updated_ids: list[str] = []
-        for task_id in normalized_ids:
-            mark_task_notification_read(task_id)
-            updated_ids.append(task_id)
-        return TaskNotificationBatchReadResponse(taskIds=updated_ids, updatedCount=len(updated_ids))
+        for notification_id in normalized_ids:
+            mark_inbox_notification_read(notification_id)
+            updated_ids.append(notification_id)
+        return InboxNotificationBatchReadResponse(notificationIds=updated_ids, updatedCount=len(updated_ids))
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
@@ -26133,7 +26842,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 title=str(row["title"]),
                 desc=str(row["summary"]),
                 priority="normal",
-                listId=DEFAULT_LOCAL_ORG_TASK_LIST_ID,
+                listId="",
                 ddl="本周",
                 ownerName=current_operator_row()["name"],
                 tags=["选题"],
@@ -26975,7 +27684,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recommendation = next((item for item in list_learning_recommendations(state.db, user_id) if item.id == recommendation_id), None)
         if recommendation is None:
             raise HTTPException(status_code=404, detail="成长练习推荐不存在或已失效")
-        task_settings = _get_local_task_settings()
         task = create_task(
             TaskPayload(
                 title=f"成长练习：{recommendation.title}",
@@ -26989,7 +27697,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if line
                 ),
                 priority="normal",
-                listId=task_settings.defaultListId or DEFAULT_LOCAL_ORG_TASK_LIST_ID,
+                listId="",
                 ownerName=user_name,
                 tags=["成长练习", recommendation.abilityLabel],
                 sourceType="growth_recommendation",
@@ -27181,17 +27889,17 @@ def normalize_local_task_lists(state: AppState) -> None:
         )
         if has_table("task_settings"):
             state.db.execute(
-                "UPDATE task_settings SET default_list_id = ? WHERE default_list_id = ?",
-                (target_id, source_id),
+                "UPDATE task_settings SET default_list_id = NULL WHERE default_list_id = ?",
+                (source_id,),
             )
         if has_table("client_workspace_settings"):
             state.db.execute(
                 """
                 UPDATE client_workspace_settings
-                SET meeting_publish_default_list_id = ?
+                SET meeting_publish_default_list_id = NULL
                 WHERE meeting_publish_default_list_id = ?
                 """,
-                (target_id, source_id),
+                (source_id,),
             )
 
     if removed_ids:
@@ -27202,10 +27910,10 @@ def normalize_local_task_lists(state: AppState) -> None:
         state.db.execute(
             """
             UPDATE task_settings
-            SET default_list_id = ?
-            WHERE default_list_id IS NULL
-               OR default_list_id = ''
+            SET default_list_id = NULL
+            WHERE default_list_id = ''
                OR default_list_id = 'list-0'
+               OR default_list_id = ?
                OR default_list_id NOT IN (SELECT id FROM task_lists WHERE scope = 'org')
             """,
             (DEFAULT_LOCAL_ORG_TASK_LIST_ID,),
@@ -27214,10 +27922,10 @@ def normalize_local_task_lists(state: AppState) -> None:
         state.db.execute(
             """
             UPDATE client_workspace_settings
-            SET meeting_publish_default_list_id = ?
-            WHERE meeting_publish_default_list_id IS NULL
-               OR meeting_publish_default_list_id = ''
+            SET meeting_publish_default_list_id = NULL
+            WHERE meeting_publish_default_list_id = ''
                OR meeting_publish_default_list_id = 'list-0'
+               OR meeting_publish_default_list_id = ?
                OR meeting_publish_default_list_id NOT IN (SELECT id FROM task_lists WHERE scope = 'org')
             """,
             (DEFAULT_LOCAL_ORG_TASK_LIST_ID,),
@@ -27279,7 +27987,7 @@ def seed_defaults(state: AppState) -> None:
                 auto_assign_self, updated_at
             ) VALUES(?, ?, 'normal', 'today', 'calendar', 'manual', 0, 'work', 1, ?)
             """,
-            [(str(row["id"]), DEFAULT_LOCAL_ORG_TASK_LIST_ID, timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
+            [(str(row["id"]), None, timestamp) for row in state.db.fetchall("SELECT id FROM operators")],
         )
     if state.db.scalar("SELECT COUNT(1) AS count FROM analysis_templates") == 0:
         state.db.executemany(

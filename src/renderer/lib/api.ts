@@ -76,6 +76,8 @@ import type {
   HandbookEntryDetail,
   HandbookEntryPayload,
   HealthResponse,
+  InboxAggregate,
+  InboxNotification,
   ImportRecord,
   KnowledgeJob,
   KnowledgeMemoryRecord,
@@ -1152,6 +1154,14 @@ export async function getTaskBoard() {
   return request<{ tasks: Task[]; lists: TaskList[]; tags: TaskTag[] }>('/api/v1/tasks');
 }
 
+export async function getInboxNotifications() {
+  return request<{ notifications: InboxNotification[] }>('/api/v1/inbox/notifications');
+}
+
+export async function getCollaborationInbox() {
+  return request<InboxAggregate>('/api/v1/inbox');
+}
+
 export async function getTaskLists() {
   return request<{ lists: TaskList[] }>('/api/v1/task-lists');
 }
@@ -1474,14 +1484,14 @@ export async function confirmTask(id: string) {
   return request<Task>(`/api/v1/tasks/${id}/confirm`, { method: 'POST' });
 }
 
-export async function markTaskNotificationRead(id: string) {
-  return request<Task>(`/api/v1/tasks/${id}/notifications/read`, { method: 'POST' });
+export async function markInboxNotificationRead(id: string) {
+  return request<InboxNotification>(`/api/v1/inbox/notifications/${id}/read`, { method: 'POST' });
 }
 
-export async function markTaskNotificationsRead(taskIds: string[]) {
-  return request<{ taskIds: string[]; updatedCount: number }>('/api/v1/tasks/notifications/read-batch', {
+export async function markInboxNotificationsRead(notificationIds: string[]) {
+  return request<{ notificationIds: string[]; updatedCount: number }>('/api/v1/inbox/notifications/read-batch', {
     method: 'POST',
-    body: JSON.stringify({ taskIds }),
+    body: JSON.stringify({ notificationIds }),
   });
 }
 

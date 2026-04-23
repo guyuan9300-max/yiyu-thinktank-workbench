@@ -44,6 +44,14 @@ export function formatMonthTitle(date: Date) {
   return `${date.getFullYear()}年 ${date.getMonth() + 1}月`;
 }
 
+export function formatCalendarDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+export function buildWeekTaskAggregateKey(dayDate: Date, clusterId: number) {
+  return `aggregate-${formatCalendarDateKey(dayDate)}-${clusterId}`;
+}
+
 export function shiftCalendarMonth(baseDate: Date, selectedDay: number, monthDelta: number) {
   const calendarDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + monthDelta, 1);
 

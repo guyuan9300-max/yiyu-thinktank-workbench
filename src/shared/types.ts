@@ -853,6 +853,7 @@ export interface Task {
   status: TaskStatus;
   creatorId?: string | null;
   creatorName?: string | null;
+  creatorDisplayName?: string | null;
   priority: Priority;
   listId: string;
   listName: string;
@@ -876,6 +877,7 @@ export interface Task {
   projectFlowName?: string | null;
   ownerId?: string | null;
   ownerName: string;
+  ownerDisplayName?: string | null;
   sourceType: string;
   sourceId?: string | null;
   businessCategory?: string | null;
@@ -888,7 +890,10 @@ export interface Task {
   attachments: TaskAttachment[];
   collaborators: TaskCollaborator[];
   collaborationSummary: Record<string, number>;
+  pendingParticipantNames?: string[];
   viewerInboxStatus?: CollaboratorInboxStatus | null;
+  viewerCanConfirm?: boolean;
+  viewerCanReject?: boolean;
   orgContext?: TaskOrgContext | null;
   projectContext?: TaskProjectContext | null;
   memoryHints?: string[];
@@ -898,6 +903,31 @@ export interface Task {
   syncStatus?: 'local' | 'syncing' | 'synced' | 'pending' | 'error' | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface InboxNotification {
+  id: string;
+  kind: 'event_line_operation';
+  eventLineId?: string | null;
+  eventLineName?: string | null;
+  operationLabel: string;
+  actorId?: string | null;
+  actorName: string;
+  title: string;
+  summary: string;
+  mainOwnerNames: string[];
+  participantNames: string[];
+  metadata: Record<string, unknown>;
+  operatedAt: string;
+  viewerReadAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InboxAggregate {
+  pendingTasks: Task[];
+  systemNotifications: InboxNotification[];
+  outboundPendingTasks: Task[];
 }
 
 export interface TaskAttachment {
@@ -3700,6 +3730,7 @@ export interface TaskMutationPayload {
   ownerId?: string | null;
   ownerName: string;
   collaboratorIds: string[];
+  collaboratorNames?: string[];
   tagIds: string[];
   tags?: string[];
   sourceType?: string;

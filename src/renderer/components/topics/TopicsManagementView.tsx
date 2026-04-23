@@ -244,7 +244,6 @@ export function TopicsManagementView({
   candidates,
   tasks,
   activeTaskLists,
-  effectiveTaskSettings,
   topicsSettingsState,
   currentSessionUser,
   currentOperatorName,
@@ -276,7 +275,7 @@ export function TopicsManagementView({
   const [isPreparingTaskModal, setIsPreparingTaskModal] = useState(false);
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
 
-  const defaultListId = effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-1';
+  const defaultListId = '';
   const radarMap = useMemo(() => new Map(radars.map((item) => [item.id, item])), [radars]);
   const relatedTasksByCandidate = useMemo(() => {
     const grouped = new Map<string, Task[]>();

@@ -85,6 +85,100 @@ def seed_cloud_token(client: TestClient, token: str = "token_demo") -> None:
     client.app.state.app_state.db.set_setting("cloud_access_token", token)
 
 
+def test_growth_overview_smoke_does_not_fail_when_no_badges_have_synced(tmp_path: Path):
+    client = make_client(tmp_path)
+    try:
+        response = client.get("/api/v1/growth/overview")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert "abilities" in payload
+        assert "updatedAt" in payload
+    finally:
+        client.__exit__(None, None, None)
+
+
+def insert_local_event_line_notification(
+    client: TestClient,
+    *,
+    notification_id: str,
+    user: dict,
+    event_line_id: str = "line_demo",
+    title: str = "事件线系统通知",
+    other_user_ids: list[tuple[str, str, str]] | None = None,
+) -> None:
+    timestamp = app_main.now_iso()
+    db = client.app.state.app_state.db
+    db.execute(
+        """
+        INSERT INTO event_line_notifications(
+            id, organization_id, event_line_id, event_line_name, operation_label,
+            actor_id, actor_name, title, summary, metadata_json,
+            main_owner_names_json, participant_names_json, operated_at, created_at, updated_at,
+            sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version,
+            pending_sync_action, last_sync_error
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            notification_id,
+            user["organizationId"],
+            event_line_id,
+            "测试事件线",
+            "状态更新",
+            user["id"],
+            user["fullName"],
+            title,
+            "验证本地系统通知已阅逻辑。",
+            "{}",
+            json.dumps([user["fullName"]], ensure_ascii=False),
+            json.dumps([user["fullName"]], ensure_ascii=False),
+            timestamp,
+            timestamp,
+            timestamp,
+            "synced",
+            "",
+            "",
+            timestamp,
+            "",
+            "",
+            "",
+        ),
+    )
+    receipt_rows = [
+        (
+            notification_id,
+            user["organizationId"],
+            user["id"],
+            user["fullName"],
+            user["email"],
+            None,
+            timestamp,
+            timestamp,
+        )
+    ]
+    for other_user_id, other_name, other_email in other_user_ids or []:
+        receipt_rows.append(
+            (
+                notification_id,
+                user["organizationId"],
+                other_user_id,
+                other_name,
+                other_email,
+                None,
+                timestamp,
+                timestamp,
+            )
+        )
+    db.conn.executemany(
+        """
+        INSERT INTO event_line_notification_receipts(
+            notification_id, organization_id, user_id, full_name, email, read_at, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        receipt_rows,
+    )
+
+
 def stub_cloud_auth_me(monkeypatch, user_payload: dict, *, base_url: str = "http://127.0.0.1:47830"):
     def fake_cloud_request(method: str, url: str, **kwargs):
         if method.upper() == "GET" and url == f"{base_url.rstrip('/')}/api/v1/auth/me":
@@ -1450,6 +1544,9 @@ def test_client_meeting_publish_writes_task(tmp_path: Path):
     tasks = client.get("/api/v1/tasks")
     task_items = tasks.json()["tasks"]
     assert any(task["sourceId"] == meeting_id for task in task_items)
+    meeting_task = next(task for task in task_items if task["sourceId"] == meeting_id)
+    assert meeting_task["listId"] == ""
+    assert meeting_task["listIds"] == []
 
 
 def test_topics_promote_to_task(tmp_path: Path):
@@ -1481,6 +1578,8 @@ def test_topics_promote_to_task(tmp_path: Path):
     to_task = client.post(f"/api/v1/topics/candidates/{candidate_id}/promote-task")
     assert to_task.status_code == 200
     assert to_task.json()["sourceType"] == "topic_candidate"
+    assert to_task.json()["listId"] == ""
+    assert to_task.json()["listIds"] == []
 
 
 def test_topics_task_plan_and_batch_promote(tmp_path: Path, monkeypatch):
@@ -4844,86 +4943,359 @@ def test_confirm_task_local_fallback_returns_task_for_pending_collaborator(tmp_p
 def test_mark_event_line_notification_read_queues_local_sync(tmp_path: Path):
     client = make_client(tmp_path)
     session_user = seed_session_user(client)
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    list_id = board.json()["lists"][0]["id"]
-    seed_cloud_token(client)
-
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "系统通知待处理",
-            "desc": "验证本地已读会进入待同步状态。",
-            "listId": list_id,
-            "sourceType": "event_line_notification",
-            "ownerId": session_user["id"],
-            "ownerName": session_user["fullName"],
-            "collaboratorIds": [session_user["id"], "user_other"],
-        },
-    )
-    assert created.status_code == 200, created.text
-    task_id = created.json()["id"]
-    client.app.state.app_state.db.execute(
-        "UPDATE tasks SET sync_status = 'synced', pending_sync_action = '', last_sync_error = '' WHERE id = ?",
-        (task_id,),
+    insert_local_event_line_notification(
+        client,
+        notification_id="notif_local_single",
+        user=session_user,
+        other_user_ids=[("user_other", "其他成员", "other@example.com")],
     )
 
-    marked = client.post(f"/api/v1/tasks/{task_id}/notifications/read")
+    inbox_before = client.get("/api/v1/inbox/notifications")
+    assert inbox_before.status_code == 200, inbox_before.text
+    assert [item["id"] for item in inbox_before.json()["notifications"]] == ["notif_local_single"]
+
+    marked = client.post("/api/v1/inbox/notifications/notif_local_single/read")
     assert marked.status_code == 200, marked.text
-    assert marked.json()["status"] == "inbox"
+    assert marked.json()["id"] == "notif_local_single"
+    assert marked.json()["viewerReadAt"]
 
-    task_row = client.app.state.app_state.db.fetchone(
-        "SELECT sync_status, pending_sync_action FROM tasks WHERE id = ?",
-        (task_id,),
+    notification_row = client.app.state.app_state.db.fetchone(
+        "SELECT sync_status, pending_sync_action FROM event_line_notifications WHERE id = ?",
+        ("notif_local_single",),
     )
-    assert task_row is not None
-    assert task_row["sync_status"] == "queued"
-    assert task_row["pending_sync_action"] == "update"
+    assert notification_row is not None
+    assert notification_row["sync_status"] == "queued"
+    assert notification_row["pending_sync_action"] == "read"
+
+    receipt_row = client.app.state.app_state.db.fetchone(
+        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
+        ("notif_local_single", session_user["id"]),
+    )
+    assert receipt_row is not None
+    assert receipt_row["read_at"]
+
+    inbox_after = client.get("/api/v1/inbox/notifications")
+    assert inbox_after.status_code == 200, inbox_after.text
+    assert inbox_after.json()["notifications"] == []
 
 
 def test_mark_event_line_notifications_read_batch_queues_local_sync(tmp_path: Path):
     client = make_client(tmp_path)
     session_user = seed_session_user(client)
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    list_id = board.json()["lists"][0]["id"]
-    seed_cloud_token(client)
-
-    task_ids: list[str] = []
-    for index in range(2):
-        created = client.post(
-            "/api/v1/tasks",
-            json={
-                "title": f"批量系统通知 {index + 1}",
-                "desc": "验证批量已阅会统一进入待同步状态。",
-                "listId": list_id,
-                "sourceType": "event_line_notification",
-                "ownerId": session_user["id"],
-                "ownerName": session_user["fullName"],
-                "collaboratorIds": [session_user["id"], f"user_other_{index}"],
-            },
-        )
-        assert created.status_code == 200, created.text
-        task_ids.append(created.json()["id"])
-        client.app.state.app_state.db.execute(
-            "UPDATE tasks SET sync_status = 'synced', pending_sync_action = '', last_sync_error = '' WHERE id = ?",
-            (created.json()["id"],),
+    notification_ids = ["notif_local_batch_1", "notif_local_batch_2"]
+    for index, notification_id in enumerate(notification_ids, start=1):
+        insert_local_event_line_notification(
+            client,
+            notification_id=notification_id,
+            user=session_user,
+            event_line_id=f"line_batch_{index}",
+            title=f"批量系统通知 {index}",
+            other_user_ids=[(f"user_other_{index}", f"其他成员{index}", f"other{index}@example.com")],
         )
 
-    marked = client.post("/api/v1/tasks/notifications/read-batch", json={"taskIds": task_ids})
+    marked = client.post("/api/v1/inbox/notifications/read-batch", json={"notificationIds": notification_ids})
     assert marked.status_code == 200, marked.text
     payload = marked.json()
     assert payload["updatedCount"] == 2
-    assert payload["taskIds"] == task_ids
+    assert payload["notificationIds"] == notification_ids
 
     rows = client.app.state.app_state.db.fetchall(
-        "SELECT id, sync_status, pending_sync_action FROM tasks WHERE id IN (?, ?) ORDER BY created_at ASC",
-        (task_ids[0], task_ids[1]),
+        "SELECT id, sync_status, pending_sync_action FROM event_line_notifications WHERE id IN (?, ?) ORDER BY created_at ASC",
+        (notification_ids[0], notification_ids[1]),
     )
     assert len(rows) == 2
     for row in rows:
         assert row["sync_status"] == "queued"
-        assert row["pending_sync_action"] == "update"
+        assert row["pending_sync_action"] == "read"
+
+    unread_rows = client.app.state.app_state.db.fetchall(
+        "SELECT notification_id, read_at FROM event_line_notification_receipts WHERE user_id = ? ORDER BY notification_id ASC",
+        (session_user["id"],),
+    )
+    assert len(unread_rows) == 2
+    assert all(row["read_at"] for row in unread_rows)
+
+    inbox_after = client.get("/api/v1/inbox/notifications")
+    assert inbox_after.status_code == 200, inbox_after.text
+    assert inbox_after.json()["notifications"] == []
+
+
+def test_task_board_preserves_empty_list_from_cloud_payload(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    session_user = seed_session_user(client)
+    seed_cloud_token(client)
+    app_main._local_cloud_sync_runtime["last_started_at"] = 0.0
+    app_main._local_cloud_sync_runtime["running"] = False
+
+    class ImmediateThread:
+        def __init__(self, *, target=None, daemon=None, **kwargs):
+            self._target = target
+            self.daemon = daemon
+
+        def start(self):
+            if self._target:
+                self._target()
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        normalized = "http://127.0.0.1:47830"
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-lists":
+            return httpx.Response(200, json={"lists": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-tags":
+            return httpx.Response(200, json={"tags": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [
+                        {
+                            "id": "task_cloud_no_list",
+                            "title": "云端无清单任务",
+                            "description": "不应被回退成默认清单。",
+                            "status": "todo",
+                            "priority": "normal",
+                            "listId": "",
+                            "listName": "",
+                            "listColor": "",
+                            "listIds": [],
+                            "listNames": [],
+                            "creatorId": session_user["id"],
+                            "creatorName": session_user["fullName"],
+                            "ownerId": session_user["id"],
+                            "ownerName": session_user["fullName"],
+                            "sourceType": "manual",
+                            "createdAt": "2026-04-23T10:00:00",
+                            "updatedAt": "2026-04-23T10:05:00",
+                            "collaborators": [],
+                        }
+                    ]
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines":
+            return httpx.Response(200, json={"eventLines": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-group-templates":
+            return httpx.Response(200, json={"templates": []})
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/reviews/history":
+            return httpx.Response(200, json={"items": []})
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main, "Thread", ImmediateThread)
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    payload = board.json()
+    assert len(payload["tasks"]) == 1
+    task = payload["tasks"][0]
+    assert task["listId"] == ""
+    assert task["listName"] == ""
+    assert task["listNames"] == []
+
+
+def test_inbox_aggregate_preserves_cloud_collaboration_display_fields(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
+    session_user = seed_session_user(
+        client,
+        user_id="user_admin",
+        email="admin@example.com",
+        full_name="系统管理员",
+        primary_role="admin",
+    )
+    seed_cloud_token(client)
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        normalized = "http://127.0.0.1:47830"
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [],
+                    "lists": [
+                        {
+                            "id": default_list_id,
+                            "name": "客户项目",
+                            "color": "#5B7BFE",
+                            "sortOrder": 0,
+                            "isDefault": True,
+                            "scope": "org",
+                        }
+                    ],
+                    "tags": [],
+                    "commonTags": [],
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/inbox":
+            return httpx.Response(
+                200,
+                json={
+                    "pendingTasks": [
+                        {
+                            "id": "task_cloud_pending_display",
+                            "title": "云端待确认任务",
+                            "description": "验证本地桥接保留协作展示字段。",
+                            "status": "inbox",
+                            "progressStatus": "todo",
+                            "priority": "normal",
+                            "listId": default_list_id,
+                            "listName": "客户项目",
+                            "listColor": "#5B7BFE",
+                            "listIds": [default_list_id],
+                            "listNames": ["客户项目"],
+                            "creatorId": "user_qinghua",
+                            "creatorName": "清华",
+                            "creatorDisplayName": "清华",
+                            "ownerId": session_user["id"],
+                            "ownerName": session_user["fullName"],
+                            "ownerDisplayName": session_user["fullName"],
+                            "sourceType": "manual",
+                            "collaborators": [
+                                {
+                                    "userId": session_user["id"],
+                                    "fullName": session_user["fullName"],
+                                    "email": session_user["email"],
+                                    "orderIndex": 0,
+                                    "isOwner": True,
+                                    "inboxStatus": "pending",
+                                },
+                                {
+                                    "userId": "user_qinghua",
+                                    "fullName": "清华",
+                                    "email": "qinghua@example.com",
+                                    "orderIndex": 1,
+                                    "isOwner": False,
+                                    "inboxStatus": "accepted",
+                                },
+                            ],
+                            "collaborationSummary": {"pending": 1, "accepted": 1, "returned": 0},
+                            "pendingParticipantNames": [session_user["fullName"]],
+                            "viewerInboxStatus": "pending",
+                            "viewerCanConfirm": True,
+                            "viewerCanReject": True,
+                            "createdAt": "2026-04-23T10:00:00",
+                            "updatedAt": "2026-04-23T10:05:00",
+                        }
+                    ],
+                    "systemNotifications": [],
+                    "outboundPendingTasks": [],
+                },
+            )
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    inbox = client.get("/api/v1/inbox")
+    assert inbox.status_code == 200, inbox.text
+    payload = inbox.json()
+    assert len(payload["pendingTasks"]) == 1
+    task = payload["pendingTasks"][0]
+    assert task["creatorDisplayName"] == "清华"
+    assert task["ownerDisplayName"] == session_user["fullName"]
+    assert task["pendingParticipantNames"] == [session_user["fullName"]]
+    assert task["viewerInboxStatus"] == "pending"
+    assert task["viewerCanConfirm"] is True
+    assert task["viewerCanReject"] is True
+
+
+def test_task_can_be_created_without_any_list_locally(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    settings = client.get("/api/v1/settings/tasks")
+    assert settings.status_code == 200, settings.text
+    assert settings.json()["defaultListId"] is None
+
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "本地无清单任务",
+            "desc": "保存后保持无清单。",
+            "priority": "normal",
+            "listId": "",
+            "listIds": [],
+        },
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["listId"] == ""
+    assert payload["listName"] == ""
+    assert payload["listIds"] == []
+    assert payload["listNames"] == []
+
+    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
+    set_default = client.post("/api/v1/settings/tasks", json={"defaultListId": default_list_id})
+    assert set_default.status_code == 200, set_default.text
+    assert set_default.json()["defaultListId"] == default_list_id
+    clear_default = client.post("/api/v1/settings/tasks", json={"defaultListId": None})
+    assert clear_default.status_code == 200, clear_default.text
+    assert clear_default.json()["defaultListId"] is None
+
+
+def test_task_board_excludes_legacy_event_line_notification_rows(tmp_path: Path):
+    client = make_client(tmp_path)
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    list_id = board.json()["lists"][0]["id"]
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "遗留事件线通知任务",
+            "desc": "这条任务会被改造成遗留通知记录。",
+            "priority": "normal",
+            "listId": list_id,
+        },
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+
+    client.app.state.app_state.db.execute(
+        "UPDATE tasks SET source_type = 'event_line_notification', progress_status = 'inbox' WHERE id = ?",
+        (task_id,),
+    )
+
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    visible_ids = {task["id"] for task in board.json()["tasks"]}
+    assert task_id not in visible_ids
+
+
+def test_collaboration_inbox_cleans_legacy_notification_tasks_and_returns_notifications(tmp_path: Path):
+    client = make_client(tmp_path)
+    session_user = seed_session_user(client)
+    insert_local_event_line_notification(
+        client,
+        notification_id="notif_inbox_aggregate",
+        user=session_user,
+    )
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    list_id = board.json()["lists"][0]["id"]
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "聚合收件箱不应显示的旧通知任务",
+            "desc": "这条旧任务形态应被收件箱清掉。",
+            "priority": "normal",
+            "listId": list_id,
+        },
+    )
+    assert created.status_code == 200, created.text
+    legacy_task_id = created.json()["id"]
+    client.app.state.app_state.db.execute(
+        "UPDATE tasks SET source_type = 'event_line_notification', progress_status = 'inbox' WHERE id = ?",
+        (legacy_task_id,),
+    )
+
+    inbox = client.get("/api/v1/inbox")
+    assert inbox.status_code == 200, inbox.text
+    payload = inbox.json()
+    assert payload["pendingTasks"] == []
+    assert [item["id"] for item in payload["systemNotifications"]] == ["notif_inbox_aggregate"]
+    assert payload["outboundPendingTasks"] == []
+
+    legacy_row = client.app.state.app_state.db.fetchone(
+        "SELECT id FROM tasks WHERE id = ?",
+        (legacy_task_id,),
+    )
+    assert legacy_row is None
 
 
 def test_employee_can_edit_business_settings_but_not_sensitive_settings(tmp_path: Path):

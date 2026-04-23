@@ -99,6 +99,7 @@ import type {
   HandbookSettings,
   HealthResponse,
   HierarchyReport,
+  InboxNotification,
   KnowledgeSearchResult,
   LegacyScanReport,
   LocalInputMemory,
@@ -217,6 +218,7 @@ import {
   getHealth,
   getHandbook,
   getHandbookSettings,
+  getCollaborationInbox,
   getLocalInputMemory,
   getMentionCandidates,
   getOrganizationDna,
@@ -256,8 +258,8 @@ import {
   login,
   ingestMeeting,
   logout,
-  markTaskNotificationRead,
-  markTaskNotificationsRead,
+  markInboxNotificationRead,
+  markInboxNotificationsRead,
   processPendingConsultationKnowledgeRequests,
   previewPullFromMain,
   previewPushToMain,
@@ -2372,37 +2374,6 @@ function formatTaskTimelineLabel(task: Pick<Task, 'startDate' | 'dueDate' | 'dur
   return formatUnifiedTaskTimelineLabel(task);
 }
 
-type EventLineNotificationSummary = {
-  eventLineTitle: string;
-  operation: string;
-  operator: string;
-  operatedAt: string;
-  mainOwners: string;
-  participants: string;
-};
-
-function parseEventLineNotificationSummary(task: Pick<Task, 'sourceType' | 'title' | 'desc'>): EventLineNotificationSummary | null {
-  if (task.sourceType !== 'event_line_notification') return null;
-  const rawLines = String(task.desc || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const values = new Map<string, string>();
-  rawLines.forEach((line) => {
-    const [label, ...rest] = line.split('：');
-    if (!label || rest.length === 0) return;
-    values.set(label.trim(), rest.join('：').trim());
-  });
-  return {
-    eventLineTitle: values.get('事件线标题') || task.title || '未命名事件线',
-    operation: values.get('事件线操作') || '状态更新',
-    operator: values.get('操作者') || '未标记',
-    operatedAt: values.get('操作时间') || '',
-    mainOwners: values.get('主要负责人') || '未设置',
-    participants: values.get('参与者') || '暂无',
-  };
-}
-
 function taskIsSystemNotification(task: Pick<Task, 'sourceType'>) {
   return task.sourceType === 'event_line_notification';
 }
@@ -3511,10 +3482,56 @@ function taskMatchesTimeRange(
   return true;
 }
 
+function notificationMatchesTimeRange(
+  notification: InboxNotification,
+  filter: TaskTimeRangeFilter,
+  customStartDate: string,
+  customEndDate: string,
+) {
+  if (filter === 'all') return true;
+  const notificationDate = new Date(notification.operatedAt || notification.createdAt || notification.updatedAt);
+  if (Number.isNaN(notificationDate.getTime())) return false;
+  const notificationTime = notificationDate.getTime();
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (filter === 'last3days') {
+    const start = new Date(startOfToday);
+    start.setDate(start.getDate() - 2);
+    return notificationTime >= start.getTime();
+  }
+  if (filter === 'lastMonth') {
+    const start = new Date(startOfToday);
+    start.setMonth(start.getMonth() - 1);
+    return notificationTime >= start.getTime();
+  }
+  if (filter === 'lastHalfYear') {
+    const start = new Date(startOfToday);
+    start.setMonth(start.getMonth() - 6);
+    return notificationTime >= start.getTime();
+  }
+  if (filter === 'custom') {
+    const start = customStartDate ? new Date(`${customStartDate}T00:00:00`) : null;
+    const end = customEndDate ? new Date(`${customEndDate}T23:59:59`) : null;
+    if (start && !Number.isNaN(start.getTime()) && notificationTime < start.getTime()) return false;
+    if (end && !Number.isNaN(end.getTime()) && notificationTime > end.getTime()) return false;
+    return true;
+  }
+  return true;
+}
+
 function sortTasksByTimeDirection(tasks: Task[], direction: TaskTimeSort) {
   return [...tasks].sort((left, right) => {
     const leftTime = resolveTaskTimelineDateTime(left)?.getTime() || 0;
     const rightTime = resolveTaskTimelineDateTime(right)?.getTime() || 0;
+    return direction === 'newest' ? rightTime - leftTime : leftTime - rightTime;
+  });
+}
+
+function sortNotificationsByTimeDirection(notifications: InboxNotification[], direction: TaskTimeSort) {
+  return [...notifications].sort((left, right) => {
+    const leftTime = new Date(left.operatedAt || left.createdAt || left.updatedAt).getTime() || 0;
+    const rightTime = new Date(right.operatedAt || right.createdAt || right.updatedAt).getTime() || 0;
     return direction === 'newest' ? rightTime - leftTime : leftTime - rightTime;
   });
 }
@@ -4045,6 +4062,9 @@ export default function App() {
   }, [currentClientId]);
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [inboxPendingTasks, setInboxPendingTasks] = useState<Task[]>([]);
+  const [outboundInboxTasks, setOutboundInboxTasks] = useState<Task[]>([]);
+  const [inboxNotifications, setInboxNotifications] = useState<InboxNotification[]>([]);
   const [updatingTaskStatusIds, setUpdatingTaskStatusIds] = useState<string[]>([]);
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [isTaskListsLoading, setIsTaskListsLoading] = useState(false);
@@ -4783,7 +4803,14 @@ export default function App() {
   }
 
   async function loadTaskBlock() {
-    const response = await getTaskBoard();
+    const [response, inboxResponse] = await Promise.all([
+      getTaskBoard(),
+      getCollaborationInbox().catch(() => ({
+        pendingTasks: [] as Task[],
+        systemNotifications: [] as InboxNotification[],
+        outboundPendingTasks: [] as Task[],
+      })),
+    ]);
     let mergedLists = response.lists;
     try {
       const library = await getTaskLists();
@@ -4792,12 +4819,29 @@ export default function App() {
       mergedLists = mergeTaskListRecords(response.lists || []);
     }
     setTasks(response.tasks);
+    setInboxPendingTasks(inboxResponse.pendingTasks || []);
+    setInboxNotifications(inboxResponse.systemNotifications || []);
+    setOutboundInboxTasks(inboxResponse.outboundPendingTasks || []);
     setTaskLists(mergedLists);
     setTaskTags([]);
     return {
       ...response,
       lists: mergedLists,
+      notifications: inboxResponse.systemNotifications || [],
     };
+  }
+
+  async function refreshInboxNotificationsBlock() {
+    try {
+      const response = await getCollaborationInbox();
+      setInboxPendingTasks(response.pendingTasks || []);
+      setInboxNotifications(response.systemNotifications || []);
+      setOutboundInboxTasks(response.outboundPendingTasks || []);
+    } catch {
+      setInboxPendingTasks([]);
+      setInboxNotifications([]);
+      setOutboundInboxTasks([]);
+    }
   }
 
   const refreshTaskListLibrary = useCallback(async () => {
@@ -4813,6 +4857,9 @@ export default function App() {
 
   function resetCloudBoundTaskViews() {
     setTasks([]);
+    setInboxPendingTasks([]);
+    setOutboundInboxTasks([]);
+    setInboxNotifications([]);
     setReviewDashboard(null);
     setReviewHistory([]);
   }
@@ -6546,19 +6593,17 @@ export default function App() {
       if (!isTaskModalOpen) return;
       if (editingTask.scopeMode === 'PERSONAL_ONLY') {
         if (personalTaskLists.length === 0) return;
-        const fallbackListId = resolveTaskViewDefaultListId('personal');
         const nextListIds = Array.from(new Set((editingTask.listIds || []).filter((listId) => personalTaskLists.some((item) => item.id === listId))));
-        const nextPrimaryListId = nextListIds[0] || fallbackListId || '';
-        const normalizedListIds = nextListIds.length > 0 ? nextListIds : (nextPrimaryListId ? [nextPrimaryListId] : []);
+        const nextPrimaryListId = nextListIds[0] || '';
+        const normalizedListIds = nextListIds;
         if (editingTask.listId === nextPrimaryListId && JSON.stringify(editingTask.listIds) === JSON.stringify(normalizedListIds)) return;
         setEditingTask((prev) => ({ ...prev, listId: nextPrimaryListId, listIds: normalizedListIds }));
         return;
       }
       if (orgTaskLists.length === 0) return;
-      const fallbackListId = resolveTaskViewDefaultListId('org');
       const nextListIds = Array.from(new Set((editingTask.listIds || []).filter((listId) => orgTaskLists.some((item) => item.id === listId))));
-      const nextPrimaryListId = nextListIds[0] || fallbackListId || '';
-      const normalizedListIds = nextListIds.length > 0 ? nextListIds : (nextPrimaryListId ? [nextPrimaryListId] : []);
+      const nextPrimaryListId = nextListIds[0] || '';
+      const normalizedListIds = nextListIds;
       if (editingTask.listId === nextPrimaryListId && JSON.stringify(editingTask.listIds) === JSON.stringify(normalizedListIds)) return;
       setEditingTask((prev) => ({ ...prev, listId: nextPrimaryListId, listIds: normalizedListIds }));
     }, [
@@ -6568,7 +6613,6 @@ export default function App() {
       isTaskModalOpen,
       orgTaskLists,
       personalTaskLists,
-      resolveTaskViewDefaultListId,
     ]);
     const latestReview = reviewDashboard?.currentReview || null;
     const teamReport = reviewDashboard?.teamReport || null;
@@ -6737,28 +6781,22 @@ export default function App() {
       return true;
     };
 
-    const inboundPendingTasks = tasks.filter((task) => task.status === 'inbox' && !transitioningInboxTaskIds.includes(task.id));
-    const outboundPendingTasks = tasks.filter(
+    const inboundPendingTasks = inboxPendingTasks.filter(
+      (task) =>
+        task.status === 'inbox'
+        && task.viewerInboxStatus === 'pending'
+        && !transitioningInboxTaskIds.includes(task.id),
+    );
+    const outboundPendingTasks = outboundInboxTasks.filter(
       (task) => task.status !== 'rejected'
         && task.status !== 'inbox'
         && !transitioningInboxTaskIds.includes(task.id)
         && taskWaitsForOthers(task, currentSessionUser?.id),
     );
-    const inboundNotificationTasks = useMemo(
-      () => sortTasksByTimeDirection(
-        inboundPendingTasks.filter((task) =>
-          task.sourceType === 'event_line_notification'
-          && taskMatchesTimeRange(task, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
-        ),
-        inboxTimeSort,
-      ),
-      [inboundPendingTasks, inboxCustomEndDate, inboxCustomStartDate, inboxTimeRangeFilter, inboxTimeSort],
-    );
     const inboundConfirmableTasks = useMemo(
       () => sortTasksByTimeDirection(
         inboundPendingTasks.filter((task) =>
-          task.sourceType !== 'event_line_notification'
-          && taskMatchesTimeRange(task, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
+          taskMatchesTimeRange(task, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
         ),
         inboxTimeSort,
       ),
@@ -6777,19 +6815,17 @@ export default function App() {
       () => [...inboundConfirmableTasks],
       [inboundConfirmableTasks],
     );
-    const inboxBadgeCount = inboundPendingTasks.length + outboundPendingTasks.length;
-    const inboxFeedItems = useMemo(() => {
-      const items = [
-        ...inboundConfirmableTasks.map((task) => ({ task, kind: 'confirmable' as const })),
-        ...filteredOutboundPendingTasks.map((task) => ({ task, kind: 'outbound' as const })),
-        ...inboundNotificationTasks.map((task) => ({ task, kind: 'notification' as const })),
-      ];
-      return items.sort((left, right) => {
-        const leftTime = new Date(left.task.updatedAt || left.task.createdAt || 0).getTime();
-        const rightTime = new Date(right.task.updatedAt || right.task.createdAt || 0).getTime();
-        return inboxTimeSort === 'oldest' ? leftTime - rightTime : rightTime - leftTime;
-      });
-    }, [filteredOutboundPendingTasks, inboxTimeSort, inboundConfirmableTasks, inboundNotificationTasks]);
+    const visibleInboxNotifications = useMemo(
+      () => sortNotificationsByTimeDirection(
+        inboxNotifications.filter((notification) =>
+          !transitioningInboxTaskIds.includes(notification.id)
+          && notificationMatchesTimeRange(notification, inboxTimeRangeFilter, inboxCustomStartDate, inboxCustomEndDate)
+        ),
+        inboxTimeSort,
+      ),
+      [inboxCustomEndDate, inboxCustomStartDate, inboxNotifications, inboxTimeRangeFilter, inboxTimeSort, transitioningInboxTaskIds],
+    );
+    const inboxBadgeCount = inboundPendingTasks.length + outboundPendingTasks.length + inboxNotifications.filter((notification) => !transitioningInboxTaskIds.includes(notification.id)).length;
     const activeFormalTaskView = useMemo(() => {
       if (drillTaskViewOverride?.targetType === 'task_view') {
         return {
@@ -6875,13 +6911,17 @@ export default function App() {
       setSelectedInboxIds((prev) => prev.filter((id) => availableIds.has(id)));
     }, [actionableInboxTasks]);
     useEffect(() => {
-      const availableIds = new Set(inboundNotificationTasks.map((task) => task.id));
+      const availableIds = new Set(visibleInboxNotifications.map((item) => item.id));
       setSelectedNotificationIds((prev) => prev.filter((id) => availableIds.has(id)));
-    }, [inboundNotificationTasks]);
+    }, [visibleInboxNotifications]);
     useEffect(() => {
-      const availableIds = new Set(inboxFeedItems.map((item) => item.task.id));
+      const availableIds = new Set([
+        ...actionableInboxTasks.map((task) => task.id),
+        ...filteredOutboundPendingTasks.map((task) => task.id),
+        ...visibleInboxNotifications.map((item) => item.id),
+      ]);
       setExpandedInboxTaskIds((prev) => prev.filter((id) => availableIds.has(id)));
-    }, [inboxFeedItems]);
+    }, [actionableInboxTasks, filteredOutboundPendingTasks, visibleInboxNotifications]);
     const baseCalendarTasks = tasks.filter((task) => {
       if (task.status === 'rejected') return false;
       if (taskIsSystemNotification(task)) return false;
@@ -6895,7 +6935,7 @@ export default function App() {
       );
     }, [activeFormalTaskView, baseCalendarTasks]);
     const isAllSelected = actionableInboxTasks.length > 0 && selectedInboxIds.length === actionableInboxTasks.length;
-    const isAllNotificationsSelected = inboundNotificationTasks.length > 0 && selectedNotificationIds.length === inboundNotificationTasks.length;
+    const isAllNotificationsSelected = visibleInboxNotifications.length > 0 && selectedNotificationIds.length === visibleInboxNotifications.length;
 
     const tasksById = new Map(tasks.map((task) => [task.id, task]));
     const buildReviewRows = (items: WeeklyReviewTaskEntry[]): ReviewTaskRow[] =>
@@ -7622,25 +7662,226 @@ export default function App() {
     };
 
     const handleMarkNotificationsRead = async (idsToRead: string[]) => {
-      const taskIds = Array.from(new Set(idsToRead)).filter(Boolean);
-      if (taskIds.length === 0) return false;
-      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...taskIds])));
-      setSelectedNotificationIds((prev) => prev.filter((id) => !taskIds.includes(id)));
+      const notificationIds = Array.from(new Set(idsToRead)).filter(Boolean);
+      if (notificationIds.length === 0) return false;
+      setTransitioningInboxTaskIds((prev) => Array.from(new Set([...prev, ...notificationIds])));
+      setSelectedNotificationIds((prev) => prev.filter((id) => !notificationIds.includes(id)));
       try {
-        if (taskIds.length === 1) {
-          await markTaskNotificationRead(taskIds[0]);
+        if (notificationIds.length === 1) {
+          await markInboxNotificationRead(notificationIds[0]);
         } else {
-          await markTaskNotificationsRead(taskIds);
+          await markInboxNotificationsRead(notificationIds);
         }
         await loadTaskBlock();
-        flash('success', taskIds.length === 1 ? '通知已标记为已阅。' : `已阅 ${taskIds.length} 条通知。`);
+        flash('success', notificationIds.length === 1 ? '通知已标记为已阅。' : `已阅 ${notificationIds.length} 条通知。`);
         return true;
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '通知状态更新失败');
         return false;
       } finally {
-        setTransitioningInboxTaskIds((prev) => prev.filter((id) => !taskIds.includes(id)));
+        setTransitioningInboxTaskIds((prev) => prev.filter((id) => !notificationIds.includes(id)));
       }
+    };
+
+    const renderInboxTaskCard = (task: Task, kind: 'confirmable' | 'outbound') => {
+      const isExpanded = expandedInboxTaskIds.includes(task.id);
+      const pendingParticipantNames = Array.from(
+        new Set((task.pendingParticipantNames || []).map((item) => item.trim()).filter(Boolean)),
+      );
+      const pendingCount = pendingParticipantNames.length;
+      const creatorLabel =
+        (task.creatorDisplayName || task.creatorName || '').trim()
+        || '未标记';
+      const statusBadge =
+        kind === 'outbound'
+          ? { label: pendingCount > 0 ? `待 ${pendingCount} 人确认` : '已发出', className: 'bg-amber-50 text-amber-700' }
+          : { label: '待你确认', className: 'bg-blue-50 text-[#5B7BFE]' };
+      return (
+        <div
+          key={`${kind}-${task.id}`}
+          className={`border rounded-2xl px-4 py-4 shadow-sm transition-all duration-300 flex items-start gap-3 ${
+            isExpanded ? 'border-blue-100 shadow-md bg-[#FBFCFF]' : 'border-gray-100 bg-white hover:border-blue-100 hover:shadow-md'
+          }`}
+        >
+          {kind === 'confirmable' ? (
+            <input
+              type="checkbox"
+              checked={selectedInboxIds.includes(task.id)}
+              onChange={(event) => {
+                setSelectedInboxIds((prev) =>
+                  event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
+                );
+              }}
+              className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+            />
+          ) : (
+            <div className="mt-1 h-4 w-4 rounded-full border border-amber-300 bg-amber-50" />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${statusBadge.className}`}>{statusBadge.label}</span>
+                  <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
+                </div>
+                {!isExpanded && (
+                  <p className="mt-2 text-[12px] text-gray-500 line-clamp-2">
+                    {task.desc || '点击展开可查看任务详情与协作状态。'}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {kind === 'confirmable' ? (
+                  <>
+                    <Button disabled={!task.viewerCanConfirm} onClick={() => void handleConfirmTasks([task.id])}>确认</Button>
+                    <Button
+                      disabled={!task.viewerCanReject}
+                      onClick={() => {
+                        setRejectingTaskIds([task.id]);
+                        setIsRejectModalOpen(true);
+                      }}
+                    >
+                      退回
+                    </Button>
+                  </>
+                ) : (
+                  <Button onClick={() => openTaskEditor(task)}>查看任务</Button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpandedInboxTaskIds((prev) =>
+                      prev.includes(task.id) ? prev.filter((item) => item !== task.id) : [...prev, task.id],
+                    );
+                  }}
+                  className={`inline-flex items-center justify-center rounded-full border border-gray-200 bg-gray-50 p-1.5 text-gray-400 transition-transform hover:border-[#C9D6FF] hover:text-[#5B7BFE] ${isExpanded ? 'rotate-180' : ''}`}
+                  aria-label={isExpanded ? '收起任务卡片' : '展开任务卡片'}
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-medium">
+              <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">{formatTaskTimelineLabel(task)}</span>
+            </div>
+            <div className="mt-2 space-y-1 text-[11px] font-medium">
+              <div className="rounded-xl bg-blue-50 px-3 py-2 text-[#5B7BFE]">发起人：{creatorLabel}</div>
+              <div className="rounded-xl bg-amber-50 px-3 py-2 text-amber-700">
+                待确认：{pendingParticipantNames.length > 0 ? pendingParticipantNames.join('、') : '无'}
+              </div>
+            </div>
+            {isExpanded && (
+              <div className="mt-3 border-t border-gray-100 pt-3 space-y-3">
+                <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">任务说明</p>
+                  <p className="mt-2 text-[12px] leading-6 text-gray-600 whitespace-pre-wrap">{task.desc || '暂无详细说明。'}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const renderInboxNotificationCard = (notification: InboxNotification) => {
+      const isExpanded = expandedInboxTaskIds.includes(notification.id);
+      const operatedAtLabel = new Date(notification.operatedAt || notification.createdAt || notification.updatedAt).toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      const mainOwnersLabel = notification.mainOwnerNames.length > 0 ? notification.mainOwnerNames.join('、') : '未设置';
+      const participantsLabel = notification.participantNames.length > 0 ? notification.participantNames.join('、') : '暂无';
+      return (
+        <div
+          key={`notification-${notification.id}`}
+          className={`border rounded-2xl px-4 py-4 shadow-sm transition-all duration-300 flex items-start gap-3 ${
+            isExpanded ? 'border-sky-100 shadow-md bg-sky-50/40' : 'border-gray-100 bg-white hover:border-sky-100 hover:shadow-md'
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={selectedNotificationIds.includes(notification.id)}
+            onChange={(event) => {
+              setSelectedNotificationIds((prev) =>
+                event.target.checked ? [...prev, notification.id] : prev.filter((item) => item !== notification.id),
+              );
+            }}
+            className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="px-2 py-1 rounded-md text-[10px] font-bold bg-sky-50 text-sky-700">系统通知</span>
+                  <span className="text-[14px] font-bold text-gray-900">{notification.title}</span>
+                </div>
+                {!isExpanded && (
+                  <p className="mt-2 text-[12px] text-gray-500 line-clamp-2">
+                    {notification.operationLabel ? `${notification.operationLabel} · 主要负责人：${mainOwnersLabel}` : (notification.summary || '来自内部协作系统的提醒。')}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {notification.eventLineId ? (
+                  <Button
+                    onClick={async () => {
+                      const detail = await openEventLineDetail(notification.eventLineId!);
+                      if (detail) {
+                        await handleMarkNotificationsRead([notification.id]);
+                      }
+                    }}
+                  >
+                    查看事件线
+                  </Button>
+                ) : null}
+                <Button onClick={() => void handleMarkNotificationsRead([notification.id])}>已阅</Button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpandedInboxTaskIds((prev) =>
+                      prev.includes(notification.id) ? prev.filter((item) => item !== notification.id) : [...prev, notification.id],
+                    );
+                  }}
+                  className={`inline-flex items-center justify-center rounded-full border border-gray-200 bg-gray-50 p-1.5 text-gray-400 transition-transform hover:border-sky-200 hover:text-sky-600 ${isExpanded ? 'rotate-180' : ''}`}
+                  aria-label={isExpanded ? '收起通知卡片' : '展开通知卡片'}
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-medium">
+              <span className="bg-sky-50 text-sky-700 px-2 py-1 rounded-md">通知时间 {operatedAtLabel}</span>
+            </div>
+            <div className="mt-2 space-y-1 text-[11px] font-medium">
+              <div className="rounded-xl bg-blue-50 px-3 py-2 text-[#5B7BFE]">操作者：{notification.actorName || '未标记'}</div>
+              <div className="rounded-xl bg-sky-50 px-3 py-2 text-sky-700">事件线操作：{notification.operationLabel || '状态更新'}</div>
+              <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600">主要负责人：{mainOwnersLabel}</div>
+              <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600">参与者：{participantsLabel}</div>
+            </div>
+            {isExpanded && (
+              <div className="mt-3 border-t border-gray-100 pt-3 space-y-3">
+                <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-[12px] leading-6 text-sky-700">
+                  <div>事件线标题：{notification.eventLineName || '未命名事件线'}</div>
+                  <div>事件线操作：{notification.operationLabel || '状态更新'}</div>
+                  <div>操作者：{notification.actorName || '未标记'}</div>
+                  <div>操作时间：{operatedAtLabel}</div>
+                  <div>主要负责人：{mainOwnersLabel}</div>
+                  <div>参与者：{participantsLabel}</div>
+                </div>
+                {notification.summary ? (
+                  <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">通知内容</p>
+                    <p className="mt-2 text-[12px] leading-6 text-gray-600 whitespace-pre-wrap">{notification.summary}</p>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+      );
     };
 
     const handleCreateEventLineFromWorkspace = async () => {
@@ -7695,6 +7936,7 @@ export default function App() {
           setActiveEventLine(refreshed);
           setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
         }
+        await refreshInboxNotificationsBlock();
         flash('success', `事件线状态已切换为${{ active: '进行中', paused: '暂停', blocked: '阻塞', done: '完成' }[nextStatus]}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线状态更新失败');
@@ -8156,6 +8398,7 @@ export default function App() {
             setIsEventLineEditorOpen(false);
           }
         }
+        await refreshInboxNotificationsBlock();
         flash('success', '事件线已归档');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '事件线归档失败');
@@ -8177,6 +8420,7 @@ export default function App() {
             setEventLineEditorDraft(buildEventLineEditorDraftFromDetail(refreshed));
           }
         }
+        await refreshInboxNotificationsBlock();
         flash('success', '事件线已重新打开');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '重新打开失败');
@@ -8658,21 +8902,8 @@ export default function App() {
       const normalizedDraftListIds = Array.from(
         new Set((editingTask.listIds || []).filter((listId) => availableLists.some((item) => item.id === listId))),
       );
-      const resolvedListId = (() => {
-        if (isEditingTaskPersonal) {
-          if (normalizedDraftListIds.length > 0) {
-            return normalizedDraftListIds[0];
-          }
-          return resolveTaskViewDefaultListId('personal') || editingTask.listId;
-        }
-        if (normalizedDraftListIds.length > 0) {
-          return normalizedDraftListIds[0];
-        }
-        return resolveTaskViewDefaultListId('org') || editingTask.listId;
-      })();
-      const resolvedListIds = normalizedDraftListIds.length > 0
-        ? normalizedDraftListIds
-        : (resolvedListId ? [resolvedListId] : []);
+      const resolvedListId = normalizedDraftListIds[0] || '';
+      const resolvedListIds = normalizedDraftListIds;
       const ownerId = editingTask.ownerId || null;
       const ownerName = ownerCollaborator?.fullName || '';
       const payload: TaskMutationPayload = {
@@ -8693,6 +8924,7 @@ export default function App() {
         ownerId,
         ownerName,
         collaboratorIds: editingTask.collaborators.map((item) => item.id),
+        collaboratorNames: editingTask.collaborators.map((item) => item.fullName),
         tagIds: [],
       };
       const draftSnapshot: TaskEditorState = {
@@ -10424,10 +10656,10 @@ export default function App() {
                   <div>
                     <h2 className="text-[18px] font-bold text-gray-900">协作收件箱</h2>
                     <p className="text-[12px] text-gray-500 mt-1">
-                      这里统一显示需要你确认、已发出待他人确认，以及系统协作通知。待确认任务一旦确认接受，就会进入任务列表；自己发起的协作任务会同时保存在任务列表，确认完成后收件箱不再显示该任务，以免消息堆积。
+                      待确认任务、系统通知、等待他人确认分区展示。确认/退回只作用于任务，已阅只作用于系统通知，避免两类动作混在一起。
                     </p>
                   </div>
-                  {(actionableInboxTasks.length > 0 || inboundNotificationTasks.length > 0) && (
+                  {(actionableInboxTasks.length > 0 || visibleInboxNotifications.length > 0) && (
                     <div className="flex flex-wrap items-center justify-end gap-2">
                       {actionableInboxTasks.length > 0 && (
                         <>
@@ -10439,12 +10671,12 @@ export default function App() {
                           </Button>
                         </>
                       )}
-                      {inboundNotificationTasks.length > 0 && (
+                      {visibleInboxNotifications.length > 0 && (
                         <>
-                          <Button onClick={() => setSelectedNotificationIds(isAllNotificationsSelected ? [] : inboundNotificationTasks.map((task) => task.id))}>
+                          <Button onClick={() => setSelectedNotificationIds(isAllNotificationsSelected ? [] : visibleInboxNotifications.map((item) => item.id))}>
                             {isAllNotificationsSelected ? '取消全选通知' : '全选通知'}
                           </Button>
-                          <Button onClick={() => void handleMarkNotificationsRead(selectedNotificationIds.length ? selectedNotificationIds : inboundNotificationTasks.map((task) => task.id))}>
+                          <Button onClick={() => void handleMarkNotificationsRead(selectedNotificationIds.length ? selectedNotificationIds : visibleInboxNotifications.map((item) => item.id))}>
                             批量已阅
                           </Button>
                         </>
@@ -10498,205 +10730,43 @@ export default function App() {
                   )}
                 </div>
                 <div className="space-y-3">
-                  {inboxFeedItems.map(({ task, kind }) => {
-                    const isExpanded = expandedInboxTaskIds.includes(task.id);
-                    const isTaskSelectable = kind === 'confirmable';
-                    const isNotificationSelectable = kind === 'notification';
-                    const notificationSummary = parseEventLineNotificationSummary(task);
-                    const pendingParticipantNames = Array.from(
-                      new Set(
-                        task.collaborators
-                          .filter((item) => item.inboxStatus === 'pending')
-                          .map((item) => ({
-                            id: (item.userId || item.id || '').trim(),
-                            name: (item.fullName || '').trim(),
-                          }))
-                          .filter((item) => item.name)
-                          .filter((item) => {
-                            const creatorId = (task.creatorId || '').trim();
-                            const creatorName = (task.creatorName || '').trim();
-                            if (creatorId && item.id && item.id === creatorId) return false;
-                            if (creatorName && item.name === creatorName) return false;
-                            if (kind === 'outbound' && currentSessionUser?.id && item.id && item.id === currentSessionUser.id) return false;
-                            if (kind === 'outbound' && currentSessionUser?.fullName && item.name === currentSessionUser.fullName) return false;
-                            return true;
-                          })
-                          .map((item) => item.name),
-                      ),
-                    );
-                    const pendingCount = pendingParticipantNames.length;
-                    const creatorLabel =
-                      notificationSummary?.operator
-                      || task.creatorName
-                      || (kind === 'outbound' ? currentSessionUser?.fullName : null)
-                      || '未标记';
-                    const statusBadge =
-                      kind === 'notification'
-                        ? { label: '系统通知', className: 'bg-sky-50 text-sky-700' }
-                        : kind === 'outbound'
-                          ? { label: pendingCount > 0 ? `待 ${pendingCount} 人确认` : '已发出', className: 'bg-amber-50 text-amber-700' }
-                          : { label: '待你确认', className: 'bg-blue-50 text-[#5B7BFE]' };
-                    const notificationTimeLabel = new Date(task.createdAt).toLocaleString('zh-CN', {
-                      month: '2-digit',
-                      day: '2-digit',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      hour12: false,
-                    });
-                    return (
-                      <div
-                        key={`${kind}-${task.id}`}
-                        className={`border rounded-2xl px-4 py-4 shadow-sm transition-all duration-300 flex items-start gap-3 ${
-                          isExpanded ? 'border-blue-100 shadow-md bg-[#FBFCFF]' : 'border-gray-100 bg-white hover:border-blue-100 hover:shadow-md'
-                        }`}
-                      >
-                        {isTaskSelectable ? (
-                          <input
-                            type="checkbox"
-                            checked={selectedInboxIds.includes(task.id)}
-                            onChange={(event) => {
-                              setSelectedInboxIds((prev) =>
-                                event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
-                              );
-                            }}
-                            className="mt-1 h-4 w-4 rounded border-gray-300 text-[#5B7BFE] focus:ring-[#5B7BFE]"
-                          />
-                        ) : isNotificationSelectable ? (
-                          <input
-                            type="checkbox"
-                            checked={selectedNotificationIds.includes(task.id)}
-                            onChange={(event) => {
-                              setSelectedNotificationIds((prev) =>
-                                event.target.checked ? [...prev, task.id] : prev.filter((item) => item !== task.id),
-                              );
-                            }}
-                            className="mt-1 h-4 w-4 rounded border-gray-300 text-sky-500 focus:ring-sky-400"
-                          />
-                        ) : (
-                          <div className="mt-1 h-4 w-4 rounded-full border border-amber-300 bg-amber-50" />
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className={`px-2 py-1 rounded-md text-[10px] font-bold ${statusBadge.className}`}>{statusBadge.label}</span>
-                                <span className="text-[14px] font-bold text-gray-900">{task.title}</span>
-                              </div>
-                              {!isExpanded && (
-                                <p className="mt-2 text-[12px] text-gray-500 line-clamp-2">
-                                  {kind === 'notification'
-                                    ? notificationSummary
-                                      ? `${notificationSummary.operation} · 主要负责人：${notificationSummary.mainOwners}`
-                                      : (task.desc || '来自内部协作系统的提醒。')
-                                    : (task.desc || '点击展开可查看任务详情与协作状态。')}
-                                </p>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {kind === 'confirmable' && (
-                                <>
-                                  <Button onClick={() => void handleConfirmTasks([task.id])}>确认</Button>
-                                  <Button
-                                    onClick={() => {
-                                      setRejectingTaskIds([task.id]);
-                                      setIsRejectModalOpen(true);
-                                    }}
-                                  >
-                                    退回
-                                  </Button>
-                                </>
-                              )}
-                              {kind === 'notification' && task.eventLineId ? (
-                                <>
-                                  <Button
-                                    onClick={async () => {
-                                      const detail = await openEventLineDetail(task.eventLineId!);
-                                      if (detail) {
-                                        await handleMarkNotificationsRead([task.id]);
-                                      }
-                                    }}
-                                  >
-                                    查看事件线
-                                  </Button>
-                                  <Button onClick={() => void handleMarkNotificationsRead([task.id])}>已阅</Button>
-                                </>
-                              ) : kind === 'notification' ? (
-                                <Button onClick={() => void handleMarkNotificationsRead([task.id])}>已阅</Button>
-                              ) : null}
-                              {kind === 'outbound' && <Button onClick={() => openTaskEditor(task)}>查看任务</Button>}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setExpandedInboxTaskIds((prev) =>
-                                    prev.includes(task.id) ? prev.filter((item) => item !== task.id) : [...prev, task.id],
-                                  );
-                                }}
-                                className={`inline-flex items-center justify-center rounded-full border border-gray-200 bg-gray-50 p-1.5 text-gray-400 transition-transform hover:border-[#C9D6FF] hover:text-[#5B7BFE] ${isExpanded ? 'rotate-180' : ''}`}
-                                aria-label={isExpanded ? '收起任务卡片' : '展开任务卡片'}
-                              >
-                                <ChevronDown size={14} />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-medium">
-                            <span className="bg-orange-50 text-orange-600 px-2 py-1 rounded-md">
-                              {kind === 'notification' ? `通知时间 ${notificationTimeLabel}` : formatTaskTimelineLabel(task)}
-                            </span>
-                          </div>
-                          <div className="mt-2 space-y-1 text-[11px] font-medium">
-                            <div className="rounded-xl bg-blue-50 px-3 py-2 text-[#5B7BFE]">
-                              {kind === 'notification'
-                                ? `操作者：${creatorLabel}`
-                                : `发起人：${creatorLabel}`}
-                            </div>
-                            {kind === 'notification' && notificationSummary ? (
-                              <>
-                                <div className="rounded-xl bg-sky-50 px-3 py-2 text-sky-700">
-                                  事件线操作：{notificationSummary.operation}
-                                </div>
-                                <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600">
-                                  主要负责人：{notificationSummary.mainOwners}
-                                </div>
-                                <div className="rounded-xl bg-slate-50 px-3 py-2 text-slate-600">
-                                  参与者：{notificationSummary.participants}
-                                </div>
-                              </>
-                            ) : null}
-                            {kind !== 'notification' ? (
-                              <div className="rounded-xl bg-amber-50 px-3 py-2 text-amber-700">
-                                待确认：{pendingParticipantNames.length > 0 ? pendingParticipantNames.join('、') : '无'}
-                              </div>
-                            ) : null}
-                          </div>
-                          {isExpanded && (
-                            <div className="mt-3 border-t border-gray-100 pt-3 space-y-3">
-                              {kind === 'notification' && notificationSummary ? (
-                                <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-[12px] leading-6 text-sky-700">
-                                  <div>事件线标题：{notificationSummary.eventLineTitle}</div>
-                                  <div>事件线操作：{notificationSummary.operation}</div>
-                                  <div>操作者：{notificationSummary.operator}</div>
-                                  <div>操作时间：{notificationSummary.operatedAt || notificationTimeLabel}</div>
-                                  <div>主要负责人：{notificationSummary.mainOwners}</div>
-                                  <div>参与者：{notificationSummary.participants}</div>
-                                </div>
-                              ) : (
-                                <div className="rounded-2xl border border-gray-100 bg-gray-50/80 px-3 py-3">
-                                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">{kind === 'notification' ? '通知内容' : '任务说明'}</p>
-                                  <p className="mt-2 text-[12px] leading-6 text-gray-600 whitespace-pre-wrap">{task.desc || (kind === 'notification' ? '来自内部协作系统的提醒。' : '暂无详细说明。')}</p>
-                                </div>
-                              )}
-                              {kind === 'notification' && task.eventLineId ? (
-                                <div className="rounded-2xl border border-sky-100 bg-sky-50/80 px-3 py-3 text-[12px] leading-6 text-sky-700">
-                                  这是一条只读系统通知。查看事件线后，这条通知会自动标记为已阅，不会进入待确认任务。
-                                </div>
-                              ) : null}
-                            </div>
-                          )}
+                  {actionableInboxTasks.length > 0 && (
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#DDE7FF] bg-[#F8FAFF] px-4 py-3">
+                        <div>
+                          <h3 className="text-[14px] font-bold text-[#3550B8]">待你确认</h3>
+                          <p className="mt-1 text-[12px] text-[#5B7BFE]">这一区只放需要你确认或退回的协作任务，处理完后会从收件箱移出。</p>
                         </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-[#5B7BFE] shadow-sm">{actionableInboxTasks.length} 条</span>
                       </div>
-                    );
-                  })}
-                  {inboxFeedItems.length === 0 && (
+                      {actionableInboxTasks.map((task) => renderInboxTaskCard(task, 'confirmable'))}
+                    </section>
+                  )}
+                  {visibleInboxNotifications.length > 0 && (
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between gap-3 rounded-2xl border border-sky-100 bg-sky-50/70 px-4 py-3">
+                        <div>
+                          <h3 className="text-[14px] font-bold text-sky-800">系统通知</h3>
+                          <p className="mt-1 text-[12px] text-sky-700">这一区只保留事件线等操作通知；查看事件线或手动已阅后，对你本人立即消失，不再混进任务。</p>
+                        </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-sky-700 shadow-sm">{visibleInboxNotifications.length} 条</span>
+                      </div>
+                      {visibleInboxNotifications.map((notification) => renderInboxNotificationCard(notification))}
+                    </section>
+                  )}
+                  {filteredOutboundPendingTasks.length > 0 && (
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-3">
+                        <div>
+                          <h3 className="text-[14px] font-bold text-amber-800">等待他人确认</h3>
+                          <p className="mt-1 text-[12px] text-amber-700">这些任务是你已发出的协作任务，仍在等待对方确认，便于你继续催办和查看详情。</p>
+                        </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-amber-700 shadow-sm">{filteredOutboundPendingTasks.length} 条</span>
+                      </div>
+                      {filteredOutboundPendingTasks.map((task) => renderInboxTaskCard(task, 'outbound'))}
+                    </section>
+                  )}
+                  {actionableInboxTasks.length === 0 && visibleInboxNotifications.length === 0 && filteredOutboundPendingTasks.length === 0 && (
                     <div className="text-center py-16 text-gray-400">
                       <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
                         <Inbox className="w-5 h-5 text-emerald-500" />

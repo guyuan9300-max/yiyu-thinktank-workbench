@@ -806,12 +806,14 @@ class TaskRecord(BaseModel):
     description: str
     creatorId: str
     creatorName: str
+    creatorDisplayName: str | None = None
     listName: str
     listColor: str
     listIds: list[str] = Field(default_factory=list)
     listNames: list[str] = Field(default_factory=list)
     ownerId: str | None = None
     ownerName: str | None = None
+    ownerDisplayName: str | None = None
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
@@ -841,7 +843,10 @@ class TaskRecord(BaseModel):
     expenseEvidenceLinks: list["TaskExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     collaborators: list[TaskCollaboratorRecord]
     collaborationSummary: dict[str, int]
+    pendingParticipantNames: list[str] = Field(default_factory=list)
     viewerInboxStatus: CollaboratorInboxStatus | None = None
+    viewerCanConfirm: bool = False
+    viewerCanReject: bool = False
     orgContext: "TaskOrgContextRecord | None" = None
     createdAt: str
     updatedAt: str
@@ -884,6 +889,35 @@ class TaskBoardResponse(BaseModel):
     lists: list[TaskListRecord]
     tags: list[TaskTagRecord] = Field(default_factory=list)
     commonTags: list[str]
+
+
+class InboxNotificationRecord(BaseModel):
+    id: str
+    kind: Literal["event_line_operation"] = "event_line_operation"
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    operationLabel: str
+    actorId: str | None = None
+    actorName: str
+    title: str
+    summary: str
+    mainOwnerNames: list[str] = Field(default_factory=list)
+    participantNames: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    operatedAt: str
+    viewerReadAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class InboxNotificationListResponse(BaseModel):
+    notifications: list[InboxNotificationRecord] = Field(default_factory=list)
+
+
+class InboxAggregateResponse(BaseModel):
+    pendingTasks: list[TaskRecord] = Field(default_factory=list)
+    systemNotifications: list[InboxNotificationRecord] = Field(default_factory=list)
+    outboundPendingTasks: list[TaskRecord] = Field(default_factory=list)
 
 
 class TaskGroupTemplateStepAttachment(BaseModel):
@@ -932,6 +966,15 @@ class TaskNotificationBatchReadPayload(BaseModel):
 
 class TaskNotificationBatchReadResponse(BaseModel):
     taskIds: list[str] = Field(default_factory=list)
+    updatedCount: int = 0
+
+
+class InboxNotificationBatchReadPayload(BaseModel):
+    notificationIds: list[str] = Field(default_factory=list)
+
+
+class InboxNotificationBatchReadResponse(BaseModel):
+    notificationIds: list[str] = Field(default_factory=list)
     updatedCount: int = 0
 
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 import type { Task } from '../../../shared/types';
-import { buildCalendarCells, formatMonthTitle } from '../../../shared/calendar';
+import { buildCalendarCells, buildWeekTaskAggregateKey, formatMonthTitle } from '../../../shared/calendar';
 import { getChinaCalendarMarkers, type ChinaCalendarMarker } from '../../../shared/china-calendar';
 import {
   assignTimedTaskLanes,
@@ -63,10 +63,11 @@ const DAY_TIMELINE_SLOT_MINUTES = 15;
 const DAY_TIMELINE_SLOT_HEIGHT = 14;
 const DAY_TIMELINE_DEFAULT_DURATION_MINUTES = 60;
 const DAY_TIMELINE_DEFAULT_START_MINUTE = 8 * 60;
-const DAY_TIMELINE_SCROLL_END_PADDING = DAY_TIMELINE_SLOT_HEIGHT * 3;
+const DAY_TIMELINE_SCROLL_END_PADDING = DAY_TIMELINE_SLOT_HEIGHT + 8;
 const DAY_MINUTES = 24 * 60;
 const MONTH_TIMELINE_WEEKS_BEFORE = 78;
 const MONTH_TIMELINE_WEEKS_AFTER = 78;
+const MONTH_TIMELINE_WEEKS_EXPAND_STEP = 52;
 type WeekCreateSelection = {
   dayKey: number;
   dayDate: Date;
@@ -103,6 +104,12 @@ type WeekTaskDisplayItem =
 
 function formatDateInputValue(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function parseDateInputValue(value: string) {
+  const [year, month, day] = value.split('-').map((part) => Number(part));
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
 }
 
 function combineDateAndTime(date: Date, minuteOfDay: number) {
@@ -298,7 +305,7 @@ function buildWeekTaskDisplayItems(items: TimedWeekTask[]) {
       const clusterTitles = sortedClusterItems.map((item) => item.task.title).filter(Boolean);
       displayItems.push({
         kind: 'aggregate',
-        key: `aggregate-${clusterId}`,
+        key: buildWeekTaskAggregateKey(sortedClusterItems[0].dayDate, clusterId),
         clusterItems: sortedClusterItems,
         summary: clusterTitles.slice(0, 4).join('、'),
       });
@@ -339,6 +346,10 @@ export function TaskCalendarView({
   const [weekAggregateIndexes, setWeekAggregateIndexes] = useState<Record<string, number>>({});
   const [visibleWeekPageIndex, setVisibleWeekPageIndex] = useState(1);
   const [isWeekPaging, setIsWeekPaging] = useState(false);
+  const [monthTimelineRange, setMonthTimelineRange] = useState({
+    before: MONTH_TIMELINE_WEEKS_BEFORE,
+    after: MONTH_TIMELINE_WEEKS_AFTER,
+  });
   const [jumpPickerMonth, setJumpPickerMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const resizePreviewRef = useRef<number | null>(null);
   const resizeDraftRef = useRef<{ taskId: string; startY: number; startMinute: number; baseDuration: number } | null>(null);
@@ -355,6 +366,11 @@ export function TaskCalendarView({
   const weekPagerIdleTimerRef = useRef<number | null>(null);
   const weekPagerVerticalSyncRef = useRef(false);
   const weekPagerGestureDeadlineRef = useRef(0);
+  const monthTimelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const monthTimelineScrollFrameRef = useRef<number | null>(null);
+  const monthTimelineLastAlignedMonthRef = useRef('');
+  const monthTimelinePrependAdjustRef = useRef<{ weeks: number; rowHeight: number } | null>(null);
+  const monthTimelineExpandingRef = useRef(false);
   const jumpPickerRef = useRef<HTMLDivElement | null>(null);
   const monthWeekAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const today = useMemo(() => new Date(), []);
@@ -416,8 +432,8 @@ export function TaskCalendarView({
 
   const monthTimelineWeeks = useMemo(() => {
     const anchorWeekStart = startOfWeek(selectedDate);
-    const rangeStart = addDays(anchorWeekStart, -7 * MONTH_TIMELINE_WEEKS_BEFORE);
-    const rangeEnd = addDays(anchorWeekStart, 7 * MONTH_TIMELINE_WEEKS_AFTER + 6);
+    const rangeStart = addDays(anchorWeekStart, -7 * monthTimelineRange.before);
+    const rangeEnd = addDays(anchorWeekStart, 7 * monthTimelineRange.after + 6);
     const weeks: Array<{
       key: string;
       days: Array<{
@@ -439,7 +455,7 @@ export function TaskCalendarView({
       });
     }
     return weeks;
-  }, [monthTasksByDateKey, selectedDate]);
+  }, [monthTasksByDateKey, monthTimelineRange.after, monthTimelineRange.before, selectedDate]);
 
   const weekStartDate = useMemo(() => startOfWeek(selectedDate), [selectedDate]);
   const weekPages = useMemo(() => {
@@ -512,7 +528,7 @@ export function TaskCalendarView({
     pager.querySelectorAll<HTMLElement>('[data-week-scroll="true"]').forEach((node) => {
       node.scrollTop = nextScrollTop;
     });
-  }, [calendarDisplayMode, selectedDate]);
+  }, [calendarDisplayMode, weekStartKey]);
 
   useEffect(() => {
     if (!isJumpPickerOpen) return;
@@ -548,6 +564,19 @@ export function TaskCalendarView({
       window.cancelAnimationFrame(frame);
     };
   }, [calendarDisplayMode, monthScrollAnchorKey, scrollMonthTimelineToDate, selectedDate]);
+
+  useLayoutEffect(() => {
+    const pendingAdjust = monthTimelinePrependAdjustRef.current;
+    if (!pendingAdjust) return;
+    monthTimelinePrependAdjustRef.current = null;
+    const container = monthTimelineScrollRef.current;
+    if (!container) return;
+    container.scrollTop += pendingAdjust.weeks * pendingAdjust.rowHeight;
+  }, [monthTimelineRange.before]);
+
+  useEffect(() => {
+    monthTimelineLastAlignedMonthRef.current = `${activeMonthDate.getFullYear()}-${activeMonthDate.getMonth()}`;
+  }, [activeMonthDate]);
 
   useEffect(() => {
     if (!resizingTaskId || !resizeDraftRef.current) return;
@@ -605,6 +634,9 @@ export function TaskCalendarView({
   useEffect(() => {
     return () => {
       cleanupWeekCreateInteraction();
+      if (monthTimelineScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(monthTimelineScrollFrameRef.current);
+      }
     };
   }, [cleanupWeekCreateInteraction]);
 
@@ -673,6 +705,53 @@ export function TaskCalendarView({
     }
     onShiftMonth(delta);
   };
+
+  const handleMonthTimelineScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const container = event.currentTarget;
+    if (monthTimelineScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(monthTimelineScrollFrameRef.current);
+    }
+    monthTimelineScrollFrameRef.current = window.requestAnimationFrame(() => {
+      monthTimelineScrollFrameRef.current = null;
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-month-week-start]'));
+      if (rows.length === 0) return;
+      if (!monthTimelineExpandingRef.current) {
+        if (container.scrollTop < 320) {
+          const rowHeight = rows[0]?.getBoundingClientRect().height || 146;
+          monthTimelinePrependAdjustRef.current = {
+            weeks: MONTH_TIMELINE_WEEKS_EXPAND_STEP,
+            rowHeight,
+          };
+          monthTimelineExpandingRef.current = true;
+          setMonthTimelineRange((prev) => ({
+            before: prev.before + MONTH_TIMELINE_WEEKS_EXPAND_STEP,
+            after: prev.after,
+          }));
+        } else if (container.scrollHeight - container.scrollTop - container.clientHeight < 480) {
+          monthTimelineExpandingRef.current = true;
+          setMonthTimelineRange((prev) => ({
+            before: prev.before,
+            after: prev.after + MONTH_TIMELINE_WEEKS_EXPAND_STEP,
+          }));
+        }
+      }
+
+      const containerTop = container.getBoundingClientRect().top;
+      const anchorRow = rows.find((row) => row.getBoundingClientRect().bottom > containerTop + 8) || rows[0];
+      const weekStart = parseDateInputValue(anchorRow.dataset.monthWeekStart || '');
+      if (!weekStart) return;
+      const visibleMonthDate = addDays(weekStart, 3);
+      const visibleMonthKey = `${visibleMonthDate.getFullYear()}-${visibleMonthDate.getMonth()}`;
+      if (visibleMonthKey === monthTimelineLastAlignedMonthRef.current) return;
+      monthTimelineLastAlignedMonthRef.current = visibleMonthKey;
+      onAlignCalendarDate(visibleMonthDate);
+    });
+  };
+
+  useEffect(() => {
+    if (!monthTimelineExpandingRef.current) return;
+    monthTimelineExpandingRef.current = false;
+  }, [monthTimelineRange.after, monthTimelineRange.before]);
 
   const handleDaySelect = (date: Date) => {
     if (calendarDisplayMode === 'week') {
@@ -1117,10 +1196,15 @@ export function TaskCalendarView({
               ))}
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+            <div
+              ref={monthTimelineScrollRef}
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+              onScroll={handleMonthTimelineScroll}
+            >
               {monthTimelineWeeks.map((week) => (
                 <div
                   key={week.key}
+                  data-month-week-start={week.key}
                   ref={(node) => {
                     monthWeekAnchorRefs.current[week.key] = node;
                   }}
