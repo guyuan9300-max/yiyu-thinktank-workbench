@@ -152,6 +152,8 @@ import type {
   StrategicCockpitConfirmPayload,
   StrategicCockpitSnapshot,
   StrategicLineDetail,
+  StrategicSettings,
+  StrategicSettingsPayload,
   ApplyTaskGroupTemplatePayload,
   ApplyTaskGroupTemplateResult,
   TaskViewDefinition,
@@ -628,6 +630,17 @@ export async function updateTopicsSettings(payload: TopicsSettingsPayload) {
   });
 }
 
+export async function getStrategicSettings() {
+  return request<StrategicSettings>('/api/v1/settings/strategic');
+}
+
+export async function updateStrategicSettings(payload: StrategicSettingsPayload) {
+  return request<StrategicSettings>('/api/v1/settings/strategic', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getAnalysisWorkbenchSettings() {
   return request<AnalysisWorkbenchSettings>('/api/v1/settings/analysis-workbench');
 }
@@ -814,6 +827,10 @@ export async function getLogDates() {
 
 export async function getEmployees() {
   return request<EmployeeRecord[]>('/api/v1/admin/employees');
+}
+
+export async function getEmployeeDirectory() {
+  return request<EmployeeRecord[]>('/api/v1/employees/directory');
 }
 
 export async function approveEmployee(id: string, payload: EmployeeRolePayload) {

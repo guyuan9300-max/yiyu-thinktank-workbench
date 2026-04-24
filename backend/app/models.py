@@ -1605,6 +1605,12 @@ class ClientWorkspaceSettingsRecord(BaseModel):
     defaultGoalQuarter: str = ""
     defaultMeetingTitlePrefix: str = "客户会议"
     clientDnaModeLabel: str = "DNA"
+    clientEditPermission: Literal["admin_only", "owner", "owner_and_collaborators"] = "owner_and_collaborators"
+    clientDnaGenerationMode: Literal["manual", "prompt_on_material_change", "auto_draft_on_material_change"] = "prompt_on_material_change"
+    knowledgeIngestMeetingNotes: bool = True
+    knowledgeIngestAttachments: bool = True
+    knowledgeIngestTaskReviews: bool = False
+    meetingActionItemMode: Literal["candidate_only", "pending_tasks", "direct_tasks"] = "candidate_only"
     updatedAt: str
 
 
@@ -1616,6 +1622,26 @@ class ClientWorkspaceSettingsPayload(BaseModel):
     defaultGoalQuarter: str | None = None
     defaultMeetingTitlePrefix: str | None = None
     clientDnaModeLabel: str | None = None
+    clientEditPermission: Literal["admin_only", "owner", "owner_and_collaborators"] | None = None
+    clientDnaGenerationMode: Literal["manual", "prompt_on_material_change", "auto_draft_on_material_change"] | None = None
+    knowledgeIngestMeetingNotes: bool | None = None
+    knowledgeIngestAttachments: bool | None = None
+    knowledgeIngestTaskReviews: bool | None = None
+    meetingActionItemMode: Literal["candidate_only", "pending_tasks", "direct_tasks"] | None = None
+
+
+class TopicFocusDomainRecord(BaseModel):
+    id: str
+    name: str
+    keywords: str = ""
+    description: str = ""
+
+
+class TopicSourcePreferenceRecord(BaseModel):
+    id: str
+    name: str
+    trustLevel: Literal["high", "medium", "low"] = "medium"
+    enabled: bool = True
 
 
 class TopicsSettingsRecord(BaseModel):
@@ -1626,6 +1652,10 @@ class TopicsSettingsRecord(BaseModel):
     defaultSourceStrategy: str = "google_bing_news"
     useOrgDnaForInsight: bool = True
     useOrgDnaForTaskPlan: bool = True
+    refreshCadence: Literal["manual", "daily", "weekly"] = "manual"
+    focusDomains: list[TopicFocusDomainRecord] = Field(default_factory=list)
+    sourcePreferences: list[TopicSourcePreferenceRecord] = Field(default_factory=list)
+    candidateRetentionDays: int = 90
     updatedAt: str
 
 
@@ -1637,6 +1667,41 @@ class TopicsSettingsPayload(BaseModel):
     defaultSourceStrategy: str | None = None
     useOrgDnaForInsight: bool | None = None
     useOrgDnaForTaskPlan: bool | None = None
+    refreshCadence: Literal["manual", "daily", "weekly"] | None = None
+    focusDomains: list[TopicFocusDomainRecord] | None = None
+    sourcePreferences: list[TopicSourcePreferenceRecord] | None = None
+    candidateRetentionDays: int | None = None
+
+
+class StrategicSettingsRecord(BaseModel):
+    visibilityScope: Literal["admin_only", "admin_and_owner", "admin_owner_collaborators"] = "admin_and_owner"
+    snapshotConfirmationEnabled: bool = True
+    snapshotConfirmRoles: list[str] = Field(default_factory=lambda: ["admin", "client_owner"])
+    stalledDays: int = 14
+    stalledRiskLevel: Literal["watch", "risk"] = "watch"
+    meetingPackSections: list[str] = Field(default_factory=lambda: [
+        "client_background",
+        "recent_progress",
+        "key_findings",
+        "risks",
+        "suggested_agenda",
+        "pending_decisions",
+        "evidence_summary",
+    ])
+    evidenceMinCount: int = 2
+    markUncalibratedWhenEvidenceInsufficient: bool = True
+    updatedAt: str
+
+
+class StrategicSettingsPayload(BaseModel):
+    visibilityScope: Literal["admin_only", "admin_and_owner", "admin_owner_collaborators"] | None = None
+    snapshotConfirmationEnabled: bool | None = None
+    snapshotConfirmRoles: list[str] | None = None
+    stalledDays: int | None = None
+    stalledRiskLevel: Literal["watch", "risk"] | None = None
+    meetingPackSections: list[str] | None = None
+    evidenceMinCount: int | None = None
+    markUncalibratedWhenEvidenceInsufficient: bool | None = None
 
 
 class DiagnosisProfileRecord(BaseModel):
@@ -1829,6 +1894,31 @@ class HandbookSettingsRecord(BaseModel):
     allowTaskSource: bool = True
     allowAnalysisSource: bool = True
     visibilityBoundary: str = "organization_and_personal"
+    experienceVisibility: Literal["personal", "team_requires_confirmation", "team_default"] = "team_requires_confirmation"
+    captureSources: dict[str, bool] = Field(default_factory=lambda: {
+        "weeklyReview": True,
+        "meetingNotes": True,
+        "aiOverview": True,
+        "taskReview": True,
+        "strategicInsight": True,
+    })
+    handbookSources: dict[str, bool] = Field(default_factory=lambda: {
+        "task": True,
+        "analysis": True,
+        "meeting": True,
+        "strategic": True,
+    })
+    notificationSettings: dict[str, bool] = Field(default_factory=lambda: {
+        "badgeToSelf": True,
+        "xpToSelf": True,
+        "importantBadgeToTeam": False,
+    })
+    organizationCategories: list[dict[str, str]] = Field(default_factory=lambda: [
+        {"id": "experience", "name": "经验卡片", "description": "记录一次有效做法"},
+        {"id": "method", "name": "方法卡片", "description": "沉淀可复用步骤"},
+        {"id": "correction", "name": "纠偏卡片", "description": "记录错误、教训和修正方式"},
+        {"id": "template", "name": "模板/SOP", "description": "可直接复用的流程或模板"},
+    ])
     updatedAt: str
 
 
@@ -1838,6 +1928,11 @@ class HandbookSettingsPayload(BaseModel):
     allowTaskSource: bool | None = None
     allowAnalysisSource: bool | None = None
     visibilityBoundary: str | None = None
+    experienceVisibility: Literal["personal", "team_requires_confirmation", "team_default"] | None = None
+    captureSources: dict[str, bool] | None = None
+    handbookSources: dict[str, bool] | None = None
+    notificationSettings: dict[str, bool] | None = None
+    organizationCategories: list[dict[str, str]] | None = None
 
 
 class SystemAdminSettingsRecord(BaseModel):

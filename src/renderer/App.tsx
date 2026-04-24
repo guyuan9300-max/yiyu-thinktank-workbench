@@ -24,6 +24,7 @@ import {
   Clock,
   ShieldAlert,
   BrainCircuit,
+  Compass,
   Zap,
   LayoutTemplate,
   Target,
@@ -108,6 +109,9 @@ import type {
   Operator,
   OrgInvitationRecord,
   OrgMembershipSummary,
+  OrgRuleActorScope,
+  OrgTaskControlLevel,
+  OrgTaskControlRuleSettings,
   OrgWritingNorm,
   ProjectFlow,
   ProjectFlowPayload,
@@ -124,6 +128,7 @@ import type {
   ReviewGovernanceSettings,
   OrgModelSettings,
   SupportRequestRecord,
+  StrategicSettings,
   SystemAdminSettings,
   Task,
   TaskAttachmentRecord,
@@ -210,6 +215,7 @@ import {
   fetchExpenseEvidenceAttachments,
   getProjectFlowDetail,
   getProjectModuleDetail,
+  getEmployeeDirectory,
   getEmployees,
   backfillOrgTaskLinks,
   getFeishuDeliveryProfile,
@@ -231,6 +237,7 @@ import {
   getSettings,
   getSupportRequests,
   getSystemAdminSettings,
+  getStrategicSettings,
   getTaskTagSuggestions,
   getTaskBoard,
   importExpenseEvidences,
@@ -305,6 +312,7 @@ import {
   updateProfile,
   updateReviewGovernanceSettings,
   updateSystemAdminSettings,
+  updateStrategicSettings,
   upsertFundraisingReminderRule,
   upsertFundraisingWritingNorm,
   updateAgentWeeklyPlan,
@@ -407,7 +415,7 @@ type ImportFeedback = {
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
-type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
+type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'strategic' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -775,6 +783,12 @@ const DEFAULT_CLIENT_WORKSPACE_SETTINGS: ClientWorkspaceSettings = {
   defaultGoalQuarter: '',
   defaultMeetingTitlePrefix: '客户会议',
   clientDnaModeLabel: 'DNA',
+  clientEditPermission: 'owner_and_collaborators',
+  clientDnaGenerationMode: 'prompt_on_material_change',
+  knowledgeIngestMeetingNotes: true,
+  knowledgeIngestAttachments: true,
+  knowledgeIngestTaskReviews: false,
+  meetingActionItemMode: 'candidate_only',
   updatedAt: '',
 };
 
@@ -786,6 +800,36 @@ const DEFAULT_TOPICS_SETTINGS: TopicsSettings = {
   defaultSourceStrategy: 'google_bing_news',
   useOrgDnaForInsight: true,
   useOrgDnaForTaskPlan: true,
+  refreshCadence: 'manual',
+  focusDomains: [],
+  sourcePreferences: [
+    { id: 'policy', name: '政策/政府公开信息', trustLevel: 'high', enabled: true },
+    { id: 'foundation', name: '基金会/公益组织', trustLevel: 'high', enabled: true },
+    { id: 'industry_media', name: '行业媒体', trustLevel: 'medium', enabled: true },
+    { id: 'research', name: '研究机构', trustLevel: 'high', enabled: true },
+    { id: 'client_official', name: '客户官网/公开材料', trustLevel: 'high', enabled: true },
+  ],
+  candidateRetentionDays: 90,
+  updatedAt: '',
+};
+
+const DEFAULT_STRATEGIC_SETTINGS: StrategicSettings = {
+  visibilityScope: 'admin_and_owner',
+  snapshotConfirmationEnabled: true,
+  snapshotConfirmRoles: ['admin', 'client_owner'],
+  stalledDays: 14,
+  stalledRiskLevel: 'watch',
+  meetingPackSections: [
+    'client_background',
+    'recent_progress',
+    'key_findings',
+    'risks',
+    'suggested_agenda',
+    'pending_decisions',
+    'evidence_summary',
+  ],
+  evidenceMinCount: 2,
+  markUncalibratedWhenEvidenceInsufficient: true,
   updatedAt: '',
 };
 
@@ -795,6 +839,31 @@ const DEFAULT_HANDBOOK_SETTINGS: HandbookSettings = {
   allowTaskSource: true,
   allowAnalysisSource: true,
   visibilityBoundary: 'organization_and_personal',
+  experienceVisibility: 'team_requires_confirmation',
+  captureSources: {
+    weeklyReview: true,
+    meetingNotes: true,
+    aiOverview: true,
+    taskReview: true,
+    strategicInsight: true,
+  },
+  handbookSources: {
+    task: true,
+    analysis: true,
+    meeting: true,
+    strategic: true,
+  },
+  notificationSettings: {
+    badgeToSelf: true,
+    xpToSelf: true,
+    importantBadgeToTeam: false,
+  },
+  organizationCategories: [
+    { id: 'experience', name: '经验卡片', description: '记录一次有效做法' },
+    { id: 'method', name: '方法卡片', description: '沉淀可复用步骤' },
+    { id: 'correction', name: '纠偏卡片', description: '记录错误、教训和修正方式' },
+    { id: 'template', name: '模板/SOP', description: '可直接复用的流程或模板' },
+  ],
   updatedAt: '',
 };
 
@@ -4018,6 +4087,7 @@ export default function App() {
     org_dna: false,
     tasks: true,
     client_workspace: false,
+    strategic: false,
     topics: false,
     handbook: false,
     system_admin: false,
@@ -4025,6 +4095,7 @@ export default function App() {
     org_departments: false,
     org_people: false,
     org_rules: false,
+    system_logs: false,
   });
   const [logs, setLogs] = useState<
     Array<{
@@ -4041,6 +4112,7 @@ export default function App() {
   const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
   const [clientWorkspaceSettingsState, setClientWorkspaceSettingsState] = useState<ClientWorkspaceSettings>(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
   const [topicsSettingsState, setTopicsSettingsState] = useState<TopicsSettings>(DEFAULT_TOPICS_SETTINGS);
+  const [strategicSettingsState, setStrategicSettingsState] = useState<StrategicSettings>(DEFAULT_STRATEGIC_SETTINGS);
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
   const [orgMembershipState, setOrgMembershipState] = useState<OrgMembershipSummary>(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
@@ -4135,7 +4207,8 @@ export default function App() {
         .trim()
         .replace(/^local-device$/u, ''),
     );
-  const canEditWorkObjectMode = !hasOrganizationTerminologyScope || currentSessionUser?.primaryRole === 'admin';
+  const hasJoinedOrganization = hasOrganizationTerminologyScope || orgMembershipState.hasOrganization;
+  const canEditWorkObjectMode = !hasJoinedOrganization || currentSessionUser?.primaryRole === 'admin';
   const terminology = useMemo(
     () => resolveWorkObjectTerminology(workObjectTerminologyState ?? {
       localMode: settingsState?.localWorkObjectMode ?? null,
@@ -4166,7 +4239,8 @@ export default function App() {
     };
   }, [activeTab, authState.authenticated, authState.sessionMode, authState.user?.email, authState.user?.fullName, authState.user?.id, currentSessionUser, isCloudSession, taskViewMode]);
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
-  const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
+  const canManagePublicTaskTaxonomy = !hasJoinedOrganization || currentSessionUser?.primaryRole === 'admin';
+  const canManageOrgTaskList = !hasJoinedOrganization || currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
   const [cloudAuthMode, setCloudAuthMode] = useState<'login' | 'register'>('login');
   const [cloudAuthForm, setCloudAuthForm] = useState({
@@ -4202,6 +4276,7 @@ export default function App() {
   const [isImportingLegacy, setIsImportingLegacy] = useState(false);
   const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
   const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
+  const [strategicDraft, setStrategicDraft] = useState(strategicSettingsState);
   const [handbookDraft, setHandbookDraft] = useState({
     ...handbookSettingsState,
     defaultTagsText: handbookSettingsState.defaultTags.join(', '),
@@ -4238,6 +4313,148 @@ export default function App() {
   const effectiveTaskSettings = useMemo(
     () => resolveTaskSettings(taskSettingsState, taskLists),
     [taskSettingsState, taskLists],
+  );
+
+  const resetListManager = () => {
+    setEditingListId(null);
+    setListManageDraft({ name: '', description: '' });
+  };
+
+  const handleSaveTaskList = async () => {
+    if (!canManageOrgTaskList) {
+      flash('error', '只有管理员可以维护组织清单');
+      return;
+    }
+    const trimmedName = listManageDraft.name.trim();
+    if (!trimmedName) {
+      flash('error', '请先填写清单名称');
+      return;
+    }
+    try {
+      if (editingListId) {
+        await updateTaskList(editingListId, {
+          name: trimmedName,
+          description: listManageDraft.description.trim() || null,
+          scope: 'org',
+        });
+      } else {
+        await createTaskList({
+          name: trimmedName,
+          description: listManageDraft.description.trim() || null,
+          scope: 'org',
+        });
+      }
+      await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
+      resetListManager();
+      flash('success', editingListId ? '清单已更新' : '清单已创建');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : editingListId ? '更新清单失败' : '创建清单失败');
+    }
+  };
+
+  const handleToggleTaskListArchived = async (list: TaskList) => {
+    if (!canManageOrgTaskList) {
+      flash('error', '只有管理员可以维护组织清单');
+      return;
+    }
+    try {
+      await updateTaskList(list.id, {
+        name: list.name,
+        description: list.description || null,
+        archived: !list.archivedAt,
+        scope: 'org',
+      });
+      await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
+      flash('success', list.archivedAt ? '清单已恢复' : '清单已归档');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '清单状态更新失败');
+    }
+  };
+
+  const handleDeleteTaskList = async (list: TaskList) => {
+    if (!canManageOrgTaskList) {
+      flash('error', '只有管理员可以删除组织清单');
+      return;
+    }
+    if (!window.confirm(`确认删除清单“${list.name}”？相关任务会移除与该清单的关联；删除后不会再自动补任何默认清单。`)) {
+      return;
+    }
+    try {
+      await deleteTaskList(list.id);
+      await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
+      if (editingListId === list.id) {
+        resetListManager();
+      }
+      flash('success', '清单已删除');
+    } catch (error) {
+      flash('error', error instanceof Error ? error.message : '删除清单失败');
+    }
+  };
+
+  const TaskListManagerPanel = ({ compact = false }: { compact?: boolean }) => (
+    <div className={compact ? 'space-y-5' : 'bg-white border border-gray-100 rounded-3xl p-6 shadow-sm'}>
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h2 className="text-[16px] font-bold text-gray-900">清单管理</h2>
+          <p className="text-[12px] text-gray-500 mt-1">清单只是任务分类工具；任务可以不选择清单，也不会被系统强制回填默认清单。</p>
+        </div>
+        {editingListId && <button type="button" className="text-[12px] font-bold text-gray-400 hover:text-gray-700" onClick={resetListManager}>取消编辑</button>}
+      </div>
+
+      {!canManageOrgTaskList && (
+        <div className="mb-4 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] leading-6 text-amber-700">
+          当前账号可查看组织清单；新增、编辑、归档和删除清单由管理员维护。
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_auto] gap-3">
+        <input
+          value={listManageDraft.name}
+          onChange={(event) => setListManageDraft((prev) => ({ ...prev, name: event.target.value }))}
+          placeholder="输入清单名称"
+          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
+          disabled={!canManageOrgTaskList}
+        />
+        <input
+          value={listManageDraft.description}
+          onChange={(event) => setListManageDraft((prev) => ({ ...prev, description: event.target.value }))}
+          placeholder="输入清单简介（选填）"
+          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
+          disabled={!canManageOrgTaskList}
+        />
+        <Button
+          primary
+          className="rounded-2xl"
+          onClick={() => void handleSaveTaskList()}
+          disabled={!canManageOrgTaskList}
+        >
+          {editingListId ? '保存清单' : '新建清单'}
+        </Button>
+      </div>
+      <div className="mt-5 space-y-3 max-h-[320px] overflow-y-auto pr-1">
+        {taskLists.filter((list) => (list.scope || 'org') === 'org').map((list) => (
+          <div key={list.id} className="border border-gray-100 rounded-2xl p-4 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[14px] font-bold text-gray-900">{list.name}</p>
+                {list.archivedAt && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">已归档</span>}
+              </div>
+              <p className="text-[12px] text-gray-500 mt-2">{list.description?.trim() || '暂无简介。'}</p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, description: list.description || '' }); }} disabled={!canManageOrgTaskList}>编辑</Button>
+              <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={!canManageOrgTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
+              <Button onClick={() => void handleDeleteTaskList(list)} disabled={!canManageOrgTaskList}>删除</Button>
+            </div>
+          </div>
+        ))}
+        {taskLists.filter((list) => (list.scope || 'org') === 'org').length === 0 && (
+          <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-4 py-6 text-center text-[12px] text-gray-400">
+            还没有组织清单。管理员可以在这里创建第一个清单。
+          </div>
+        )}
+      </div>
+    </div>
   );
   const availableReviewGovernanceMembers = useMemo<ReviewDepartmentMember[]>(() => {
     const deduped = new Map<string, ReviewDepartmentMember>();
@@ -4344,6 +4561,10 @@ export default function App() {
   useEffect(() => {
     setTopicsDraft(topicsSettingsState);
   }, [topicsSettingsState]);
+
+  useEffect(() => {
+    setStrategicDraft(strategicSettingsState);
+  }, [strategicSettingsState]);
 
   useEffect(() => {
     setHandbookDraft({
@@ -4555,7 +4776,7 @@ export default function App() {
       setCollabDialogError(null);
       await refreshCollabStatus(repoPath);
       if (mode === 'pull') {
-        await loadSystemAdminSettingsBlock(currentSessionUser?.primaryRole === 'admin');
+        await loadSystemAdminSettingsBlock(authState.sessionMode === 'cloud');
         const shouldRebuild = window.confirm('源码已经同步完成。要不要继续自动更新本机安装版？');
         if (shouldRebuild) {
           setCollabBusyAction('rebuild');
@@ -4659,19 +4880,35 @@ export default function App() {
     return response;
   }
 
+  async function loadStrategicSettingsBlock() {
+    const response = await getStrategicSettings();
+    setStrategicSettingsState(response);
+    return response;
+  }
+
   async function loadHandbookSettingsBlock() {
     const response = await getHandbookSettings();
     setHandbookSettingsState(response);
     return response;
   }
 
-  async function loadSystemAdminSettingsBlock(includeOrgModel = authState.sessionMode === 'cloud') {
-    const [response, orgModel] = await Promise.all([
+  async function loadSystemAdminSettingsBlock(
+    includeOrgModel = authState.sessionMode === 'cloud',
+    sessionUser: AuthState['user'] | null = currentSessionUser,
+  ) {
+    const shouldLoadEmployees = includeOrgModel;
+    const [response, orgModel, employees] = await Promise.all([
       getSystemAdminSettings(),
       includeOrgModel ? getOrgModelProfile() : Promise.resolve(EMPTY_ORG_MODEL_SETTINGS),
+      shouldLoadEmployees
+        ? (sessionUser?.primaryRole === 'admin' ? getEmployees() : getEmployeeDirectory())
+        : Promise.resolve([] as EmployeeRecord[]),
     ]);
     setSystemAdminSettingsState(response);
     setOrgModelState(orgModel);
+    if (shouldLoadEmployees) {
+      setEmployeeReviews(employees);
+    }
     return response;
   }
 
@@ -4694,6 +4931,9 @@ export default function App() {
         break;
       case 'topics':
         await loadTopicsSettingsBlock();
+        break;
+      case 'strategic':
+        await loadStrategicSettingsBlock();
         break;
       case 'handbook':
         await loadHandbookSettingsBlock();
@@ -4927,6 +5167,7 @@ export default function App() {
         markLoadingPhase('正在载入核心模块数据…');
         const backgroundLoaders: Array<{ name: string; run: () => Promise<unknown> }> = [
           { name: 'task-settings', run: () => loadTaskSettingsBlock() },
+          { name: 'strategic-settings', run: () => loadStrategicSettingsBlock() },
           { name: 'activity-logs', run: () => loadLogsBlock() },
           { name: 'task-board', run: () => loadTaskBlock() },
           {
@@ -4970,7 +5211,7 @@ export default function App() {
           },
           {
             name: 'system-admin-settings',
-            run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud'),
+            run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud', nextAuth.user || null),
           },
           {
             name: 'review-governance',
@@ -5012,6 +5253,7 @@ export default function App() {
           org_dna: false,
           tasks: true,
           client_workspace: false,
+          strategic: false,
           topics: false,
           handbook: false,
           system_admin: false,
@@ -5019,12 +5261,9 @@ export default function App() {
           org_departments: false,
           org_people: false,
           org_rules: false,
+          system_logs: false,
         });
-        if (nextAuth.user?.primaryRole === 'admin') {
-          markLoadingPhase('正在读取员工与组织数据…');
-          await loadEmployeeReviewBlock();
-        } else {
-          setEmployeeReviews([]);
+        if (nextAuth.user?.primaryRole !== 'admin') {
           setReviewGovernanceState(EMPTY_REVIEW_GOVERNANCE_SETTINGS);
         }
       } else {
@@ -10343,17 +10582,6 @@ export default function App() {
                       />
                     </>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('settings');
-                      setSettingsSection('tasks');
-                    }}
-                    className="inline-flex items-center gap-2 rounded-2xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
-                  >
-                    <Layout size={14} />
-                    清单管理
-                  </button>
                 </div>
               </div>
               <div className={`space-y-3 transition-all duration-300 ${isTaskGroupOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none h-0 overflow-hidden'}`}>
@@ -16603,8 +16831,7 @@ export default function App() {
   const SettingsView = () => {
     const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
-    const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
-    const canManageSensitiveSettings = currentSessionUser?.primaryRole === 'admin';
+    const canManageSensitiveSettings = !hasJoinedOrganization || currentSessionUser?.primaryRole === 'admin';
     const isLocalSession = authState.sessionMode !== 'cloud';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
     const canEditOrgDna = canManageSensitiveSettings || systemAdminSettingsState.allowOrgDnaForEmployees;
@@ -16612,10 +16839,6 @@ export default function App() {
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
-    };
-    const resetListManager = () => {
-      setEditingListId(null);
-      setListManageDraft({ name: '', description: '' });
     };
 
     const handleImportLegacyEntries = async () => {
@@ -16742,77 +16965,6 @@ export default function App() {
         flash('error', error instanceof Error ? error.message : '组织底盘保存失败');
       } finally {
         setIsSavingOrgModel(false);
-      }
-    };
-
-    const handleSaveTaskList = async () => {
-      if (!canManageOrgTaskList) {
-        flash('error', '只有管理员可以维护组织清单');
-        return;
-      }
-      const trimmedName = listManageDraft.name.trim();
-      if (!trimmedName) {
-        flash('error', '请先填写清单名称');
-        return;
-      }
-      try {
-        if (editingListId) {
-          await updateTaskList(editingListId, {
-            name: trimmedName,
-            description: listManageDraft.description.trim() || null,
-            scope: 'org',
-          });
-        } else {
-          await createTaskList({
-            name: trimmedName,
-            description: listManageDraft.description.trim() || null,
-            scope: 'org',
-          });
-        }
-        await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
-        resetListManager();
-        flash('success', editingListId ? '清单已更新' : '清单已创建');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : editingListId ? '更新清单失败' : '创建清单失败');
-      }
-    };
-
-    const handleToggleTaskListArchived = async (list: TaskList) => {
-      if (!canManageOrgTaskList) {
-        flash('error', '只有管理员可以维护组织清单');
-        return;
-      }
-      try {
-        await updateTaskList(list.id, {
-          name: list.name,
-          description: list.description || null,
-          archived: !list.archivedAt,
-          scope: 'org',
-        });
-        await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
-        flash('success', list.archivedAt ? '清单已恢复' : '清单已归档');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '清单状态更新失败');
-      }
-    };
-
-    const handleDeleteTaskList = async (list: TaskList) => {
-      if (!canManageOrgTaskList) {
-        flash('error', '只有管理员可以删除组织清单');
-        return;
-      }
-      if (!window.confirm(`确认删除清单“${list.name}”？相关任务会移除与该清单的关联；删除后不会再自动补任何默认清单。`)) {
-        return;
-      }
-      try {
-        await deleteTaskList(list.id);
-        await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
-        if (editingListId === list.id) {
-          resetListManager();
-        }
-        flash('success', '清单已删除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除清单失败');
       }
     };
 
@@ -16981,6 +17133,17 @@ export default function App() {
       }
     };
 
+    const handleSaveStrategicSettings = async () => {
+      try {
+        const next = await updateStrategicSettings(strategicDraft);
+        setStrategicSettingsState(next);
+        await loadLogsBlock();
+        flash('success', '战略陪伴规则已保存');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '保存失败');
+      }
+    };
+
     const handleSaveHandbookSettings = async () => {
       try {
         const next = await updateHandbookSettings({
@@ -16989,6 +17152,11 @@ export default function App() {
           allowTaskSource: handbookDraft.allowTaskSource,
           allowAnalysisSource: handbookDraft.allowAnalysisSource,
           visibilityBoundary: handbookDraft.visibilityBoundary,
+          experienceVisibility: handbookDraft.experienceVisibility,
+          captureSources: handbookDraft.captureSources,
+          handbookSources: handbookDraft.handbookSources,
+          notificationSettings: handbookDraft.notificationSettings,
+          organizationCategories: handbookDraft.organizationCategories,
         });
         setHandbookSettingsState(next);
         await loadLogsBlock();
@@ -17115,17 +17283,18 @@ export default function App() {
       {
         group: '组织管理',
         items: [
-          { key: 'system_admin', label: '组织与权限', icon: ShieldAlert, helper: '组织架构、邀请码、负责人绑定' },
+          { key: 'system_admin', label: '组织与权限（仅管理员可改）', icon: ShieldAlert, helper: '组织架构、邀请码、负责人绑定' },
           { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
         ],
       },
       {
-        group: '功能设置',
+        group: '规则设置',
         items: [
-          { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '任务清单、复盘规则' },
-          { key: 'client_workspace', label: terminology.workspaceLabel, icon: Briefcase, helper: '聊天、会议、目标' },
-          { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取与转任务' },
-          { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
+          { key: 'tasks', label: '任务与日程（仅管理员可改）', icon: CheckSquare, helper: '清单、确认、权限、周复盘' },
+          { key: 'client_workspace', label: `${terminology.workspaceLabel}（仅管理员可改）`, icon: Briefcase, helper: '资料、DNA、会议行动项' },
+          { key: 'strategic', label: '战略陪伴（仅管理员可改）', icon: Compass, helper: '可见范围、快照、战略线' },
+          { key: 'topics', label: '资讯情报站（仅管理员可改）', icon: Newspaper, helper: '雷达、来源、洞察转化' },
+          { key: 'handbook', label: '成长中心（仅管理员可改）', icon: BookOpen, helper: '经验公开、捕获、通知' },
         ],
       },
       {
@@ -17572,53 +17741,197 @@ export default function App() {
       </div>
     );
 
+    const ruleActorOptions: Array<{ value: OrgRuleActorScope; label: string }> = [
+      { value: 'assignee', label: '当前负责人' },
+      { value: 'creator', label: '发起人' },
+      { value: 'manager', label: '直属负责人' },
+      { value: 'department_lead', label: '部门负责人' },
+      { value: 'organization_lead', label: '组织管理员' },
+    ];
+    const taskControlLevelOptions: Array<{ value: OrgTaskControlLevel; label: string }> = [
+      { value: 'normal', label: '普通任务' },
+      { value: 'leader_control', label: '负责人管控' },
+      { value: 'department_control', label: '部门管控' },
+      { value: 'organization_control', label: '组织管控' },
+    ];
+    const approvedEmployeeOptions = employeeReviews.filter((employee) => employee.accountStatus === 'approved');
+    const updateTaskControlRule = (ruleId: string, patch: Partial<OrgTaskControlRuleSettings>) => {
+      setOrgModelDraft((prev) => ({
+        ...prev,
+        taskControlRules: prev.taskControlRules.map((rule) => (
+          rule.id === ruleId ? { ...rule, ...patch, updatedAt: new Date().toISOString() } : rule
+        )),
+        updatedAt: new Date().toISOString(),
+      }));
+    };
+    const handleAddTaskControlRule = () => {
+      setOrgModelDraft((prev) => ({
+        ...prev,
+        taskControlRules: [
+          ...prev.taskControlRules,
+          {
+            id: createUiId('task-rule'),
+            name: '新的协作任务规则',
+            controlLevel: 'normal',
+            departmentId: null,
+            roleTemplateId: null,
+            contentEditableBy: 'assignee',
+            deadlineEditableBy: 'manager',
+            ownerEditableBy: 'manager',
+            cancellableBy: 'creator',
+            requireCollabConfirmation: true,
+            defaultApproverUserId: null,
+            active: true,
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      }));
+    };
+    const handleRemoveTaskControlRule = (ruleId: string) => {
+      setOrgModelDraft((prev) => ({
+        ...prev,
+        taskControlRules: prev.taskControlRules.filter((rule) => rule.id !== ruleId),
+        updatedAt: new Date().toISOString(),
+      }));
+    };
+    const updateTopicFocusDomain = (id: string, patch: Partial<TopicsSettings['focusDomains'][number]>) => {
+      setTopicsDraft((prev) => ({
+        ...prev,
+        focusDomains: prev.focusDomains.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      }));
+    };
+    const updateTopicSourcePreference = (id: string, patch: Partial<TopicsSettings['sourcePreferences'][number]>) => {
+      setTopicsDraft((prev) => ({
+        ...prev,
+        sourcePreferences: prev.sourcePreferences.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      }));
+    };
+    const updateHandbookCategory = (id: string, patch: Partial<HandbookSettings['organizationCategories'][number]>) => {
+      setHandbookDraft((prev) => ({
+        ...prev,
+        organizationCategories: prev.organizationCategories.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      }));
+    };
+    const toggleStrategicConfirmRole = (role: string, checked: boolean) => {
+      setStrategicDraft((prev) => ({
+        ...prev,
+        snapshotConfirmRoles: checked
+          ? Array.from(new Set([...prev.snapshotConfirmRoles, role]))
+          : prev.snapshotConfirmRoles.filter((item) => item !== role),
+      }));
+    };
+    const toggleMeetingPackSection = (section: string, checked: boolean) => {
+      setStrategicDraft((prev) => ({
+        ...prev,
+        meetingPackSections: checked
+          ? Array.from(new Set([...prev.meetingPackSections, section]))
+          : prev.meetingPackSections.filter((item) => item !== section),
+      }));
+    };
+
     const renderTasksSection = () => (
       <div className="space-y-6">
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
-              <h2 className="text-[16px] font-bold text-gray-900">任务默认规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">统一任务优先级、日期策略、视图偏好和复盘入口。</p>
+              <h2 className="text-[16px] font-bold text-gray-900">任务基础规则</h2>
+              <p className="text-[12px] text-gray-500 mt-1">任务可以不选清单；这里仅配置新建任务时真正会影响协作的默认值。</p>
             </div>
-            <Button primary onClick={() => void handleSaveTaskSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存任务设置
+            <Button primary onClick={() => void handleSaveTaskSettings()} disabled={!canManageSensitiveSettings}>
+              <Settings size={16} /> 保存基础规则
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <select value={taskSettingsDraft.defaultPriority} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultPriority: event.target.value as TaskSettings['defaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="low">默认低优先级</option>
-              <option value="normal">默认普通优先级</option>
-              <option value="high">默认高优先级</option>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <select value={taskSettingsDraft.defaultPriority} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultPriority: event.target.value as TaskSettings['defaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+              <option value="low">新任务默认低优先级</option>
+              <option value="normal">新任务默认普通优先级</option>
+              <option value="high">新任务默认高优先级</option>
             </select>
-            <select value={taskSettingsDraft.defaultDueDatePreset} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultDueDatePreset: event.target.value as TaskSettings['defaultDueDatePreset'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="today">默认日期：今天</option>
-              <option value="none">默认日期：无日期</option>
+            <select value={taskSettingsDraft.defaultDueDatePreset} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultDueDatePreset: event.target.value as TaskSettings['defaultDueDatePreset'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+              <option value="today">新任务默认今天</option>
+              <option value="none">新任务默认无日期</option>
             </select>
-            <select value={taskSettingsDraft.defaultViewMode} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultViewMode: event.target.value as TaskSettings['defaultViewMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="inbox">默认打开：协作收件箱</option>
-              <option value="list">默认打开：清单列表</option>
-              <option value="calendar">默认打开：我的月历</option>
-              <option value="event_lines">默认打开：事件线</option>
-              <option value="review">默认打开：周复盘</option>
-            </select>
-            <select value={taskSettingsDraft.listSortMode} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, listSortMode: event.target.value as TaskSettings['listSortMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="manual">清单排序：按时间先后</option>
-              <option value="dueDate">清单排序：按截止时间</option>
-              <option value="priority">清单排序：按优先级</option>
-            </select>
-            <select value={taskSettingsDraft.defaultReviewScope} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultReviewScope: event.target.value as TaskSettings['defaultReviewScope'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="work">周复盘默认进入组织复盘</option>
-              <option value="personal">周复盘默认进入成长复盘</option>
-            </select>
-            <select value={taskSettingsDraft.showCompletedTasks ? 'show' : 'hide'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, showCompletedTasks: event.target.value === 'show' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="hide">清单默认隐藏已完成</option>
-              <option value="show">清单默认显示已完成</option>
-            </select>
-            <select value={taskSettingsDraft.autoAssignSelf ? 'self' : 'empty'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, autoAssignSelf: event.target.value === 'self' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="self">未选协作者时默认给自己</option>
-              <option value="empty">未选协作者时先留空</option>
+            <select value={taskSettingsDraft.autoAssignSelf ? 'self' : 'empty'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, autoAssignSelf: event.target.value === 'self' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+              <option value="self">无负责人时默认给自己</option>
+              <option value="empty">无负责人时保持为空</option>
             </select>
           </div>
+        </div>
+
+        <TaskListManagerPanel />
+
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-[16px] font-bold text-gray-900">协作确认与编辑权限</h2>
+              <p className="text-[12px] text-gray-500 mt-1">配置不同任务等级下，谁可以改内容、改时间、改负责人，以及是否进入待确认。</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={handleAddTaskControlRule} disabled={!canManageSensitiveSettings}>
+                <Plus size={16} /> 新增规则
+              </Button>
+              <Button primary onClick={() => void handleSaveOrgModel()} disabled={!canManageSensitiveSettings || isSavingOrgModel}>
+                {isSavingOrgModel ? <RefreshCw size={16} className="animate-spin" /> : <Settings size={16} />}
+                保存协作规则
+              </Button>
+            </div>
+          </div>
+          {orgModelDraft.taskControlRules.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-5 py-6 text-[13px] text-gray-500">
+              还没有配置任务协作规则。未配置时按默认逻辑处理；建议至少新增一条“普通任务”规则，明确是否需要协作者确认。
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {orgModelDraft.taskControlRules.map((rule) => (
+                <div key={rule.id} className="rounded-3xl border border-gray-100 bg-gray-50/70 p-5 space-y-4">
+                  <div className="grid grid-cols-1 xl:grid-cols-[1.3fr_0.9fr_0.9fr] gap-3">
+                    <input value={rule.name} onChange={(event) => updateTaskControlRule(rule.id, { name: event.target.value })} placeholder="规则名称" className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+                    <select value={rule.controlLevel} onChange={(event) => updateTaskControlRule(rule.id, { controlLevel: event.target.value as OrgTaskControlLevel })} className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                      {taskControlLevelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <select value={rule.departmentId || ''} onChange={(event) => updateTaskControlRule(rule.id, { departmentId: event.target.value || null })} className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                      <option value="">适用于全组织</option>
+                      {departmentOptions.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                    {[
+                      ['contentEditableBy', '谁可改内容'],
+                      ['deadlineEditableBy', '谁可改截止时间'],
+                      ['ownerEditableBy', '谁可改负责人'],
+                      ['cancellableBy', '谁可取消任务'],
+                    ].map(([field, label]) => (
+                      <label key={field} className="block">
+                        <span className="block text-[11px] font-bold text-gray-400 mb-1">{label}</span>
+                        <select value={String(rule[field as keyof OrgTaskControlRuleSettings] || 'assignee')} onChange={(event) => updateTaskControlRule(rule.id, { [field]: event.target.value } as Partial<OrgTaskControlRuleSettings>)} className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                          {ruleActorOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-1 xl:grid-cols-[1fr_1fr_auto] gap-3 items-center">
+                    <label className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-[13px] font-medium text-blue-900 flex items-center justify-between">
+                      非管理员发起协作任务时进入待确认
+                      <input type="checkbox" checked={rule.requireCollabConfirmation} onChange={(event) => updateTaskControlRule(rule.id, { requireCollabConfirmation: event.target.checked })} disabled={!canManageSensitiveSettings} />
+                    </label>
+                    <select value={rule.defaultApproverUserId || ''} onChange={(event) => updateTaskControlRule(rule.id, { defaultApproverUserId: event.target.value || null })} className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                      <option value="">默认由规则匹配负责人确认</option>
+                      {approvedEmployeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.fullName}</option>)}
+                    </select>
+                    <div className="flex items-center justify-end gap-2">
+                      <button type="button" onClick={() => updateTaskControlRule(rule.id, { active: !rule.active })} className={`rounded-2xl px-4 py-3 text-[12px] font-bold ${rule.active ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-gray-100 text-gray-500 border border-gray-200'}`} disabled={!canManageSensitiveSettings}>
+                        {rule.active ? '已启用' : '已停用'}
+                      </button>
+                      <button type="button" onClick={() => handleRemoveTaskControlRule(rule.id)} className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-[12px] font-bold text-red-600" disabled={!canManageSensitiveSettings}>
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {currentSessionUser?.primaryRole === 'admin' && (
@@ -17631,49 +17944,6 @@ export default function App() {
             onSave={() => void handleSaveReviewGovernance()}
           />
         )}
-
-        <div className="space-y-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-start justify-between gap-4 mb-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">清单管理</h2>
-                <p className="text-[12px] text-gray-500 mt-1">这里只维护任务清单名称和简介。删除清单后，其下任务会自动变成无清单。</p>
-              </div>
-              {editingListId && <button type="button" className="text-[12px] font-bold text-gray-400 hover:text-gray-700" onClick={resetListManager}>取消编辑</button>}
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_1.2fr_auto] gap-3">
-              <input value={listManageDraft.name} onChange={(event) => setListManageDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="输入清单名称" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
-              <input value={listManageDraft.description} onChange={(event) => setListManageDraft((prev) => ({ ...prev, description: event.target.value }))} placeholder="输入清单简介（选填）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
-              <Button
-                primary
-                className="rounded-2xl"
-                onClick={() => void handleSaveTaskList()}
-                disabled={!canManageOrgTaskList}
-              >
-                {editingListId ? '保存清单' : '新建清单'}
-              </Button>
-            </div>
-            <div className="mt-5 space-y-3 max-h-[320px] overflow-y-auto pr-1">
-              {taskLists.filter((list) => (list.scope || 'org') === 'org').map((list) => (
-                <div key={list.id} className="border border-gray-100 rounded-2xl p-4 flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-[14px] font-bold text-gray-900">{list.name}</p>
-                      {list.archivedAt && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">已归档</span>}
-                    </div>
-                    <p className="text-[12px] text-gray-500 mt-2">{list.description?.trim() || '暂无简介。'}</p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, description: list.description || '' }); }} disabled={!canManageOrgTaskList}>编辑</Button>
-                    <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={!canManageOrgTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
-                    <Button onClick={() => void handleDeleteTaskList(list)} disabled={!canManageOrgTaskList}>删除</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-        </div>
       </div>
     );
 
@@ -17682,81 +17952,251 @@ export default function App() {
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
-              <h2 className="text-[16px] font-bold text-gray-900">{terminology.workspaceLabel}全局规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">控制{terminology.workspaceLabel}聊天、会议发布到任务和{terminology.singularLabel}补充 DNA 的组织级规则。</p>
+              <h2 className="text-[16px] font-bold text-gray-900">{terminology.workspaceLabel}规则</h2>
+              <p className="text-[12px] text-gray-500 mt-1">控制资料编辑、DNA 生成、知识入库，以及会议行动项进入任务的方式。</p>
             </div>
-            <Button primary onClick={() => void handleSaveClientWorkspaceSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存{terminology.workspaceLabel}设置
+            <Button primary onClick={() => void handleSaveClientWorkspaceSettings()} disabled={!canManageSensitiveSettings}>
+              <Settings size={16} /> 保存{terminology.workspaceLabel}规则
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              聊天默认注入组织 DNA
-              <input type="checkbox" checked={clientWorkspaceDraft.useOrgDnaInChat} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, useOrgDnaInChat: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              知识问答默认注入组织 DNA
-              <input type="checkbox" checked={clientWorkspaceDraft.useOrgDnaInKnowledgeQa} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, useOrgDnaInKnowledgeQa: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <input value={clientWorkspaceDraft.defaultMeetingTitlePrefix} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, defaultMeetingTitlePrefix: event.target.value }))} placeholder="会议标题默认前缀" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <input value={clientWorkspaceDraft.defaultGoalQuarter} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, defaultGoalQuarter: event.target.value }))} placeholder="目标默认季度，例如 2026 Q2" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <select value={clientWorkspaceDraft.meetingPublishDefaultListId || ''} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="">不额外指定清单</option>
-              {activeTaskLists.map((list) => (
-                <option key={list.id} value={list.id}>{list.name}</option>
-              ))}
-            </select>
-            <select value={clientWorkspaceDraft.meetingPublishDefaultPriority} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultPriority: event.target.value as ClientWorkspaceSettings['meetingPublishDefaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="low">会议任务默认低优先级</option>
-              <option value="normal">会议任务默认普通优先级</option>
-              <option value="high">会议任务默认高优先级</option>
-            </select>
-            <input value={clientWorkspaceDraft.clientDnaModeLabel} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, clientDnaModeLabel: event.target.value }))} placeholder={`${terminology.singularLabel} DNA 显示文案`} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none md:col-span-2" disabled={!canEditBusinessSettings} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+              <h3 className="text-[14px] font-bold text-gray-900">资料与 DNA</h3>
+              <select value={clientWorkspaceDraft.clientEditPermission} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, clientEditPermission: event.target.value as ClientWorkspaceSettings['clientEditPermission'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="admin_only">仅管理员可编辑{terminology.singularLabel}资料</option>
+                <option value="owner">管理员与{terminology.singularLabel}负责人可编辑</option>
+                <option value="owner_and_collaborators">管理员、负责人、协作者可编辑</option>
+              </select>
+              <select value={clientWorkspaceDraft.clientDnaGenerationMode} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, clientDnaGenerationMode: event.target.value as ClientWorkspaceSettings['clientDnaGenerationMode'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="manual">DNA 只手动生成</option>
+                <option value="prompt_on_material_change">资料变化后提示生成 DNA 草稿</option>
+                <option value="auto_draft_on_material_change">资料变化后自动生成 DNA 草稿</option>
+              </select>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                聊天默认注入组织 DNA
+                <input type="checkbox" checked={clientWorkspaceDraft.useOrgDnaInChat} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, useOrgDnaInChat: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                知识问答默认注入组织 DNA
+                <input type="checkbox" checked={clientWorkspaceDraft.useOrgDnaInKnowledgeQa} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, useOrgDnaInKnowledgeQa: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+            </div>
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+              <h3 className="text-[14px] font-bold text-gray-900">知识入库与会议任务</h3>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                会议纪要可入库
+                <input type="checkbox" checked={clientWorkspaceDraft.knowledgeIngestMeetingNotes} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, knowledgeIngestMeetingNotes: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                附件材料可入库
+                <input type="checkbox" checked={clientWorkspaceDraft.knowledgeIngestAttachments} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, knowledgeIngestAttachments: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                任务复盘可入库
+                <input type="checkbox" checked={clientWorkspaceDraft.knowledgeIngestTaskReviews} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, knowledgeIngestTaskReviews: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <select value={clientWorkspaceDraft.meetingActionItemMode} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingActionItemMode: event.target.value as ClientWorkspaceSettings['meetingActionItemMode'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="candidate_only">会议行动项只生成候选</option>
+                <option value="pending_tasks">会议行动项生成待确认任务</option>
+                <option value="direct_tasks">会议行动项直接生成任务</option>
+              </select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <select value={clientWorkspaceDraft.meetingPublishDefaultListId || ''} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultListId: event.target.value || null }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                  <option value="">会议任务不指定清单</option>
+                  {activeTaskLists.map((list) => (
+                    <option key={list.id} value={list.id}>{list.name}</option>
+                  ))}
+                </select>
+                <select value={clientWorkspaceDraft.meetingPublishDefaultPriority} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultPriority: event.target.value as ClientWorkspaceSettings['meetingPublishDefaultPriority'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                  <option value="low">会议任务默认低优先级</option>
+                  <option value="normal">会议任务默认普通优先级</option>
+                  <option value="high">会议任务默认高优先级</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     );
 
+    const renderStrategicSection = () => {
+      const confirmRoleOptions = [
+        { value: 'admin', label: '管理员' },
+        { value: 'client_owner', label: `${terminology.singularLabel}负责人` },
+        { value: 'collaborator', label: '协作者' },
+      ];
+      const meetingPackOptions = [
+        { value: 'client_background', label: `${terminology.singularLabel}背景` },
+        { value: 'recent_progress', label: '近期进展' },
+        { value: 'key_findings', label: '关键发现' },
+        { value: 'risks', label: '风险项' },
+        { value: 'suggested_agenda', label: '建议议程' },
+        { value: 'pending_decisions', label: '待确认事项' },
+        { value: 'evidence_summary', label: '证据摘要' },
+      ];
+      return (
+        <div className="space-y-6">
+          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-[16px] font-bold text-gray-900">战略陪伴规则</h2>
+                <p className="text-[12px] text-gray-500 mt-1">补齐战略陪伴的可见范围、快照确认、风险提示和会前包生成边界。</p>
+              </div>
+              <Button primary onClick={() => void handleSaveStrategicSettings()} disabled={!canManageSensitiveSettings}>
+                <Settings size={16} /> 保存战略规则
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+                <h3 className="text-[14px] font-bold text-gray-900">可见范围与快照确认</h3>
+                <select value={strategicDraft.visibilityScope} onChange={(event) => setStrategicDraft((prev) => ({ ...prev, visibilityScope: event.target.value as StrategicSettings['visibilityScope'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                  <option value="admin_only">仅管理员可见</option>
+                  <option value="admin_and_owner">管理员与{terminology.singularLabel}负责人可见</option>
+                  <option value="admin_owner_collaborators">管理员、负责人、协作者可见</option>
+                </select>
+                <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                  战略快照发布前需要确认
+                  <input type="checkbox" checked={strategicDraft.snapshotConfirmationEnabled} onChange={(event) => setStrategicDraft((prev) => ({ ...prev, snapshotConfirmationEnabled: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+                </label>
+                <div className="rounded-2xl border border-gray-200 bg-white px-4 py-3">
+                  <p className="text-[12px] font-bold text-gray-500 mb-2">可确认快照的角色</p>
+                  <div className="flex flex-wrap gap-2">
+                    {confirmRoleOptions.map((option) => (
+                      <label key={option.value} className="inline-flex items-center gap-2 rounded-full border border-gray-200 px-3 py-1.5 text-[12px] font-bold text-gray-600">
+                        <input type="checkbox" checked={strategicDraft.snapshotConfirmRoles.includes(option.value)} onChange={(event) => toggleStrategicConfirmRole(option.value, event.target.checked)} disabled={!canManageSensitiveSettings} />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+                <h3 className="text-[14px] font-bold text-gray-900">战略线风险与证据</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="block text-[11px] font-bold text-gray-400 mb-1">多少天未推进算停滞</span>
+                    <input type="number" min={1} value={strategicDraft.stalledDays} onChange={(event) => setStrategicDraft((prev) => ({ ...prev, stalledDays: Math.max(1, Number(event.target.value || 1)) }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] font-bold text-gray-400 mb-1">停滞后的风险等级</span>
+                    <select value={strategicDraft.stalledRiskLevel} onChange={(event) => setStrategicDraft((prev) => ({ ...prev, stalledRiskLevel: event.target.value as StrategicSettings['stalledRiskLevel'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                      <option value="watch">观察</option>
+                      <option value="risk">风险</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="block text-[11px] font-bold text-gray-400 mb-1">生成结论至少需要几条证据</span>
+                  <input type="number" min={1} value={strategicDraft.evidenceMinCount} onChange={(event) => setStrategicDraft((prev) => ({ ...prev, evidenceMinCount: Math.max(1, Number(event.target.value || 1)) }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+                </label>
+                <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                  证据不足时标记为“待校准”
+                  <input type="checkbox" checked={strategicDraft.markUncalibratedWhenEvidenceInsufficient} onChange={(event) => setStrategicDraft((prev) => ({ ...prev, markUncalibratedWhenEvidenceInsufficient: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+                </label>
+              </div>
+            </div>
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5">
+              <h3 className="text-[14px] font-bold text-gray-900 mb-3">会前包默认包含</h3>
+              <div className="flex flex-wrap gap-2">
+                {meetingPackOptions.map((option) => (
+                  <label key={option.value} className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-600">
+                    <input type="checkbox" checked={strategicDraft.meetingPackSections.includes(option.value)} onChange={(event) => toggleMeetingPackSection(option.value, event.target.checked)} disabled={!canManageSensitiveSettings} />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     const renderTopicsSection = () => (
       <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+          <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-[16px] font-bold text-gray-900">资讯情报站规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">集中管理抓取中文化、解析 gating、默认时间窗和任务指派策略。</p>
+              <p className="text-[12px] text-gray-500 mt-1">集中管理刷新节奏、关注领域、来源可信度，以及洞察转任务前置条件。</p>
             </div>
-            <Button primary onClick={() => void handleSaveTopicsSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存资讯设置
+            <Button primary onClick={() => void handleSaveTopicsSettings()} disabled={!canManageSensitiveSettings}>
+              <Settings size={16} /> 保存资讯规则
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              抓回内容默认中文化
-              <input type="checkbox" checked={topicsDraft.chineseOnly} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, chineseOnly: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              解析完成前禁止查看解析 / 转任务
-              <input type="checkbox" checked={topicsDraft.requireInsightBeforeActions} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, requireInsightBeforeActions: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              候选解析默认注入组织 DNA
-              <input type="checkbox" checked={topicsDraft.useOrgDnaForInsight} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, useOrgDnaForInsight: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              转任务提炼默认注入组织 DNA
-              <input type="checkbox" checked={topicsDraft.useOrgDnaForTaskPlan} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, useOrgDnaForTaskPlan: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <select value={topicsDraft.defaultTimeRange} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTimeRange: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="1_day">默认时间窗：1 天</option>
-              <option value="3_days">默认时间窗：3 天</option>
-              <option value="7_days">默认时间窗：7 天</option>
-              <option value="14_days">默认时间窗：14 天</option>
-            </select>
-            <select value={topicsDraft.defaultTaskOwnerMode} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTaskOwnerMode: event.target.value as TopicsSettings['defaultTaskOwnerMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="self">转任务默认指派给自己</option>
-              <option value="empty">转任务默认不带负责人</option>
-            </select>
-            <input value={topicsDraft.defaultSourceStrategy} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultSourceStrategy: event.target.value }))} placeholder="默认来源策略" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none md:col-span-2" disabled={!canEditBusinessSettings} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+              <h3 className="text-[14px] font-bold text-gray-900">刷新与转化</h3>
+              <select value={topicsDraft.refreshCadence} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, refreshCadence: event.target.value as TopicsSettings['refreshCadence'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="manual">手动刷新</option>
+                <option value="daily">每日刷新</option>
+                <option value="weekly">每周刷新</option>
+              </select>
+              <select value={topicsDraft.defaultTimeRange} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTimeRange: event.target.value }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="1_day">默认时间窗：1 天</option>
+                <option value="3_days">默认时间窗：3 天</option>
+                <option value="7_days">默认时间窗：7 天</option>
+                <option value="14_days">默认时间窗：14 天</option>
+              </select>
+              <input type="number" min={1} value={topicsDraft.candidateRetentionDays} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, candidateRetentionDays: Math.max(1, Number(event.target.value || 1)) }))} placeholder="候选保留天数" className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+              <select value={topicsDraft.defaultTaskOwnerMode} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTaskOwnerMode: event.target.value as TopicsSettings['defaultTaskOwnerMode'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="self">转任务默认指派给自己</option>
+                <option value="empty">转任务默认不带负责人</option>
+              </select>
+            </div>
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+              <h3 className="text-[14px] font-bold text-gray-900">洞察生成边界</h3>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                抓回内容默认中文化
+                <input type="checkbox" checked={topicsDraft.chineseOnly} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, chineseOnly: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                解析完成前禁止查看解析 / 转任务
+                <input type="checkbox" checked={topicsDraft.requireInsightBeforeActions} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, requireInsightBeforeActions: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                候选解析默认注入组织 DNA
+                <input type="checkbox" checked={topicsDraft.useOrgDnaForInsight} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, useOrgDnaForInsight: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+              <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                转任务提炼默认注入组织 DNA
+                <input type="checkbox" checked={topicsDraft.useOrgDnaForTaskPlan} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, useOrgDnaForTaskPlan: event.target.checked }))} disabled={!canManageSensitiveSettings} />
+              </label>
+            </div>
+          </div>
+          <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-[14px] font-bold text-gray-900">关注领域</h3>
+              <Button onClick={() => setTopicsDraft((prev) => ({ ...prev, focusDomains: [...prev.focusDomains, { id: createUiId('focus-domain'), name: '', keywords: '', description: '' }] }))} disabled={!canManageSensitiveSettings}>
+                <Plus size={16} /> 新增领域
+              </Button>
+            </div>
+            {topicsDraft.focusDomains.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-4 text-[12px] text-gray-500">未设置关注领域时，资讯情报站按通用公益/行业线索工作。</p>
+            ) : topicsDraft.focusDomains.map((domain) => (
+              <div key={domain.id} className="grid grid-cols-1 xl:grid-cols-[0.8fr_1fr_1fr_auto] gap-3">
+                <input value={domain.name} onChange={(event) => updateTopicFocusDomain(domain.id, { name: event.target.value })} placeholder="领域名称" className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+                <input value={domain.keywords} onChange={(event) => updateTopicFocusDomain(domain.id, { keywords: event.target.value })} placeholder="关键词，用逗号分隔" className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] outline-none" disabled={!canManageSensitiveSettings} />
+                <input value={domain.description} onChange={(event) => updateTopicFocusDomain(domain.id, { description: event.target.value })} placeholder="筛选说明" className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] outline-none" disabled={!canManageSensitiveSettings} />
+                <button type="button" onClick={() => setTopicsDraft((prev) => ({ ...prev, focusDomains: prev.focusDomains.filter((item) => item.id !== domain.id) }))} className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-[12px] font-bold text-red-600" disabled={!canManageSensitiveSettings}>删除</button>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+            <h3 className="text-[14px] font-bold text-gray-900">来源偏好</h3>
+            {topicsDraft.sourcePreferences.map((source) => (
+              <div key={source.id} className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr_auto] gap-3 items-center">
+                <input value={source.name} onChange={(event) => updateTopicSourcePreference(source.id, { name: event.target.value })} className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+                <select value={source.trustLevel} onChange={(event) => updateTopicSourcePreference(source.id, { trustLevel: event.target.value as TopicsSettings['sourcePreferences'][number]['trustLevel'] })} className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                  <option value="high">高可信</option>
+                  <option value="medium">中可信</option>
+                  <option value="low">低可信</option>
+                </select>
+                <label className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-600 flex items-center justify-between gap-3">
+                  启用
+                  <input type="checkbox" checked={source.enabled} onChange={(event) => updateTopicSourcePreference(source.id, { enabled: event.target.checked })} disabled={!canManageSensitiveSettings} />
+                </label>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -17764,32 +18204,74 @@ export default function App() {
 
     const renderHandbookSection = () => (
       <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-[16px] font-bold text-gray-900">成长手册规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">统一默认标签、默认分类和组织沉淀 / 个人沉淀边界说明。</p>
+              <h2 className="text-[16px] font-bold text-gray-900">成长中心规则</h2>
+              <p className="text-[12px] text-gray-500 mt-1">配置经验是否公开、从哪里捕获沉淀、哪些通知需要提醒，以及组织沉淀分类。</p>
             </div>
-            <Button primary onClick={() => void handleSaveHandbookSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存成长手册设置
+            <Button primary onClick={() => void handleSaveHandbookSettings()} disabled={!canManageSensitiveSettings}>
+              <Settings size={16} /> 保存成长规则
             </Button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input value={handbookDraft.defaultTagsText} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultTagsText: event.target.value }))} placeholder="默认标签，逗号分隔" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <input value={handbookDraft.defaultCategory} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultCategory: event.target.value }))} placeholder="默认分类" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              允许从任务沉淀进入成长手册
-              <input type="checkbox" checked={handbookDraft.allowTaskSource} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, allowTaskSource: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              允许从分析结论沉淀进入成长手册
-              <input type="checkbox" checked={handbookDraft.allowAnalysisSource} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, allowAnalysisSource: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <select value={handbookDraft.visibilityBoundary} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, visibilityBoundary: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none md:col-span-2" disabled={!canEditBusinessSettings}>
-              <option value="organization_and_personal">组织沉淀与个人沉淀分开展示</option>
-              <option value="organization_first">优先显示组织沉淀</option>
-              <option value="personal_first">优先显示个人沉淀</option>
-            </select>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+              <h3 className="text-[14px] font-bold text-gray-900">公开边界</h3>
+              <select value={handbookDraft.experienceVisibility} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, experienceVisibility: event.target.value as HandbookSettings['experienceVisibility'] }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="personal">默认仅个人可见</option>
+                <option value="team_requires_confirmation">默认个人可见，公开到团队需确认</option>
+                <option value="team_default">默认团队可见</option>
+              </select>
+              <select value={handbookDraft.visibilityBoundary} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, visibilityBoundary: event.target.value }))} className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings}>
+                <option value="organization_and_personal">组织沉淀与个人沉淀分开展示</option>
+                <option value="organization_first">优先显示组织沉淀</option>
+                <option value="personal_first">优先显示个人沉淀</option>
+              </select>
+              <input value={handbookDraft.defaultCategory} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultCategory: event.target.value }))} placeholder="默认分类" className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
+              <input value={handbookDraft.defaultTagsText} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, defaultTagsText: event.target.value }))} placeholder="默认标签，逗号分隔" className="w-full bg-white border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
+            </div>
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+              <h3 className="text-[14px] font-bold text-gray-900">捕获来源与提醒</h3>
+              {[
+                ['weeklyReview', '周复盘可沉淀'],
+                ['meetingNotes', '会议纪要可沉淀'],
+                ['aiOverview', 'AI 总结可沉淀'],
+                ['taskReview', '任务复盘可沉淀'],
+                ['strategicInsight', '战略洞察可沉淀'],
+              ].map(([key, label]) => (
+                <label key={key} className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-medium flex items-center justify-between">
+                  {label}
+                  <input type="checkbox" checked={Boolean(handbookDraft.captureSources[key as keyof HandbookSettings['captureSources']])} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, captureSources: { ...prev.captureSources, [key]: event.target.checked } }))} disabled={!canManageSensitiveSettings} />
+                </label>
+              ))}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                {[
+                  ['badgeToSelf', '给本人徽章提醒'],
+                  ['xpToSelf', '给本人成长值提醒'],
+                  ['importantBadgeToTeam', '重要徽章同步团队'],
+                ].map(([key, label]) => (
+                  <label key={key} className="rounded-2xl border border-gray-200 bg-white px-3 py-3 text-[12px] font-bold text-gray-600 flex items-center justify-between gap-2">
+                    {label}
+                    <input type="checkbox" checked={Boolean(handbookDraft.notificationSettings[key as keyof HandbookSettings['notificationSettings']])} onChange={(event) => setHandbookDraft((prev) => ({ ...prev, notificationSettings: { ...prev.notificationSettings, [key]: event.target.checked } }))} disabled={!canManageSensitiveSettings} />
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-3xl border border-gray-100 bg-gray-50 p-5 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-[14px] font-bold text-gray-900">组织沉淀分类</h3>
+              <Button onClick={() => setHandbookDraft((prev) => ({ ...prev, organizationCategories: [...prev.organizationCategories, { id: createUiId('handbook-category'), name: '', description: '' }] }))} disabled={!canManageSensitiveSettings}>
+                <Plus size={16} /> 新增分类
+              </Button>
+            </div>
+            {handbookDraft.organizationCategories.map((category) => (
+              <div key={category.id} className="grid grid-cols-1 xl:grid-cols-[0.8fr_1.2fr_auto] gap-3">
+                <input value={category.name} onChange={(event) => updateHandbookCategory(category.id, { name: event.target.value })} placeholder="分类名称" className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
+                <input value={category.description} onChange={(event) => updateHandbookCategory(category.id, { description: event.target.value })} placeholder="分类说明" className="rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] outline-none" disabled={!canManageSensitiveSettings} />
+                <button type="button" onClick={() => setHandbookDraft((prev) => ({ ...prev, organizationCategories: prev.organizationCategories.filter((item) => item.id !== category.id) }))} className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-[12px] font-bold text-red-600" disabled={!canManageSensitiveSettings}>删除</button>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -17941,7 +18423,7 @@ export default function App() {
             organizationDnaModules={organizationDnaModules}
             departmentCatalog={departmentOptions}
             employees={employeeReviews}
-            canEdit
+            canEdit={canManageSensitiveSettings}
             isSaving={isSavingOrgModel}
             activeWeekLabel={currentWeekLabel()}
             initialAdvancedTab={initialAdvancedTab}
@@ -17976,6 +18458,8 @@ export default function App() {
           return renderTasksSection();
         case 'client_workspace':
           return renderClientWorkspaceSection();
+        case 'strategic':
+          return renderStrategicSection();
         case 'topics':
           return renderTopicsSection();
         case 'handbook':
@@ -18051,8 +18535,7 @@ export default function App() {
               </div>
               <div className="space-y-4">
                 {sectionGroups.map((group) => {
-                  const visibleItems = group.items.filter((section) => currentSessionUser?.primaryRole === 'admin' || !['system_admin', 'org_overview', 'org_departments', 'org_people', 'org_rules'].includes(section.key));
-                  if (visibleItems.length === 0) return null;
+                  const visibleItems = group.items;
                   return (
                     <div key={group.group}>
                       {!settingsSidebarCollapsed && (

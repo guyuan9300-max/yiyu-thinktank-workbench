@@ -335,6 +335,8 @@ from app.models import (
     StrategicReadinessRecord,
     StrategicLineRecord,
     StrategicLineDetailRecord,
+    StrategicSettingsPayload,
+    StrategicSettingsRecord,
     VectorizeAnswerPayload,
     WeeklyReviewAnalysisRecord,
     WeeklyReviewEventLineContextRecord,
@@ -3034,7 +3036,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def _default_topics_settings() -> TopicsSettingsRecord:
-        return TopicsSettingsRecord(updatedAt=now_iso())
+        return TopicsSettingsRecord(
+            sourcePreferences=[
+                {"id": "policy", "name": "政策/政府公开信息", "trustLevel": "high", "enabled": True},
+                {"id": "foundation", "name": "基金会/公益组织", "trustLevel": "high", "enabled": True},
+                {"id": "industry_media", "name": "行业媒体", "trustLevel": "medium", "enabled": True},
+                {"id": "research", "name": "研究机构", "trustLevel": "high", "enabled": True},
+                {"id": "client_official", "name": "客户官网/公开材料", "trustLevel": "high", "enabled": True},
+            ],
+            updatedAt=now_iso(),
+        )
+
+    def _default_strategic_settings() -> StrategicSettingsRecord:
+        return StrategicSettingsRecord(updatedAt=now_iso())
 
     FUNDRAISING_MODE_GUIDES: dict[str, dict[str, object]] = {
         "platform_fundraising": {
@@ -3769,6 +3783,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_topics_settings() -> TopicsSettingsRecord:
         return _load_json_settings_record("settings.topics", _default_topics_settings, TopicsSettingsRecord)
 
+    def get_strategic_settings() -> StrategicSettingsRecord:
+        return _load_json_settings_record("settings.strategic", _default_strategic_settings, StrategicSettingsRecord)
+
     def get_analysis_workbench_settings() -> AnalysisWorkbenchSettingsRecord:
         current = _load_json_settings_record("settings.analysis_workbench", _default_analysis_workbench_settings, AnalysisWorkbenchSettingsRecord)
         dirty = False
@@ -4430,6 +4447,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return
         if session_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="只有管理员可以编辑该设置")
+
+    def ensure_org_scoped_settings_editable() -> None:
+        session_user = get_cached_session_user()
+        if not session_user:
+            return
+        if session_user.primaryRole == "admin":
+            return
+        organization_id = str(session_user.organizationId or "").strip()
+        if not has_active_cloud_session() or organization_id in {"", "local-device"}:
+            return
+        raise HTTPException(status_code=403, detail="加入组织后，只有管理员可以编辑组织规则")
 
     def _organization_dna_record(module_key: str, module_title: str, row=None) -> OrganizationDnaModuleRecord:
         return OrganizationDnaModuleRecord(
@@ -19183,6 +19211,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid employee payload")
         return [EmployeeRecord(**item) for item in payload if isinstance(item, dict)]
 
+    @app.get("/api/v1/employees/directory", response_model=list[EmployeeRecord])
+    def list_employee_directory() -> list[EmployeeRecord]:
+        payload = cloud_request("GET", "/api/v1/employees/directory")
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Invalid employee directory payload")
+        return [EmployeeRecord(**item) for item in payload if isinstance(item, dict)]
+
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def read_org_model_profile() -> OrgModelProfileRecord:
         payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
@@ -19192,6 +19227,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def update_org_model_profile(payload: OrgModelProfileRecord) -> OrgModelProfileRecord:
+        ensure_org_scoped_settings_editable()
         response = cloud_request("POST", "/api/v1/settings/org-model/profile", json_body=payload.model_dump())
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid org model payload")
@@ -21670,7 +21706,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
     def update_task_settings(payload: TaskSettingsPayload) -> TaskSettingsRecord:
-        ensure_business_settings_editable()
+        ensure_org_scoped_settings_editable()
         if get_cloud_token():
             response = cloud_request("POST", "/api/v1/settings/tasks", json_body=payload.model_dump(exclude_unset=True))
             if not isinstance(response, dict):
@@ -21768,7 +21804,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/client-workspace", response_model=ClientWorkspaceSettingsRecord)
     def update_client_workspace_settings(payload: ClientWorkspaceSettingsPayload) -> ClientWorkspaceSettingsRecord:
-        ensure_business_settings_editable()
+        ensure_org_scoped_settings_editable()
         current = get_client_workspace_settings()
         next_payload = current.model_dump()
         next_payload.update(payload.model_dump(exclude_none=True))
@@ -21788,14 +21824,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/topics", response_model=TopicsSettingsRecord)
     def update_topics_settings(payload: TopicsSettingsPayload) -> TopicsSettingsRecord:
-        ensure_business_settings_editable()
+        ensure_org_scoped_settings_editable()
         current = get_topics_settings()
         next_payload = current.model_dump()
         next_payload.update(payload.model_dump(exclude_none=True))
         next_payload["updatedAt"] = now_iso()
+        if int(next_payload.get("candidateRetentionDays") or 0) < 1:
+            raise HTTPException(status_code=400, detail="候选条目保留期限至少为 1 天")
         next_record = TopicsSettingsRecord(**next_payload)
         _save_json_settings_record("settings.topics", next_record)
         log_activity("settings.topics.update", "settings", "topics", payload.model_dump(exclude_none=True))
+        return next_record
+
+    @app.get("/api/v1/settings/strategic", response_model=StrategicSettingsRecord)
+    def read_strategic_settings() -> StrategicSettingsRecord:
+        return get_strategic_settings()
+
+    @app.post("/api/v1/settings/strategic", response_model=StrategicSettingsRecord)
+    def update_strategic_settings(payload: StrategicSettingsPayload) -> StrategicSettingsRecord:
+        ensure_org_scoped_settings_editable()
+        current = get_strategic_settings()
+        next_payload = current.model_dump()
+        next_payload.update(payload.model_dump(exclude_none=True))
+        next_payload["updatedAt"] = now_iso()
+        if int(next_payload.get("stalledDays") or 0) < 1:
+            raise HTTPException(status_code=400, detail="战略线停滞天数至少为 1 天")
+        if int(next_payload.get("evidenceMinCount") or 0) < 1:
+            raise HTTPException(status_code=400, detail="战略判断证据数至少为 1 条")
+        next_record = StrategicSettingsRecord(**next_payload)
+        _save_json_settings_record("settings.strategic", next_record)
+        log_activity("settings.strategic.update", "settings", "strategic", payload.model_dump(exclude_none=True))
         return next_record
 
     @app.get("/api/v1/settings/analysis-workbench", response_model=AnalysisWorkbenchSettingsRecord)
@@ -21829,7 +21887,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/settings/handbook", response_model=HandbookSettingsRecord)
     def update_handbook_settings(payload: HandbookSettingsPayload) -> HandbookSettingsRecord:
-        ensure_business_settings_editable()
+        ensure_org_scoped_settings_editable()
         current = get_handbook_settings()
         next_payload = current.model_dump()
         next_payload.update(payload.model_dump(exclude_none=True))
@@ -24428,8 +24486,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def create_task_list(payload: TaskListMutationPayload) -> TaskListRecord:
         session_user = get_cached_session_user()
         organization_id = session_user.organizationId if session_user else ""
-        if session_user and session_user.primaryRole != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can create public task lists")
+        ensure_org_scoped_settings_editable()
         trimmed_name = payload.name.strip()
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
@@ -24498,8 +24555,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def update_task_list(list_id: str, payload: TaskListMutationPayload) -> TaskListRecord:
         session_user = get_cached_session_user()
         organization_id = session_user.organizationId if session_user else ""
-        if session_user and session_user.primaryRole != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can update public task lists")
+        ensure_org_scoped_settings_editable()
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
@@ -24576,8 +24632,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def delete_task_list(list_id: str) -> dict[str, bool]:
         session_user = get_cached_session_user()
         organization_id = session_user.organizationId if session_user else ""
-        if session_user and session_user.primaryRole != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
+        ensure_org_scoped_settings_editable()
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")

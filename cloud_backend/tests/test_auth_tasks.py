@@ -784,6 +784,21 @@ def test_org_model_profile_roundtrip():
     assert reread_payload['roleProcessTemplates'][0]['commonBlockers'] == ['资料未补齐', '等待部门确认']
 
 
+def test_org_model_profile_read_only_for_employee():
+    app = create_app()
+    client = TestClient(app)
+
+    user_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    response = client.get("/api/v1/settings/org-model/profile", headers=user_headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["organization"]["name"] == "益语智库"
+    assert any(item["userId"] == "user_qinghua" for item in payload["bindings"])
+
+    blocked = client.post("/api/v1/settings/org-model/profile", json=payload, headers=user_headers)
+    assert blocked.status_code == 403
+
+
 def test_task_org_link_and_department_control_permissions():
     app = create_app()
     client = TestClient(app)

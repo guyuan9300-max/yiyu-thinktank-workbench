@@ -2274,7 +2274,27 @@ export interface ClientWorkspaceSettings {
   defaultGoalQuarter: string;
   defaultMeetingTitlePrefix: string;
   clientDnaModeLabel: string;
+  clientEditPermission: 'admin_only' | 'owner' | 'owner_and_collaborators';
+  clientDnaGenerationMode: 'manual' | 'prompt_on_material_change' | 'auto_draft_on_material_change';
+  knowledgeIngestMeetingNotes: boolean;
+  knowledgeIngestAttachments: boolean;
+  knowledgeIngestTaskReviews: boolean;
+  meetingActionItemMode: 'candidate_only' | 'pending_tasks' | 'direct_tasks';
   updatedAt: string;
+}
+
+export interface TopicFocusDomain {
+  id: string;
+  name: string;
+  keywords: string;
+  description: string;
+}
+
+export interface TopicSourcePreference {
+  id: string;
+  name: string;
+  trustLevel: 'high' | 'medium' | 'low';
+  enabled: boolean;
 }
 
 export interface TopicsSettings {
@@ -2285,6 +2305,22 @@ export interface TopicsSettings {
   defaultSourceStrategy: string;
   useOrgDnaForInsight: boolean;
   useOrgDnaForTaskPlan: boolean;
+  refreshCadence: 'manual' | 'daily' | 'weekly';
+  focusDomains: TopicFocusDomain[];
+  sourcePreferences: TopicSourcePreference[];
+  candidateRetentionDays: number;
+  updatedAt: string;
+}
+
+export interface StrategicSettings {
+  visibilityScope: 'admin_only' | 'admin_and_owner' | 'admin_owner_collaborators';
+  snapshotConfirmationEnabled: boolean;
+  snapshotConfirmRoles: string[];
+  stalledDays: number;
+  stalledRiskLevel: 'watch' | 'risk';
+  meetingPackSections: string[];
+  evidenceMinCount: number;
+  markUncalibratedWhenEvidenceInsufficient: boolean;
   updatedAt: string;
 }
 
@@ -2463,6 +2499,26 @@ export interface HandbookSettings {
   allowTaskSource: boolean;
   allowAnalysisSource: boolean;
   visibilityBoundary: string;
+  experienceVisibility: 'personal' | 'team_requires_confirmation' | 'team_default';
+  captureSources: {
+    weeklyReview: boolean;
+    meetingNotes: boolean;
+    aiOverview: boolean;
+    taskReview: boolean;
+    strategicInsight: boolean;
+  };
+  handbookSources: {
+    task: boolean;
+    analysis: boolean;
+    meeting: boolean;
+    strategic: boolean;
+  };
+  notificationSettings: {
+    badgeToSelf: boolean;
+    xpToSelf: boolean;
+    importantBadgeToTeam: boolean;
+  };
+  organizationCategories: Array<{ id: string; name: string; description: string }>;
   updatedAt: string;
 }
 
@@ -3911,6 +3967,12 @@ export interface ClientWorkspaceSettingsPayload {
   defaultGoalQuarter?: string;
   defaultMeetingTitlePrefix?: string;
   clientDnaModeLabel?: string;
+  clientEditPermission?: ClientWorkspaceSettings['clientEditPermission'];
+  clientDnaGenerationMode?: ClientWorkspaceSettings['clientDnaGenerationMode'];
+  knowledgeIngestMeetingNotes?: boolean;
+  knowledgeIngestAttachments?: boolean;
+  knowledgeIngestTaskReviews?: boolean;
+  meetingActionItemMode?: ClientWorkspaceSettings['meetingActionItemMode'];
 }
 
 export interface TopicsSettingsPayload {
@@ -3921,6 +3983,21 @@ export interface TopicsSettingsPayload {
   defaultSourceStrategy?: string;
   useOrgDnaForInsight?: boolean;
   useOrgDnaForTaskPlan?: boolean;
+  refreshCadence?: TopicsSettings['refreshCadence'];
+  focusDomains?: TopicFocusDomain[];
+  sourcePreferences?: TopicSourcePreference[];
+  candidateRetentionDays?: number;
+}
+
+export interface StrategicSettingsPayload {
+  visibilityScope?: StrategicSettings['visibilityScope'];
+  snapshotConfirmationEnabled?: boolean;
+  snapshotConfirmRoles?: string[];
+  stalledDays?: number;
+  stalledRiskLevel?: StrategicSettings['stalledRiskLevel'];
+  meetingPackSections?: string[];
+  evidenceMinCount?: number;
+  markUncalibratedWhenEvidenceInsufficient?: boolean;
 }
 
 export interface AnalysisWorkbenchSettingsPayload {
@@ -3944,6 +4021,11 @@ export interface HandbookSettingsPayload {
   allowTaskSource?: boolean;
   allowAnalysisSource?: boolean;
   visibilityBoundary?: string;
+  experienceVisibility?: HandbookSettings['experienceVisibility'];
+  captureSources?: HandbookSettings['captureSources'];
+  handbookSources?: HandbookSettings['handbookSources'];
+  notificationSettings?: HandbookSettings['notificationSettings'];
+  organizationCategories?: HandbookSettings['organizationCategories'];
 }
 
 export interface SystemAdminSettingsPayload {

@@ -9527,7 +9527,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def get_org_model_profile(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> OrgModelProfileRecord:
         return _get_org_model_profile(state, current_user.organizationId)
 
