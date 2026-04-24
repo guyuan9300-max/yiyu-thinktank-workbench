@@ -5196,6 +5196,201 @@ def test_inbox_aggregate_preserves_cloud_collaboration_display_fields(tmp_path: 
     assert task["viewerCanReject"] is True
 
 
+def test_cloud_inbox_merges_board_pending_when_cloud_inbox_omits_task(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
+    session_user = seed_session_user(
+        client,
+        user_id="user_receiver",
+        email="receiver@example.com",
+        full_name="接收人",
+    )
+    seed_cloud_token(client)
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        normalized = "http://127.0.0.1:47830"
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/inbox":
+            return httpx.Response(
+                200,
+                json={"pendingTasks": [], "systemNotifications": [], "outboundPendingTasks": []},
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [
+                        {
+                            "id": "task_board_pending_only",
+                            "title": "看板里仍待我确认的任务",
+                            "description": "云端 inbox 漏掉时，本地桥接应从任务看板补回。",
+                            "status": "todo",
+                            "progressStatus": "todo",
+                            "priority": "normal",
+                            "listId": default_list_id,
+                            "listName": "客户项目",
+                            "listColor": "#5B7BFE",
+                            "listIds": [default_list_id],
+                            "listNames": ["客户项目"],
+                            "creatorId": "user_creator",
+                            "creatorName": "发起人",
+                            "ownerId": session_user["id"],
+                            "ownerName": session_user["fullName"],
+                            "sourceType": "manual",
+                            "collaborators": [
+                                {
+                                    "userId": session_user["id"],
+                                    "fullName": session_user["fullName"],
+                                    "email": session_user["email"],
+                                    "orderIndex": 0,
+                                    "isOwner": True,
+                                    "inboxStatus": "pending",
+                                }
+                            ],
+                            "collaborationSummary": {"pending": 1, "accepted": 0, "returned": 0},
+                            "createdAt": "2026-04-24T08:00:00",
+                            "updatedAt": "2026-04-24T08:05:00",
+                        }
+                    ],
+                    "lists": [
+                        {
+                            "id": default_list_id,
+                            "name": "客户项目",
+                            "color": "#5B7BFE",
+                            "sortOrder": 0,
+                            "isDefault": True,
+                            "scope": "org",
+                        }
+                    ],
+                    "tags": [],
+                    "commonTags": [],
+                },
+            )
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    inbox = client.get("/api/v1/inbox")
+    assert inbox.status_code == 200, inbox.text
+    payload = inbox.json()
+    assert [task["id"] for task in payload["pendingTasks"]] == ["task_board_pending_only"]
+    assert payload["pendingTasks"][0]["viewerInboxStatus"] == "pending"
+    assert payload["pendingTasks"][0]["viewerCanConfirm"] is True
+
+
+def test_inbox_upsert_preserves_pending_local_empty_list_from_stale_default_payload(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
+    session_user = seed_session_user(
+        client,
+        user_id="user_creator",
+        email="creator@example.com",
+        full_name="发起人",
+    )
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "清单清空后不应被客户项目回灌",
+            "desc": "本地已明确保存为无清单。",
+            "priority": "normal",
+            "listId": "",
+            "listIds": [],
+        },
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+    db = client.app.state.app_state.db
+    db.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
+    db.execute(
+        """
+        UPDATE tasks
+        SET list_id = NULL,
+            updated_at = '2026-04-24T12:00:00',
+            sync_status = 'queued',
+            pending_sync_action = 'update',
+            last_synced_at = '2026-04-24T11:00:00',
+            last_cloud_version = '2026-04-24T11:30:00'
+        WHERE id = ?
+        """,
+        (task_id,),
+    )
+    seed_cloud_token(client)
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        normalized = "http://127.0.0.1:47830"
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "tasks": [],
+                    "lists": [
+                        {
+                            "id": default_list_id,
+                            "name": "客户项目",
+                            "color": "#5B7BFE",
+                            "sortOrder": 0,
+                            "isDefault": True,
+                            "scope": "org",
+                        }
+                    ],
+                    "tags": [],
+                    "commonTags": [],
+                },
+            )
+        if method.upper() == "GET" and url == f"{normalized}/api/v1/inbox":
+            return httpx.Response(
+                200,
+                json={
+                    "pendingTasks": [],
+                    "systemNotifications": [],
+                    "outboundPendingTasks": [
+                        {
+                            "id": task_id,
+                            "title": "清单清空后不应被客户项目回灌",
+                            "description": "云端旧快照仍带默认清单。",
+                            "status": "todo",
+                            "progressStatus": "todo",
+                            "priority": "normal",
+                            "listId": default_list_id,
+                            "listName": "客户项目",
+                            "listColor": "#5B7BFE",
+                            "listIds": [default_list_id],
+                            "listNames": ["客户项目"],
+                            "creatorId": session_user["id"],
+                            "creatorName": session_user["fullName"],
+                            "ownerId": "",
+                            "ownerName": "",
+                            "sourceType": "manual",
+                            "collaborators": [
+                                {
+                                    "userId": "user_owner",
+                                    "fullName": "负责人",
+                                    "email": "owner@example.com",
+                                    "orderIndex": 0,
+                                    "isOwner": True,
+                                    "inboxStatus": "pending",
+                                }
+                            ],
+                            "collaborationSummary": {"pending": 1, "accepted": 0, "returned": 0},
+                            "createdAt": "2026-04-24T09:00:00",
+                            "updatedAt": "2026-04-24T11:30:00",
+                        }
+                    ],
+                },
+            )
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    inbox = client.get("/api/v1/inbox")
+    assert inbox.status_code == 200, inbox.text
+    local_row = db.fetchone("SELECT list_id, sync_status, pending_sync_action FROM tasks WHERE id = ?", (task_id,))
+    assert local_row["list_id"] is None
+    assert local_row["sync_status"] == "queued"
+    assert local_row["pending_sync_action"] == "update"
+    links = db.fetchall("SELECT list_id FROM task_list_links WHERE task_id = ?", (task_id,))
+    assert links == []
+
+
 def test_task_can_be_created_without_any_list_locally(tmp_path: Path):
     client = make_client(tmp_path)
 

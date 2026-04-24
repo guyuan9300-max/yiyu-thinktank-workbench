@@ -6547,6 +6547,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for item in payload.get("collaborators", []) if isinstance(item, dict)
         ]
         viewer_user = get_cached_session_user()
+        viewer_status = payload.get("viewerInboxStatus")
+        if not viewer_status and viewer_user:
+            viewer_status = next(
+                (item.inboxStatus for item in collaborators if item.userId == viewer_user.id),
+                None,
+            )
         list_id = normalize_legacy_task_list_id(str(payload.get("listId", "")))
         list_ids = _normalize_task_list_ids(
             [str(item) for item in payload.get("listIds", []) if str(item).strip()]
@@ -6583,7 +6589,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for list_item_id in list_ids
         ]
         progress_status = str(payload.get("progressStatus", "todo"))
-        viewer_status = payload.get("viewerInboxStatus")
         source_type = str(payload.get("sourceType", "manual"))
         task_status = (
             "inbox"
@@ -7189,6 +7194,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         if not session_user or not get_cloud_token():
             return InboxAggregateResponse()
+
+        def merge_task_records(primary: list[TaskRecord], fallback: list[TaskRecord]) -> list[TaskRecord]:
+            merged: list[TaskRecord] = []
+            seen: set[str] = set()
+            for task in [*primary, *fallback]:
+                if task.id in seen:
+                    continue
+                seen.add(task.id)
+                merged.append(task)
+            return merged
+
         try:
             payload = cloud_request("GET", "/api/v1/inbox")
         except HTTPException as error:
@@ -7224,6 +7240,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for item in payload.get("systemNotifications", [])
             if isinstance(item, dict)
         ]
+        derived = _aggregate_inbox_from_tasks(board.tasks, notifications, session_user.id)
+        pending_tasks = merge_task_records(pending_tasks, derived.pendingTasks)
+        outbound_pending_tasks = merge_task_records(outbound_pending_tasks, derived.outboundPendingTasks)
         for task_payload in [*pending_payloads, *outbound_payloads]:
             _upsert_local_task_from_cloud(task_payload, session_user.organizationId)
         for notification in notifications:
@@ -17430,13 +17449,60 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _delete_local_legacy_event_line_notification_task(str(payload.get("id") or ""))
             return
         timestamp = now_iso()
+        task_id = str(payload.get("id") or "").strip()
+        existing_task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,)) if task_id else None
         owner_name = str(payload.get("ownerName") or "")
         tags_payload = [item for item in payload.get("tags", []) if isinstance(item, dict)] if isinstance(payload.get("tags"), list) else []
+        remote_list_ids = (
+            [str(item) for item in payload.get("listIds", []) if str(item).strip()]
+            if isinstance(payload.get("listIds"), list)
+            else None
+        )
         normalized_list_ids = _normalize_task_list_ids(
-            [str(item) for item in payload.get("listIds", []) if str(item).strip()] if isinstance(payload.get("listIds"), list) else None,
+            remote_list_ids,
             str(payload.get("listId") or "").strip() or None,
         )
-        primary_list_id = normalized_list_ids[0] if normalized_list_ids else str(payload.get("listId") or "")
+        existing_list_records = (
+            _task_list_records_for_task(state.db, task_id, str(existing_task_row["list_id"] or ""))
+            if existing_task_row
+            else []
+        )
+        existing_has_no_lists = bool(
+            existing_task_row
+            and not normalize_legacy_task_list_id(str(existing_task_row["list_id"] or ""))
+            and not existing_list_records
+        )
+        remote_list_names = (
+            [str(item) for item in payload.get("listNames", []) if str(item).strip()]
+            if isinstance(payload.get("listNames"), list)
+            else []
+        )
+        if str(payload.get("listName") or "").strip():
+            remote_list_names.append(str(payload.get("listName") or "").strip())
+        remote_looks_like_default_list = (
+            normalize_legacy_task_list_id(str(payload.get("listId") or "")) == DEFAULT_LOCAL_ORG_TASK_LIST_ID
+            or DEFAULT_LOCAL_ORG_TASK_LIST_ID in normalized_list_ids
+            or any(name == DEFAULT_LOCAL_ORG_TASK_LIST_NAME for name in remote_list_names)
+        )
+        local_updated_at = str(existing_task_row["updated_at"] or "").strip() if existing_task_row else ""
+        remote_updated_at = str(payload.get("updatedAt") or "").strip()
+        local_not_older_than_remote = not local_updated_at or not remote_updated_at or local_updated_at >= remote_updated_at
+        preserve_empty_local_list = bool(
+            existing_has_no_lists
+            and (
+                (existing_task_row is not None and _row_has_pending_local_change(existing_task_row))
+                or (remote_looks_like_default_list and local_not_older_than_remote)
+            )
+        )
+        stored_payload = dict(payload)
+        if preserve_empty_local_list:
+            normalized_list_ids = []
+            stored_payload["listId"] = ""
+            stored_payload["listName"] = ""
+            stored_payload["listColor"] = ""
+            stored_payload["listIds"] = []
+            stored_payload["listNames"] = []
+        primary_list_id = normalized_list_ids[0] if normalized_list_ids else ""
         state.db.execute(
             """
             INSERT INTO tasks(
@@ -17491,7 +17557,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 str(payload.get("description") or ""),
                 str(payload.get("progressStatus") or "todo"),
                 str(payload.get("priority") or "normal"),
-                primary_list_id,
+                primary_list_id or None,
                 str(payload.get("creatorId") or ""),
                 str(payload.get("ownerId")) if payload.get("ownerId") else None,
                 owner_name,
@@ -17516,15 +17582,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json([str(item.get("id") or "") for item in tags_payload if str(item.get("id") or "").strip()]),
                 str(payload.get("createdAt") or timestamp),
                 str(payload.get("updatedAt") or timestamp),
-                str(payload.get("id")),
-                to_json(payload),
+                task_id,
+                to_json(stored_payload),
                 timestamp,
                 str(payload.get("updatedAt") or timestamp),
             ),
         )
-        _replace_task_list_links(state.db, str(payload.get("id")), normalized_list_ids)
+        if preserve_empty_local_list and existing_task_row and _row_has_pending_local_change(existing_task_row):
+            state.db.execute(
+                """
+                UPDATE tasks
+                SET updated_at = ?, sync_status = ?, pending_sync_action = ?, last_sync_error = ?
+                WHERE id = ?
+                """,
+                (
+                    local_updated_at or timestamp,
+                    str(existing_task_row["sync_status"] or "queued"),
+                    str(existing_task_row["pending_sync_action"] or "update"),
+                    str(existing_task_row["last_sync_error"] or ""),
+                    task_id,
+                ),
+            )
+        _replace_task_list_links(state.db, task_id, normalized_list_ids)
         collaborator_rows = [item for item in payload.get("collaborators", []) if isinstance(item, dict)] if isinstance(payload.get("collaborators"), list) else []
-        state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (str(payload.get("id")),))
+        state.db.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
         for index, collaborator in enumerate(collaborator_rows):
             state.db.execute(
                 """
@@ -17533,7 +17614,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(payload.get("id")),
+                    task_id,
                     organization_id,
                     str(collaborator.get("userId") or ""),
                     str(collaborator.get("fullName") or ""),
@@ -17549,7 +17630,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         note = str(payload.get("note") or "").strip()
         if note:
-            upsert_task_note(str(payload.get("id")), note)
+            upsert_task_note(task_id, note)
 
     def _upsert_local_event_line_from_cloud(payload: dict[str, object], organization_id: str, activities: list[dict[str, object]] | None = None) -> None:
         timestamp = now_iso()

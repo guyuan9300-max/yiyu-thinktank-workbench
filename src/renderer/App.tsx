@@ -100,6 +100,7 @@ import type {
   HandbookSettings,
   HealthResponse,
   HierarchyReport,
+  InboxAggregate,
   InboxNotification,
   KnowledgeSearchResult,
   LegacyScanReport,
@@ -414,6 +415,7 @@ type ImportFeedback = {
 
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
+type InboxSectionKey = 'confirmable' | 'notifications' | 'outbound';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
 type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'strategic' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
 type ReviewFormState = {
@@ -555,6 +557,42 @@ function buildTaskGroupTemplateApplyDraft(
       durationDays: step.durationDays,
       daysAfterPrevious: step.daysAfterPrevious,
     })),
+  };
+}
+
+function normalizeTaskRecordListFields(task: Task, lists: TaskList[]): Task {
+  const orderedIds: string[] = [];
+  const addId = (value: string | null | undefined) => {
+    const normalized = (value || '').trim();
+    if (normalized && !orderedIds.includes(normalized)) {
+      orderedIds.push(normalized);
+    }
+  };
+  (task.listIds || []).forEach(addId);
+  addId(task.listId);
+
+  const primaryListId = orderedIds[0] || '';
+  if (!primaryListId) {
+    return {
+      ...task,
+      listId: '',
+      listName: '',
+      listColor: '',
+      listIds: [],
+      listNames: [],
+    };
+  }
+  const primaryList = lists.find((list) => list.id === primaryListId);
+  const normalizedListNames = orderedIds
+    .map((listId) => lists.find((list) => list.id === listId)?.name)
+    .filter((name): name is string => Boolean(name));
+  return {
+    ...task,
+    listId: primaryListId,
+    listName: primaryList?.name || task.listName || '',
+    listColor: primaryList?.color || task.listColor || '',
+    listIds: orderedIds,
+    listNames: normalizedListNames.length > 0 ? normalizedListNames : task.listNames,
   };
 }
 
@@ -2599,8 +2637,29 @@ function sortTasksByFormalView(tasks: Task[], view: TaskViewDefinition) {
 type TaskListFilter = 'doing' | 'done' | 'overdue' | 'all';
 type TaskParticipationFilter = 'all' | 'personal' | 'collab';
 type TaskTimeSort = 'newest' | 'oldest';
-type TaskTimeRangeFilter = 'all' | 'last3days' | 'lastMonth' | 'lastHalfYear' | 'custom';
+type TaskTimeRangeFilter = 'all' | 'today' | 'next3days' | 'nextMonth' | 'nextHalfYear' | 'custom';
 const TASK_LIST_FILTER_NONE = '__no_list__';
+const TASK_LIST_FILTER_STORAGE_PREFIX = 'yiyu-task-list-filters:v1';
+const INBOX_FILTER_STORAGE_PREFIX = 'yiyu-inbox-filters:v1';
+
+type PersistedTaskListFilters = {
+  listFilter?: TaskListFilter;
+  participationFilter?: TaskParticipationFilter;
+  listNameFilter?: string;
+  timeSort?: TaskTimeSort;
+  timeRangeFilter?: TaskTimeRangeFilter;
+  customStartDate?: string;
+  customEndDate?: string;
+  searchQuery?: string;
+};
+
+type PersistedInboxFilters = {
+  timeSort?: TaskTimeSort;
+  timeRangeFilter?: TaskTimeRangeFilter;
+  customStartDate?: string;
+  customEndDate?: string;
+  collapsedSections?: Partial<Record<InboxSectionKey, boolean>>;
+};
 
 const TASK_LIST_FILTER_OPTIONS: Array<{ value: TaskListFilter; label: string }> = [
   { value: 'doing', label: '待推进' },
@@ -2616,17 +2675,66 @@ const TASK_PARTICIPATION_FILTER_OPTIONS: Array<{ value: TaskParticipationFilter;
 ];
 
 const TASK_TIME_SORT_OPTIONS: Array<{ value: TaskTimeSort; label: string }> = [
-  { value: 'newest', label: '从近到远' },
-  { value: 'oldest', label: '从远到近' },
+  { value: 'oldest', label: '从早到晚' },
+  { value: 'newest', label: '从晚到早' },
 ];
 
 const TASK_TIME_RANGE_OPTIONS: Array<{ value: TaskTimeRangeFilter; label: string }> = [
   { value: 'all', label: '全部时间' },
-  { value: 'last3days', label: '最近三天' },
-  { value: 'lastMonth', label: '最近一个月' },
-  { value: 'lastHalfYear', label: '最近半年' },
+  { value: 'today', label: '今天' },
+  { value: 'next3days', label: '未来三天' },
+  { value: 'nextMonth', label: '未来一个月' },
+  { value: 'nextHalfYear', label: '未来半年' },
   { value: 'custom', label: '自定义时间' },
 ];
+
+const TASK_LIST_FILTER_VALUES = TASK_LIST_FILTER_OPTIONS.map((option) => option.value);
+const TASK_PARTICIPATION_FILTER_VALUES = TASK_PARTICIPATION_FILTER_OPTIONS.map((option) => option.value);
+const TASK_TIME_SORT_VALUES = TASK_TIME_SORT_OPTIONS.map((option) => option.value);
+const TASK_TIME_RANGE_FILTER_VALUES = TASK_TIME_RANGE_OPTIONS.map((option) => option.value);
+const INBOX_SECTION_KEYS: InboxSectionKey[] = ['confirmable', 'notifications', 'outbound'];
+
+function isTaskListFilter(value: unknown): value is TaskListFilter {
+  return typeof value === 'string' && TASK_LIST_FILTER_VALUES.includes(value as TaskListFilter);
+}
+
+function isTaskParticipationFilter(value: unknown): value is TaskParticipationFilter {
+  return typeof value === 'string' && TASK_PARTICIPATION_FILTER_VALUES.includes(value as TaskParticipationFilter);
+}
+
+function isTaskTimeSort(value: unknown): value is TaskTimeSort {
+  return typeof value === 'string' && TASK_TIME_SORT_VALUES.includes(value as TaskTimeSort);
+}
+
+function isTaskTimeRangeFilter(value: unknown): value is TaskTimeRangeFilter {
+  return typeof value === 'string' && TASK_TIME_RANGE_FILTER_VALUES.includes(value as TaskTimeRangeFilter);
+}
+
+function buildUserScopedStorageKey(prefix: string, userId?: string | null) {
+  const normalizedUserId = (userId || '').trim() || 'local';
+  return `${prefix}:${normalizedUserId}`;
+}
+
+function readStoredObject<T extends Record<string, unknown>>(key: string): Partial<T> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Partial<T> : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredObject(key: string, value: Record<string, unknown>) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Local storage may be unavailable in some embedded contexts.
+  }
+}
 
 function resolveOrganizationTaskName(organizationName?: string | null) {
   const normalized = (organizationName || '').trim();
@@ -3510,7 +3618,62 @@ function taskMatchesParticipationFilter(task: Task, filter: TaskParticipationFil
 function taskCanToggleCompletion(task: Task, userId: string | null | undefined) {
   if (!userId) return false;
   if (task.ownerId === userId) return true;
+  if (task.creatorId === userId) return true;
   return task.collaborators.some((item) => item.userId === userId);
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function endOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function buildTaskTimeRangeWindow(
+  filter: TaskTimeRangeFilter,
+  customStartDate: string,
+  customEndDate: string,
+) {
+  if (filter === 'all') return null;
+  if (filter === 'custom') {
+    const start = customStartDate ? new Date(`${customStartDate}T00:00:00`) : null;
+    const end = customEndDate ? new Date(`${customEndDate}T23:59:59.999`) : null;
+    return {
+      startTime: start && !Number.isNaN(start.getTime()) ? start.getTime() : null,
+      endTime: end && !Number.isNaN(end.getTime()) ? end.getTime() : null,
+    };
+  }
+
+  const start = startOfLocalDay(new Date());
+  const end = new Date(start);
+  if (filter === 'today') {
+    return { startTime: start.getTime(), endTime: endOfLocalDay(end).getTime() };
+  }
+  if (filter === 'next3days') {
+    end.setDate(end.getDate() + 2);
+    return { startTime: start.getTime(), endTime: endOfLocalDay(end).getTime() };
+  }
+  if (filter === 'nextMonth') {
+    end.setMonth(end.getMonth() + 1);
+    return { startTime: start.getTime(), endTime: endOfLocalDay(end).getTime() };
+  }
+  if (filter === 'nextHalfYear') {
+    end.setMonth(end.getMonth() + 6);
+    return { startTime: start.getTime(), endTime: endOfLocalDay(end).getTime() };
+  }
+  return null;
+}
+
+function timestampMatchesTimeRange(
+  timestamp: number,
+  window: ReturnType<typeof buildTaskTimeRangeWindow>,
+) {
+  if (!window) return true;
+  if (Number.isNaN(timestamp)) return false;
+  if (window.startTime !== null && timestamp < window.startTime) return false;
+  if (window.endTime !== null && timestamp > window.endTime) return false;
+  return true;
 }
 
 function taskMatchesTimeRange(
@@ -3522,33 +3685,10 @@ function taskMatchesTimeRange(
   if (filter === 'all') return true;
   const taskDate = resolveTaskTimelineDateTime(task);
   if (!taskDate) return false;
-  const taskTime = taskDate.getTime();
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-  if (filter === 'last3days') {
-    const start = new Date(startOfToday);
-    start.setDate(start.getDate() - 2);
-    return taskTime >= start.getTime();
-  }
-  if (filter === 'lastMonth') {
-    const start = new Date(startOfToday);
-    start.setMonth(start.getMonth() - 1);
-    return taskTime >= start.getTime();
-  }
-  if (filter === 'lastHalfYear') {
-    const start = new Date(startOfToday);
-    start.setMonth(start.getMonth() - 6);
-    return taskTime >= start.getTime();
-  }
-  if (filter === 'custom') {
-    const start = customStartDate ? new Date(`${customStartDate}T00:00:00`) : null;
-    const end = customEndDate ? new Date(`${customEndDate}T23:59:59`) : null;
-    if (start && !Number.isNaN(start.getTime()) && taskTime < start.getTime()) return false;
-    if (end && !Number.isNaN(end.getTime()) && taskTime > end.getTime()) return false;
-    return true;
-  }
-  return true;
+  return timestampMatchesTimeRange(
+    taskDate.getTime(),
+    buildTaskTimeRangeWindow(filter, customStartDate, customEndDate),
+  );
 }
 
 function notificationMatchesTimeRange(
@@ -3559,40 +3699,19 @@ function notificationMatchesTimeRange(
 ) {
   if (filter === 'all') return true;
   const notificationDate = new Date(notification.operatedAt || notification.createdAt || notification.updatedAt);
-  if (Number.isNaN(notificationDate.getTime())) return false;
-  const notificationTime = notificationDate.getTime();
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-  if (filter === 'last3days') {
-    const start = new Date(startOfToday);
-    start.setDate(start.getDate() - 2);
-    return notificationTime >= start.getTime();
-  }
-  if (filter === 'lastMonth') {
-    const start = new Date(startOfToday);
-    start.setMonth(start.getMonth() - 1);
-    return notificationTime >= start.getTime();
-  }
-  if (filter === 'lastHalfYear') {
-    const start = new Date(startOfToday);
-    start.setMonth(start.getMonth() - 6);
-    return notificationTime >= start.getTime();
-  }
-  if (filter === 'custom') {
-    const start = customStartDate ? new Date(`${customStartDate}T00:00:00`) : null;
-    const end = customEndDate ? new Date(`${customEndDate}T23:59:59`) : null;
-    if (start && !Number.isNaN(start.getTime()) && notificationTime < start.getTime()) return false;
-    if (end && !Number.isNaN(end.getTime()) && notificationTime > end.getTime()) return false;
-    return true;
-  }
-  return true;
+  return timestampMatchesTimeRange(
+    notificationDate.getTime(),
+    buildTaskTimeRangeWindow(filter, customStartDate, customEndDate),
+  );
 }
 
 function sortTasksByTimeDirection(tasks: Task[], direction: TaskTimeSort) {
   return [...tasks].sort((left, right) => {
-    const leftTime = resolveTaskTimelineDateTime(left)?.getTime() || 0;
-    const rightTime = resolveTaskTimelineDateTime(right)?.getTime() || 0;
+    const leftTime = resolveTaskTimelineDateTime(left)?.getTime();
+    const rightTime = resolveTaskTimelineDateTime(right)?.getTime();
+    if (leftTime === undefined && rightTime === undefined) return 0;
+    if (leftTime === undefined) return 1;
+    if (rightTime === undefined) return -1;
     return direction === 'newest' ? rightTime - leftTime : leftTime - rightTime;
   });
 }
@@ -5045,11 +5164,10 @@ export default function App() {
   async function loadTaskBlock() {
     const [response, inboxResponse] = await Promise.all([
       getTaskBoard(),
-      getCollaborationInbox().catch(() => ({
-        pendingTasks: [] as Task[],
-        systemNotifications: [] as InboxNotification[],
-        outboundPendingTasks: [] as Task[],
-      })),
+      getCollaborationInbox().catch((error) => {
+        console.warn('[inbox] failed to load inbox aggregate with task board', error);
+        return null as InboxAggregate | null;
+      }),
     ]);
     let mergedLists = response.lists;
     try {
@@ -5058,31 +5176,58 @@ export default function App() {
     } catch {
       mergedLists = mergeTaskListRecords(response.lists || []);
     }
-    setTasks(response.tasks);
-    setInboxPendingTasks(inboxResponse.pendingTasks || []);
-    setInboxNotifications(inboxResponse.systemNotifications || []);
-    setOutboundInboxTasks(inboxResponse.outboundPendingTasks || []);
+    const normalizedTasks = (response.tasks || []).map((task) => normalizeTaskRecordListFields(task, mergedLists));
+    setTasks(normalizedTasks);
+    if (inboxResponse) {
+      setInboxPendingTasks((inboxResponse.pendingTasks || []).map((task) => normalizeTaskRecordListFields(task, mergedLists)));
+      setInboxNotifications(inboxResponse.systemNotifications || []);
+      setOutboundInboxTasks((inboxResponse.outboundPendingTasks || []).map((task) => normalizeTaskRecordListFields(task, mergedLists)));
+    }
     setTaskLists(mergedLists);
     setTaskTags([]);
     return {
       ...response,
+      tasks: normalizedTasks,
       lists: mergedLists,
-      notifications: inboxResponse.systemNotifications || [],
+      notifications: inboxResponse?.systemNotifications || [],
     };
   }
 
   async function refreshInboxNotificationsBlock() {
     try {
       const response = await getCollaborationInbox();
-      setInboxPendingTasks(response.pendingTasks || []);
+      setInboxPendingTasks((response.pendingTasks || []).map((task) => normalizeTaskRecordListFields(task, taskLists)));
       setInboxNotifications(response.systemNotifications || []);
-      setOutboundInboxTasks(response.outboundPendingTasks || []);
-    } catch {
-      setInboxPendingTasks([]);
-      setInboxNotifications([]);
-      setOutboundInboxTasks([]);
+      setOutboundInboxTasks((response.outboundPendingTasks || []).map((task) => normalizeTaskRecordListFields(task, taskLists)));
+    } catch (error) {
+      console.warn('[inbox] failed to refresh inbox aggregate', error);
     }
   }
+
+  useEffect(() => {
+    if (activeTab !== 'tasks' || taskViewMode !== 'inbox') return undefined;
+    if (!authState.authenticated || !isCloudSession) return undefined;
+    let cancelled = false;
+    const refresh = () => {
+      if (!cancelled) {
+        void refreshInboxNotificationsBlock();
+      }
+    };
+    refresh();
+    const retryTimer = window.setTimeout(refresh, 1200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+    };
+  }, [
+    activeTab,
+    authState.authenticated,
+    currentSessionUser?.id,
+    currentSessionUser?.organizationId,
+    isCloudSession,
+    taskLists.length,
+    taskViewMode,
+  ]);
 
   const refreshTaskListLibrary = useCallback(async () => {
     setIsTaskListsLoading(true);
@@ -5551,7 +5696,7 @@ export default function App() {
 
     const normalizeTaskListScope = (scope?: string | null) => {
       const normalized = (scope || '').trim().toLowerCase();
-      return normalized === 'personal' ? 'personal' : 'org';
+      return normalized === 'personal' || normalized === 'self' ? 'personal' : 'org';
     };
     const activeTaskLists = taskLists.filter((item) => !item.archivedAt);
     const orgTaskLists = activeTaskLists.filter((item) => normalizeTaskListScope(item.scope) === 'org');
@@ -6245,20 +6390,116 @@ export default function App() {
         isSelf: true,
       }];
     };
-    const [isTaskGroupOpen, setIsTaskGroupOpen] = useState(true);
     const [taskListFilter, setTaskListFilter] = useState<TaskListFilter>('all');
     const [taskParticipationFilter, setTaskParticipationFilter] = useState<TaskParticipationFilter>('all');
     const [taskListNameFilter, setTaskListNameFilter] = useState('');
-    const [taskListTimeSort, setTaskListTimeSort] = useState<TaskTimeSort>('newest');
+    const [taskListTimeSort, setTaskListTimeSort] = useState<TaskTimeSort>('oldest');
     const [taskListTimeRangeFilter, setTaskListTimeRangeFilter] = useState<TaskTimeRangeFilter>('all');
     const [taskListCustomStartDate, setTaskListCustomStartDate] = useState('');
     const [taskListCustomEndDate, setTaskListCustomEndDate] = useState('');
-    const [inboxTimeSort, setInboxTimeSort] = useState<TaskTimeSort>('newest');
+    const [inboxTimeSort, setInboxTimeSort] = useState<TaskTimeSort>('oldest');
     const [inboxTimeRangeFilter, setInboxTimeRangeFilter] = useState<TaskTimeRangeFilter>('all');
     const [inboxCustomStartDate, setInboxCustomStartDate] = useState('');
     const [inboxCustomEndDate, setInboxCustomEndDate] = useState('');
     const [taskSearchQuery, setTaskSearchQuery] = useState('');
     const [expandedInboxTaskIds, setExpandedInboxTaskIds] = useState<string[]>([]);
+    const [collapsedInboxSections, setCollapsedInboxSections] = useState<Record<InboxSectionKey, boolean>>({
+      confirmable: false,
+      notifications: false,
+      outbound: false,
+    });
+    const filterStorageUserKey = currentSessionUser?.id || (authState.sessionMode === 'cloud' ? currentSessionUser?.email : 'local');
+    const taskListFilterStorageKey = buildUserScopedStorageKey(TASK_LIST_FILTER_STORAGE_PREFIX, filterStorageUserKey);
+    const inboxFilterStorageKey = buildUserScopedStorageKey(INBOX_FILTER_STORAGE_PREFIX, filterStorageUserKey);
+    const taskListFilterStorageReadyRef = useRef('');
+    const taskListFilterSkipNextSaveRef = useRef(false);
+    const inboxFilterStorageReadyRef = useRef('');
+    const inboxFilterSkipNextSaveRef = useRef(false);
+
+    useEffect(() => {
+      const stored = readStoredObject<PersistedTaskListFilters>(taskListFilterStorageKey);
+      taskListFilterSkipNextSaveRef.current = true;
+      taskListFilterStorageReadyRef.current = taskListFilterStorageKey;
+      setTaskListFilter(isTaskListFilter(stored?.listFilter) ? stored.listFilter : 'all');
+      setTaskParticipationFilter(isTaskParticipationFilter(stored?.participationFilter) ? stored.participationFilter : 'all');
+      setTaskListNameFilter(typeof stored?.listNameFilter === 'string' ? stored.listNameFilter : '');
+      setTaskListTimeSort(isTaskTimeSort(stored?.timeSort) ? stored.timeSort : 'oldest');
+      setTaskListTimeRangeFilter(isTaskTimeRangeFilter(stored?.timeRangeFilter) ? stored.timeRangeFilter : 'all');
+      setTaskListCustomStartDate(typeof stored?.customStartDate === 'string' ? stored.customStartDate : '');
+      setTaskListCustomEndDate(typeof stored?.customEndDate === 'string' ? stored.customEndDate : '');
+      setTaskSearchQuery(typeof stored?.searchQuery === 'string' ? stored.searchQuery : '');
+    }, [taskListFilterStorageKey]);
+
+    useEffect(() => {
+      if (taskListFilterStorageReadyRef.current !== taskListFilterStorageKey) return;
+      if (taskListFilterSkipNextSaveRef.current) {
+        taskListFilterSkipNextSaveRef.current = false;
+        return;
+      }
+      writeStoredObject(taskListFilterStorageKey, {
+        listFilter: taskListFilter,
+        participationFilter: taskParticipationFilter,
+        listNameFilter: taskListNameFilter,
+        timeSort: taskListTimeSort,
+        timeRangeFilter: taskListTimeRangeFilter,
+        customStartDate: taskListCustomStartDate,
+        customEndDate: taskListCustomEndDate,
+        searchQuery: taskSearchQuery,
+      });
+    }, [
+      taskListCustomEndDate,
+      taskListCustomStartDate,
+      taskListFilter,
+      taskListFilterStorageKey,
+      taskListNameFilter,
+      taskListTimeRangeFilter,
+      taskListTimeSort,
+      taskParticipationFilter,
+      taskSearchQuery,
+    ]);
+
+    useEffect(() => {
+      const stored = readStoredObject<PersistedInboxFilters>(inboxFilterStorageKey);
+      const nextCollapsedSections: Record<InboxSectionKey, boolean> = {
+        confirmable: false,
+        notifications: false,
+        outbound: false,
+      };
+      if (stored?.collapsedSections && typeof stored.collapsedSections === 'object') {
+        INBOX_SECTION_KEYS.forEach((section) => {
+          nextCollapsedSections[section] = stored.collapsedSections?.[section] === true;
+        });
+      }
+      inboxFilterSkipNextSaveRef.current = true;
+      inboxFilterStorageReadyRef.current = inboxFilterStorageKey;
+      setInboxTimeSort(isTaskTimeSort(stored?.timeSort) ? stored.timeSort : 'oldest');
+      setInboxTimeRangeFilter(isTaskTimeRangeFilter(stored?.timeRangeFilter) ? stored.timeRangeFilter : 'all');
+      setInboxCustomStartDate(typeof stored?.customStartDate === 'string' ? stored.customStartDate : '');
+      setInboxCustomEndDate(typeof stored?.customEndDate === 'string' ? stored.customEndDate : '');
+      setCollapsedInboxSections(nextCollapsedSections);
+    }, [inboxFilterStorageKey]);
+
+    useEffect(() => {
+      if (inboxFilterStorageReadyRef.current !== inboxFilterStorageKey) return;
+      if (inboxFilterSkipNextSaveRef.current) {
+        inboxFilterSkipNextSaveRef.current = false;
+        return;
+      }
+      writeStoredObject(inboxFilterStorageKey, {
+        timeSort: inboxTimeSort,
+        timeRangeFilter: inboxTimeRangeFilter,
+        customStartDate: inboxCustomStartDate,
+        customEndDate: inboxCustomEndDate,
+        collapsedSections: collapsedInboxSections,
+      });
+    }, [
+      collapsedInboxSections,
+      inboxCustomEndDate,
+      inboxCustomStartDate,
+      inboxFilterStorageKey,
+      inboxTimeRangeFilter,
+      inboxTimeSort,
+    ]);
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     const [isDuePickerOpen, setIsDuePickerOpen] = useState(false);
     const [duePickerMonth, setDuePickerMonth] = useState(() => getTodayCalendarState().calendarDate);
@@ -6830,17 +7071,9 @@ export default function App() {
 
     useEffect(() => {
       if (!isTaskModalOpen) return;
-      if (editingTask.scopeMode === 'PERSONAL_ONLY') {
-        if (personalTaskLists.length === 0) return;
-        const nextListIds = Array.from(new Set((editingTask.listIds || []).filter((listId) => personalTaskLists.some((item) => item.id === listId))));
-        const nextPrimaryListId = nextListIds[0] || '';
-        const normalizedListIds = nextListIds;
-        if (editingTask.listId === nextPrimaryListId && JSON.stringify(editingTask.listIds) === JSON.stringify(normalizedListIds)) return;
-        setEditingTask((prev) => ({ ...prev, listId: nextPrimaryListId, listIds: normalizedListIds }));
-        return;
-      }
-      if (orgTaskLists.length === 0) return;
-      const nextListIds = Array.from(new Set((editingTask.listIds || []).filter((listId) => orgTaskLists.some((item) => item.id === listId))));
+      const nextListIds = Array.from(
+        new Set(((editingTask.listIds || []).length > 0 ? editingTask.listIds : [editingTask.listId]).filter(Boolean)),
+      );
       const nextPrimaryListId = nextListIds[0] || '';
       const normalizedListIds = nextListIds;
       if (editingTask.listId === nextPrimaryListId && JSON.stringify(editingTask.listIds) === JSON.stringify(normalizedListIds)) return;
@@ -6848,10 +7081,7 @@ export default function App() {
     }, [
       editingTask.listId,
       editingTask.listIds,
-      editingTask.scopeMode,
       isTaskModalOpen,
-      orgTaskLists,
-      personalTaskLists,
     ]);
     const latestReview = reviewDashboard?.currentReview || null;
     const teamReport = reviewDashboard?.teamReport || null;
@@ -7020,13 +7250,37 @@ export default function App() {
       return true;
     };
 
-    const inboundPendingTasks = inboxPendingTasks.filter(
+    const inboxPendingTaskCandidates = useMemo(() => {
+      const byId = new Map<string, Task>();
+      tasks.forEach((task) => {
+        if (task.status === 'inbox' && task.viewerInboxStatus === 'pending') {
+          byId.set(task.id, task);
+        }
+      });
+      inboxPendingTasks.forEach((task) => byId.set(task.id, task));
+      return Array.from(byId.values());
+    }, [inboxPendingTasks, tasks]);
+    const outboundPendingTaskCandidates = useMemo(() => {
+      const byId = new Map<string, Task>();
+      tasks.forEach((task) => {
+        if (
+          task.status !== 'rejected'
+          && task.status !== 'inbox'
+          && taskWaitsForOthers(task, currentSessionUser?.id)
+        ) {
+          byId.set(task.id, task);
+        }
+      });
+      outboundInboxTasks.forEach((task) => byId.set(task.id, task));
+      return Array.from(byId.values());
+    }, [currentSessionUser?.id, outboundInboxTasks, tasks]);
+    const inboundPendingTasks = inboxPendingTaskCandidates.filter(
       (task) =>
         task.status === 'inbox'
         && task.viewerInboxStatus === 'pending'
         && !transitioningInboxTaskIds.includes(task.id),
     );
-    const outboundPendingTasks = outboundInboxTasks.filter(
+    const outboundPendingTasks = outboundPendingTaskCandidates.filter(
       (task) => task.status !== 'rejected'
         && task.status !== 'inbox'
         && !transitioningInboxTaskIds.includes(task.id)
@@ -7064,6 +7318,10 @@ export default function App() {
       ),
       [inboxCustomEndDate, inboxCustomStartDate, inboxNotifications, inboxTimeRangeFilter, inboxTimeSort, transitioningInboxTaskIds],
     );
+    const activeInboxNotifications = inboxNotifications.filter((notification) => !transitioningInboxTaskIds.includes(notification.id));
+    const hasRawInboxItems = inboundPendingTasks.length > 0 || activeInboxNotifications.length > 0 || outboundPendingTasks.length > 0;
+    const hasVisibleInboxItems = actionableInboxTasks.length > 0 || visibleInboxNotifications.length > 0 || filteredOutboundPendingTasks.length > 0;
+    const isInboxFiltered = inboxTimeRangeFilter !== 'all' || Boolean(inboxCustomStartDate || inboxCustomEndDate);
     const inboxBadgeCount = inboundPendingTasks.length + outboundPendingTasks.length + inboxNotifications.filter((notification) => !transitioningInboxTaskIds.includes(notification.id)).length;
     const activeFormalTaskView = useMemo(() => {
       if (drillTaskViewOverride?.targetType === 'task_view') {
@@ -7175,6 +7433,18 @@ export default function App() {
     }, [activeFormalTaskView, baseCalendarTasks]);
     const isAllSelected = actionableInboxTasks.length > 0 && selectedInboxIds.length === actionableInboxTasks.length;
     const isAllNotificationsSelected = visibleInboxNotifications.length > 0 && selectedNotificationIds.length === visibleInboxNotifications.length;
+    const toggleInboxSection = (section: InboxSectionKey) => {
+      setCollapsedInboxSections((prev) => ({
+        ...prev,
+        [section]: !prev[section],
+      }));
+    };
+    const resetInboxFilters = () => {
+      setInboxTimeSort('oldest');
+      setInboxTimeRangeFilter('all');
+      setInboxCustomStartDate('');
+      setInboxCustomEndDate('');
+    };
 
     const tasksById = new Map(tasks.map((task) => [task.id, task]));
     const buildReviewRows = (items: WeeklyReviewTaskEntry[]): ReviewTaskRow[] =>
@@ -7241,18 +7511,38 @@ export default function App() {
         return left.name.localeCompare(right.name, 'zh-Hans-CN');
       });
     }, [orgTaskLists, selectedTaskListIds]);
+    const editorTaskListPool = editingTask.scopeMode === 'PERSONAL_ONLY' ? personalTaskLists : orgTaskLists;
+    const visibleEditorTaskLists = useMemo(() => {
+      const uniqueByName = new Map<string, TaskList>();
+      editorTaskListPool.forEach((list) => {
+        const key = (list.name || '').trim().toLowerCase() || list.id;
+        const current = uniqueByName.get(key);
+        if (!current) {
+          uniqueByName.set(key, list);
+          return;
+        }
+        if (selectedTaskListIds.includes(current.id)) return;
+        if (selectedTaskListIds.includes(list.id) || (!current.isDefault && list.isDefault)) {
+          uniqueByName.set(key, list);
+        }
+      });
+      return Array.from(uniqueByName.values()).sort((left, right) => {
+        if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
+        return left.name.localeCompare(right.name, 'zh-Hans-CN');
+      });
+    }, [editorTaskListPool, selectedTaskListIds]);
     const selectedTaskLists = useMemo(
       () => selectedTaskListIds
-        .map((listId) => visibleOrgTaskLists.find((list) => list.id === listId) || orgTaskLists.find((list) => list.id === listId) || null)
+        .map((listId) => visibleEditorTaskLists.find((list) => list.id === listId) || activeTaskLists.find((list) => list.id === listId) || null)
         .filter((list): list is TaskList => Boolean(list)),
-      [orgTaskLists, selectedTaskListIds, visibleOrgTaskLists],
+      [activeTaskLists, selectedTaskListIds, visibleEditorTaskLists],
     );
     const normalizedTaskListQuery = taskListQuery.trim().toLowerCase();
-    const filteredTaskListOptions = visibleOrgTaskLists.filter((list) => {
+    const filteredTaskListOptions = visibleEditorTaskLists.filter((list) => {
       if (!normalizedTaskListQuery) return true;
       return list.name.toLowerCase().includes(normalizedTaskListQuery);
     });
-    const hasExactTaskListMatch = visibleOrgTaskLists.some((list) => list.name.trim().toLowerCase() === normalizedTaskListQuery);
+    const hasExactTaskListMatch = visibleEditorTaskLists.some((list) => list.name.trim().toLowerCase() === normalizedTaskListQuery);
     useEffect(() => {
       if (typeof window === 'undefined') return;
       (window as typeof window & { __YIYU_DEBUG_TASK_LISTS__?: Record<string, unknown> }).__YIYU_DEBUG_TASK_LISTS__ = {
@@ -7270,6 +7560,8 @@ export default function App() {
         orgTaskListNames: orgTaskLists.map((item) => `${item.scope}:${item.name}:${item.id}`),
         visibleOrgTaskListsCount: visibleOrgTaskLists.length,
         visibleOrgTaskListNames: visibleOrgTaskLists.map((item) => item.name),
+        visibleEditorTaskListsCount: visibleEditorTaskLists.length,
+        visibleEditorTaskListNames: visibleEditorTaskLists.map((item) => item.name),
         selectedTaskListIds,
         selectedTaskListNames: selectedTaskLists.map((item) => item.name),
         taskListQuery,
@@ -7284,6 +7576,7 @@ export default function App() {
       selectedTaskLists,
       taskListQuery,
       taskLists.length,
+      visibleEditorTaskLists,
       visibleOrgTaskLists,
     ]);
     useEffect(() => {
@@ -9137,9 +9430,8 @@ export default function App() {
       const resolvedDdl = combinedDueDate
         ? duePickerSummaryLabel
         : (editingTask.ddl.trim() || '待确认');
-      const availableLists = isEditingTaskPersonal ? personalTaskLists : orgTaskLists;
       const normalizedDraftListIds = Array.from(
-        new Set((editingTask.listIds || []).filter((listId) => availableLists.some((item) => item.id === listId))),
+        new Set((editingTask.listIds || []).map((listId) => listId.trim()).filter(Boolean)),
       );
       const resolvedListId = normalizedDraftListIds[0] || '';
       const resolvedListIds = normalizedDraftListIds;
@@ -9180,9 +9472,10 @@ export default function App() {
               // 组织清单创建失败不阻断保存
             }
           }
-          const savedTask = draftSnapshot.id
+          const savedTaskResponse = draftSnapshot.id
             ? await updateTask(draftSnapshot.id, payload)
             : await createTask(payload);
+          const savedTask = normalizeTaskRecordListFields(savedTaskResponse, taskLists);
           upsertLocalTask(savedTask, draftSnapshot.id || null);
 
           if (!draftSnapshot.id && smartBriefSourceSnapshot?.sourceTaskId && smartBriefSourceSnapshot.actionKey) {
@@ -9264,6 +9557,7 @@ export default function App() {
 
           closeTaskModal('save-succeeded');
           void loadTaskBlock();
+          void refreshInboxNotificationsBlock();
           if ((savedTask?.eventLineId || draftSnapshot.eventLineId) && activeEventLine?.eventLine.id === (savedTask?.eventLineId || draftSnapshot.eventLineId)) {
             void openEventLineDetail(savedTask?.eventLineId || draftSnapshot.eventLineId);
           }
@@ -9693,20 +9987,24 @@ export default function App() {
         flash('info', '任务正在后台保存，稍等一下就会稳定出现在列表里。');
         return;
       }
-      const resolvedDueDate = task.dueDate || dueDate || new Date().toISOString().slice(0, 10);
+      const normalizedTask = normalizeTaskRecordListFields(task, activeTaskLists);
+      const resolvedTaskListIds = Array.from(
+        new Set(((normalizedTask.listIds || []).length > 0 ? normalizedTask.listIds : [normalizedTask.listId]).filter(Boolean)),
+      );
+      const resolvedDueDate = normalizedTask.dueDate || dueDate || new Date().toISOString().slice(0, 10);
       const resolvedDueParts = splitTaskDueDateTime(resolvedDueDate);
-      const resolvedStartParts = splitTaskDueDateTime(task.startDate || '');
-      const resolvedTimelineRange = resolveUnifiedTaskDateTimeRange(task);
+      const resolvedStartParts = splitTaskDueDateTime(normalizedTask.startDate || '');
+      const resolvedTimelineRange = resolveUnifiedTaskDateTimeRange(normalizedTask);
       const resolvedTimelineStartDate = formatDateOnlyValue(resolvedTimelineRange.startDateTime);
       const resolvedTimelineStartTime = formatTimeOnlyValue(resolvedTimelineRange.startDateTime);
       const resolvedTimelineDueDate = formatDateOnlyValue(resolvedTimelineRange.endDateTime);
       const resolvedTimelineDueTime = formatTimeOnlyValue(resolvedTimelineRange.endDateTime);
-      const safeDurationMinutes = Math.max(15, task.durationMinutes ?? options?.durationMinutes ?? 60);
+      const safeDurationMinutes = Math.max(15, normalizedTask.durationMinutes ?? options?.durationMinutes ?? 60);
       const legacyTimedTaskStartMinute = !resolvedStartParts.date
         ? minuteOfDayFromTaskTime(resolvedDueParts.time)
         : null;
       const legacyTimedTaskEndMinute = legacyTimedTaskStartMinute !== null
-        ? Math.min(legacyTimedTaskStartMinute + Math.max(15, task.durationMinutes ?? 0), 24 * 60)
+        ? Math.min(legacyTimedTaskStartMinute + Math.max(15, normalizedTask.durationMinutes ?? 0), 24 * 60)
         : null;
       const explicitStartMinute = minuteOfDayFromTaskTime(resolvedStartParts.time);
       const explicitTimedTaskEndMinute = explicitStartMinute !== null
@@ -9715,8 +10013,8 @@ export default function App() {
       const explicitTimedTaskEndDate = explicitTimedTaskEndMinute !== null
         ? shiftDateOnlyValue(resolvedDueParts.date || resolvedStartParts.date, Math.floor(explicitTimedTaskEndMinute / (24 * 60)))
         : resolvedDueParts.date;
-      const ddlWindow = parseTaskTimelineWindowFromLabel(task.ddl);
-      const displayWindow = parseTaskTimelineWindowFromLabel(formatUnifiedTaskTimelineLabel(task));
+      const ddlWindow = parseTaskTimelineWindowFromLabel(normalizedTask.ddl);
+      const displayWindow = parseTaskTimelineWindowFromLabel(formatUnifiedTaskTimelineLabel(normalizedTask));
       const inferredStartDate = resolvedStartParts.date
         || (legacyTimedTaskStartMinute !== null ? resolvedDueParts.date : '')
         || (displayWindow.hasSpecificTime ? resolvedDueParts.date || resolvedTimelineDueDate : '')
@@ -9753,55 +10051,53 @@ export default function App() {
       const parsedDate = parseTaskDateValue(resolvedDueParts.date);
       setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
       setEditingTask({
-        id: task.id,
-        scopeMode: task.scopeMode || (isPrivateTask(task) ? 'PERSONAL_ONLY' : 'COLLAB_SHARED'),
+        id: normalizedTask.id,
+        scopeMode: normalizedTask.scopeMode || (isPrivateTask(normalizedTask) ? 'PERSONAL_ONLY' : 'COLLAB_SHARED'),
         scopeModeTouched: false,
-        title: task.title,
-        desc: task.desc,
-        listId: task.listId,
-        listIds: task.listIds && task.listIds.length > 0
-          ? task.listIds
-          : (task.listId ? [task.listId] : []),
-        priority: task.priority,
+        title: normalizedTask.title,
+        desc: normalizedTask.desc,
+        listId: resolvedTaskListIds[0] || '',
+        listIds: resolvedTaskListIds,
+        priority: normalizedTask.priority,
         priorityTouched: true,
         priorityReason: '保留当前优先级，你可以手动调整。',
-        ownerId: task.ownerId || '',
+        ownerId: normalizedTask.ownerId || '',
         startDate: normalizedStartDate,
         startTime: inferredStartTime,
         dueDate: inferredDueDate,
         dueTime: inferredDueTime,
         hasSpecificDueTime: inferredHasSpecificTime,
         durationMinutes: safeDurationMinutes,
-        clientId: task.clientId || '',
-        clientTouched: Boolean(task.clientId),
-        clientConfidence: task.clientId ? 'manual' : 'none',
-        clientReason: task.clientName ? `当前任务已关联${terminology.singularLabel}“${task.clientName}”，你可以手动调整。` : organizationTaskManualReason,
-        eventLineId: task.eventLineId || '',
-        eventLineTouched: Boolean(task.eventLineId),
-        eventLineReason: task.eventLineName ? `当前任务已挂到事件线"${task.eventLineName}"。` : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
-        projectModuleId: task.projectModuleId || '',
-        projectModuleTouched: Boolean(task.projectModuleId),
-        projectModuleReason: task.projectModuleName ? `当前任务已挂到模块"${task.projectModuleName}"。` : `可选：把任务挂到当前${terminology.singularLabel}下的具体${terminology.structureLabel}。`,
-        projectFlowId: task.projectFlowId || '',
-        projectFlowTouched: Boolean(task.projectFlowId),
-        projectFlowReason: task.projectFlowName ? `当前任务已挂到流程"${task.projectFlowName}"。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
-        ddl: formatTaskTimelineLabel(task),
+        clientId: normalizedTask.clientId || '',
+        clientTouched: Boolean(normalizedTask.clientId),
+        clientConfidence: normalizedTask.clientId ? 'manual' : 'none',
+        clientReason: normalizedTask.clientName ? `当前任务已关联${terminology.singularLabel}“${normalizedTask.clientName}”，你可以手动调整。` : organizationTaskManualReason,
+        eventLineId: normalizedTask.eventLineId || '',
+        eventLineTouched: Boolean(normalizedTask.eventLineId),
+        eventLineReason: normalizedTask.eventLineName ? `当前任务已挂到事件线"${normalizedTask.eventLineName}"。` : '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
+        projectModuleId: normalizedTask.projectModuleId || '',
+        projectModuleTouched: Boolean(normalizedTask.projectModuleId),
+        projectModuleReason: normalizedTask.projectModuleName ? `当前任务已挂到模块"${normalizedTask.projectModuleName}"。` : `可选：把任务挂到当前${terminology.singularLabel}下的具体${terminology.structureLabel}。`,
+        projectFlowId: normalizedTask.projectFlowId || '',
+        projectFlowTouched: Boolean(normalizedTask.projectFlowId),
+        projectFlowReason: normalizedTask.projectFlowName ? `当前任务已挂到流程"${normalizedTask.projectFlowName}"。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
+        ddl: formatTaskTimelineLabel(normalizedTask),
         tagIds: [],
         collaborators: (() => {
-          const nextCollaborators = task.collaborators.map((item) => ({
+          const nextCollaborators = normalizedTask.collaborators.map((item) => ({
             id: item.userId,
             fullName: item.fullName,
             email: item.email,
             primaryRole: currentSessionUser.primaryRole,
             isSelf: item.userId === currentSessionUser.id,
           }));
-          if (task.ownerId && !nextCollaborators.some((item) => item.id === task.ownerId)) {
+          if (normalizedTask.ownerId && !nextCollaborators.some((item) => item.id === normalizedTask.ownerId)) {
             nextCollaborators.unshift({
-              id: task.ownerId,
-              fullName: task.ownerName || '未指定',
+              id: normalizedTask.ownerId,
+              fullName: normalizedTask.ownerName || '未指定',
               email: '',
               primaryRole: currentSessionUser.primaryRole,
-              isSelf: task.ownerId === currentSessionUser.id,
+              isSelf: normalizedTask.ownerId === currentSessionUser.id,
             });
           }
           return nextCollaborators;
@@ -10467,124 +10763,123 @@ export default function App() {
                   </p>
                 </div>
               )}
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 cursor-pointer select-none group" onClick={() => setIsTaskGroupOpen(!isTaskGroupOpen)}>
-                    <div className={`p-1 rounded-md transition-all ${isTaskGroupOpen ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400 group-hover:bg-gray-100'}`}>
-                      <ChevronDown size={14} className={`transition-transform duration-300 ${isTaskGroupOpen ? '' : '-rotate-90'}`} />
+              <div className="sticky top-0 z-30 mb-4 -mx-1 bg-[#F7F8FC]/95 px-1 pb-4 pt-1 backdrop-blur">
+                <div className="grid gap-3 md:grid-cols-[112px_minmax(0,1fr)]">
+                  <div className="flex min-h-[132px] flex-col items-center justify-center rounded-3xl border border-gray-100 bg-white px-4 py-4 text-center shadow-sm">
+                    <div className="whitespace-nowrap text-[13px] font-bold text-gray-800">任务数量</div>
+                    <div className="mt-2 text-[22px] font-black leading-none text-[#5B7BFE]">{listTasks.length}</div>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500 shadow-sm">
+                        <span>时间排序</span>
+                        <select
+                          value={taskListTimeSort}
+                          onChange={(event) => setTaskListTimeSort(event.target.value as TaskTimeSort)}
+                          className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                        >
+                          {TASK_TIME_SORT_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500 shadow-sm">
+                        <span>时间范围</span>
+                        <select
+                          value={taskListTimeRangeFilter}
+                          onChange={(event) => setTaskListTimeRangeFilter(event.target.value as TaskTimeRangeFilter)}
+                          className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                        >
+                          {TASK_TIME_RANGE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {taskListTimeRangeFilter === 'custom' && (
+                        <>
+                          <InlineChineseDatePickerField
+                            value={taskListCustomStartDate}
+                            onChange={setTaskListCustomStartDate}
+                            placeholder="开始日期"
+                          />
+                          <span className="text-[12px] font-bold text-gray-300">至</span>
+                          <InlineChineseDatePickerField
+                            value={taskListCustomEndDate}
+                            onChange={setTaskListCustomEndDate}
+                            placeholder="结束日期"
+                          />
+                        </>
+                      )}
                     </div>
-                    <span className="text-[14px] font-bold text-gray-800">任务数量</span>
-                    <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
-                      {listTasks.length}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex items-center gap-1.5 rounded-2xl border border-gray-200 bg-white px-3 py-2">
-                    <Search size={14} className="text-gray-400 shrink-0" />
-                    <input
-                      type="text"
-                      value={taskSearchQuery}
-                      onChange={(e) => setTaskSearchQuery(e.target.value)}
-                      placeholder="搜索任务..."
-                      className="w-[260px] bg-transparent text-[12px] font-bold text-gray-800 outline-none placeholder:text-gray-400 placeholder:font-normal"
-                    />
-                    {taskSearchQuery && (
-                      <button type="button" onClick={() => setTaskSearchQuery('')} className="text-gray-300 hover:text-gray-500">
-                        <X size={12} />
-                      </button>
-                    )}
-                  </div>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>完成情况</span>
-                    <select
-                      value={taskListFilter}
-                      onChange={(event) => setTaskListFilter(event.target.value as TaskListFilter)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                    >
-                      {TASK_LIST_FILTER_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>类型</span>
-                    <select
-                      value={taskParticipationFilter}
-                      onChange={(event) => setTaskParticipationFilter(event.target.value as TaskParticipationFilter)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                    >
-                      {TASK_PARTICIPATION_FILTER_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>任务清单</span>
-                    <select
-                      value={taskListNameFilter}
-                      onChange={(event) => setTaskListNameFilter(event.target.value)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                    >
-                      <option value="">全部清单</option>
-                      <option value={TASK_LIST_FILTER_NONE}>无清单</option>
-                      {visibleOrgTaskLists.map((list) => (
-                        <option key={`task-list-filter-${list.id}`} value={list.name}>
-                          {list.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>时间排序</span>
-                    <select
-                      value={taskListTimeSort}
-                      onChange={(event) => setTaskListTimeSort(event.target.value as TaskTimeSort)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                    >
-                      {TASK_TIME_SORT_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
-                    <span>时间范围</span>
-                    <select
-                      value={taskListTimeRangeFilter}
-                      onChange={(event) => setTaskListTimeRangeFilter(event.target.value as TaskTimeRangeFilter)}
-                      className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
-                    >
-                      {TASK_TIME_RANGE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {taskListTimeRangeFilter === 'custom' && (
-                    <>
-                      <InlineChineseDatePickerField
-                        value={taskListCustomStartDate}
-                        onChange={setTaskListCustomStartDate}
-                        placeholder="开始日期"
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500 shadow-sm">
+                        <span>完成情况</span>
+                        <select
+                          value={taskListFilter}
+                          onChange={(event) => setTaskListFilter(event.target.value as TaskListFilter)}
+                          className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                        >
+                          {TASK_LIST_FILTER_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500 shadow-sm">
+                        <span>协作情况</span>
+                        <select
+                          value={taskParticipationFilter}
+                          onChange={(event) => setTaskParticipationFilter(event.target.value as TaskParticipationFilter)}
+                          className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                        >
+                          {TASK_PARTICIPATION_FILTER_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500 shadow-sm">
+                        <span>任务清单</span>
+                        <select
+                          value={taskListNameFilter}
+                          onChange={(event) => setTaskListNameFilter(event.target.value)}
+                          className="bg-transparent text-[12px] font-bold text-gray-800 outline-none"
+                        >
+                          <option value="">全部清单</option>
+                          <option value={TASK_LIST_FILTER_NONE}>无清单</option>
+                          {visibleOrgTaskLists.map((list) => (
+                            <option key={`task-list-filter-${list.id}`} value={list.name}>
+                              {list.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="flex w-full items-center gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-2.5 shadow-sm">
+                      <Search size={14} className="shrink-0 text-gray-400" />
+                      <input
+                        type="text"
+                        value={taskSearchQuery}
+                        onChange={(e) => setTaskSearchQuery(e.target.value)}
+                        placeholder="搜索任务..."
+                        className="w-full bg-transparent text-[13px] font-bold text-gray-800 outline-none placeholder:text-gray-400 placeholder:font-normal"
                       />
-                      <span className="text-[12px] font-bold text-gray-300">至</span>
-                      <InlineChineseDatePickerField
-                        value={taskListCustomEndDate}
-                        onChange={setTaskListCustomEndDate}
-                        placeholder="结束日期"
-                      />
-                    </>
-                  )}
+                      {taskSearchQuery && (
+                        <button type="button" onClick={() => setTaskSearchQuery('')} className="text-gray-300 hover:text-gray-500">
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className={`space-y-3 transition-all duration-300 ${isTaskGroupOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4 pointer-events-none h-0 overflow-hidden'}`}>
+              <div className="space-y-3">
                 {listTasks.length === 0 && (
                   <div className="rounded-2xl border border-dashed border-gray-200 bg-white/80 px-5 py-8 text-center text-[13px] text-gray-400">
                     {baseListTasks.length === 0 ? (
@@ -10887,30 +11182,6 @@ export default function App() {
                       待确认任务、系统通知、等待他人确认分区展示。确认/退回只作用于任务，已阅只作用于系统通知，避免两类动作混在一起。
                     </p>
                   </div>
-                  {(actionableInboxTasks.length > 0 || visibleInboxNotifications.length > 0) && (
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      {actionableInboxTasks.length > 0 && (
-                        <>
-                          <Button onClick={() => setSelectedInboxIds(isAllSelected ? [] : actionableInboxTasks.map((task) => task.id))}>
-                            {isAllSelected ? '取消全选任务' : '全选任务'}
-                          </Button>
-                          <Button primary onClick={() => void handleConfirmTasks(selectedInboxIds.length ? selectedInboxIds : actionableInboxTasks.map((task) => task.id))}>
-                            确认接收
-                          </Button>
-                        </>
-                      )}
-                      {visibleInboxNotifications.length > 0 && (
-                        <>
-                          <Button onClick={() => setSelectedNotificationIds(isAllNotificationsSelected ? [] : visibleInboxNotifications.map((item) => item.id))}>
-                            {isAllNotificationsSelected ? '取消全选通知' : '全选通知'}
-                          </Button>
-                          <Button onClick={() => void handleMarkNotificationsRead(selectedNotificationIds.length ? selectedNotificationIds : visibleInboxNotifications.map((item) => item.id))}>
-                            批量已阅
-                          </Button>
-                        </>
-                      )}
-                    </div>
-                  )}
                 </div>
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 text-[12px] font-bold text-gray-500">
@@ -10956,45 +11227,147 @@ export default function App() {
                       />
                     </>
                   )}
+                  {isInboxFiltered && (
+                    <button
+                      type="button"
+                      onClick={resetInboxFilters}
+                      className="rounded-2xl border border-[#DDE7FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
+                    >
+                      显示全部收件
+                    </button>
+                  )}
                 </div>
                 <div className="space-y-3">
-                  {actionableInboxTasks.length > 0 && (
+                  {inboundPendingTasks.length > 0 && (
                     <section className="space-y-3">
                       <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#DDE7FF] bg-[#F8FAFF] px-4 py-3">
                         <div>
                           <h3 className="text-[14px] font-bold text-[#3550B8]">待你确认</h3>
                           <p className="mt-1 text-[12px] text-[#5B7BFE]">这一区只放需要你确认或退回的协作任务，处理完后会从收件箱移出。</p>
                         </div>
-                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-[#5B7BFE] shadow-sm">{actionableInboxTasks.length} 条</span>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-[#5B7BFE] shadow-sm">
+                            {actionableInboxTasks.length === inboundPendingTasks.length ? `${inboundPendingTasks.length} 条` : `${actionableInboxTasks.length}/${inboundPendingTasks.length} 条`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleInboxSection('confirmable')}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-[#5B7BFE] shadow-sm transition hover:bg-[#EEF2FF]"
+                            aria-label={collapsedInboxSections.confirmable ? '展开待你确认' : '折叠待你确认'}
+                          >
+                            <ChevronDown size={16} className={`transition-transform duration-200 ${collapsedInboxSections.confirmable ? '-rotate-90' : ''}`} />
+                          </button>
+                        </div>
                       </div>
-                      {actionableInboxTasks.map((task) => renderInboxTaskCard(task, 'confirmable'))}
+                      {!collapsedInboxSections.confirmable && (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[#DDE7FF] bg-white/90 px-4 py-3">
+                            <Button onClick={() => setSelectedInboxIds(isAllSelected ? [] : actionableInboxTasks.map((task) => task.id))}>
+                              {isAllSelected ? '取消全选任务' : '全选任务'}
+                            </Button>
+                            <Button primary onClick={() => void handleConfirmTasks(selectedInboxIds.length ? selectedInboxIds : actionableInboxTasks.map((task) => task.id))}>
+                              批量接收
+                            </Button>
+                          </div>
+                          {actionableInboxTasks.length > 0
+                            ? actionableInboxTasks.map((task) => renderInboxTaskCard(task, 'confirmable'))
+                            : (
+                              <div className="rounded-2xl border border-dashed border-[#DDE7FF] bg-white/80 px-4 py-6 text-center text-[13px] text-[#5B7BFE]">
+                                当前时间筛选下没有待确认任务。
+                              </div>
+                            )}
+                        </>
+                      )}
                     </section>
                   )}
-                  {visibleInboxNotifications.length > 0 && (
+                  {activeInboxNotifications.length > 0 && (
                     <section className="space-y-3">
                       <div className="flex items-center justify-between gap-3 rounded-2xl border border-sky-100 bg-sky-50/70 px-4 py-3">
                         <div>
                           <h3 className="text-[14px] font-bold text-sky-800">系统通知</h3>
                           <p className="mt-1 text-[12px] text-sky-700">这一区只保留事件线等操作通知；查看事件线或手动已阅后，对你本人立即消失，不再混进任务。</p>
                         </div>
-                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-sky-700 shadow-sm">{visibleInboxNotifications.length} 条</span>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-sky-700 shadow-sm">
+                            {visibleInboxNotifications.length === activeInboxNotifications.length ? `${activeInboxNotifications.length} 条` : `${visibleInboxNotifications.length}/${activeInboxNotifications.length} 条`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleInboxSection('notifications')}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-sky-700 shadow-sm transition hover:bg-sky-100"
+                            aria-label={collapsedInboxSections.notifications ? '展开系统通知' : '折叠系统通知'}
+                          >
+                            <ChevronDown size={16} className={`transition-transform duration-200 ${collapsedInboxSections.notifications ? '-rotate-90' : ''}`} />
+                          </button>
+                        </div>
                       </div>
-                      {visibleInboxNotifications.map((notification) => renderInboxNotificationCard(notification))}
+                      {!collapsedInboxSections.notifications && (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-sky-100 bg-white/90 px-4 py-3">
+                            <Button onClick={() => setSelectedNotificationIds(isAllNotificationsSelected ? [] : visibleInboxNotifications.map((item) => item.id))}>
+                              {isAllNotificationsSelected ? '取消全选通知' : '全选通知'}
+                            </Button>
+                            <Button onClick={() => void handleMarkNotificationsRead(selectedNotificationIds.length ? selectedNotificationIds : visibleInboxNotifications.map((item) => item.id))}>
+                              批量已阅
+                            </Button>
+                          </div>
+                          {visibleInboxNotifications.length > 0
+                            ? visibleInboxNotifications.map((notification) => renderInboxNotificationCard(notification))
+                            : (
+                              <div className="rounded-2xl border border-dashed border-sky-100 bg-white/80 px-4 py-6 text-center text-[13px] text-sky-700">
+                                当前时间筛选下没有系统通知。
+                              </div>
+                            )}
+                        </>
+                      )}
                     </section>
                   )}
-                  {filteredOutboundPendingTasks.length > 0 && (
+                  {outboundPendingTasks.length > 0 && (
                     <section className="space-y-3">
                       <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-3">
                         <div>
                           <h3 className="text-[14px] font-bold text-amber-800">等待他人确认</h3>
                           <p className="mt-1 text-[12px] text-amber-700">这些任务是你已发出的协作任务，仍在等待对方确认，便于你继续催办和查看详情。</p>
                         </div>
-                        <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-amber-700 shadow-sm">{filteredOutboundPendingTasks.length} 条</span>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-amber-700 shadow-sm">
+                            {filteredOutboundPendingTasks.length === outboundPendingTasks.length ? `${outboundPendingTasks.length} 条` : `${filteredOutboundPendingTasks.length}/${outboundPendingTasks.length} 条`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleInboxSection('outbound')}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-amber-700 shadow-sm transition hover:bg-amber-100"
+                            aria-label={collapsedInboxSections.outbound ? '展开等待他人确认' : '折叠等待他人确认'}
+                          >
+                            <ChevronDown size={16} className={`transition-transform duration-200 ${collapsedInboxSections.outbound ? '-rotate-90' : ''}`} />
+                          </button>
+                        </div>
                       </div>
-                      {filteredOutboundPendingTasks.map((task) => renderInboxTaskCard(task, 'outbound'))}
+                      {!collapsedInboxSections.outbound && (
+                        filteredOutboundPendingTasks.length > 0
+                          ? filteredOutboundPendingTasks.map((task) => renderInboxTaskCard(task, 'outbound'))
+                          : (
+                            <div className="rounded-2xl border border-dashed border-amber-100 bg-white/80 px-4 py-6 text-center text-[13px] text-amber-700">
+                              当前时间筛选下没有等待他人确认的任务。
+                            </div>
+                          )
+                      )}
                     </section>
                   )}
-                  {actionableInboxTasks.length === 0 && visibleInboxNotifications.length === 0 && filteredOutboundPendingTasks.length === 0 && (
+                  {hasRawInboxItems && !hasVisibleInboxItems && (
+                    <div className="rounded-2xl border border-dashed border-[#DDE7FF] bg-[#F8FAFF] px-5 py-6 text-center">
+                      <p className="text-[14px] font-bold text-[#3550B8]">当前时间筛选下暂无收件。</p>
+                      <p className="mt-2 text-[13px] text-[#5B7BFE]">收件箱里仍有内容，只是被时间范围暂时隐藏了。</p>
+                      <button
+                        type="button"
+                        onClick={resetInboxFilters}
+                        className="mt-4 rounded-full bg-[#5B7BFE] px-4 py-2 text-[12px] font-bold text-white transition hover:bg-[#4a6ae8]"
+                      >
+                        显示全部收件
+                      </button>
+                    </div>
+                  )}
+                  {!hasRawInboxItems && (
                     <div className="text-center py-16 text-gray-400">
                       <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
                         <Inbox className="w-5 h-5 text-emerald-500" />
@@ -13077,7 +13450,7 @@ export default function App() {
                                   }
                                 }
                               }}
-                              placeholder={isTaskListsLoading ? '正在加载清单…' : visibleOrgTaskLists.length > 0 ? '输入清单名称搜索或直接创建' : '输入清单名称后直接创建'}
+                              placeholder={isTaskListsLoading ? '正在加载清单…' : visibleEditorTaskLists.length > 0 ? '输入清单名称搜索或直接创建' : '输入清单名称后直接创建'}
                               className="w-full border-0 bg-transparent text-[14px] font-medium text-gray-800 outline-none"
                             />
                             <ChevronDown size={16} className={`shrink-0 text-gray-400 transition-transform ${isTaskListMenuOpen ? 'rotate-180' : ''}`} />
