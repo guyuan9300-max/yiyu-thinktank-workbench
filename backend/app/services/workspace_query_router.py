@@ -49,6 +49,12 @@ _FILE_SEARCH_OBJECT_TOKENS = (
     "文档",
     "会议纪要",
     "纪要",
+    "合同",
+    "协议",
+    "报价",
+    "申请书",
+    "标书",
+    "0907",
 )
 
 _ANSWER_STYLE_GUARD_TOKENS = (

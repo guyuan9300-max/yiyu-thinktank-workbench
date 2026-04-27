@@ -8789,6 +8789,11 @@ export default function App() {
       });
     };
 
+    const removeOptimisticTask = (taskId: string) => {
+      optimisticTasksRef.current.delete(taskId);
+      setTasks((prev) => prev.filter((item) => item.id !== taskId));
+    };
+
     const uploadAttachmentsToTask = async (
       taskId: string,
       files: File[],
@@ -9149,8 +9154,7 @@ export default function App() {
           );
         } catch (error) {
           // Local-first: backend saves to local DB first, so failures are rare.
-          // For updates, restore the previous version; for creates, keep the optimistic task
-          // visible and show a non-destructive warning instead of deleting the user's work.
+          // If create fails, remove the optimistic draft so it cannot be edited as a real task.
           if (draftSnapshot.id && existingTaskSnapshot) {
             upsertLocalTask(existingTaskSnapshot, draftSnapshot.id);
             if (!isTaskModalOpenRef.current) {
@@ -9158,14 +9162,21 @@ export default function App() {
               setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
               setEditingTask(draftSnapshot);
               setPendingTaskArchiveText(archiveTextSnapshot);
+              setPendingTaskAttachments(pendingTaskAttachmentsSnapshot);
               setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
               setIsTaskModalOpen(true);
             }
             flash('error', `${error instanceof Error ? error.message : '更新失败'}。草稿已恢复，请检查后重试。`);
           } else {
-            // Keep the optimistic task visible — don't delete the user's work
-            flash('info', '任务已保存到本地，云端同步将自动重试。');
-            void loadTaskBlock();
+            removeOptimisticTask(optimisticTaskId);
+            const parsedDate = parseTaskDateValue(draftSnapshot.dueDate);
+            setDuePickerMonth(parsedDate ? new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1) : getTodayCalendarState().calendarDate);
+            setEditingTask(draftSnapshot);
+            setPendingTaskArchiveText(archiveTextSnapshot);
+            setPendingTaskAttachments(pendingTaskAttachmentsSnapshot);
+            setPendingSmartBriefDraftSource(smartBriefSourceSnapshot);
+            setIsTaskModalOpen(true);
+            flash('error', `${error instanceof Error ? error.message : '创建失败'}。草稿已恢复，请检查后重试。`);
           }
         }
       })();
@@ -9845,6 +9856,10 @@ export default function App() {
       nextDate: string,
       options?: { preserveCalendarViewport?: boolean },
     ) => {
+      if (isLocalDraftTaskId(task.id)) {
+        flash('info', '任务正在保存，稍后再调整时间。');
+        return;
+      }
       const currentParts = splitTaskDueDateTime(task.dueDate);
       const nextParts = splitTaskDueDateTime(nextDate);
       const nextDueDate = nextParts.date
@@ -9889,6 +9904,10 @@ export default function App() {
     };
 
     const handleUpdateTaskDuration = async (task: Task, durationMinutes: number) => {
+      if (isLocalDraftTaskId(task.id)) {
+        flash('info', '任务正在保存，稍后再调整时间。');
+        return;
+      }
       const safeDuration = Math.max(15, Math.min(12 * 60, Math.round(durationMinutes / 15) * 15));
       await updateTask(task.id, {
         durationMinutes: safeDuration,
