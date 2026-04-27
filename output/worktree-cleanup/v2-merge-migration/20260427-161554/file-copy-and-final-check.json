@@ -1,0 +1,65 @@
+{
+  "client_workspace": {
+    "old": {
+      "exists": true,
+      "files": 4242,
+      "bytes": 26163610652
+    },
+    "new": {
+      "exists": true,
+      "files": 4245,
+      "bytes": 26163631012
+    }
+  },
+  "knowledge_base": {
+    "old": {
+      "exists": true,
+      "files": 87,
+      "bytes": 1214648309
+    },
+    "new": {
+      "exists": true,
+      "files": 87,
+      "bytes": 1214648309
+    }
+  },
+  "vector_store": {
+    "old": {
+      "exists": true,
+      "files": 332,
+      "bytes": 311738744
+    },
+    "new": {
+      "exists": true,
+      "files": 332,
+      "bytes": 311738744
+    }
+  },
+  "memory": {
+    "old": {
+      "exists": true,
+      "files": 18,
+      "bytes": 20574
+    },
+    "new": {
+      "exists": true,
+      "files": 18,
+      "bytes": 20574
+    }
+  },
+  "Cache/event-line-attachments": {
+    "old": {
+      "exists": true,
+      "files": 22,
+      "bytes": 16561680
+    },
+    "new": {
+      "exists": true,
+      "files": 22,
+      "bytes": 16561680
+    }
+  },
+  "foreignKeyCheckCount": 0,
+  "brandLogoDataUrlLength": 17570,
+  "actualOldPrefixHits": []
+}
