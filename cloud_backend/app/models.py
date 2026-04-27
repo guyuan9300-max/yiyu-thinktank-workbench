@@ -23,7 +23,6 @@ OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
 OrgTaskControlLevel = Literal["normal", "leader_control", "department_control", "organization_control"]
 OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organization_lead", "creator"]
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
-WorkObjectMode = Literal["client", "project"]
 ConsultationKnowledgeTarget = Literal["vector_memory", "document_archive"]
 ConsultationKnowledgeRequestStatus = Literal["pending", "processing", "completed", "failed"]
 SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
@@ -150,197 +149,6 @@ class FeishuDeliveryProfileSavePayload(BaseModel):
     mobile: str | None = None
 
 
-class OrgDingtalkFinanceIntegrationRecord(BaseModel):
-    organizationId: str | None = None
-    organizationName: str | None = None
-    appKey: str = ""
-    operatorMobile: str = ""
-    resolvedOperatorUserId: str | None = None
-    enabled: bool = False
-    hasAppSecret: bool = False
-    syncEnabled: bool = True
-    mappedTemplateNames: list[str] = Field(default_factory=list)
-    configuredBy: str | None = None
-    configuredAt: str | None = None
-    updatedAt: str
-    lastValidationStatus: Literal["idle", "success", "failed"] = "idle"
-    lastValidationMessage: str | None = None
-
-
-class OrgDingtalkFinanceIntegrationSavePayload(BaseModel):
-    appKey: str | None = None
-    appSecret: str | None = None
-    operatorMobile: str | None = None
-    clearAppSecret: bool = False
-    syncEnabled: bool = True
-    mappedTemplateNames: list[str] = Field(default_factory=list)
-
-
-class ExpenseImportSourceRecord(BaseModel):
-    id: str
-    organizationId: str
-    sourceSystem: Literal["dingtalk_finance"] = "dingtalk_finance"
-    sourceInstanceId: str
-    sourceTemplateCode: str | None = None
-    sourceTemplateName: str | None = None
-    sourceTitle: str
-    applicantUserName: str = ""
-    amount: float | None = None
-    currency: str = "CNY"
-    submittedAt: str | None = None
-    approvedAt: str | None = None
-    approvalStatus: str = "unknown"
-    sourceUrl: str | None = None
-    attachments: list["ExpenseEvidenceAttachmentImportPayload"] = Field(default_factory=list)
-    rawPayload: dict[str, object] = Field(default_factory=dict)
-    importedEvidenceId: str | None = None
-    lastImportedAt: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class ExpenseImportSearchPayload(BaseModel):
-    query: str = ""
-    applicantUserName: str = ""
-    approvalStatus: str | None = None
-    submittedFrom: str | None = None
-    submittedTo: str | None = None
-    includeImported: bool = True
-    limit: int = Field(default=20, ge=1, le=100)
-
-
-class ExpenseImportSearchResponse(BaseModel):
-    items: list[ExpenseImportSourceRecord] = Field(default_factory=list)
-    total: int = 0
-    message: str | None = None
-
-
-class ExpenseEvidenceAttachmentImportPayload(BaseModel):
-    sourceFileId: str | None = None
-    sourceSpaceId: str | None = None
-    sourceFileType: str | None = None
-    fileName: str = Field(min_length=1)
-    mimeType: str | None = None
-    sizeBytes: int = 0
-    previewUrl: str | None = None
-
-
-class ExpenseEvidenceImportItemPayload(BaseModel):
-    sourceInstanceId: str = Field(min_length=1)
-    sourceTemplateCode: str | None = None
-    sourceTemplateName: str | None = None
-    sourceTitle: str = Field(min_length=1)
-    applicantUserName: str = ""
-    amount: float | None = None
-    currency: str = "CNY"
-    submittedAt: str | None = None
-    approvedAt: str | None = None
-    approvalStatus: str = "unknown"
-    sourceUrl: str | None = None
-    displayTitle: str | None = None
-    normalizedCategory: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    summary: str = ""
-    attachments: list[ExpenseEvidenceAttachmentImportPayload] = Field(default_factory=list)
-    rawPayload: dict[str, object] = Field(default_factory=dict)
-
-
-class ExpenseEvidenceImportPayload(BaseModel):
-    items: list[ExpenseEvidenceImportItemPayload] = Field(default_factory=list)
-
-
-class ExpenseEvidenceAttachmentRecord(BaseModel):
-    id: str
-    expenseEvidenceId: str
-    sourceFileId: str | None = None
-    sourceSpaceId: str | None = None
-    sourceFileType: str | None = None
-    fileName: str
-    mimeType: str | None = None
-    sizeBytes: int = 0
-    downloadStatus: Literal["not_fetched", "fetched", "failed"] = "not_fetched"
-    ocrStatus: Literal["pending", "done", "failed", "skipped"] = "pending"
-    ocrSummary: str | None = None
-    storagePath: str | None = None
-    previewUrl: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class ExpenseEvidenceRecord(BaseModel):
-    id: str
-    organizationId: str
-    workObjectId: str | None = None
-    sourceSystem: Literal["dingtalk_finance"] = "dingtalk_finance"
-    sourceInstanceId: str
-    sourceTemplateCode: str | None = None
-    sourceTemplateName: str | None = None
-    sourceTitle: str
-    displayTitle: str
-    applicantUserName: str = ""
-    amount: float | None = None
-    currency: str = "CNY"
-    submittedAt: str | None = None
-    approvedAt: str | None = None
-    approvalStatus: str = "unknown"
-    sourceUrl: str | None = None
-    normalizedCategory: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    summary: str = ""
-    lastImportedAt: str | None = None
-    createdByUserId: str | None = None
-    updatedByUserId: str | None = None
-    createdAt: str
-    updatedAt: str
-    attachments: list[ExpenseEvidenceAttachmentRecord] = Field(default_factory=list)
-
-
-class ExpenseEvidenceUpdatePayload(BaseModel):
-    workObjectId: str | None = None
-    displayTitle: str | None = None
-    normalizedCategory: str | None = None
-    tags: list[str] | None = None
-    summary: str | None = None
-
-
-class ExpenseEvidenceImportResult(BaseModel):
-    imported: list[ExpenseEvidenceRecord] = Field(default_factory=list)
-    importedCount: int = 0
-    skippedCount: int = 0
-
-
-class EventLineExpenseEvidenceLinkRecord(BaseModel):
-    id: str
-    eventLineId: str
-    evidenceId: str
-    note: str = ""
-    linkedByUserId: str | None = None
-    linkedByUserName: str | None = None
-    createdAt: str
-    evidence: ExpenseEvidenceRecord | None = None
-
-
-class EventLineExpenseEvidenceLinkPayload(BaseModel):
-    evidenceId: str = Field(min_length=1)
-    note: str = ""
-
-
-class TaskExpenseEvidenceLinkRecord(BaseModel):
-    id: str
-    taskId: str
-    evidenceId: str
-    note: str = ""
-    linkedByUserId: str | None = None
-    linkedByUserName: str | None = None
-    createdAt: str
-    evidence: ExpenseEvidenceRecord | None = None
-
-
-class TaskExpenseEvidenceLinkPayload(BaseModel):
-    evidenceId: str = Field(min_length=1)
-    note: str = ""
-
-
 class FeishuTaskNotificationRecord(BaseModel):
     id: str
     organizationId: str
@@ -418,7 +226,6 @@ class DepartmentOption(BaseModel):
 class OrgProfileRecord(BaseModel):
     organizationId: str
     name: str
-    workObjectMode: WorkObjectMode = "project"
     annualGoal: str = ""
     annualStrategyYear: str = ""
     annualStrategy: str = ""
@@ -427,20 +234,6 @@ class OrgProfileRecord(BaseModel):
     leaderUserId: str | None = None
     managementUserIds: list[str] = Field(default_factory=list)
     updatedAt: str
-
-
-class WorkObjectTerminologyStateRecord(BaseModel):
-    localMode: WorkObjectMode | None = None
-    organizationMode: WorkObjectMode | None = None
-    effectiveMode: WorkObjectMode = "project"
-    source: Literal["default", "local", "organization"] = "organization"
-    lockedByOrganization: bool = True
-    needsOnboarding: bool = False
-    updatedAt: str
-
-
-class WorkObjectTerminologyUpdatePayload(BaseModel):
-    mode: WorkObjectMode
 
 
 class OrgQuarterPlanRecord(BaseModel):
@@ -673,12 +466,183 @@ class ConsultationChatPayload(BaseModel):
     clientId: str | None = None
     clientName: str | None = None
     eventLineId: str | None = None
+    eventLineName: str | None = None
+    taskId: str | None = None
+    taskTitle: str | None = None
     taskContext: str | None = None
+    workspaceContext: str | None = None
+    eventLineContext: str | None = None
+    taskBoardContext: str | None = None
+    sourceLabels: list[str] = Field(default_factory=list)
+    missingEventLineHint: str | None = None
+
+
+class ConsultationContextQualityRecord(BaseModel):
+    level: Literal["none", "thin", "partial", "rich"] = "none"
+    availableSources: list[str] = Field(default_factory=list)
+    missingSources: list[str] = Field(default_factory=list)
+    staleSources: list[str] = Field(default_factory=list)
+    contextBundleHash: str | None = None
+
+
+class ConsultationEvidenceRecord(BaseModel):
+    id: str
+    type: Literal[
+        "workspace",
+        "client_dna",
+        "event_line",
+        "meeting",
+        "task",
+        "knowledge_surrogate",
+        "cockpit",
+        "thread_snapshot",
+        "task_board",
+        "client_name",
+    ]
+    title: str
+    updatedAt: str | None = None
+    snippet: str | None = None
+
+
+class ConsultationMissingContextRecord(BaseModel):
+    type: Literal[
+        "client_dna",
+        "workspace",
+        "event_line",
+        "meeting",
+        "person_profile",
+        "project_background",
+        "strategic_cockpit",
+        "knowledge_surrogate",
+        "task_board",
+    ]
+    message: str
 
 
 class ConsultationChatResponse(BaseModel):
     reply: str
     model: str | None = None
+    answerMode: Literal["grounded", "limited_context", "missing_context", "error"] | None = None
+    contextQuality: ConsultationContextQualityRecord | None = None
+    evidence: list[ConsultationEvidenceRecord] = Field(default_factory=list)
+    missingContext: list[ConsultationMissingContextRecord] = Field(default_factory=list)
+
+
+class MobileCapabilityRecord(BaseModel):
+    consultationChat: bool = True
+    clientWorkspace: bool = False
+    strategicCockpit: bool = False
+    knowledgeMirror: bool = False
+    contextBundle: bool = False
+    consultationPayloadVersion: str = "v2"
+    updatedAt: str
+
+
+class MobileContextSourceStatusRecord(BaseModel):
+    source: str
+    available: bool = False
+    status: Literal["ready", "partial", "missing", "unavailable"] = "missing"
+    detail: str | None = None
+    updatedAt: str | None = None
+
+
+class MobileWorkspaceCompatClientRecord(BaseModel):
+    id: str
+    name: str
+    updatedAt: str | None = None
+
+
+class MobileWorkspaceCompatItemRecord(BaseModel):
+    id: str
+    title: str
+    summary: str = ""
+    subtitle: str = ""
+    updatedAt: str | None = None
+
+
+class MobileWorkspaceCompatTaskRecord(BaseModel):
+    id: str
+    title: str
+    status: str = ""
+    clientName: str | None = None
+    eventLineName: str | None = None
+    nextAction: str | None = None
+
+
+class MobileWorkspaceKnowledgeStatusRecord(BaseModel):
+    status: Literal["ready", "partial", "missing"] = "missing"
+    statusLabel: str = "资料未同步"
+    summary: str = ""
+    missingSources: list[str] = Field(default_factory=list)
+    updatedAt: str | None = None
+
+
+class MobileWorkspaceCompatResponse(BaseModel):
+    client: MobileWorkspaceCompatClientRecord
+    status: Literal["rich", "partial", "missing"] = "missing"
+    updatedAt: str | None = None
+    goals: list[MobileWorkspaceCompatItemRecord] = Field(default_factory=list)
+    meetings: list[MobileWorkspaceCompatItemRecord] = Field(default_factory=list)
+    documentCards: list[MobileWorkspaceCompatItemRecord] = Field(default_factory=list)
+    latestOpenQuestions: list[MobileWorkspaceCompatItemRecord] = Field(default_factory=list)
+    latestConflicts: list[MobileWorkspaceCompatItemRecord] = Field(default_factory=list)
+    relatedTasks: list[MobileWorkspaceCompatTaskRecord] = Field(default_factory=list)
+    knowledgeStatus: MobileWorkspaceKnowledgeStatusRecord | None = None
+    missingSources: list[str] = Field(default_factory=list)
+    sourceAvailability: list[MobileContextSourceStatusRecord] = Field(default_factory=list)
+
+
+class MobileCockpitHeadlineRecord(BaseModel):
+    summary: str = ""
+
+
+class MobileCockpitSummaryItemRecord(BaseModel):
+    summary: str = ""
+    updatedAt: str | None = None
+
+
+class MobileStrategicCockpitCompatResponse(BaseModel):
+    clientId: str
+    clientName: str
+    status: Literal["rich", "partial", "missing"] = "missing"
+    updatedAt: str | None = None
+    headline: MobileCockpitHeadlineRecord = Field(default_factory=MobileCockpitHeadlineRecord)
+    health: list[MobileCockpitSummaryItemRecord] = Field(default_factory=list)
+    twoWeekChanges: list[MobileCockpitSummaryItemRecord] = Field(default_factory=list)
+    pendingDecisions: list[MobileCockpitSummaryItemRecord] = Field(default_factory=list)
+    pendingMaterials: list[MobileCockpitSummaryItemRecord] = Field(default_factory=list)
+    missingSources: list[str] = Field(default_factory=list)
+    sourceAvailability: list[MobileContextSourceStatusRecord] = Field(default_factory=list)
+
+
+class CloudKnowledgeMirrorPublishItemPayload(BaseModel):
+    clientId: str
+    sourceType: Literal[
+        "workspace_snapshot",
+        "client_dna",
+        "event_line_snapshot",
+        "meeting_summary",
+        "knowledge_surrogate",
+        "strategic_cockpit",
+    ]
+    sourceId: str
+    snapshotVersion: int = 1
+    snapshotHash: str
+    updatedAt: str
+    publishedAt: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+    evidenceRefs: list[str] = Field(default_factory=list)
+
+
+class CloudKnowledgeMirrorPublishPayload(BaseModel):
+    items: list[CloudKnowledgeMirrorPublishItemPayload] = Field(default_factory=list)
+
+
+class CloudKnowledgeMirrorPublishResultRecord(BaseModel):
+    publishedCount: int = 0
+    clientIds: list[str] = Field(default_factory=list)
+    sourceTypes: list[str] = Field(default_factory=list)
+    publishedAt: str
 
 
 class SmartTaskDraftRecord(BaseModel):
@@ -736,20 +700,16 @@ class MentionCandidate(BaseModel):
     isSelf: bool = False
 
 
-class WorkObjectRecord(BaseModel):
+class ClientSummaryRecord(BaseModel):
     id: str
     name: str
     alias: str | None = None
-
-
-ClientSummaryRecord = WorkObjectRecord
 
 
 class TaskListRecord(BaseModel):
     id: str
     name: str
     color: str
-    description: str | None = None
     sortOrder: int = 0
     isDefault: bool = False
     scope: Literal["org", "personal"] = "org"
@@ -806,20 +766,14 @@ class TaskRecord(BaseModel):
     description: str
     creatorId: str
     creatorName: str
-    creatorDisplayName: str | None = None
     listName: str
     listColor: str
-    listIds: list[str] = Field(default_factory=list)
-    listNames: list[str] = Field(default_factory=list)
     ownerId: str | None = None
     ownerName: str | None = None
-    ownerDisplayName: str | None = None
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
-    workObjectId: str | None = None
-    workObjectName: str | None = None
     clientId: str | None = None
     clientName: str | None = None
     eventLineId: str | None = None
@@ -840,13 +794,9 @@ class TaskRecord(BaseModel):
     evidenceCount: int = 0
     tags: list[TaskTagRecord]
     attachments: list["TaskAttachmentRecord"] = Field(default_factory=list)
-    expenseEvidenceLinks: list["TaskExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     collaborators: list[TaskCollaboratorRecord]
     collaborationSummary: dict[str, int]
-    pendingParticipantNames: list[str] = Field(default_factory=list)
     viewerInboxStatus: CollaboratorInboxStatus | None = None
-    viewerCanConfirm: bool = False
-    viewerCanReject: bool = False
     orgContext: "TaskOrgContextRecord | None" = None
     createdAt: str
     updatedAt: str
@@ -855,7 +805,6 @@ class TaskRecord(BaseModel):
 class TaskAttachmentRecord(BaseModel):
     id: str
     taskId: str
-    workObjectId: str | None = None
     clientId: str | None = None
     eventLineId: str | None = None
     title: str
@@ -891,105 +840,16 @@ class TaskBoardResponse(BaseModel):
     commonTags: list[str]
 
 
-class InboxNotificationRecord(BaseModel):
-    id: str
-    kind: Literal["event_line_operation"] = "event_line_operation"
-    eventLineId: str | None = None
-    eventLineName: str | None = None
-    operationLabel: str
-    actorId: str | None = None
-    actorName: str
-    title: str
-    summary: str
-    mainOwnerNames: list[str] = Field(default_factory=list)
-    participantNames: list[str] = Field(default_factory=list)
-    metadata: dict[str, object] = Field(default_factory=dict)
-    operatedAt: str
-    viewerReadAt: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class InboxNotificationListResponse(BaseModel):
-    notifications: list[InboxNotificationRecord] = Field(default_factory=list)
-
-
-class InboxAggregateResponse(BaseModel):
-    pendingTasks: list[TaskRecord] = Field(default_factory=list)
-    systemNotifications: list[InboxNotificationRecord] = Field(default_factory=list)
-    outboundPendingTasks: list[TaskRecord] = Field(default_factory=list)
-
-
-class TaskGroupTemplateStepAttachment(BaseModel):
-    name: str
-    size: int | None = None
-
-
-class TaskGroupTemplateStep(BaseModel):
-    title: str
-    description: str = ""
-    daysAfterPrevious: int = 0
-    durationDays: float = 1.0
-    priority: Priority = "normal"
-    ownerId: str | None = None
-    ownerName: str | None = None
-    collaboratorIds: list[str] = Field(default_factory=list)
-    collaboratorNames: list[str] = Field(default_factory=list)
-    attachments: list[TaskGroupTemplateStepAttachment] = Field(default_factory=list)
-
-
-class TaskGroupTemplateRecord(BaseModel):
-    id: str
-    name: str
-    scenarioDesc: str = ""
-    scope: Literal["local", "organization"] = "organization"
-    workObjectId: str | None = None
-    clientId: str | None = None
-    legacyModuleId: str | None = None
-    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
-    createdAt: str
-    updatedAt: str
-
-
-class TaskGroupTemplatePayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    scenarioDesc: str = ""
-    scope: Literal["local", "organization"] | None = None
-    workObjectId: str | None = None
-    clientId: str | None = None
-    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
-
-
-class TaskNotificationBatchReadPayload(BaseModel):
-    taskIds: list[str] = Field(default_factory=list)
-
-
-class TaskNotificationBatchReadResponse(BaseModel):
-    taskIds: list[str] = Field(default_factory=list)
-    updatedCount: int = 0
-
-
-class InboxNotificationBatchReadPayload(BaseModel):
-    notificationIds: list[str] = Field(default_factory=list)
-
-
-class InboxNotificationBatchReadResponse(BaseModel):
-    notificationIds: list[str] = Field(default_factory=list)
-    updatedCount: int = 0
-
-
 class TaskCreatePayload(BaseModel):
     id: str | None = None
     title: str
     description: str = ""
     priority: Priority = "normal"
     listId: str
-    listIds: list[str] = Field(default_factory=list)
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
-    workObjectId: str | None = None
     clientId: str | None = None
     eventLineId: str | None = None
     projectModuleId: str | None = None
@@ -1012,12 +872,10 @@ class TaskUpdatePayload(BaseModel):
     description: str | None = None
     priority: Priority | None = None
     listId: str | None = None
-    listIds: list[str] | None = None
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
-    workObjectId: str | None = None
     clientId: str | None = None
     eventLineId: str | None = None
     projectModuleId: str | None = None
@@ -1080,10 +938,6 @@ class EventLineRecord(BaseModel):
     evidenceCount: int = 0
     ownerId: str | None = None
     ownerName: str | None = None
-    ownerIds: list[str] = Field(default_factory=list)
-    ownerNames: list[str] = Field(default_factory=list)
-    primaryWorkObjectId: str | None = None
-    primaryWorkObjectName: str | None = None
     primaryClientId: str | None = None
     primaryClientName: str | None = None
     primaryDepartmentId: str | None = None
@@ -1112,12 +966,13 @@ class EventLineDetailRecord(BaseModel):
     eventLine: EventLineRecord
     tasks: list[TaskRecord] = Field(default_factory=list)
     activities: list[EventLineActivityRecord] = Field(default_factory=list)
-    expenseEvidenceLinks: list["EventLineExpenseEvidenceLinkRecord"] = Field(default_factory=list)
 
 
 class EventLineReportAttachmentRecord(BaseModel):
     id: str
     taskId: str
+    documentId: str | None = None
+    sourceKind: Literal["task_attachment", "event_line_attachment"] | None = None
     title: str
     kind: str
     mimeType: str | None = None
@@ -1125,6 +980,35 @@ class EventLineReportAttachmentRecord(BaseModel):
     downloadUrl: str
     actorName: str | None = None
     createdAt: str
+    parseStatus: str | None = None
+    parsedPreview: str = ""
+    chunkCount: int = 0
+    sectionCount: int = 0
+
+
+class EventLineTimelineNodeRecord(BaseModel):
+    id: str
+    kind: Literal[
+        "project_start",
+        "material_intake",
+        "project_review",
+        "continuing_task",
+        "admin_archive",
+        "needs_review",
+        "system_trace",
+    ]
+    title: str
+    time: str
+    summary: str
+    sourceTaskIds: list[str] = Field(default_factory=list)
+    sourceTaskId: str = ""
+    sourceActivityIds: list[str] = Field(default_factory=list)
+    attachments: list[EventLineReportAttachmentRecord] = Field(default_factory=list)
+    evidenceSummary: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    actorName: str | None = None
+    ownerName: str | None = None
 
 
 class EventLineReportSnapshotRecord(BaseModel):
@@ -1132,6 +1016,7 @@ class EventLineReportSnapshotRecord(BaseModel):
     activities: list[EventLineActivityRecord]
     tasks: list[TaskRecord] = Field(default_factory=list)
     attachments: list[EventLineReportAttachmentRecord] = Field(default_factory=list)
+    timelineNodes: list[EventLineTimelineNodeRecord] = Field(default_factory=list)
     participantNames: list[str] = Field(default_factory=list)
     snapshotAt: str
 
@@ -1151,8 +1036,6 @@ class EventLineCreatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
-    ownerIds: list[str] = Field(default_factory=list)
-    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] = Field(default_factory=list)
@@ -1171,11 +1054,10 @@ class EventLineUpdatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
-    ownerIds: list[str] | None = None
-    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] | None = None
+    syncLinkedTaskClientIds: bool | None = None
 
 
 class EventLineImportActivityPayload(BaseModel):
@@ -1204,8 +1086,6 @@ class EventLineImportPayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int = 0
     ownerId: str | None = None
-    ownerIds: list[str] = Field(default_factory=list)
-    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryClientName: str | None = None
     primaryDepartmentId: str | None = None
@@ -1285,8 +1165,7 @@ class TaskTagMutationPayload(BaseModel):
 class TaskListMutationPayload(BaseModel):
     id: str | None = None
     name: str = Field(min_length=1, max_length=30)
-    description: str | None = None
-    color: str | None = Field(default=None, min_length=4, max_length=16)
+    color: str = Field(min_length=4, max_length=16)
     isDefault: bool | None = None
     scope: Literal["org", "personal"] | None = None
     archived: bool | None = None

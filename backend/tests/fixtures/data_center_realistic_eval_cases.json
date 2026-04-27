@@ -1,0 +1,746 @@
+[
+  {
+    "id": "business_001",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "CFFC 核心业务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_002",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请说明 CFFC 核心业务是什么",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_003",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "这家机构的核心业务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_004",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "当前资料里它的核心业务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_005",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请给出客户核心业务与服务对象",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_006",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "主营业务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_007",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "客户主营业务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_008",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请概括主营业务",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_009",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "核心业务和核心产品服务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_010",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "核心业务与业务模式是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_011",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "核心业务、主要服务、服务对象分别是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_012",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请基于资料回答核心业务是什么",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "strategy_001",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "日慈的最新战略是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_002",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请说明最新战略是什么",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_003",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "这家机构最新战略是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_004",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "当前资料里最新战略是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_005",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "最新战略方向是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_006",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "战略方向是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_007",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请给出最新战略方向与重点",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_008",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "2026 战略重点是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_009",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "最新战略与行动计划是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_010",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请基于资料回答最新战略是什么",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "official_001",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景1）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_002",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景2）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_003",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景3）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_004",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景4）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_005",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景5）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_006",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景6）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_007",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景7）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_008",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景8）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_009",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景9）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "official_010",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景10）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  },
+  {
+    "id": "meeting_followup_001",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "根据这次会议生成会后跟进",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_002",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请基于会议行动项生成会后跟进",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_003",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请生成会议 follow-up 草稿",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_004",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请输出会后跟进与补证据建议",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_005",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "围绕本次会议生成后续提案",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_006",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请给出会后行动与风险处理建议",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_007",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请按会议 open questions 生成跟进",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_008",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "会议 ambiguities 需要怎样跟进",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_009",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请把会议 action items 转成待审批草稿",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_010",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请生成会议后续动作池",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_011",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请输出 meeting follow-up（含风险）",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_followup_012",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "会后还需要哪些证据补齐",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "regression_001",
+    "category": "regression",
+    "page": "task_ai",
+    "scopeType": "task",
+    "mode": "answer",
+    "prompt": "这条任务下一步怎么做？"
+  },
+  {
+    "id": "regression_002",
+    "category": "regression",
+    "page": "task_ai",
+    "scopeType": "task",
+    "mode": "answer",
+    "prompt": "当前任务下一步是什么？"
+  },
+  {
+    "id": "regression_003",
+    "category": "regression",
+    "page": "task_ai",
+    "scopeType": "task",
+    "mode": "answer",
+    "prompt": "任务下一步要先推进什么？"
+  },
+  {
+    "id": "regression_004",
+    "category": "regression",
+    "page": "task_ai",
+    "scopeType": "task",
+    "mode": "answer",
+    "prompt": "任务背景是什么，下一步如何推进？"
+  },
+  {
+    "id": "regression_005",
+    "category": "regression",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请介绍一下这个客户"
+  },
+  {
+    "id": "regression_006",
+    "category": "regression",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "这个机构是谁？"
+  },
+  {
+    "id": "regression_007",
+    "category": "regression",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "当前状态是什么？"
+  },
+  {
+    "id": "regression_008",
+    "category": "regression",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "现在推进到哪了？"
+  },
+  {
+    "id": "regression_009",
+    "category": "regression",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "answer",
+    "prompt": "会议行动项和负责人是什么？"
+  },
+  {
+    "id": "regression_010",
+    "category": "regression",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "answer",
+    "prompt": "会议风险和未决问题有哪些？"
+  },
+  {
+    "id": "prep_task_001",
+    "category": "prep",
+    "page": "task_ai",
+    "scopeType": "task",
+    "mode": "prep",
+    "prompt": "为这条任务生成准备包"
+  },
+  {
+    "id": "prep_meeting_001",
+    "category": "prep",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "prep",
+    "prompt": "为这次会议生成准备包"
+  },
+  {
+    "id": "search_business_001",
+    "category": "search",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "search",
+    "prompt": "检索核心业务相关证据"
+  },
+  {
+    "id": "business_dup_a",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "CFFC 核心业务是什么？",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "business_dup_b",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请说明 CFFC 核心业务是什么",
+    "expectedIntent": "business_profile",
+    "expectedRouteMode": "raw_doc_drilldown",
+    "mustUseRawEvidence": true,
+    "mustHaveBusinessSlots": true
+  },
+  {
+    "id": "strategy_dup_a",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "日慈的最新战略是什么？",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "strategy_dup_b",
+    "category": "slot",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "请说明最新战略是什么",
+    "expectedIntent": "strategy_profile",
+    "expectedRouteMode": "hybrid",
+    "mustUseRawEvidence": true,
+    "mustHaveStrategySlots": true
+  },
+  {
+    "id": "meeting_dup_a",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "根据这次会议生成会后跟进",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "meeting_dup_b",
+    "category": "meeting_followup",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "mode": "proposal",
+    "prompt": "请基于会议行动项生成会后跟进",
+    "mustGenerateFollowup": true,
+    "expectedDraftKinds": [
+      "meeting_followup",
+      "evidence_request",
+      "judgment_review"
+    ]
+  },
+  {
+    "id": "official_dup_a",
+    "category": "official_boundary",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "mode": "answer",
+    "prompt": "系统里已批准的正式判断有哪些？（场景1）",
+    "expectedIntent": "official_judgment_registry",
+    "expectedRouteMode": "registry_only",
+    "mustUseRawEvidence": false,
+    "mustNotTreatCandidateAsOfficial": true
+  }
+]

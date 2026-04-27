@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildWeekTaskAggregateKey,
   buildCalendarCells,
   getTodayCalendarState,
   shiftCalendarMonth,
@@ -37,13 +36,4 @@ test('getTodayCalendarState resets month anchor and selected day together', () =
   assert.equal(state.calendarDate.getMonth(), 2);
   assert.equal(state.calendarDate.getDate(), 1);
   assert.equal(state.selectedDay, 12);
-});
-
-test('buildWeekTaskAggregateKey isolates overlapping task switches by day', () => {
-  const mondayFirstCluster = buildWeekTaskAggregateKey(new Date(2026, 3, 13), 0);
-  const tuesdayFirstCluster = buildWeekTaskAggregateKey(new Date(2026, 3, 14), 0);
-  const mondaySecondCluster = buildWeekTaskAggregateKey(new Date(2026, 3, 13), 1);
-
-  assert.notEqual(mondayFirstCluster, tuesdayFirstCluster);
-  assert.notEqual(mondayFirstCluster, mondaySecondCluster);
 });

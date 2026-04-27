@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import ipaddress
 import json
@@ -8,7 +9,6 @@ import logging
 import mimetypes
 import os
 import re
-import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -28,19 +28,22 @@ from app.db import Database, from_json, to_json
 from app.models import (
     AuthTokenResponse,
     ClientSummaryRecord,
+    CloudKnowledgeMirrorPublishPayload,
+    CloudKnowledgeMirrorPublishResultRecord,
     ConsultationChatPayload,
     ConsultationChatResponse,
+    ConsultationContextQualityRecord,
+    ConsultationEvidenceRecord,
     ConsultationKnowledgeRequestCreatePayload,
     ConsultationKnowledgeRequestRecord,
     ConsultationKnowledgeRequestUpdatePayload,
+    ConsultationMissingContextRecord,
     DepartmentOption,
     EmployeeRecord,
     EmployeeDepartmentPayload,
     EventLineActivityRecord,
     EventLineCreatePayload,
     EventLineDetailRecord,
-    EventLineExpenseEvidenceLinkPayload,
-    EventLineExpenseEvidenceLinkRecord,
     EventLineImportBatchPayload,
     EventLineImportItemResult,
     EventLineImportResultRecord,
@@ -48,11 +51,6 @@ from app.models import (
     EventLineReportAttachmentRecord,
     EventLineReportSnapshotRecord,
     EventLineUpdatePayload,
-    InboxAggregateResponse,
-    InboxNotificationBatchReadPayload,
-    InboxNotificationBatchReadResponse,
-    InboxNotificationListResponse,
-    InboxNotificationRecord,
     FeishuBadgeNotificationPayload,
     FeishuDeliveryProfileRecord,
     FeishuDeliveryProfileSavePayload,
@@ -66,6 +64,16 @@ from app.models import (
     LoginPayload,
     ManagementSignalCardRecord,
     MentionCandidate,
+    MobileCapabilityRecord,
+    MobileContextSourceStatusRecord,
+    MobileCockpitHeadlineRecord,
+    MobileCockpitSummaryItemRecord,
+    MobileStrategicCockpitCompatResponse,
+    MobileWorkspaceCompatClientRecord,
+    MobileWorkspaceCompatItemRecord,
+    MobileWorkspaceCompatResponse,
+    MobileWorkspaceCompatTaskRecord,
+    MobileWorkspaceKnowledgeStatusRecord,
     OrgDepartmentRecord,
     OrgFeishuIntegrationAuditRecord,
     OrgFeishuIntegrationRecord,
@@ -73,8 +81,6 @@ from app.models import (
     OrgDepartmentPlanItemRecord,
     OrgDepartmentPlanRecord,
     OrgDepartmentQuarterPlanRecord,
-    OrgDingtalkFinanceIntegrationRecord,
-    OrgDingtalkFinanceIntegrationSavePayload,
     OrgEmployeeBindingRecord,
     OrgFocusItemRecord,
     OrgMembershipSummaryRecord,
@@ -85,11 +91,7 @@ from app.models import (
     OrgReportingLineRecord,
     OrgRoleTemplateRecord,
     OrgTaskControlRuleRecord,
-    WorkObjectTerminologyStateRecord,
-    WorkObjectTerminologyUpdatePayload,
     TaskOrgBackfillResultRecord,
-    TaskGroupTemplatePayload,
-    TaskGroupTemplateRecord,
     PersonalGrowthCardRecord,
     PlanNodeRecord,
     PrimaryRole,
@@ -121,8 +123,6 @@ from app.models import (
     OrgAiConfigUpdatePayload,
     OrgAiConfigSecretRecord,
     TaskOrgContextRecord,
-    TaskExpenseEvidenceLinkPayload,
-    TaskExpenseEvidenceLinkRecord,
     TaskRecord,
     TaskReturnPayload,
     TaskSettingsPayload,
@@ -130,14 +130,6 @@ from app.models import (
     TaskTagLibraryResponse,
     TaskTagMutationPayload,
     TaskTagRecord,
-    ExpenseEvidenceImportPayload,
-    ExpenseEvidenceImportResult,
-    ExpenseEvidenceAttachmentRecord,
-    ExpenseEvidenceRecord,
-    ExpenseEvidenceUpdatePayload,
-    ExpenseImportSearchPayload,
-    ExpenseImportSearchResponse,
-    ExpenseImportSourceRecord,
     TaskPlanLinkRecord,
     TaskPlanLinkUpsertPayload,
     TaskUpdatePayload,
@@ -158,18 +150,6 @@ APP_NAME = "益语智库中心任务后端"
 APP_VERSION = "0.1.0"
 DEFAULT_ORG_ID = "org_yiyu_default"
 DEFAULT_ADMIN_EMAIL = DEFAULT_BOOTSTRAP_ADMIN_EMAIL
-DEFAULT_ORG_TASK_LIST_ID = "list-1"
-DEFAULT_ORG_TASK_LIST_NAME = "客户项目"
-DEFAULT_ORG_TASK_LIST_COLOR = "#5B7BFE"
-CANONICAL_ORG_TASK_LIST_SPECS: tuple[tuple[str, str, str, int, int], ...] = (
-    ("list-1", "客户项目", "#5B7BFE", 1, 1),
-    ("list-2", "产品研发", "#F59E0B", 2, 0),
-    ("list-3", "数据分析", "#10B981", 3, 0),
-    ("list-4", "组织管理", "#8B5CF6", 4, 0),
-    ("list-5", "品牌市场", "#EC4899", 5, 0),
-)
-CANONICAL_ORG_TASK_LIST_IDS = tuple(item[0] for item in CANONICAL_ORG_TASK_LIST_SPECS)
-LEGACY_PERSONAL_TASK_LIST_NAMES = ("健身", "学习", "吃饭", "约会")
 ALLOWED_APPROVER_ROLES: tuple[PrimaryRole, ...] = ("admin",)
 ORG_QUARTERS: tuple[str, ...] = ("Q1", "Q2", "Q3", "Q4")
 TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS: tuple[str, ...] = ("startDate", "dueDate", "durationMinutes", "ownerId", "collaboratorIds")
@@ -363,7 +343,6 @@ def _org_profile_record(state: AppState, organization_id: str) -> OrgProfileReco
         return OrgProfileRecord(
             organizationId=organization_id,
             name=str(org_row["name"]),
-            workObjectMode="project",
             annualGoal="",
             annualStrategyYear="",
             annualStrategy="",
@@ -377,7 +356,6 @@ def _org_profile_record(state: AppState, organization_id: str) -> OrgProfileReco
     return OrgProfileRecord(
         organizationId=organization_id,
         name=str(org_row["name"]),
-        workObjectMode=str(profile_row["work_object_mode"] or "project"),
         annualGoal=str(profile_row["annual_goal"] or ""),
         annualStrategyYear=annual_strategy_year,
         annualStrategy=str(profile_row["annual_strategy_text"] or ""),
@@ -1003,155 +981,6 @@ def _event_line_primary_client_name(row) -> str | None:
     return value or None
 
 
-def _event_line_linked_task_member_ids(state: AppState, organization_id: str, event_line_id: str) -> list[str]:
-    seen: set[str] = set()
-    member_ids: list[str] = []
-    owner_rows = state.db.fetchall(
-        """
-        SELECT DISTINCT owner_id
-        FROM tasks
-        WHERE event_line_id = ?
-          AND organization_id = ?
-          AND COALESCE(source_type, '') != 'event_line_notification'
-          AND owner_id IS NOT NULL
-          AND owner_id != ''
-        """,
-        (event_line_id, organization_id),
-    )
-    for row in owner_rows:
-        candidate = str(row["owner_id"] or "").strip()
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            member_ids.append(candidate)
-    collaborator_rows = state.db.fetchall(
-        """
-        SELECT DISTINCT tc.user_id
-        FROM task_collaborators tc
-        JOIN tasks t ON t.id = tc.task_id
-        WHERE t.event_line_id = ?
-          AND t.organization_id = ?
-          AND COALESCE(t.source_type, '') != 'event_line_notification'
-          AND tc.user_id IS NOT NULL
-          AND tc.user_id != ''
-        """,
-        (event_line_id, organization_id),
-    )
-    for row in collaborator_rows:
-        candidate = str(row["user_id"] or "").strip()
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            member_ids.append(candidate)
-    return member_ids
-
-
-def _event_line_resolved_owner_ids(row) -> list[str]:
-    raw_owner_ids = from_json(row["owner_ids_json"], []) if "owner_ids_json" in row.keys() else []
-    owner_ids = [str(item).strip() for item in raw_owner_ids if str(item).strip()]
-    fallback = str(row["owner_id"] or "").strip() if row["owner_id"] else ""
-    if fallback and fallback not in owner_ids:
-        owner_ids.insert(0, fallback)
-    return owner_ids
-
-
-def _event_line_resolved_owner_names(state: AppState, row) -> list[str]:
-    names: list[str] = []
-    for owner_id in _event_line_resolved_owner_ids(row):
-        owner_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (owner_id,))
-        name = str(owner_row["full_name"]).strip() if owner_row and owner_row["full_name"] else ""
-        if name and name not in names:
-            names.append(name)
-    fallback = (
-        str(row["owner_name"] or "").strip()
-        if "owner_name" in row.keys() and row["owner_name"]
-        else ""
-    )
-    if fallback and fallback not in names:
-        names.insert(0, fallback)
-    return names
-
-
-def _event_line_resolved_participant_ids(state: AppState, row) -> list[str]:
-    owner_ids = set(_event_line_resolved_owner_ids(row))
-    seen: set[str] = set()
-    participant_ids: list[str] = []
-    for candidate in [
-        *[str(item).strip() for item in from_json(row["participant_ids_json"], []) if str(item).strip()],
-        *_event_line_linked_task_member_ids(state, str(row["organization_id"]), str(row["id"])),
-    ]:
-        if not candidate or candidate in seen or candidate in owner_ids:
-            continue
-        seen.add(candidate)
-        participant_ids.append(candidate)
-    return participant_ids
-
-
-def _event_line_notification_record(state: AppState, row) -> InboxNotificationRecord:
-    metadata = from_json(row["metadata_json"], {})
-    return InboxNotificationRecord(
-        id=str(row["id"]),
-        eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
-        eventLineName=str(row["event_line_name"] or "") or None,
-        operationLabel=str(row["operation_label"] or ""),
-        actorId=str(row["actor_id"]) if row["actor_id"] else None,
-        actorName=str(row["actor_name"] or ""),
-        title=str(row["title"] or ""),
-        summary=str(row["summary"] or ""),
-        mainOwnerNames=[str(item).strip() for item in from_json(row["main_owner_names_json"], []) if str(item).strip()],
-        participantNames=[str(item).strip() for item in from_json(row["participant_names_json"], []) if str(item).strip()],
-        metadata=metadata if isinstance(metadata, dict) else {},
-        operatedAt=str(row["operated_at"] or row["created_at"] or now_iso()),
-        viewerReadAt=str(row["viewer_read_at"]) if "viewer_read_at" in row.keys() and row["viewer_read_at"] else None,
-        createdAt=str(row["created_at"] or now_iso()),
-        updatedAt=str(row["updated_at"] or row["created_at"] or now_iso()),
-    )
-
-
-def _list_event_line_notifications_for_user(state: AppState, organization_id: str, user_id: str, *, unread_only: bool = True) -> list[InboxNotificationRecord]:
-    query = """
-        SELECT n.*, r.read_at AS viewer_read_at
-        FROM event_line_notifications n
-        JOIN event_line_notification_receipts r ON r.notification_id = n.id
-        WHERE n.organization_id = ?
-          AND r.user_id = ?
-    """
-    params: list[object] = [organization_id, user_id]
-    if unread_only:
-        query += " AND r.read_at IS NULL"
-    query += " ORDER BY n.operated_at DESC, n.updated_at DESC, n.created_at DESC"
-    return [_event_line_notification_record(state, item) for item in state.db.fetchall(query, tuple(params))]
-
-
-def _event_line_notification_row_for_user_or_404(state: AppState, notification_id: str, current_user: SessionUser):
-    row = state.db.fetchone(
-        """
-        SELECT n.*, r.read_at AS viewer_read_at
-        FROM event_line_notifications n
-        JOIN event_line_notification_receipts r ON r.notification_id = n.id
-        WHERE n.id = ?
-          AND n.organization_id = ?
-          AND r.user_id = ?
-        """,
-        (notification_id, current_user.organizationId, current_user.id),
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="通知不存在。")
-    return row
-
-
-def _can_view_event_line(state: AppState, row, current_user: SessionUser) -> bool:
-    if current_user.primaryRole == "admin":
-        return True
-    if current_user.id in _event_line_resolved_owner_ids(row):
-        return True
-    return current_user.id in _event_line_resolved_participant_ids(state, row)
-
-
-def _assert_event_line_view_permission(state: AppState, row, current_user: SessionUser) -> None:
-    if _can_view_event_line(state, row, current_user):
-        return
-    raise HTTPException(status_code=403, detail="当前事件线仅主要负责人和参与者可查看。")
-
-
 def _client_row_by_id(state: AppState, client_id: str | None, organization_id: str | None = None):
     normalized = (client_id or "").strip()
     if not normalized:
@@ -1168,14 +997,666 @@ def _client_summary_record(row) -> ClientSummaryRecord:
     return ClientSummaryRecord(
         id=str(row["id"]),
         name=str(row["name"]),
-        workObjectId=str(row["id"]),
         alias=str(row["alias"]) if row["alias"] else None,
     )
 
 
+MIRROR_TABLE_BY_SOURCE_TYPE: dict[str, str] = {
+    "workspace_snapshot": "cloud_client_workspace_snapshots",
+    "client_dna": "cloud_client_dna_summaries",
+    "event_line_snapshot": "cloud_event_line_snapshots",
+    "meeting_summary": "cloud_meeting_summaries",
+    "knowledge_surrogate": "cloud_knowledge_surrogates",
+    "strategic_cockpit": "cloud_strategic_cockpit_snapshots",
+}
+
+
+def _client_row_or_404(state: AppState, client_id: str, organization_id: str):
+    row = _client_row_by_id(state, client_id, organization_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return row
+
+
+def _mirror_latest_row(
+    state: AppState,
+    table_name: str,
+    organization_id: str,
+    client_id: str,
+    source_id: str | None = None,
+):
+    sql = f"SELECT * FROM {table_name} WHERE organization_id = ? AND client_id = ?"
+    params: list[str] = [organization_id, client_id]
+    if source_id:
+        sql += " AND source_id = ?"
+        params.append(source_id)
+    sql += " ORDER BY updated_at DESC, published_at DESC LIMIT 1"
+    return state.db.fetchone(sql, tuple(params))
+
+
+def _mirror_rows(
+    state: AppState,
+    table_name: str,
+    organization_id: str,
+    client_id: str,
+    limit: int = 4,
+):
+    return state.db.fetchall(
+        f"""
+        SELECT *
+        FROM {table_name}
+        WHERE organization_id = ? AND client_id = ?
+        ORDER BY updated_at DESC, published_at DESC
+        LIMIT ?
+        """,
+        (organization_id, client_id, limit),
+    )
+
+
+def _mirror_payload(row) -> dict[str, object]:
+    if not row:
+        return {}
+    raw_payload = from_json(str(row["payload_json"] or "{}"), {})
+    return raw_payload if isinstance(raw_payload, dict) else {}
+
+
+def _mirror_updated_at(row) -> str | None:
+    if not row:
+        return None
+    return str(row["updated_at"] or row["published_at"] or "") or None
+
+
+def _mirror_has_any_records(state: AppState, organization_id: str) -> bool:
+    for table_name in MIRROR_TABLE_BY_SOURCE_TYPE.values():
+        if state.db.scalar(
+            f"SELECT COUNT(1) AS count FROM {table_name} WHERE organization_id = ?",
+            (organization_id,),
+        ):
+            return True
+    return False
+
+
+def _context_source_status(
+    source: str,
+    *,
+    available: bool,
+    status: Literal["ready", "partial", "missing", "unavailable"],
+    detail: str | None = None,
+    updated_at: str | None = None,
+) -> MobileContextSourceStatusRecord:
+    return MobileContextSourceStatusRecord(
+        source=source,
+        available=available,
+        status=status,
+        detail=detail,
+        updatedAt=updated_at,
+    )
+
+
+def _coerce_text(value: object | None, default: str = "") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def _mobile_summary_item(item: dict[str, object] | None, fallback_title: str) -> MobileWorkspaceCompatItemRecord:
+    payload = item or {}
+    item_id = _coerce_text(
+        payload.get("id")
+        or payload.get("meetingId")
+        or payload.get("documentId")
+        or payload.get("questionId")
+        or fallback_title,
+        fallback_title,
+    )
+    return MobileWorkspaceCompatItemRecord(
+        id=item_id,
+        title=_coerce_text(payload.get("title") or payload.get("name") or payload.get("label"), fallback_title),
+        summary=_coerce_text(payload.get("summary") or payload.get("description") or payload.get("note")),
+        subtitle=_coerce_text(payload.get("subtitle") or payload.get("updatedAt") or payload.get("sourceType")),
+        updatedAt=_coerce_text(payload.get("updatedAt") or payload.get("createdAt")) or None,
+    )
+
+
+def _mobile_task_item(item: dict[str, object] | None) -> MobileWorkspaceCompatTaskRecord:
+    payload = item or {}
+    return MobileWorkspaceCompatTaskRecord(
+        id=_coerce_text(payload.get("id"), "unknown-task"),
+        title=_coerce_text(payload.get("title") or payload.get("name"), "未命名任务"),
+        status=_coerce_text(payload.get("status") or payload.get("progressStatus")),
+        clientName=_coerce_text(payload.get("clientName")) or None,
+        eventLineName=_coerce_text(payload.get("eventLineName")) or None,
+        nextAction=_coerce_text(payload.get("nextAction")) or None,
+    )
+
+
+def _build_mobile_capabilities(state: AppState, current_user: SessionUser) -> MobileCapabilityRecord:
+    return MobileCapabilityRecord(
+        consultationChat=True,
+        clientWorkspace=True,
+        strategicCockpit=True,
+        knowledgeMirror=_mirror_has_any_records(state, current_user.organizationId),
+        contextBundle=True,
+        consultationPayloadVersion="v2",
+        updatedAt=now_iso(),
+    )
+
+
+def _workspace_related_tasks(state: AppState, client_id: str, organization_id: str, limit: int = 6) -> list[MobileWorkspaceCompatTaskRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT id, title, progress_status, current_blocker, next_action, updated_at
+        FROM tasks
+        WHERE organization_id = ? AND client_id = ?
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ?
+        """,
+        (organization_id, client_id, limit),
+    )
+    return [
+        MobileWorkspaceCompatTaskRecord(
+            id=str(row["id"]),
+            title=_coerce_text(row["title"], "未命名任务"),
+            status=_coerce_text(row["progress_status"]),
+            nextAction=_coerce_text(row["next_action"]) or _coerce_text(row["current_blocker"]) or None,
+        )
+        for row in rows
+    ]
+
+
+def _event_line_summary_items(state: AppState, client_id: str, organization_id: str, limit: int = 4) -> list[MobileWorkspaceCompatItemRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT id, name, stage, summary, current_blocker, next_step, updated_at
+        FROM event_lines
+        WHERE organization_id = ? AND primary_client_id = ?
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ?
+        """,
+        (organization_id, client_id, limit),
+    )
+    return [
+        MobileWorkspaceCompatItemRecord(
+            id=str(row["id"]),
+            title=_coerce_text(row["name"], "事件线"),
+            summary=_coerce_text(row["summary"]) or _coerce_text(row["current_blocker"]) or _coerce_text(row["next_step"]),
+            subtitle=_coerce_text(row["stage"]),
+            updatedAt=_coerce_text(row["updated_at"]) or None,
+        )
+        for row in rows
+    ]
+
+
+def _recent_meeting_items_from_mirror(state: AppState, organization_id: str, client_id: str) -> list[MobileWorkspaceCompatItemRecord]:
+    rows = _mirror_rows(state, "cloud_meeting_summaries", organization_id, client_id, limit=4)
+    result: list[MobileWorkspaceCompatItemRecord] = []
+    for row in rows:
+        payload = _mirror_payload(row)
+        result.append(
+            MobileWorkspaceCompatItemRecord(
+                id=_coerce_text(row["source_id"], "meeting"),
+                title=_coerce_text(payload.get("title"), "会议"),
+                summary=_coerce_text(payload.get("summary") or payload.get("coreConclusion")),
+                subtitle=_coerce_text(payload.get("meetingDate") or payload.get("participantSummary")),
+                updatedAt=_mirror_updated_at(row),
+            )
+        )
+    return result
+
+
+def _recent_document_items_from_mirror(state: AppState, organization_id: str, client_id: str) -> list[MobileWorkspaceCompatItemRecord]:
+    rows = _mirror_rows(state, "cloud_knowledge_surrogates", organization_id, client_id, limit=4)
+    result: list[MobileWorkspaceCompatItemRecord] = []
+    for row in rows:
+        payload = _mirror_payload(row)
+        result.append(
+            MobileWorkspaceCompatItemRecord(
+                id=_coerce_text(row["source_id"], "knowledge"),
+                title=_coerce_text(payload.get("title"), "知识代理"),
+                summary=_coerce_text(payload.get("summary") or payload.get("overview") or payload.get("overviewSummary")),
+                subtitle=_coerce_text(payload.get("sourceType") or payload.get("documentType")),
+                updatedAt=_mirror_updated_at(row),
+            )
+        )
+    return result
+
+
+def _build_workspace_compat_response(state: AppState, client_row, organization_id: str) -> MobileWorkspaceCompatResponse:
+    client_id = str(client_row["id"])
+    client_name = _coerce_text(client_row["name"], "客户")
+    workspace_row = _mirror_latest_row(state, "cloud_client_workspace_snapshots", organization_id, client_id)
+    cockpit_row = _mirror_latest_row(state, "cloud_strategic_cockpit_snapshots", organization_id, client_id)
+    dna_row = _mirror_latest_row(state, "cloud_client_dna_summaries", organization_id, client_id)
+    meeting_items = _recent_meeting_items_from_mirror(state, organization_id, client_id)
+    surrogate_items = _recent_document_items_from_mirror(state, organization_id, client_id)
+    related_tasks = _workspace_related_tasks(state, client_id, organization_id)
+    event_line_items = _event_line_summary_items(state, client_id, organization_id)
+
+    available_sources: list[MobileContextSourceStatusRecord] = []
+    missing_sources: list[str] = []
+
+    workspace_payload = _mirror_payload(workspace_row)
+    workspace_updated_at = _mirror_updated_at(workspace_row)
+
+    if workspace_row:
+        available_sources.append(
+            _context_source_status(
+                "workspace_snapshot",
+                available=True,
+                status="ready",
+                detail="已找到云端客户工作台快照。",
+                updated_at=workspace_updated_at,
+            )
+        )
+    else:
+        missing_sources.append("workspace_snapshot")
+        available_sources.append(
+            _context_source_status(
+                "workspace_snapshot",
+                available=False,
+                status="missing",
+                detail="当前云端没有客户工作台快照，只能退回轻量兼容视图。",
+            )
+        )
+
+    if dna_row:
+        available_sources.append(
+            _context_source_status(
+                "client_dna",
+                available=True,
+                status="ready",
+                detail="已找到客户 DNA 摘要。",
+                updated_at=_mirror_updated_at(dna_row),
+            )
+        )
+    else:
+        missing_sources.append("client_dna")
+        available_sources.append(
+            _context_source_status(
+                "client_dna",
+                available=False,
+                status="missing",
+                detail="未找到客户 DNA 摘要。",
+            )
+        )
+
+    if meeting_items:
+        available_sources.append(
+            _context_source_status(
+                "recent_meetings",
+                available=True,
+                status="ready",
+                detail="已找到最近会议摘要。",
+                updated_at=meeting_items[0].updatedAt,
+            )
+        )
+    else:
+        missing_sources.append("recent_meetings")
+        available_sources.append(
+            _context_source_status(
+                "recent_meetings",
+                available=False,
+                status="missing",
+                detail="云端没有最近会议摘要。",
+            )
+        )
+
+    if cockpit_row:
+        available_sources.append(
+            _context_source_status(
+                "strategic_cockpit",
+                available=True,
+                status="ready",
+                detail="已找到战略 cockpit 快照。",
+                updated_at=_mirror_updated_at(cockpit_row),
+            )
+        )
+    else:
+        missing_sources.append("strategic_cockpit")
+        available_sources.append(
+            _context_source_status(
+                "strategic_cockpit",
+                available=False,
+                status="missing",
+                detail="云端还没有战略 cockpit 快照。",
+            )
+        )
+
+    if surrogate_items:
+        available_sources.append(
+            _context_source_status(
+                "knowledge_surrogate",
+                available=True,
+                status="ready",
+                detail="已找到知识代理摘要。",
+                updated_at=surrogate_items[0].updatedAt,
+            )
+        )
+    else:
+        missing_sources.append("knowledge_surrogate")
+        available_sources.append(
+            _context_source_status(
+                "knowledge_surrogate",
+                available=False,
+                status="missing",
+                detail="云端没有可用于咨询的知识代理。",
+            )
+        )
+
+    goals = [
+        _mobile_summary_item(item, "目标")
+        for item in cast(list[dict[str, object]], workspace_payload.get("goals") or [])
+    ] if workspace_payload.get("goals") else event_line_items
+    meetings = [
+        _mobile_summary_item(item, "会议")
+        for item in cast(list[dict[str, object]], workspace_payload.get("meetings") or [])
+    ] if workspace_payload.get("meetings") else meeting_items
+    document_cards = [
+        _mobile_summary_item(item, "资料")
+        for item in cast(list[dict[str, object]], workspace_payload.get("documentCards") or [])
+    ] if workspace_payload.get("documentCards") else surrogate_items
+    latest_open_questions = [
+        _mobile_summary_item(item, "开放问题")
+        for item in cast(list[dict[str, object]], workspace_payload.get("latestOpenQuestions") or [])
+    ]
+    latest_conflicts = [
+        _mobile_summary_item(item, "冲突")
+        for item in cast(list[dict[str, object]], workspace_payload.get("latestConflicts") or [])
+    ]
+    if not latest_open_questions:
+        latest_open_questions = [
+            MobileWorkspaceCompatItemRecord(
+                id=f"task-open-{task.id}",
+                title=task.title,
+                summary=task.nextAction or "缺少更完整的工作台/会议资料，当前只保留了任务面上的下一步。",
+                subtitle=task.status,
+            )
+            for task in related_tasks[:3]
+            if task.nextAction
+        ]
+    if not latest_conflicts and event_line_items:
+        latest_conflicts = [
+            MobileWorkspaceCompatItemRecord(
+                id=f"line-conflict-{item.id}",
+                title=item.title,
+                summary=item.summary or "当前云端还没有正式冲突整理，只保留了事件线摘要。",
+                subtitle=item.subtitle,
+                updatedAt=item.updatedAt,
+            )
+            for item in event_line_items[:2]
+            if item.summary
+        ]
+
+    if workspace_payload.get("relatedTasks"):
+        related_tasks = [
+            _mobile_task_item(item)
+            for item in cast(list[dict[str, object]], workspace_payload.get("relatedTasks") or [])
+        ]
+
+    status: Literal["rich", "partial", "missing"]
+    if workspace_row and not missing_sources:
+        status = "rich"
+    elif goals or meetings or document_cards or related_tasks:
+        status = "partial"
+    else:
+        status = "missing"
+
+    if workspace_payload.get("missingSources"):
+        for source in cast(list[object], workspace_payload.get("missingSources") or []):
+            source_name = _coerce_text(source)
+            if source_name and source_name not in missing_sources:
+                missing_sources.append(source_name)
+
+    knowledge_status = MobileWorkspaceKnowledgeStatusRecord(
+        status="ready" if status == "rich" else ("partial" if status == "partial" else "missing"),
+        statusLabel="工作台资料已同步" if status == "rich" else ("工作台资料部分可用" if status == "partial" else "工作台资料未同步"),
+        summary=(
+            "已找到客户工作台、战略判断和最近资料，可以提供较完整的上下文。"
+            if status == "rich"
+            else (
+                "当前只找到了部分云端资料，更多上下文仍缺失。"
+                if status == "partial"
+                else "当前云端没有这位客户的工作台快照，只能显示轻量兼容结果。"
+            )
+        ),
+        missingSources=missing_sources,
+        updatedAt=workspace_updated_at,
+    )
+
+    return MobileWorkspaceCompatResponse(
+        client=MobileWorkspaceCompatClientRecord(id=client_id, name=client_name, updatedAt=_coerce_text(client_row["updated_at"]) or None),
+        status=status,
+        updatedAt=workspace_updated_at or _coerce_text(client_row["updated_at"]) or None,
+        goals=goals[:4],
+        meetings=meetings[:4],
+        documentCards=document_cards[:4],
+        latestOpenQuestions=latest_open_questions[:4],
+        latestConflicts=latest_conflicts[:4],
+        relatedTasks=related_tasks[:6],
+        knowledgeStatus=knowledge_status,
+        missingSources=missing_sources,
+        sourceAvailability=available_sources,
+    )
+
+
+def _build_cockpit_compat_response(state: AppState, client_row, organization_id: str) -> MobileStrategicCockpitCompatResponse:
+    client_id = str(client_row["id"])
+    client_name = _coerce_text(client_row["name"], "客户")
+    cockpit_row = _mirror_latest_row(state, "cloud_strategic_cockpit_snapshots", organization_id, client_id)
+    workspace_row = _mirror_latest_row(state, "cloud_client_workspace_snapshots", organization_id, client_id)
+    dna_row = _mirror_latest_row(state, "cloud_client_dna_summaries", organization_id, client_id)
+    event_line_rows = state.db.fetchall(
+        """
+        SELECT id, name, stage, summary, current_blocker, next_step, updated_at
+        FROM event_lines
+        WHERE organization_id = ? AND primary_client_id = ?
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 4
+        """,
+        (organization_id, client_id),
+    )
+    cockpit_payload = _mirror_payload(cockpit_row)
+    available_sources: list[MobileContextSourceStatusRecord] = []
+    missing_sources: list[str] = []
+
+    def _status_for(row, source: str, missing_detail: str, ready_detail: str) -> None:
+        if row:
+            available_sources.append(
+                _context_source_status(
+                    source,
+                    available=True,
+                    status="ready",
+                    detail=ready_detail,
+                    updated_at=_mirror_updated_at(row),
+                )
+            )
+        else:
+            missing_sources.append(source)
+            available_sources.append(
+                _context_source_status(
+                    source,
+                    available=False,
+                    status="missing",
+                    detail=missing_detail,
+                )
+            )
+
+    _status_for(cockpit_row, "strategic_cockpit", "云端还没有正式战略 cockpit。", "已找到战略 cockpit 快照。")
+    _status_for(workspace_row, "workspace_snapshot", "云端还没有客户工作台快照。", "已找到客户工作台快照。")
+    _status_for(dna_row, "client_dna", "云端还没有客户 DNA 摘要。", "已找到客户 DNA 摘要。")
+    if event_line_rows:
+        available_sources.append(
+            _context_source_status(
+                "event_line_snapshot",
+                available=True,
+                status="partial",
+                detail="当前可退回事件线摘要作为轻量战略线索。",
+                updated_at=_coerce_text(event_line_rows[0]["updated_at"]) or None,
+            )
+        )
+    else:
+        missing_sources.append("event_line_snapshot")
+        available_sources.append(
+            _context_source_status(
+                "event_line_snapshot",
+                available=False,
+                status="missing",
+                detail="连事件线级别的线索都还没有。",
+            )
+        )
+
+    health_items = [
+        MobileCockpitSummaryItemRecord(
+            summary=_coerce_text(item.get("summary") or item.get("label") or item.get("value")),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+        for item in cast(list[dict[str, object]], cockpit_payload.get("health") or [])
+        if _coerce_text(item.get("summary") or item.get("label") or item.get("value"))
+    ]
+    two_week_changes = [
+        MobileCockpitSummaryItemRecord(
+            summary=_coerce_text(item.get("summary") or item.get("title") or item.get("label")),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+        for item in cast(list[dict[str, object]], cockpit_payload.get("twoWeekChanges") or [])
+        if _coerce_text(item.get("summary") or item.get("title") or item.get("label"))
+    ]
+    pending_decisions = [
+        MobileCockpitSummaryItemRecord(
+            summary=_coerce_text(item.get("summary") or item.get("title") or item.get("label")),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+        for item in cast(list[dict[str, object]], cockpit_payload.get("pendingDecisions") or [])
+        if _coerce_text(item.get("summary") or item.get("title") or item.get("label"))
+    ]
+    pending_materials = [
+        MobileCockpitSummaryItemRecord(
+            summary=_coerce_text(item.get("summary") or item.get("title") or item.get("label")),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+        for item in cast(list[dict[str, object]], cockpit_payload.get("pendingMaterials") or [])
+        if _coerce_text(item.get("summary") or item.get("title") or item.get("label"))
+    ]
+
+    if not health_items and event_line_rows:
+        health_items = [
+            MobileCockpitSummaryItemRecord(
+                summary=_coerce_text(row["summary"]) or f"事件线「{_coerce_text(row['name'], '事件线')}」当前没有更完整的战略摘要。",
+                updatedAt=_coerce_text(row["updated_at"]) or None,
+            )
+            for row in event_line_rows[:2]
+        ]
+    if not two_week_changes and event_line_rows:
+        two_week_changes = [
+            MobileCockpitSummaryItemRecord(
+                summary=f"最近更新的事件线：{_coerce_text(row['name'], '事件线')}，下一步 { _coerce_text(row['next_step']) or '仍需补充' }。",
+                updatedAt=_coerce_text(row["updated_at"]) or None,
+            )
+            for row in event_line_rows[:2]
+        ]
+    if not pending_decisions and event_line_rows:
+        pending_decisions = [
+            MobileCockpitSummaryItemRecord(
+                summary=_coerce_text(row["current_blocker"]) or f"事件线「{_coerce_text(row['name'], '事件线')}」还缺更正式的经营判断。",
+                updatedAt=_coerce_text(row["updated_at"]) or None,
+            )
+            for row in event_line_rows[:3]
+        ]
+    if not pending_materials:
+        pending_materials = [
+            MobileCockpitSummaryItemRecord(summary="当前云端还没有正式战略材料包，建议先从桌面端发布 workspace / DNA / 会议摘要。")
+        ]
+
+    headline_summary = _coerce_text(
+        cast(dict[str, object], cockpit_payload.get("headline") or {}).get("summary")
+        if isinstance(cockpit_payload.get("headline"), dict)
+        else cockpit_payload.get("headline")
+    )
+    if not headline_summary:
+        if cockpit_row:
+            headline_summary = "已找到战略 cockpit 快照，但当前快照没有可直接展示的 headline。"
+        elif event_line_rows:
+            headline_summary = "当前云端没有正式战略 cockpit，以下是根据事件线与任务生成的轻量战略视图。"
+        else:
+            headline_summary = "当前云端没有战略 cockpit，也没有足够的事件线数据。"
+
+    status: Literal["rich", "partial", "missing"]
+    if cockpit_row and not missing_sources:
+        status = "rich"
+    elif cockpit_row or event_line_rows:
+        status = "partial"
+    else:
+        status = "missing"
+
+    return MobileStrategicCockpitCompatResponse(
+        clientId=client_id,
+        clientName=client_name,
+        status=status,
+        updatedAt=_mirror_updated_at(cockpit_row) or _coerce_text(client_row["updated_at"]) or None,
+        headline=MobileCockpitHeadlineRecord(summary=headline_summary),
+        health=health_items[:4],
+        twoWeekChanges=two_week_changes[:4],
+        pendingDecisions=pending_decisions[:4],
+        pendingMaterials=pending_materials[:4],
+        missingSources=missing_sources,
+        sourceAvailability=available_sources,
+    )
+
+
+def _upsert_cloud_mirror_item(
+    state: AppState,
+    *,
+    organization_id: str,
+    client_id: str,
+    source_type: str,
+    source_id: str,
+    snapshot_version: int,
+    snapshot_hash: str,
+    updated_at: str,
+    published_at: str,
+    payload: dict[str, object],
+    evidence_refs: list[str],
+) -> None:
+    table_name = MIRROR_TABLE_BY_SOURCE_TYPE.get(source_type)
+    if not table_name:
+        raise HTTPException(status_code=400, detail=f"Unsupported sourceType: {source_type}")
+    state.db.execute(
+        f"""
+        INSERT INTO {table_name}(
+            id, organization_id, client_id, source_type, source_id, snapshot_version, snapshot_hash,
+            payload_json, evidence_refs_json, updated_at, published_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id, client_id, source_id) DO UPDATE SET
+            source_type = excluded.source_type,
+            snapshot_version = excluded.snapshot_version,
+            snapshot_hash = excluded.snapshot_hash,
+            payload_json = excluded.payload_json,
+            evidence_refs_json = excluded.evidence_refs_json,
+            updated_at = excluded.updated_at,
+            published_at = excluded.published_at
+        """,
+        (
+            new_id("mirror"),
+            organization_id,
+            client_id,
+            source_type,
+            source_id,
+            snapshot_version,
+            snapshot_hash,
+            to_json(payload),
+            to_json(evidence_refs),
+            updated_at,
+            published_at,
+        ),
+    )
+
 def _event_line_record(state: AppState, row) -> EventLineRecord:
-    owner_ids = _event_line_resolved_owner_ids(row)
-    owner_names = _event_line_resolved_owner_names(state, row)
+    owner_name = None
+    if row["owner_id"]:
+        owner_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["owner_id"]),))
+        owner_name = str(owner_row["full_name"]) if owner_row else None
     department_name = None
     if row["primary_department_id"]:
         department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (str(row["primary_department_id"]),))
@@ -1183,23 +1664,12 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
     activity_count = int(state.db.scalar("SELECT COUNT(1) FROM event_line_activities WHERE event_line_id = ?", (str(row["id"]),)) or 0)
     client_row = _client_row_by_id(state, _event_line_primary_client_id(row), str(row["organization_id"]))
     primary_client_name = _event_line_primary_client_name(row) or (str(client_row["name"]) if client_row and client_row["name"] else None)
-    visibility_scope = (
-        str(row["visibility_scope"])
-        if "visibility_scope" in row.keys() and row["visibility_scope"]
-        else "project_public"
-    )
-    closed_at = str(row["closed_at"]) if "closed_at" in row.keys() and row["closed_at"] else None
-    closed_by_user_id = (
-        str(row["closed_by_user_id"])
-        if "closed_by_user_id" in row.keys() and row["closed_by_user_id"]
-        else None
-    )
     return EventLineRecord(
         id=str(row["id"]),
         name=str(row["name"]),
         kind=str(row["kind"] or "custom"),
         status=str(row["status"] or "active"),
-        visibilityScope=visibility_scope,
+        visibilityScope=str(row["visibility_scope"]) if row["visibility_scope"] else "project_public",
         businessCategory=str(row["business_category"]) if row["business_category"] else None,
         stage=str(row["stage"]) if row["stage"] else None,
         summary=str(row["summary"]) if row["summary"] else None,
@@ -1208,19 +1678,15 @@ def _event_line_record(state: AppState, row) -> EventLineRecord:
         recentDecision=str(row["recent_decision"]) if row["recent_decision"] else None,
         nextStep=str(row["next_step"]) if row["next_step"] else None,
         evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
-        ownerId=owner_ids[0] if owner_ids else (str(row["owner_id"]) if row["owner_id"] else None),
-        ownerName=owner_names[0] if owner_names else None,
-        ownerIds=owner_ids,
-        ownerNames=owner_names,
-        primaryWorkObjectId=_event_line_primary_client_id(row),
-        primaryWorkObjectName=primary_client_name,
+        ownerId=str(row["owner_id"]) if row["owner_id"] else None,
+        ownerName=owner_name,
         primaryClientId=_event_line_primary_client_id(row),
         primaryClientName=primary_client_name,
         primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
         primaryDepartmentName=department_name,
-        participantIds=_event_line_resolved_participant_ids(state, row),
-        closedAt=closed_at,
-        closedByUserId=closed_by_user_id,
+        participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
+        closedAt=str(row["closed_at"]) if row["closed_at"] else None,
+        closedByUserId=str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
@@ -1368,12 +1834,12 @@ def _event_line_detail_record(state: AppState, row, viewer_id: str | None = None
         """
         SELECT DISTINCT t.*
         FROM tasks t
+        LEFT JOIN task_collaborators tc ON tc.task_id = t.id
         WHERE t.event_line_id = ?
-          AND t.organization_id = ?
-          AND COALESCE(t.source_type, '') != 'event_line_notification'
+          AND (t.creator_id = ? OR tc.user_id = ?)
         ORDER BY t.updated_at DESC
         """,
-        (event_line.id, str(row["organization_id"])),
+        (event_line.id, viewer_id or "", viewer_id or ""),
     )
     activity_rows = state.db.fetchall(
         """
@@ -1387,9 +1853,8 @@ def _event_line_detail_record(state: AppState, row, viewer_id: str | None = None
     )
     return EventLineDetailRecord(
         eventLine=event_line,
-        tasks=[_task_record(state, item, viewer_id, include_expense_evidence_links=True) for item in task_rows],
+        tasks=[_task_record(state, item, viewer_id) for item in task_rows],
         activities=[_event_line_activity_record(state, item) for item in activity_rows],
-        expenseEvidenceLinks=_event_line_expense_link_records(state, event_line.id),
     )
 
 
@@ -1952,13 +2417,12 @@ def _ensure_org_model_seed(state: AppState) -> None:
         db.execute(
             """
             INSERT INTO org_profiles(
-                organization_id, work_object_mode, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
+                organization_id, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
                 quarterly_focus_json, leader_user_id, management_user_ids_json, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 DEFAULT_ORG_ID,
-                "project",
                 "围绕战略陪伴、产品化交付和组织预测性管理建立稳定闭环。",
                 str(datetime.now().year),
                 "围绕战略陪伴闭环、知识底座产品化和组织预测性管理，建立全年清晰节奏。",
@@ -2275,7 +2739,12 @@ def _ensure_seed_data(state: AppState) -> None:
                 (new_id("role"), bound_user_id, primary_role, timestamp),
             )
 
-    for list_id, name, color, sort_order, is_default in CANONICAL_ORG_TASK_LIST_SPECS:
+    for list_id, name, color, sort_order, is_default in [
+        ("list-0", "收集箱", "#888681", 0, 1),
+        ("list-1", "Q3 营销", "#5B7BFE", 1, 0),
+        ("list-2", "用户体验", "#F59E0B", 2, 0),
+        ("list-3", "商业化", "#10B981", 3, 0),
+    ]:
         db.execute(
             """
             INSERT OR IGNORE INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
@@ -2325,9 +2794,9 @@ def _ensure_seed_data(state: AppState) -> None:
                 user_id, organization_id, default_list_id, default_priority, default_due_date_preset,
                 default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
                 auto_assign_self, updated_at
-            ) VALUES(?, ?, ?, 'normal', 'today', 'list', 'manual', 0, 'work', 1, ?)
+            ) VALUES(?, ?, 'list-0', 'normal', 'today', 'list', 'manual', 0, 'work', 1, ?)
             """,
-            (seed_user_id, DEFAULT_ORG_ID, None, timestamp),
+            (seed_user_id, DEFAULT_ORG_ID, timestamp),
         )
 
     for unit_id, parent_id, name, unit_type, leader_user_id in [
@@ -2396,13 +2865,12 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
     state.db.execute(
         """
         INSERT OR REPLACE INTO org_profiles(
-            organization_id, work_object_mode, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
+            organization_id, annual_goal, annual_strategy_year, annual_strategy_text, quarter_plans_json,
             quarterly_focus_json, leader_user_id, management_user_ids_json, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             organization_id,
-            payload.organization.workObjectMode,
             payload.organization.annualGoal.strip(),
             payload.organization.annualStrategyYear.strip(),
             payload.organization.annualStrategy.strip(),
@@ -2933,473 +3401,6 @@ def _org_feishu_decrypt(state: AppState, encrypted_b64: str, nonce_b64: str, org
     return cipher.decrypt(nonce, cipher_text, None).decode("utf-8")
 
 
-def _org_dingtalk_encrypt(state: AppState, plain_text: str, organization_id: str) -> tuple[str, str]:
-    import base64
-    from hashlib import sha256
-    from os import urandom
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    key = sha256(f"{state.secret_key}:{organization_id}:dingtalk_config".encode()).digest()
-    nonce = urandom(12)
-    cipher = AESGCM(key)
-    cipher_text = cipher.encrypt(nonce, plain_text.encode("utf-8"), None)
-    return base64.b64encode(cipher_text).decode(), base64.b64encode(nonce).decode()
-
-
-def _org_dingtalk_decrypt(state: AppState, encrypted_b64: str, nonce_b64: str, organization_id: str) -> str:
-    import base64
-    from hashlib import sha256
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-    if not encrypted_b64 or not nonce_b64:
-        return ""
-    key = sha256(f"{state.secret_key}:{organization_id}:dingtalk_config".encode()).digest()
-    cipher = AESGCM(key)
-    cipher_text = base64.b64decode(encrypted_b64)
-    nonce = base64.b64decode(nonce_b64)
-    return cipher.decrypt(nonce, cipher_text, None).decode("utf-8")
-
-
-def _normalize_phone_number(raw_value: str | None) -> str:
-    digits = "".join(ch for ch in str(raw_value or "") if ch.isdigit())
-    if digits.startswith("86") and len(digits) > 11:
-        digits = digits[2:]
-    return digits
-
-
-def _dingtalk_api_headers(access_token: str, *, use_legacy_query_token: bool = False) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if not use_legacy_query_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-        headers["x-acs-dingtalk-access-token"] = access_token
-    return headers
-
-
-def _extract_nested_values(payload: object, key_name: str) -> list[object]:
-    matches: list[object] = []
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if key == key_name:
-                matches.append(value)
-            matches.extend(_extract_nested_values(value, key_name))
-    elif isinstance(payload, list):
-        for item in payload:
-            matches.extend(_extract_nested_values(item, key_name))
-    return matches
-
-
-def _extract_first_non_empty(payload: dict[str, object], keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        value = payload.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return None
-
-
-def _dingtalk_raise_for_error(response_payload: object, *, fallback_message: str) -> dict[str, object]:
-    if not isinstance(response_payload, dict):
-        raise HTTPException(status_code=502, detail=fallback_message)
-    errcode = response_payload.get("errcode")
-    success = response_payload.get("success")
-    if (errcode not in (None, 0, "0")) or success is False:
-        message = str(response_payload.get("errmsg") or response_payload.get("message") or fallback_message)
-        raise HTTPException(status_code=502, detail=message)
-    return cast(dict[str, object], response_payload)
-
-
-def _dingtalk_fetch_app_access_token(app_key: str, app_secret: str) -> str:
-    import httpx
-
-    timeout = httpx.Timeout(18.0, connect=5.0)
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(
-            "https://api.dingtalk.com/v1.0/oauth2/accessToken",
-            json={"appKey": app_key, "appSecret": app_secret},
-            headers={"Content-Type": "application/json"},
-        )
-        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-        if response.status_code == 200 and isinstance(payload, dict):
-            token = str(payload.get("accessToken") or payload.get("access_token") or "").strip()
-            if token:
-                return token
-
-        legacy_response = client.get(
-            "https://oapi.dingtalk.com/gettoken",
-            params={"appkey": app_key, "appsecret": app_secret},
-        )
-        legacy_payload = legacy_response.json() if legacy_response.headers.get("content-type", "").startswith("application/json") else {}
-        normalized = _dingtalk_raise_for_error(legacy_payload, fallback_message="获取钉钉 accessToken 失败。")
-        token = str(normalized.get("access_token") or "").strip()
-        if not token:
-            raise HTTPException(status_code=502, detail="钉钉 accessToken 返回为空。")
-        return token
-
-
-def _dingtalk_get_user_id_by_mobile(access_token: str, mobile: str) -> str:
-    import httpx
-
-    timeout = httpx.Timeout(18.0, connect=5.0)
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(
-            "https://oapi.dingtalk.com/topapi/v2/user/getbymobile",
-            params={"access_token": access_token},
-            json={"mobile": mobile, "support_exclusive_account_search": True},
-            headers=_dingtalk_api_headers(access_token, use_legacy_query_token=True),
-        )
-        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-    normalized = _dingtalk_raise_for_error(payload, fallback_message="根据手机号查询钉钉操作人失败。")
-    result = normalized.get("result")
-    if not isinstance(result, dict):
-        raise HTTPException(status_code=502, detail="钉钉未返回有效的操作人信息。")
-    user_id = str(result.get("userid") or "").strip()
-    if not user_id:
-        raise HTTPException(status_code=502, detail="钉钉未返回可用的操作人 userId。")
-    return user_id
-
-
-def _dingtalk_list_manageable_templates(access_token: str, operator_user_id: str) -> list[dict[str, object]]:
-    import httpx
-
-    timeout = httpx.Timeout(20.0, connect=5.0)
-    templates: list[dict[str, object]] = []
-    next_token: str | None = None
-    with httpx.Client(timeout=timeout) as client:
-        for _ in range(10):
-            params: dict[str, object] = {"userId": operator_user_id, "maxResults": 100}
-            if next_token:
-                params["nextToken"] = next_token
-            response = client.get(
-                "https://api.dingtalk.com/v1.0/workflow/processes/managements/templates",
-                params=params,
-                headers=_dingtalk_api_headers(access_token),
-            )
-            payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-            if response.status_code >= 400:
-                detail = payload.get("message") if isinstance(payload, dict) else None
-                raise HTTPException(status_code=502, detail=str(detail or "获取钉钉可管理审批模板失败。"))
-            result = payload.get("result") if isinstance(payload, dict) else None
-            bucket: list[dict[str, object]] = []
-            if isinstance(result, dict):
-                for key in ("templates", "templateList", "items", "records"):
-                    value = result.get(key)
-                    if isinstance(value, list):
-                        bucket = [item for item in value if isinstance(item, dict)]
-                        break
-                if not bucket:
-                    bucket = [item for item in _extract_nested_values(result, "processCode") if isinstance(item, dict)]
-                next_token = str(result.get("nextToken") or "").strip() or None
-            elif isinstance(payload, dict):
-                maybe_list = payload.get("result")
-                if isinstance(maybe_list, list):
-                    bucket = [item for item in maybe_list if isinstance(item, dict)]
-            templates.extend(bucket)
-            if not next_token or not bucket:
-                break
-    deduped: dict[str, dict[str, object]] = {}
-    for item in templates:
-        process_code = str(item.get("processCode") or item.get("process_code") or "").strip()
-        if process_code:
-            deduped[process_code] = item
-    return list(deduped.values())
-
-
-def _dingtalk_list_process_instance_ids(
-    access_token: str,
-    *,
-    process_code: str,
-    operator_user_id: str,
-    start_time_ms: int,
-    end_time_ms: int,
-    size: int,
-) -> list[str]:
-    import httpx
-
-    timeout = httpx.Timeout(20.0, connect=5.0)
-    instance_ids: list[str] = []
-    cursor = 0
-    with httpx.Client(timeout=timeout) as client:
-        for _ in range(10):
-            response = client.post(
-                "https://oapi.dingtalk.com/topapi/processinstance/listids",
-                params={"access_token": access_token},
-                json={
-                    "process_code": process_code,
-                    "start_time": start_time_ms,
-                    "end_time": end_time_ms,
-                    "size": max(1, min(size, 20)),
-                    "cursor": cursor,
-                    "userid_list": operator_user_id,
-                },
-                headers=_dingtalk_api_headers(access_token, use_legacy_query_token=True),
-            )
-            payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-            normalized = _dingtalk_raise_for_error(payload, fallback_message="获取钉钉审批实例列表失败。")
-            result = normalized.get("result")
-            if not isinstance(result, dict):
-                break
-            current_ids = [str(item).strip() for item in result.get("list", []) if str(item).strip()]
-            instance_ids.extend(current_ids)
-            next_cursor = result.get("next_cursor")
-            if next_cursor in (None, "", cursor) or not current_ids or len(instance_ids) >= size:
-                break
-            try:
-                cursor = int(next_cursor)
-            except Exception:
-                break
-    return list(dict.fromkeys(instance_ids[:size]))
-
-
-def _dingtalk_get_process_instance_detail(access_token: str, process_instance_id: str) -> dict[str, object]:
-    import httpx
-
-    timeout = httpx.Timeout(20.0, connect=5.0)
-    with httpx.Client(timeout=timeout) as client:
-        response = client.get(
-            "https://api.dingtalk.com/v1.0/workflow/processInstances",
-            params={"processInstanceId": process_instance_id},
-            headers=_dingtalk_api_headers(access_token),
-        )
-        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-    if response.status_code >= 400:
-        detail = payload.get("message") if isinstance(payload, dict) else None
-        raise HTTPException(status_code=502, detail=str(detail or "获取钉钉审批实例详情失败。"))
-    result = payload.get("result") if isinstance(payload, dict) else None
-    if not isinstance(result, dict):
-        raise HTTPException(status_code=502, detail="钉钉审批实例详情返回格式异常。")
-    return result
-
-
-def _dingtalk_parse_json_like(raw_value: object) -> object:
-    if isinstance(raw_value, (dict, list)):
-        return raw_value
-    text = str(raw_value or "").strip()
-    if not text:
-        return text
-    if text[:1] not in ("{", "["):
-        return text
-    try:
-        return json.loads(text)
-    except Exception:
-        return text
-
-
-def _dingtalk_extract_amount(detail: dict[str, object]) -> float | None:
-    candidates: list[str] = []
-    for component in detail.get("formComponentValues", []) if isinstance(detail.get("formComponentValues"), list) else []:
-        if not isinstance(component, dict):
-            continue
-        name = str(component.get("name") or component.get("bizAlias") or "").strip()
-        value = component.get("value")
-        if any(keyword in name for keyword in ("金额", "总额", "报销", "合计", "amount", "fee")):
-            candidates.append(str(value or ""))
-    for candidate in candidates:
-        match = re.search(r"-?\d+(?:\.\d+)?", candidate.replace(",", ""))
-        if match:
-            try:
-                return float(match.group(0))
-            except Exception:
-                continue
-    return None
-
-
-def _dingtalk_extract_attachments(detail: dict[str, object]) -> list[dict[str, object]]:
-    attachments: list[dict[str, object]] = []
-
-    def visit(value: object, *, field_name: str = "") -> None:
-        if isinstance(value, dict):
-            file_id = _extract_first_non_empty(value, ("fileId", "file_id", "id"))
-            file_name = _extract_first_non_empty(value, ("fileName", "file_name", "name"))
-            file_type = _extract_first_non_empty(value, ("fileType", "file_type", "type"))
-            space_id = _extract_first_non_empty(value, ("spaceId", "space_id"))
-            preview_url = _extract_first_non_empty(value, ("previewUrl", "preview_url", "downloadUrl", "download_uri"))
-            size_bytes = value.get("fileSize") or value.get("size") or value.get("sizeBytes") or 0
-            has_attachment_shape = bool(file_id or (field_name and any(keyword in field_name for keyword in ("附件", "票据", "发票", "图片", "file")) and file_name))
-            if has_attachment_shape:
-                attachments.append(
-                    {
-                        "sourceFileId": file_id,
-                        "sourceSpaceId": space_id,
-                        "sourceFileType": file_type,
-                        "fileName": file_name or field_name or "未命名附件",
-                        "mimeType": mimetypes.guess_type(file_name or "")[0] if file_name else None,
-                        "sizeBytes": int(size_bytes or 0),
-                        "previewUrl": preview_url,
-                    }
-                )
-            for nested_key, nested_value in value.items():
-                visit(nested_value, field_name=nested_key)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item, field_name=field_name)
-        else:
-            parsed = _dingtalk_parse_json_like(value)
-            if parsed is not value:
-                visit(parsed, field_name=field_name)
-
-    form_values = detail.get("formComponentValues", [])
-    if isinstance(form_values, list):
-        for component in form_values:
-            if not isinstance(component, dict):
-                continue
-            name = str(component.get("name") or component.get("bizAlias") or "附件").strip()
-            visit(component.get("value"), field_name=name)
-            visit(component.get("extValue"), field_name=name)
-    visit(detail.get("operationRecords"), field_name="operationRecords")
-
-    deduped: dict[tuple[str, str], dict[str, object]] = {}
-    for item in attachments:
-        key = (str(item.get("sourceFileId") or ""), str(item.get("fileName") or ""))
-        deduped[key] = item
-    return list(deduped.values())
-
-
-def _dingtalk_normalize_approval_status(detail: dict[str, object]) -> str:
-    raw_candidates = [
-        str(detail.get("status") or "").strip().lower(),
-        str(detail.get("result") or "").strip().lower(),
-        str(detail.get("approvalResult") or "").strip().lower(),
-    ]
-    raw = " ".join(item for item in raw_candidates if item)
-    if any(token in raw for token in ("terminate", "refuse", "reject", "deny")):
-        return "rejected"
-    if any(token in raw for token in ("finish", "completed", "agree", "approved", "pass", "success")):
-        return "approved"
-    if any(token in raw for token in ("running", "process", "pending", "new", "start")):
-        return "processing"
-    return "unknown"
-
-
-def _dingtalk_build_source_url(detail: dict[str, object], process_instance_id: str) -> str | None:
-    for key in ("pcUrl", "pc_url", "pcLink", "mobileUrl", "url"):
-        value = detail.get(key)
-        if value:
-            text = str(value).strip()
-            if text:
-                return text
-    if process_instance_id:
-        return f"https://www.dingtalk.com/"
-    return None
-
-
-def _dingtalk_normalize_import_source(
-    detail: dict[str, object],
-    *,
-    organization_id: str,
-    process_instance_id: str,
-    source_template_code: str | None,
-    source_template_name: str | None,
-) -> dict[str, object]:
-    title = _extract_first_non_empty(detail, ("title", "processTitle", "name")) or f"审批 {process_instance_id}"
-    applicant = _extract_first_non_empty(detail, ("originatorName", "originatorRealName", "originatorUserName", "originatorUserid", "originatorUserId")) or ""
-    amount = _dingtalk_extract_amount(detail)
-    attachments = _dingtalk_extract_attachments(detail)
-    submitted_at = _extract_first_non_empty(detail, ("createTime", "createdTime", "submittedAt", "gmtCreate"))
-    approved_at = _extract_first_non_empty(detail, ("finishTime", "completedTime", "approvedAt", "gmtFinished"))
-    approval_status = _dingtalk_normalize_approval_status(detail)
-    source_url = _dingtalk_build_source_url(detail, process_instance_id)
-    return {
-        "id": new_id("expense_src"),
-        "organization_id": organization_id,
-        "source_instance_id": process_instance_id,
-        "source_template_code": source_template_code,
-        "source_template_name": source_template_name,
-        "source_title": title,
-        "applicant_user_name": applicant,
-        "amount": amount,
-        "currency": "CNY",
-        "submitted_at": submitted_at,
-        "approved_at": approved_at,
-        "approval_status": approval_status,
-        "source_url": source_url,
-        "raw_payload_json": to_json({**detail, "attachments": attachments}),
-    }
-
-
-def _expense_evidence_attachment_public_url(attachment_id: str) -> str:
-    return f"/api/public/expense-evidence-attachments/{attachment_id}"
-
-
-def _ocr_expense_image_attachment(state: AppState, attachment_path: Path, mime_type: str) -> tuple[str, str | None]:
-    import base64
-    import httpx
-
-    ark_key = os.getenv("ARK_API_KEY", "").strip() or os.getenv("VOLCENGINE_API_KEY", "").strip()
-    if not ark_key:
-        return "skipped", "OCR 未配置 API Key"
-    img_b64 = base64.b64encode(attachment_path.read_bytes()).decode()
-    try:
-        response = httpx.post(
-            "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-            headers={"Authorization": f"Bearer {ark_key}", "Content-Type": "application/json"},
-            json={
-                "model": os.getenv("YIYU_OCR_MODEL", "ep-m-20260326120641-m4lf6"),
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是票据识别助手。请识别图片中的票据内容，用一行简要概括：类型、金额、日期、付款方/收款方（如果能识别的话）。只返回纯文本，不要 JSON。",
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}},
-                            {"type": "text", "text": "请识别这张票据的内容"},
-                        ],
-                    },
-                ],
-                "max_tokens": 200,
-            },
-            timeout=20.0,
-        )
-        if response.status_code != 200:
-            return "failed", f"OCR 识别失败 (HTTP {response.status_code})"
-        payload = response.json()
-        choices = payload.get("choices") if isinstance(payload, dict) else None
-        if not isinstance(choices, list) or not choices:
-            return "failed", "OCR 返回为空"
-        summary = str(choices[0].get("message", {}).get("content") or "").strip()
-        return ("done", summary or "OCR 已执行，但未提取到有效摘要")
-    except Exception as exc:
-        return "failed", f"OCR 识别失败: {exc}"
-
-
-def _dingtalk_fetch_attachment_download_uri(access_token: str, *, process_instance_id: str, file_id: str) -> str:
-    import httpx
-
-    timeout = httpx.Timeout(20.0, connect=5.0)
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(
-            "https://api.dingtalk.com/v1.0/workflow/processInstances/spaces/files/urls/download",
-            headers=_dingtalk_api_headers(access_token),
-            json={"processInstanceId": process_instance_id, "fileId": file_id},
-        )
-        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-    if response.status_code >= 400:
-        detail = payload.get("message") if isinstance(payload, dict) else None
-        raise HTTPException(status_code=502, detail=str(detail or "获取钉钉审批附件下载地址失败。"))
-    result = payload.get("result") if isinstance(payload, dict) else None
-    if not isinstance(result, dict):
-        raise HTTPException(status_code=502, detail="钉钉审批附件下载地址返回异常。")
-    download_uri = str(result.get("downloadUri") or "").strip()
-    if not download_uri:
-        raise HTTPException(status_code=502, detail="钉钉审批附件下载地址为空。")
-    return download_uri
-
-
-def _dingtalk_download_attachment_bytes(download_uri: str) -> bytes:
-    import httpx
-
-    if download_uri.startswith("#"):
-        raise HTTPException(status_code=502, detail="钉钉返回了占位附件地址，请先在审批详情里确认文件可下载。")
-    timeout = httpx.Timeout(timeout=None, connect=8.0, read=60.0, write=20.0, pool=20.0)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.get(download_uri)
-        response.raise_for_status()
-        return response.content
-
-
 def _org_membership_summary(state: AppState, current_user: SessionUser) -> OrgMembershipSummaryRecord:
     if not current_user.organizationId:
         return OrgMembershipSummaryRecord(hasOrganization=False)
@@ -3510,208 +3511,6 @@ def _org_feishu_integration_record(state: AppState, current_user: SessionUser, r
         lastValidationMessage=last_validation_message,
         recentAudits=_org_feishu_audit_records(state, membership.organizationId),
     )
-
-
-def _org_dingtalk_finance_integration_record(state: AppState, current_user: SessionUser) -> OrgDingtalkFinanceIntegrationRecord:
-    membership = _org_membership_summary(state, current_user)
-    if not membership.hasOrganization or not membership.organizationId:
-        return OrgDingtalkFinanceIntegrationRecord(
-            organizationId=None,
-            organizationName=None,
-            updatedAt=now_iso(),
-            lastValidationStatus="idle",
-            lastValidationMessage="你还没有加入任何组织。票据证明导入依赖组织级钉钉财务接入。",
-        )
-    row = state.db.fetchone(
-        "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
-        (membership.organizationId,),
-    )
-    if not row:
-        return OrgDingtalkFinanceIntegrationRecord(
-            organizationId=membership.organizationId,
-            organizationName=membership.organizationName,
-            updatedAt=now_iso(),
-            lastValidationStatus="idle",
-            lastValidationMessage="当前组织尚未接通钉钉财务。完成接入后，票据证明池才可开始导入审批票据。",
-        )
-    configured_by = None
-    if row["configured_by"]:
-        actor_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(row["configured_by"]),))
-        configured_by = str(actor_row["full_name"]) if actor_row and actor_row["full_name"] else str(row["configured_by"])
-    return OrgDingtalkFinanceIntegrationRecord(
-        organizationId=membership.organizationId,
-        organizationName=membership.organizationName,
-        appKey=str(row["app_key"] or ""),
-        operatorMobile=str(row["operator_mobile"] or ""),
-        resolvedOperatorUserId=str(row["resolved_operator_user_id"]) if row["resolved_operator_user_id"] else None,
-        enabled=bool(row["enabled"]),
-        hasAppSecret=bool(row["app_secret_encrypted"]),
-        syncEnabled=bool(row["sync_enabled"]),
-        mappedTemplateNames=[str(item).strip() for item in from_json(row["mapped_template_names_json"], []) if str(item).strip()],
-        configuredBy=configured_by,
-        configuredAt=str(row["configured_at"]) if row["configured_at"] else None,
-        updatedAt=str(row["updated_at"]),
-        lastValidationStatus=str(row["last_validation_status"] or "idle"),
-        lastValidationMessage=str(row["last_validation_message"] or "") or None,
-    )
-
-
-def _expense_evidence_attachment_records(state: AppState, evidence_id: str) -> list[ExpenseEvidenceAttachmentRecord]:
-    rows = state.db.fetchall(
-        "SELECT * FROM expense_evidence_attachments WHERE expense_evidence_id = ? ORDER BY created_at ASC",
-        (evidence_id,),
-    )
-    return [
-        ExpenseEvidenceAttachmentRecord(
-            id=str(row["id"]),
-            expenseEvidenceId=str(row["expense_evidence_id"]),
-            sourceFileId=str(row["source_file_id"]) if row["source_file_id"] else None,
-            sourceSpaceId=str(row["source_space_id"]) if row["source_space_id"] else None,
-            sourceFileType=str(row["source_file_type"]) if row["source_file_type"] else None,
-            fileName=str(row["file_name"]),
-            mimeType=str(row["mime_type"]) if row["mime_type"] else None,
-            sizeBytes=int(row["size_bytes"] or 0),
-            downloadStatus=str(row["download_status"] or "not_fetched"),
-            ocrStatus=str(row["ocr_status"] or "pending"),
-            ocrSummary=str(row["ocr_summary"]) if row["ocr_summary"] else None,
-            storagePath=str(row["storage_path"]) if row["storage_path"] else None,
-            previewUrl=str(row["preview_url"]) if row["preview_url"] else None,
-            createdAt=str(row["created_at"]),
-            updatedAt=str(row["updated_at"]),
-        )
-        for row in rows
-    ]
-
-
-def _expense_evidence_record(state: AppState, row, *, include_attachments: bool = False) -> ExpenseEvidenceRecord:
-    return ExpenseEvidenceRecord(
-        id=str(row["id"]),
-        organizationId=str(row["organization_id"]),
-        workObjectId=str(row["work_object_id"]) if row["work_object_id"] else None,
-        sourceInstanceId=str(row["source_instance_id"]),
-        sourceTemplateCode=str(row["source_template_code"]) if row["source_template_code"] else None,
-        sourceTemplateName=str(row["source_template_name"]) if row["source_template_name"] else None,
-        sourceTitle=str(row["source_title"]),
-        displayTitle=str(row["display_title"]),
-        applicantUserName=str(row["applicant_user_name"] or ""),
-        amount=float(row["amount"]) if row["amount"] is not None else None,
-        currency=str(row["currency"] or "CNY"),
-        submittedAt=str(row["submitted_at"]) if row["submitted_at"] else None,
-        approvedAt=str(row["approved_at"]) if row["approved_at"] else None,
-        approvalStatus=str(row["approval_status"] or "unknown"),
-        sourceUrl=str(row["source_url"]) if row["source_url"] else None,
-        normalizedCategory=str(row["normalized_category"]) if row["normalized_category"] else None,
-        tags=[str(item).strip() for item in from_json(row["tags_json"], []) if str(item).strip()],
-        summary=str(row["summary"] or ""),
-        lastImportedAt=str(row["last_imported_at"]) if row["last_imported_at"] else None,
-        createdByUserId=str(row["created_by_user_id"]) if row["created_by_user_id"] else None,
-        updatedByUserId=str(row["updated_by_user_id"]) if row["updated_by_user_id"] else None,
-        createdAt=str(row["created_at"]),
-        updatedAt=str(row["updated_at"]),
-        attachments=_expense_evidence_attachment_records(state, str(row["id"])) if include_attachments else [],
-    )
-
-
-def _expense_import_source_record(row) -> ExpenseImportSourceRecord:
-    raw_payload = cast(dict[str, object], from_json(row["raw_payload_json"], {}))
-    raw_attachments = raw_payload.get("attachments") if isinstance(raw_payload, dict) else None
-    attachment_records = []
-    if isinstance(raw_attachments, list):
-        for item in raw_attachments:
-            if not isinstance(item, dict):
-                continue
-            attachment_records.append(
-                {
-                    "sourceFileId": str(item.get("sourceFileId") or item.get("source_file_id") or "") or None,
-                    "sourceSpaceId": str(item.get("sourceSpaceId") or item.get("source_space_id") or "") or None,
-                    "sourceFileType": str(item.get("sourceFileType") or item.get("source_file_type") or "") or None,
-                    "fileName": str(item.get("fileName") or item.get("file_name") or "未命名附件"),
-                    "mimeType": str(item.get("mimeType") or item.get("mime_type") or "") or None,
-                    "sizeBytes": int(item.get("sizeBytes") or item.get("size_bytes") or 0),
-                    "previewUrl": str(item.get("previewUrl") or item.get("preview_url") or "") or None,
-                }
-            )
-    return ExpenseImportSourceRecord(
-        id=str(row["id"]),
-        organizationId=str(row["organization_id"]),
-        sourceInstanceId=str(row["source_instance_id"]),
-        sourceTemplateCode=str(row["source_template_code"]) if row["source_template_code"] else None,
-        sourceTemplateName=str(row["source_template_name"]) if row["source_template_name"] else None,
-        sourceTitle=str(row["source_title"]),
-        applicantUserName=str(row["applicant_user_name"] or ""),
-        amount=float(row["amount"]) if row["amount"] is not None else None,
-        currency=str(row["currency"] or "CNY"),
-        submittedAt=str(row["submitted_at"]) if row["submitted_at"] else None,
-        approvedAt=str(row["approved_at"]) if row["approved_at"] else None,
-        approvalStatus=str(row["approval_status"] or "unknown"),
-        sourceUrl=str(row["source_url"]) if row["source_url"] else None,
-        attachments=attachment_records,
-        rawPayload=raw_payload,
-        importedEvidenceId=str(row["imported_evidence_id"]) if row["imported_evidence_id"] else None,
-        lastImportedAt=str(row["last_imported_at"]) if row["last_imported_at"] else None,
-        createdAt=str(row["created_at"]),
-        updatedAt=str(row["updated_at"]),
-    )
-
-
-def _event_line_expense_link_records(state: AppState, event_line_id: str) -> list[EventLineExpenseEvidenceLinkRecord]:
-    rows = state.db.fetchall(
-        """
-        SELECT link.*, user.full_name AS linked_by_name
-        FROM event_line_expense_evidence_links link
-        LEFT JOIN employee_accounts user ON user.id = link.linked_by_user_id
-        WHERE link.event_line_id = ?
-        ORDER BY link.created_at DESC
-        """,
-        (event_line_id,),
-    )
-    result: list[EventLineExpenseEvidenceLinkRecord] = []
-    for row in rows:
-        evidence_row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (str(row["expense_evidence_id"]),))
-        evidence = _expense_evidence_record(state, evidence_row) if evidence_row else None
-        result.append(
-            EventLineExpenseEvidenceLinkRecord(
-                id=str(row["id"]),
-                eventLineId=str(row["event_line_id"]),
-                evidenceId=str(row["expense_evidence_id"]),
-                note=str(row["note"] or ""),
-                linkedByUserId=str(row["linked_by_user_id"]) if row["linked_by_user_id"] else None,
-                linkedByUserName=str(row["linked_by_name"]) if row["linked_by_name"] else None,
-                createdAt=str(row["created_at"]),
-                evidence=evidence,
-            )
-        )
-    return result
-
-
-def _task_expense_link_records(state: AppState, task_id: str) -> list[TaskExpenseEvidenceLinkRecord]:
-    rows = state.db.fetchall(
-        """
-        SELECT link.*, user.full_name AS linked_by_name
-        FROM task_expense_evidence_links link
-        LEFT JOIN employee_accounts user ON user.id = link.linked_by_user_id
-        WHERE link.task_id = ?
-        ORDER BY link.created_at DESC
-        """,
-        (task_id,),
-    )
-    result: list[TaskExpenseEvidenceLinkRecord] = []
-    for row in rows:
-        evidence_row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (str(row["expense_evidence_id"]),))
-        evidence = _expense_evidence_record(state, evidence_row) if evidence_row else None
-        result.append(
-            TaskExpenseEvidenceLinkRecord(
-                id=str(row["id"]),
-                taskId=str(row["task_id"]),
-                evidenceId=str(row["expense_evidence_id"]),
-                note=str(row["note"] or ""),
-                linkedByUserId=str(row["linked_by_user_id"]) if row["linked_by_user_id"] else None,
-                linkedByUserName=str(row["linked_by_name"]) if row["linked_by_name"] else None,
-                createdAt=str(row["created_at"]),
-                evidence=evidence,
-            )
-        )
-    return result
 
 
 def _normalize_feishu_mobile(raw_value: str | None) -> str:
@@ -5932,7 +5731,7 @@ class FeishuNotificationService:
                 dedupe_key = f"overdue_digest:{organization_id}:{user_id}:{today_key}"
                 if self._any_dedupe_record(dedupe_key=dedupe_key):
                     continue
-                overdue_tasks = self._collect_newly_overdue_tasks_for_user(
+                overdue_tasks = self._collect_overdue_tasks_for_user(
                     organization_id=organization_id,
                     user_id=user_id,
                     reference_time=current_time,
@@ -5943,10 +5742,11 @@ class FeishuNotificationService:
                 earliest = overdue_tasks[0]["dueText"]
                 card = _build_feishu_readonly_card(
                     template="red",
-                    title=f"逾期提醒｜{len(overdue_tasks)} 项",
-                    headline=f"{user_name}，你有 {len(overdue_tasks)} 项昨天到期的任务仍未完成",
+                    title=f"逾期任务提醒｜{len(overdue_tasks)} 项",
+                    headline=f"{user_name}，你有 {len(overdue_tasks)} 项任务已逾期",
                     core_lines=[
-                        f"最早截止：{earliest}",
+                        f"逾期总数：{len(overdue_tasks)}",
+                        f"最早逾期：{earliest}",
                     ],
                     secondary_blocks=[
                         ("待处理任务", [f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]]),
@@ -5955,9 +5755,9 @@ class FeishuNotificationService:
                 )
                 text = "\n".join(
                     [
-                        "【益语智库】逾期提醒",
-                        f"任务数：{len(overdue_tasks)}",
-                        f"最早截止：{earliest}",
+                        "【益语智库】今日逾期提醒",
+                        f"逾期总数：{len(overdue_tasks)}",
+                        f"最早逾期：{earliest}",
                         *[f"{item['title']}｜截止 {item['dueText']}" for item in overdue_tasks[:5]],
                         "请回到益语智库处理或调整截止时间。",
                     ]
@@ -6306,7 +6106,7 @@ class FeishuNotificationService:
             payload={"changedFields": changed_fields},
         )
 
-    def _collect_newly_overdue_tasks_for_user(self, *, organization_id: str, user_id: str, reference_time: datetime) -> list[dict[str, str]]:
+    def _collect_overdue_tasks_for_user(self, *, organization_id: str, user_id: str, reference_time: datetime) -> list[dict[str, str]]:
         rows = self.state.db.fetchall(
             """
             SELECT DISTINCT t.id, t.title, t.due_date
@@ -6323,7 +6123,8 @@ class FeishuNotificationService:
         overdue: list[dict[str, str]] = []
         for row in rows:
             due_value = str(row["due_date"]) if row["due_date"] else None
-            if not _is_due_date_newly_overdue_by_day(due_value, reference_time.date()):
+            due_dt = _task_datetime_value(due_value)
+            if due_dt is None or due_dt >= reference_time:
                 continue
             overdue.append(
                 {
@@ -6623,51 +6424,6 @@ def _collaboration_summary(collaborators: list[TaskCollaboratorRecord]) -> dict[
     return summary
 
 
-def _task_collaboration_display(
-    *,
-    creator_id: str | None,
-    creator_name: str | None,
-    owner_id: str | None,
-    owner_name: str | None,
-    collaborators: list[TaskCollaboratorRecord],
-    viewer_id: str | None,
-    viewer_status: CollaboratorInboxStatus | None,
-) -> tuple[str | None, str | None, list[str], bool, bool]:
-    collaborator_name_by_id = {
-        str(item.userId or "").strip(): str(item.fullName or "").strip()
-        for item in collaborators
-        if str(item.userId or "").strip() and str(item.fullName or "").strip()
-    }
-    normalized_creator_id = str(creator_id or "").strip()
-    normalized_owner_id = str(owner_id or "").strip()
-    creator_display_name = (
-        str(creator_name or "").strip()
-        or collaborator_name_by_id.get(normalized_creator_id)
-        or None
-    )
-    owner_display_name = (
-        str(owner_name or "").strip()
-        or collaborator_name_by_id.get(normalized_owner_id)
-        or None
-    )
-    pending_participant_names = list(
-        dict.fromkeys(
-            str(item.fullName or "").strip()
-            for item in collaborators
-            if item.inboxStatus == "pending" and str(item.fullName or "").strip()
-        )
-    )
-    viewer_can_confirm = bool(viewer_id and viewer_status == "pending")
-    viewer_can_reject = viewer_can_confirm
-    return (
-        creator_display_name,
-        owner_display_name,
-        pending_participant_names,
-        viewer_can_confirm,
-        viewer_can_reject,
-    )
-
-
 def _parse_date_only(value: str | None) -> datetime.date | None:
     if not value:
         return None
@@ -6698,14 +6454,6 @@ def _is_due_date_overdue_by_day(value: str | None, today: datetime.date | None =
     return due_date < reference_date
 
 
-def _is_due_date_newly_overdue_by_day(value: str | None, today: datetime.date | None = None) -> bool:
-    due_date = _parse_date_only(value)
-    if not due_date:
-        return False
-    reference_date = today or datetime.now().date()
-    return due_date == (reference_date - timedelta(days=1))
-
-
 def _task_tag_record(row) -> TaskTagRecord:
     return TaskTagRecord(
         id=str(row["id"]),
@@ -6724,206 +6472,11 @@ def _task_list_record(row) -> TaskListRecord:
         id=str(row["id"]),
         name=str(row["name"]),
         color=str(row["color"]),
-        description=str(row["description"]) if "description" in row.keys() and row["description"] else None,
         sortOrder=int(row["sort_order"] or 0),
         isDefault=bool(int(row["is_default"] or 0)),
         scope=str(row["scope"] or "org"),
         archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
     )
-
-
-def _normalize_task_list_ids(raw_list_ids: list[str] | None, primary_list_id: str | None = None) -> list[str]:
-    ordered: list[str] = []
-    for candidate in [primary_list_id, *(raw_list_ids or [])]:
-        normalized = str(candidate or "").strip()
-        if normalized and normalized not in ordered:
-            ordered.append(normalized)
-    return ordered
-
-
-def _task_list_rows_by_ids(state: AppState, list_ids: list[str]) -> list:
-    if not list_ids:
-        return []
-    rows = state.db.fetchall(
-        f"SELECT * FROM task_lists WHERE id IN ({_sql_placeholders(list_ids)})",
-        tuple(list_ids),
-    )
-    by_id = {str(row["id"]): row for row in rows}
-    return [by_id[list_id] for list_id in list_ids if list_id in by_id]
-
-
-def _task_list_records_for_task(state: AppState, task_id: str, primary_list_id: str | None = None) -> list[TaskListRecord]:
-    link_rows = state.db.fetchall(
-        """
-        SELECT l.*
-        FROM task_list_links link
-        JOIN task_lists l ON l.id = link.list_id
-        WHERE link.task_id = ?
-        ORDER BY link.order_index ASC, l.sort_order ASC, l.name COLLATE NOCASE ASC
-        """,
-        (task_id,),
-    )
-    if link_rows:
-        return [_task_list_record(row) for row in link_rows]
-    return []
-
-
-def _replace_task_list_links(state: AppState, task_id: str, list_ids: list[str]) -> None:
-    normalized_ids = _normalize_task_list_ids(list_ids)
-    timestamp = now_iso()
-    state.db.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
-    if not normalized_ids:
-        return
-    state.db.executemany(
-        """
-        INSERT INTO task_list_links(task_id, list_id, order_index, created_at, updated_at)
-        VALUES(?, ?, ?, ?, ?)
-        """,
-        [
-            (task_id, list_id, index, timestamp, timestamp)
-            for index, list_id in enumerate(normalized_ids)
-        ],
-    )
-
-
-def _normalize_task_group_template_steps(raw_steps: object) -> list[dict[str, object]]:
-    if not isinstance(raw_steps, list):
-        return []
-    normalized: list[dict[str, object]] = []
-    for item in raw_steps:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or "").strip()
-        if not title:
-            continue
-        raw_days_after = item.get("daysAfterPrevious", item.get("relativeDays", 0))
-        try:
-            days_after_previous = max(0, int(raw_days_after or 0))
-        except (TypeError, ValueError):
-            days_after_previous = 0
-        raw_duration_days = item.get("durationDays")
-        if raw_duration_days is None:
-            raw_duration_minutes = item.get("durationMinutes")
-            try:
-                duration_days = max(0.5, round((float(raw_duration_minutes or 1440) / 1440.0) * 2) / 2)
-            except (TypeError, ValueError):
-                duration_days = 1.0
-        else:
-            try:
-                duration_days = max(0.5, round(float(raw_duration_days) * 2) / 2)
-            except (TypeError, ValueError):
-                duration_days = 1.0
-        collaborator_names: list[str] = []
-        raw_collaborator_names = item.get("collaboratorNames")
-        if isinstance(raw_collaborator_names, list):
-            collaborator_names = [
-                str(name).strip()
-                for name in raw_collaborator_names
-                if str(name).strip()
-            ]
-        collaborator_ids: list[str] = []
-        raw_collaborator_ids = item.get("collaboratorIds")
-        if isinstance(raw_collaborator_ids, list):
-            collaborator_ids = [
-                str(identifier).strip()
-                for identifier in raw_collaborator_ids
-                if str(identifier).strip()
-            ]
-        attachments: list[dict[str, object]] = []
-        raw_attachments = item.get("attachments")
-        if isinstance(raw_attachments, list):
-            for attachment in raw_attachments:
-                if not isinstance(attachment, dict):
-                    continue
-                name = str(attachment.get("name") or "").strip()
-                if not name:
-                    continue
-                next_attachment: dict[str, object] = {"name": name}
-                size = attachment.get("size")
-                try:
-                    if size is not None:
-                        next_attachment["size"] = int(size)
-                except (TypeError, ValueError):
-                    pass
-                attachments.append(next_attachment)
-        normalized.append(
-            {
-                "title": title,
-                "description": str(item.get("description") or "").strip(),
-                "daysAfterPrevious": days_after_previous,
-                "durationDays": duration_days,
-                "priority": "high" if str(item.get("priority") or "").strip().lower() == "high" else "normal",
-                "ownerId": str(item.get("ownerId") or "").strip() or None,
-                "ownerName": str(item.get("ownerName") or "").strip() or None,
-                "collaboratorIds": collaborator_ids,
-                "collaboratorNames": collaborator_names,
-                "attachments": attachments,
-            }
-        )
-    return normalized
-
-
-def _task_group_template_record(row) -> TaskGroupTemplateRecord:
-    scope = str(row["scope"] or "organization")
-    work_object_id = str(row["work_object_id"]) if row["work_object_id"] else None
-    return TaskGroupTemplateRecord(
-        id=str(row["id"]),
-        name=str(row["name"] or ""),
-        scenarioDesc=str(row["scenario_desc"] or ""),
-        scope="organization" if scope == "organization" else "local",
-        workObjectId=work_object_id,
-        clientId=work_object_id,
-        legacyModuleId=str(row["legacy_module_id"]) if row["legacy_module_id"] else None,
-        steps=_normalize_task_group_template_steps(from_json(row["steps_json"], [])),  # type: ignore[arg-type]
-        createdAt=str(row["created_at"] or now_iso()),
-        updatedAt=str(row["updated_at"] or row["created_at"] or now_iso()),
-    )
-
-
-def _migrate_legacy_task_group_templates(state: AppState, organization_id: str) -> None:
-    try:
-        legacy_rows = state.db.fetchall(
-            """
-            SELECT id, client_id, name, goal, template_tasks_json, created_at, updated_at
-            FROM project_modules
-            WHERE organization_id = ? AND template_tasks_json IS NOT NULL AND TRIM(template_tasks_json) != ''
-            ORDER BY updated_at DESC, created_at DESC
-            """,
-            (organization_id,),
-        )
-    except sqlite3.OperationalError:
-        legacy_rows = []
-    for legacy_row in legacy_rows:
-        legacy_module_id = str(legacy_row["id"])
-        existing = state.db.fetchone(
-            "SELECT id FROM task_group_templates WHERE organization_id = ? AND legacy_module_id = ?",
-            (organization_id, legacy_module_id),
-        )
-        if existing:
-            continue
-        parsed = from_json(legacy_row["template_tasks_json"], {})
-        steps = _normalize_task_group_template_steps(parsed.get("tasks") if isinstance(parsed, dict) else [])
-        if not steps:
-            continue
-        timestamp = str(legacy_row["updated_at"] or legacy_row["created_at"] or now_iso())
-        state.db.execute(
-            """
-            INSERT INTO task_group_templates(
-                id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at
-            ) VALUES(?, ?, 'organization', ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_id("tgtpl"),
-                organization_id,
-                str(legacy_row["client_id"]) if legacy_row["client_id"] else None,
-                str(legacy_row["name"] or "未命名任务组模板"),
-                str(legacy_row["goal"] or ""),
-                to_json(steps),
-                legacy_module_id,
-                str(legacy_row["created_at"] or timestamp),
-                timestamp,
-            ),
-        )
 
 
 def _default_list_id(state: AppState, organization_id: str) -> str | None:
@@ -6942,7 +6495,7 @@ def _default_list_id(state: AppState, organization_id: str) -> str | None:
 
 def _default_task_settings(state: AppState, current_user: SessionUser) -> TaskSettingsRecord:
     return TaskSettingsRecord(
-        defaultListId=None,
+        defaultListId=_default_list_id(state, current_user.organizationId),
         defaultPriority="normal",
         defaultDueDatePreset="today",
         defaultViewMode="list",
@@ -7187,36 +6740,13 @@ def _task_note_text(state: AppState, task_id: str) -> str | None:
     return str(note_row["note"]) if note_row and note_row["note"] else None
 
 
-def _task_record(
-    state: AppState,
-    row,
-    viewer_id: str | None = None,
-    *,
-    include_expense_evidence_links: bool = False,
-) -> TaskRecord:
+def _task_record(state: AppState, row, viewer_id: str | None = None) -> TaskRecord:
     creator = _get_user_or_404(state, str(row["creator_id"]))
     owner = _get_user_or_404(state, str(row["owner_id"])) if row["owner_id"] else None
-    normalized_list_id = str(row["list_id"]) if row["list_id"] else ""
-    list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (normalized_list_id,)) if normalized_list_id else None
-    list_records = _task_list_records_for_task(state, str(row["id"]), normalized_list_id)
+    list_row = state.db.fetchone("SELECT name, color FROM task_lists WHERE id = ?", (str(row["list_id"]),))
     collaborators = _collaborators_for_task(state, str(row["id"]))
     attachments = _task_attachments_for_task(state, str(row["id"]))
     viewer_status = next((item.inboxStatus for item in collaborators if item.userId == viewer_id), None)
-    (
-        creator_display_name,
-        owner_display_name,
-        pending_participant_names,
-        viewer_can_confirm,
-        viewer_can_reject,
-    ) = _task_collaboration_display(
-        creator_id=str(row["creator_id"]) if row["creator_id"] else None,
-        creator_name=str(creator["full_name"]) if creator and creator["full_name"] else None,
-        owner_id=str(row["owner_id"]) if row["owner_id"] else None,
-        owner_name=str(owner["full_name"]) if owner and owner["full_name"] else None,
-        collaborators=collaborators,
-        viewer_id=viewer_id,
-        viewer_status=viewer_status,
-    )
     org_link_row = _task_org_link_row(state, str(row["id"]))
     task_plan_link_row = _task_plan_link_row(state, str(row["id"]))
     rule_row = None
@@ -7278,20 +6808,14 @@ def _task_record(
         description=str(row["description"]),
         creatorId=str(row["creator_id"]),
         creatorName=str(creator["full_name"]),
-        creatorDisplayName=creator_display_name,
-        listName=str(list_row["name"]) if list_row else "",
-        listColor=str(list_row["color"]) if list_row else "",
-        listIds=[item.id for item in list_records],
-        listNames=[item.name for item in list_records],
+        listName=str(list_row["name"]) if list_row else "收集箱",
+        listColor=str(list_row["color"]) if list_row else "#888681",
         ownerId=str(row["owner_id"]) if row["owner_id"] else None,
         ownerName=str(owner["full_name"]) if owner else None,
-        ownerDisplayName=owner_display_name,
         startDate=str(row["start_date"]) if row["start_date"] else None,
         dueDate=row["due_date"],
         durationMinutes=int(row["duration_minutes"] or 60),
         scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),
-        workObjectId=str(row["client_id"]) if row["client_id"] else None,
-        workObjectName=client_name,
         clientId=str(row["client_id"]) if row["client_id"] else None,
         clientName=client_name,
         eventLineId=str(row["event_line_id"]) if row["event_line_id"] else None,
@@ -7299,7 +6823,7 @@ def _task_record(
         projectModuleId=str(row["project_module_id"]) if row["project_module_id"] else None,
         projectFlowId=str(row["project_flow_id"]) if row["project_flow_id"] else None,
         priority=str(row["priority"]),
-        listId=normalized_list_id,
+        listId=str(row["list_id"]),
         progressStatus=str(row["progress_status"]),
         sourceType=str(row["source_type"]),
         sourceId=row["source_id"],
@@ -7312,13 +6836,9 @@ def _task_record(
         evidenceCount=max(evidence_count, len(attachments)),
         tags=[_task_tag_record(tr) for tr in _tag_rows_by_ids(state, [str(i) for i in from_json(row["tag_ids_json"], []) if i])] if row["tag_ids_json"] else [],
         attachments=attachments,
-        expenseEvidenceLinks=_task_expense_link_records(state, str(row["id"])) if include_expense_evidence_links else [],
         collaborators=collaborators,
         collaborationSummary=_collaboration_summary(collaborators),
-        pendingParticipantNames=pending_participant_names,
         viewerInboxStatus=viewer_status,
-        viewerCanConfirm=viewer_can_confirm,
-        viewerCanReject=viewer_can_reject,
         orgContext=org_context,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
@@ -7470,8 +6990,7 @@ def _task_metrics_for_user(state: AppState, user_id: str) -> dict[str, int]:
         SELECT DISTINCT t.id, t.progress_status, t.due_date
         FROM tasks t
         LEFT JOIN task_collaborators tc ON tc.task_id = t.id
-        WHERE COALESCE(t.source_type, '') != 'event_line_notification'
-          AND (t.creator_id = ? OR t.owner_id = ? OR tc.user_id = ?)
+        WHERE t.creator_id = ? OR t.owner_id = ? OR tc.user_id = ?
         """,
         (user_id, user_id, user_id),
     )
@@ -7592,7 +7111,6 @@ def _visible_tasks_for_user(state: AppState, current_user: SessionUser) -> list[
         FROM tasks t
         LEFT JOIN task_collaborators tc ON tc.task_id = t.id
         WHERE t.organization_id = ?
-          AND COALESCE(t.source_type, '') != 'event_line_notification'
           AND (t.creator_id = ? OR tc.user_id = ?)
         ORDER BY t.updated_at DESC
         """,
@@ -8236,144 +7754,6 @@ def _dashboard_for_user(state: AppState, current_user: SessionUser, week_label: 
     )
 
 
-def _normalize_org_task_lists(state: AppState, organization_id: str) -> None:
-    timestamp = now_iso()
-    for list_id, name, color, sort_order, is_default in CANONICAL_ORG_TASK_LIST_SPECS:
-        existing = state.db.fetchone(
-            "SELECT id FROM task_lists WHERE organization_id = ? AND id = ?",
-            (organization_id, list_id),
-        )
-        if existing:
-            state.db.execute(
-                """
-                UPDATE task_lists
-                SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = 'org', archived_at = NULL
-                WHERE organization_id = ? AND id = ?
-                """,
-                (name, color, sort_order, is_default, organization_id, list_id),
-            )
-        else:
-            state.db.execute(
-                """
-                INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
-                VALUES(?, ?, ?, ?, ?, ?, 'org', NULL)
-                """,
-                (list_id, organization_id, name, color, sort_order, is_default),
-            )
-
-    def normalized_name(value: str | None) -> str:
-        return " ".join(str(value or "").strip().split()).lower()
-
-    canonical_name_to_id = {
-        normalized_name(name): list_id
-        for list_id, name, _color, _sort_order, _is_default in CANONICAL_ORG_TASK_LIST_SPECS
-    }
-    replacement_map: dict[str, str] = {}
-    removed_ids = set()
-
-    org_rows = state.db.fetchall(
-        """
-        SELECT id, name, sort_order, is_default, archived_at
-        FROM task_lists
-        WHERE organization_id = ? AND scope = 'org'
-        ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
-        """,
-        (organization_id,),
-    )
-    grouped_rows: dict[str, list] = {}
-    for row in org_rows:
-        key = normalized_name(row["name"])
-        if not key:
-            continue
-        grouped_rows.setdefault(key, []).append(row)
-
-    for key, rows in grouped_rows.items():
-        if len(rows) <= 1:
-            continue
-        canonical_id = canonical_name_to_id.get(key)
-        preferred_row = None
-        if canonical_id:
-            preferred_row = next((row for row in rows if str(row["id"]) == canonical_id), None)
-        if preferred_row is None:
-            preferred_row = sorted(
-                rows,
-                key=lambda row: (
-                    0 if bool(int(row["is_default"] or 0)) else 1,
-                    0 if not row["archived_at"] else 1,
-                    int(row["sort_order"] or 0),
-                    str(row["id"]),
-                ),
-            )[0]
-        preferred_id = str(preferred_row["id"])
-        for row in rows:
-            source_id = str(row["id"])
-            if source_id == preferred_id:
-                continue
-            replacement_map[source_id] = preferred_id
-            removed_ids.add(source_id)
-
-    removed_rows = state.db.fetchall(
-        """
-        SELECT id
-        FROM task_lists
-        WHERE organization_id = ?
-          AND (
-            scope = 'personal'
-            OR (
-              scope = 'org'
-              AND (
-                id = 'list-0'
-                OR name = '收集箱'
-                OR name IN (?, ?, ?, ?)
-              )
-            )
-          )
-        """,
-        (organization_id, *LEGACY_PERSONAL_TASK_LIST_NAMES),
-    )
-    for row in removed_rows:
-        source_id = str(row["id"])
-        replacement_map[source_id] = DEFAULT_ORG_TASK_LIST_ID
-        removed_ids.add(source_id)
-
-    for source_id, target_id in replacement_map.items():
-        state.db.execute(
-            "UPDATE tasks SET list_id = ?, updated_at = ? WHERE organization_id = ? AND list_id = ?",
-            (target_id, timestamp, organization_id, source_id),
-        )
-        state.db.execute(
-            "UPDATE task_settings SET default_list_id = NULL WHERE organization_id = ? AND default_list_id = ?",
-            (organization_id, source_id),
-        )
-
-    if removed_ids:
-        placeholders = ", ".join("?" for _ in removed_ids)
-        state.db.execute(
-            f"DELETE FROM task_lists WHERE organization_id = ? AND id IN ({placeholders})",
-            (organization_id, *sorted(removed_ids)),
-        )
-    state.db.execute(
-        "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = 'org' AND id IN (?, ?, ?, ?, ?)",
-        (DEFAULT_ORG_TASK_LIST_ID, organization_id, *CANONICAL_ORG_TASK_LIST_IDS),
-    )
-    state.db.execute(
-        """
-        UPDATE task_settings
-        SET default_list_id = NULL
-        WHERE organization_id = ?
-          AND (
-            default_list_id = ''
-            OR default_list_id = 'list-0'
-            OR default_list_id = ?
-            OR default_list_id NOT IN (
-              SELECT id FROM task_lists WHERE organization_id = ? AND scope = 'org'
-            )
-          )
-        """,
-        (organization_id, DEFAULT_ORG_TASK_LIST_ID, organization_id),
-    )
-
-
 def _backfill_task_tag_ids(state: AppState) -> None:
     timestamp = now_iso()
     state.db.execute(
@@ -8388,14 +7768,12 @@ def _backfill_task_tag_ids(state: AppState) -> None:
         """,
     )
     state.db.execute(
-        "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''",
-        (DEFAULT_ORG_TASK_LIST_ID,),
+        "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
     )
     org_row = state.db.fetchone("SELECT id FROM organizations ORDER BY created_at ASC LIMIT 1")
     if not org_row:
         return
     org_id = str(org_row["id"])
-    _normalize_org_task_lists(state, org_id)
     fallback_user = state.db.fetchone("SELECT * FROM employee_accounts WHERE organization_id = ? ORDER BY created_at ASC LIMIT 1", (org_id,))
     if not fallback_user:
         return
@@ -8563,15 +7941,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    @app.middleware("http")
-    async def _work_object_route_alias_middleware(request: Request, call_next):
-        path = request.scope.get("path", "")
-        if isinstance(path, str) and path.startswith("/api/v1/work-objects"):
-            aliased_path = "/api/v1/clients" + path.removeprefix("/api/v1/work-objects")
-            request.scope["path"] = aliased_path
-            request.scope["raw_path"] = aliased_path.encode("utf-8")
-        return await call_next(request)
 
     data_dir = Path(os.environ.get("YIYU_CLOUD_DATA_DIR", Path.home() / "Library/Application Support/YiyuThinkTankCloud"))
     state = AppState(
@@ -8986,112 +8355,6 @@ def create_app() -> FastAPI:
             validation_message=success_message,
         )
         return _org_feishu_integration_record(state, current_user, request)
-
-    @app.get("/api/v1/org-integrations/dingtalk-finance", response_model=OrgDingtalkFinanceIntegrationRecord)
-    def get_org_dingtalk_finance_integration(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> OrgDingtalkFinanceIntegrationRecord:
-        return _org_dingtalk_finance_integration_record(state, current_user)
-
-    @app.post("/api/v1/org-integrations/dingtalk-finance/validate-and-save", response_model=OrgDingtalkFinanceIntegrationRecord)
-    def validate_and_save_org_dingtalk_finance_integration(
-        payload: OrgDingtalkFinanceIntegrationSavePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> OrgDingtalkFinanceIntegrationRecord:
-        membership = _org_membership_summary(state, current_user)
-        if not membership.hasOrganization or not membership.organizationId:
-            raise HTTPException(status_code=400, detail="钉钉票据导入需要组织信息，请先加入组织或创建组织。")
-
-        existing = state.db.fetchone(
-            "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
-            (membership.organizationId,),
-        )
-        app_key = str(payload.appKey or "").strip() if payload.appKey is not None else str(existing["app_key"] or "") if existing else ""
-        operator_mobile = _normalize_phone_number(
-            payload.operatorMobile if payload.operatorMobile is not None else str(existing["operator_mobile"] or "") if existing else ""
-        )
-        app_secret = ""
-        if existing and existing["app_secret_encrypted"] and not payload.clearAppSecret:
-            try:
-                app_secret = _org_dingtalk_decrypt(
-                    state,
-                    str(existing["app_secret_encrypted"]),
-                    str(existing["encryption_nonce"]),
-                    membership.organizationId,
-                )
-            except Exception:
-                app_secret = ""
-        if payload.appSecret and payload.appSecret.strip():
-            app_secret = payload.appSecret.strip()
-
-        if not app_key:
-            raise HTTPException(status_code=400, detail="请先填写钉钉 AppKey。")
-        if not app_secret:
-            raise HTTPException(status_code=400, detail="请先填写钉钉 AppSecret。")
-        if not operator_mobile:
-            raise HTTPException(status_code=400, detail="请先填写一个有审批查看权限的钉钉手机号。")
-
-        access_token = _dingtalk_fetch_app_access_token(app_key, app_secret)
-        resolved_operator_user_id = _dingtalk_get_user_id_by_mobile(access_token, operator_mobile)
-        manageable_templates = _dingtalk_list_manageable_templates(access_token, resolved_operator_user_id)
-        mapped_names = [item.strip() for item in payload.mappedTemplateNames if item.strip()]
-        if mapped_names:
-            manageable_names = {
-                str(item.get("name") or item.get("templateName") or item.get("processName") or "").strip()
-                for item in manageable_templates
-                if isinstance(item, dict)
-            }
-            missing_names = [name for name in mapped_names if name not in manageable_names]
-            if len(missing_names) == len(mapped_names):
-                raise HTTPException(
-                    status_code=400,
-                    detail="当前操作人在钉钉里找不到这些审批模板，请确认模板名称和审批管理权限。",
-                )
-
-        encrypted_secret, encryption_nonce = _org_dingtalk_encrypt(state, app_secret, membership.organizationId)
-        timestamp = now_iso()
-        message = (
-            f"钉钉财务接入验证成功。当前操作人已识别为 {resolved_operator_user_id}，"
-            f"可管理 {len(manageable_templates)} 个审批模板。"
-        )
-        state.db.execute(
-            """
-            INSERT INTO org_dingtalk_finance_integrations(
-                organization_id, app_key, app_secret_encrypted, encryption_nonce, operator_mobile, resolved_operator_user_id, sync_enabled,
-                mapped_template_names_json, enabled, configured_by, configured_at, updated_at,
-                last_validation_status, last_validation_message
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'success', ?)
-            ON CONFLICT(organization_id) DO UPDATE SET
-                app_key = excluded.app_key,
-                app_secret_encrypted = excluded.app_secret_encrypted,
-                encryption_nonce = excluded.encryption_nonce,
-                operator_mobile = excluded.operator_mobile,
-                resolved_operator_user_id = excluded.resolved_operator_user_id,
-                sync_enabled = excluded.sync_enabled,
-                mapped_template_names_json = excluded.mapped_template_names_json,
-                enabled = 1,
-                configured_by = excluded.configured_by,
-                configured_at = COALESCE(org_dingtalk_finance_integrations.configured_at, excluded.configured_at),
-                updated_at = excluded.updated_at,
-                last_validation_status = excluded.last_validation_status,
-                last_validation_message = excluded.last_validation_message
-            """,
-            (
-                membership.organizationId,
-                app_key,
-                encrypted_secret,
-                encryption_nonce,
-                operator_mobile,
-                resolved_operator_user_id,
-                1 if payload.syncEnabled else 0,
-                to_json(mapped_names),
-                current_user.id,
-                timestamp,
-                timestamp,
-                message,
-            ),
-        )
-        return _org_dingtalk_finance_integration_record(state, current_user)
 
     @app.get("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
     def get_feishu_delivery_profile(
@@ -9527,7 +8790,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def get_org_model_profile(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> OrgModelProfileRecord:
         return _get_org_model_profile(state, current_user.organizationId)
 
@@ -9537,41 +8800,6 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
     ) -> OrgModelProfileRecord:
         return _save_org_model_profile(state, current_user, payload)
-
-    @app.get("/api/v1/settings/work-object-terminology", response_model=WorkObjectTerminologyStateRecord)
-    def get_work_object_terminology(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> WorkObjectTerminologyStateRecord:
-        organization = _org_profile_record(state, current_user.organizationId)
-        return WorkObjectTerminologyStateRecord(
-            localMode=None,
-            organizationMode=organization.workObjectMode,
-            effectiveMode=organization.workObjectMode,
-            source="organization",
-            lockedByOrganization=True,
-            needsOnboarding=False,
-            updatedAt=organization.updatedAt,
-        )
-
-    @app.post("/api/v1/settings/work-object-terminology", response_model=WorkObjectTerminologyStateRecord)
-    def update_work_object_terminology(
-        payload: WorkObjectTerminologyUpdatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
-    ) -> WorkObjectTerminologyStateRecord:
-        state.db.execute(
-            "UPDATE org_profiles SET work_object_mode = ?, updated_at = ? WHERE organization_id = ?",
-            (payload.mode, now_iso(), current_user.organizationId),
-        )
-        organization = _org_profile_record(state, current_user.organizationId)
-        return WorkObjectTerminologyStateRecord(
-            localMode=None,
-            organizationMode=organization.workObjectMode,
-            effectiveMode=organization.workObjectMode,
-            source="organization",
-            lockedByOrganization=True,
-            needsOnboarding=False,
-            updatedAt=organization.updatedAt,
-        )
 
     @app.post("/api/v1/settings/org-model/backfill-task-links", response_model=TaskOrgBackfillResultRecord)
     def backfill_org_task_links(
@@ -9601,7 +8829,7 @@ def create_app() -> FastAPI:
             """,
             (current_user.organizationId,),
         )
-        return [_event_line_record(state, row) for row in rows if _can_view_event_line(state, row, current_user)]
+        return [_event_line_record(state, row) for row in rows]
 
     @app.get("/api/v1/clients", response_model=list[ClientSummaryRecord])
     def list_clients(
@@ -9618,694 +8846,103 @@ def create_app() -> FastAPI:
         )
         return [_client_summary_record(row) for row in rows]
 
-    @app.get("/api/v1/work-objects/{work_object_id}/expense-evidences", response_model=list[ExpenseEvidenceRecord])
-    def list_expense_evidences(
-        work_object_id: str,
-        query: str = Query(default=""),
-        limit: int = Query(default=50, ge=1, le=200),
+    @app.get("/api/v1/mobile/capabilities", response_model=MobileCapabilityRecord)
+    def get_mobile_capabilities(
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> list[ExpenseEvidenceRecord]:
-        _client_row_by_id(state, work_object_id, current_user.organizationId)
-        rows = state.db.fetchall(
-            """
-            SELECT *
-            FROM expense_evidences
-            WHERE organization_id = ?
-              AND work_object_id = ?
-              AND (
-                ? = ''
-                OR display_title LIKE ?
-                OR source_title LIKE ?
-                OR applicant_user_name LIKE ?
-                OR normalized_category LIKE ?
-              )
-            ORDER BY COALESCE(approved_at, submitted_at, updated_at) DESC, updated_at DESC
-            LIMIT ?
-            """,
-            (
-                current_user.organizationId,
-                work_object_id,
-                query.strip(),
-                f"%{query.strip()}%",
-                f"%{query.strip()}%",
-                f"%{query.strip()}%",
-                f"%{query.strip()}%",
-                limit,
-            ),
-        )
-        return [_expense_evidence_record(state, row) for row in rows]
+    ) -> MobileCapabilityRecord:
+        return _build_mobile_capabilities(state, current_user)
 
-    @app.post("/api/v1/work-objects/{work_object_id}/expense-evidences/import-search", response_model=ExpenseImportSearchResponse)
-    def search_importable_expense_evidences(
-        work_object_id: str,
-        payload: ExpenseImportSearchPayload,
+    @app.get("/api/v1/clients/{client_id}/workspace", response_model=MobileWorkspaceCompatResponse)
+    def get_mobile_client_workspace(
+        client_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> ExpenseImportSearchResponse:
-        _client_row_by_id(state, work_object_id, current_user.organizationId)
-        integration = state.db.fetchone(
-            "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
-            (current_user.organizationId,),
-        )
-        if not integration or not bool(integration["enabled"]):
-            return ExpenseImportSearchResponse(
-                items=[],
-                total=0,
-                message="当前组织尚未接通钉钉财务，因此这里只能返回空结果。接通后，这里将承接票据元数据搜索与导入。",
-            )
-        app_key = str(integration["app_key"] or "").strip()
-        app_secret = _org_dingtalk_decrypt(
-            state,
-            str(integration["app_secret_encrypted"] or ""),
-            str(integration["encryption_nonce"] or ""),
-            current_user.organizationId,
-        )
-        operator_user_id = str(integration["resolved_operator_user_id"] or "").strip()
-        if not app_key or not app_secret or not operator_user_id:
-            raise HTTPException(status_code=400, detail="当前组织的钉钉财务接入尚未完成完整验证，请先回系统设置重新验证保存。")
+    ) -> MobileWorkspaceCompatResponse:
+        client_row = _client_row_or_404(state, client_id, current_user.organizationId)
+        return _build_workspace_compat_response(state, client_row, current_user.organizationId)
 
-        access_token = _dingtalk_fetch_app_access_token(app_key, app_secret)
-        manageable_templates = _dingtalk_list_manageable_templates(access_token, operator_user_id)
-        mapped_names = [str(item).strip() for item in from_json(integration["mapped_template_names_json"], []) if str(item).strip()]
-        selected_templates = manageable_templates
-        if mapped_names:
-            selected_templates = [
-                item
-                for item in manageable_templates
-                if str(item.get("name") or item.get("templateName") or item.get("processName") or "").strip() in mapped_names
-            ]
-
-        query_text = payload.query.strip().lower()
-        applicant_query = payload.applicantUserName.strip().lower()
-        submitted_from = payload.submittedFrom or (datetime.now() - timedelta(days=180)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        submitted_to = payload.submittedTo or datetime.now().replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
-        start_time_ms = int(datetime.fromisoformat(submitted_from).timestamp() * 1000)
-        end_time_ms = int(datetime.fromisoformat(submitted_to).timestamp() * 1000)
-        desired_limit = max(1, min(payload.limit, 100))
-        collected_rows: list[dict[str, object]] = []
-
-        for template in selected_templates[:12]:
-            process_code = str(template.get("processCode") or template.get("process_code") or "").strip()
-            if not process_code:
-                continue
-            template_name = str(template.get("name") or template.get("templateName") or template.get("processName") or "").strip() or None
-            instance_ids = _dingtalk_list_process_instance_ids(
-                access_token,
-                process_code=process_code,
-                operator_user_id=operator_user_id,
-                start_time_ms=start_time_ms,
-                end_time_ms=end_time_ms,
-                size=min(max(desired_limit * 2, 20), 60),
-            )
-            for process_instance_id in instance_ids:
-                detail = _dingtalk_get_process_instance_detail(access_token, process_instance_id)
-                normalized = _dingtalk_normalize_import_source(
-                    detail,
-                    organization_id=current_user.organizationId,
-                    process_instance_id=process_instance_id,
-                    source_template_code=process_code,
-                    source_template_name=template_name,
-                )
-                haystack = " ".join(
-                    [
-                        str(normalized.get("source_title") or ""),
-                        str(normalized.get("applicant_user_name") or ""),
-                        str(normalized.get("source_template_name") or ""),
-                    ]
-                ).lower()
-                if query_text and query_text not in haystack:
-                    continue
-                if applicant_query and applicant_query not in str(normalized.get("applicant_user_name") or "").lower():
-                    continue
-                if payload.approvalStatus and str(normalized.get("approval_status") or "") != payload.approvalStatus:
-                    continue
-                collected_rows.append(normalized)
-                if len(collected_rows) >= desired_limit:
-                    break
-            if len(collected_rows) >= desired_limit:
-                break
-
-        timestamp = now_iso()
-        upserted_ids: list[str] = []
-        for item in collected_rows:
-            existing_source = state.db.fetchone(
-                """
-                SELECT id, imported_evidence_id
-                FROM expense_import_sources
-                WHERE organization_id = ? AND source_system = 'dingtalk_finance' AND source_instance_id = ?
-                """,
-                (current_user.organizationId, str(item["source_instance_id"])),
-            )
-            source_id = str(existing_source["id"]) if existing_source else new_id("expense_src")
-            state.db.execute(
-                """
-                INSERT INTO expense_import_sources(
-                    id, organization_id, source_system, source_instance_id, source_template_code, source_template_name,
-                    source_title, applicant_user_name, amount, currency, submitted_at, approved_at, approval_status,
-                    source_url, raw_payload_json, imported_evidence_id, last_imported_at, created_at, updated_at
-                ) VALUES(?, ?, 'dingtalk_finance', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-                ON CONFLICT(organization_id, source_system, source_instance_id) DO UPDATE SET
-                    source_template_code = excluded.source_template_code,
-                    source_template_name = excluded.source_template_name,
-                    source_title = excluded.source_title,
-                    applicant_user_name = excluded.applicant_user_name,
-                    amount = excluded.amount,
-                    currency = excluded.currency,
-                    submitted_at = excluded.submitted_at,
-                    approved_at = excluded.approved_at,
-                    approval_status = excluded.approval_status,
-                    source_url = excluded.source_url,
-                    raw_payload_json = excluded.raw_payload_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    source_id,
-                    current_user.organizationId,
-                    str(item["source_instance_id"]),
-                    item.get("source_template_code"),
-                    item.get("source_template_name"),
-                    str(item["source_title"]),
-                    str(item.get("applicant_user_name") or ""),
-                    item.get("amount"),
-                    str(item.get("currency") or "CNY"),
-                    item.get("submitted_at"),
-                    item.get("approved_at"),
-                    str(item.get("approval_status") or "unknown"),
-                    item.get("source_url"),
-                    item.get("raw_payload_json"),
-                    str(existing_source["imported_evidence_id"]) if existing_source and existing_source["imported_evidence_id"] else None,
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            upserted_ids.append(source_id)
-
-        rows = state.db.fetchall(
-            f"""
-            SELECT *
-            FROM expense_import_sources
-            WHERE organization_id = ?
-              AND id IN ({",".join("?" for _ in upserted_ids) if upserted_ids else "''"})
-            ORDER BY COALESCE(approved_at, submitted_at, updated_at) DESC, updated_at DESC
-            """,
-            (current_user.organizationId, *upserted_ids) if upserted_ids else (current_user.organizationId,),
-        )
-        items = [_expense_import_source_record(row) for row in rows][:desired_limit]
-        message = None
-        if not items:
-            message = "这次没有从钉钉里搜到匹配的审批记录，请缩小时间范围、检查模板映射或确认当前操作人的审批权限。"
-        return ExpenseImportSearchResponse(items=items, total=len(items), message=message)
-
-    @app.post("/api/v1/work-objects/{work_object_id}/expense-evidences/import", response_model=ExpenseEvidenceImportResult)
-    def import_expense_evidences(
-        work_object_id: str,
-        payload: ExpenseEvidenceImportPayload,
+    @app.get("/api/v1/clients/{client_id}/strategic-cockpit", response_model=MobileStrategicCockpitCompatResponse)
+    def get_mobile_client_strategic_cockpit(
+        client_id: str,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> ExpenseEvidenceImportResult:
-        _client_row_by_id(state, work_object_id, current_user.organizationId)
-        timestamp = now_iso()
-        imported: list[ExpenseEvidenceRecord] = []
-        skipped = 0
+    ) -> MobileStrategicCockpitCompatResponse:
+        client_row = _client_row_or_404(state, client_id, current_user.organizationId)
+        return _build_cockpit_compat_response(state, client_row, current_user.organizationId)
+
+    @app.post("/api/v1/mobile/knowledge-mirror/publish", response_model=CloudKnowledgeMirrorPublishResultRecord)
+    def publish_mobile_knowledge_mirror(
+        payload: CloudKnowledgeMirrorPublishPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> CloudKnowledgeMirrorPublishResultRecord:
+        if not payload.items:
+            raise HTTPException(status_code=400, detail="至少需要一条知识快照。")
+
+        published_at = now_iso()
+        client_ids: set[str] = set()
+        source_types: set[str] = set()
+        published_count = 0
 
         for item in payload.items:
-            existing_row = state.db.fetchone(
-                """
-                SELECT *
-                FROM expense_evidences
-                WHERE organization_id = ? AND source_system = 'dingtalk_finance' AND source_instance_id = ?
-                """,
-                (current_user.organizationId, item.sourceInstanceId),
+            client_row = _client_row_or_404(state, item.clientId, current_user.organizationId)
+            _upsert_cloud_mirror_item(
+                state,
+                organization_id=current_user.organizationId,
+                client_id=str(client_row["id"]),
+                source_type=item.sourceType,
+                source_id=item.sourceId,
+                snapshot_version=item.snapshotVersion,
+                snapshot_hash=item.snapshotHash,
+                updated_at=item.updatedAt,
+                published_at=item.publishedAt or published_at,
+                payload=item.payload,
+                evidence_refs=item.evidenceRefs,
             )
-            evidence_id = str(existing_row["id"]) if existing_row else new_id("expense")
-            display_title = (item.displayTitle or "").strip() or item.sourceTitle.strip()
-            normalized_category = (item.normalizedCategory or "").strip() or None
-            summary = item.summary.strip()
-            tags = [tag.strip() for tag in item.tags if tag.strip()]
-            state.db.execute(
-                """
-                INSERT INTO expense_evidences(
-                    id, organization_id, work_object_id, source_system, source_instance_id, source_template_code,
-                    source_template_name, source_title, display_title, applicant_user_name, amount, currency,
-                    submitted_at, approved_at, approval_status, source_url, normalized_category, tags_json,
-                    summary, last_imported_at, created_by_user_id, updated_by_user_id, created_at, updated_at
-                ) VALUES(?, ?, ?, 'dingtalk_finance', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    work_object_id = excluded.work_object_id,
-                    source_template_code = excluded.source_template_code,
-                    source_template_name = excluded.source_template_name,
-                    source_title = excluded.source_title,
-                    display_title = excluded.display_title,
-                    applicant_user_name = excluded.applicant_user_name,
-                    amount = excluded.amount,
-                    currency = excluded.currency,
-                    submitted_at = excluded.submitted_at,
-                    approved_at = excluded.approved_at,
-                    approval_status = excluded.approval_status,
-                    source_url = excluded.source_url,
-                    normalized_category = excluded.normalized_category,
-                    tags_json = excluded.tags_json,
-                    summary = excluded.summary,
-                    last_imported_at = excluded.last_imported_at,
-                    updated_by_user_id = excluded.updated_by_user_id,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    evidence_id,
-                    current_user.organizationId,
-                    work_object_id,
-                    item.sourceInstanceId,
-                    item.sourceTemplateCode,
-                    item.sourceTemplateName,
-                    item.sourceTitle.strip(),
-                    display_title,
-                    item.applicantUserName.strip(),
-                    item.amount,
-                    item.currency.strip() or "CNY",
-                    item.submittedAt,
-                    item.approvedAt,
-                    item.approvalStatus.strip() or "unknown",
-                    item.sourceUrl,
-                    normalized_category,
-                    to_json(tags),
-                    summary,
-                    timestamp,
-                    current_user.id if not existing_row else str(existing_row["created_by_user_id"] or current_user.id),
-                    current_user.id,
-                    str(existing_row["created_at"]) if existing_row and existing_row["created_at"] else timestamp,
-                    timestamp,
-                ),
-            )
-            state.db.execute(
-                """
-                INSERT INTO expense_import_sources(
-                    id, organization_id, source_system, source_instance_id, source_template_code, source_template_name,
-                    source_title, applicant_user_name, amount, currency, submitted_at, approved_at, approval_status,
-                    source_url, raw_payload_json, imported_evidence_id, last_imported_at, created_at, updated_at
-                ) VALUES(?, ?, 'dingtalk_finance', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(organization_id, source_system, source_instance_id) DO UPDATE SET
-                    source_template_code = excluded.source_template_code,
-                    source_template_name = excluded.source_template_name,
-                    source_title = excluded.source_title,
-                    applicant_user_name = excluded.applicant_user_name,
-                    amount = excluded.amount,
-                    currency = excluded.currency,
-                    submitted_at = excluded.submitted_at,
-                    approved_at = excluded.approved_at,
-                    approval_status = excluded.approval_status,
-                    source_url = excluded.source_url,
-                    raw_payload_json = excluded.raw_payload_json,
-                    imported_evidence_id = excluded.imported_evidence_id,
-                    last_imported_at = excluded.last_imported_at,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    new_id("expense_src"),
-                    current_user.organizationId,
-                    item.sourceInstanceId,
-                    item.sourceTemplateCode,
-                    item.sourceTemplateName,
-                    item.sourceTitle.strip(),
-                    item.applicantUserName.strip(),
-                    item.amount,
-                    item.currency.strip() or "CNY",
-                    item.submittedAt,
-                    item.approvedAt,
-                    item.approvalStatus.strip() or "unknown",
-                    item.sourceUrl,
-                    to_json(item.rawPayload),
-                    evidence_id,
-                    timestamp,
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            for attachment in item.attachments:
-                existing_attachment = state.db.fetchone(
-                    """
-                    SELECT id
-                    FROM expense_evidence_attachments
-                    WHERE expense_evidence_id = ?
-                      AND COALESCE(source_file_id, '') = ?
-                      AND file_name = ?
-                    """,
-                    (evidence_id, attachment.sourceFileId or "", attachment.fileName),
-                )
-                attachment_id = str(existing_attachment["id"]) if existing_attachment else new_id("expense_att")
-                state.db.execute(
-                    """
-                    INSERT INTO expense_evidence_attachments(
-                        id, expense_evidence_id, source_file_id, source_space_id, source_file_type, file_name, mime_type, size_bytes, download_status,
-                        ocr_status, ocr_summary, storage_path, preview_url, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'not_fetched', 'pending', NULL, NULL, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        source_file_id = excluded.source_file_id,
-                        source_space_id = excluded.source_space_id,
-                        source_file_type = excluded.source_file_type,
-                        file_name = excluded.file_name,
-                        mime_type = excluded.mime_type,
-                        size_bytes = excluded.size_bytes,
-                        preview_url = excluded.preview_url,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        attachment_id,
-                        evidence_id,
-                        attachment.sourceFileId,
-                        attachment.sourceSpaceId,
-                        attachment.sourceFileType,
-                        attachment.fileName.strip(),
-                        attachment.mimeType,
-                        max(int(attachment.sizeBytes or 0), 0),
-                        attachment.previewUrl,
-                        str(existing_row["created_at"]) if existing_row and existing_row["created_at"] else timestamp,
-                        timestamp,
-                    ),
-                )
-            evidence_row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (evidence_id,))
-            if evidence_row:
-                imported.append(_expense_evidence_record(state, evidence_row, include_attachments=True))
-            else:
-                skipped += 1
+            client_ids.add(item.clientId)
+            source_types.add(item.sourceType)
+            published_count += 1
 
-        return ExpenseEvidenceImportResult(imported=imported, importedCount=len(imported), skippedCount=skipped)
-
-    @app.get("/api/v1/expense-evidences/{evidence_id}", response_model=ExpenseEvidenceRecord)
-    def get_expense_evidence(
-        evidence_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> ExpenseEvidenceRecord:
-        row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?", (evidence_id, current_user.organizationId))
-        if not row:
-            raise HTTPException(status_code=404, detail="票据记录不存在。")
-        return _expense_evidence_record(state, row, include_attachments=True)
-
-    @app.patch("/api/v1/expense-evidences/{evidence_id}", response_model=ExpenseEvidenceRecord)
-    def update_expense_evidence(
-        evidence_id: str,
-        payload: ExpenseEvidenceUpdatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> ExpenseEvidenceRecord:
-        row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?", (evidence_id, current_user.organizationId))
-        if not row:
-            raise HTTPException(status_code=404, detail="票据记录不存在。")
-        merged_work_object_id = payload.workObjectId if "workObjectId" in payload.model_fields_set else row["work_object_id"]
-        if merged_work_object_id:
-            _client_row_by_id(state, str(merged_work_object_id), current_user.organizationId)
-        state.db.execute(
-            """
-            UPDATE expense_evidences
-            SET work_object_id = ?, display_title = ?, normalized_category = ?, tags_json = ?, summary = ?, updated_by_user_id = ?, updated_at = ?
-            WHERE id = ? AND organization_id = ?
-            """,
-            (
-                merged_work_object_id,
-                (payload.displayTitle if "displayTitle" in payload.model_fields_set and payload.displayTitle is not None else str(row["display_title"])).strip(),
-                (payload.normalizedCategory if "normalizedCategory" in payload.model_fields_set else row["normalized_category"]) or None,
-                to_json(payload.tags if payload.tags is not None else from_json(row["tags_json"], [])),
-                (payload.summary if "summary" in payload.model_fields_set and payload.summary is not None else str(row["summary"] or "")).strip(),
-                current_user.id,
-                now_iso(),
-                evidence_id,
-                current_user.organizationId,
-            ),
-        )
-        refreshed = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (evidence_id,))
-        return _expense_evidence_record(state, refreshed, include_attachments=True)
-
-    @app.post("/api/v1/expense-evidences/{evidence_id}/attachments/fetch", response_model=ExpenseEvidenceRecord)
-    def fetch_expense_evidence_attachments(
-        evidence_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> ExpenseEvidenceRecord:
-        row = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?", (evidence_id, current_user.organizationId))
-        if not row:
-            raise HTTPException(status_code=404, detail="票据记录不存在。")
-        integration = state.db.fetchone(
-            "SELECT * FROM org_dingtalk_finance_integrations WHERE organization_id = ?",
-            (current_user.organizationId,),
-        )
-        if not integration or not bool(integration["enabled"]):
-            raise HTTPException(status_code=400, detail="当前组织尚未接通钉钉财务，无法抓取票据附件。")
-        app_key = str(integration["app_key"] or "").strip()
-        app_secret = _org_dingtalk_decrypt(
+        _log_audit(
             state,
-            str(integration["app_secret_encrypted"] or ""),
-            str(integration["encryption_nonce"] or ""),
-            current_user.organizationId,
+            "mobile.knowledge_mirror_published",
+            actor_user_id=current_user.id,
+            target_user_id=None,
+            detail={
+                "publishedCount": published_count,
+                "clientIds": sorted(client_ids),
+                "sourceTypes": sorted(source_types),
+            },
         )
-        if not app_key or not app_secret:
-            raise HTTPException(status_code=400, detail="当前组织的钉钉财务密钥不完整，请先回系统设置重新验证保存。")
-        access_token = _dingtalk_fetch_app_access_token(app_key, app_secret)
-        timestamp = now_iso()
-        attachment_rows = state.db.fetchall(
-            "SELECT * FROM expense_evidence_attachments WHERE expense_evidence_id = ? ORDER BY created_at ASC",
-            (evidence_id,),
+        return CloudKnowledgeMirrorPublishResultRecord(
+            publishedCount=published_count,
+            clientIds=sorted(client_ids),
+            sourceTypes=sorted(source_types),
+            publishedAt=published_at,
         )
-        attachment_dir = state.data_dir / "expense-evidence-attachments" / current_user.organizationId / evidence_id
-        attachment_dir.mkdir(parents=True, exist_ok=True)
-        for attachment_row in attachment_rows:
-            attachment_id = str(attachment_row["id"])
-            file_name = str(attachment_row["file_name"] or "未命名附件")
-            source_file_id = str(attachment_row["source_file_id"] or "").strip()
-            mime_type = str(attachment_row["mime_type"] or "") or mimetypes.guess_type(file_name)[0] or "application/octet-stream"
-            if not source_file_id:
-                state.db.execute(
-                    """
-                    UPDATE expense_evidence_attachments
-                    SET download_status = 'failed',
-                        ocr_status = 'skipped',
-                        ocr_summary = '钉钉未返回可下载的 fileId',
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (timestamp, attachment_id),
-                )
-                continue
-            try:
-                download_uri = _dingtalk_fetch_attachment_download_uri(
-                    access_token,
-                    process_instance_id=str(row["source_instance_id"]),
-                    file_id=source_file_id,
-                )
-                content = _dingtalk_download_attachment_bytes(download_uri)
-                safe_name = safe_filename(file_name)
-                target_path = attachment_dir / f"{attachment_id}_{safe_name}"
-                target_path.write_bytes(content)
-                relative_path = str(target_path.relative_to(state.data_dir))
-                preview_url = _expense_evidence_attachment_public_url(attachment_id)
-                ocr_status = "skipped"
-                ocr_summary = None
-                if mime_type.startswith("image/"):
-                    ocr_status, ocr_summary = _ocr_expense_image_attachment(state, target_path, mime_type)
-                state.db.execute(
-                    """
-                    UPDATE expense_evidence_attachments
-                    SET mime_type = ?,
-                        size_bytes = ?,
-                        download_status = 'fetched',
-                        ocr_status = ?,
-                        ocr_summary = ?,
-                        storage_path = ?,
-                        preview_url = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        mime_type,
-                        len(content),
-                        ocr_status,
-                        ocr_summary,
-                        relative_path,
-                        preview_url,
-                        timestamp,
-                        attachment_id,
-                    ),
-                )
-            except Exception as exc:
-                state.db.execute(
-                    """
-                    UPDATE expense_evidence_attachments
-                    SET download_status = 'failed',
-                        ocr_status = 'failed',
-                        ocr_summary = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (str(exc), timestamp, attachment_id),
-                )
-        refreshed = state.db.fetchone("SELECT * FROM expense_evidences WHERE id = ?", (evidence_id,))
-        return _expense_evidence_record(state, refreshed, include_attachments=True)
-
-    @app.get("/api/v1/event-lines/{event_line_id}/expense-evidences", response_model=list[EventLineExpenseEvidenceLinkRecord])
-    def list_event_line_expense_evidences(
-        event_line_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> list[EventLineExpenseEvidenceLinkRecord]:
-        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        return _event_line_expense_link_records(state, event_line_id)
-
-    @app.post("/api/v1/event-lines/{event_line_id}/expense-evidences/link", response_model=EventLineExpenseEvidenceLinkRecord)
-    def link_expense_evidence_to_event_line(
-        event_line_id: str,
-        payload: EventLineExpenseEvidenceLinkPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> EventLineExpenseEvidenceLinkRecord:
-        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        evidence_row = state.db.fetchone(
-            "SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?",
-            (payload.evidenceId, current_user.organizationId),
-        )
-        if not evidence_row:
-            raise HTTPException(status_code=404, detail="票据记录不存在。")
-        link_row = state.db.fetchone(
-            "SELECT * FROM event_line_expense_evidence_links WHERE event_line_id = ? AND expense_evidence_id = ?",
-            (event_line_id, payload.evidenceId),
-        )
-        link_id = str(link_row["id"]) if link_row else new_id("expense_link")
-        timestamp = now_iso()
-        state.db.execute(
-            """
-            INSERT INTO event_line_expense_evidence_links(id, organization_id, event_line_id, expense_evidence_id, note, linked_by_user_id, created_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(event_line_id, expense_evidence_id) DO UPDATE SET
-                note = excluded.note,
-                linked_by_user_id = excluded.linked_by_user_id
-            """,
-            (
-                link_id,
-                current_user.organizationId,
-                event_line_id,
-                payload.evidenceId,
-                payload.note.strip(),
-                current_user.id,
-                timestamp,
-            ),
-        )
-        return _event_line_expense_link_records(state, event_line_id)[0]
-
-    @app.delete("/api/v1/event-lines/{event_line_id}/expense-evidences/{evidence_id}")
-    def unlink_expense_evidence_from_event_line(
-        event_line_id: str,
-        evidence_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> dict[str, bool]:
-        _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        state.db.execute(
-            """
-            DELETE FROM event_line_expense_evidence_links
-            WHERE organization_id = ? AND event_line_id = ? AND expense_evidence_id = ?
-            """,
-            (current_user.organizationId, event_line_id, evidence_id),
-        )
-        return {"deleted": True}
-
-    @app.get("/api/v1/tasks/{task_id}/expense-evidences", response_model=list[TaskExpenseEvidenceLinkRecord])
-    def list_task_expense_evidences(
-        task_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> list[TaskExpenseEvidenceLinkRecord]:
-        row = _task_row_or_404(state, task_id)
-        if str(row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="任务不存在。")
-        return _task_expense_link_records(state, task_id)
-
-    @app.post("/api/v1/tasks/{task_id}/expense-evidences/link", response_model=TaskExpenseEvidenceLinkRecord)
-    def link_expense_evidence_to_task(
-        task_id: str,
-        payload: TaskExpenseEvidenceLinkPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> TaskExpenseEvidenceLinkRecord:
-        row = _task_row_or_404(state, task_id)
-        if str(row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="任务不存在。")
-        evidence_row = state.db.fetchone(
-            "SELECT * FROM expense_evidences WHERE id = ? AND organization_id = ?",
-            (payload.evidenceId, current_user.organizationId),
-        )
-        if not evidence_row:
-            raise HTTPException(status_code=404, detail="票据记录不存在。")
-        link_row = state.db.fetchone(
-            "SELECT * FROM task_expense_evidence_links WHERE task_id = ? AND expense_evidence_id = ?",
-            (task_id, payload.evidenceId),
-        )
-        link_id = str(link_row["id"]) if link_row else new_id("task_expense_link")
-        timestamp = now_iso()
-        state.db.execute(
-            """
-            INSERT INTO task_expense_evidence_links(id, organization_id, task_id, expense_evidence_id, note, linked_by_user_id, created_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(task_id, expense_evidence_id) DO UPDATE SET
-                note = excluded.note,
-                linked_by_user_id = excluded.linked_by_user_id
-            """,
-            (
-                link_id,
-                current_user.organizationId,
-                task_id,
-                payload.evidenceId,
-                payload.note.strip(),
-                current_user.id,
-                timestamp,
-            ),
-        )
-        return _task_expense_link_records(state, task_id)[0]
-
-    @app.delete("/api/v1/tasks/{task_id}/expense-evidences/{evidence_id}")
-    def unlink_expense_evidence_from_task(
-        task_id: str,
-        evidence_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> dict[str, bool]:
-        row = _task_row_or_404(state, task_id)
-        if str(row["organization_id"]) != current_user.organizationId:
-            raise HTTPException(status_code=404, detail="任务不存在。")
-        state.db.execute(
-            """
-            DELETE FROM task_expense_evidence_links
-            WHERE organization_id = ? AND task_id = ? AND expense_evidence_id = ?
-            """,
-            (current_user.organizationId, task_id, evidence_id),
-        )
-        return {"deleted": True}
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(
         payload: EventLineCreatePayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineRecord:
-        owner_ids = list(
-            dict.fromkeys(
-                [
-                    str(item).strip()
-                    for item in (
-                        payload.ownerIds
-                        if payload.ownerIds
-                        else [payload.ownerId] if payload.ownerId else [current_user.id]
-                    )
-                    if str(item).strip()
-                ],
-            ),
-        )
-        for owner_candidate in owner_ids:
-            _get_user_or_404(state, owner_candidate)
+        if payload.ownerId:
+            _get_user_or_404(state, payload.ownerId)
         timestamp = now_iso()
         event_line_id = (payload.id or "").strip() or new_id("eline")
-        owner_id = owner_ids[0] if owner_ids else current_user.id
-        participant_ids = [item for item in dict.fromkeys([item for item in payload.participantIds if item]) if item not in owner_ids]
-        primary_work_object_id = payload.primaryWorkObjectId or payload.primaryClientId
+        owner_id = payload.ownerId or current_user.id
+        participant_ids = list(dict.fromkeys([owner_id, *[item for item in payload.participantIds if item]]))
         department_name = None
         client_name = None
         if payload.primaryDepartmentId:
             department_row = state.db.fetchone("SELECT name FROM org_departments WHERE id = ?", (payload.primaryDepartmentId,))
             department_name = str(department_row["name"]) if department_row else None
-        if primary_work_object_id:
-            client_row = _client_row_by_id(state, primary_work_object_id, current_user.organizationId)
+        if payload.primaryClientId:
+            client_row = _client_row_by_id(state, payload.primaryClientId, current_user.organizationId)
             client_name = str(client_row["name"]) if client_row and client_row["name"] else None
         state.db.execute(
             """
             INSERT INTO event_lines(
-                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id, owner_ids_json,
+                id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker, recent_decision, next_step, evidence_count, owner_id,
                 primary_client_id, primary_client_name, primary_department_id, participant_ids_json, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
@@ -10323,8 +8960,7 @@ def create_app() -> FastAPI:
                 payload.nextStep,
                 int(payload.evidenceCount or 0),
                 owner_id,
-                to_json(owner_ids),
-                primary_work_object_id,
+                payload.primaryClientId,
                 client_name,
                 payload.primaryDepartmentId,
                 to_json(participant_ids),
@@ -10395,29 +9031,18 @@ def create_app() -> FastAPI:
                 )
                 continue
 
-            owner_ids = list(
-                dict.fromkeys(
-                    [
-                        _resolve_org_user_id(candidate, current_user.id)
-                        for candidate in (
-                            item.ownerIds
-                            if item.ownerIds
-                            else [item.ownerId] if item.ownerId else [current_user.id]
-                        )
-                    ],
-                ),
-            )
-            owner_ids = [candidate for candidate in owner_ids if candidate]
-            owner_id = owner_ids[0] if owner_ids else current_user.id
+            owner_id = _resolve_org_user_id(item.ownerId, current_user.id) or current_user.id
             closed_by_user_id = _resolve_org_user_id(item.closedByUserId)
             participant_ids: list[str] = []
             seen_participants: set[str] = set()
-            for candidate in item.participantIds:
+            for candidate in [owner_id, *item.participantIds]:
                 resolved = _resolve_org_user_id(candidate)
-                if not resolved or resolved in owner_ids or resolved in seen_participants:
+                if not resolved or resolved in seen_participants:
                     continue
                 participant_ids.append(resolved)
                 seen_participants.add(resolved)
+            if not participant_ids:
+                participant_ids = [owner_id]
 
             resolved_department_id = _resolve_department_id(item.primaryDepartmentId)
             client_id = (item.primaryClientId or "").strip() or None
@@ -10431,10 +9056,10 @@ def create_app() -> FastAPI:
                 """
                 INSERT INTO event_lines(
                     id, organization_id, name, kind, status, visibility_scope, business_category, stage, summary, intent,
-                    current_blocker, recent_decision, next_step, evidence_count, owner_id, owner_ids_json,
+                    current_blocker, recent_decision, next_step, evidence_count, owner_id,
                     primary_client_id, primary_client_name, primary_department_id, participant_ids_json,
                     closed_at, closed_by_user_id, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.id,
@@ -10452,7 +9077,6 @@ def create_app() -> FastAPI:
                     item.nextStep,
                     max(int(item.evidenceCount or 0), 0),
                     owner_id,
-                    to_json(owner_ids),
                     client_id,
                     client_name,
                     resolved_department_id,
@@ -10528,7 +9152,6 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineDetailRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        _assert_event_line_view_permission(state, row, current_user)
         return _event_line_detail_record(state, row, current_user.id)
 
     def _has_event_line_attachments_table() -> bool:
@@ -10543,22 +9166,21 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineReportSnapshotRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        _assert_event_line_view_permission(state, row, current_user)
         event_line = _event_line_record(state, row)
         activity_rows = state.db.fetchall(
             "SELECT * FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at ASC",
             (event_line_id,),
         )
         task_rows = state.db.fetchall(
-            "SELECT * FROM tasks WHERE event_line_id = ? AND organization_id = ? AND COALESCE(source_type, '') != 'event_line_notification' ORDER BY updated_at DESC",
+            "SELECT * FROM tasks WHERE event_line_id = ? AND organization_id = ? ORDER BY updated_at DESC",
             (event_line_id, current_user.organizationId),
         )
         if _has_event_line_attachments_table():
             attachment_rows = state.db.fetchall(
                 """
-                SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id FROM task_attachments WHERE event_line_id = ? AND organization_id = ?
+                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id, 'task_attachment' AS source_kind FROM task_attachments WHERE event_line_id = ? AND organization_id = ?
                 UNION ALL
-                SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ?
+                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id, 'event_line_attachment' AS source_kind FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ?
                 ORDER BY created_at ASC
                 """,
                 (event_line_id, current_user.organizationId, event_line_id, current_user.organizationId),
@@ -10566,14 +9188,14 @@ def create_app() -> FastAPI:
         else:
             attachment_rows = state.db.fetchall(
                 """
-                SELECT id, organization_id, event_line_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id
+                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id, 'task_attachment' AS source_kind
                 FROM task_attachments
                 WHERE event_line_id = ? AND organization_id = ?
                 ORDER BY created_at ASC
                 """,
                 (event_line_id, current_user.organizationId),
             )
-        participant_ids = _event_line_resolved_participant_ids(state, row)
+        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
         participant_names = []
         for uid in participant_ids:
             user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
@@ -10587,6 +9209,8 @@ def create_app() -> FastAPI:
                 EventLineReportAttachmentRecord(
                     id=str(att["id"]),
                     taskId=str(att["task_id"]),
+                    documentId=str(att["document_id"]) if att["document_id"] else None,
+                    sourceKind=str(att["source_kind"]) if att["source_kind"] else None,
                     title=str(att["title"]),
                     kind=str(att["kind"]),
                     mimeType=str(att["mime_type"]) if att["mime_type"] else None,
@@ -10596,6 +9220,10 @@ def create_app() -> FastAPI:
                         state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),))["full_name"]
                     ) if att["created_by_user_id"] and state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),)) else None,
                     createdAt=str(att["created_at"]),
+                    parseStatus=None,
+                    parsedPreview=str(att["summary"] or ""),
+                    chunkCount=0,
+                    sectionCount=0,
                 )
                 for att in attachment_rows
             ],
@@ -10655,29 +9283,9 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> EventLineRecord:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        previous_status = str(row["status"] or "active")
-        incoming_owner_ids = (
-            payload.ownerIds
-            if payload.ownerIds
-            else [payload.ownerId] if payload.ownerId else None
-        )
-        if incoming_owner_ids:
-            for owner_candidate in incoming_owner_ids:
-                _get_user_or_404(state, owner_candidate)
-        merged_owner_ids = list(
-            dict.fromkeys(
-                [
-                    str(item).strip()
-                    for item in (
-                        incoming_owner_ids
-                        if incoming_owner_ids is not None
-                        else _event_line_resolved_owner_ids(row)
-                    )
-                    if str(item).strip()
-                ],
-            ),
-        )
-        merged_owner_id = merged_owner_ids[0] if merged_owner_ids else None
+        if payload.ownerId:
+            _get_user_or_404(state, payload.ownerId)
+        previous_client_id = str(row["primary_client_id"]).strip() if row["primary_client_id"] else None
         merged = {
             "name": payload.name.strip() if payload.name is not None else str(row["name"]),
             "kind": payload.kind or str(row["kind"] or "custom"),
@@ -10690,33 +9298,24 @@ def create_app() -> FastAPI:
             "recent_decision": payload.recentDecision if "recentDecision" in payload.model_fields_set else row["recent_decision"],
             "next_step": payload.nextStep if "nextStep" in payload.model_fields_set else row["next_step"],
             "evidence_count": payload.evidenceCount if "evidenceCount" in payload.model_fields_set and payload.evidenceCount is not None else int(row["evidence_count"] or 0),
-            "owner_id": merged_owner_id if ("ownerId" in payload.model_fields_set or "ownerIds" in payload.model_fields_set) else row["owner_id"],
-            "owner_ids_json": to_json(merged_owner_ids),
-            "primary_client_id": (
-                payload.primaryWorkObjectId
-                if "primaryWorkObjectId" in payload.model_fields_set
-                else payload.primaryClientId
-                if "primaryClientId" in payload.model_fields_set
-                else row["primary_client_id"]
-            ),
+            "owner_id": payload.ownerId if "ownerId" in payload.model_fields_set else row["owner_id"],
+            "primary_client_id": payload.primaryClientId if "primaryClientId" in payload.model_fields_set else row["primary_client_id"],
             "primary_client_name": None,
             "primary_department_id": payload.primaryDepartmentId if "primaryDepartmentId" in payload.model_fields_set else row["primary_department_id"],
-            "participant_ids_json": to_json(
-                [
-                    item
-                    for item in dict.fromkeys(
-                        payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])
-                    )
-                    if item and item not in merged_owner_ids
-                ]
-            ),
+            "participant_ids_json": to_json(payload.participantIds if payload.participantIds is not None else from_json(row["participant_ids_json"], [])),
         }
         client_row = _client_row_by_id(state, merged["primary_client_id"], current_user.organizationId)
         merged["primary_client_name"] = str(client_row["name"]) if client_row and client_row["name"] else None
+        should_sync_linked_task_client_ids = (
+            bool(payload.syncLinkedTaskClientIds)
+            and bool(merged["primary_client_id"])
+            and merged["primary_client_id"] != previous_client_id
+        )
+        updated_at = now_iso()
         state.db.execute(
             """
             UPDATE event_lines
-            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, owner_ids_json = ?, primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
+            SET name = ?, kind = ?, status = ?, business_category = ?, stage = ?, summary = ?, intent = ?, current_blocker = ?, recent_decision = ?, next_step = ?, evidence_count = ?, owner_id = ?, primary_client_id = ?, primary_client_name = ?, primary_department_id = ?, participant_ids_json = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -10732,15 +9331,37 @@ def create_app() -> FastAPI:
                 merged["next_step"],
                 merged["evidence_count"],
                 merged["owner_id"],
-                merged["owner_ids_json"],
                 merged["primary_client_id"],
                 merged["primary_client_name"],
                 merged["primary_department_id"],
                 merged["participant_ids_json"],
-                now_iso(),
+                updated_at,
                 event_line_id,
             ),
         )
+        if should_sync_linked_task_client_ids:
+            state.db.execute(
+                "UPDATE tasks SET client_id = ?, updated_at = ? WHERE event_line_id = ? AND organization_id = ?",
+                (merged["primary_client_id"], updated_at, event_line_id, current_user.organizationId),
+            )
+            state.db.execute(
+                "UPDATE task_attachments SET client_id = ? WHERE event_line_id = ? AND organization_id = ?",
+                (merged["primary_client_id"], event_line_id, current_user.organizationId),
+            )
+            state.db.execute(
+                """
+                UPDATE consultation_answers
+                SET client_id = ?, client_name = ?, updated_at = ?
+                WHERE event_line_id = ? AND organization_id = ?
+                """,
+                (
+                    merged["primary_client_id"],
+                    merged["primary_client_name"],
+                    updated_at,
+                    event_line_id,
+                    current_user.organizationId,
+                ),
+            )
         _record_event_line_activity(
             state,
             event_line_id,
@@ -10756,84 +9377,24 @@ def create_app() -> FastAPI:
             },
         )
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        next_status = str(row["status"] or "active")
-        if next_status != previous_status and next_status in {"paused", "blocked", "done"}:
-            _notify_event_line_operation(
-                row,
-                current_user,
-                {"paused": "暂停", "blocked": "阻塞", "done": "完成"}[next_status],
-                now_iso(),
-            )
         return _event_line_record(state, row)
 
     def _can_manage_event_line(current_user: SessionUser, row) -> bool:
-        """Only admins and explicitly configured main owners can manage an event line."""
+        """Check if user can close/manage this event line: creator, their manager, or admin."""
         if current_user.primaryRole == "admin":
             return True
-        resolved_owner_ids = _event_line_resolved_owner_ids(row)
-        return current_user.id in resolved_owner_ids
-
-    def _notify_event_line_operation(row, current_user: SessionUser, operation_label: str, timestamp: str) -> None:
-        main_owner_names = _event_line_resolved_owner_names(state, row)
-        participant_ids = _event_line_resolved_participant_ids(state, row)
-        participant_names: list[str] = []
-        for uid in participant_ids:
-            user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
-            if user_row and user_row["full_name"]:
-                full_name = str(user_row["full_name"]).strip()
-                if full_name and full_name not in participant_names:
-                    participant_names.append(full_name)
-        notify_user_ids = [
-            uid
-            for uid in dict.fromkeys([current_user.id, *_event_line_resolved_owner_ids(row), *participant_ids])
-            if uid
-        ]
-        if not notify_user_ids:
-            return
-        operator_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (current_user.id,))
-        operator_name = str(operator_row["full_name"]) if operator_row and operator_row["full_name"] else current_user.id
-        event_line_name = str(row["name"] or "未命名事件线")
-        notify_title = f"事件线{operation_label}：{event_line_name}"
-        notify_desc = "\n".join([
-            f"事件线标题：{event_line_name}",
-            f"事件线操作：{operation_label}",
-            f"操作者：{operator_name}",
-            f"操作时间：{timestamp[:16].replace('T', ' ')}",
-            f"主要负责人：{'、'.join(main_owner_names) if main_owner_names else '未设置'}",
-            f"参与者：{'、'.join(participant_names) if participant_names else '暂无'}",
-        ])
-        notification_id = new_id("notif")
-        state.db.execute(
-            """
-            INSERT INTO event_line_notifications(
-                id, organization_id, event_line_id, event_line_name, activity_id, operation_label,
-                actor_id, actor_name, title, summary, metadata_json, main_owner_names_json,
-                participant_names_json, operated_at, created_at, updated_at
-            ) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                notification_id,
-                current_user.organizationId,
-                str(row["id"]),
-                event_line_name,
-                operation_label,
-                current_user.id,
-                operator_name,
-                notify_title,
-                notify_desc,
-                to_json({"operationLabel": operation_label}),
-                to_json(main_owner_names),
-                to_json(participant_names),
-                timestamp,
-                timestamp,
-                timestamp,
-            ),
-        )
-        collab_rows = [(notification_id, uid, None, timestamp, timestamp) for uid in notify_user_ids]
-        state.db.executemany(
-            "INSERT INTO event_line_notification_receipts(notification_id, user_id, read_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
-            collab_rows,
-        )
+        owner_id = str(row["owner_id"]) if row["owner_id"] else None
+        if owner_id == current_user.id:
+            return True
+        # Check if current user is the manager of the creator
+        if owner_id:
+            is_manager = state.db.fetchone(
+                "SELECT 1 FROM reporting_lines WHERE manager_user_id = ? AND report_user_id = ? AND effective_to IS NULL",
+                (current_user.id, owner_id),
+            )
+            if is_manager:
+                return True
+        return False
 
     @app.post("/api/v1/event-lines/{event_line_id}/close")
     def close_event_line(
@@ -10844,14 +9405,42 @@ def create_app() -> FastAPI:
         if str(row["status"]) in ("done", "archived"):
             return {"status": str(row["status"])}
         if not _can_manage_event_line(current_user, row):
-            raise HTTPException(status_code=403, detail="只有管理员和主要负责人可以结束事件线。")
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以结束事件线。")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ? AND organization_id = ?",
             (timestamp, current_user.id, timestamp, event_line_id, current_user.organizationId),
         )
         _record_event_line_activity(state, event_line_id, "manual_note", event_line_id, current_user.id, "结束事件线", "事件线已归档")
-        _notify_event_line_operation(row, current_user, "完成", timestamp)
+        # Send notification to all participants
+        participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item)]
+        notify_user_ids = [uid for uid in participant_ids if uid != current_user.id]
+        if notify_user_ids:
+            operator_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (current_user.id,))
+            operator_name = str(operator_row["full_name"]) if operator_row else current_user.id
+            event_line_name = str(row["name"])
+            notify_title = f"事件线已结束：{event_line_name}"
+            notify_desc = f"{operator_name} 于 {timestamp[:10]} 结束了事件线「{event_line_name}」"
+            list_id = _default_list_id(state, current_user.organizationId)
+            if list_id:
+                notify_task_id = new_id("task")
+                state.db.execute(
+                    """
+                    INSERT INTO tasks(
+                        id, organization_id, title, description, creator_id, owner_id, priority, list_id,
+                        progress_status, source_type, source_id, scope_mode, event_line_id,
+                        tags_json, tag_ids_json, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, 'normal', ?, 'inbox', 'event_line_notification', ?, 'COLLAB_SHARED', ?, '[]', '[]', ?, ?)
+                    """,
+                    (notify_task_id, current_user.organizationId, notify_title, notify_desc,
+                     current_user.id, current_user.id, list_id, event_line_id, event_line_id, timestamp, timestamp),
+                )
+                collab_rows = [(notify_task_id, uid, idx, 0, "pending", None, timestamp, timestamp)
+                               for idx, uid in enumerate(notify_user_ids)]
+                state.db.executemany(
+                    "INSERT INTO task_collaborators(task_id, user_id, order_index, is_owner, inbox_status, handled_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                    collab_rows,
+                )
         return {"status": "archived"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/reopen")
@@ -10861,7 +9450,7 @@ def create_app() -> FastAPI:
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
         if not _can_manage_event_line(current_user, row):
-            raise HTTPException(status_code=403, detail="只有管理员和主要负责人可以重新打开事件线。")
+            raise HTTPException(status_code=403, detail="只有事件线创建者、其上级主管或管理员可以重新打开事件线。")
         timestamp = now_iso()
         state.db.execute(
             "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ? WHERE id = ? AND organization_id = ?",
@@ -10876,10 +9465,17 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> dict:
         row = _event_line_row_or_404(state, event_line_id, current_user.organizationId)
-        if not _can_manage_event_line(current_user, row):
-            raise HTTPException(status_code=403, detail="只有管理员和主要负责人可以删除事件线。")
+        # Only admin can delete event lines
+        if current_user.primaryRole != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
+        # Can only delete event lines with zero associated tasks
+        task_count = int(state.db.scalar(
+            "SELECT COUNT(1) FROM tasks WHERE event_line_id = ? AND organization_id = ?",
+            (event_line_id, current_user.organizationId),
+        ) or 0)
+        if task_count > 0:
+            raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
         counts = _event_line_dependency_counts(state, event_line_id, current_user.organizationId)
-        _notify_event_line_operation(row, current_user, "删除", now_iso())
         state.db.execute(
             "UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ? AND organization_id = ?",
             (now_iso(), event_line_id, current_user.organizationId),
@@ -11145,7 +9741,7 @@ def create_app() -> FastAPI:
             target=payload.target,
             question=payload.question,
             answer=payload.answer,
-            client_id=payload.workObjectId or payload.clientId,
+            client_id=payload.clientId,
             client_name=payload.clientName,
             task_id=payload.taskId,
             event_line_id=payload.eventLineId,
@@ -11212,36 +9808,341 @@ def create_app() -> FastAPI:
         if not api_key:
             raise HTTPException(status_code=503, detail="AI 服务暂不可用：未配置 API Key（请设置 ARK_API_KEY 环境变量）。")
 
-        # Build context from client/task/event-line info
+        def _trim_context_block(value: str | None, limit: int = 1800) -> str:
+            text = (value or "").strip()
+            if not text:
+                return ""
+            if len(text) <= limit:
+                return text
+            return f"{text[:limit - 3]}..."
+
+        def _append_context_block(target: list[str], label: str, value: str | None, limit: int = 1800) -> None:
+            text = _trim_context_block(value, limit)
+            if not text:
+                return
+            if "\n" in text:
+                target.append(f"{label}：\n{text}")
+                return
+            target.append(f"{label}：{text}")
+
         context_parts: list[str] = []
-        if payload.clientName:
-            context_parts.append(f"当前客户：{payload.clientName}")
-        if payload.eventLineId:
+        evidence: list[ConsultationEvidenceRecord] = []
+        missing_context: list[ConsultationMissingContextRecord] = []
+        available_sources: list[str] = []
+        missing_sources: list[str] = []
+        stale_sources: list[str] = []
+
+        def _append_evidence(
+            evidence_type: Literal[
+                "workspace",
+                "client_dna",
+                "event_line",
+                "meeting",
+                "task",
+                "knowledge_surrogate",
+                "cockpit",
+                "thread_snapshot",
+                "task_board",
+                "client_name",
+            ],
+            title: str,
+            *,
+            snippet: str | None = None,
+            updated_at: str | None = None,
+            evidence_id: str | None = None,
+            source_name: str | None = None,
+        ) -> None:
+            record = ConsultationEvidenceRecord(
+                id=evidence_id or f"{evidence_type}:{len(evidence) + 1}",
+                type=evidence_type,
+                title=title,
+                updatedAt=updated_at,
+                snippet=_trim_context_block(snippet, 220) or None,
+            )
+            evidence.append(record)
+            if updated_at:
+                try:
+                    age_days = (datetime.now() - datetime.fromisoformat(updated_at)).days
+                    stale_name = source_name or evidence_type
+                    if age_days >= 21 and stale_name not in stale_sources:
+                        stale_sources.append(stale_name)
+                except ValueError:
+                    pass
+
+        def _mark_available(source: str) -> None:
+            if source not in available_sources:
+                available_sources.append(source)
+            if source in missing_sources:
+                missing_sources.remove(source)
+
+        def _mark_missing(
+            source: Literal[
+                "client_dna",
+                "workspace",
+                "event_line",
+                "meeting",
+                "person_profile",
+                "project_background",
+                "strategic_cockpit",
+                "knowledge_surrogate",
+                "task_board",
+            ],
+            message: str,
+        ) -> None:
+            if source not in missing_sources:
+                missing_sources.append(source)
+            if not any(item.type == source for item in missing_context):
+                missing_context.append(ConsultationMissingContextRecord(type=source, message=message))
+
+        normalized_message = payload.message.strip()
+        intro_request = any(
+            keyword in normalized_message
+            for keyword in ("介绍", "简介", "是谁", "做什么", "背景", "全称")
+        )
+
+        client_row = _client_row_by_id(state, payload.clientId, current_user.organizationId) if payload.clientId else None
+        if not client_row and payload.clientName:
+            client_row = state.db.fetchone(
+                """
+                SELECT *
+                FROM clients
+                WHERE organization_id = ?
+                  AND (name = ? OR alias = ?)
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (current_user.organizationId, payload.clientName, payload.clientName),
+            )
+        resolved_client_id = str(client_row["id"]) if client_row and client_row["id"] else payload.clientId
+        resolved_client_name = _coerce_text(
+            payload.clientName or (str(client_row["name"]) if client_row and client_row["name"] else ""),
+            "",
+        ) or None
+
+        workspace_compat = (
+            _build_workspace_compat_response(state, client_row, current_user.organizationId)
+            if client_row
+            else None
+        )
+        cockpit_compat = (
+            _build_cockpit_compat_response(state, client_row, current_user.organizationId)
+            if client_row
+            else None
+        )
+        dna_row = _mirror_latest_row(state, "cloud_client_dna_summaries", current_user.organizationId, resolved_client_id) if resolved_client_id else None
+        surrogate_rows = _mirror_rows(state, "cloud_knowledge_surrogates", current_user.organizationId, resolved_client_id, limit=6) if resolved_client_id else []
+        event_line_snapshot_row = (
+            _mirror_latest_row(state, "cloud_event_line_snapshots", current_user.organizationId, resolved_client_id, payload.eventLineId)
+            if resolved_client_id and payload.eventLineId
+            else None
+        )
+
+        workspace_context_text = payload.workspaceContext
+        if not workspace_context_text and workspace_compat and workspace_compat.status != "missing":
+            workspace_lines: list[str] = []
+            if workspace_compat.goals:
+                workspace_lines.append("阶段目标：" + "；".join(item.title for item in workspace_compat.goals[:3]))
+            if workspace_compat.meetings:
+                workspace_lines.append("最近会议：" + "；".join(
+                    _coerce_text(item.summary or item.title, item.title)
+                    for item in workspace_compat.meetings[:2]
+                ))
+            if workspace_compat.latestOpenQuestions:
+                workspace_lines.append("开放问题：" + "；".join(
+                    _coerce_text(item.summary or item.title, item.title)
+                    for item in workspace_compat.latestOpenQuestions[:2]
+                ))
+            if workspace_compat.relatedTasks:
+                workspace_lines.append("相关任务：" + "；".join(item.title for item in workspace_compat.relatedTasks[:3]))
+            workspace_context_text = "\n".join(workspace_lines)
+
+        event_line_context_text = payload.eventLineContext
+        if not event_line_context_text and payload.eventLineId:
             try:
                 el_row = _event_line_row_or_404(state, payload.eventLineId, current_user.organizationId)
-                el_name = str(el_row["name"]) if el_row["name"] else ""
-                el_summary = str(el_row["summary"]) if el_row["summary"] else ""
-                el_blocker = str(el_row["current_blocker"]) if el_row["current_blocker"] else ""
-                el_next = str(el_row["next_step"]) if el_row["next_step"] else ""
-                if el_name:
-                    context_parts.append(f"事件线：{el_name}")
-                if el_summary:
-                    context_parts.append(f"事件线摘要：{el_summary}")
-                if el_blocker:
-                    context_parts.append(f"当前阻塞：{el_blocker}")
-                if el_next:
-                    context_parts.append(f"下一步：{el_next}")
+                event_line_context_text = "\n".join(
+                    part
+                    for part in (
+                        f"事件线：{_coerce_text(el_row['name'])}" if el_row["name"] else "",
+                        f"摘要：{_coerce_text(el_row['summary'])}" if el_row["summary"] else "",
+                        f"当前阻塞：{_coerce_text(el_row['current_blocker'])}" if el_row["current_blocker"] else "",
+                        f"下一步：{_coerce_text(el_row['next_step'])}" if el_row["next_step"] else "",
+                    )
+                    if part
+                )
             except HTTPException:
-                pass
-        if payload.taskContext:
-            context_parts.append(f"用户当前任务上下文：{payload.taskContext}")
+                event_line_context_text = None
+        if not event_line_context_text and event_line_snapshot_row:
+            event_line_payload = _mirror_payload(event_line_snapshot_row)
+            event_line_context_text = "\n".join(
+                part
+                for part in (
+                    f"事件线：{_coerce_text(event_line_payload.get('name'))}" if event_line_payload.get("name") else "",
+                    f"摘要：{_coerce_text(event_line_payload.get('summary'))}" if event_line_payload.get("summary") else "",
+                    f"当前阻塞：{_coerce_text(event_line_payload.get('currentBlocker'))}" if event_line_payload.get("currentBlocker") else "",
+                    f"下一步：{_coerce_text(event_line_payload.get('nextStep'))}" if event_line_payload.get("nextStep") else "",
+                )
+                if part
+            )
 
-        # ── Desktop knowledge (DNA + surrogates) ──
+        cockpit_context_text = None
+        if cockpit_compat and cockpit_compat.status != "missing":
+            cockpit_lines: list[str] = []
+            if cockpit_compat.headline.summary:
+                cockpit_lines.append(f"战略 headline：{cockpit_compat.headline.summary}")
+            if cockpit_compat.pendingDecisions:
+                cockpit_lines.append("待决策：" + "；".join(item.summary for item in cockpit_compat.pendingDecisions[:2]))
+            if cockpit_compat.pendingMaterials:
+                cockpit_lines.append("待材料：" + "；".join(item.summary for item in cockpit_compat.pendingMaterials[:2]))
+            cockpit_context_text = "\n".join(cockpit_lines)
+
+        if resolved_client_name:
+            context_parts.append(f"当前客户：{resolved_client_name}")
+            _mark_available("client_name")
+            _append_evidence("client_name", f"客户：{resolved_client_name}", evidence_id=f"client:{resolved_client_id or resolved_client_name}")
+        else:
+            _mark_missing("project_background", "当前没有锁定客户，系统无法知道你在问哪一条客户/项目线。")
+
+        if payload.eventLineName and not payload.eventLineId:
+            context_parts.append(f"当前事件线：{payload.eventLineName}")
+        if payload.taskTitle:
+            context_parts.append(f"当前任务：{payload.taskTitle}")
+            _append_evidence("task", f"任务：{payload.taskTitle}", snippet=payload.taskContext, evidence_id=f"task:{payload.taskId or payload.taskTitle}")
+        if payload.sourceLabels:
+            context_parts.append("上下文标签：" + " / ".join(label for label in payload.sourceLabels[:6] if label))
+        if event_line_context_text:
+            _append_context_block(context_parts, "事件线摘要", event_line_context_text, 1600)
+            _mark_available("event_line")
+            _append_evidence(
+                "event_line",
+                payload.eventLineName or "当前事件线",
+                snippet=event_line_context_text,
+                updated_at=_mirror_updated_at(event_line_snapshot_row),
+                evidence_id=f"event-line:{payload.eventLineId or payload.eventLineName or 'current'}",
+            )
+        elif payload.eventLineId or payload.eventLineName:
+            _mark_missing("event_line", "已锁定事件线，但云端没有找到这条事件线的正式摘要。")
+
+        if workspace_context_text:
+            _append_context_block(context_parts, "移动端工作台摘要", workspace_context_text, 2200)
+            _mark_available("workspace")
+            _append_evidence(
+                "workspace",
+                "客户工作台",
+                snippet=workspace_context_text,
+                updated_at=workspace_compat.updatedAt if workspace_compat else None,
+                source_name="workspace",
+            )
+        elif resolved_client_id:
+            _mark_missing("workspace", "当前云端没有客户工作台快照，因此无法恢复阶段目标、最近会议和开放问题。")
+
+        if workspace_compat and workspace_compat.meetings:
+            _mark_available("recent_meetings")
+            _append_evidence(
+                "meeting",
+                workspace_compat.meetings[0].title or "最近会议",
+                snippet=workspace_compat.meetings[0].summary or workspace_compat.meetings[0].title,
+                updated_at=workspace_compat.meetings[0].updatedAt,
+                evidence_id=f"meeting:{workspace_compat.meetings[0].id}",
+                source_name="recent_meetings",
+            )
+        elif resolved_client_id:
+            _mark_missing("meeting", "当前云端没有最近会议摘要，无法知道这位客户最近一次沟通发生了什么。")
+
+        if payload.taskBoardContext or payload.taskContext:
+            _append_context_block(context_parts, "移动端任务板摘要", payload.taskBoardContext, 1800)
+            if payload.taskContext:
+                _append_context_block(context_parts, "用户当前任务上下文", payload.taskContext, 1400)
+            _mark_available("task_board")
+            _append_evidence(
+                "task_board",
+                "任务板 / 当前任务",
+                snippet=payload.taskBoardContext or payload.taskContext,
+                evidence_id=f"task-board:{payload.taskId or resolved_client_id or 'current'}",
+            )
+        elif resolved_client_id:
+            _mark_missing("task_board", "当前没有任务板摘要，系统只能看到更薄的客户/任务字段。")
+
+        if payload.missingEventLineHint:
+            context_parts.append(f"上下文边界：{payload.missingEventLineHint}")
+
+        if cockpit_context_text:
+            _append_context_block(context_parts, "战略 Cockpit 摘要", cockpit_context_text, 1200)
+            _mark_available("strategic_cockpit")
+            _append_evidence(
+                "cockpit",
+                "战略 Cockpit",
+                snippet=cockpit_context_text,
+                updated_at=cockpit_compat.updatedAt if cockpit_compat else None,
+                source_name="strategic_cockpit",
+            )
+        elif resolved_client_id:
+            _mark_missing("strategic_cockpit", "当前云端没有战略 cockpit 快照，无法给出正式战略判断层。")
+
         dna_context = ""
         dna_doc_map: dict[str, str] = {}
         surrogate_overviews: list[str] = []
-        resolved_desktop_client_id = payload.clientId
-        if payload.clientId or payload.clientName:
+        if dna_row:
+            dna_payload = _mirror_payload(dna_row)
+            dna_sections: list[str] = []
+            modules = dna_payload.get("modules")
+            if isinstance(modules, list):
+                for raw_module in modules[:8]:
+                    if not isinstance(raw_module, dict):
+                        continue
+                    module_key = _coerce_text(raw_module.get("moduleKey") or raw_module.get("module_key"))
+                    title = _coerce_text(raw_module.get("title"), module_key or "客户资料")
+                    text = _coerce_text(raw_module.get("summary") or raw_module.get("text") or raw_module.get("content"))
+                    if text:
+                        if module_key:
+                            dna_doc_map[module_key] = text
+                        dna_sections.append(f"【{title}】\n{text[:1800]}")
+            summary_text = _coerce_text(dna_payload.get("summary"))
+            if summary_text:
+                dna_sections.insert(0, f"【客户 DNA 摘要】\n{summary_text[:1800]}")
+            if dna_sections:
+                dna_context = "\n\n客户知识档案：\n" + "\n---\n".join(dna_sections)
+                _mark_available("client_dna")
+                _append_evidence(
+                    "client_dna",
+                    "客户 DNA",
+                    snippet=summary_text or dna_sections[0],
+                    updated_at=_mirror_updated_at(dna_row),
+                    evidence_id=f"dna:{resolved_client_id}",
+                    source_name="client_dna",
+                )
+
+        if surrogate_rows:
+            surrogate_blocks: list[str] = []
+            for row in surrogate_rows[:6]:
+                surrogate_payload = _mirror_payload(row)
+                title = _coerce_text(surrogate_payload.get("title"), "知识代理")
+                overview = _coerce_text(
+                    surrogate_payload.get("summary")
+                    or surrogate_payload.get("overview")
+                    or surrogate_payload.get("overviewSummary")
+                )
+                if overview:
+                    surrogate_overviews.append(overview)
+                    surrogate_blocks.append(f"【{title}】\n{overview[:1200]}")
+            if surrogate_blocks and not dna_context:
+                dna_context = "\n\n客户知识档案：\n" + "\n---\n".join(surrogate_blocks)
+            if surrogate_blocks:
+                _mark_available("knowledge_surrogate")
+                _append_evidence(
+                    "knowledge_surrogate",
+                    "知识代理",
+                    snippet=surrogate_overviews[0],
+                    updated_at=_mirror_updated_at(surrogate_rows[0]),
+                    evidence_id=f"surrogate:{resolved_client_id or 'current'}",
+                    source_name="knowledge_surrogate",
+                )
+        elif resolved_client_id:
+            _mark_missing("knowledge_surrogate", "当前云端没有知识代理摘要，无法用客户资料替代原始长文。")
+
+        # ── Desktop knowledge fallback (dev / compatibility only) ──
+        resolved_desktop_client_id = resolved_client_id
+        if not dna_context and (resolved_client_id or resolved_client_name):
             try:
                 import sqlite3 as _sqlite3
                 from app.knowledge_store import find_desktop_app_db_path
@@ -11251,27 +10152,23 @@ def create_app() -> FastAPI:
                     dconn = _sqlite3.connect(str(desktop_db_path))
                     dconn.row_factory = _sqlite3.Row
 
-                    # Resolve desktop client_id: try direct match first, then fallback by name
-                    if payload.clientId:
-                        check = dconn.execute("SELECT id FROM clients WHERE id = ?", (payload.clientId,)).fetchone()
-                        if check:
-                            resolved_desktop_client_id = payload.clientId
-                        elif payload.clientName:
+                    if resolved_desktop_client_id:
+                        check = dconn.execute("SELECT id FROM clients WHERE id = ?", (resolved_desktop_client_id,)).fetchone()
+                        if not check and resolved_client_name:
                             name_match = dconn.execute(
                                 "SELECT id FROM clients WHERE name = ? OR alias = ? LIMIT 1",
-                                (payload.clientName, payload.clientName),
+                                (resolved_client_name, resolved_client_name),
                             ).fetchone()
                             if name_match:
                                 resolved_desktop_client_id = str(name_match["id"])
-                    elif payload.clientName:
+                    elif resolved_client_name:
                         name_match = dconn.execute(
                             "SELECT id FROM clients WHERE name = ? OR alias = ? LIMIT 1",
-                            (payload.clientName, payload.clientName),
+                            (resolved_client_name, resolved_client_name),
                         ).fetchone()
                         if name_match:
                             resolved_desktop_client_id = str(name_match["id"])
 
-                    # Read DNA documents
                     dna_parts: list[str] = []
                     if resolved_desktop_client_id:
                         dna_docs = dconn.execute(
@@ -11283,74 +10180,85 @@ def create_app() -> FastAPI:
                             if text.startswith('{"prompt'):
                                 continue
                             module = str(doc["module_key"] or "")
-                            title = str(doc["title"] or module)
+                            title = str(doc["title"] or module or "客户资料")
                             if module:
                                 dna_doc_map[module] = text
                             dna_parts.append(f"【{title}】\n{text[:2000]}")
 
-                    # Read surrogates (enriched summaries + profile blocks)
-                    surrogate_parts: list[str] = []
-                    if resolved_desktop_client_id:
                         surrogates = dconn.execute(
-                            """SELECT title, overview_summary, retrieval_summary, document_role, source_type
+                            """SELECT title, overview_summary, retrieval_summary
                                FROM knowledge_surrogates
                                WHERE client_id = ? AND source_type = 'memory_answer'
                                ORDER BY updated_at DESC LIMIT 10""",
                             (resolved_desktop_client_id,),
                         ).fetchall()
+                        surrogate_parts: list[str] = []
                         for s in surrogates:
-                            s_title = str(s["title"] or "")
+                            s_title = str(s["title"] or "知识代理")
                             s_overview = str(s["overview_summary"] or "")
-                            s_retrieval = str(s["retrieval_summary"] or "")
                             if s_overview:
                                 surrogate_overviews.append(s_overview)
                                 surrogate_parts.append(f"【{s_title}】\n{s_overview[:1500]}")
-
+                        all_parts = surrogate_parts + dna_parts
+                        if all_parts:
+                            dna_context = "\n\n客户知识档案：\n" + "\n---\n".join(all_parts)
+                            _mark_available("client_dna")
+                            if not any(item.type == "client_dna" for item in evidence):
+                                _append_evidence(
+                                    "client_dna",
+                                    "桌面端客户知识档案",
+                                    snippet=all_parts[0],
+                                    evidence_id=f"desktop-dna:{resolved_desktop_client_id}",
+                                    source_name="client_dna",
+                                )
                     dconn.close()
-
-                    all_parts = surrogate_parts + dna_parts  # profile blocks first, then DNA
-                    if all_parts:
-                        dna_context = "\n\n客户知识档案：\n" + "\n---\n".join(all_parts)
             except Exception as dna_err:
                 logger.warning("Desktop knowledge read failed: %s", dna_err)
-        logger.info("Desktop context for client %s (resolved: %s): %d chars", payload.clientId, resolved_desktop_client_id, len(dna_context))
+        if not dna_context and resolved_client_id:
+            _mark_missing("client_dna", "当前云端没有客户 DNA 摘要，因此无法准确介绍这位客户的使命、业务和项目类型。")
 
-        # ── Vector knowledge retrieval (semantic search) ──
         knowledge_context = ""
-        try:
-            from app.knowledge_store import query_knowledge
-            # Try with resolved desktop client_id first, then original payload clientId
-            search_client_id = resolved_desktop_client_id or payload.clientId
-            vector_snippets = await asyncio.to_thread(
-                query_knowledge,
-                organization_id=current_user.organizationId,
-                query=payload.message,
-                n_results=20,
-                client_id=search_client_id,
-            )
-            # If no results with resolved id, try without client_id filter
-            if not vector_snippets and search_client_id:
+        if not any(item.type == "knowledge_surrogate" for item in evidence):
+            try:
+                from app.knowledge_store import query_knowledge
+
+                search_client_id = resolved_desktop_client_id or resolved_client_id
                 vector_snippets = await asyncio.to_thread(
                     query_knowledge,
                     organization_id=current_user.organizationId,
                     query=payload.message,
                     n_results=20,
-                    client_id=None,
+                    client_id=search_client_id,
                 )
-            if vector_snippets:
-                knowledge_context = "\n\n相关知识参考：\n" + "\n---\n".join(
-                    snippet[:1200] for snippet in vector_snippets[:10]
-                )
-        except Exception as vec_err:
-            logger.warning("Vector knowledge query failed: %s", vec_err)
+                if not vector_snippets and search_client_id:
+                    vector_snippets = await asyncio.to_thread(
+                        query_knowledge,
+                        organization_id=current_user.organizationId,
+                        query=payload.message,
+                        n_results=20,
+                        client_id=None,
+                    )
+                if vector_snippets:
+                    knowledge_context = "\n\n相关知识参考：\n" + "\n---\n".join(
+                        snippet[:1200] for snippet in vector_snippets[:10]
+                    )
+                    _mark_available("knowledge_surrogate")
+                    _append_evidence(
+                        "knowledge_surrogate",
+                        "检索知识片段",
+                        snippet=vector_snippets[0],
+                        evidence_id=f"vector:{resolved_client_id or 'global'}",
+                        source_name="knowledge_surrogate",
+                    )
+            except Exception as vec_err:
+                logger.warning("Vector knowledge query failed: %s", vec_err)
 
-        # ── Fallback: recent consultation answers from DB ──
-        if not knowledge_context and payload.clientId:
+        if not knowledge_context and resolved_client_id:
             recent_answers = state.db.fetchall(
-                """SELECT question, answer FROM consultation_answers
+                """SELECT question, answer, created_at FROM consultation_answers
                    WHERE organization_id = ? AND client_id = ?
                    ORDER BY created_at DESC LIMIT 5""",
-                (current_user.organizationId, payload.clientId),
+                (current_user.organizationId, resolved_client_id),
             )
             if recent_answers:
                 snippets = []
@@ -11361,11 +10269,33 @@ def create_app() -> FastAPI:
                         snippets.append(f"Q: {q[:200]}\nA: {a[:400]}")
                 if snippets:
                     knowledge_context = "\n\n已有知识沉淀：\n" + "\n---\n".join(snippets[:3])
+                    _mark_available("knowledge_surrogate")
+                    if not any(item.type == "knowledge_surrogate" for item in evidence):
+                        _append_evidence(
+                            "knowledge_surrogate",
+                            "历史咨询沉淀",
+                            snippet=snippets[0],
+                            updated_at=str(recent_answers[0]["created_at"]) if recent_answers[0]["created_at"] else None,
+                            source_name="knowledge_surrogate",
+                        )
 
-        normalized_message = payload.message.strip()
-        intro_request = any(
-            keyword in normalized_message
-            for keyword in ("介绍", "简介", "是谁", "做什么", "背景", "全称")
+        logger.info("Consult context for client %s: workspace=%s dna=%s cockpit=%s knowledge=%s",
+            resolved_client_id,
+            bool(workspace_context_text),
+            bool(dna_context.strip()),
+            bool(cockpit_context_text),
+            bool(knowledge_context.strip()),
+        )
+
+        has_mobile_context = any(
+            _trim_context_block(item)
+            for item in (
+                workspace_context_text,
+                event_line_context_text,
+                payload.taskBoardContext,
+                payload.taskContext,
+                cockpit_context_text,
+            )
         )
         has_client_knowledge = bool(dna_context.strip())
         intro_context = ""
@@ -11386,6 +10316,38 @@ def create_app() -> FastAPI:
             if intro_parts:
                 intro_context = "\n\n客户知识档案：\n" + "\n---\n".join(intro_parts)
 
+        substantive_sources = {
+            source
+            for source in available_sources
+            if source in {
+                "workspace",
+                "client_dna",
+                "knowledge_surrogate",
+                "event_line",
+                "task_board",
+                "strategic_cockpit",
+                "recent_meetings",
+            }
+        }
+        if not substantive_sources and not resolved_client_name:
+            context_level: Literal["none", "thin", "partial", "rich"] = "none"
+        elif {"workspace", "client_dna", "strategic_cockpit"}.issubset(substantive_sources) or (
+            {"workspace", "client_dna", "knowledge_surrogate"}.issubset(substantive_sources)
+        ):
+            context_level = "rich"
+        elif len(substantive_sources) >= 2:
+            context_level = "partial"
+        else:
+            context_level = "thin"
+
+        answer_mode: Literal["grounded", "limited_context", "missing_context", "error"]
+        if context_level == "none":
+            answer_mode = "missing_context"
+        elif context_level == "thin":
+            answer_mode = "limited_context"
+        else:
+            answer_mode = "grounded"
+
         model_name = os.getenv("YIYU_CONSULTATION_CHAT_MODEL", os.getenv("YIYU_SMART_INPUT_MODEL", DEFAULT_QWEN_MODEL))
 
         import httpx
@@ -11400,7 +10362,33 @@ def create_app() -> FastAPI:
             "- 如果资料中出现益语智库团队成员参与客户工作的描述，要明确区分：谁是顾问方的人，谁是客户方的人。\n"
         )
 
-        if has_client_knowledge and intro_request:
+        known_facts_text = "\n".join(context_parts) if context_parts else "当前没有已知事实。"
+        missing_sources_text = "\n".join(f"- {item.message}" for item in missing_context) or "- 当前没有额外缺口。"
+
+        if answer_mode == "missing_context":
+            response = (
+                "当前还没有锁定足够的客户、事件线或任务上下文。\n\n"
+                "已知：只有你刚刚输入的问题本身。\n\n"
+                "缺失：需要至少补一项客户、事件线、任务板或工作台资料，系统才能进入业务回答。"
+            )
+        elif answer_mode == "limited_context":
+            system_prompt = (
+                "你是益语智库的资深战略顾问，但当前处于 limited_context 模式。\n"
+                "你只能根据【已知事实】回答，严禁根据客户名字、组织类型或常识去推断使命、业务、项目领域或合作状态。\n"
+                "尤其禁止出现“通常基金会可能……”“大概率……”“一般来说……”这类按名称推断的内容。\n"
+                "回答必须严格三段：\n"
+                "第一段：当前已知事实。\n"
+                "第二段：当前明确缺失的上下文。\n"
+                "第三段：为了把回答变准，下一步最该补什么。\n"
+                "如果问题是介绍客户，直接说明“当前只知道客户名/任务板/工作台片段，不足以准确介绍其使命与项目”。"
+            )
+            system_prompt += role_boundary
+            system_prompt += "\n\n【已知事实】\n" + known_facts_text
+            system_prompt += "\n\n【明确缺失】\n" + missing_sources_text
+            if knowledge_context:
+                system_prompt += knowledge_context
+            user_prompt = normalized_message
+        elif has_client_knowledge and intro_request:
             system_prompt = (
                 "你是益语智库的资深战略顾问。下面是客户的知识档案。"
                 "你必须严格依据这些资料直接回答，禁止说\"缺乏信息\"\"上下文不足\"\"无法介绍\"。\n"
@@ -11411,6 +10399,21 @@ def create_app() -> FastAPI:
             if context_parts:
                 system_prompt += "\n\n当前上下文：\n" + "\n".join(context_parts)
             system_prompt += intro_context or dna_context
+            user_prompt = normalized_message
+        elif intro_request and has_mobile_context:
+            system_prompt = (
+                "你是益语智库的资深战略顾问。系统已经提供了移动端当前工作台、事件线、任务板或任务摘要。"
+                "请基于这些已知上下文回答，不要忽略它们，也不要退化成空泛的基金会常识猜测。\n"
+                "默认按三段回答：第一段说当前已知的客户/合作定位；第二段说当前推进状态、关键卡点与下一步；"
+                "第三段明确还缺哪些信息。\n"
+                "如果资料还不够完整，也必须先总结已知事实，再列缺口；禁止只回答“信息不足”“上下文不足”。\n"
+                "严禁把未知内容脑补成事实，任何判断都要紧贴已提供的上下文。"
+            )
+            system_prompt += role_boundary
+            if context_parts:
+                system_prompt += "\n\n当前上下文：\n" + "\n".join(context_parts)
+            if knowledge_context:
+                system_prompt += knowledge_context
             user_prompt = normalized_message
         else:
             system_prompt = (
@@ -11432,6 +10435,13 @@ def create_app() -> FastAPI:
                 "- 关键结论用 **加粗**（加粗完整判断句，不要只加粗关键词）\n"
                 "- 根据问题复杂度自由决定总长度，但必须保持短段落、多分层的排版节奏\n"
             )
+            if has_mobile_context:
+                system_prompt += (
+                    "\n【移动端上下文使用要求】\n"
+                    "- 系统已经提供了移动端工作台、事件线、任务板或任务摘要，必须先提炼这些已知事实再回答\n"
+                    "- 如果只能回答一部分，也要先说清已知进展、卡点和下一步，再说明仍缺什么\n"
+                    "- 禁止无视已给出的上下文，直接退回空泛建议\n"
+                )
             if context_parts:
                 system_prompt += "\n当前上下文：\n" + "\n".join(context_parts)
             if dna_context:
@@ -11444,26 +10454,85 @@ def create_app() -> FastAPI:
             if knowledge_context:
                 system_prompt += knowledge_context
             user_prompt = normalized_message
-        chat_payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.5,
-            "top_p": 0.95,
-            "max_tokens": 2000 if (has_client_knowledge and intro_request) else (600 if terse_request else 2500),
-            "stream": False,
-            "enable_thinking": True,
-        }
-        read_timeout = 60.0 if (has_client_knowledge and intro_request) else 30.0
-        timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
-        try:
-            response = await asyncio.to_thread(
-                _sync_qwen_chat, api_key, chat_payload, timeout
-            )
-        except Exception as error:
-            raise HTTPException(status_code=502, detail=f"AI 回复失败：{error}") from error
+        if answer_mode != "missing_context":
+            chat_payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.35 if answer_mode == "limited_context" else 0.5,
+                "top_p": 0.95,
+                "max_tokens": 2000 if (has_client_knowledge and intro_request) else (700 if terse_request else 2200),
+                "stream": False,
+                "enable_thinking": True,
+            }
+            read_timeout = 60.0 if (has_client_knowledge and intro_request) else 30.0
+            timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
+            try:
+                response = await asyncio.to_thread(
+                    _sync_qwen_chat, api_key, chat_payload, timeout
+                )
+            except Exception as error:
+                raise HTTPException(status_code=502, detail=f"AI 回复失败：{error}") from error
+
+        context_bundle_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "clientId": resolved_client_id,
+                    "eventLineId": payload.eventLineId,
+                    "taskId": payload.taskId,
+                    "availableSources": sorted(available_sources),
+                    "missingSources": sorted(missing_sources),
+                    "staleSources": sorted(stale_sources),
+                    "message": normalized_message,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+        state.db.execute(
+            """
+            INSERT INTO cloud_context_bundle_cache(
+                id, organization_id, client_id, event_line_id, snapshot_hash, context_quality_level,
+                payload_json, available_sources_json, missing_sources_json, stale_sources_json, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(organization_id, snapshot_hash) DO UPDATE SET
+                client_id = excluded.client_id,
+                event_line_id = excluded.event_line_id,
+                context_quality_level = excluded.context_quality_level,
+                payload_json = excluded.payload_json,
+                available_sources_json = excluded.available_sources_json,
+                missing_sources_json = excluded.missing_sources_json,
+                stale_sources_json = excluded.stale_sources_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                new_id("ctxbundle"),
+                current_user.organizationId,
+                resolved_client_id,
+                payload.eventLineId,
+                context_bundle_hash,
+                context_level,
+                to_json(
+                    {
+                        "clientName": resolved_client_name,
+                        "contextParts": context_parts,
+                        "workspaceContext": workspace_context_text,
+                        "eventLineContext": event_line_context_text,
+                        "taskBoardContext": payload.taskBoardContext,
+                        "taskContext": payload.taskContext,
+                        "cockpitContext": cockpit_context_text,
+                    }
+                ),
+                to_json(sorted(available_sources)),
+                to_json(sorted(missing_sources)),
+                to_json(sorted(stale_sources)),
+                now_iso(),
+                now_iso(),
+            ),
+        )
 
         # Auto-ingest Q&A into vector knowledge store (fire-and-forget)
         async def _ingest_bg():
@@ -11480,9 +10549,23 @@ def create_app() -> FastAPI:
                 )
             except Exception as ingest_err:
                 logger.warning("Knowledge ingest failed: %s", ingest_err)
-        asyncio.create_task(_ingest_bg())
+        if answer_mode != "missing_context":
+            asyncio.create_task(_ingest_bg())
 
-        return ConsultationChatResponse(reply=response, model=model_name)
+        return ConsultationChatResponse(
+            reply=response,
+            model=model_name,
+            answerMode=answer_mode,
+            contextQuality=ConsultationContextQualityRecord(
+                level=context_level,
+                availableSources=sorted(available_sources),
+                missingSources=sorted(missing_sources),
+                staleSources=sorted(stale_sources),
+                contextBundleHash=context_bundle_hash,
+            ),
+            evidence=evidence[:8],
+            missingContext=missing_context[:8],
+        )
 
     @app.get("/api/public/smart-input-audio/{file_key}")
     def get_public_smart_input_audio(file_key: str) -> FileResponse:
@@ -11502,20 +10585,6 @@ def create_app() -> FastAPI:
         if row is None:
             raise HTTPException(status_code=404, detail="File not found")
         attachment_path = state.data_dir / str(row["path"])
-        if not attachment_path.exists() or not attachment_path.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-        media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
-        return FileResponse(attachment_path, media_type=media_type, filename=attachment_path.name)
-
-    @app.get("/api/public/expense-evidence-attachments/{attachment_id}")
-    def get_public_expense_evidence_attachment(attachment_id: str) -> FileResponse:
-        row = state.db.fetchone("SELECT * FROM expense_evidence_attachments WHERE id = ?", (attachment_id,))
-        if row is None:
-            raise HTTPException(status_code=404, detail="File not found")
-        storage_path = str(row["storage_path"] or "").strip()
-        if not storage_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        attachment_path = state.data_dir / storage_path
         if not attachment_path.exists() or not attachment_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         media_type = str(row["mime_type"] or mimetypes.guess_type(attachment_path.name)[0] or "application/octet-stream")
@@ -11960,8 +11029,7 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskSettingsRecord:
         current = _get_task_settings(state, current_user)
-        default_list_touched = "defaultListId" in payload.model_fields_set
-        next_default_list_id = payload.defaultListId if default_list_touched else current.defaultListId
+        next_default_list_id = payload.defaultListId if payload.defaultListId is not None else current.defaultListId
         if next_default_list_id:
             list_row = state.db.fetchone(
                 "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
@@ -12010,120 +11078,35 @@ def create_app() -> FastAPI:
             )
         return _get_task_settings(state, current_user)
 
-    @app.get("/api/v1/task-group-templates")
-    def list_task_group_templates(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> dict[str, list[TaskGroupTemplateRecord]]:
-        _migrate_legacy_task_group_templates(state, current_user.organizationId)
-        rows = state.db.fetchall(
-            """
-            SELECT *
-            FROM task_group_templates
-            WHERE organization_id = ?
-            ORDER BY updated_at DESC, created_at DESC
-            """,
-            (current_user.organizationId,),
-        )
-        return {"templates": [_task_group_template_record(row) for row in rows]}
-
-    @app.post("/api/v1/task-group-templates", response_model=TaskGroupTemplateRecord)
-    def create_task_group_template(
-        payload: TaskGroupTemplatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> TaskGroupTemplateRecord:
-        _migrate_legacy_task_group_templates(state, current_user.organizationId)
-        steps = _normalize_task_group_template_steps([item.model_dump() for item in payload.steps])
-        if not steps:
-            raise HTTPException(status_code=400, detail="至少需要保留一条模板步骤")
-        timestamp = now_iso()
-        template_id = new_id("tgtpl")
-        state.db.execute(
-            """
-            INSERT INTO task_group_templates(
-                id, organization_id, scope, work_object_id, name, scenario_desc, steps_json, legacy_module_id, created_at, updated_at
-            ) VALUES(?, ?, 'organization', ?, ?, ?, ?, NULL, ?, ?)
-            """,
-            (
-                template_id,
-                current_user.organizationId,
-                str(payload.workObjectId or "").strip() or None,
-                payload.name.strip(),
-                str(payload.scenarioDesc or "").strip(),
-                to_json(steps),
-                timestamp,
-                timestamp,
-            ),
-        )
-        row = state.db.fetchone(
-            "SELECT * FROM task_group_templates WHERE id = ? AND organization_id = ?",
-            (template_id, current_user.organizationId),
-        )
-        assert row is not None
-        return _task_group_template_record(row)
-
-    @app.patch("/api/v1/task-group-templates/{template_id}", response_model=TaskGroupTemplateRecord)
-    def update_task_group_template(
-        template_id: str,
-        payload: TaskGroupTemplatePayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> TaskGroupTemplateRecord:
-        row = state.db.fetchone(
-            "SELECT * FROM task_group_templates WHERE id = ? AND organization_id = ?",
-            (template_id, current_user.organizationId),
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="任务组模板不存在")
-        steps = _normalize_task_group_template_steps([item.model_dump() for item in payload.steps])
-        if not steps:
-            raise HTTPException(status_code=400, detail="至少需要保留一条模板步骤")
-        timestamp = now_iso()
-        state.db.execute(
-            """
-            UPDATE task_group_templates
-            SET work_object_id = ?, name = ?, scenario_desc = ?, steps_json = ?, updated_at = ?
-            WHERE id = ? AND organization_id = ?
-            """,
-            (
-                str(payload.workObjectId or "").strip() or None,
-                payload.name.strip(),
-                str(payload.scenarioDesc or "").strip(),
-                to_json(steps),
-                timestamp,
-                template_id,
-                current_user.organizationId,
-            ),
-        )
-        updated = state.db.fetchone(
-            "SELECT * FROM task_group_templates WHERE id = ? AND organization_id = ?",
-            (template_id, current_user.organizationId),
-        )
-        assert updated is not None
-        return _task_group_template_record(updated)
-
-    @app.delete("/api/v1/task-group-templates/{template_id}")
-    def delete_task_group_template(
-        template_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> dict[str, bool]:
-        row = state.db.fetchone(
-            "SELECT id FROM task_group_templates WHERE id = ? AND organization_id = ?",
-            (template_id, current_user.organizationId),
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="任务组模板不存在")
-        state.db.execute(
-            "DELETE FROM task_group_templates WHERE id = ? AND organization_id = ?",
-            (template_id, current_user.organizationId),
-        )
-        return {"deleted": True}
-
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def get_task_lists(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskListLibraryResponse:
-        _normalize_org_task_lists(state, current_user.organizationId)
         state.db.execute(
             "UPDATE task_lists SET scope = 'org' WHERE organization_id = ? AND (scope IS NULL OR scope = '')",
             (current_user.organizationId,),
         )
+        if state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = 'personal'",
+            (current_user.organizationId,),
+        ) == 0:
+            timestamp = now_iso()
+            for name, color, sort_order, is_default in [
+                ("健身", "#5B7BFE", 10, 1),
+                ("约会", "#EC4899", 11, 0),
+                ("吃饭", "#F59E0B", 12, 0),
+                ("学习", "#10B981", 13, 0),
+            ]:
+                list_id = new_id("list")
+                state.db.execute(
+                    """
+                    INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+                    VALUES(?, ?, ?, ?, ?, ?, 'personal', NULL)
+                    """,
+                    (list_id, current_user.organizationId, name, color, sort_order, is_default),
+                )
+            state.db.execute(
+                "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = 'personal' AND id NOT IN (SELECT id FROM task_lists WHERE organization_id = ? AND scope = 'personal' ORDER BY sort_order ASC LIMIT 1)",
+                (current_user.organizationId, current_user.organizationId),
+            )
         rows = state.db.fetchall(
             """
             SELECT *
@@ -12143,43 +11126,14 @@ def create_app() -> FastAPI:
         payload: TaskListMutationPayload,
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskListRecord:
-        if current_user.primaryRole != "admin":
+        if current_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
         trimmed_name = payload.name.strip()
         if not trimmed_name:
             raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
         list_id = (payload.id or "").strip() or new_id("list")
-        next_scope = "org"
-        existing_row = state.db.fetchone(
-            """
-            SELECT *
-            FROM task_lists
-            WHERE organization_id = ? AND scope = 'org' AND LOWER(TRIM(name)) = LOWER(TRIM(?))
-            ORDER BY is_default DESC, sort_order ASC, id ASC
-            LIMIT 1
-            """,
-            (current_user.organizationId, trimmed_name),
-        )
-        if existing_row:
-            existing_id = str(existing_row["id"])
-            next_is_default = bool(payload.isDefault)
-            if next_is_default:
-                state.db.execute(
-                    "UPDATE task_lists SET is_default = 0 WHERE organization_id = ? AND scope = 'org'",
-                    (current_user.organizationId,),
-                )
-            state.db.execute(
-                """
-                UPDATE task_lists
-                SET color = ?, description = ?, archived_at = NULL, is_default = CASE WHEN ? THEN 1 ELSE is_default END
-                WHERE id = ?
-                """,
-                ((payload.color or str(existing_row["color"]) or "#5B7BFE").strip(), str(payload.description or ""), 1 if next_is_default else 0, existing_id),
-            )
-            row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (existing_id,))
-            assert row is not None
-            return _task_list_record(row)
+        next_scope = payload.scope or "org"
         is_default = bool(payload.isDefault) or state.db.scalar(
             "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
             (current_user.organizationId, next_scope),
@@ -12195,19 +11149,10 @@ def create_app() -> FastAPI:
             )
         state.db.execute(
             """
-            INSERT INTO task_lists(id, organization_id, name, color, description, sort_order, is_default, scope, archived_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO task_lists(id, organization_id, name, color, sort_order, is_default, scope, archived_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, NULL)
             """,
-            (
-                list_id,
-                current_user.organizationId,
-                trimmed_name,
-                (payload.color or "#5B7BFE").strip(),
-                str(payload.description or ""),
-                sort_order,
-                1 if is_default else 0,
-                next_scope,
-            ),
+            (list_id, current_user.organizationId, trimmed_name, payload.color.strip(), sort_order, 1 if is_default else 0, next_scope),
         )
         row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
         assert row is not None
@@ -12225,22 +11170,10 @@ def create_app() -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
-        if current_user.primaryRole != "admin":
+        if current_user.primaryRole != "admin" and (payload.scope or str(row["scope"] or "org")) != "personal":
             raise HTTPException(status_code=403, detail="Only admin can update public task lists")
-        duplicate_row = state.db.fetchone(
-            """
-            SELECT id
-            FROM task_lists
-            WHERE organization_id = ? AND scope = 'org' AND id != ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))
-            ORDER BY is_default DESC, sort_order ASC, id ASC
-            LIMIT 1
-            """,
-            (current_user.organizationId, list_id, payload.name.strip()),
-        )
-        if duplicate_row:
-            raise HTTPException(status_code=400, detail="已存在同名清单，请直接使用或删除重复项")
         next_archived_at = str(row["archived_at"]) if row["archived_at"] else None
-        next_scope = "org"
+        next_scope = payload.scope or str(row["scope"] or "org")
         if payload.archived is True:
             active_list_count = state.db.scalar(
                 "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ? AND (archived_at IS NULL OR archived_at = '')",
@@ -12262,13 +11195,12 @@ def create_app() -> FastAPI:
         state.db.execute(
             """
             UPDATE task_lists
-            SET name = ?, color = ?, description = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
+            SET name = ?, color = ?, sort_order = ?, is_default = ?, scope = ?, archived_at = ?
             WHERE id = ?
             """,
             (
                 payload.name.strip(),
-                (payload.color or str(row["color"]) or "#5B7BFE").strip(),
-                str(payload.description or row["description"] or ""),
+                payload.color.strip(),
                 payload.sortOrder if payload.sortOrder is not None else int(row["sort_order"] or 0),
                 1 if next_is_default else 0,
                 next_scope,
@@ -12307,28 +11239,29 @@ def create_app() -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task list not found")
-        if current_user.primaryRole != "admin":
+        if current_user.primaryRole != "admin" and str(row["scope"] or "org") != "personal":
             raise HTTPException(status_code=403, detail="Only admin can delete public task lists")
-        linked_task_rows = state.db.fetchall("SELECT DISTINCT task_id FROM task_list_links WHERE list_id = ?", (list_id,))
-        for linked_task_row in linked_task_rows:
-            task_id = str(linked_task_row["task_id"])
-            remaining_ids = [
-                item.id
-                for item in _task_list_records_for_task(state, task_id)
-                if item.id != list_id
-            ]
-            next_list_ids = remaining_ids
-            _replace_task_list_links(state, task_id, next_list_ids)
-            next_primary_list_id = next_list_ids[0] if next_list_ids else None
-            state.db.execute(
-                "UPDATE tasks SET list_id = ?, updated_at = ? WHERE id = ?",
-                (next_primary_list_id, now_iso(), task_id),
-            )
-        state.db.execute("DELETE FROM task_list_links WHERE list_id = ?", (list_id,))
-        state.db.execute(
-            "UPDATE task_settings SET default_list_id = NULL WHERE organization_id = ? AND default_list_id = ?",
+        task_count = state.db.scalar(
+            "SELECT COUNT(1) AS count FROM tasks WHERE organization_id = ? AND list_id = ?",
             (current_user.organizationId, list_id),
         )
+        if task_count > 0:
+            raise HTTPException(status_code=400, detail="该清单已有任务，请先归档，不支持直接删除")
+        if state.db.scalar(
+            "SELECT COUNT(1) AS count FROM task_lists WHERE organization_id = ? AND scope = ?",
+            (current_user.organizationId, str(row["scope"] or "org")),
+        ) <= 1:
+            raise HTTPException(status_code=400, detail="至少保留一个清单")
+        if bool(int(row["is_default"] or 0)):
+            fallback_row = state.db.fetchone(
+                "SELECT id FROM task_lists WHERE organization_id = ? AND scope = ? AND id != ? ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1",
+                (current_user.organizationId, str(row["scope"] or "org"), list_id),
+            )
+            if fallback_row:
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE organization_id = ? AND scope = ?",
+                    (str(fallback_row["id"]), current_user.organizationId, str(row["scope"] or "org")),
+                )
         state.db.execute("DELETE FROM task_lists WHERE id = ?", (list_id,))
         return {"deleted": True}
 
@@ -12392,7 +11325,6 @@ def create_app() -> FastAPI:
             FROM tasks t
             LEFT JOIN task_collaborators tc ON tc.task_id = t.id
             WHERE t.organization_id = ?
-              AND COALESCE(t.source_type, '') != 'event_line_notification'
               AND (t.creator_id = ? OR tc.user_id = ?)
             ORDER BY t.updated_at DESC
             """,
@@ -12406,61 +11338,13 @@ def create_app() -> FastAPI:
             commonTags=[tag.name for tag in all_tags if tag.scope == "org"],
         )
 
-    @app.get("/api/v1/inbox", response_model=InboxAggregateResponse)
-    def list_inbox(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> InboxAggregateResponse:
-        pending_rows = state.db.fetchall(
-            """
-            SELECT DISTINCT t.*
-            FROM tasks t
-            JOIN task_collaborators tc_self ON tc_self.task_id = t.id
-            WHERE t.organization_id = ?
-              AND COALESCE(t.source_type, '') != 'event_line_notification'
-              AND tc_self.user_id = ?
-              AND tc_self.inbox_status = 'pending'
-            ORDER BY t.updated_at DESC
-            """,
-            (current_user.organizationId, current_user.id),
-        )
-        outbound_rows = state.db.fetchall(
-            """
-            SELECT DISTINCT t.*
-            FROM tasks t
-            JOIN task_collaborators tc_pending ON tc_pending.task_id = t.id
-            WHERE t.organization_id = ?
-              AND COALESCE(t.source_type, '') != 'event_line_notification'
-              AND COALESCE(t.progress_status, 'todo') != 'rejected'
-              AND (t.creator_id = ? OR t.owner_id = ?)
-              AND tc_pending.inbox_status = 'pending'
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM task_collaborators tc_self
-                  WHERE tc_self.task_id = t.id
-                    AND tc_self.user_id = ?
-                    AND tc_self.inbox_status = 'pending'
-              )
-            ORDER BY t.updated_at DESC
-            """,
-            (current_user.organizationId, current_user.id, current_user.id, current_user.id),
-        )
-        return InboxAggregateResponse(
-            pendingTasks=[_task_record(state, row, current_user.id) for row in pending_rows],
-            systemNotifications=_list_event_line_notifications_for_user(
-                state,
-                current_user.organizationId,
-                current_user.id,
-                unread_only=True,
-            ),
-            outboundPendingTasks=[_task_record(state, row, current_user.id) for row in outbound_rows],
-        )
-
     @app.post("/api/v1/tasks", response_model=TaskRecord)
     def create_task(payload: TaskCreatePayload, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskRecord:
-        normalized_list_ids = _normalize_task_list_ids(payload.listIds, payload.listId)
-        primary_list_id = normalized_list_ids[0] if normalized_list_ids else None
-        list_rows = _task_list_rows_by_ids(state, normalized_list_ids)
-        if len(list_rows) != len(normalized_list_ids) or any(item["archived_at"] for item in list_rows):
+        list_row = state.db.fetchone(
+            "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
+            (payload.listId, current_user.organizationId),
+        )
+        if not list_row or list_row["archived_at"]:
             raise HTTPException(status_code=400, detail="Invalid task list")
         collaborator_ids = [item for item in payload.collaboratorIds if item]
         owner_id = (payload.ownerId or "").strip() or None
@@ -12472,7 +11356,7 @@ def create_app() -> FastAPI:
         for user_id in ([owner_id] if owner_id else []) + collaborator_ids:
             _get_user_or_404(state, user_id)
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
-        requested_client_id = None if scope_mode == "PERSONAL_ONLY" else (payload.workObjectId or payload.clientId)
+        requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
         requested_event_line_id = None if scope_mode == "PERSONAL_ONLY" else payload.eventLineId
         requested_project_module_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectModuleId
         requested_project_flow_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectFlowId
@@ -12524,7 +11408,7 @@ def create_app() -> FastAPI:
                 requested_project_flow_id,
                 scope_mode,
                 payload.priority,
-                primary_list_id,
+                payload.listId,
                 payload.sourceType,
                 payload.sourceId,
                 business_category,
@@ -12538,7 +11422,6 @@ def create_app() -> FastAPI:
                 timestamp,
             ),
         )
-        _replace_task_list_links(state, task_id, normalized_list_ids)
         state.db.executemany(
             """
             INSERT INTO task_collaborators(
@@ -12607,12 +11490,6 @@ def create_app() -> FastAPI:
         next_owner_id = (payload.ownerId or "").strip() if owner_field_touched and payload.ownerId else None
         if not owner_field_touched:
             next_owner_id = str(row["owner_id"]) if row["owner_id"] else None
-        list_ids_field_touched = "listIds" in payload.model_fields_set
-        list_id_field_touched = "listId" in payload.model_fields_set
-        normalized_list_ids = _normalize_task_list_ids(
-            payload.listIds if list_ids_field_touched else None,
-            payload.listId if list_id_field_touched else None,
-        )
         next_collaborator_ids = [item for item in (payload.collaboratorIds if payload.collaboratorIds is not None else existing_collaborator_ids) if item]
         if next_owner_id and next_owner_id in next_collaborator_ids:
             next_collaborator_ids = [next_owner_id] + [item for item in next_collaborator_ids if item != next_owner_id]
@@ -12638,11 +11515,7 @@ def create_app() -> FastAPI:
         )
         owner_changed = owner_field_touched and next_owner_id != previous_owner_id
         _assert_task_edit_permission(state, current_user, row, content_changed, due_date_changed, owner_changed, status_changed)
-        if normalized_list_ids:
-            list_rows = _task_list_rows_by_ids(state, normalized_list_ids)
-            if len(list_rows) != len(normalized_list_ids) or any(item["archived_at"] for item in list_rows):
-                raise HTTPException(status_code=400, detail="Invalid task list")
-        elif payload.listId:
+        if payload.listId:
             list_row = state.db.fetchone(
                 "SELECT * FROM task_lists WHERE id = ? AND organization_id = ?",
                 (payload.listId, current_user.organizationId),
@@ -12656,13 +11529,7 @@ def create_app() -> FastAPI:
             next_project_module_id = None
             next_project_flow_id = None
         else:
-            next_client_id = (
-                payload.workObjectId
-                if "workObjectId" in payload.model_fields_set
-                else payload.clientId
-                if "clientId" in payload.model_fields_set
-                else row["client_id"]
-            )
+            next_client_id = payload.clientId if "clientId" in payload.model_fields_set else row["client_id"]
             next_event_line_id = payload.eventLineId if "eventLineId" in payload.model_fields_set else (str(row["event_line_id"]) if row["event_line_id"] else None)
             next_project_module_id = payload.projectModuleId if "projectModuleId" in payload.model_fields_set else row["project_module_id"]
             next_project_flow_id = payload.projectFlowId if "projectFlowId" in payload.model_fields_set else row["project_flow_id"]
@@ -12697,11 +11564,7 @@ def create_app() -> FastAPI:
             "title": payload.title or row["title"],
             "description": payload.description if payload.description is not None else row["description"],
             "priority": payload.priority or row["priority"],
-            "list_id": normalized_list_ids[0] if normalized_list_ids else (
-                ""
-                if list_ids_field_touched or list_id_field_touched
-                else row["list_id"]
-            ),
+            "list_id": payload.listId or row["list_id"],
             "start_date": payload.startDate if payload.startDate is not None else row["start_date"],
             "due_date": payload.dueDate if payload.dueDate is not None else row["due_date"],
             "duration_minutes": payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
@@ -12730,7 +11593,7 @@ def create_app() -> FastAPI:
                 merged["title"],
                 merged["description"],
                 merged["priority"],
-                merged["list_id"] or None,
+                merged["list_id"],
                 merged["start_date"],
                 merged["due_date"],
                 merged["duration_minutes"],
@@ -12751,11 +11614,6 @@ def create_app() -> FastAPI:
                 now_iso(),
                 task_id,
             ),
-        )
-        _replace_task_list_links(
-            state,
-            task_id,
-            normalized_list_ids if (list_ids_field_touched or list_id_field_touched) else [str(merged["list_id"] or "").strip()],
         )
         if payload.collaboratorIds is not None or owner_field_touched:
             state.db.execute("UPDATE tasks SET owner_id = ?, updated_at = ? WHERE id = ?", (next_owner_id, now_iso(), task_id))
@@ -13065,54 +11923,18 @@ def create_app() -> FastAPI:
             "UPDATE task_collaborators SET inbox_status = 'accepted', return_reason = NULL, handled_at = ?, updated_at = ? WHERE task_id = ? AND user_id = ?",
             (timestamp, timestamp, task_id, user_id),
         )
+        # Notification tasks go straight to done after acknowledgement (don't enter calendar/task list)
         task_row = _task_row_or_404(state, task_id)
+        if str(task_row["source_type"]) == "event_line_notification":
+            all_accepted = not state.db.fetchone(
+                "SELECT 1 FROM task_collaborators WHERE task_id = ? AND inbox_status = 'pending'", (task_id,),
+            )
+            if all_accepted:
+                state.db.execute(
+                    "UPDATE tasks SET progress_status = 'done', updated_at = ? WHERE id = ?", (timestamp, task_id),
+                )
         _record_activity(state, task_id, current_user.id, "accepted", {"userId": user_id})
-        return _task_record(state, task_row, current_user.id)
-
-    @app.get("/api/v1/inbox/notifications", response_model=InboxNotificationListResponse)
-    def list_inbox_notifications(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> InboxNotificationListResponse:
-        notifications = _list_event_line_notifications_for_user(
-            state,
-            current_user.organizationId,
-            current_user.id,
-            unread_only=True,
-        )
-        return InboxNotificationListResponse(notifications=notifications)
-
-    @app.post("/api/v1/inbox/notifications/{notification_id}/read", response_model=InboxNotificationRecord)
-    def mark_inbox_notification_read(
-        notification_id: str,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> InboxNotificationRecord:
-        row = _event_line_notification_row_for_user_or_404(state, notification_id, current_user)
-        timestamp = now_iso()
-        state.db.execute(
-            """
-            UPDATE event_line_notification_receipts
-            SET read_at = COALESCE(read_at, ?), updated_at = ?
-            WHERE notification_id = ? AND user_id = ?
-            """,
-            (timestamp, timestamp, notification_id, current_user.id),
-        )
-        refreshed = _event_line_notification_row_for_user_or_404(state, notification_id, current_user)
-        return _event_line_notification_record(state, refreshed)
-
-    @app.post("/api/v1/inbox/notifications/read-batch", response_model=InboxNotificationBatchReadResponse)
-    def mark_inbox_notifications_read_batch(
-        payload: InboxNotificationBatchReadPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
-    ) -> InboxNotificationBatchReadResponse:
-        notification_ids = [item.strip() for item in payload.notificationIds if item and item.strip()]
-        normalized_ids = list(dict.fromkeys(notification_ids))
-        if not normalized_ids:
-            return InboxNotificationBatchReadResponse(notificationIds=[], updatedCount=0)
-        updated_ids: list[str] = []
-        for notification_id in normalized_ids:
-            mark_inbox_notification_read(notification_id, current_user)
-            updated_ids.append(notification_id)
-        return InboxNotificationBatchReadResponse(notificationIds=updated_ids, updatedCount=len(updated_ids))
+        return _task_record(state, _task_row_or_404(state, task_id), current_user.id)
 
     @app.post("/api/v1/tasks/{task_id}/collaborators/{user_id}/return", response_model=TaskRecord)
     def return_task(

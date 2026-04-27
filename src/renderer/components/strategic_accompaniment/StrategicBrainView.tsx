@@ -1,22 +1,39 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   BrainCircuit, Sparkles, FileText, CheckCircle, MessageCircle,
-  GitBranch, BookOpen, Award, Layers, ChevronDown,
+  GitBranch, BookOpen, Award, Layers,
   AlertCircle, ClipboardList, Check, Folder, Target, FolderTree,
-  Activity, Lightbulb, Bot, Clock, User, PenLine, Calendar,
+  Activity, Bot, Clock, PenLine, Calendar,
   ArrowLeft, AlertTriangle, ChevronRight, XCircle,
-  Users, Flag, AlertOctagon, HelpCircle, CornerDownRight
+  Users, Flag, AlertOctagon, HelpCircle, CornerDownRight,
+  RefreshCw, Star, Trash2
 } from 'lucide-react';
-import { getBrainDashboard, type BrainDashboard, type BrainPulse, type BrainClientData } from '../../lib/api';
-
-// --- Mock Data ---
-
-const CLIENTS = ['全部客户', '为爱黔行', 'CFFC', '日慈基金会', '益语智库', '云南儿童资助研究', '顾源源', '顾源源文章'];
+import {
+  getClientProjectStructure,
+  getBrainDashboard,
+  getClientDigitalAssets,
+  getDigitalAssetDashboard,
+  getStrategicThoughts,
+  refreshStrategicThoughts,
+  reviewStrategicThought,
+  updateStrategicThoughtState,
+  type BrainDashboard,
+  type BrainPulse,
+  type DigitalAssetClientDetail,
+  type DigitalAssetClientSummary,
+  type DigitalAssetDashboard,
+  type DigitalAssetMapNode,
+  type DigitalAssetMetric,
+  type ProjectModule,
+  type StrategicThought,
+} from '../../lib/api';
+import type { GrowthContextLink, Task } from '../../../shared/types';
+import { StrategicLearningListPanel, type StrategicLearningTaskPayload } from './StrategicLearningListPanel';
 
 const TABS = [
   { id: 'pulse', label: '大脑脉搏' },
   { id: 'thoughts', label: '思考与研判' },
-  { id: 'clients', label: '项目认知' },
+  { id: 'clients', label: '数字资产中心' },
   { id: 'learning', label: '学习清单' }
 ];
 
@@ -34,202 +51,18 @@ const PULSE_METRICS_2 = [
   { icon: Layers, label: '经验沉淀', value: '5' },
 ];
 
-// Client name → client_id mapping (for task association)
-const CLIENT_ID_MAP: Record<string, string> = {
-  'CFFC': 'client_a4d1db29a7',
-  '为爱黔行': 'client_cffc',
-  '日慈基金会': 'client_284afd836e',
-  '益语智库': 'client_53d82aa249',
-  '云南儿童资助研究': 'client_bda0f1d379',
-  '顾源源': 'client_952be522fb',
-  '顾源源文章': 'client_30a392788c',
-};
-
 export type ThoughtTaskPayload = {
   suggestion: string;
   ceoComment: string;
   thoughtLine: string;
   clientId: string;
   dueDate: string;
+  thoughtId?: string;
+  sources?: StrategicThought['sources'];
+  evidenceCount?: number;
+  confidence?: number | null;
+  clientName?: string;
 };
-
-const THOUGHTS_DATA = [
-  {
-    id: 1,
-    line: '洪峰讨论赋能合作',
-    clientName: 'CFFC',
-    confidence: 85,
-    observation: '洪峰正在推动鸿鹄计划的 AI 技术合作，你已经跟他聊过 3 次，方向基本锁定在 AI 赋能方向。但合作方案的要点和 CFFC 侧的对接人目前还没有正式记录进系统。',
-    suggestion: '方向确认后最容易出现的问题是"共识停在口头"。建议本周做两件事：把合作要点写成一份简短备忘录，哪怕只有半页；同时确认 CFFC 侧的具体对接人和第一个时间节点。如果这周不落纸面，双方可能都觉得在推进，但实际没人动手。',
-    dueDateHint: '本周',
-    tags: [{ icon: MessageCircle, text: '3 次对话' }, { icon: GitBranch, text: '1 条事件线' }, { icon: Clock, text: '上次更新：本周' }]
-  },
-  {
-    id: 2,
-    line: '日慈战略陪伴',
-    clientName: '日慈基金会',
-    confidence: 58,
-    observation: '日慈 Q1 三个项目都进入了复盘阶段，笑雨和高老师的复盘记录已经进入系统。但教师赋能项目的项目设计部分有缺口，目前没有人在跟进补完。',
-    suggestion: '教师赋能的设计补完是当前最具体的卡点。如果这周不推进，Q2 的项目迭代就缺少 Q1 结论作为基础。建议指定一个人把教师赋能的设计缺口列成一份问题清单——不需要写完整方案，有清单就能让下一步有抓手。',
-    dueDateHint: '本周',
-    tags: [{ icon: FileText, text: '来自复盘数据' }, { icon: GitBranch, text: '1 条事件线' }]
-  },
-  {
-    id: 5,
-    isSystem: true,
-    line: '系统观察',
-    clientName: '',
-    confidence: undefined as number | undefined,
-    observation: 'W14 周复盘已创建但内容为空。已准备的 6 场会议没有一场完成全流程。当前系统中最活跃的信号来源是 AI 对话（549 条），但对话中的洞察还没有被结构化地沉淀下来。',
-    suggestion: '复盘和完整的会议记录是系统提升认知最快的两个渠道——比上传 100 份文档都有效，因为它们直接包含你们当下的判断和决策。建议本周至少完成一件：写一份有内容的周复盘，或者把一场会议走完全流程。做哪个都行，系统都能从中学到很多。',
-    dueDateHint: '本周',
-    tags: [{ icon: Bot, text: '来源：周复盘 + 会议系统' }]
-  }
-];
-
-const CLIENTS_DNA_DATA = [
-  {
-    name: 'CFFC', confidence: 85, stage: '战略陪伴中',
-    desc: '我对 CFFC 了解最深。读过他们 168 份文档，完成了组织、项目、团队、市场四篇 DNA 画像。我知道他们 Q2 的两个目标——提升项目传播清晰度和补齐捐赠人关系素材——都跟品牌表达有关。',
-    metrics: [
-      { icon: Folder, label: '168 文档' }, { icon: FileText, label: '4 篇 DNA' },
-      { icon: Activity, label: '3 事件线' }, { icon: Target, label: '2 个 Q2 目标' }
-    ]
-  },
-  {
-    name: '为爱黔行', confidence: 62, stage: '审计中',
-    desc: '91 份文档已读完，资料量在所有客户中排第二。庆华正在输出战略诊断提纲。但我还没有生成任何 DNA 画像——一旦诊断提纲完成，我建议立刻生成，能大幅提升认知结构。',
-    metrics: [
-      { icon: Folder, label: '91 文档' }, { icon: FileText, label: '0 篇 DNA' },
-      { icon: Activity, label: '1 事件线' }, { icon: FolderTree, label: '8 个文件夹' }
-    ],
-    alert: 'DNA 画像尚未生成——建议在诊断完成后立即创建'
-  },
-  {
-    name: '顾源源', confidence: 38, stage: '资料待补',
-    desc: '目前只有 1 份文档，没有 DNA 画像，也没有事件线。我对你个人项目的理解还非常初步。多跟我聊聊你在做什么，或者把相关资料放进来，我会学得很快。',
-    metrics: [
-      { icon: Folder, label: '1 文档' }, { icon: FileText, label: '0 篇 DNA' },
-      { icon: Activity, label: '0 事件线' }
-    ]
-  }
-];
-
-const LEARNING_REQUESTS = [
-  {
-    title: '完成一场完整的会议记录',
-    desc: '你准备了 6 场会议，但没有一场完成了全流程——从准备到纪要到提取决策。会议是我学习组织运转的最高效渠道。只要完成 1 场，我对相关客户的判断能力就会显著提升。',
-    btn1: '开一场会', btn2: '上传已有纪要'
-  }
-];
-
-// --- 详情页专属 MOCK 数据 ---
-const PROJECT_DETAILS: Record<string, any> = {
-  'CFFC': {
-    name: 'CFFC',
-    stage: '战略陪伴中',
-    confidence: 85,
-    docsCount: 168,
-    conversations: 276,
-    understanding: {
-      what: "CFFC 对外不再分散讲多个'产品群'，而是讲一个平台型业务群，用'业务层—网络层—资产层'的结构解释其如何运转、升级和产生行业复利。",
-      people: [
-        { name: '李超', role: '战略负责人' },
-        { name: '史成斌', role: '业务运营' },
-        { name: '吴艾思', role: '品牌传播' },
-        { name: '顾源源', role: '战略陪伴顾问' },
-        { name: '洪峰', role: '鸿鹄计划 AI 合作方' }
-      ],
-      stageDesc: "当前处于战略陪伴阶段。3 条活跃事件线：洪峰合作（85%，方向锁定待落地）、项目结项（14%，几乎无信息）、战略讨论会（70%，聚焦鸿鹄计划）。上一次有内容进来是洪峰合作相关的文档上传。",
-      goals: [] as string[],
-      challenges: [
-        "缺乏行业筹款下滑的量化数据",
-        "公众信任危机的案例缺少量化影响",
-        "资源本地化收缩缺少地域分布数据"
-      ],
-      boundaries: [
-        { level: 'missing', text: '"cffc 项目结项"事件线几乎无信息（conf 14%）', action: '补充结项报告，我就能判断交付质量和遗留问题' },
-        { level: 'weak', text: '团队介绍只有 829 字', action: '补充后我能判断"谁适合推什么"' },
-        { level: 'weak', text: '市场背景缺少筹款下滑数据', action: '补充后行业判断从定性变定量' }
-      ]
-    },
-    dimensions: [
-      { name: 'DNA 画像', status: 'ready', value: '4篇' },
-      { name: '深度分析', status: 'missing', value: '0次' },
-      { name: '会议记录', status: 'missing', value: '0场完成' },
-      { name: '业务目标', status: 'missing', value: '0个' },
-      { name: '业务模块', status: 'missing', value: '0个' },
-      { name: '关键流程', status: 'missing', value: '0条' },
-      { name: '复盘信号', status: 'weak', value: '有但空' },
-      { name: '任务与事件线', status: 'ready', value: '8任务3线' }
-    ],
-    supplements: [
-      {
-        name: '深度分析', status: 'missing',
-        desc: '深度分析是我对项目做过的系统性思考——不是扫一眼文档摘要，而是针对一个具体问题做过的深入推理。有了它，我在战略研判中能引用自己之前的分析结论，建议的逻辑链条会更严密。',
-        buttons: ['发起一次深度分析']
-      },
-      {
-        name: '会议记录', status: 'missing',
-        desc: '会议是我了解你们真实讨论和决策的唯一渠道。文档告诉我"事情是什么样的"，但会议告诉我"你们是怎么想的、怎么决定的"。完成一场完整的会议流程，我对这个项目的判断能力会有质的飞跃。',
-        buttons: ['开一场会', '上传已有纪要']
-      },
-      {
-        name: '业务目标', status: 'missing',
-        desc: '没有目标锚点，我无法判断什么算"进展"、什么算"偏离"。目前我只能描述正在发生什么，但无法评价这些事情对不对、快不快。设定哪怕一个核心目标，我的研判就能从描述变成评价。',
-        buttons: ['设定业务目标']
-      },
-      {
-        name: '复盘信号', status: 'weak',
-        desc: '复盘是我学习你们当周真实节奏的最快渠道——哪些事在推进、哪些卡住了、方向有没有变。它比文档更新鲜，比任务状态更有深度。每写一次复盘，我对这个项目下一周的研判质量都会明显提升。',
-        buttons: ['去写周复盘']
-      }
-    ]
-  },
-  '顾源源': {
-    name: '顾源源',
-    stage: '资料待补',
-    confidence: 38,
-    docsCount: 1,
-    conversations: 2,
-    understanding: {
-      what: null,
-      people: [] as Array<{ name: string; role: string }>,
-      stageDesc: null,
-      goals: [] as string[],
-      challenges: [] as string[],
-      boundaries: [
-        { level: 'missing', text: '我对这个项目的认知非常初步，只有 1 份文档', action: '上传任何项目相关资料都会显著提升我的理解' },
-        { level: 'missing', text: '没有任何 DNA 画像', action: '先生成组织介绍，我就能建立基本的认知框架' },
-        { level: 'missing', text: '没有事件线', action: '创建一条核心事件线，我就能开始追踪项目推进动态' },
-        { level: 'missing', text: '缺乏 AI 对话', action: '聊一次就能快速建立初步理解' }
-      ]
-    },
-    dimensions: [
-      { name: 'DNA 画像', status: 'missing', value: '0篇' },
-      { name: '深度分析', status: 'missing', value: '0次' },
-      { name: '会议记录', status: 'missing', value: '0场完成' },
-      { name: '业务目标', status: 'missing', value: '0个' },
-      { name: '业务模块', status: 'missing', value: '0个' },
-      { name: '关键流程', status: 'missing', value: '0条' },
-      { name: '复盘信号', status: 'missing', value: '0个' },
-      { name: '任务与事件线', status: 'missing', value: '0任务0线' }
-    ],
-    supplements: [
-      {
-        name: 'DNA 画像', status: 'missing',
-        desc: 'DNA 画像是我理解项目的基础框架——组织是谁、做什么业务、团队怎么分工、市场环境如何。没有它，我只能从零散的文档中拼凑理解，容易遗漏关键信息，也容易被单一文档的视角带偏。生成后，我后续收到的每一份新资料都能自动归位到正确的认知结构中。',
-        buttons: ['一键生成全部 DNA', '上传资料后生成']
-      },
-      {
-        name: '任务与事件线', status: 'missing',
-        desc: '任务和事件线是我追踪项目动态的基本信号源。没有它们，我只能基于静态文档做判断，无法感知项目的"脉搏"——谁在做什么、做到哪了、卡在哪了。',
-        buttons: ['创建事件线', '创建任务']
-      }
-    ]
-  }
-};
-
 
 // --- Helpers ---
 
@@ -247,20 +80,50 @@ const getConfBg = (conf?: number) => {
   return 'bg-red-50 text-red-600';
 };
 
-function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: (event: MouseEvent) => void) {
-  useEffect(() => {
-    const listener = (event: MouseEvent) => {
-      if (!ref.current || ref.current.contains(event.target as Node)) return;
-      handler(event);
-    };
-    document.addEventListener("mousedown", listener);
-    return () => document.removeEventListener("mousedown", listener);
-  }, [ref, handler]);
+const INTERNAL_KEY_SET = new Set([
+  'client_overview',
+  'org_overview',
+  'project_overview',
+  'main_contradiction',
+  'core_breakthrough',
+  'pending_material',
+  'pending_decision',
+]);
+
+const INTERNAL_KEY_REGEX = /^[a-z]+(?:_[a-z0-9]+)+$/;
+
+function _isInternalKeyText(value: string | null | undefined): boolean {
+  const normalized = (value || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return INTERNAL_KEY_SET.has(normalized) || INTERNAL_KEY_REGEX.test(normalized);
+}
+
+function _normalizeTextForUI(value: string | null | undefined): string {
+  const text = (value || '').trim();
+  if (!text) return '';
+  const compact = text.replace(/\s+/g, ' ');
+  if (_isInternalKeyText(compact)) return '系统发现一条待确认判断。';
+  return compact;
 }
 
 // --- Detail View Components ---
 
-function DetailHeader({ client, onBack }: { client: any; onBack: () => void }) {
+function DetailHeader({
+  clientName,
+  stageLabel,
+  readinessScore,
+  assetStage,
+  assetTrackTitle,
+  onBack,
+}: {
+  clientName: string;
+  stageLabel: string;
+  readinessScore: number | null;
+  assetStage?: string;
+  assetTrackTitle?: string;
+  onBack: () => void;
+}) {
+  const badgeText = assetStage ? `${assetStage} · ${assetTrackTitle || '组织资产型'}` : `数字资产进度 ${readinessScore ?? '--'}%`;
   return (
     <header className="sticky top-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-b border-slate-200/60 z-50 px-6 sm:px-8 py-4 flex items-center justify-between shadow-sm">
       <div className="flex items-center gap-4">
@@ -272,255 +135,252 @@ function DetailHeader({ client, onBack }: { client: any; onBack: () => void }) {
           <ArrowLeft size={16} className="text-slate-600" />
         </button>
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold text-slate-800">{client.name}</h1>
+          <h1 className="text-xl font-bold text-slate-800">{clientName}</h1>
           <span className="bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-bold px-2.5 py-1 rounded-lg">
-            {client.stage}
+            {stageLabel || '待判断'}
           </span>
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-50 border border-slate-100">
-          <Folder size={12} className="text-slate-400" />
-          <span className="text-[12px] font-semibold text-slate-500">{client.docsCount} 文档</span>
-        </div>
-        <div className={`px-3 py-1.5 rounded-full text-[12px] font-bold flex items-center gap-1.5 ${getConfBg(client.confidence)}`}>
+        <div className={`px-3 py-1.5 rounded-full text-[12px] font-bold flex items-center gap-1.5 ${getConfBg(readinessScore ?? undefined)}`}>
           <Activity size={14} className="opacity-80" />
-          Confidence {client.confidence}%
+          {badgeText}
         </div>
       </div>
     </header>
   );
 }
 
-function DimensionGrid({ dimensions }: { dimensions: any[] }) {
-  const readyCount = dimensions.filter((d: any) => d.status === 'ready').length;
+const clampPercent = (value: number | null | undefined) => Math.max(0, Math.min(100, Number(value || 0)));
+
+const metricValue = (metrics: DigitalAssetMetric[], key: string) => metrics.find((item) => item.key === key)?.value ?? 0;
+
+const STAGE_ORDER = ['资料整理期', '组织画像期', '结构计算期', '机制洞察期', '机会生成期'];
+const NODE_STAGE_ORDER = ['整理', '画像', '计算', '洞察', '机会'];
+
+const stageRank = (stage: string | null | undefined) => Math.max(0, STAGE_ORDER.indexOf(stage || ''));
+
+function AbilityLadder({ currentStage }: { currentStage: string }) {
+  const current = stageRank(currentStage);
   return (
-    <div className="mt-8">
-      <div className="flex items-baseline justify-between mb-4 px-1">
-        <h2 className="text-[15px] font-bold text-slate-800">认知维度</h2>
-        <span className="text-[12px] font-bold text-blue-600">就绪 {readyCount}/8</span>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-        {dimensions.map((dim: any, i: number) => {
-          const isReady = dim.status === 'ready';
-          const isWeak = dim.status === 'weak';
-          return (
-            <div key={i} className="bg-white rounded-[16px] border border-slate-100 p-3.5 min-h-[80px] shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-              <div className="flex items-start gap-2 mb-2">
-                {isReady && <CheckCircle size={12} className="text-emerald-500 mt-0.5 shrink-0" />}
-                {isWeak && <AlertTriangle size={12} className="text-amber-500 mt-0.5 shrink-0" />}
-                {!isReady && !isWeak && <XCircle size={12} className="text-red-500 mt-0.5 shrink-0" />}
-                <span className={`text-[12px] font-bold ${isReady || isWeak ? 'text-slate-800' : 'text-slate-400'}`}>
-                  {dim.name}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 pl-5">
-                {isReady && <span className="text-[11px] font-semibold text-slate-500">{dim.value}</span>}
-                {isWeak && (
-                  <>
-                    <span className="text-[11px] font-semibold text-slate-500">{dim.value}</span>
-                    <span className="bg-orange-50 text-orange-600 text-[9px] font-bold px-1.5 py-0.5 rounded-full">薄弱</span>
-                  </>
-                )}
-                {!isReady && !isWeak && (
-                  <span className="bg-red-50 text-red-600 text-[9px] font-bold px-1.5 py-0.5 rounded-full">未就绪</span>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+    <div className="flex flex-wrap items-center gap-2">
+      {NODE_STAGE_ORDER.map((label, index) => (
+        <div key={label} className="flex items-center gap-2">
+          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${
+            index <= current
+              ? 'border-blue-100 bg-blue-50 text-blue-600'
+              : 'border-slate-100 bg-white text-slate-400'
+          }`}>
+            {label}
+          </span>
+          {index < NODE_STAGE_ORDER.length - 1 && <ChevronRight size={12} className="text-slate-300" />}
+        </div>
+      ))}
     </div>
   );
 }
 
-function ProjectDetailView({ clientId, onBack }: { clientId: string; onBack: () => void }) {
-  const data = PROJECT_DETAILS[clientId] || PROJECT_DETAILS['CFFC'];
-  const u = data.understanding;
+const nodeMaturityPercent = (node: DigitalAssetMapNode) => Math.max(0, Math.min(100, Math.round(node.maturityPercent ?? node.coverageScore ?? 0)));
+
+const maturityBarClass = (value: number) => {
+  if (value >= 75) return 'bg-emerald-500';
+  if (value >= 50) return 'bg-blue-500';
+  if (value >= 30) return 'bg-amber-500';
+  return 'bg-rose-500';
+};
+
+function AssetMaturityRows({ nodes }: { nodes: DigitalAssetMapNode[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleNodes = expanded ? nodes : nodes.slice(0, 8);
+  return (
+    <section className="mt-8">
+      <div className="flex items-baseline justify-between mb-4 px-1">
+        <div>
+          <h2 className="text-[15px] font-bold text-slate-800">资料成熟度进度条</h2>
+          <p className="mt-1 text-[12px] text-slate-400">百分比表示资料质量成熟度，不按文件数量直接打分。</p>
+        </div>
+        <span className="text-[12px] font-bold text-blue-600">资料类型 {nodes.length}</span>
+      </div>
+      <div className="rounded-[24px] border border-slate-100 bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+        <div className="space-y-3">
+          {visibleNodes.map((node) => {
+            const maturity = nodeMaturityPercent(node);
+            return (
+              <div key={node.key} className="rounded-[18px] border border-slate-100 bg-slate-50/50 px-4 py-4">
+                <div className="grid grid-cols-1 xl:grid-cols-[200px_minmax(240px,1fr)] gap-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      {maturity >= 50 ? <CheckCircle size={14} className="text-emerald-500 shrink-0" /> : <AlertCircle size={14} className="text-amber-500 shrink-0" />}
+                      <span className="text-[14px] font-bold text-slate-800">{node.label}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-[1.6] text-slate-400">{node.description}</p>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-3">
+                      <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-200/70">
+                        <div className={`h-full rounded-full ${maturityBarClass(maturity)}`} style={{ width: `${maturity}%` }} />
+                      </div>
+                      <span className="w-11 text-right text-[13px] font-bold tabular-nums text-slate-800">{maturity}%</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-[10px] font-bold text-emerald-600">已看到</div>
+                        <p className="mt-1 text-[12px] leading-[1.75] text-slate-600">{node.seenSummary || '已看到部分资料线索。'}</p>
+                      </div>
+                      <div>
+                        <div className="text-[10px] font-bold text-amber-600">还缺</div>
+                        <p className="mt-1 text-[12px] leading-[1.75] text-slate-600">{node.missingSummary || '还缺一份能持续复盘这类资料的整理表。'}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {nodes.length > 8 && (
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="mt-4 w-full rounded-[14px] border border-slate-100 bg-white px-4 py-2 text-[12px] font-bold text-blue-600 hover:bg-blue-50 transition-colors"
+          >
+            {expanded ? '收起资料类型' : `查看更多资料类型（${nodes.length - 8}）`}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DigitalAssetMetricStrip({ metrics }: { metrics: DigitalAssetMetric[] }) {
+  const visible = metrics.filter((metric) => ['documents', 'memoryFacts', 'eventLines', 'evidenceCards', 'themeClusters', 'openQuestions', 'judgments'].includes(metric.key));
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2.5">
+      {visible.map((metric) => (
+        <div key={metric.key} className="rounded-[16px] border border-slate-100 bg-white/80 px-3.5 py-3">
+          <div className="text-[10px] font-bold text-slate-400">{metric.label}</div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="text-[20px] font-bold text-slate-800 tabular-nums">{metric.value}</span>
+            {metric.hint && <span className="text-[10px] font-semibold text-slate-400">{metric.hint}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack: () => void }) {
+  const [detail, setDetail] = useState<DigitalAssetClientDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError(null);
+    getClientDigitalAssets(clientId)
+      .then((result) => {
+        if (!mounted) return;
+        setDetail(result);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        setError(err instanceof Error ? err.message : '加载失败');
+        setDetail(null);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [clientId]);
+
+  if (loading) {
+    return (
+      <div className="animate-in fade-in duration-300">
+        <DetailHeader clientName="数字资产中心" stageLabel="加载中" readinessScore={null} onBack={onBack} />
+        <div className="max-w-full mx-auto px-6 py-8 pb-24 text-[13px] text-slate-500">正在计算组织数字资产...</div>
+      </div>
+    );
+  }
+
+  if (error || !detail) {
+    return (
+      <div className="animate-in fade-in duration-300">
+        <DetailHeader clientName="数字资产中心" stageLabel="资料不足" readinessScore={null} onBack={onBack} />
+        <div className="max-w-full mx-auto px-6 py-8 pb-24">
+          <div className="rounded-2xl border border-amber-100 bg-amber-50 px-5 py-4">
+            <p className="text-[14px] font-bold text-amber-700">暂时无法生成数字资产中心</p>
+            <p className="text-[13px] mt-2 text-amber-700/80">建议先补充资料或稍后重试。{error ? `（${error}）` : ''}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const documentCount = metricValue(detail.sourceMetrics, 'documents');
+  const memoryCount = metricValue(detail.sourceMetrics, 'memoryFacts');
+  const evidenceCount = metricValue(detail.sourceMetrics, 'evidenceCards');
 
   return (
     <div className="animate-in fade-in duration-300">
-      <DetailHeader client={data} onBack={onBack} />
+      <DetailHeader
+        clientName={detail.name}
+        stageLabel={detail.stage || '待判断'}
+        readinessScore={detail.stageProgress}
+        assetStage={detail.assetStage}
+        assetTrackTitle={detail.assetTrackTitle}
+        onBack={onBack}
+      />
       <div className="max-w-full mx-auto px-6 py-8 pb-24">
-        {/* ❶ 我对这个项目的理解 */}
         <section
-          className="rounded-[28px] border border-blue-100 p-6 sm:p-8 relative"
+          className="rounded-[28px] border border-blue-100 p-6 sm:p-8 relative overflow-hidden"
           style={{
-            backgroundImage: 'radial-gradient(circle at top left, rgba(51,92,254,0.04), transparent 40%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
-            boxShadow: '0 10px 40px -10px rgba(51,92,254,0.06)'
+            backgroundImage: 'linear-gradient(135deg, rgba(37,99,235,0.08), rgba(20,184,166,0.06) 42%, rgba(255,255,255,0) 78%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+            boxShadow: '0 10px 40px -10px rgba(15,23,42,0.08)'
           }}
         >
-          <div className="inline-flex items-center gap-1.5 bg-blue-50/80 border border-blue-100/80 rounded-full px-3.5 py-1.5 mb-6 shadow-sm">
-            <BrainCircuit size={14} className="text-blue-600" />
-            <span className="text-[12px] font-bold text-blue-600 tracking-wide">系统对项目的完整认知</span>
-          </div>
-          <div className="space-y-7">
-            {/* 做什么 */}
-            <div>
-              <h3 className="text-[13px] font-bold text-slate-800 mb-2.5 flex items-center gap-1.5">
-                <Target size={14} className="text-blue-500" /> 这个项目是做什么的
-              </h3>
-              {u.what ? (
-                <p className="text-[13px] leading-[2.0] text-slate-600 font-medium pl-5">{u.what}</p>
-              ) : (
-                <p className="text-[13px] leading-[2.0] text-slate-400 italic pl-5">"我还不了解这个项目的基本情况。上传一份组织介绍或项目说明，我就能建立起初步认知。"</p>
-              )}
-            </div>
-            {/* 关键人物 */}
-            <div>
-              <h3 className="text-[13px] font-bold text-slate-800 mb-2.5 flex items-center gap-1.5">
-                <Users size={14} className="text-blue-500" /> 关键人物
-              </h3>
-              {u.people && u.people.length > 0 ? (
-                <div className="bg-slate-50/80 rounded-[14px] p-3 border border-slate-100 ml-5">
-                  {u.people.map((p: any, i: number) => (
-                    <div key={i} className="flex items-center gap-3 py-1.5">
-                      <span className="text-[13px] font-bold text-slate-800 w-16">{p.name}</span>
-                      <span className="text-[13px] text-slate-500">— {p.role}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[13px] leading-[2.0] text-slate-400 italic pl-5">"我还不知道这个项目的关键人物。补充团队介绍 DNA 或在对话中告诉我。"</p>
-              )}
-            </div>
-            {/* 阶段 */}
-            <div>
-              <h3 className="text-[13px] font-bold text-slate-800 mb-2.5 flex items-center gap-1.5">
-                <Activity size={14} className="text-blue-500" /> 当前阶段与推进状态
-              </h3>
-              {u.stageDesc ? (
-                <p className="text-[13px] leading-[2.0] text-slate-600 font-medium pl-5">{u.stageDesc}</p>
-              ) : (
-                <p className="text-[13px] leading-[2.0] text-slate-400 italic pl-5">"当前阶段：待导入资料。没有活跃的事件线。我无法追踪这个项目的动态推进——建议创建至少一条事件线来记录核心工作流。"</p>
-              )}
-            </div>
-            {/* 目标 */}
-            <div>
-              <h3 className="text-[13px] font-bold text-slate-800 mb-2.5 flex items-center gap-1.5">
-                <Flag size={14} className="text-blue-500" /> 业务目标
-              </h3>
-              {u.goals && u.goals.length > 0 ? (
-                <ul className="text-[13px] leading-[2.0] text-slate-600 font-medium list-decimal pl-9">
-                  {u.goals.map((g: string, i: number) => <li key={i}>{g}</li>)}
-                </ul>
-              ) : (
-                <p className="text-[13px] leading-[2.0] text-slate-400 italic pl-5">"我还不知道这个项目当前的核心目标。没有目标锚点，我的研判就缺少方向参照——不知道什么算'推进了'、什么算'偏了'。"</p>
-              )}
-            </div>
-            {/* 挑战 */}
-            <div>
-              <h3 className="text-[13px] font-bold text-slate-800 mb-2.5 flex items-center gap-1.5">
-                <AlertOctagon size={14} className="text-blue-500" /> 主要挑战与风险
-              </h3>
-              {u.challenges && u.challenges.length > 0 ? (
-                <div className="space-y-2 pl-5">
-                  {u.challenges.map((c: string, i: number) => (
-                    <div key={i} className="flex items-start gap-2">
-                      <AlertTriangle size={14} className="text-orange-500 mt-1 shrink-0" />
-                      <span className="text-[13px] leading-[1.8] text-slate-700 font-medium">{c}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-[13px] leading-[2.0] text-slate-400 italic pl-5">"暂未识别到明确的挑战信号。随着更多复盘和会议记录进入系统，我会逐渐发现需要关注的问题。"</p>
-              )}
-            </div>
-            {/* 认知边界 */}
-            <div>
-              <h3 className="text-[13px] font-bold text-slate-800 mb-3.5 flex items-center gap-1.5">
-                <HelpCircle size={14} className="text-blue-500" /> 认知边界 — 我不确定的地方
-              </h3>
-              <div className="space-y-2.5 pl-5">
-                {u.boundaries.map((b: any, i: number) => (
-                  <div key={i} className={`p-4 rounded-[16px] border ${b.level === 'missing' ? 'bg-red-50/50 border-red-100' : 'bg-orange-50/50 border-orange-100'}`}>
-                    <div className="flex items-start gap-2 mb-1.5">
-                      {b.level === 'missing' ? (
-                        <XCircle size={14} className="text-red-500 mt-[2px] shrink-0" />
-                      ) : (
-                        <AlertTriangle size={14} className="text-orange-500 mt-[2px] shrink-0" />
-                      )}
-                      <span className={`text-[13px] font-bold ${b.level === 'missing' ? 'text-red-800' : 'text-orange-800'}`}>{b.text}</span>
-                    </div>
-                    <div className="flex items-start gap-1.5 pl-5">
-                      <CornerDownRight size={14} className="text-slate-400 mt-[2px] shrink-0" />
-                      <span className="text-[12px] leading-[1.7] text-slate-600 font-semibold">{b.action}</span>
-                    </div>
-                  </div>
-                ))}
+          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-8">
+            <div className="max-w-3xl">
+              <div className="inline-flex items-center gap-1.5 bg-blue-50/80 border border-blue-100/80 rounded-full px-3.5 py-1.5 mb-5 shadow-sm">
+                <BrainCircuit size={14} className="text-blue-600" />
+                <span className="text-[12px] font-bold text-blue-600 tracking-wide">组织资产阶段</span>
               </div>
+              <h2 className="text-[24px] font-bold text-slate-900 tracking-tight mb-3">
+                {detail.assetStage} · {detail.assetTrackTitle}
+              </h2>
+              <p className="text-[14px] leading-[1.9] text-slate-700 font-medium">
+                {detail.understandingStatement}
+              </p>
             </div>
-          </div>
-        </section>
-
-        {/* ❷ 认知维度看板 */}
-        <DimensionGrid dimensions={data.dimensions} />
-
-        {/* ❸ 帮我补充 */}
-        {data.supplements.length > 0 && (
-          <section className="mt-10">
-            <div className="flex items-baseline justify-between mb-4 px-1">
-              <h2 className="text-[15px] font-bold text-slate-800">帮我补充</h2>
-              <span className="text-[12px] font-medium text-slate-400">每一步都让我的判断更准确</span>
-            </div>
-            <div className="space-y-3">
-              {data.supplements.map((sup: any, i: number) => (
-                <div key={i} className="bg-white border border-slate-200 rounded-[20px] p-5 shadow-sm hover:border-slate-300 transition-colors">
-                  <div className="flex items-center gap-2.5 mb-3">
-                    {sup.status === 'missing' ? (
-                      <XCircle size={16} className="text-red-500 shrink-0" />
-                    ) : (
-                      <AlertTriangle size={16} className="text-amber-500 shrink-0" />
-                    )}
-                    <h3 className="text-[14px] font-bold text-slate-800">{sup.name}</h3>
-                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${sup.status === 'missing' ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}`}>
-                      {sup.status === 'missing' ? '缺失' : '薄弱'}
-                    </span>
+            <div className="grid grid-cols-3 gap-2.5 min-w-[320px]">
+              {[
+                { label: '沉淀经验', value: `${detail.depositXp} XP`, icon: Award },
+                { label: '下一阶段', value: detail.nextStage || '继续沉淀', icon: Target },
+                { label: '成长模式', value: detail.growthMode || '均衡成长', icon: Layers },
+                { label: '证据卡', value: evidenceCount.toLocaleString(), icon: CheckCircle },
+                { label: '资料沉淀', value: documentCount.toLocaleString(), icon: FileText },
+                { label: '组织记忆', value: memoryCount.toLocaleString(), icon: BrainCircuit },
+              ].map((item) => (
+                <div key={item.label} className="rounded-[18px] bg-white/80 border border-slate-100 px-4 py-3 shadow-sm">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400">
+                    <item.icon size={12} />
+                    {item.label}
                   </div>
-                  <p className="text-[13px] leading-[1.8] text-slate-600 font-medium mb-4 pl-[26px]">{sup.desc}</p>
-                  <div className="flex flex-wrap items-center gap-2 pl-[26px]">
-                    {sup.buttons.map((btn: string, idx: number) => (
-                      <button key={idx} type="button" className={`rounded-xl px-4 py-2 text-[12px] font-bold transition-colors shadow-sm ${
-                        idx === 0
-                          ? 'bg-slate-800 text-white hover:bg-slate-700'
-                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-                      }`}>
-                        {btn}
-                      </button>
-                    ))}
-                  </div>
+                  <div className="mt-1 text-[20px] font-bold text-slate-800 tabular-nums">{item.value}</div>
                 </div>
               ))}
             </div>
-          </section>
-        )}
-
-        {/* ❹ 澄清入口 */}
-        <section className="mt-8">
-          <button
-            type="button"
-            className="w-full group text-left p-5 rounded-[22px] border border-blue-100 relative overflow-hidden transition-all hover:shadow-[0_4px_16px_rgba(51,92,254,0.08)]"
-            style={{ background: 'radial-gradient(circle at top left, rgba(51,92,254,0.04), transparent 40%), #fff' }}
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <MessageCircle size={18} className="text-blue-600" />
-                  <h3 className="text-[14px] font-bold text-slate-800">以上理解有偏差？跟我聊聊</h3>
-                </div>
-                <p className="text-[12px] leading-[1.7] text-slate-500 font-medium pl-6 max-w-[90%]">
-                  直接告诉我哪里理解错了。你的纠正是我提升最快的方式——比上传 10 份文档都有效。
-                </p>
-                <div className="pl-6 mt-2">
-                  <span className="text-[11px] font-semibold text-slate-400">已有 {data.conversations} 条对话记录</span>
-                </div>
-              </div>
-              <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center shrink-0 group-hover:bg-blue-100 transition-colors">
-                <ChevronRight size={16} className="text-blue-500" />
-              </div>
-            </div>
-          </button>
+          </div>
         </section>
+
+        <section className="mt-6">
+          <DigitalAssetMetricStrip metrics={detail.sourceMetrics} />
+        </section>
+
+        <AssetMaturityRows nodes={detail.assetMapNodes || []} />
       </div>
     </div>
   );
@@ -595,94 +455,182 @@ function PulseTab({ pulse }: { pulse: BrainPulse | null }) {
   );
 }
 
-function ThoughtCard({ thought, onCreateTask }: { thought: any; onCreateTask?: (payload: ThoughtTaskPayload) => void }) {
+const getThoughtStatusMeta = (thought: StrategicThought): { text: string; className: string } | null => {
+  if (thought.status === 'confirmed') return { text: '已确认', className: 'bg-emerald-50 text-emerald-600 border border-emerald-100' };
+  if (thought.status === 'task_created') return { text: '已转任务', className: 'bg-blue-50 text-blue-600 border border-blue-100' };
+  if (thought.isSystem || thought.scope === 'system') return { text: '系统观察', className: 'bg-slate-100 text-slate-500 border border-slate-200' };
+  return null;
+};
+
+const INSIGHT_TYPE_META: Record<string, { text: string; className: string }> = {
+  strategic_shift: { text: '战略转型', className: 'bg-blue-50 text-blue-600 border border-blue-100' },
+  risk_signal: { text: '风险研判', className: 'bg-rose-50 text-rose-600 border border-rose-100' },
+  opportunity_window: { text: '机会窗口', className: 'bg-emerald-50 text-emerald-600 border border-emerald-100' },
+  execution_bottleneck: { text: '执行瓶颈', className: 'bg-amber-50 text-amber-600 border border-amber-100' },
+  narrative_upgrade: { text: '叙事升级', className: 'bg-violet-50 text-violet-600 border border-violet-100' },
+  operating_model: { text: '运营模型', className: 'bg-cyan-50 text-cyan-600 border border-cyan-100' },
+};
+
+const getInsightTypeMeta = (thought: StrategicThought): { text: string; className: string } => {
+  if (thought.insightType && INSIGHT_TYPE_META[thought.insightType]) return INSIGHT_TYPE_META[thought.insightType];
+  return { text: '分析信号', className: 'bg-slate-50 text-slate-500 border border-slate-100' };
+};
+
+function ThoughtCard({
+  thought,
+  onCreateTask,
+  onReview,
+  onToggleFavorite,
+  onDelete,
+}: {
+  thought: StrategicThought;
+  onCreateTask?: (payload: ThoughtTaskPayload) => void;
+  onReview: (thoughtId: string, action: 'confirm' | 'dismiss', note: string) => Promise<void>;
+  onToggleFavorite: (thought: StrategicThought) => Promise<void>;
+  onDelete: (thought: StrategicThought) => Promise<void>;
+}) {
   const [isEditing, setIsEditing] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(false);
-  const [reviewText, setReviewText] = useState('');
-  const [taskCreated, setTaskCreated] = useState(false);
+  const [reviewText, setReviewText] = useState(thought.review?.note || '');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const statusMeta = getThoughtStatusMeta(thought);
+  const typeMeta = getInsightTypeMeta(thought);
+  const normalizedLine = _normalizeTextForUI(thought.line) || '系统发现一条分析信号';
+  const normalizedInsight = _normalizeTextForUI(thought.insightText || thought.observation) || '系统发现一条值得关注的客户洞察。';
+  const normalizedFuture = _normalizeTextForUI(thought.futureJudgment || thought.whyItMatters || '');
+  const normalizedAction = _normalizeTextForUI(thought.recommendedAction || thought.suggestion) || '建议将这条洞察转成下一步行动。';
+
+  const handleConfirm = async () => {
+    setIsSubmitting(true);
+    try {
+      await onReview(thought.id, 'confirm', reviewText.trim());
+      setIsEditing(false);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDismiss = async () => {
+    setIsSubmitting(true);
+    try {
+      await onReview(thought.id, 'dismiss', reviewText.trim());
+      setIsEditing(false);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const handleCreateTask = () => {
-    // If there's a comment, save it as review first
-    if (reviewText.trim()) {
-      setIsSubmitted(true);
-      setIsEditing(false);
-    }
-    setTaskCreated(true);
-
-    // Build the task description: suggestion + optional CEO comment
-    const clientId = thought.clientName ? (CLIENT_ID_MAP[thought.clientName] || '') : '';
     const today = new Date();
     const endOfWeek = new Date(today);
     endOfWeek.setDate(today.getDate() + (7 - today.getDay()));
     const dueDate = thought.dueDateHint === '本周' ? endOfWeek.toISOString().slice(0, 10) : '';
-
     onCreateTask?.({
-      suggestion: thought.suggestion,
+      suggestion: normalizedAction,
       ceoComment: reviewText.trim(),
-      thoughtLine: thought.line,
-      clientId,
+      thoughtLine: normalizedLine,
+      clientId: thought.clientId || '',
       dueDate,
+      thoughtId: thought.id,
+      sources: thought.sources,
+      evidenceCount: thought.evidenceCount,
+      confidence: thought.confidence ?? null,
+      clientName: thought.clientName,
     });
-  };
-
-  const handleConfirm = () => {
-    if (reviewText.trim()) {
-      setIsSubmitted(true);
-      setIsEditing(false);
-    }
   };
 
   return (
     <div className="break-inside-avoid bg-white rounded-[24px] border border-slate-100 p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] relative hover:shadow-[0_8px_30px_rgba(0,0,0,0.04)] transition-all duration-300">
-      <div className="flex items-center justify-between mb-5">
-        <div className="flex items-center gap-2">
-          {!thought.isSystem && <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getConfColor(thought.confidence) }} />}
-          <span className={`text-[13px] font-bold ${thought.isSystem ? 'text-slate-500' : 'text-slate-800'}`}>{thought.line}</span>
+      <div className="flex items-start justify-between mb-5 gap-4">
+        <div className="flex items-start gap-2">
+          <div className="w-2 h-2 rounded-full mt-1.5 bg-blue-500" />
+          <div>
+            <span className={`text-[13px] font-bold ${thought.isSystem ? 'text-slate-600' : 'text-slate-800'}`}>{normalizedLine}</span>
+            {thought.clientName && thought.clientName !== '系统观察' && (
+              <p className="text-[11px] text-slate-400 mt-1">{thought.clientName}</p>
+            )}
+          </div>
         </div>
-        <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${getConfBg(thought.confidence)}`}>
-          {thought.isSystem ? '系统观察' : `Conf ${thought.confidence}%`}
-        </div>
-      </div>
-      <div className="mb-4">
-        <span className="inline-block text-[10px] font-bold text-slate-400 tracking-[0.5px] uppercase mb-2">我观察到</span>
-        <p className="text-[13px] leading-[1.9] text-slate-600 font-medium">{thought.observation}</p>
-      </div>
-      <div>
-        <span className="inline-block text-[10px] font-bold text-blue-600 tracking-[0.5px] uppercase mb-2">我的建议</span>
-        <p className="text-[13px] leading-[1.9] text-slate-700 font-medium">{thought.suggestion}</p>
-      </div>
-      <div className="mt-6 pt-4 border-t border-slate-50">
-        {/* Review display (shown when confirmed OR when task was created with a comment) */}
-        {isSubmitted && (
-          <div className="bg-slate-50 rounded-[16px] p-4 mb-3">
-            <div className="flex items-center gap-1.5 mb-2">
-              <CheckCircle size={14} className="text-emerald-500" />
-              <span className="text-[11px] font-semibold text-slate-500">已批阅 · {new Date().toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</span>
+        <div className="flex flex-wrap justify-end items-center gap-2 shrink-0">
+          <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide ${typeMeta.className}`}>
+            {typeMeta.text}
+          </div>
+          {statusMeta && (
+            <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-wide ${statusMeta.className}`}>
+              {statusMeta.text}
             </div>
-            <p className="text-[12px] leading-[1.7] text-slate-700 font-medium">"{reviewText}"</p>
+          )}
+          <button
+            type="button"
+            onClick={() => void onToggleFavorite(thought)}
+            className={`h-7 w-7 inline-flex items-center justify-center rounded-full border transition-colors ${
+              thought.isFavorite
+                ? 'border-amber-200 bg-amber-50 text-amber-500'
+                : 'border-slate-200 bg-white text-slate-400 hover:text-amber-500 hover:border-amber-200'
+            }`}
+            title={thought.isFavorite ? '取消收藏' : '收藏'}
+            aria-label={thought.isFavorite ? '取消收藏' : '收藏'}
+          >
+            <Star size={14} fill={thought.isFavorite ? 'currentColor' : 'none'} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void onDelete(thought)}
+            className="h-7 w-7 inline-flex items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 hover:text-rose-500 hover:border-rose-200 transition-colors"
+            title="删除"
+            aria-label="删除"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+      <div className="mb-5">
+        <p className="text-[13px] leading-[1.9] text-slate-700 font-medium">{normalizedInsight}</p>
+      </div>
+      {(normalizedFuture || normalizedAction) && (
+        <div className="grid grid-cols-1 gap-3 mb-5">
+          {normalizedFuture && (
+            <div className="rounded-[16px] bg-slate-50 px-4 py-3">
+              <div className="text-[10px] font-bold text-slate-400 mb-1">未来判断</div>
+              <p className="text-[12px] leading-[1.7] text-slate-700">{normalizedFuture}</p>
+            </div>
+          )}
+          {normalizedAction && (
+            <div className="rounded-[16px] bg-blue-50/70 px-4 py-3">
+              <div className="text-[10px] font-bold text-blue-500 mb-1">建议动作</div>
+              <p className="text-[12px] leading-[1.7] text-slate-700">{normalizedAction}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-5 pt-4 border-t border-slate-50 space-y-3">
+        {(thought.review?.note || reviewText) && (
+          <div className="bg-slate-50 rounded-[14px] px-4 py-3">
+            <div className="text-[11px] font-semibold text-slate-500 mb-1">
+              {thought.review?.status === 'confirmed' ? '我的已确认判断' : '我的备注'}
+            </div>
+            <div className="text-[12px] leading-[1.7] text-slate-700">{thought.review?.note || reviewText}</div>
           </div>
         )}
 
-        {/* Task created link */}
-        {taskCreated && (
-          <div className="bg-blue-50/50 rounded-[14px] px-4 py-3 mb-3">
-            <div className="text-[11px] text-blue-600 font-semibold flex items-center gap-1.5">
-              <CornerDownRight size={12} /> 已转为任务 · 来自研判：{thought.line}
-            </div>
-          </div>
-        )}
-
-        {/* Editing area */}
-        {isEditing && !isSubmitted ? (
+        {isEditing ? (
           <div className="bg-slate-50 rounded-[18px] p-4">
             <textarea
               className="w-full min-h-[72px] border border-slate-200 rounded-[14px] p-3 text-[13px] text-slate-700 bg-white resize-y outline-none focus:border-blue-300 focus:ring-1 focus:ring-blue-100"
-              placeholder="写下你的看法..."
+              placeholder="补充你对这条洞察的判断..."
               value={reviewText}
               onChange={(e) => setReviewText(e.target.value)}
               autoFocus
             />
             <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={handleDismiss}
+                disabled={isSubmitting}
+                className="text-[11px] font-bold px-3 py-1.5 rounded-full border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors disabled:opacity-60"
+              >
+                不准确
+              </button>
               <button
                 type="button"
                 onClick={handleCreateTask}
@@ -693,111 +641,313 @@ function ThoughtCard({ thought, onCreateTask }: { thought: any; onCreateTask?: (
               <button
                 type="button"
                 onClick={handleConfirm}
-                className="ml-auto bg-blue-600 text-white rounded-full px-5 py-1.5 text-[12px] font-bold hover:bg-blue-700 transition-colors"
+                disabled={isSubmitting}
+                className="ml-auto bg-blue-600 text-white rounded-full px-5 py-1.5 text-[12px] font-bold hover:bg-blue-700 transition-colors disabled:opacity-60"
               >
-                确认
+                采纳为判断
               </button>
             </div>
           </div>
-        ) : !isSubmitted && !taskCreated ? (
-          /* Default state: tags + two buttons */
-          <div>
-            <div className="flex flex-wrap gap-2 mb-3">
-              {thought.tags.map((t: any, idx: number) => (
-                <span key={idx} className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-bold bg-slate-50 text-slate-400 border border-slate-100">
-                  {t.icon && <t.icon size={12} className="opacity-70" />}
-                  {t.text}
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setIsEditing(true)}
-                className="flex-1 flex items-center gap-2 bg-transparent border border-slate-200 text-slate-500 rounded-[16px] px-4 py-2.5 text-[12px] font-semibold text-left hover:border-blue-300 hover:text-slate-700 transition-colors"
-              >
-                <PenLine size={14} className="text-slate-400" />
-                写下我的判断...
-              </button>
-              <button
-                type="button"
-                onClick={handleCreateTask}
-                className="flex items-center gap-1.5 border border-blue-200 bg-blue-50 text-blue-600 rounded-[16px] px-4 py-2.5 text-[12px] font-bold hover:bg-blue-100 transition-colors shrink-0"
-              >
-                <ClipboardList size={14} />
-                转为任务
-              </button>
-            </div>
+        ) : (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setIsEditing(true)}
+              className="flex-1 flex items-center gap-2 bg-transparent border border-slate-200 text-slate-500 rounded-[16px] px-4 py-2.5 text-[12px] font-semibold text-left hover:border-blue-300 hover:text-slate-700 transition-colors"
+            >
+              <PenLine size={14} className="text-slate-400" />
+              采纳/备注...
+            </button>
+            <button
+              type="button"
+              onClick={handleCreateTask}
+              className="flex items-center gap-1.5 border border-blue-200 bg-blue-50 text-blue-600 rounded-[16px] px-4 py-2.5 text-[12px] font-bold hover:bg-blue-100 transition-colors shrink-0"
+            >
+              <ClipboardList size={14} />
+              转为任务
+            </button>
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );
 }
 
-function ThoughtsTab({ onCreateTask }: { onCreateTask?: (payload: ThoughtTaskPayload) => void }) {
+function ThoughtsTab({
+  thoughts,
+  loading,
+  error,
+  selectedClientId,
+  selectedClientName,
+  selectedProjectModuleId,
+  selectedProjectModuleName,
+  onReview,
+  onCreateTask,
+  onRetry,
+  onRefresh,
+  onToggleFavorite,
+  onDelete,
+  refreshing,
+}: {
+  thoughts: StrategicThought[];
+  loading: boolean;
+  error: string | null;
+  selectedClientId: string | null;
+  selectedClientName?: string | null;
+  selectedProjectModuleId?: string | null;
+  selectedProjectModuleName?: string | null;
+  onReview: (thoughtId: string, action: 'confirm' | 'dismiss', note: string) => Promise<void>;
+  onCreateTask?: (payload: ThoughtTaskPayload) => void;
+  onRetry: () => void;
+  onRefresh: () => Promise<void>;
+  onToggleFavorite: (thought: StrategicThought) => Promise<void>;
+  onDelete: (thought: StrategicThought) => Promise<void>;
+  refreshing: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="bg-white border border-slate-100 rounded-[20px] px-5 py-6 text-[13px] text-slate-500">
+        正在加载思考与研判...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white border border-red-100 rounded-[20px] px-5 py-6">
+        <p className="text-[13px] font-semibold text-red-500">研判加载失败</p>
+        <p className="text-[12px] text-slate-500 mt-1">{error}</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-3 text-[12px] font-bold px-3 py-1.5 rounded-full border border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+        >
+          重试
+        </button>
+      </div>
+    );
+  }
+
+  if (!thoughts.length) {
+    return (
+      <div className="bg-white border border-slate-100 rounded-[20px] px-5 py-6">
+        <p className="text-[13px] leading-7 text-slate-500">
+          {selectedClientId
+            ? `${selectedProjectModuleName || selectedClientName || '这个客户'}当前还没有足够材料形成高价值研判。`
+            : '当前还没有足够材料形成高价值研判。'}
+        </p>
+        {selectedClientId && (
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            disabled={refreshing}
+            className="mt-3 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-4 py-2 text-[12px] font-bold text-blue-600 hover:bg-blue-100 disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? '正在刷新研判' : '刷新研判'}
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
+      <div className="mb-4 flex items-center justify-between gap-3 px-1">
+        <div className="text-[12px] text-slate-400">
+          {selectedProjectModuleId
+            ? `${selectedProjectModuleName || '当前项目'} · ${thoughts.length} 条洞察`
+            : selectedClientId
+              ? `${selectedClientName || '当前客户'} · ${thoughts.length} 条洞察`
+              : `全部客户 · ${thoughts.length} 条洞察`}
+        </div>
+        {selectedClientId && (
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-4 py-2 text-[12px] font-bold text-blue-600 hover:bg-blue-50 disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? '刷新中' : '刷新研判'}
+          </button>
+        )}
+      </div>
       <div className="columns-1 md:columns-2 gap-5 space-y-5">
-        {THOUGHTS_DATA.map((thought) => (
-          <ThoughtCard key={thought.id} thought={thought} onCreateTask={onCreateTask} />
+        {thoughts.map((thought) => (
+          <ThoughtCard
+            key={thought.id}
+            thought={thought}
+            onCreateTask={onCreateTask}
+            onReview={onReview}
+            onToggleFavorite={onToggleFavorite}
+            onDelete={onDelete}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function ClientsTab({ onOpenDetail, clients }: { onOpenDetail: (name: string) => void; clients: BrainClientData[] }) {
-  const sorted = [...clients].sort((a, b) => b.confidence - a.confidence);
+function ThoughtScopeSelect({
+  clients,
+  projectModules,
+  selectedClientId,
+  selectedProjectModuleId,
+  onChange,
+  onProjectChange,
+  disabled,
+}: {
+  clients: Array<{ id: string; name: string }>;
+  projectModules: ProjectModule[];
+  selectedClientId: string;
+  selectedProjectModuleId: string;
+  onChange: (clientId: string) => void;
+  onProjectChange: (projectModuleId: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-sm">
+      <Users size={15} className="text-blue-500 shrink-0" />
+      <span className="text-[12px] font-semibold text-slate-500 whitespace-nowrap">客户/项目</span>
+      <select
+        value={selectedClientId}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        className="min-w-[130px] max-w-[220px] bg-transparent text-[13px] font-semibold text-slate-700 outline-none disabled:opacity-50"
+      >
+        <option value="">全部客户</option>
+        {clients.map((client) => (
+          <option key={client.id} value={client.id}>
+            {client.name}
+          </option>
+        ))}
+      </select>
+      {selectedClientId && (
+        <select
+          value={selectedProjectModuleId}
+          onChange={(event) => onProjectChange(event.target.value)}
+          disabled={disabled || !projectModules.length}
+          className="min-w-[130px] max-w-[220px] bg-transparent text-[13px] font-semibold text-slate-700 outline-none disabled:opacity-50"
+        >
+          <option value="">全部项目</option>
+          {projectModules.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
+function DigitalAssetsTab({ onOpenDetail, clients }: { onOpenDetail: (clientId: string) => void; clients: DigitalAssetClientSummary[] }) {
+  const sorted = [...clients].sort((a, b) => {
+    const stageDiff = stageRank(b.assetStage) - stageRank(a.assetStage);
+    if (stageDiff !== 0) return stageDiff;
+    return (b.depositXp || 0) - (a.depositXp || 0);
+  });
+  if (!clients.length) {
+    return (
+      <div className="bg-white border border-slate-100 rounded-[24px] px-6 py-8">
+        <p className="text-[14px] font-bold text-slate-700">还没有可形成数字资产的组织资料</p>
+        <p className="text-[13px] leading-7 text-slate-500 mt-2">建议先建立客户/组织空间，并上传项目介绍、流程资料、反馈表和评估材料。</p>
+      </div>
+    );
+  }
   return (
     <div>
-      <div className="flex items-center justify-between mb-6 px-2">
-        <h2 className="text-[15px] font-bold text-slate-800 flex items-center gap-2">
-          <FolderTree size={18} className="text-indigo-500" /> 项目认知图谱
-        </h2>
-        <span className="text-[12px] font-medium text-slate-400">目前收录 {clients.length} 个项目空间</span>
+      <div className="rounded-[28px] border border-blue-100 bg-white p-6 mb-6 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+          <div>
+            <h2 className="text-[18px] font-bold text-slate-900 flex items-center gap-2">
+              <FolderTree size={19} className="text-blue-500" /> 组织数字资产概览
+            </h2>
+            <p className="text-[13px] leading-7 text-slate-500 mt-2 max-w-3xl">
+              这里展示每个组织已经沉淀了哪些长期可复用资产，以及下一步该补什么，才能让 AI 更理解组织。
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-[12px] font-bold text-slate-400">
+            <Layers size={14} />
+            目前收录 {clients.length} 个组织空间
+          </div>
+        </div>
       </div>
-      <div className="columns-1 md:columns-2 gap-5 space-y-5">
-        {sorted.map((client, i) => (
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        {sorted.map((client) => {
+          const documentCount = metricValue(client.metrics, 'documents');
+          const memoryCount = metricValue(client.metrics, 'memoryFacts');
+          const evidenceCount = metricValue(client.metrics, 'evidenceCards');
+          const primaryGap = client.criticalGaps[0] || '继续提高资料的连续性和结构化程度。';
+          const primaryDeposit = client.nextBestDeposits?.[0]?.title || client.nextDeposits[0] || '持续沉淀项目介绍、流程、反馈和评估材料。';
+          return (
           <div
-            key={i}
-            onClick={() => onOpenDetail(client.name)}
-            className="break-inside-avoid bg-white rounded-[24px] border border-slate-100 p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_30px_rgba(0,0,0,0.05)] hover:border-blue-200 transition-all duration-300 cursor-pointer group"
+            key={client.id}
+            onClick={() => onOpenDetail(client.id)}
+            className="bg-white rounded-[24px] border border-slate-100 p-6 shadow-[0_2px_10px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_30px_rgba(0,0,0,0.05)] hover:border-blue-200 transition-all duration-300 cursor-pointer group"
           >
             <div className="flex flex-col mb-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-[16px] font-bold text-slate-800 group-hover:text-blue-600 transition-colors">{client.name}</h3>
-                <span className="bg-slate-50 border border-slate-100 text-slate-500 text-[11px] font-bold px-2.5 py-1 rounded-lg">
-                  {client.stage}
+                <span className="bg-blue-50 border border-blue-100 text-blue-600 text-[11px] font-bold px-2.5 py-1 rounded-lg">
+                  {client.assetStage || '资料整理期'}
                 </span>
               </div>
               <div className="flex items-center gap-3">
+                <div className="min-w-[112px] rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+                  {client.assetTrackTitle || '组织资产型'}
+                </div>
                 <div className="h-1.5 bg-slate-100 rounded-full w-full overflow-hidden">
                   <div
                     className="h-full rounded-full transition-all duration-1000 ease-out"
-                    style={{ width: `${client.confidence}%`, backgroundColor: getConfColor(client.confidence) }}
+                    style={{ width: `${clampPercent(client.stageProgress)}%`, backgroundColor: getConfColor(client.stageProgress) }}
                   />
                 </div>
-                <span className="text-[12px] font-bold tabular-nums w-8 text-right" style={{ color: getConfColor(client.confidence) }}>
-                  {client.confidence}%
+                <span className="text-[12px] font-bold tabular-nums w-10 text-right" style={{ color: getConfColor(client.stageProgress) }}>
+                  {client.stageProgress}%
                 </span>
               </div>
             </div>
-            {client.intro ? (
-              <p className="text-[13px] leading-[1.8] text-slate-600 font-medium mb-5 line-clamp-3">
-                {client.intro}
-              </p>
-            ) : (
-              <p className="text-[13px] leading-[1.8] text-slate-400 italic mb-5">
-                系统对这个项目的了解还很初步
-              </p>
-            )}
-            <div className="flex flex-wrap gap-x-4 gap-y-2 mb-4 pt-4 border-t border-slate-50">
+            <div className="mb-4 flex flex-wrap gap-2">
+              <span className="rounded-full bg-blue-50 border border-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-600">
+                沉淀经验 {client.depositXp || 0} XP
+              </span>
+              <span className="rounded-full bg-emerald-50 border border-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-600">
+                {client.growthMode || '均衡成长'}
+              </span>
+              <span className="rounded-full bg-amber-50 border border-amber-100 px-2.5 py-1 text-[11px] font-bold text-amber-600">
+                下一阶段 {client.nextStage || '继续沉淀'}
+              </span>
+              {client.strongestDimensions.slice(0, 2).map((dimension) => (
+                <span key={dimension} className="rounded-full bg-slate-50 border border-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500">
+                  {dimension}
+                </span>
+              ))}
+            </div>
+            <p className="text-[13px] leading-[1.8] text-slate-600 font-medium mb-5 line-clamp-3">
+              {client.understandingStatement || client.intro || 'AI 对这个组织还处在初步理解阶段。'}
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 mb-5">
+              <div className="rounded-[16px] bg-emerald-50/70 px-3 py-2.5">
+                <div className="text-[10px] font-bold text-emerald-600 mb-1">已形成价值</div>
+                <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-3">{client.highValueSignals[0] || '等待更多资料形成长期价值判断。'}</p>
+              </div>
+              <div className="rounded-[16px] bg-amber-50/80 px-3 py-2.5">
+                <div className="text-[10px] font-bold text-amber-600 mb-1">关键缺口</div>
+                <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-3">{client.stageBlockers?.[0] || primaryGap}</p>
+              </div>
+              <div className="rounded-[16px] bg-blue-50/70 px-3 py-2.5">
+                <div className="text-[10px] font-bold text-blue-600 mb-1">下一步沉淀</div>
+                <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-3">{primaryDeposit}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 pt-4 border-t border-slate-50">
               {[
-                { icon: Folder, label: `${client.docs} 文档` },
-                { icon: FileText, label: `${client.dna} 篇 DNA` },
-                { icon: Activity, label: `${client.eventLines} 事件线` },
-                { icon: BrainCircuit, label: `${client.memoryFacts} 条记忆` },
+                { icon: Folder, label: `${documentCount} 资料` },
+                { icon: BrainCircuit, label: `${memoryCount} 记忆` },
+                { icon: CheckCircle, label: `${evidenceCount} 证据卡` },
+                { icon: ChevronRight, label: '查看详情' },
               ].map((metric, idx) => (
                 <span key={idx} className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
                   <metric.icon size={12} className="text-slate-300" />
@@ -806,57 +956,180 @@ function ClientsTab({ onOpenDetail, clients }: { onOpenDetail: (name: string) =>
               ))}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
-
-function LearningTab() {
-  return (
-    <div className="max-w-3xl mx-auto">
-      <div className="text-center mb-10">
-        <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-blue-50 border border-blue-100 mb-4 shadow-sm">
-          <Lightbulb size={24} className="text-blue-600" />
-        </div>
-        <h2 className="text-[20px] font-bold text-slate-800 mb-2">我渴望学习更多</h2>
-        <p className="text-[13px] text-slate-400">学习清单功能即将上线</p>
-      </div>
-    </div>
-  );
-}
-
 
 // ================= MAIN EXPORT =================
 
 export type StrategicBrainViewProps = {
   clients?: Array<{ id: string; name: string }>;
+  tasks?: Task[];
   currentClientId?: string | null;
   onClientChange?: (clientId: string) => void;
   onCreateTaskFromThought?: (payload: ThoughtTaskPayload) => void;
+  onCreateTaskFromLearning?: (payload: StrategicLearningTaskPayload) => Promise<void> | void;
+  onTasksReload?: () => Promise<unknown> | void;
+  onNavigate?: (tab: string) => void;
+  onOpenContext?: (context: GrowthContextLink) => void;
+  flash?: (level: 'success' | 'error' | 'info', message: string) => void;
 };
 
-export function StrategicBrainView({ onCreateTaskFromThought }: StrategicBrainViewProps) {
-  const [selectedClient, setSelectedClient] = useState('全部客户');
+export function StrategicBrainView({
+  clients = [],
+  tasks,
+  currentClientId,
+  onClientChange,
+  onCreateTaskFromThought,
+  onCreateTaskFromLearning,
+  onTasksReload,
+  onNavigate,
+  onOpenContext,
+  flash,
+}: StrategicBrainViewProps) {
   const [activeTab, setActiveTab] = useState('pulse');
   const [viewState, setViewState] = useState<{ type: 'tabs'; detailId: null } | { type: 'detail'; detailId: string }>({ type: 'tabs', detailId: null });
-  const [isOpen, setIsOpen] = useState(false);
   const [dashboard, setDashboard] = useState<BrainDashboard | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  useClickOutside(dropdownRef, () => setIsOpen(false));
+  const [assetDashboard, setAssetDashboard] = useState<DigitalAssetDashboard | null>(null);
+  const [thoughts, setThoughts] = useState<StrategicThought[]>([]);
+  const [thoughtsLoading, setThoughtsLoading] = useState(false);
+  const [thoughtsError, setThoughtsError] = useState<string | null>(null);
+  const [thoughtClientId, setThoughtClientId] = useState(currentClientId || '');
+  const [thoughtProjectModuleId, setThoughtProjectModuleId] = useState('');
+  const [thoughtProjectModules, setThoughtProjectModules] = useState<ProjectModule[]>([]);
+  const [thoughtsRefreshing, setThoughtsRefreshing] = useState(false);
+
+  const thoughtClientOptions = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>();
+    for (const client of dashboard?.clients ?? []) {
+      if (client.id && client.name) map.set(client.id, { id: client.id, name: client.name });
+    }
+    for (const client of clients) {
+      if (client.id && client.name && !map.has(client.id)) map.set(client.id, { id: client.id, name: client.name });
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+  }, [clients, dashboard?.clients]);
+
+  const selectedThoughtClient = useMemo(
+    () => thoughtClientOptions.find((client) => client.id === thoughtClientId) || null,
+    [thoughtClientId, thoughtClientOptions],
+  );
+  const selectedThoughtProjectModule = useMemo(
+    () => thoughtProjectModules.find((project) => project.id === thoughtProjectModuleId) || null,
+    [thoughtProjectModuleId, thoughtProjectModules],
+  );
 
   useEffect(() => {
     getBrainDashboard()
       .then(setDashboard)
       .catch(() => setDashboard(null));
+    getDigitalAssetDashboard()
+      .then(setAssetDashboard)
+      .catch(() => setAssetDashboard(null));
   }, []);
 
-  const clientNames = ['全部客户', ...(dashboard?.clients.map(c => c.name) || [])];
+  useEffect(() => {
+    if (currentClientId && !thoughtClientId) {
+      setThoughtClientId(currentClientId);
+    }
+  }, [currentClientId, thoughtClientId]);
+
+  useEffect(() => {
+    if (!thoughtClientId) {
+      setThoughtProjectModules([]);
+      setThoughtProjectModuleId('');
+      return;
+    }
+    let cancelled = false;
+    getClientProjectStructure(thoughtClientId)
+      .then((structure) => {
+        if (cancelled) return;
+        const modules = structure.modules || [];
+        setThoughtProjectModules(modules);
+        setThoughtProjectModuleId((current) => (current && modules.some((project) => project.id === current) ? current : ''));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setThoughtProjectModules([]);
+        setThoughtProjectModuleId('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [thoughtClientId]);
+
+  const loadThoughts = useCallback(async () => {
+    setThoughtsLoading(true);
+    setThoughtsError(null);
+    try {
+      const response = await getStrategicThoughts({
+        clientId: thoughtClientId || null,
+        projectModuleId: thoughtProjectModuleId || null,
+        limit: thoughtClientId ? 12 : 24,
+      });
+      setThoughts(response.items || []);
+    } catch (error) {
+      setThoughtsError(error instanceof Error ? error.message : '未知错误');
+      setThoughts([]);
+    } finally {
+      setThoughtsLoading(false);
+    }
+  }, [thoughtClientId, thoughtProjectModuleId]);
+
+  useEffect(() => {
+    void loadThoughts();
+  }, [loadThoughts]);
+
+  const handleThoughtReview = useCallback(
+    async (thoughtId: string, action: 'confirm' | 'dismiss', note: string) => {
+      await reviewStrategicThought(thoughtId, { action, note, createJudgment: action === 'confirm' });
+      await loadThoughts();
+    },
+    [loadThoughts],
+  );
+
+  const handleRefreshThoughts = useCallback(async () => {
+    if (!thoughtClientId) return;
+    setThoughtsRefreshing(true);
+    setThoughtsError(null);
+    try {
+      const response = await refreshStrategicThoughts({
+        clientId: thoughtClientId,
+        projectModuleId: thoughtProjectModuleId || null,
+        limit: 8,
+      });
+      setThoughts(response.items || []);
+      flash?.('success', '研判已刷新');
+    } catch (error) {
+      setThoughtsError(error instanceof Error ? error.message : '刷新失败');
+    } finally {
+      setThoughtsRefreshing(false);
+    }
+  }, [flash, thoughtClientId, thoughtProjectModuleId]);
+
+  const handleToggleFavoriteThought = useCallback(
+    async (thought: StrategicThought) => {
+      await updateStrategicThoughtState(thought.id, { action: thought.isFavorite ? 'unfavorite' : 'favorite' });
+      await loadThoughts();
+    },
+    [loadThoughts],
+  );
+
+  const handleDeleteThought = useCallback(
+    async (thought: StrategicThought) => {
+      await updateStrategicThoughtState(thought.id, { action: 'delete' });
+      await loadThoughts();
+    },
+    [loadThoughts],
+  );
 
   if (viewState.type === 'detail') {
     return (
       <div className="h-full flex flex-col bg-white/50 overflow-y-auto">
-        <ProjectDetailView clientId={viewState.detailId} onBack={() => setViewState({ type: 'tabs', detailId: null })} />
+        <DigitalAssetDetailView clientId={viewState.detailId} onBack={() => setViewState({ type: 'tabs', detailId: null })} />
       </div>
     );
   }
@@ -872,33 +1145,21 @@ export function StrategicBrainView({ onCreateTaskFromThought }: StrategicBrainVi
             </h1>
             <p className="text-[11px] font-medium text-slate-400 mt-0.5">AI 陪伴组织成长 · 越用越懂你</p>
           </div>
-          <div className="relative" ref={dropdownRef}>
-            <button
-              type="button"
-              onClick={() => setIsOpen(!isOpen)}
-              className="flex items-center gap-2 bg-white border border-slate-200 shadow-sm rounded-full px-4 py-2 hover:bg-slate-50 transition-all duration-200"
-            >
-              <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center">
-                <User size={12} className="text-blue-600" />
-              </div>
-              <span className="text-[13px] font-semibold text-slate-700">{selectedClient}</span>
-              <ChevronDown size={14} className="text-slate-400" />
-            </button>
-            {isOpen && (
-              <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-100 rounded-2xl shadow-xl py-1.5 z-50 overflow-hidden">
-                {clientNames.map(client => (
-                  <button
-                    key={client}
-                    type="button"
-                    className={`w-full text-left px-4 py-2.5 text-[13px] font-medium transition-colors hover:bg-slate-50 ${selectedClient === client ? 'text-blue-600 bg-blue-50/50' : 'text-slate-600'}`}
-                    onClick={() => { setSelectedClient(client); setIsOpen(false); }}
-                  >
-                    {client}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {activeTab === 'thoughts' && (
+            <ThoughtScopeSelect
+              clients={thoughtClientOptions}
+              projectModules={thoughtProjectModules}
+              selectedClientId={thoughtClientId}
+              selectedProjectModuleId={thoughtProjectModuleId}
+              disabled={thoughtsLoading && !thoughtClientOptions.length}
+              onChange={(clientId) => {
+                setThoughtClientId(clientId);
+                setThoughtProjectModuleId('');
+                if (clientId) onClientChange?.(clientId);
+              }}
+              onProjectChange={(projectModuleId) => setThoughtProjectModuleId(projectModuleId)}
+            />
+          )}
         </div>
         <div className="flex bg-slate-100/80 p-1 rounded-2xl w-fit">
           {TABS.map(tab => (
@@ -922,9 +1183,38 @@ export function StrategicBrainView({ onCreateTaskFromThought }: StrategicBrainVi
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="max-w-full mx-auto">
           {activeTab === 'pulse' && <PulseTab pulse={dashboard?.pulse ?? null} />}
-          {activeTab === 'thoughts' && <ThoughtsTab onCreateTask={onCreateTaskFromThought} />}
-          {activeTab === 'clients' && <ClientsTab clients={dashboard?.clients ?? []} onOpenDetail={(name) => setViewState({ type: 'detail', detailId: name })} />}
-          {activeTab === 'learning' && <LearningTab />}
+          {activeTab === 'thoughts' && (
+            <ThoughtsTab
+              thoughts={thoughts}
+              loading={thoughtsLoading}
+              error={thoughtsError}
+              selectedClientId={thoughtClientId || null}
+              selectedClientName={selectedThoughtClient?.name || null}
+              selectedProjectModuleId={thoughtProjectModuleId || null}
+              selectedProjectModuleName={selectedThoughtProjectModule?.name || null}
+              onReview={handleThoughtReview}
+              onCreateTask={onCreateTaskFromThought}
+              onRetry={() => void loadThoughts()}
+              onRefresh={handleRefreshThoughts}
+              onToggleFavorite={handleToggleFavoriteThought}
+              onDelete={handleDeleteThought}
+              refreshing={thoughtsRefreshing}
+            />
+          )}
+          {activeTab === 'clients' && <DigitalAssetsTab clients={assetDashboard?.clients ?? []} onOpenDetail={(clientId) => setViewState({ type: 'detail', detailId: clientId })} />}
+          {activeTab === 'learning' && (
+            <StrategicLearningListPanel
+              currentClientId={null}
+              currentClientName={null}
+              clients={dashboard?.clients || []}
+              tasks={tasks}
+              onTasksReload={onTasksReload}
+              onNavigate={onNavigate}
+              onOpenContext={onOpenContext}
+              onCreateTaskFromLearning={onCreateTaskFromLearning}
+              flash={flash}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -10,8 +10,8 @@ const projectRoot = path.resolve(__dirname, '..');
 const sourceDistRoot = path.join(projectRoot, 'node_modules', 'electron', 'dist');
 const sourceElectronApp = path.join(sourceDistRoot, 'Electron.app');
 const sourceElectronBinary = path.join(sourceElectronApp, 'Contents', 'MacOS', 'Electron');
-const sourceBundleId = 'com.yiyu.selfworkbench.dev';
-const sourceBundleName = '益语智库自用平台（开发版）';
+const sourceBundleId = 'com.yiyu.selfworkbench2.dev';
+const sourceBundleName = '益语智库自用平台 2.0（开发版）';
 const appArgs = process.argv.slice(2);
 
 function fail(message) {

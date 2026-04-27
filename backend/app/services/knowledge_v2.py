@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+from io import BytesIO
 import re
 import shutil
 import zipfile
@@ -15,7 +17,13 @@ from xml.etree import ElementTree as ET
 from docx import Document as WordDocument
 
 from app.db import Database, from_json, to_json
-from app.services.knowledge_base import append_file_reclass_event
+from app.services.data_center_access import (
+    DataCenterAccessContext,
+    build_document_access_where,
+    normalize_department_ids,
+)
+from app.services.knowledge_base import append_file_reclass_event, get_vector_runtime_status
+from app.services.workspace_relation_docs import materialize_workspace_relation_documents
 
 try:
     from pypdf import PdfReader
@@ -25,15 +33,35 @@ except Exception:  # pragma: no cover - runtime dependency
     PdfReader = None  # type: ignore[assignment]
     HAS_PYPDF = False
 
+try:
+    import fitz  # type: ignore[import-untyped]
+
+    HAS_PYMUPDF = True
+except Exception:  # pragma: no cover - optional runtime dependency
+    fitz = None  # type: ignore[assignment]
+    HAS_PYMUPDF = False
+
+try:
+    from PIL import Image, ImageOps
+
+    HAS_PILLOW = True
+except Exception:  # pragma: no cover - optional runtime dependency
+    Image = None  # type: ignore[assignment]
+    ImageOps = None  # type: ignore[assignment]
+    HAS_PILLOW = False
+
 
 V2_PIPELINE_VERSION = "v2-minimal-evidence"
+MAIN_KNOWLEDGE_STATUS_JOB_TYPES = ("ingest_import", "backfill_workspace_import")
+_AUXILIARY_KNOWLEDGE_JOB_TYPES = ("generate_client_dna_candidates",)
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".csv"}
 ARCHIVE_XML_EXTENSIONS = {".pptx", ".xlsx"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 LEGACY_FIXED_CATEGORIES = ["财务与筹款", "品牌与传播", "项目与业务", "组织与战略", "其他资料", "战略陪伴"]
 HUMAN_VISIBLE_CATEGORIES = LEGACY_FIXED_CATEGORIES  # kept for backward compat; new clients use dynamic folders
 EVIDENCE_CATEGORIES = LEGACY_FIXED_CATEGORIES[:-1]
 DEFAULT_INBOX_LABEL = "收件箱"
-WORKSPACE_BACKFILL_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx", ".json", ".csv"}
+WORKSPACE_BACKFILL_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx", ".json", ".csv", *IMAGE_EXTENSIONS}
 QUERY_STOPWORDS = {
     "请",
     "一下",
@@ -54,6 +82,32 @@ QUERY_STOPWORDS = {
     "问题",
     "情况",
 }
+INTRO_QUERY_TOKENS = ("介绍", "简介", "核心定位", "概况", "是什么", "项目特点", "怎么做", "业务", "创始人")
+MEETING_QUERY_TOKENS = ("最近一次会议", "会议讲了什么", "会议纪要", "会里", "会议")
+INTRO_BUCKET_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "institution": ("核心定位", "历史价值", "机构", "基金会", "平台", "定位", "介绍", "概况", "关于"),
+    "project": ("项目", "计划", "业务", "学院", "赋能", "服务", "行动营", "平台"),
+    "strategy": ("战略", "升级", "路线图", "规划", "重点事项", "第二曲线", "转型"),
+    "source": ("申请书", "访谈", "调研", "对话", "转写", "word版"),
+}
+INTRO_OPERATIONAL_MARKERS = (
+    "会议纪要",
+    "会议",
+    "沟通",
+    "待办",
+    "清单",
+    "任务",
+    "询价单",
+    "报销",
+    "联调",
+    "q1",
+    "q2",
+    "q3",
+    "q4",
+    "工作坊",
+    "ppt",
+    "转写原文版",
+)
 DERIVED_TITLE_MARKERS = ("介绍", "简介", "精简版", "预览", "说明", "ppt", "工作台")
 DERIVED_TEXT_MARKERS = (
     "完全基于你提供的材料",
@@ -81,6 +135,21 @@ SECTION_BREAK_PATTERN = re.compile(r"\n{2,}")
 CHUNK_TARGET_CHARS = 680
 CHUNK_OVERLAP_CHARS = 120
 INTERNAL_WORKSPACE_MARKERS = {"_v2_meta", "_imports"}
+OCR_DEFAULT_MAX_PAGES = 60
+OCR_DEFAULT_BATCH_SIZE = 8
+SEARCHABLE_PARSE_STATUSES = {"ready", "partial_ready"}
+SOURCE_AVAILABILITY_ORIGINAL = "original_available"
+SOURCE_AVAILABILITY_MACHINE_ONLY = "machine_readable_only"
+SOURCE_AVAILABILITY_INVALID = "invalid_source"
+SOURCE_AVAILABILITY_UNKNOWN = "unknown"
+
+PLACEHOLDER_MACHINE_TEXT_MARKERS = (
+    "解析重试",
+    "解析后暂无可用正文",
+    "用途：兼容旧字段",
+    "已进入资料缓冲池",
+    "资料缓冲池说明",
+)
 
 
 @dataclass
@@ -96,6 +165,19 @@ class CitationMatch:
     drillthrough_used: bool
     matched_terms: list[str]
     path: str | None
+    original_path: str | None = None
+    managed_path: str | None = None
+    markdown_path: str | None = None
+    openable_kind: str | None = None
+    document_family_id: str | None = None
+    canonical_kind: str | None = None
+    origin_type: str | None = None
+    origin_id: str | None = None
+    is_searchable: bool | None = None
+    source_availability: str | None = None
+    original_available: bool | None = None
+    machine_readable_available: bool | None = None
+    open_original_disabled_reason: str | None = None
 
 
 @dataclass
@@ -108,12 +190,331 @@ class RetrievalBundle:
     failure_reason: str | None = None
 
 
+@dataclass
+class ExtractionMetadata:
+    parse_status: str = "failed"
+    parse_error: str | None = None
+    failure_type: str | None = None
+    total_pages: int | None = None
+    attempted_pages: int = 0
+    succeeded_pages: int = 0
+    failed_pages: int = 0
+    ocr_page_limit: int | None = None
+    ocr_batch_size: int | None = None
+    partial: bool = False
+
+
+@dataclass
+class ExtractedDocument:
+    text: str
+    sections: list[dict[str, str]]
+    metadata: ExtractionMetadata
+
+
+@dataclass
+class VisualOcrResult:
+    text: str
+    sections: list[dict[str, str]]
+    attempted_pages: int = 0
+    succeeded_pages: int = 0
+    failed_pages: int = 0
+
+
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
 
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
+
+
+def classify_parse_failure_type(error_text: str, *, kind: str = "") -> str:
+    lowered = str(error_text or "").strip().lower()
+    normalized_kind = str(kind or "").strip().lower().lstrip(".")
+    if any(token in lowered for token in ("not found", "no such file", "不存在")):
+        return "file_missing"
+    if any(token in lowered for token in ("permission denied", "权限")):
+        return "permission_denied"
+    if any(token in lowered for token in ("unsupported", "不支持")):
+        return "unsupported_format"
+    if normalized_kind == "pdf" and any(token in lowered for token in ("empty", "为空", "无正文", "可用正文", "no text", "未能解析")):
+        return "empty_pdf"
+    if any(token in lowered for token in ("ocr", "scan", "扫描")):
+        return "ocr_required"
+    if any(token in lowered for token in ("empty", "为空", "无正文", "可用正文", "no text", "未能解析")):
+        return "empty_text"
+    if any(token in lowered for token in ("parser", "解析", "exception", "traceback")):
+        return "parser_exception"
+    return "unknown"
+
+
+def parse_failure_recoverable(failure_type: str, *, kind: str = "") -> bool:
+    normalized = str(failure_type or "").strip()
+    normalized_kind = str(kind or "").strip().lower().lstrip(".")
+    if normalized in {"empty_pdf", "ocr_required", "empty_text", "parser_exception", "unknown"}:
+        return True
+    if normalized == "unsupported_format" and normalized_kind in {"pdf", "jpg", "jpeg", "png", "webp", "docx", "txt", "md"}:
+        return True
+    return False
+
+
+def _normalized_family_stem(name: str) -> str:
+    stem = safe_filename(Path(str(name or "").strip()).stem or str(name or "").strip()).lower()
+    stem = re.sub(r"^\d{8}[_-]?\d{0,6}[_-]*", "", stem)
+    stem = re.sub(r"^\d{10,14}[_-]*", "", stem)
+    stem = re.sub(r"^副本+", "", stem)
+    stem = re.sub(r"^(copy|copied)_*", "", stem)
+    stem = re.sub(r"^#+\s*", "", stem)
+    stem = re.sub(r"^[一二三四五六七八九十0-9]+[、.．_\-\s]+", "", stem)
+    stem = re.sub(r"__+[a-z0-9]{4,}$", "", stem)
+    stem = re.sub(r"[\(\[]\d+[\)\]]", "", stem)
+    stem = re.sub(r"[_\-\s]+", "", stem)
+    return stem[:120]
+
+
+def _effective_family_id_for_row(row: Any) -> str:
+    stored = str(row["document_family_id"] or "").strip()
+    canonical_kind = _canonical_kind_for_row(row)
+    title = str(row["file_name"] or row["document_title"] or "")
+    if canonical_kind == "raw_file":
+        normalized = _normalized_family_stem(title)
+        if normalized:
+            return f"raw_file:{normalized}"
+    if stored:
+        return stored
+    return f"doc:{row['document_id']}"
+
+
+def _query_style(prompt: str) -> str:
+    normalized = re.sub(r"\s+", "", str(prompt or "").lower())
+    if any(token in normalized for token in (token.lower() for token in MEETING_QUERY_TOKENS)):
+        return "meeting"
+    if any(token in normalized for token in (token.lower() for token in INTRO_QUERY_TOKENS)):
+        return "intro"
+    return "general"
+
+
+def _family_support_text(family: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for item in family.get("rows", []):
+        row = item.get("row") if isinstance(item, dict) else None
+        if row is None:
+            continue
+        lines.extend(
+            [
+                str(item.get("title") or ""),
+                str(item.get("path") or ""),
+                str(row["visible_category"] or ""),
+                str(row["secondary_category"] or ""),
+                str(row["preview_text"] or ""),
+            ]
+        )
+    return "\n".join(lines).lower()
+
+
+def _intro_bucket_from_support_text(support_text: str) -> str | None:
+    for bucket in ("source", "project", "strategy", "institution"):
+        keywords = INTRO_BUCKET_KEYWORDS.get(bucket, ())
+        if any(keyword.lower() in support_text for keyword in keywords):
+            return bucket
+    return None
+
+
+def _intro_bucket_for_family(family: dict[str, Any]) -> str | None:
+    if "raw_file" not in family.get("canonicalKinds", set()):
+        return None
+    support_text = _family_support_text(family)
+    return _intro_bucket_from_support_text(support_text)
+
+
+def _is_intro_primary_family(family: dict[str, Any]) -> bool:
+    if "raw_file" not in family.get("canonicalKinds", set()):
+        return False
+    support_text = _family_support_text(family)
+    if not _intro_bucket_from_support_text(support_text):
+        return False
+    return not any(marker.lower() in support_text for marker in INTRO_OPERATIONAL_MARKERS)
+
+
+def backfill_client_document_family_metadata(db: Database, client_id: str) -> dict[str, int]:
+    rows = db.fetchall(
+        """
+        SELECT
+            d.id AS document_id,
+            d.title AS document_title,
+            d.document_family_id AS doc_family_id,
+            d.canonical_kind AS doc_canonical_kind,
+            d.origin_type AS doc_origin_type,
+            d.origin_id AS doc_origin_id,
+            d.is_searchable AS doc_is_searchable,
+            vd.id AS v2_document_id,
+            vd.file_name,
+            vd.content_hash,
+            vd.document_family_id AS v2_family_id,
+            vd.canonical_kind AS v2_canonical_kind,
+            vd.origin_type AS v2_origin_type,
+            vd.origin_id AS v2_origin_id,
+            vd.is_searchable AS v2_is_searchable
+        FROM v2_documents vd
+        JOIN documents d ON d.id = vd.document_id
+        WHERE vd.client_id = ?
+          AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file'
+        """,
+        (client_id,),
+    )
+    updated_documents = 0
+    updated_v2_documents = 0
+    for row in rows:
+        resolved_family_id = derive_document_family_id(
+            title=str(row["file_name"] or row["document_title"] or ""),
+            content_hash=str(row["content_hash"] or ""),
+            origin_type="file_import",
+            origin_id=str(row["document_id"] or ""),
+        )
+        if str(row["doc_family_id"] or "") != resolved_family_id:
+            db.execute(
+                """
+                UPDATE documents
+                SET document_family_id = ?, canonical_kind = 'raw_file', origin_type = 'file_import', origin_id = ?, is_searchable = 1
+                WHERE id = ?
+                """,
+                (resolved_family_id, str(row["document_id"] or ""), str(row["document_id"] or "")),
+            )
+            updated_documents += 1
+        if str(row["v2_family_id"] or "") != resolved_family_id:
+            db.execute(
+                """
+                UPDATE v2_documents
+                SET document_family_id = ?, canonical_kind = 'raw_file', origin_type = 'file_import', origin_id = ?, is_searchable = 1
+                WHERE id = ?
+                """,
+                (resolved_family_id, str(row["document_id"] or ""), str(row["v2_document_id"] or "")),
+            )
+            updated_v2_documents += 1
+
+    db.execute(
+        """
+        UPDATE document_chunks
+        SET
+            document_family_id = COALESCE(
+                (
+                    SELECT d.document_family_id
+                    FROM knowledge_documents kd
+                    JOIN documents d ON d.id = kd.document_id
+                    WHERE kd.id = document_chunks.knowledge_document_id
+                    LIMIT 1
+                ),
+                document_family_id
+            ),
+            canonical_kind = COALESCE(
+                (
+                    SELECT d.canonical_kind
+                    FROM knowledge_documents kd
+                    JOIN documents d ON d.id = kd.document_id
+                    WHERE kd.id = document_chunks.knowledge_document_id
+                    LIMIT 1
+                ),
+                canonical_kind,
+                'raw_file'
+            ),
+            origin_type = COALESCE(
+                (
+                    SELECT d.origin_type
+                    FROM knowledge_documents kd
+                    JOIN documents d ON d.id = kd.document_id
+                    WHERE kd.id = document_chunks.knowledge_document_id
+                    LIMIT 1
+                ),
+                origin_type,
+                'file_import'
+            ),
+            origin_id = COALESCE(
+                (
+                    SELECT d.origin_id
+                    FROM knowledge_documents kd
+                    JOIN documents d ON d.id = kd.document_id
+                    WHERE kd.id = document_chunks.knowledge_document_id
+                    LIMIT 1
+                ),
+                origin_id
+            ),
+            is_searchable = COALESCE(
+                (
+                    SELECT d.is_searchable
+                    FROM knowledge_documents kd
+                    JOIN documents d ON d.id = kd.document_id
+                    WHERE kd.id = document_chunks.knowledge_document_id
+                    LIMIT 1
+                ),
+                is_searchable,
+                1
+            )
+        WHERE knowledge_document_id IN (
+            SELECT id FROM knowledge_documents WHERE client_id = ?
+        )
+        """,
+        (client_id,),
+    )
+    return {
+        "updatedDocuments": updated_documents,
+        "updatedV2Documents": updated_v2_documents,
+    }
+
+
+def derive_document_family_id(
+    *,
+    title: str,
+    content_hash: str,
+    origin_type: str = "file_import",
+    origin_id: str = "",
+) -> str:
+    origin_type_clean = str(origin_type or "file_import").strip() or "file_import"
+    origin_id_clean = str(origin_id or "").strip()
+    if origin_type_clean != "file_import" and origin_id_clean:
+        return f"{origin_type_clean}:{origin_id_clean}"
+    stem = _normalized_family_stem(title)
+    if stem:
+        return f"{origin_type_clean}:{stem}"
+    return f"{origin_type_clean}:{str(content_hash or 'unknown')[:24]}"
+
+
+def _clean_ingested_text(text: str) -> str:
+    normalized = normalize_text(text)
+    if not normalized:
+        return ""
+    lines: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip()
+        compact = re.sub(r"\s+", "", line).lower()
+        if not compact:
+            lines.append("")
+            continue
+        if any(marker in compact for marker in ("说明.txt", "整理说明", "重复件已移至废纸篓")):
+            continue
+        if "wps演示" in compact or "已用的字体" in compact or "字体列表" in compact or "模板页" in compact:
+            continue
+        if re.fullmatch(r"[\d\W_]+", compact):
+            continue
+        if len(compact) <= 2:
+            continue
+        lines.append(line)
+    return normalize_text("\n".join(lines))
+
+
+def _is_ingestion_noise_document(title: str, text: str) -> bool:
+    normalized = f"{safe_filename(title).lower()}\n{str(text or '').lower()}"
+    if any(marker in normalized for marker in ("说明.txt", "整理说明", "重复件已移至废纸篓")):
+        return True
+    if "wps 演示" in normalized and "已用的字体" in normalized:
+        return True
+    return False
+
+
+def _system_document_path(data_dir: Path, client_id: str, canonical_kind: str, origin_id: str, title: str) -> Path:
+    root = client_workspace_root(data_dir, client_id) / "_v2_meta" / "system_docs" / canonical_kind
+    root.mkdir(parents=True, exist_ok=True)
+    stem = safe_filename(Path(title).stem or origin_id or canonical_kind)
+    return root / f"{origin_id or stem}_{stem}.md"
 
 
 def serialize_retrieval_bundle(bundle: RetrievalBundle) -> dict[str, Any]:
@@ -131,6 +532,14 @@ def serialize_retrieval_bundle(bundle: RetrievalBundle) -> dict[str, Any]:
                 "drillthrough_used": item.drillthrough_used,
                 "matched_terms": item.matched_terms,
                 "path": item.path,
+                "original_path": item.original_path,
+                "managed_path": item.managed_path,
+                "markdown_path": item.markdown_path,
+                "openable_kind": item.openable_kind,
+                "source_availability": item.source_availability,
+                "original_available": item.original_available,
+                "machine_readable_available": item.machine_readable_available,
+                "open_original_disabled_reason": item.open_original_disabled_reason,
             }
             for item in bundle.citations
         ],
@@ -160,6 +569,14 @@ def deserialize_retrieval_bundle(payload: dict[str, Any]) -> RetrievalBundle:
                 drillthrough_used=bool(item.get("drillthrough_used", False)),
                 matched_terms=[str(term) for term in item.get("matched_terms", []) if str(term).strip()],
                 path=str(item["path"]) if item.get("path") else None,
+                original_path=str(item["original_path"]) if item.get("original_path") else None,
+                managed_path=str(item["managed_path"]) if item.get("managed_path") else None,
+                markdown_path=str(item["markdown_path"]) if item.get("markdown_path") else None,
+                openable_kind=str(item["openable_kind"]) if item.get("openable_kind") else None,
+                source_availability=str(item["source_availability"]) if item.get("source_availability") else None,
+                original_available=bool(item.get("original_available")) if item.get("original_available") is not None else None,
+                machine_readable_available=bool(item.get("machine_readable_available")) if item.get("machine_readable_available") is not None else None,
+                open_original_disabled_reason=str(item["open_original_disabled_reason"]) if item.get("open_original_disabled_reason") else None,
             )
         )
     retrieval_summary = payload.get("retrieval_summary", {})
@@ -400,11 +817,11 @@ def _read_docx_text(path: Path) -> tuple[str, list[dict[str, str]]]:
 
 def _read_pdf_text(path: Path) -> tuple[str, list[dict[str, str]]]:
     if not HAS_PYPDF or PdfReader is None:
-        return "", []
+        return _read_pdf_text_with_pymupdf(path)
     try:
         reader = PdfReader(str(path))
     except Exception:
-        return "", []
+        return _read_pdf_text_with_pymupdf(path)
     sections: list[dict[str, str]] = []
     pages: list[str] = []
     for index, page in enumerate(reader.pages, start=1):
@@ -418,7 +835,340 @@ def _read_pdf_text(path: Path) -> tuple[str, list[dict[str, str]]]:
         title = f"第 {index} 页"
         sections.append({"title": title, "text": text})
         pages.append(f"{title}\n{text}")
+    combined = normalize_text("\n\n".join(pages))
+    if len(combined) >= 120:
+        return combined, sections
+    pymupdf_text, pymupdf_sections = _read_pdf_text_with_pymupdf(path)
+    if len(pymupdf_text) > len(combined):
+        return pymupdf_text, pymupdf_sections
+    return combined, sections
+
+
+def _read_pdf_text_with_pymupdf(path: Path) -> tuple[str, list[dict[str, str]]]:
+    if not HAS_PYMUPDF or fitz is None:
+        return "", []
+    sections: list[dict[str, str]] = []
+    pages: list[str] = []
+    try:
+        document = fitz.open(str(path))
+    except Exception:
+        return "", []
+    for index, page in enumerate(document, start=1):
+        try:
+            raw = page.get_text("text") or ""
+        except Exception:
+            raw = ""
+        text = normalize_text(raw)
+        if not text:
+            continue
+        title = f"第 {index} 页"
+        sections.append({"title": title, "text": text})
+        pages.append(f"{title}\n{text}")
     return normalize_text("\n\n".join(pages)), sections
+
+
+def _pdf_page_count(path: Path) -> int | None:
+    if not HAS_PYMUPDF or fitz is None:
+        return None
+    try:
+        document = fitz.open(str(path))
+        return int(len(document))
+    except Exception:
+        return None
+
+
+def inspect_pdf_page_count(path: Path) -> int | None:
+    return _pdf_page_count(path)
+
+
+def _render_pdf_pages_for_ai_ocr(
+    path: Path,
+    *,
+    start_page: int = 1,
+    max_pages: int = OCR_DEFAULT_BATCH_SIZE,
+    zoom: float = 1.6,
+) -> list[dict[str, object]]:
+    if not HAS_PYMUPDF or fitz is None:
+        return []
+    try:
+        document = fitz.open(str(path))
+    except Exception:
+        return []
+    rendered: list[dict[str, object]] = []
+    matrix = fitz.Matrix(zoom, zoom)
+    start_index = max(0, int(start_page or 1) - 1)
+    end_index = min(len(document), start_index + max(0, int(max_pages or 0)))
+    for page_index in range(start_index, end_index):
+        try:
+            page = document[page_index]
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            image_bytes = pixmap.tobytes("png")
+        except Exception:
+            continue
+        if not image_bytes:
+            continue
+        rendered.append(
+            {
+                "pageNumber": page_index + 1,
+                "mimeType": "image/png",
+                "imageBase64": base64.b64encode(image_bytes).decode("ascii"),
+            }
+        )
+    return rendered
+
+
+def _call_visual_markdown_ocr(
+    ai_service: Any,
+    *,
+    title: str,
+    image_base64: str,
+    mime_type: str,
+    page_number: int | None = None,
+    source_kind: str = "视觉资料",
+) -> str:
+    if hasattr(ai_service, "generate_visual_markdown"):
+        return str(
+            ai_service.generate_visual_markdown(
+                title=title,
+                page_number=page_number,
+                image_base64=image_base64,
+                mime_type=mime_type,
+                source_kind=source_kind,
+            )
+            or ""
+        )
+    if hasattr(ai_service, "generate_pdf_page_markdown"):
+        return str(
+            ai_service.generate_pdf_page_markdown(
+                title=title,
+                page_number=page_number or 1,
+                image_base64=image_base64,
+                mime_type=mime_type,
+            )
+            or ""
+        )
+    return ""
+
+
+def _read_visual_markdown_with_ai_ocr_result(
+    image_items: list[dict[str, object]],
+    *,
+    title: str,
+    ai_service: Any | None,
+    section_prefix: str,
+    source_kind: str,
+    min_chars: int = 24,
+) -> VisualOcrResult:
+    if ai_service is None or not (
+        hasattr(ai_service, "generate_visual_markdown") or hasattr(ai_service, "generate_pdf_page_markdown")
+    ):
+        return VisualOcrResult(text="", sections=[])
+    if not image_items:
+        return VisualOcrResult(text="", sections=[])
+    sections: list[dict[str, str]] = []
+    visual_texts: list[str] = []
+    attempted_pages = len(image_items)
+    for index, item in enumerate(image_items, start=1):
+        page_number = int(item.get("pageNumber") or index)
+        try:
+            markdown = _call_visual_markdown_ocr(
+                ai_service,
+                title=title,
+                page_number=page_number,
+                image_base64=str(item.get("imageBase64") or ""),
+                mime_type=str(item.get("mimeType") or "image/png"),
+                source_kind=source_kind,
+            )
+        except Exception:
+            markdown = ""
+        cleaned = _clean_ingested_text(str(markdown or ""))
+        if not cleaned:
+            continue
+        section_title = f"第 {page_number} 页" if section_prefix == "第" else f"{section_prefix} {page_number}".strip()
+        sections.append({"title": section_title, "text": cleaned})
+        visual_texts.append(f"## {section_title}\n\n{cleaned}")
+    combined = normalize_text("\n\n".join(visual_texts))
+    if len(combined) < min_chars:
+        return VisualOcrResult(text="", sections=[], attempted_pages=attempted_pages, failed_pages=attempted_pages)
+    succeeded_pages = len(sections)
+    return VisualOcrResult(
+        text=combined,
+        sections=sections,
+        attempted_pages=attempted_pages,
+        succeeded_pages=succeeded_pages,
+        failed_pages=max(0, attempted_pages - succeeded_pages),
+    )
+
+
+def _read_visual_markdown_with_ai_ocr(
+    image_items: list[dict[str, object]],
+    *,
+    title: str,
+    ai_service: Any | None,
+    section_prefix: str,
+    source_kind: str,
+    min_chars: int = 24,
+) -> tuple[str, list[dict[str, str]]]:
+    result = _read_visual_markdown_with_ai_ocr_result(
+        image_items,
+        title=title,
+        ai_service=ai_service,
+        section_prefix=section_prefix,
+        source_kind=source_kind,
+        min_chars=min_chars,
+    )
+    return result.text, result.sections
+
+
+def _read_pdf_markdown_with_ai_ocr(
+    path: Path,
+    *,
+    title: str,
+    ai_service: Any | None,
+    start_page: int = 1,
+    max_pages: int = OCR_DEFAULT_MAX_PAGES,
+    batch_size: int = OCR_DEFAULT_BATCH_SIZE,
+    continue_to_end: bool = False,
+    ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> tuple[str, list[dict[str, str]], ExtractionMetadata]:
+    total_pages = _pdf_page_count(path)
+    normalized_max_pages = max(1, int(max_pages or OCR_DEFAULT_MAX_PAGES))
+    normalized_batch_size = max(1, int(batch_size or OCR_DEFAULT_BATCH_SIZE))
+    normalized_start_page = max(1, int(start_page or 1))
+    metadata = ExtractionMetadata(
+        parse_status="failed",
+        parse_error="未能解析出可用正文",
+        failure_type="empty_pdf",
+        total_pages=total_pages,
+        ocr_page_limit=normalized_max_pages,
+        ocr_batch_size=normalized_batch_size,
+    )
+    if total_pages is not None and normalized_start_page > total_pages:
+        return "", [], metadata
+
+    sections: list[dict[str, str]] = []
+    visual_texts: list[str] = []
+    attempted_pages = 0
+    succeeded_pages = 0
+    failed_pages = 0
+    processed_end_page = normalized_start_page - 1
+    current_window_start = normalized_start_page
+
+    while True:
+        if total_pages is not None and current_window_start > total_pages:
+            break
+        remaining_pages = (total_pages - current_window_start + 1) if total_pages is not None else normalized_max_pages
+        current_window_limit = min(max(0, remaining_pages), normalized_max_pages)
+        if current_window_limit <= 0:
+            break
+        current_window_end = current_window_start + current_window_limit - 1
+
+        for batch_start in range(current_window_start, current_window_end + 1, normalized_batch_size):
+            current_batch_size = min(normalized_batch_size, current_window_end - batch_start + 1)
+            page_images = _render_pdf_pages_for_ai_ocr(path, start_page=batch_start, max_pages=current_batch_size)
+            result = _read_visual_markdown_with_ai_ocr_result(
+                page_images,
+                title=title or path.name,
+                ai_service=ai_service,
+                section_prefix="第",
+                source_kind="PDF 页面",
+                min_chars=24,
+            )
+            attempted_pages += current_batch_size
+            succeeded_pages += result.succeeded_pages
+            failed_pages += max(0, current_batch_size - result.succeeded_pages)
+            if result.sections:
+                sections.extend(result.sections)
+                visual_texts.append(result.text)
+            if ocr_progress_callback is not None:
+                try:
+                    ocr_progress_callback(
+                        {
+                            "totalPages": total_pages,
+                            "pageLimit": total_pages or current_window_end,
+                            "attemptedPages": attempted_pages,
+                            "succeededPages": succeeded_pages,
+                            "failedPages": failed_pages,
+                            "currentPageRange": [batch_start, batch_start + current_batch_size - 1],
+                            "ocrWindowRange": [current_window_start, current_window_end],
+                            "continueToEnd": bool(continue_to_end),
+                        }
+                    )
+                except Exception:
+                    pass
+
+        processed_end_page = current_window_end
+        if not continue_to_end or total_pages is None or current_window_end >= total_pages:
+            break
+        current_window_start = current_window_end + 1
+
+    combined = normalize_text("\n\n".join(text for text in visual_texts if text))
+    metadata.attempted_pages = attempted_pages
+    metadata.succeeded_pages = succeeded_pages
+    metadata.failed_pages = failed_pages
+    if not combined or len(combined) < 120:
+        metadata.parse_error = "未能解析出可用正文"
+        metadata.failure_type = "empty_pdf"
+        return "", [], metadata
+
+    truncated_by_limit = bool(total_pages and processed_end_page < total_pages)
+    has_failed_pages = failed_pages > 0
+    metadata.partial = truncated_by_limit or has_failed_pages
+    metadata.parse_status = "partial_ready" if metadata.partial else "ready"
+    metadata.failure_type = None if metadata.parse_status == "ready" else "ocr_required"
+    if metadata.partial:
+        tail = f"，PDF 共 {total_pages} 页" if total_pages else ""
+        metadata.parse_error = f"OCR 部分完成：成功 {succeeded_pages}/{attempted_pages} 页{tail}，当前已处理到第 {processed_end_page} 页。"
+    else:
+        metadata.parse_error = None
+    return combined, sections, metadata
+
+
+def _render_image_for_ai_ocr(
+    path: Path,
+    *,
+    max_side: int = 2200,
+) -> list[dict[str, object]]:
+    if not HAS_PILLOW or Image is None or ImageOps is None:
+        return []
+    try:
+        image = Image.open(path)
+        image = ImageOps.exif_transpose(image)
+        image = image.convert("RGB")
+    except Exception:
+        return []
+    width, height = image.size
+    longest = max(width, height)
+    if longest > max_side:
+        scale = max_side / float(longest)
+        image = image.resize((max(1, int(width * scale)), max(1, int(height * scale))))
+    buffer = BytesIO()
+    try:
+        image.save(buffer, format="PNG", optimize=True)
+    except Exception:
+        return []
+    image_bytes = buffer.getvalue()
+    if not image_bytes:
+        return []
+    return [
+        {
+            "pageNumber": 1,
+            "mimeType": "image/png",
+            "imageBase64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+    ]
+
+
+def _read_image_markdown_with_ai_ocr(path: Path, *, title: str, ai_service: Any | None) -> tuple[str, list[dict[str, str]]]:
+    image_items = _render_image_for_ai_ocr(path)
+    return _read_visual_markdown_with_ai_ocr(
+        image_items,
+        title=title or path.name,
+        ai_service=ai_service,
+        section_prefix="图片",
+        source_kind="图片资料",
+        min_chars=24,
+    )
 
 
 def _build_markdown_sections(text: str) -> list[dict[str, str]]:
@@ -458,29 +1208,103 @@ def _build_generic_sections(text: str) -> list[dict[str, str]]:
     return sections
 
 
-def extract_document(path: Path) -> tuple[str, list[dict[str, str]]]:
+def extract_document_with_metadata(
+    path: Path,
+    *,
+    title: str | None = None,
+    ai_service: Any | None = None,
+    ocr_start_page: int = 1,
+    ocr_max_pages: int = OCR_DEFAULT_MAX_PAGES,
+    ocr_batch_size: int = OCR_DEFAULT_BATCH_SIZE,
+    ocr_continue_to_end: bool = False,
+    force_ocr: bool = False,
+    ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> ExtractedDocument:
     suffix = path.suffix.lower()
     if suffix in {".md"}:
         text = _read_plain_text(path)
-        return text, _build_markdown_sections(text)
+        cleaned = _clean_ingested_text(text)
+        sections = _build_markdown_sections(cleaned)
+        return ExtractedDocument(cleaned, sections, ExtractionMetadata(parse_status="ready" if cleaned and sections else "failed"))
     if suffix in {".txt", ".json", ".csv"}:
         text = _read_plain_text(path)
-        return text, _build_generic_sections(text)
+        cleaned = _clean_ingested_text(text)
+        sections = _build_generic_sections(cleaned)
+        return ExtractedDocument(cleaned, sections, ExtractionMetadata(parse_status="ready" if cleaned and sections else "failed"))
     if suffix == ".docx":
         try:
-            return _read_docx_text(path)
+            text, sections = _read_docx_text(path)
+            cleaned_sections = [
+                {"title": section.get("title", "正文"), "text": _clean_ingested_text(str(section.get("text", "")))}
+                for section in sections
+            ]
+            cleaned_sections = [section for section in cleaned_sections if section["text"]]
+            cleaned = _clean_ingested_text(text)
+            final_sections = cleaned_sections or _build_generic_sections(cleaned)
+            return ExtractedDocument(cleaned, final_sections, ExtractionMetadata(parse_status="ready" if cleaned and final_sections else "failed"))
         except Exception:
             text = _archive_xml_text(path)
-            return text, _build_generic_sections(text)
+            cleaned = _clean_ingested_text(text)
+            sections = _build_generic_sections(cleaned)
+            return ExtractedDocument(cleaned, sections, ExtractionMetadata(parse_status="ready" if cleaned and sections else "failed"))
     if suffix == ".pdf":
-        text, sections = _read_pdf_text(path)
+        text, sections = ("", []) if force_ocr else _read_pdf_text(path)
         if text:
-            return text, sections
-        return "", []
+            cleaned_sections = [
+                {"title": section.get("title", "正文"), "text": _clean_ingested_text(str(section.get("text", "")))}
+                for section in sections
+            ]
+            cleaned_sections = [section for section in cleaned_sections if section["text"]]
+            cleaned = _clean_ingested_text(text)
+            final_sections = cleaned_sections or _build_generic_sections(cleaned)
+            return ExtractedDocument(cleaned, final_sections, ExtractionMetadata(parse_status="ready" if cleaned and final_sections else "failed"))
+        ai_text, ai_sections, metadata = _read_pdf_markdown_with_ai_ocr(
+            path,
+            title=title or path.name,
+            ai_service=ai_service,
+            start_page=ocr_start_page,
+            max_pages=ocr_max_pages,
+            batch_size=ocr_batch_size,
+            continue_to_end=ocr_continue_to_end,
+            ocr_progress_callback=ocr_progress_callback,
+        )
+        if ai_text:
+            cleaned_sections = [
+                {"title": section.get("title", "正文"), "text": _clean_ingested_text(str(section.get("text", "")))}
+                for section in ai_sections
+            ]
+            cleaned_sections = [section for section in cleaned_sections if section["text"]]
+            cleaned = _clean_ingested_text(ai_text)
+            final_sections = cleaned_sections or _build_markdown_sections(cleaned)
+            if not final_sections:
+                metadata.parse_status = "failed"
+                metadata.parse_error = "未能解析出可用正文"
+                metadata.failure_type = "empty_pdf"
+            return ExtractedDocument(cleaned, final_sections, metadata)
+        return ExtractedDocument("", [], metadata)
+    if suffix in IMAGE_EXTENSIONS:
+        ai_text, ai_sections = _read_image_markdown_with_ai_ocr(path, title=title or path.name, ai_service=ai_service)
+        if ai_text:
+            cleaned_sections = [
+                {"title": section.get("title", "正文"), "text": _clean_ingested_text(str(section.get("text", "")))}
+                for section in ai_sections
+            ]
+            cleaned_sections = [section for section in cleaned_sections if section["text"]]
+            cleaned = _clean_ingested_text(ai_text)
+            final_sections = cleaned_sections or _build_markdown_sections(cleaned)
+            return ExtractedDocument(cleaned, final_sections, ExtractionMetadata(parse_status="ready" if cleaned and final_sections else "failed"))
+        return ExtractedDocument("", [], ExtractionMetadata(parse_status="failed", parse_error="未能解析出可用正文", failure_type="empty_text"))
     if suffix in ARCHIVE_XML_EXTENSIONS:
         text = _archive_xml_text(path)
-        return text, _build_generic_sections(text)
-    return "", []
+        cleaned = _clean_ingested_text(text)
+        sections = _build_generic_sections(cleaned)
+        return ExtractedDocument(cleaned, sections, ExtractionMetadata(parse_status="ready" if cleaned and sections else "failed"))
+    return ExtractedDocument("", [], ExtractionMetadata(parse_status="failed", parse_error="不支持的文件格式", failure_type="unsupported_format"))
+
+
+def extract_document(path: Path, *, title: str | None = None, ai_service: Any | None = None) -> tuple[str, list[dict[str, str]]]:
+    extracted = extract_document_with_metadata(path, title=title, ai_service=ai_service)
+    return extracted.text, extracted.sections
 
 
 def build_chunks(section_text: str, section_title: str) -> list[dict[str, Any]]:
@@ -606,7 +1430,7 @@ def _write_markdown_derivative(
     title: str,
     sections: list[dict[str, str]],
     fallback_text: str,
-) -> Path:
+) -> tuple[Path, str]:
     target = _markdown_derivative_path(data_dir, client_id, document_id, title)
     lines = [f"# {safe_filename(title)}", ""]
     if sections:
@@ -621,8 +1445,9 @@ def _write_markdown_derivative(
         body = normalize_text(fallback_text)
         if body:
             lines.extend(["## 正文", "", body, ""])
-    target.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-    return target
+    markdown_content = "\n".join(lines).strip() + "\n"
+    target.write_text(markdown_content, encoding="utf-8")
+    return target, markdown_content
 
 
 def _content_hash(text: str, path: Path) -> str:
@@ -672,7 +1497,7 @@ def _sync_legacy_knowledge_document(
     reclass_reason = f"{V2_PIPELINE_VERSION} 同步的兼容知识文档记录"
     reclass_confidence = confidence
     normalized_path = str(managed_path)
-    vector_status = "chunk_indexed" if parse_status == "ready" else "needs_review"
+    vector_status = "chunk_indexed" if parse_status in SEARCHABLE_PARSE_STATUSES else "needs_review"
     needs_review = 0 if parse_status == "ready" else 1
     dedup_status = "unique"
     binary_hash = content_hash
@@ -794,7 +1619,7 @@ def _folder_counts(db: Database, client_id: str) -> dict[str, int]:
             COUNT(1) AS count
         FROM v2_documents
         WHERE client_id = ?
-          AND parse_status = 'ready'
+          AND parse_status IN ('ready', 'partial_ready')
           AND (
             material_layer = 'background'
             OR (material_layer = 'evidence' AND COALESCE(visible_category, '其他资料') IN (?, ?, ?, ?, ?))
@@ -835,9 +1660,26 @@ def ingest_document_knowledge(
     fallback_excerpt: str,
     created_at: str,
     ai_service: Any | None = None,
+    ocr_start_page: int = 1,
+    ocr_max_pages: int = OCR_DEFAULT_MAX_PAGES,
+    ocr_batch_size: int = OCR_DEFAULT_BATCH_SIZE,
+    ocr_continue_to_end: bool = False,
+    force_ocr: bool = False,
+    ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, Any]:
-    del ai_service
-    text, sections = extract_document(source_path)
+    extracted = extract_document_with_metadata(
+        source_path,
+        title=title,
+        ai_service=ai_service,
+        ocr_start_page=ocr_start_page,
+        ocr_max_pages=ocr_max_pages,
+        ocr_batch_size=ocr_batch_size,
+        ocr_continue_to_end=ocr_continue_to_end,
+        force_ocr=force_ocr,
+        ocr_progress_callback=ocr_progress_callback,
+    )
+    text, sections = extracted.text, extracted.sections
+    extraction_metadata = extracted.metadata
     preview_text = build_excerpt(text or fallback_excerpt, title)
     primary_category, secondary_category, confidence = detect_category(title, text or preview_text)
     material_layer, primary_category, secondary_category, confidence = detect_material_profile(
@@ -857,7 +1699,7 @@ def ingest_document_knowledge(
         preview_text,
         sections,
     )
-    markdown_path = _write_markdown_derivative(
+    markdown_path, markdown_content = _write_markdown_derivative(
         data_dir,
         client_id,
         document_id,
@@ -867,8 +1709,20 @@ def ingest_document_knowledge(
     )
     v2_document_id = f"v2doc_{document_id}"
     content_hash = _content_hash(text or preview_text or title, source_path)
-    parse_status = "ready" if text and sections else "failed"
-    parse_error = None if parse_status == "ready" else "未能解析出可用正文"
+    document_family_id = derive_document_family_id(
+        title=title,
+        content_hash=content_hash,
+        origin_type="file_import",
+        origin_id=document_id,
+    )
+    canonical_kind = "raw_file"
+    origin_type = "file_import"
+    origin_id = document_id
+    is_searchable = 0 if _is_ingestion_noise_document(title, text or preview_text) else 1
+    parse_status = extraction_metadata.parse_status if text and sections else "failed"
+    if parse_status not in SEARCHABLE_PARSE_STATUSES:
+        parse_status = "ready" if text and sections else "failed"
+    parse_error = None if parse_status == "ready" else (extraction_metadata.parse_error or "未能解析出可用正文")
     doc_tokens = tokenize(f"{title}\n{primary_category}\n{text[:2400] if text else preview_text}")
     heading_tokens = tokenize(" ".join(section["title"] for section in sections[:24]))
     doc_index_text = " ".join(dict.fromkeys([*doc_tokens, *heading_tokens]))
@@ -911,6 +1765,11 @@ def ingest_document_knowledge(
         doc_index_text,
         content_hash,
         confidence,
+        document_family_id,
+        canonical_kind,
+        origin_type,
+        origin_id,
+        is_searchable,
         created_at,
         now_iso(),
     )
@@ -920,7 +1779,9 @@ def ingest_document_knowledge(
             UPDATE v2_documents
             SET client_id = ?, document_id = ?, original_path = ?, managed_path = ?, markdown_path = ?, file_name = ?, kind = ?,
                 material_layer = ?, visible_category = ?, secondary_category = ?, parse_status = ?, parse_error = ?,
-                preview_text = ?, doc_index_text = ?, content_hash = ?, classification_confidence = ?, imported_at = ?, updated_at = ?
+                preview_text = ?, doc_index_text = ?, content_hash = ?, classification_confidence = ?,
+                document_family_id = ?, canonical_kind = ?, origin_type = ?, origin_id = ?, is_searchable = ?,
+                imported_at = ?, updated_at = ?
             WHERE id = ?
             """,
             payload[1:] + (v2_document_id,),
@@ -931,17 +1792,23 @@ def ingest_document_knowledge(
             INSERT INTO v2_documents(
                 id, client_id, document_id, original_path, managed_path, markdown_path, file_name, kind, material_layer, visible_category,
                 secondary_category, parse_status, parse_error, preview_text, doc_index_text, content_hash,
-                classification_confidence, imported_at, updated_at
+                classification_confidence, document_family_id, canonical_kind, origin_type, origin_id, is_searchable, imported_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             payload,
         )
 
     db.execute(
+        "UPDATE v2_documents SET markdown_content = ? WHERE id = ?",
+        (markdown_content if parse_status in SEARCHABLE_PARSE_STATUSES else "", v2_document_id),
+    )
+
+    db.execute(
         """
         UPDATE documents
-        SET title = ?, path = ?, original_source_path = ?, kind = ?, source = ?, excerpt = ?, tags_json = ?
+        SET title = ?, path = ?, original_source_path = ?, kind = ?, source = ?, excerpt = ?, tags_json = ?,
+            document_family_id = ?, canonical_kind = ?, origin_type = ?, origin_id = ?, is_searchable = ?
         WHERE id = ?
         """,
         (
@@ -952,11 +1819,16 @@ def ingest_document_knowledge(
             source,
             preview_text,
             to_json([kind, primary_category, secondary_category, V2_PIPELINE_VERSION]),
+            document_family_id,
+            canonical_kind,
+            origin_type,
+            origin_id,
+            is_searchable,
             document_id,
         ),
     )
 
-    if parse_status == "ready":
+    if parse_status in SEARCHABLE_PARSE_STATUSES:
         for section_index, section in enumerate(sections):
             section_text = normalize_text(section["text"])
             if not section_text:
@@ -1060,9 +1932,535 @@ def ingest_document_knowledge(
         "classification_confidence": confidence,
         "material_layer": material_layer,
         "needs_review": parse_status != "ready",
+        "parse_status": parse_status,
+        "parse_error": parse_error,
+        "ocr_metadata": {
+            "totalPages": extraction_metadata.total_pages,
+            "attemptedPages": extraction_metadata.attempted_pages,
+            "succeededPages": extraction_metadata.succeeded_pages,
+            "failedPages": extraction_metadata.failed_pages,
+            "pageLimit": extraction_metadata.ocr_page_limit,
+            "batchSize": extraction_metadata.ocr_batch_size,
+            "partial": extraction_metadata.partial,
+        },
         "chunk_count": chunk_count,
         "raw_text": text,
     }
+
+
+def _stable_canonical_document_id(client_id: str, origin_type: str, origin_id: str) -> str:
+    digest = hashlib.sha256(f"{client_id}:{origin_type}:{origin_id}".encode("utf-8")).hexdigest()[:20]
+    return f"sysdoc_{digest}"
+
+
+def _canonical_sections(text: str) -> list[dict[str, str]]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+    if "#" in normalized:
+        return _build_markdown_sections(normalized)
+    return _build_generic_sections(normalized)
+
+
+def upsert_canonical_text_document(
+    db: Database,
+    *,
+    data_dir: Path,
+    client_id: str,
+    canonical_kind: str,
+    origin_type: str,
+    origin_id: str,
+    title: str,
+    text: str,
+    visible_category: str,
+    secondary_category: str,
+    created_at: str,
+    updated_at: str,
+    organization_id: str = "",
+    department_id: str = "",
+    department_ids: list[str] | tuple[str, ...] | None = None,
+    owner_user_id: str = "",
+    source_entity_type: str = "",
+    source_entity_id: str = "",
+    visibility_scope: str = "project_public",
+    content_domain: str = "work",
+    lifecycle_status: str = "active",
+) -> dict[str, Any] | None:
+    cleaned_text = _clean_ingested_text(text)
+    if not cleaned_text:
+        return None
+    department_ids_json = to_json(list(normalize_department_ids(department_ids or department_id)))
+    document_id = _stable_canonical_document_id(client_id, origin_type, origin_id)
+    v2_document_id = f"v2doc_{document_id}"
+    managed_path = _system_document_path(data_dir, client_id, canonical_kind, origin_id, title)
+    managed_path.write_text(cleaned_text.strip() + "\n", encoding="utf-8")
+    sections = _canonical_sections(cleaned_text)
+    preview_text = build_excerpt(cleaned_text, title)
+    content_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
+    document_family_id = derive_document_family_id(
+        title=title,
+        content_hash=content_hash,
+        origin_type=origin_type,
+        origin_id=origin_id,
+    )
+    doc_index_text = " ".join(
+        dict.fromkeys(
+            [
+                *tokenize(f"{title}\n{visible_category}\n{secondary_category}\n{preview_text}"),
+                *tokenize(" ".join(section.get("title", "") for section in sections[:24])),
+            ]
+        )
+    )
+
+    if db.fetchone("SELECT id FROM documents WHERE id = ?", (document_id,)) is None:
+        db.execute(
+            """
+            INSERT INTO documents(
+                id, client_id, folder_id, title, path, original_source_path, kind, source, excerpt, tags_json, created_at,
+                document_family_id, canonical_kind, origin_type, origin_id, is_searchable,
+                organization_id, department_id, department_ids_json, owner_user_id, source_entity_type, source_entity_id,
+                visibility_scope, content_domain, lifecycle_status
+            )
+            VALUES(?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id,
+                client_id,
+                safe_filename(title),
+                str(managed_path),
+                str(managed_path),
+                canonical_kind,
+                "workspace_native",
+                preview_text,
+                to_json([canonical_kind, visible_category, secondary_category, V2_PIPELINE_VERSION]),
+                created_at,
+                document_family_id,
+                canonical_kind,
+                origin_type,
+                origin_id,
+                organization_id,
+                department_id,
+                department_ids_json,
+                owner_user_id,
+                source_entity_type or origin_type,
+                source_entity_id or origin_id,
+                visibility_scope or "project_public",
+                content_domain or "work",
+                lifecycle_status or "active",
+            ),
+        )
+    else:
+        db.execute(
+            """
+            UPDATE documents
+            SET client_id = ?, title = ?, path = ?, original_source_path = ?, kind = ?, source = ?, excerpt = ?, tags_json = ?,
+                document_family_id = ?, canonical_kind = ?, origin_type = ?, origin_id = ?, is_searchable = ?,
+                organization_id = ?, department_id = ?, department_ids_json = ?, owner_user_id = ?, source_entity_type = ?, source_entity_id = ?,
+                visibility_scope = ?, content_domain = ?, lifecycle_status = ?
+            WHERE id = ?
+            """,
+            (
+                client_id,
+                safe_filename(title),
+                str(managed_path),
+                str(managed_path),
+                canonical_kind,
+                "workspace_native",
+                preview_text,
+                to_json([canonical_kind, visible_category, secondary_category, V2_PIPELINE_VERSION]),
+                document_family_id,
+                canonical_kind,
+                origin_type,
+                origin_id,
+                1 if (lifecycle_status or "active") == "active" and (visibility_scope or "project_public").lower() not in {"self", "private", "personal"} else 0,
+                organization_id,
+                department_id,
+                department_ids_json,
+                owner_user_id,
+                source_entity_type or origin_type,
+                source_entity_id or origin_id,
+                visibility_scope or "project_public",
+                content_domain or "work",
+                lifecycle_status or "active",
+                document_id,
+            ),
+        )
+
+    _remove_existing_v2_rows(db, v2_document_id)
+    payload = (
+        v2_document_id,
+        client_id,
+        document_id,
+        str(managed_path),
+        str(managed_path),
+        str(managed_path),
+        safe_filename(title),
+        canonical_kind,
+        "evidence",
+        visible_category,
+        secondary_category,
+        "ready",
+        None,
+        preview_text,
+        doc_index_text,
+        content_hash,
+        0.95,
+        document_family_id,
+        canonical_kind,
+        origin_type,
+        origin_id,
+        1 if (lifecycle_status or "active") == "active" and (visibility_scope or "project_public").lower() not in {"self", "private", "personal"} else 0,
+        organization_id,
+        department_id,
+        department_ids_json,
+        owner_user_id,
+        source_entity_type or origin_type,
+        source_entity_id or origin_id,
+        visibility_scope or "project_public",
+        content_domain or "work",
+        lifecycle_status or "active",
+        created_at,
+        updated_at,
+    )
+    if db.fetchone("SELECT id FROM v2_documents WHERE id = ?", (v2_document_id,)) is None:
+        db.execute(
+            """
+            INSERT INTO v2_documents(
+                id, client_id, document_id, original_path, managed_path, markdown_path, file_name, kind, material_layer, visible_category,
+                secondary_category, parse_status, parse_error, preview_text, doc_index_text, content_hash,
+                classification_confidence, document_family_id, canonical_kind, origin_type, origin_id, is_searchable,
+                organization_id, department_id, department_ids_json, owner_user_id, source_entity_type, source_entity_id,
+                visibility_scope, content_domain, lifecycle_status, imported_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+    else:
+        db.execute(
+            """
+            UPDATE v2_documents
+            SET client_id = ?, document_id = ?, original_path = ?, managed_path = ?, markdown_path = ?, file_name = ?, kind = ?,
+                material_layer = ?, visible_category = ?, secondary_category = ?, parse_status = ?, parse_error = ?,
+                preview_text = ?, doc_index_text = ?, content_hash = ?, classification_confidence = ?,
+                document_family_id = ?, canonical_kind = ?, origin_type = ?, origin_id = ?, is_searchable = ?,
+                organization_id = ?, department_id = ?, department_ids_json = ?, owner_user_id = ?, source_entity_type = ?, source_entity_id = ?,
+                visibility_scope = ?, content_domain = ?, lifecycle_status = ?, imported_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            payload[1:] + (v2_document_id,),
+        )
+
+    db.execute(
+        "UPDATE v2_documents SET markdown_content = ? WHERE id = ?",
+        (cleaned_text.strip() + "\n", v2_document_id),
+    )
+
+    chunk_count = 0
+    for section_index, section in enumerate(sections):
+        section_text = normalize_text(section.get("text", ""))
+        if not section_text:
+            continue
+        section_title = normalize_text(section.get("title", "")) or "正文"
+        section_id = f"v2sec_{document_id}_{section_index}"
+        db.execute(
+            """
+            INSERT INTO v2_sections(id, v2_document_id, section_index, title, content, searchable_text, char_count, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                section_id,
+                v2_document_id,
+                section_index,
+                section_title[:120],
+                section_text,
+                " ".join(tokenize(f"{section_title}\n{section_text[:2400]}")),
+                len(section_text),
+                updated_at,
+            ),
+        )
+        for chunk_index, chunk in enumerate(build_chunks(section_text, section_title)):
+            db.execute(
+                """
+                INSERT INTO v2_chunks(id, v2_document_id, v2_section_id, chunk_index, section_label, content, searchable_text, char_count, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"v2chunk_{document_id}_{section_index}_{chunk_index}",
+                    v2_document_id,
+                    section_id,
+                    chunk_index,
+                    chunk["sectionLabel"],
+                    chunk["content"],
+                    chunk["tokenText"],
+                    chunk["charCount"],
+                    updated_at,
+                ),
+            )
+            chunk_count += 1
+    db.execute(
+        """
+        UPDATE v2_documents
+        SET section_count = ?, chunk_count = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (len(sections), chunk_count, updated_at, v2_document_id),
+    )
+    return {
+        "documentId": document_id,
+        "v2DocumentId": v2_document_id,
+        "documentFamilyId": document_family_id,
+        "canonicalKind": canonical_kind,
+        "originType": origin_type,
+        "originId": origin_id,
+    }
+
+
+def _render_meeting_doc_text(
+    db: Database,
+    *,
+    meeting_id: str,
+    title: str,
+    stage: str,
+    scheduled_at: str,
+    notes: str,
+    transcript_text: str,
+) -> str:
+    agenda_rows = db.fetchall(
+        "SELECT title, description FROM agenda_items WHERE meeting_id = ? ORDER BY sort_order ASC, rowid ASC",
+        (meeting_id,),
+    )
+    decision_rows = db.fetchall("SELECT summary FROM decisions WHERE meeting_id = ? ORDER BY created_at DESC", (meeting_id,))
+    action_rows = db.fetchall(
+        "SELECT title, owner_name, due_date, publish_status FROM action_items WHERE meeting_id = ? ORDER BY created_at DESC",
+        (meeting_id,),
+    )
+    source_rows = db.fetchall(
+        "SELECT title, content_text FROM meeting_sources WHERE meeting_id = ? ORDER BY created_at DESC",
+        (meeting_id,),
+    )
+    lines = [
+        f"# 会议：{title}",
+        "",
+        "## 基本信息",
+        f"- 阶段：{stage or '未标注'}",
+        f"- 时间：{scheduled_at or '未记录'}",
+    ]
+    if notes:
+        lines.extend(["", "## 会议纪要", "", notes])
+    if transcript_text:
+        lines.extend(["", "## 会议过程", "", transcript_text])
+    if agenda_rows:
+        lines.extend(["", "## 议程"])
+        for row in agenda_rows:
+            lines.append(f"- {normalize_text(str(row['title'] or '')) or '议程项'}：{normalize_text(str(row['description'] or '')) or '无描述'}")
+    if decision_rows:
+        lines.extend(["", "## 决议"])
+        for row in decision_rows:
+            summary = normalize_text(str(row["summary"] or ""))
+            if summary:
+                lines.append(f"- {summary}")
+    if action_rows:
+        lines.extend(["", "## 行动项"])
+        for row in action_rows:
+            lines.append(
+                f"- {normalize_text(str(row['title'] or '')) or '行动项'}｜负责人：{normalize_text(str(row['owner_name'] or '')) or '待定'}｜截止：{normalize_text(str(row['due_date'] or '')) or '未定'}｜状态：{normalize_text(str(row['publish_status'] or '')) or 'draft'}"
+            )
+    if source_rows:
+        lines.extend(["", "## 会议来源材料"])
+        for row in source_rows[:8]:
+            source_title = normalize_text(str(row["title"] or "")) or "来源材料"
+            source_text = normalize_text(str(row["content_text"] or ""))
+            if source_text:
+                lines.extend([f"### {source_title}", "", source_text])
+    return "\n".join(lines)
+
+
+def _render_task_doc_text(db: Database, *, task_id: str, row: Any) -> str:
+    note_row = db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (task_id,))
+    attachment_rows = db.fetchall(
+        "SELECT title, kind, path FROM task_attachments WHERE task_id = ? ORDER BY created_at DESC",
+        (task_id,),
+    )
+    collaborator_rows = db.fetchall(
+        "SELECT full_name, email, is_owner, inbox_status FROM task_collaborators WHERE task_id = ? ORDER BY order_index ASC, updated_at DESC",
+        (task_id,),
+    )
+    lines = [
+        f"# 任务：{str(row['title'] or '').strip() or task_id}",
+        "",
+        "## 基本信息",
+        f"- 状态：{str(row['status'] or '').strip() or '未标注'}",
+        f"- 优先级：{str(row['priority'] or '').strip() or '未标注'}",
+        f"- 进度：{str(row['progress_status'] or '').strip() or '未标注'}",
+        f"- 截止：{str(row['due_date'] or row['ddl'] or '').strip() or '未记录'}",
+    ]
+    for label, value in (
+        ("任务描述", str(row["description"] or "")),
+        ("当前阻塞", str(row["current_blocker"] or "")),
+        ("下一步", str(row["next_action"] or "")),
+        ("最近决策", str(row["recent_decision"] or "")),
+    ):
+        cleaned = normalize_text(value)
+        if cleaned:
+            lines.extend(["", f"## {label}", "", cleaned])
+    note_text = normalize_text(str(note_row["note"] or "")) if note_row else ""
+    if note_text:
+        lines.extend(["", "## 任务备注", "", note_text])
+    if collaborator_rows:
+        lines.extend(["", "## 协作人"])
+        for collaborator in collaborator_rows:
+            lines.append(
+                f"- {normalize_text(str(collaborator['full_name'] or '')) or '未命名'}｜邮箱：{normalize_text(str(collaborator['email'] or '')) or '未记录'}｜负责人：{'是' if int(collaborator['is_owner'] or 0) else '否'}｜收件状态：{normalize_text(str(collaborator['inbox_status'] or 'pending')) or 'pending'}"
+            )
+    if attachment_rows:
+        lines.extend(["", "## 关联附件"])
+        for attachment in attachment_rows[:10]:
+            lines.append(
+                f"- {normalize_text(str(attachment['title'] or '')) or '附件'}｜类型：{normalize_text(str(attachment['kind'] or '')) or '未知'}｜路径：{normalize_text(str(attachment['path'] or '')) or '未记录'}"
+            )
+    return "\n".join(lines)
+
+
+def _render_review_doc_text(row: Any) -> str:
+    lines = [
+        f"# 周复盘：{str(row['week_label'] or '').strip() or str(row['id'])}",
+        "",
+        "## 基本信息",
+        f"- 提交时间：{str(row['submitted_at'] or row['updated_at'] or row['created_at'] or '').strip() or '未记录'}",
+    ]
+    for label, value in (
+        ("工作总结", str(row["summary"] or "")),
+        ("工作进展", str(row["work_progress"] or "")),
+        ("工作阻塞", str(row["work_blocker"] or "")),
+        ("阻塞类型", str(row["blocker_type"] or "")),
+        ("工作方向", str(row["work_direction"] or "")),
+        ("下周重点", str(row["next_week_focus"] or "")),
+        ("需要支持", str(row["support_needed"] or "")),
+        ("自由备注", str(row["work_free_note"] or "")),
+        ("成长备注", str(row["personal_growth_note"] or "")),
+    ):
+        cleaned = normalize_text(value)
+        if cleaned:
+            lines.extend(["", f"## {label}", "", cleaned])
+    return "\n".join(lines)
+
+
+def _render_judgment_doc_text(row: Any) -> str:
+    lines = [
+        f"# 判断：{str(row['topic'] or '').strip() or str(row['id'])}",
+        "",
+        "## 基本信息",
+        f"- 状态：{str(row['status'] or '').strip() or '未标注'}",
+        f"- 目标范围：{str(row['target_type'] or '').strip() or 'unknown'} / {str(row['target_id'] or '').strip() or 'unknown'}",
+        f"- 风险等级：{str(row['risk_level'] or '').strip() or '未标注'}",
+        f"- 置信度：{str(row['confidence'] or '').strip() or '未标注'}",
+    ]
+    summary = normalize_text(str(row["summary"] or ""))
+    if summary:
+        lines.extend(["", "## 判断内容", "", summary])
+    evidence_ids = from_json(str(row["evidence_ids_json"] or "[]"), [])
+    if isinstance(evidence_ids, list) and evidence_ids:
+        lines.extend(["", "## 关联证据 ID"])
+        for evidence_id in evidence_ids[:20]:
+            lines.append(f"- {str(evidence_id)}")
+    return "\n".join(lines)
+
+
+def materialize_workspace_native_documents(db: Database, *, data_dir: Path, client_id: str) -> dict[str, int]:
+    counts = {
+        "meeting_doc": 0,
+        "task_doc": 0,
+        "review_doc": 0,
+        "judgment_doc": 0,
+        "event_line_doc": 0,
+        "project_doc": 0,
+        "calendar_doc": 0,
+    }
+
+    meeting_rows = db.fetchall(
+        "SELECT id, title, stage, scheduled_at, transcript_text, notes, created_at, updated_at FROM meetings WHERE client_id = ?",
+        (client_id,),
+    )
+    for row in meeting_rows:
+        content = _render_meeting_doc_text(
+            db,
+            meeting_id=str(row["id"]),
+            title=str(row["title"] or ""),
+            stage=str(row["stage"] or ""),
+            scheduled_at=str(row["scheduled_at"] or ""),
+            notes=str(row["notes"] or ""),
+            transcript_text=str(row["transcript_text"] or ""),
+        )
+        if upsert_canonical_text_document(
+            db,
+            data_dir=data_dir,
+            client_id=client_id,
+            canonical_kind="meeting_doc",
+            origin_type="meeting",
+            origin_id=str(row["id"]),
+            title=str(row["title"] or "") or f"meeting_{row['id']}",
+            text=content,
+            visible_category="会议纪要",
+            secondary_category="软件沉淀",
+            created_at=str(row["created_at"] or row["updated_at"] or now_iso()),
+            updated_at=str(row["updated_at"] or row["created_at"] or now_iso()),
+        ):
+            counts["meeting_doc"] += 1
+
+    task_rows = db.fetchall("SELECT * FROM tasks WHERE client_id = ?", (client_id,))
+    for row in task_rows:
+        content = _render_task_doc_text(db, task_id=str(row["id"]), row=row)
+        if upsert_canonical_text_document(
+            db,
+            data_dir=data_dir,
+            client_id=client_id,
+            canonical_kind="task_doc",
+            origin_type="task",
+            origin_id=str(row["id"]),
+            title=str(row["title"] or "") or f"task_{row['id']}",
+            text=content,
+            visible_category="任务资料",
+            secondary_category="软件沉淀",
+            created_at=str(row["created_at"] or row["updated_at"] or now_iso()),
+            updated_at=str(row["updated_at"] or row["created_at"] or now_iso()),
+        ):
+            counts["task_doc"] += 1
+
+    judgment_rows = db.fetchall(
+        "SELECT * FROM judgment_versions WHERE client_id = ? ORDER BY updated_at DESC",
+        (client_id,),
+    )
+    for row in judgment_rows:
+        content = _render_judgment_doc_text(row)
+        if upsert_canonical_text_document(
+            db,
+            data_dir=data_dir,
+            client_id=client_id,
+            canonical_kind="judgment_doc",
+            origin_type="judgment_version",
+            origin_id=str(row["id"]),
+            title=str(row["topic"] or "") or f"judgment_{row['id']}",
+            text=content,
+            visible_category="正式判断",
+            secondary_category="软件沉淀",
+            created_at=str(row["created_at"] or row["updated_at"] or now_iso()),
+            updated_at=str(row["updated_at"] or row["created_at"] or now_iso()),
+        ):
+            counts["judgment_doc"] += 1
+
+    relation_counts = materialize_workspace_relation_documents(
+        db,
+        data_dir=data_dir,
+        client_id=client_id,
+        upsert_canonical_text_document=upsert_canonical_text_document,
+        now_iso=now_iso,
+    )
+    for key, value in relation_counts.items():
+        counts[key] = counts.get(key, 0) + int(value or 0)
+
+    refresh_client_folder_counts(db, client_id)
+    return counts
 
 
 def backfill_knowledge_documents(
@@ -1289,29 +2687,64 @@ def backfill_workspace_import(
 
 
 def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None = None) -> dict[str, Any]:
-    del data_dir
+    runtime_status = (
+        get_vector_runtime_status(db, data_dir=data_dir, client_id=client_id)
+        if data_dir is not None
+        else {
+            "qdrantReady": True,
+            "embeddingMode": "hash_fallback",
+            "embeddingModel": None,
+            "embeddingError": None,
+            "embeddingProvider": None,
+            "embeddingDimension": None,
+            "embeddingSignature": None,
+            "activeVectorCollection": None,
+            "vectorIndexStatus": "ready",
+            "routerEnabled": False,
+            "routerModel": None,
+            "rerankEnabled": False,
+        }
+    )
+    main_job_placeholders = ",".join("?" for _ in MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
+    job_filter = f"client_id = ? AND job_type IN ({main_job_placeholders})"
+    job_params = (client_id, *MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
     document_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer = 'evidence'", (client_id,)) or 0)
     v2_background_docs = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer = 'background'", (client_id,)) or 0)
     section_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_sections WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer = 'evidence')", (client_id,)) or 0)
     chunk_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_chunks WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer = 'evidence')", (client_id,)) or 0)
-    failed_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND parse_status != 'ready'", (client_id,)) or 0)
+    failed_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND parse_status NOT IN ('ready', 'partial_ready')", (client_id,)) or 0)
     review_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND classification_confidence < 0.62", (client_id,)) or 0)
     dna_background_docs = int(db.scalar("SELECT COUNT(1) AS count FROM client_dna_documents WHERE client_id = ?", (client_id,)) or 0)
     memory_docs = int(db.scalar("SELECT COUNT(1) AS count FROM knowledge_surrogates WHERE client_id = ? AND source_type = 'memory_answer'", (client_id,)) or 0)
-    pending_jobs = int(db.scalar("SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status = 'queued'", (client_id,)) or 0)
-    running_jobs = int(db.scalar("SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status = 'running'", (client_id,)) or 0)
-    last_job = db.fetchone("SELECT * FROM knowledge_jobs WHERE client_id = ? ORDER BY created_at DESC LIMIT 1", (client_id,))
+    pending_jobs = int(
+        db.scalar(
+            f"SELECT COUNT(1) AS count FROM knowledge_jobs WHERE {job_filter} AND status = 'queued'",
+            job_params,
+        )
+        or 0
+    )
+    running_jobs = int(
+        db.scalar(
+            f"SELECT COUNT(1) AS count FROM knowledge_jobs WHERE {job_filter} AND status = 'running'",
+            job_params,
+        )
+        or 0
+    )
+    last_job = db.fetchone(
+        f"SELECT * FROM knowledge_jobs WHERE {job_filter} ORDER BY created_at DESC LIMIT 1",
+        job_params,
+    )
     last_status = str(last_job["status"]) if last_job else "idle"
     last_error = str(last_job["last_error"]) if last_job and last_job["last_error"] else None
     last_success_row = db.fetchone(
-        """
+        f"""
         SELECT finished_at
         FROM knowledge_jobs
-        WHERE client_id = ? AND status = 'completed'
+        WHERE {job_filter} AND status = 'completed'
         ORDER BY finished_at DESC
         LIMIT 1
         """,
-        (client_id,),
+        job_params,
     )
     last_updated_row = db.fetchone(
         """
@@ -1340,31 +2773,48 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         "memoryDocCount": memory_docs,
         "masterIndexCount": document_count,
         "reclassifiedDocumentCount": document_count,
-        "qdrantReady": True,
+        "qdrantReady": bool(runtime_status.get("qdrantReady", True)),
         "lastUpdatedAt": last_updated,
         "pendingJobs": pending_jobs,
         "runningJobs": running_jobs,
         "lastJobStatus": last_status,
         "lastJobError": last_error,
         "lastSuccessfulRunAt": last_success,
-        "embeddingMode": "hash_fallback",
-        "embeddingModel": None,
-        "embeddingError": None,
+        "embeddingMode": str(runtime_status.get("embeddingMode") or "hash_fallback"),
+        "embeddingModel": runtime_status.get("embeddingModel"),
+        "embeddingError": runtime_status.get("embeddingError"),
+        "embeddingProvider": runtime_status.get("embeddingProvider"),
+        "embeddingDimension": runtime_status.get("embeddingDimension"),
+        "embeddingSignature": runtime_status.get("embeddingSignature"),
+        "activeVectorCollection": runtime_status.get("activeVectorCollection"),
+        "vectorIndexStatus": runtime_status.get("vectorIndexStatus"),
+        "routerEnabled": runtime_status.get("routerEnabled"),
+        "routerModel": runtime_status.get("routerModel"),
+        "rerankEnabled": runtime_status.get("rerankEnabled"),
         "lastPipelineVersion": V2_PIPELINE_VERSION,
     }
 
 
-def fetch_document_cards(db: Database, client_id: str, data_dir: Path | None = None, limit: int | None = 120) -> list[dict[str, Any]]:
+def fetch_document_cards(
+    db: Database,
+    client_id: str,
+    data_dir: Path | None = None,
+    limit: int | None = 120,
+    access_context: DataCenterAccessContext | dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    access = build_document_access_where("vd", "d", access_context)
     rows = db.fetchall(
-        """
+        f"""
         SELECT vd.*, d.created_at AS document_created_at, d.excerpt AS legacy_excerpt
         FROM v2_documents vd
         JOIN documents d ON d.id = vd.document_id
         WHERE vd.client_id = ? AND vd.material_layer = 'evidence'
+          AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file'
+          AND {access.sql}
         ORDER BY vd.updated_at DESC
         LIMIT ?
         """,
-        (client_id, limit or 120),
+        (client_id, *access.params, limit or 120),
     )
     cards: list[dict[str, Any]] = []
     for row in rows:
@@ -1430,221 +2880,734 @@ def _score_by_terms(query_terms: list[str], *haystacks: str, title_weight: float
     return score, matched
 
 
-def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prompt: str) -> RetrievalBundle:
+def _normalize_path_for_match(path: str | None) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    return re.sub(r"[\\/]+", "/", raw).rstrip("/").lower()
+
+
+def _normalize_title_for_match(title: str | None) -> str:
+    raw = str(title or "").strip().lower()
+    if not raw:
+        return ""
+    return re.sub(r"\s+", "", raw)
+
+
+def _canonical_kind_for_row(row: Any) -> str:
+    return str(row["canonical_kind"] or "raw_file").strip() or "raw_file"
+
+
+def _is_software_kind(canonical_kind: str) -> bool:
+    return canonical_kind not in {"", "raw_file"}
+
+
+def _row_value(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except Exception:
+        if isinstance(row, dict):
+            return row.get(key)
+        return getattr(row, key, None)
+
+
+def _clean_path_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _is_markdown_path(path: str | None) -> bool:
+    return _clean_path_value(path).lower().endswith(".md")
+
+
+def is_placeholder_machine_text(text: str) -> bool:
+    """Return True for machine-readable text that is only a retry/placeholder stub."""
+
+    normalized = normalize_text(text)
+    if not normalized:
+        return True
+    compact = re.sub(r"\s+", "", normalized)
+    if not compact:
+        return True
+    if any(marker in normalized for marker in PLACEHOLDER_MACHINE_TEXT_MARKERS):
+        if len(compact) <= 220:
+            return True
+        # A document that is mostly headings plus a placeholder should still be invalid.
+        body_without_headings = re.sub(r"(?m)^#{1,6}\s+.*$", "", normalized)
+        body_compact = re.sub(r"\s+", "", body_without_headings)
+        if len(body_compact) <= 80 and any(marker in body_without_headings for marker in PLACEHOLDER_MACHINE_TEXT_MARKERS):
+            return True
+    # Title-only markdown cards are not useful evidence.
+    non_heading_body = re.sub(r"(?m)^#{1,6}\s+.*$", "", normalized)
+    if len(compact) <= 160 and len(re.sub(r"\s+", "", non_heading_body)) <= 12:
+        return True
+    return False
+
+
+def has_effective_machine_text(*values: Any) -> bool:
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", normalize_text(text))
+        if len(compact) >= 8 and not is_placeholder_machine_text(text):
+            return True
+    return False
+
+
+def _read_text_sample(path: str, *, max_chars: int = 1200) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="ignore")[:max_chars]
+    except (OSError, ValueError, UnicodeError):
+        return ""
+
+
+def _is_effective_machine_markdown_path(path: str) -> bool:
+    cleaned = _clean_path_value(path)
+    if not cleaned or not _is_markdown_path(cleaned):
+        return False
+    try:
+        candidate = Path(cleaned)
+        if not candidate.exists() or not candidate.is_file() or candidate.stat().st_size <= 0:
+            return False
+    except (OSError, ValueError):
+        return False
+    return has_effective_machine_text(_read_text_sample(cleaned))
+
+
+def _first_non_markdown_path(*values: Any) -> str:
+    for value in values:
+        path = _clean_path_value(value)
+        if path and not _is_markdown_path(path):
+            return path
+    return ""
+
+
+def _existing_path(value: Any, *, allow_markdown: bool = True) -> str:
+    path = _clean_path_value(value)
+    if not path:
+        return ""
+    if not allow_markdown and _is_markdown_path(path):
+        return ""
+    try:
+        candidate = Path(path)
+        if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+            if _is_markdown_path(path) and not _is_effective_machine_markdown_path(path):
+                return ""
+            return path
+    except (OSError, ValueError):
+        return ""
+    return ""
+
+
+def _client_workspace_roots_from_paths(*values: Any) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for value in values:
+        path = _clean_path_value(value)
+        if not path:
+            continue
+        try:
+            parts = Path(path).parts
+        except (OSError, ValueError):
+            continue
+        if "client_workspace" not in parts:
+            continue
+        index = parts.index("client_workspace")
+        if len(parts) <= index + 1:
+            continue
+        root = Path(*parts[: index + 2])
+        root_key = str(root)
+        if root_key not in seen and root.exists():
+            roots.append(root)
+            seen.add(root_key)
+    return roots
+
+
+def _find_existing_same_named_file(*values: Any, allow_markdown: bool = True) -> str:
+    """Recover stale workspace paths by searching the same client workspace.
+
+    Some historical document rows kept paths under old folders while the actual
+    imported file later moved to `_imports/...`. The search result should open
+    the real file when an exact basename match exists inside the same client
+    workspace, instead of emitting a dead path as an "original file".
+    """
+
+    candidates = [_clean_path_value(value) for value in values]
+    roots = _client_workspace_roots_from_paths(*candidates)
+    if not roots:
+        return ""
+    names: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        if not path:
+            continue
+        if not allow_markdown and _is_markdown_path(path):
+            continue
+        name = Path(path).name
+        if not name or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    for name in names:
+        for root in roots:
+            try:
+                for match in root.rglob(name):
+                    if (
+                        match.is_file()
+                        and match.stat().st_size > 0
+                        and (allow_markdown or not _is_markdown_path(str(match)))
+                        and (not _is_markdown_path(str(match)) or _is_effective_machine_markdown_path(str(match)))
+                    ):
+                        return str(match)
+            except OSError:
+                continue
+    return ""
+
+
+def _first_existing_path(*values: Any, allow_markdown: bool = True, recover_by_name: bool = True) -> str:
+    for value in values:
+        path = _existing_path(value, allow_markdown=allow_markdown)
+        if path:
+            return path
+    if recover_by_name:
+        return _find_existing_same_named_file(*values, allow_markdown=allow_markdown)
+    return ""
+
+
+def classify_source_availability_for_row(row: Any) -> dict[str, str | bool | None]:
+    """Separate human-openable originals from machine-readable markdown.
+
+    The retrieval layer reads markdown/sections, but the workspace UI needs to
+    open editable Word/PDF/XLSX files when they exist. System generated records
+    such as task/event-line docs only have markdown and must be labelled as
+    system cards instead of "original documents".
+    """
+
+    canonical_kind = _canonical_kind_for_row(row)
+    managed_path = _clean_path_value(_row_value(row, "managed_path"))
+    original_path_raw = _clean_path_value(_row_value(row, "original_path"))
+    document_path = _clean_path_value(_row_value(row, "document_path"))
+    original_source_path = _clean_path_value(_row_value(row, "original_source_path"))
+    markdown_path = _clean_path_value(_row_value(row, "markdown_path"))
+    markdown_content = str(_row_value(row, "markdown_content") or "")
+    preview_text = str(_row_value(row, "preview_text") or "")
+    doc_index_text = str(_row_value(row, "doc_index_text") or "")
+    machine_text_available = has_effective_machine_text(markdown_content, preview_text, doc_index_text)
+
+    if canonical_kind == "raw_file":
+        original_candidates = (
+            managed_path,
+            original_path_raw,
+            document_path,
+            original_source_path,
+        )
+        markdown_candidates = (
+            markdown_path,
+            managed_path if _is_markdown_path(managed_path) else "",
+            document_path if _is_markdown_path(document_path) else "",
+            original_path_raw if _is_markdown_path(original_path_raw) else "",
+            original_source_path if _is_markdown_path(original_source_path) else "",
+        )
+        original_path = _first_existing_path(*original_candidates, allow_markdown=False)
+        machine_markdown_path = _first_existing_path(*markdown_candidates, allow_markdown=True)
+        machine_readable_available = bool(machine_markdown_path or machine_text_available)
+        fallback_path = original_path or machine_markdown_path
+        if original_path:
+            source_availability = SOURCE_AVAILABILITY_ORIGINAL
+            disabled_reason = None
+        elif machine_readable_available:
+            source_availability = SOURCE_AVAILABILITY_MACHINE_ONLY
+            disabled_reason = "原文件已缺失，当前仅有机读稿。"
+        else:
+            source_availability = SOURCE_AVAILABILITY_INVALID
+            disabled_reason = "原文件缺失或为空，且没有有效机读稿。"
+        openable_kind = "original_file" if original_path else ("machine_markdown" if machine_markdown_path else "unknown")
+        return {
+            "path": fallback_path or None,
+            "originalPath": original_path or None,
+            "managedPath": original_path or machine_markdown_path or None,
+            "markdownPath": machine_markdown_path or None,
+            "openableKind": openable_kind,
+            "sourceAvailability": source_availability,
+            "originalAvailable": bool(original_path),
+            "machineReadableAvailable": machine_readable_available,
+            "openOriginalDisabledReason": disabled_reason,
+        }
+
+    system_path = _first_existing_path(
+        markdown_path,
+        managed_path,
+        document_path,
+        original_path_raw,
+        recover_by_name=False,
+    )
+    machine_readable_available = bool(system_path or machine_text_available)
+    return {
+        "path": system_path or None,
+        "originalPath": None,
+        "managedPath": system_path or None,
+        "markdownPath": markdown_path or system_path or None,
+        "openableKind": "system_card" if system_path else "unknown",
+        "sourceAvailability": SOURCE_AVAILABILITY_MACHINE_ONLY if machine_readable_available else SOURCE_AVAILABILITY_INVALID,
+        "originalAvailable": False,
+        "machineReadableAvailable": machine_readable_available,
+        "openOriginalDisabledReason": "系统整理线索，不是原始上传文件。" if machine_readable_available else "没有有效机读稿。",
+    }
+
+
+def _openable_paths_for_row(row: Any) -> dict[str, str | bool | None]:
+    return classify_source_availability_for_row(row)
+
+
+LOW_INFORMATION_SYSTEM_KINDS = {"task_doc", "calendar_doc"}
+LOW_INFORMATION_EXACT_SEGMENTS = {
+    "补充录音",
+    "补资料",
+    "待补资料",
+    "待补资料清单",
+    "无",
+    "暂无",
+    "未记录",
+}
+
+
+def _compact_text_for_noise(value: str) -> str:
+    return re.sub(r"\s+", "", normalize_text(value))
+
+
+def _is_low_information_system_segment(canonical_kind: str, section_title: str | None, segment: str) -> bool:
+    if canonical_kind not in LOW_INFORMATION_SYSTEM_KINDS:
+        return False
+    compact = _compact_text_for_noise(segment)
+    if not compact:
+        return True
+    if compact in LOW_INFORMATION_EXACT_SEGMENTS:
+        return True
+    if compact.startswith("预期输出") and len(compact) <= 80:
+        return True
+    if compact.startswith("输出") and len(compact) <= 50 and ("清单" in compact or "提纲" in compact):
+        return True
+    section_compact = _compact_text_for_noise(section_title or "")
+    if section_compact in {"下一步", "当前阻塞", "最近决策"} and len(compact) < 18:
+        return True
+    return False
+
+
+def _split_reading_segments(text: str, *, min_chars: int = 1200, max_chars: int = 2200) -> list[str]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+    paragraphs = [segment.strip() for segment in SECTION_BREAK_PATTERN.split(normalized) if segment.strip()]
+    if not paragraphs:
+        paragraphs = [normalized]
+    segments: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            segments.append(current)
+        if len(paragraph) <= max_chars:
+            current = paragraph
+            continue
+        start = 0
+        while start < len(paragraph):
+            end = min(len(paragraph), start + max_chars)
+            piece = paragraph[start:end].strip()
+            if len(piece) >= max(200, min_chars // 3):
+                segments.append(piece)
+            if end >= len(paragraph):
+                break
+            start = end
+        current = ""
+    if current:
+        segments.append(current)
+    return [segment for segment in segments if segment]
+
+
+def _score_document_row(query_terms: list[str], prompt: str, row: Any) -> tuple[float, list[str]]:
+    title = str(row["file_name"] or row["title"] or "")
+    preview = str(row["preview_text"] or "")
+    index_text = str(row["doc_index_text"] or "")
+    category = str(row["visible_category"] or "其他资料")
+    canonical_kind = _canonical_kind_for_row(row)
+    score, matched = _score_by_terms(
+        query_terms,
+        title.lower(),
+        index_text.lower(),
+        preview.lower(),
+        category.lower(),
+        canonical_kind.lower(),
+        title_weight=2.6,
+    )
+    if category and category in prompt:
+        score += 0.5
+    if canonical_kind in prompt:
+        score += 0.35
+    return score, matched
+
+
+def retrieve_knowledge_bundle(
+    db: Database,
+    data_dir: Path,
+    client_id: str,
+    prompt: str,
+    access_context: DataCenterAccessContext | dict[str, Any] | None = None,
+) -> RetrievalBundle:
+    del data_dir
+    query_style = _query_style(prompt)
     query_terms = tokenize(prompt)
     if not query_terms and prompt.strip():
         query_terms = [prompt.strip().lower()]
-    strategic_mode = is_strategy_analysis_query(prompt)
-    doc_rows = db.fetchall(
-        """
-        SELECT *
-        FROM v2_documents
-        WHERE client_id = ? AND material_layer = 'evidence' AND parse_status = 'ready'
-        ORDER BY updated_at DESC
+    access = build_document_access_where("vd", "d", access_context)
+    rows = db.fetchall(
+        f"""
+        SELECT vd.*, d.title AS document_title, d.path AS document_path, d.original_source_path AS original_source_path
+        FROM v2_documents vd
+        JOIN documents d ON d.id = vd.document_id
+        WHERE vd.client_id = ?
+          AND vd.material_layer = 'evidence'
+          AND vd.parse_status IN ('ready', 'partial_ready')
+          AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1
+          AND COALESCE(vd.lifecycle_status, d.lifecycle_status, 'active') = 'active'
+          AND {access.sql}
+          AND NOT (
+            vd.canonical_kind = 'task_doc'
+            AND vd.origin_type = 'task'
+            AND NOT EXISTS (
+              SELECT 1 FROM tasks t
+              WHERE t.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id)
+                AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            )
+          )
+          AND NOT (
+            vd.canonical_kind = 'task_note_doc'
+            AND vd.origin_type = 'task_note'
+            AND NOT EXISTS (
+              SELECT 1 FROM tasks t
+              WHERE t.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id)
+                AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            )
+          )
+          AND NOT (
+            vd.canonical_kind = 'review_entry_doc'
+            AND vd.origin_type = 'weekly_review_entry'
+            AND NOT EXISTS (
+              SELECT 1 FROM weekly_review_task_entries entry
+              WHERE entry.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id)
+                AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private')
+            )
+          )
+          AND NOT (
+            vd.canonical_kind = 'event_line_doc'
+            AND vd.origin_type = 'event_line'
+            AND NOT EXISTS (
+              SELECT 1 FROM event_lines e
+              WHERE e.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id)
+                AND COALESCE(e.status, 'active') NOT IN ('deleted', 'archived')
+                AND LOWER(COALESCE(e.visibility_scope, 'project_public')) NOT IN ('self', 'private', 'personal')
+            )
+          )
+          AND NOT (
+            vd.canonical_kind = 'event_line_update_doc'
+            AND vd.origin_type = 'event_line_manual_update'
+            AND NOT EXISTS (
+              SELECT 1 FROM event_lines e
+              WHERE e.id = COALESCE(NULLIF(vd.source_entity_id, ''), vd.origin_id)
+                AND COALESCE(e.status, 'active') NOT IN ('deleted', 'archived')
+                AND LOWER(COALESCE(e.visibility_scope, 'project_public')) NOT IN ('self', 'private', 'personal')
+            )
+          )
+        ORDER BY vd.updated_at DESC
         """,
-        (client_id,),
+        (client_id, *access.params),
     )
     scored_docs: list[dict[str, Any]] = []
-    for row in doc_rows:
-        title = str(row["file_name"])
-        preview = str(row["preview_text"] or "")
-        category = str(row["visible_category"] or "其他资料")
-        index_text = str(row["doc_index_text"] or "")
-        score, matched = _score_by_terms(query_terms, title.lower(), index_text.lower(), preview.lower(), category.lower(), title_weight=2.4)
-        if category in prompt:
-            score += 0.8
-        if strategic_mode and category in {"组织与战略", "项目与业务"}:
-            score += 0.6
-        if matched or score > 0:
-            scored_docs.append(
-                {
-                    "row": row,
-                    "score": score,
-                    "matchedTerms": matched,
-                    "title": title,
-                    "path": str(row["managed_path"]),
-                    "category": category,
-                }
-            )
-    # --- Vector recall from master_index (Qdrant) to boost semantic matches ---
-    try:
-        from app.services.knowledge_base import search_master_index_qdrant
-        qdrant_scores = search_master_index_qdrant(
-            data_dir, client_id, prompt,
-            limit=96 if strategic_mode else 72,
-        )
-        # Build a lookup from v2_document_id to scored_doc for boosting
-        v2_doc_id_to_idx: dict[str, int] = {}
-        for idx, item in enumerate(scored_docs):
-            v2_doc_id_to_idx[str(item["row"]["id"])] = idx
-
-        # Qdrant returns master_index entry_ids (midx_xxx), need to map back to v2_documents
-        if qdrant_scores:
-            master_rows = db.fetchall(
-                "SELECT id, surrogate_id, title FROM knowledge_master_index WHERE client_id = ?",
-                (client_id,),
-            )
-            for mrow in master_rows:
-                master_id = str(mrow["id"])
-                q_score = qdrant_scores.get(master_id, 0.0)
-                if q_score < 0.10:
-                    continue
-                # Find matching v2_document by title
-                m_title = str(mrow["title"]).lower()
-                for idx, item in enumerate(scored_docs):
-                    if str(item["title"]).lower() == m_title:
-                        scored_docs[idx]["score"] += q_score * 0.65
-                        break
-    except Exception:
-        pass  # vector recall is best-effort
-
-    scored_docs.sort(key=lambda item: item["score"], reverse=True)
-    top_docs = scored_docs[:120]
-    if not top_docs:
-        retrieval_summary = {
-            "docHitCount": 0,
-            "sectionHitCount": 0,
-            "rawChunkHitCount": 0,
-            "masterHitCount": 0,
-            "surrogateHitCount": 0,
-            "preferredCategories": [],
-            "categoryCoverage": [],
-            "backgroundTrail": [],
-            "strategicMode": strategic_mode,
+    family_pool: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not has_effective_machine_text(row["markdown_content"], row["preview_text"], row["doc_index_text"]):
+            continue
+        openable_paths = _openable_paths_for_row(row)
+        if str(openable_paths.get("sourceAvailability") or "") == SOURCE_AVAILABILITY_INVALID:
+            continue
+        score, matched = _score_document_row(query_terms, prompt, row)
+        canonical_kind = _canonical_kind_for_row(row)
+        if query_style == "intro" and canonical_kind == "raw_file":
+            intro_support_text = "\n".join(
+                [
+                    str(row["file_name"] or row["document_title"] or ""),
+                    str(row["visible_category"] or ""),
+                    str(row["secondary_category"] or ""),
+                    str(row["preview_text"] or ""),
+                    str(row["doc_index_text"] or ""),
+                ]
+            ).lower()
+            intro_bucket = _intro_bucket_from_support_text(intro_support_text)
+            if intro_bucket is not None:
+                score += 0.35
+                if not matched:
+                    matched = [f"intro_bucket:{intro_bucket}"]
+        if not matched and score <= 0:
+            continue
+        family_id = _effective_family_id_for_row(row)
+        doc_payload = {
+            "row": row,
+            "score": score,
+            "matchedTerms": matched,
+            "title": str(row["file_name"] or row["document_title"] or "资料"),
+            "path": str(openable_paths.get("path") or ""),
+            "originalPath": openable_paths.get("originalPath"),
+            "managedPath": openable_paths.get("managedPath"),
+            "markdownPath": openable_paths.get("markdownPath"),
+            "openableKind": openable_paths.get("openableKind"),
+            "sourceAvailability": openable_paths.get("sourceAvailability"),
+            "originalAvailable": bool(openable_paths.get("originalAvailable")),
+            "machineReadableAvailable": bool(openable_paths.get("machineReadableAvailable")),
+            "openOriginalDisabledReason": openable_paths.get("openOriginalDisabledReason"),
+            "familyId": family_id,
+            "canonicalKind": canonical_kind,
         }
+        scored_docs.append(doc_payload)
+        bucket = family_pool.setdefault(
+            family_id,
+            {
+                "familyId": family_id,
+                "bestScore": float("-inf"),
+                "rows": [],
+                "matchedTerms": set(),
+                "canonicalKinds": set(),
+            },
+        )
+        bucket["rows"].append(doc_payload)
+        bucket["bestScore"] = max(float(bucket["bestScore"]), float(score))
+        bucket["matchedTerms"].update(matched)
+        bucket["canonicalKinds"].add(canonical_kind)
+
+    families = list(family_pool.values())
+    families.sort(key=lambda item: float(item["bestScore"]), reverse=True)
+    if not families:
         return RetrievalBundle(
             citations=[],
             coverage=0.0,
-            retrieval_summary=retrieval_summary,
+            retrieval_summary={
+                "docHitCount": 0,
+                "sectionHitCount": 0,
+                "rawChunkHitCount": 0,
+                "masterHitCount": 0,
+                "surrogateHitCount": 0,
+                "readingPassCount": 0,
+                "selectedDocumentFamilyCount": 0,
+                "selectedCanonicalKinds": [],
+                "softwareMaterialIncluded": False,
+                "backgroundTrail": [],
+            },
             context_text="",
             matched_terms=[],
             failure_reason="no_candidate_documents",
         )
 
-    doc_ids = [str(item["row"]["id"]) for item in top_docs]
+    selected_pass1: list[dict[str, Any]] = []
+    if query_style == "intro":
+        raw_families = [item for item in families if "raw_file" in item["canonicalKinds"]]
+        preferred_raw_families = [item for item in raw_families if _is_intro_primary_family(item)]
+        selected_ids: set[str] = set()
+        for bucket_name in ("institution", "project", "strategy", "source"):
+            candidates = [
+                item
+                for item in preferred_raw_families
+                if _intro_bucket_for_family(item) == bucket_name and item["familyId"] not in selected_ids
+            ]
+            if not candidates:
+                continue
+            selected = sorted(candidates, key=lambda item: float(item["bestScore"]), reverse=True)[0]
+            selected_pass1.append(selected)
+            selected_ids.add(str(selected["familyId"]))
+        for family in preferred_raw_families:
+            if str(family["familyId"]) in selected_ids:
+                continue
+            selected_pass1.append(family)
+            selected_ids.add(str(family["familyId"]))
+            if len(selected_pass1) >= 8:
+                break
+        for family in raw_families:
+            if str(family["familyId"]) in selected_ids:
+                continue
+            selected_pass1.append(family)
+            selected_ids.add(str(family["familyId"]))
+            if len(selected_pass1) >= 8:
+                break
+        if len(selected_pass1) < 8:
+            for family in families:
+                if str(family["familyId"]) in selected_ids:
+                    continue
+                selected_pass1.append(family)
+                selected_ids.add(str(family["familyId"]))
+                if len(selected_pass1) >= 8:
+                    break
+    elif query_style == "meeting":
+        meeting_families = [item for item in families if "meeting_doc" in item["canonicalKinds"]]
+        raw_families = [item for item in families if "raw_file" in item["canonicalKinds"]]
+        selected_ids: set[str] = set()
+        for family in meeting_families[:4]:
+            selected_pass1.append(family)
+            selected_ids.add(str(family["familyId"]))
+        for family in raw_families:
+            if str(family["familyId"]) in selected_ids:
+                continue
+            selected_pass1.append(family)
+            selected_ids.add(str(family["familyId"]))
+            if len(selected_pass1) >= 8:
+                break
+        if len(selected_pass1) < 8:
+            for family in families:
+                if str(family["familyId"]) in selected_ids:
+                    continue
+                selected_pass1.append(family)
+                selected_ids.add(str(family["familyId"]))
+                if len(selected_pass1) >= 8:
+                    break
+    else:
+        raw_candidate = next((item for item in families if "raw_file" in item["canonicalKinds"]), None)
+        software_candidate = next((item for item in families if any(_is_software_kind(kind) for kind in item["canonicalKinds"])), None)
+        if raw_candidate is not None:
+            selected_pass1.append(raw_candidate)
+        if software_candidate is not None and software_candidate is not raw_candidate:
+            selected_pass1.append(software_candidate)
+        for family in families:
+            if family in selected_pass1:
+                continue
+            selected_pass1.append(family)
+            if len(selected_pass1) >= 8:
+                break
+    selected_terms = {term for family in selected_pass1 for term in family["matchedTerms"]}
+    selected_kinds = {kind for family in selected_pass1 for kind in family["canonicalKinds"]}
+    uncovered_terms = [term for term in query_terms if term not in selected_terms]
+
+    remaining_families = [family for family in families if family not in selected_pass1]
+    remaining_families.sort(
+        key=lambda item: (
+            1 if query_style == "intro" and any(_is_software_kind(kind) for kind in item["canonicalKinds"]) else 0,
+            1 if query_style == "meeting" and "meeting_doc" in item["canonicalKinds"] else 0,
+            sum(1 for term in uncovered_terms if term in item["matchedTerms"]),
+            len([kind for kind in item["canonicalKinds"] if kind not in selected_kinds]),
+            float(item["bestScore"]),
+        ),
+        reverse=True,
+    )
+    selected_pass2: list[dict[str, Any]] = []
+    for family in remaining_families[:4]:
+        selected_pass2.append(family)
+
+    selected_families = [*selected_pass1[:8], *selected_pass2]
+    representative_docs = []
+    for family in selected_families:
+        rows_for_family = sorted(family["rows"], key=lambda item: float(item["score"]), reverse=True)
+        if rows_for_family:
+            representative_docs.append(rows_for_family[0])
+    v2_doc_ids = [str(item["row"]["id"]) for item in representative_docs]
     section_rows = db.fetchall(
         f"""
         SELECT *
         FROM v2_sections
-        WHERE v2_document_id IN ({','.join('?' for _ in doc_ids)})
+        WHERE v2_document_id IN ({','.join('?' for _ in v2_doc_ids)})
         ORDER BY section_index ASC
         """,
-        tuple(doc_ids),
-    )
-    doc_lookup = {str(item["row"]["id"]): item for item in top_docs}
-    scored_sections: list[dict[str, Any]] = []
+        tuple(v2_doc_ids),
+    ) if v2_doc_ids else []
+    sections_by_doc: dict[str, list[Any]] = defaultdict(list)
     for row in section_rows:
-        section_title = str(row["title"] or "正文")
-        content = str(row["content"] or "")
-        doc_item = doc_lookup.get(str(row["v2_document_id"]))
-        if not doc_item:
-            continue
-        score, matched = _score_by_terms(query_terms, section_title.lower(), content[:2400].lower(), title_weight=2.0)
-        score += doc_item["score"] * 0.28
-        if matched or score > 0:
-            scored_sections.append(
-                {
-                    "row": row,
-                    "score": score,
-                    "matchedTerms": sorted(set([*doc_item["matchedTerms"], *matched])),
-                    "doc": doc_item,
-                }
-            )
-    scored_sections.sort(key=lambda item: item["score"], reverse=True)
-    top_sections = scored_sections[:240]
-
-    section_ids = [str(item["row"]["id"]) for item in top_sections] or [""]
-    chunk_rows = db.fetchall(
-        f"""
-        SELECT *
-        FROM v2_chunks
-        WHERE v2_section_id IN ({','.join('?' for _ in section_ids)})
-        ORDER BY chunk_index ASC
-        """,
-        tuple(section_ids),
-    )
-    section_lookup = {str(item["row"]["id"]): item for item in top_sections}
-
-    # --- Vector recall for chunks (Qdrant) ---
-    v2_chunk_qdrant_scores: dict[str, float] = {}
-    try:
-        from app.services.knowledge_base import search_raw_chunks_qdrant
-        v2_doc_ids_for_chunks = list({str(item["row"]["v2_document_id"]) for item in top_sections})
-        # Map v2_document_id → knowledge_document_id for Qdrant lookup
-        if v2_doc_ids_for_chunks:
-            kd_rows = db.fetchall(
-                f"SELECT id, document_id FROM v2_documents WHERE id IN ({','.join('?' for _ in v2_doc_ids_for_chunks)})",
-                tuple(v2_doc_ids_for_chunks),
-            )
-            kd_ids = [str(r["document_id"]) for r in kd_rows if r["document_id"]]
-            if kd_ids:
-                v2_chunk_qdrant_scores = search_raw_chunks_qdrant(
-                    data_dir, client_id, prompt, kd_ids,
-                    limit=120 if strategic_mode else 80,
-                )
-    except Exception:
-        pass
-
-    scored_chunks: list[dict[str, Any]] = []
-    for row in chunk_rows:
-        content = str(row["content"] or "")
-        section_item = section_lookup.get(str(row["v2_section_id"]))
-        if not section_item:
-            continue
-        score, matched = _score_by_terms(query_terms, content[:2800].lower(), title_weight=1.0)
-        score += section_item["score"] * 0.42
-        # Add vector score for chunks
-        chunk_qdrant_score = v2_chunk_qdrant_scores.get(str(row["id"]), 0.0)
-        score += chunk_qdrant_score * 0.65
-        if strategic_mode and any(term in content for term in ("战略", "治理", "路径", "风险", "业务")):
-            score += 0.25
-        if matched or score > 0 or chunk_qdrant_score >= 0.12:
-            scored_chunks.append(
-                {
-                    "row": row,
-                    "score": score,
-                    "matchedTerms": sorted(set([*section_item["matchedTerms"], *matched])),
-                    "section": section_item,
-                }
-            )
-    scored_chunks.sort(key=lambda item: item["score"], reverse=True)
+        sections_by_doc[str(row["v2_document_id"])].append(row)
 
     citations: list[CitationMatch] = []
     matched_terms: set[str] = set()
-    used_sections: set[str] = set()
-    used_documents: Counter[str] = Counter()
-    for item in scored_chunks:
-        section_id = str(item["row"]["v2_section_id"])
-        document_id = str(item["row"]["v2_document_id"])
-        if used_documents[document_id] >= 16:
-            continue
-        if section_id in used_sections and used_documents[document_id] >= 4:
-            continue
-        used_sections.add(section_id)
-        used_documents[document_id] += 1
-        matched_terms.update(item["matchedTerms"])
-        doc_item = item["section"]["doc"]
-        citations.append(
-            CitationMatch(
-                knowledge_document_id=document_id,
-                chunk_id=str(item["row"]["id"]),
-                title=str(doc_item["title"]),
-                excerpt=str(item["row"]["content"])[:2200],
-                score=round(float(item["score"]), 4),
-                coverage=0.0,
-                section_label=str(item["row"]["section_label"]) if item["row"]["section_label"] else None,
-                source_stage="raw_chunk",
-                drillthrough_used=True,
-                matched_terms=item["matchedTerms"],
-                path=str(doc_item["path"]),
+    background_trail: list[dict[str, Any]] = []
+    for doc in representative_docs:
+        row = doc["row"]
+        doc_sections = sections_by_doc.get(str(row["id"]), [])
+        scored_segments: list[tuple[float, str, str | None, list[str]]] = []
+        for section in doc_sections:
+            section_title = str(section["title"] or "正文")
+            section_content = str(section["content"] or "")
+            section_score, section_matched = _score_by_terms(
+                query_terms,
+                section_title.lower(),
+                section_content[:3600].lower(),
+                title_weight=2.0,
             )
+            section_score += float(doc["score"]) * 0.35
+            for segment in _split_reading_segments(section_content):
+                canonical_kind = _canonical_kind_for_row(row)
+                if _is_low_information_system_segment(canonical_kind, section_title, segment):
+                    continue
+                segment_score, segment_matched = _score_by_terms(query_terms, segment.lower(), title_weight=1.2)
+                merged_terms = sorted(set([*doc["matchedTerms"], *section_matched, *segment_matched]))
+                scored_segments.append((section_score + segment_score, segment, section_title, merged_terms))
+        if not scored_segments:
+            fallback_excerpt = str(row["preview_text"] or "")
+            canonical_kind = _canonical_kind_for_row(row)
+            if fallback_excerpt and not _is_low_information_system_segment(canonical_kind, "文档摘要", fallback_excerpt):
+                scored_segments.append((float(doc["score"]), fallback_excerpt[:2200], "文档摘要", list(doc["matchedTerms"])))
+        scored_segments.sort(key=lambda item: item[0], reverse=True)
+        for score, segment, section_title, segment_terms in scored_segments[:2]:
+            matched_terms.update(segment_terms)
+            citations.append(
+                CitationMatch(
+                    knowledge_document_id=str(row["document_id"] or row["id"]),
+                    chunk_id=None,
+                    title=str(doc["title"]),
+                    excerpt=str(segment)[:2200],
+                    score=round(float(score), 4),
+                    coverage=0.0,
+                    section_label=section_title,
+                    source_stage="raw_chunk",
+                    drillthrough_used=True,
+                    matched_terms=segment_terms,
+                    path=str(doc["path"]),
+                    original_path=str(doc.get("originalPath") or "") or None,
+                    managed_path=str(doc.get("managedPath") or "") or None,
+                    markdown_path=str(doc.get("markdownPath") or "") or None,
+                    openable_kind=str(doc.get("openableKind") or "") or None,
+                    source_availability=str(doc.get("sourceAvailability") or "") or None,
+                    original_available=bool(doc.get("originalAvailable")),
+                    machine_readable_available=bool(doc.get("machineReadableAvailable")),
+                    open_original_disabled_reason=str(doc.get("openOriginalDisabledReason") or "") or None,
+                    document_family_id=str(row["document_family_id"] or doc["familyId"]),
+                    canonical_kind=_canonical_kind_for_row(row),
+                    origin_type=str(row["origin_type"] or ""),
+                    origin_id=str(row["origin_id"] or ""),
+                    is_searchable=bool(int(row["is_searchable"] or 1)),
+                )
+            )
+        background_trail.append(
+            {
+                "title": str(doc["title"]),
+                "stage": "family_first",
+                "sectionLabel": None,
+                "path": str(doc["path"]),
+                "originalPath": str(doc.get("originalPath") or ""),
+                "managedPath": str(doc.get("managedPath") or ""),
+                "markdownPath": str(doc.get("markdownPath") or ""),
+                "openableKind": str(doc.get("openableKind") or ""),
+                "sourceAvailability": str(doc.get("sourceAvailability") or ""),
+                "originalAvailable": bool(doc.get("originalAvailable")),
+                "machineReadableAvailable": bool(doc.get("machineReadableAvailable")),
+                "openOriginalDisabledReason": str(doc.get("openOriginalDisabledReason") or ""),
+                "excerpt": str(row["preview_text"] or "")[:180],
+                "documentFamilyId": str(row["document_family_id"] or doc["familyId"]),
+                "canonicalKind": _canonical_kind_for_row(row),
+            }
         )
-        if len(citations) >= 80:
+        if len(citations) >= 24:
             break
 
+    citations = citations[:24]
+    selected_document_families = list(dict.fromkeys([item.document_family_id or item.knowledge_document_id for item in citations]))
+    selected_canonical_kinds = list(dict.fromkeys([item.canonical_kind or "raw_file" for item in citations]))
     coverage = round(len(matched_terms) / len(query_terms), 2) if query_terms and citations else 0.0
     if citations:
-        coverage = max(0.5, coverage)
+        coverage = max(0.55, coverage)
     citations = [
         CitationMatch(
             knowledge_document_id=item.knowledge_document_id,
@@ -1658,51 +3621,22 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
             drillthrough_used=item.drillthrough_used,
             matched_terms=item.matched_terms,
             path=item.path,
+            original_path=item.original_path,
+            managed_path=item.managed_path,
+            markdown_path=item.markdown_path,
+            openable_kind=item.openable_kind,
+            source_availability=item.source_availability,
+            original_available=item.original_available,
+            machine_readable_available=item.machine_readable_available,
+            open_original_disabled_reason=item.open_original_disabled_reason,
+            document_family_id=item.document_family_id,
+            canonical_kind=item.canonical_kind,
+            origin_type=item.origin_type,
+            origin_id=item.origin_id,
+            is_searchable=item.is_searchable,
         )
         for item in citations
     ]
-
-    category_coverage: list[str] = []
-    for item in top_docs:
-        category = str(item["category"])
-        if category not in category_coverage:
-            category_coverage.append(category)
-
-    background_trail = [
-        {
-            "title": str(item["title"]),
-            "stage": "文档索引",
-            "sectionLabel": None,
-            "path": str(item["path"]),
-            "excerpt": str(item["row"]["preview_text"] or "")[:180],
-        }
-        for item in top_docs[:6]
-    ]
-    if top_sections:
-        background_trail.extend(
-            {
-                "title": str(item["doc"]["title"]),
-                "stage": "章节定位",
-                "sectionLabel": str(item["row"]["title"]),
-                "path": str(item["doc"]["path"]),
-                "excerpt": str(item["row"]["content"])[:180],
-            }
-            for item in top_sections[:4]
-        )
-
-    retrieval_summary = {
-        "docHitCount": len(top_docs),
-        "sectionHitCount": len(top_sections),
-        "rawChunkHitCount": len(citations),
-        "backgroundHitCount": len(background_trail),
-        "masterHitCount": len(top_docs),
-        "surrogateHitCount": len(top_sections),
-        "drillthroughUsed": bool(citations),
-        "strategicMode": strategic_mode,
-        "categoryCoverage": category_coverage,
-        "preferredCategories": category_coverage,
-        "backgroundTrail": background_trail[:8],
-    }
     context_lines = []
     for index, citation in enumerate(citations, start=1):
         label = citation.title
@@ -1711,6 +3645,18 @@ def retrieve_knowledge_bundle(db: Database, data_dir: Path, client_id: str, prom
         context_lines.append(
             f"[证据{index}] {label}\n命中要点：{'、'.join(citation.matched_terms) or '无'}\n原文：{citation.excerpt}"
         )
+    retrieval_summary = {
+        "docHitCount": len(families),
+        "sectionHitCount": len(section_rows),
+        "rawChunkHitCount": len(citations),
+        "masterHitCount": len(families),
+        "surrogateHitCount": 0,
+        "readingPassCount": 2,
+        "selectedDocumentFamilyCount": len(selected_document_families),
+        "selectedCanonicalKinds": selected_canonical_kinds,
+        "softwareMaterialIncluded": any(_is_software_kind(kind) for kind in selected_canonical_kinds),
+        "backgroundTrail": background_trail[:12],
+    }
     return RetrievalBundle(
         citations=citations,
         coverage=coverage,

@@ -554,7 +554,7 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
             </div>
             <h3 className="mt-4 text-[22px] font-bold tracking-tight text-gray-900">组织建模画布</h3>
             <p className="mt-2 max-w-3xl text-[13px] leading-6 text-gray-500">
-              把组织、部门、岗位、成员建成结构化底盘。工作对象暂时不入画布，先在右侧详情里作为关联工作对象展示，后续 AI 会直接读取这份层级模型。
+              把组织、部门、岗位、成员建成结构化底盘。项目暂时不入画布，先在右侧详情里作为关联项目展示，后续 AI 会直接读取这份层级模型。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -731,7 +731,7 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                 右侧详情抽屉
               </div>
               <p className="mt-2 text-[13px] leading-6 text-gray-500">
-                点击任意节点即可编辑字段、补流程、补模板、绑定负责人，并查看关联工作对象。
+                点击任意节点即可编辑字段、补流程、补模板、绑定负责人，并查看关联项目。
               </p>
             </div>
 
@@ -895,12 +895,12 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                     }
                   />
                   <DrawerInfoBlock
-                    title="关联工作对象"
+                    title="关联项目"
                     helper="项目暂不入树，先在这里聚合展示部门当前已绑定的项目标签。"
                     items={
                       selectedDepartmentMeta.relatedProjects.length > 0
                         ? selectedDepartmentMeta.relatedProjects
-                        : ['当前暂无关联工作对象']
+                        : ['当前暂无关联项目']
                     }
                     icon={FolderKanban}
                   />
@@ -1027,9 +1027,9 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                     items={selectedRoleMeta.missing.length > 0 ? selectedRoleMeta.missing : ['该岗位的说明、流程和模板都已补齐']}
                   />
                   <DrawerInfoBlock
-                    title="关联工作对象"
+                    title="关联项目"
                     helper="这里先展示与该岗位成员绑定的项目标签。"
-                    items={selectedRoleMeta.relatedProjects.length > 0 ? selectedRoleMeta.relatedProjects : ['当前暂无关联工作对象']}
+                    items={selectedRoleMeta.relatedProjects.length > 0 ? selectedRoleMeta.relatedProjects : ['当前暂无关联项目']}
                     icon={FolderKanban}
                   />
                 </div>
@@ -1098,7 +1098,7 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                     onChange={(next) => updateBinding(selectedMemberMeta.node.id, { currentFocus: next })}
                   />
                   <DrawerTextarea
-                    label="关联工作对象"
+                    label="关联项目"
                     value={toMultiline(selectedMemberMeta.binding.projectRoleLabels)}
                     disabled={!canEdit}
                     placeholder="每行一个项目标签"
@@ -1111,7 +1111,7 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                     items={[
                       selectedMemberMeta.binding.primaryRoleId ? '岗位已绑定' : '待绑定岗位',
                       selectedMemberMeta.binding.managerUserId ? '直属上级已绑定' : '待绑定直属上级',
-                      selectedMemberMeta.projectCount > 0 ? `已关联 ${selectedMemberMeta.projectCount} 个工作对象` : '当前暂无关联工作对象',
+                      selectedMemberMeta.projectCount > 0 ? `已关联 ${selectedMemberMeta.projectCount} 个项目` : '当前暂无关联项目',
                     ]}
                   />
                 </div>

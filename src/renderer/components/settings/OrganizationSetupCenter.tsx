@@ -866,7 +866,6 @@ export function OrganizationSetupCenter({
                         value={value.organization.leaderUserId || ''}
                         onChange={(event) => handleSelectOrganizationLead(event.target.value)}
                         className="min-w-[160px] rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 outline-none transition hover:border-[#5B7BFE]/50 focus:border-[#5B7BFE]"
-                        disabled={!canEdit}
                       >
                         <option value="">待绑定</option>
                         {approvedEmployees.map((employee) => (
@@ -944,7 +943,6 @@ export function OrganizationSetupCenter({
                                 value={department.leaderUserId || (department.leaderName?.trim() ? '__manual__' : '')}
                                 onChange={(event) => handleSelectDepartmentLead(department.id, event.target.value)}
                                 className="min-w-[112px] rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE]/50"
-                                disabled={!canEdit}
                               >
                                 <option value="">待绑定</option>
                                 {approvedEmployees.map((employee) => (

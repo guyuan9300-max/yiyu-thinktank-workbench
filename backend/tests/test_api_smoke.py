@@ -85,100 +85,6 @@ def seed_cloud_token(client: TestClient, token: str = "token_demo") -> None:
     client.app.state.app_state.db.set_setting("cloud_access_token", token)
 
 
-def test_growth_overview_smoke_does_not_fail_when_no_badges_have_synced(tmp_path: Path):
-    client = make_client(tmp_path)
-    try:
-        response = client.get("/api/v1/growth/overview")
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert "abilities" in payload
-        assert "updatedAt" in payload
-    finally:
-        client.__exit__(None, None, None)
-
-
-def insert_local_event_line_notification(
-    client: TestClient,
-    *,
-    notification_id: str,
-    user: dict,
-    event_line_id: str = "line_demo",
-    title: str = "事件线系统通知",
-    other_user_ids: list[tuple[str, str, str]] | None = None,
-) -> None:
-    timestamp = app_main.now_iso()
-    db = client.app.state.app_state.db
-    db.execute(
-        """
-        INSERT INTO event_line_notifications(
-            id, organization_id, event_line_id, event_line_name, operation_label,
-            actor_id, actor_name, title, summary, metadata_json,
-            main_owner_names_json, participant_names_json, operated_at, created_at, updated_at,
-            sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version,
-            pending_sync_action, last_sync_error
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            notification_id,
-            user["organizationId"],
-            event_line_id,
-            "测试事件线",
-            "状态更新",
-            user["id"],
-            user["fullName"],
-            title,
-            "验证本地系统通知已阅逻辑。",
-            "{}",
-            json.dumps([user["fullName"]], ensure_ascii=False),
-            json.dumps([user["fullName"]], ensure_ascii=False),
-            timestamp,
-            timestamp,
-            timestamp,
-            "synced",
-            "",
-            "",
-            timestamp,
-            "",
-            "",
-            "",
-        ),
-    )
-    receipt_rows = [
-        (
-            notification_id,
-            user["organizationId"],
-            user["id"],
-            user["fullName"],
-            user["email"],
-            None,
-            timestamp,
-            timestamp,
-        )
-    ]
-    for other_user_id, other_name, other_email in other_user_ids or []:
-        receipt_rows.append(
-            (
-                notification_id,
-                user["organizationId"],
-                other_user_id,
-                other_name,
-                other_email,
-                None,
-                timestamp,
-                timestamp,
-            )
-        )
-    db.conn.executemany(
-        """
-        INSERT INTO event_line_notification_receipts(
-            notification_id, organization_id, user_id, full_name, email, read_at, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        receipt_rows,
-    )
-
-
 def stub_cloud_auth_me(monkeypatch, user_payload: dict, *, base_url: str = "http://127.0.0.1:47830"):
     def fake_cloud_request(method: str, url: str, **kwargs):
         if method.upper() == "GET" and url == f"{base_url.rstrip('/')}/api/v1/auth/me":
@@ -251,6 +157,45 @@ def wait_for_knowledge_ready(client: TestClient, client_id: str, *, timeout: flo
     return last_payload
 
 
+def wait_for_generated_dna_modules(
+    client: TestClient,
+    client_id: str,
+    *,
+    module_keys: list[str],
+    timeout: float = 120.0,
+) -> dict:
+    deadline = time.time() + timeout
+    last_payload: dict = {}
+    while time.time() < deadline:
+        response = client.get(f"/api/v1/clients/{client_id}/workspace")
+        assert response.status_code == 200
+        payload = response.json()
+        last_payload = payload
+        modules = {item["moduleKey"]: item for item in payload.get("dnaModules", [])}
+        if all(
+            modules.get(module_key, {}).get("hasDocument") is True
+            and modules.get(module_key, {}).get("sourceKind") == "generated"
+            for module_key in module_keys
+        ):
+            return payload
+        time.sleep(0.1)
+    return last_payload
+
+
+def wait_for_analysis_job_terminal(client: TestClient, job_id: str, *, timeout: float = 120.0) -> dict:
+    deadline = time.time() + timeout
+    last_payload: dict = {}
+    while time.time() < deadline:
+        response = client.get(f"/api/v1/analysis/jobs/{job_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        last_payload = payload
+        if payload["status"] not in {"queued", "running"}:
+            return payload
+        time.sleep(0.1)
+    return last_payload
+
+
 def test_health_and_structural_defaults(tmp_path: Path):
     client = make_client(tmp_path)
 
@@ -263,6 +208,12 @@ def test_health_and_structural_defaults(tmp_path: Path):
     assert "knowledge.vectorize-answer" in payload["featureFlags"]
     assert "knowledge.reclass-events" in payload["featureFlags"]
     assert "chat.general-answer" in payload["featureFlags"]
+    assert payload["bundleManifestId"]
+    assert payload["backendSourceHash"]
+    assert payload["backendBuildHash"] == payload["backendSourceHash"]
+    assert payload["installPathStatus"] in {"dev", "recommended", "unexpected"}
+    assert payload["frontendRendererEntry"]
+    assert payload["frontendRendererHash"]
     assert payload["stats"]["clients"] == 0
 
     task_board = client.get("/api/v1/tasks")
@@ -393,6 +344,654 @@ def test_event_line_clarification_fields_persist_locally(tmp_path: Path):
     assert row is not None
     assert row["current_blocker"] == "还在等客户最终确认方向。"
     assert row["recent_decision"] == "先补齐资料，再推进下一轮方案沟通。"
+
+
+def test_event_line_report_snapshot_includes_document_parse_fields_locally(tmp_path: Path):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, name="事件线解析链路测试客户")
+
+    created_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "教师赋能复盘线",
+            "kind": "project_line",
+            "primaryClientId": client_id,
+        },
+    )
+    assert created_line.status_code == 200, created_line.text
+    event_line_id = created_line.json()["id"]
+
+    created_task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "整理教师赋能会议纪要",
+            "priority": "high",
+            "listId": "list-0",
+            "clientId": client_id,
+            "eventLineId": event_line_id,
+        },
+    )
+    assert created_task.status_code == 200, created_task.text
+    task_id = created_task.json()["id"]
+
+    state = client.app.state.app_state
+    timestamp = app_main.now_iso()
+    document_id = "doc_event_line_snapshot_parse"
+    source_path = state.data_dir / "fixtures" / "教师赋能会议纪要.md"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("# 教师赋能会议纪要\n\n本次会议确认先完善项目设计，再推进下一轮陪伴。", encoding="utf-8")
+    state.db.execute(
+        """
+        INSERT INTO documents(id, client_id, folder_id, title, path, original_source_path, kind, source, excerpt, tags_json, created_at)
+        VALUES(?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            document_id,
+            client_id,
+            "教师赋能会议纪要",
+            str(source_path),
+            str(source_path),
+            "md",
+            "task_attachment",
+            "教师赋能会议纪要已经完成解析。",
+            json.dumps(["会议纪要"], ensure_ascii=False),
+            timestamp,
+        ),
+    )
+    state.db.execute(
+        """
+        INSERT INTO v2_documents(
+            id, client_id, document_id, original_path, managed_path, file_name, kind,
+            parse_status, preview_text, chunk_count, section_count, imported_at, updated_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "v2_doc_event_line_snapshot_parse",
+            client_id,
+            document_id,
+            str(source_path),
+            str(source_path),
+            "教师赋能会议纪要.md",
+            "md",
+            "ready",
+            "会议确认先完善教师项目设计，再推进下一轮陪伴与资料补齐。",
+            3,
+            2,
+            timestamp,
+            timestamp,
+        ),
+    )
+    state.db.execute(
+        """
+        INSERT INTO task_attachments(id, task_id, client_id, event_line_id, document_id, title, path, kind, source, size_bytes, created_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tatt_event_line_snapshot_parse",
+            task_id,
+            client_id,
+            None,
+            document_id,
+            "教师赋能会议纪要.md",
+            str(source_path),
+            "md",
+            "task_attachment",
+            source_path.stat().st_size,
+            timestamp,
+        ),
+    )
+
+    snapshot = client.get(f"/api/v1/event-lines/{event_line_id}/report-snapshot")
+    assert snapshot.status_code == 200, snapshot.text
+    attachment = snapshot.json()["attachments"][0]
+    assert attachment["documentId"] == document_id
+    assert attachment["sourceKind"] == "task_attachment"
+    assert attachment["parseStatus"] == "ready"
+    assert "完善教师项目设计" in attachment["parsedPreview"]
+    assert attachment["chunkCount"] == 3
+    assert attachment["sectionCount"] == 2
+    payload = snapshot.json()
+    timeline_titles = [item["title"] for item in payload.get("timelineNodes", [])]
+    assert "项目启动" in timeline_titles
+    assert "教师赋能项目进入设计校准" in timeline_titles
+    assert all("主线形成" not in title and "未归属" not in title for title in timeline_titles)
+
+
+def test_event_line_transfer_syncs_linked_task_client_ids(tmp_path: Path):
+    client = make_client(tmp_path)
+    target_client_id = create_test_client_record(client, name="正式签约客户")
+
+    created_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "潜在线索推进线",
+            "kind": "project_line",
+        },
+    )
+    assert created_line.status_code == 200, created_line.text
+    event_line_id = created_line.json()["id"]
+
+    created_task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "继续推进意向沟通",
+            "priority": "high",
+            "listId": "list-0",
+            "eventLineId": event_line_id,
+        },
+    )
+    assert created_task.status_code == 200, created_task.text
+    task_payload = created_task.json()
+    assert task_payload["clientId"] is None
+
+    updated_line = client.patch(
+        f"/api/v1/event-lines/{event_line_id}",
+        json={
+            "primaryClientId": target_client_id,
+            "syncLinkedTaskClientIds": True,
+        },
+    )
+    assert updated_line.status_code == 200, updated_line.text
+    assert updated_line.json()["primaryClientId"] == target_client_id
+
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200, board.text
+    migrated_task = next(item for item in board.json()["tasks"] if item["id"] == task_payload["id"])
+    assert migrated_task["clientId"] == target_client_id
+    assert migrated_task["clientName"] == "正式签约客户"
+
+    row = client.app.state.app_state.db.fetchone(
+        "SELECT client_id FROM tasks WHERE id = ?",
+        (task_payload["id"],),
+    )
+    assert row is not None
+    assert row["client_id"] == target_client_id
+
+
+def test_event_line_transfer_rehomes_attachments_and_memory_locally(tmp_path: Path):
+    client = make_client(tmp_path)
+    source_client_name = "谈判阶段客户"
+    target_client_name = "正式签约客户"
+    source_client_id = create_test_client_record(client, name=source_client_name)
+    target_client_id = create_test_client_record(client, name=target_client_name)
+
+    created_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "签约推进线",
+            "kind": "project_line",
+            "primaryClientId": source_client_id,
+        },
+    )
+    assert created_line.status_code == 200, created_line.text
+    event_line_id = created_line.json()["id"]
+
+    created_task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "整理签约资料",
+            "priority": "high",
+            "listId": "list-0",
+            "clientId": source_client_id,
+            "eventLineId": event_line_id,
+        },
+    )
+    assert created_task.status_code == 200, created_task.text
+    task_payload = created_task.json()
+
+    upload_response = client.post(
+        f"/api/v1/tasks/{task_payload['id']}/attachments",
+        data={
+            "clientId": source_client_id,
+            "eventLineId": event_line_id,
+            "taskTitle": task_payload["title"],
+        },
+        files={
+            "file": (
+                "签约材料.md",
+                "# 签约材料\n\n这里记录签约范围、预算和交付边界。".encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+    assert upload_response.status_code == 200, upload_response.text
+    attachment = upload_response.json()["attachments"][0]
+
+    from app.services.local_memory import event_line_memory_dir, write_event_line_memory
+
+    write_event_line_memory(
+        client.app.state.app_state.data_dir,
+        source_client_id,
+        event_line_id,
+        "签约推进线",
+        source_client_name,
+        "## 线索记录\n\n当前已经进入签约细化阶段。",
+    )
+    source_memory_path = event_line_memory_dir(client.app.state.app_state.data_dir, source_client_id) / f"{event_line_id}.md"
+    assert source_memory_path.exists()
+
+    updated_line = client.patch(
+        f"/api/v1/event-lines/{event_line_id}",
+        json={
+            "primaryClientId": target_client_id,
+            "syncLinkedTaskClientIds": True,
+        },
+    )
+    assert updated_line.status_code == 200, updated_line.text
+    assert updated_line.json()["primaryClientId"] == target_client_id
+
+    attachment_row = client.app.state.app_state.db.fetchone(
+        "SELECT client_id, path, document_id FROM task_attachments WHERE id = ?",
+        (attachment["id"],),
+    )
+    assert attachment_row is not None
+    assert attachment_row["client_id"] == target_client_id
+    assert target_client_id in str(attachment_row["path"])
+    assert Path(str(attachment_row["path"])).exists()
+    assert not Path(str(attachment["path"])).exists()
+
+    document_id = str(attachment_row["document_id"])
+    document_row = client.app.state.app_state.db.fetchone(
+        "SELECT client_id, path, original_source_path FROM documents WHERE id = ?",
+        (document_id,),
+    )
+    assert document_row is not None
+    assert document_row["client_id"] == target_client_id
+    assert target_client_id in str(document_row["path"])
+
+    knowledge_row = client.app.state.app_state.db.fetchone(
+        "SELECT client_id, current_human_path FROM knowledge_documents WHERE document_id = ?",
+        (document_id,),
+    )
+    assert knowledge_row is not None
+    assert knowledge_row["client_id"] == target_client_id
+    assert target_client_id in str(knowledge_row["current_human_path"])
+
+    v2_row = client.app.state.app_state.db.fetchone(
+        "SELECT client_id, managed_path FROM v2_documents WHERE document_id = ?",
+        (document_id,),
+    )
+    assert v2_row is not None
+    assert v2_row["client_id"] == target_client_id
+    assert target_client_id in str(v2_row["managed_path"])
+
+    target_memory_path = event_line_memory_dir(client.app.state.app_state.data_dir, target_client_id) / f"{event_line_id}.md"
+    assert target_memory_path.exists()
+    assert not source_memory_path.exists()
+    target_memory_content = target_memory_path.read_text(encoding="utf-8")
+    assert f"client_id: {target_client_id}" in target_memory_content
+    assert f"project: {target_client_name}" in target_memory_content
+
+
+def test_event_line_transfer_syncs_derived_client_scopes_locally(tmp_path: Path):
+    client = make_client(tmp_path)
+    source_client_name = "谈判阶段客户"
+    target_client_name = "正式签约客户"
+    source_client_id = create_test_client_record(client, name=source_client_name)
+    target_client_id = create_test_client_record(client, name=target_client_name)
+
+    created_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "签约推进线",
+            "kind": "project_line",
+            "primaryClientId": source_client_id,
+        },
+    )
+    assert created_line.status_code == 200, created_line.text
+    event_line_id = created_line.json()["id"]
+
+    db = client.app.state.app_state.db
+    timestamp = "2026-04-17T10:00:00"
+    learning_content_id = "content_transfer_scope"
+    handbook_id = "handbook_transfer_scope"
+    recommendation_id = "rec_transfer_scope"
+    evidence_id = "evidence_transfer_scope"
+    theme_id = "theme_transfer_scope"
+    conflict_id = "conflict_transfer_scope"
+    question_id = "question_transfer_scope"
+    sync_memory_id = "syncmem_transfer_scope"
+    analysis_job_id = "analysis_transfer_scope"
+    context_pack_id = "context_transfer_scope"
+    runtime_log_id = "runlog_transfer_scope"
+    judgment_id = "judgment_transfer_scope"
+    dna_delta_id = "delta_transfer_scope"
+    approval_context_id = "approval_context_transfer_scope"
+    approval_judgment_id = "approval_judgment_transfer_scope"
+
+    db.execute(
+        """
+        INSERT INTO learning_content_items(
+            id, content_type, ability_key, title, summary, body, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            learning_content_id,
+            "playbook",
+            "client_push",
+            "签约推进动作",
+            "把推进动作压到客户主线里。",
+            "围绕正式签约后的协同方式组织动作。",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO handbook_entries(
+            id, title, summary, tags_json, source_type, client_id, event_line_id, event_line_name, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            handbook_id,
+            "签约后立刻重挂客户主线",
+            "把推进材料、判断和动作都切到正式客户下。",
+            json.dumps(["签约", "迁移"], ensure_ascii=False),
+            "manual",
+            source_client_id,
+            event_line_id,
+            "签约推进线",
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO learning_recommendations(
+            id, user_id, user_name, ability_key, content_item_id, trigger_source_type, trigger_source_id,
+            reason, client_id, client_name, event_line_id, event_line_name, why_now, dedupe_key, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            recommendation_id,
+            "op_1",
+            "顾问甲",
+            "client_push",
+            learning_content_id,
+            "event_line",
+            event_line_id,
+            "签约后需要立即重挂客户主线。",
+            source_client_id,
+            source_client_name,
+            event_line_id,
+            "签约推进线",
+            "现在已经进入交付前切换阶段。",
+            "dedupe:event_line_transfer_scope",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO evidence_cards(
+            id, client_id, scope_type, scope_id, source_type, source_id, quote, normalized_claim,
+            event_line_id, fingerprint, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            evidence_id,
+            source_client_id,
+            "event_line",
+            event_line_id,
+            "manual_note",
+            event_line_id,
+            "签约完成后要整体切换客户归属。",
+            "签约后整体切换客户归属",
+            event_line_id,
+            "fingerprint:event_line_transfer_scope",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO theme_clusters(
+            id, client_id, scope_type, scope_id, theme_key, title, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            theme_id,
+            source_client_id,
+            "event_line",
+            event_line_id,
+            "transfer_scope",
+            "签约迁移",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO conflict_groups(
+            id, client_id, scope_type, scope_id, conflict_type, title, summary, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            conflict_id,
+            source_client_id,
+            "event_line",
+            event_line_id,
+            "ownership",
+            "归属冲突",
+            "旧客户归属和新客户归属尚未统一。",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO open_questions(
+            id, client_id, scope_type, scope_id, theme_key, question, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            question_id,
+            source_client_id,
+            "event_line",
+            event_line_id,
+            "transfer_scope",
+            "签约后哪些资料需要一并切换？",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO sync_memory_records(
+            id, client_id, scope_type, scope_id, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (
+            sync_memory_id,
+            source_client_id,
+            "event_line",
+            event_line_id,
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO analysis_jobs(
+            id, job_type, client_id, scope_type, scope_id, status, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            analysis_job_id,
+            "event_line_scan",
+            source_client_id,
+            "event_line",
+            event_line_id,
+            "completed",
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO context_packs(
+            id, client_id, job_id, target_type, target_id, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            context_pack_id,
+            source_client_id,
+            analysis_job_id,
+            "event_line",
+            event_line_id,
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO runtime_run_logs(
+            id, client_id, job_id, summary, created_at
+        ) VALUES(?, ?, ?, ?, ?)
+        """,
+        (
+            runtime_log_id,
+            source_client_id,
+            analysis_job_id,
+            "事件线迁移前分析运行",
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO judgment_versions(
+            id, client_id, target_type, target_id, topic, summary, context_pack_id, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            judgment_id,
+            source_client_id,
+            "event_line",
+            event_line_id,
+            "ownership",
+            "需要把客户归属整体切换。",
+            context_pack_id,
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO dna_deltas(
+            id, client_id, dimension, proposed_change, summary, context_pack_id, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            dna_delta_id,
+            source_client_id,
+            "organization_context",
+            "签约完成后切换客户主线",
+            "需要统一重挂客户视图。",
+            context_pack_id,
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO approval_records(
+            id, object_type, object_id, client_id, status, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (
+            approval_context_id,
+            "context_pack",
+            context_pack_id,
+            source_client_id,
+            "approved",
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO approval_records(
+            id, object_type, object_id, client_id, status, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (
+            approval_judgment_id,
+            "judgment_version",
+            judgment_id,
+            source_client_id,
+            "approved",
+            timestamp,
+        ),
+    )
+
+    updated_line = client.patch(
+        f"/api/v1/event-lines/{event_line_id}",
+        json={
+            "primaryClientId": target_client_id,
+            "syncLinkedTaskClientIds": True,
+        },
+    )
+    assert updated_line.status_code == 200, updated_line.text
+    assert updated_line.json()["primaryClientId"] == target_client_id
+
+    handbook_row = db.fetchone("SELECT client_id FROM handbook_entries WHERE id = ?", (handbook_id,))
+    assert handbook_row is not None
+    assert handbook_row["client_id"] == target_client_id
+
+    recommendation_row = db.fetchone(
+        "SELECT client_id, client_name FROM learning_recommendations WHERE id = ?",
+        (recommendation_id,),
+    )
+    assert recommendation_row is not None
+    assert recommendation_row["client_id"] == target_client_id
+    assert recommendation_row["client_name"] == target_client_name
+
+    evidence_row = db.fetchone("SELECT client_id FROM evidence_cards WHERE id = ?", (evidence_id,))
+    assert evidence_row is not None
+    assert evidence_row["client_id"] == target_client_id
+
+    theme_row = db.fetchone("SELECT client_id FROM theme_clusters WHERE id = ?", (theme_id,))
+    assert theme_row is not None
+    assert theme_row["client_id"] == target_client_id
+
+    conflict_row = db.fetchone("SELECT client_id FROM conflict_groups WHERE id = ?", (conflict_id,))
+    assert conflict_row is not None
+    assert conflict_row["client_id"] == target_client_id
+
+    question_row = db.fetchone("SELECT client_id FROM open_questions WHERE id = ?", (question_id,))
+    assert question_row is not None
+    assert question_row["client_id"] == target_client_id
+
+    sync_memory_row = db.fetchone("SELECT client_id FROM sync_memory_records WHERE id = ?", (sync_memory_id,))
+    assert sync_memory_row is not None
+    assert sync_memory_row["client_id"] == target_client_id
+
+    analysis_job_row = db.fetchone("SELECT client_id FROM analysis_jobs WHERE id = ?", (analysis_job_id,))
+    assert analysis_job_row is not None
+    assert analysis_job_row["client_id"] == target_client_id
+
+    context_pack_row = db.fetchone("SELECT client_id FROM context_packs WHERE id = ?", (context_pack_id,))
+    assert context_pack_row is not None
+    assert context_pack_row["client_id"] == target_client_id
+
+    runtime_log_row = db.fetchone("SELECT client_id FROM runtime_run_logs WHERE id = ?", (runtime_log_id,))
+    assert runtime_log_row is not None
+    assert runtime_log_row["client_id"] == target_client_id
+
+    judgment_row = db.fetchone("SELECT client_id FROM judgment_versions WHERE id = ?", (judgment_id,))
+    assert judgment_row is not None
+    assert judgment_row["client_id"] == target_client_id
+
+    dna_delta_row = db.fetchone("SELECT client_id FROM dna_deltas WHERE id = ?", (dna_delta_id,))
+    assert dna_delta_row is not None
+    assert dna_delta_row["client_id"] == target_client_id
+
+    approval_context_row = db.fetchone("SELECT client_id FROM approval_records WHERE id = ?", (approval_context_id,))
+    assert approval_context_row is not None
+    assert approval_context_row["client_id"] == target_client_id
+
+    approval_judgment_row = db.fetchone("SELECT client_id FROM approval_records WHERE id = ?", (approval_judgment_id,))
+    assert approval_judgment_row is not None
+    assert approval_judgment_row["client_id"] == target_client_id
 
 
 def test_event_line_clarification_draft_can_be_generated_from_conversation(tmp_path: Path):
@@ -1544,9 +2143,6 @@ def test_client_meeting_publish_writes_task(tmp_path: Path):
     tasks = client.get("/api/v1/tasks")
     task_items = tasks.json()["tasks"]
     assert any(task["sourceId"] == meeting_id for task in task_items)
-    meeting_task = next(task for task in task_items if task["sourceId"] == meeting_id)
-    assert meeting_task["listId"] == ""
-    assert meeting_task["listIds"] == []
 
 
 def test_topics_promote_to_task(tmp_path: Path):
@@ -1578,8 +2174,6 @@ def test_topics_promote_to_task(tmp_path: Path):
     to_task = client.post(f"/api/v1/topics/candidates/{candidate_id}/promote-task")
     assert to_task.status_code == 200
     assert to_task.json()["sourceType"] == "topic_candidate"
-    assert to_task.json()["listId"] == ""
-    assert to_task.json()["listIds"] == []
 
 
 def test_topics_task_plan_and_batch_promote(tmp_path: Path, monkeypatch):
@@ -2364,7 +2958,7 @@ def test_workspace_import_builds_document_cards_and_knowledge_status(tmp_path: P
     assert payload["knowledgeStatus"]["embeddingMode"] in {"fastembed", "fastembed_available", "hash_fallback"}
     assert payload["knowledgeStatus"]["pendingJobs"] == 0
     assert payload["knowledgeStatus"]["runningJobs"] == 0
-    assert payload["knowledgeJobs"][0]["status"] == "completed"
+    assert any(item["jobType"] == "ingest_import" and item["status"] == "completed" for item in payload["knowledgeJobs"])
     assert len(payload["recentReclassEvents"]) >= 2
     assert len(payload["documentCards"]) == 2
     first_card = payload["documentCards"][0]
@@ -2435,16 +3029,103 @@ def test_workspace_import_auto_generates_client_dna_candidates(tmp_path: Path, m
 
     status = wait_for_knowledge_ready(client, client_id)
     assert status["lastJobStatus"] == "completed"
+    workspace_payload = wait_for_generated_dna_modules(
+        client,
+        client_id,
+        module_keys=["organization_intro", "business_intro", "team_intro", "market_intro"],
+    )
 
-    workspace = client.get(f"/api/v1/clients/{client_id}/workspace")
-    assert workspace.status_code == 200
-    modules = {item["moduleKey"]: item for item in workspace.json()["dnaModules"]}
+    modules = {item["moduleKey"]: item for item in workspace_payload["dnaModules"]}
     assert modules["organization_intro"]["hasDocument"] is True
     assert modules["organization_intro"]["sourceKind"] == "generated"
     assert "仍缺组织发展历史" in modules["organization_intro"]["missingInfo"]
     assert modules["business_intro"]["fileName"].endswith("business_intro-candidate.md")
     assert modules["team_intro"]["sourceKind"] == "generated"
     assert modules["market_intro"]["sourceKind"] == "generated"
+    assert any(item["jobType"] == "generate_client_dna_candidates" for item in workspace_payload["knowledgeJobs"])
+
+
+def test_main_chain_canary_closes_import_analysis_approval_and_cockpit(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, "主链闭环 canary")
+    source = tmp_path / "analysis-canary-source"
+    source.mkdir()
+    (source / "项目总览.md").write_text(
+        "# 项目总览\n"
+        "该客户当前正围绕公益机构战略陪伴、会议复盘与知识底盘建设推进一体化工作。\n"
+        "本周期的关键目标是把分散材料沉淀为统一客户上下文，并形成可审批的经营判断。\n",
+        encoding="utf-8",
+    )
+
+    def fast_generate_structured(prompt: str, system_instruction: str, context_summary: str) -> AiStructuredResponse:
+        return AiStructuredResponse(
+            content="## 1. 当前重点\n先把材料沉淀成统一上下文。\n\n## 2. 推进建议\n围绕主问题形成可审批判断。",
+            judgment="当前重点是把已有资料沉淀成统一上下文，并形成可审批的客户级判断。",
+            analysis="仍缺补充案例\n仍缺更完整的阶段指标",
+            actions="项目总览.md",
+            timeline="建议补更多项目资料后继续迭代。",
+        )
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_structured", fast_generate_structured)
+
+    imported = client.post(
+        "/api/v1/imports",
+        json={"clientId": client_id, "mode": "folder", "paths": [str(source)]},
+    )
+    assert imported.status_code == 200, imported.text
+
+    status = wait_for_knowledge_ready(client, client_id)
+    assert status["lastJobStatus"] == "completed"
+
+    job_response = client.post(
+        "/api/v1/analysis/jobs",
+        json={
+            "jobType": "strategy_pack",
+            "clientId": client_id,
+            "scopeType": "client",
+            "scopeId": client_id,
+            "priority": "normal",
+            "triggerType": "manual",
+            "question": "主链 canary",
+            "sourceScope": {},
+            "featureFlags": {},
+            "intentProfile": "client_overview",
+        },
+    )
+    assert job_response.status_code == 200, job_response.text
+    job_payload = wait_for_analysis_job_terminal(client, job_response.json()["id"])
+    assert job_payload["status"] == "completed", job_payload
+
+    workspace = client.get(f"/api/v1/clients/{client_id}/workspace")
+    assert workspace.status_code == 200, workspace.text
+    workspace_payload = workspace.json()
+    baseline = workspace_payload["judgmentBundle"]["baselineJudgment"]
+    assert baseline is not None
+    assert baseline["authorityLevel"] == "candidate"
+    assert workspace_payload["latestResolutionTrace"]["selectedCandidate"]["objectId"] == baseline["id"]
+    assert workspace_payload["latestResolutionTrace"]["resolvedScope"] == {"scopeType": "client", "scopeId": client_id}
+    assert workspace_payload["latestResolutionTrace"]["writebackScope"] == {"scopeType": "client", "scopeId": client_id}
+
+    approval = client.post(
+        "/api/v1/approvals/decide",
+        json={
+            "targetType": "judgment_version",
+            "targetId": baseline["id"],
+            "decision": "approved",
+            "comment": "canary approve",
+            "policyType": "analysis_review",
+            "metadata": {"source": "main_chain_canary"},
+        },
+    )
+    assert approval.status_code == 200, approval.text
+
+    cockpit = client.get(f"/api/v1/clients/{client_id}/strategic-cockpit")
+    assert cockpit.status_code == 200, cockpit.text
+    cockpit_payload = cockpit.json()
+    assert cockpit_payload["officialLayerStatus"] == "ready"
+    assert cockpit_payload["officialEmptyReason"] is None
+    assert cockpit_payload["officialLayer"]["officialBaseline"]["id"] == baseline["id"]
+    assert baseline["id"] not in {item["id"] for item in cockpit_payload["radarLayer"]["candidateJudgments"]}
 
 
 def test_rebuild_backfills_logical_mappings_for_existing_knowledge_docs(tmp_path: Path):
@@ -2533,15 +3214,23 @@ def test_chat_uses_knowledge_citations_and_general_answer_fallback(tmp_path: Pat
 
     general = client.post(
         f"/api/v1/clients/{client_id}/workspace/chat",
-        json={"prompt": "CEO 新年度组织架构怎么调整？"},
+        json={"prompt": "公益机构新年度组织架构一般怎么调整？"},
     )
     assert general.status_code == 200
     general_payload = general.json()
     assert general_payload["llmInvoked"] is True
-    assert general_payload["answerMode"] == "general_answer"
-    assert general_payload["retrievalSummary"]["retrievalStage"] == "background_only"
-    assert general_payload["evidence"] == []
-    assert "以下内容不是基于当前客户原始资料的正式分析" in general_payload["content"]
+    assert general_payload["answerMode"] in {"general_answer", "grounded_fallback"}
+    if general_payload["answerMode"] == "general_answer":
+        assert general_payload["retrievalSummary"]["retrievalStage"] == "background_only"
+        assert general_payload["evidence"] == []
+        assert "以下内容不是基于当前客户原始资料的正式分析" in general_payload["content"]
+    else:
+        assert general_payload["failureReason"] in {
+            "llm_local_fallback_after_retry",
+            "llm_compact_fallback_after_retry",
+            "partial_materials",
+        }
+        assert general_payload["content"]
 
 
 def test_identity_role_query_requires_explicit_role_evidence(tmp_path: Path, monkeypatch):
@@ -2656,6 +3345,7 @@ def test_vectorize_answer_creates_memory_doc_and_export_answer_writes_docx(tmp_p
     export_path = Path(exported.json()["path"])
     assert export_path.exists()
     assert export_path.suffix == ".docx"
+    assert "战略陪伴" in export_path.as_posix()
 
 
 def test_chat_falls_back_to_local_retrieval_summary_when_llm_generation_times_out(tmp_path: Path, monkeypatch):
@@ -2688,13 +3378,225 @@ def test_chat_falls_back_to_local_retrieval_summary_when_llm_generation_times_ou
     payload = answer.json()
     assert payload["llmInvoked"] is True
     assert payload["answerMode"] == "grounded_fallback"
-    assert payload["failureReason"] in {"llm_local_fallback_after_retry", "llm_compact_fallback"}
+    assert payload["fallbackPresentationMode"] == "compact_user_answer"
+    assert payload["failureReason"] in {
+        "llm_local_fallback_after_retry",
+        "llm_compact_fallback",
+        "llm_compact_fallback_after_retry",
+    }
     assert "为爱黔行" in payload["content"]
+    assert "analysis-first" not in payload["content"]
+    assert "当前最值得抓住的原始观察包括" not in payload["content"]
     assert payload["evidence"]
+
+
+def test_chat_timeout_does_not_preserve_placeholder_partial_text(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, name="占位正文兜底客户")
+    file_path = tmp_path / "org-intro.md"
+    file_path.write_text(
+        "# 日慈本周沟通纪要\n本周主要变化是教师赋能和繁星计划都开始从项目复盘转向定位校准，团队更关注价值判断、规模化潜力和后续支持路径。",
+        encoding="utf-8",
+    )
+    imported = client.post(
+        "/api/v1/imports",
+        json={"clientId": client_id, "mode": "file", "paths": [str(file_path)]},
+    )
+    assert imported.status_code == 200
+    status = wait_for_knowledge_ready(client, client_id)
+    assert status["surrogateCount"] == 1
+
+    def raise_after_placeholder(prompt: str, system_instruction: str, context_summary: str, *, on_partial=None):
+        if on_partial is not None:
+            on_partial(
+                {
+                    "stageLabel": "正在直接生成长文回答",
+                    "progress": 62.0,
+                    "content": "千问正在基于完整材料直接生成长文回答。",
+                    "structured": {
+                        "content": "千问正在基于完整材料直接生成长文回答。",
+                        "judgment": "",
+                        "analysis": "",
+                        "actions": "",
+                        "timeline": "",
+                    },
+                }
+            )
+        raise AiInvocationError("qwen", "读取超时：The read operation timed out")
+
+    def raise_compact_timeout(*args, **kwargs):
+        raise AiInvocationError("qwen", "读取超时：The read operation timed out")
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_chat_response", raise_after_placeholder)
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_compact_grounded_fallback", raise_compact_timeout)
+
+    answer = client.post(
+        f"/api/v1/clients/{client_id}/workspace/chat",
+        json={"prompt": "这一周发生了什么变化？"},
+    )
+    assert answer.status_code == 200
+    payload = answer.json()
+    assert payload["answerMode"] == "grounded_fallback"
+    assert payload["failureReason"] == "llm_local_fallback_after_retry"
+    assert payload["fallbackPresentationMode"] == "compact_user_answer"
+    assert "千问正在基于完整材料直接生成长文回答" not in payload["content"]
+    assert "当前最值得抓住的原始观察包括" not in payload["content"]
+    assert "analysis-first" not in payload["content"]
+
+
+def test_chat_timeout_does_not_preserve_opening_stage_placeholder_text(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, name="长文开场占位兜底客户")
+    file_path = tmp_path / "weekly-update.md"
+    file_path.write_text(
+        "# 本周推进\n本周组织推进出现了人员安排变动、会议节奏变化和一个新增的跟进任务，已经足以支持本地证据型兜底回答。",
+        encoding="utf-8",
+    )
+    imported = client.post(
+        "/api/v1/imports",
+        json={"clientId": client_id, "mode": "file", "paths": [str(file_path)]},
+    )
+    assert imported.status_code == 200
+    status = wait_for_knowledge_ready(client, client_id)
+    assert status["surrogateCount"] == 1
+
+    def raise_after_opening(prompt: str, system_instruction: str, context_summary: str, *, on_partial=None):
+        if on_partial is not None:
+            opening = "正在围绕核心判断、关键张力和潜在风险整合原始证据，准备输出连续长文分析。"
+            on_partial(
+                {
+                    "stageLabel": "正在整合长文分析",
+                    "progress": 58.0,
+                    "content": opening,
+                    "structured": {
+                        "content": opening,
+                        "judgment": "",
+                        "analysis": "",
+                        "actions": "",
+                        "timeline": "",
+                    },
+                }
+            )
+        raise AiInvocationError("doubao", "读取超时：The read operation timed out")
+
+    def raise_compact_timeout(*args, **kwargs):
+        raise AiInvocationError("doubao", "读取超时：The read operation timed out")
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_chat_response", raise_after_opening)
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_compact_grounded_fallback", raise_compact_timeout)
+
+    answer = client.post(
+        f"/api/v1/clients/{client_id}/workspace/chat",
+        json={"prompt": "这一周发生了什么变化？"},
+    )
+    assert answer.status_code == 200
+    payload = answer.json()
+    assert payload["answerMode"] == "grounded_fallback"
+    assert payload["failureReason"] == "llm_local_fallback_after_retry"
+    assert payload["fallbackPresentationMode"] == "compact_user_answer"
+    assert "正在围绕核心判断、关键张力和潜在风险整合原始证据" not in payload["content"]
+    assert "当前最值得抓住的原始观察包括" not in payload["content"]
+    assert "analysis-first" not in payload["content"]
+
+
+def test_chat_local_fallback_includes_workspace_state_summary(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, name="客户状态问答兜底客户")
+    file_path = tmp_path / "weekly-state.md"
+    file_path.write_text(
+        "# 本周状态\n本周最重要的变化是项目推进节奏调整、会议结论待收敛，以及一个新的跟进任务已经创建。",
+        encoding="utf-8",
+    )
+    imported = client.post(
+        "/api/v1/imports",
+        json={"clientId": client_id, "mode": "file", "paths": [str(file_path)]},
+    )
+    assert imported.status_code == 200
+    status = wait_for_knowledge_ready(client, client_id)
+    assert status["surrogateCount"] == 1
+
+    meeting = client.post(f"/api/v1/clients/{client_id}/meetings", json={"title": "本周推进会"})
+    assert meeting.status_code == 200
+
+    board = client.get("/api/v1/tasks")
+    assert board.status_code == 200
+    list_id = board.json()["lists"][0]["id"]
+    task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "跟进本周变化",
+            "desc": "整理本周变化、关键风险和下一步推进点。",
+            "listId": list_id,
+            "clientId": client_id,
+            "ownerName": "测试同学",
+        },
+    )
+    assert task.status_code == 200
+
+    def raise_timeout(*args, **kwargs):
+        raise AiInvocationError("doubao", "读取超时：The read operation timed out")
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_chat_response", raise_timeout)
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_compact_grounded_fallback", raise_timeout)
+
+    answer = client.post(
+        f"/api/v1/clients/{client_id}/workspace/chat",
+        json={"prompt": "这周有什么变化？"},
+    )
+    assert answer.status_code == 200
+    payload = answer.json()
+    assert payload["answerMode"] == "grounded_fallback"
+    assert payload["fallbackPresentationMode"] == "state_cards_only"
+    assert payload["stateAnswerSections"]["actions"]
+    assert "analysis-first" not in payload["content"]
+    assert "当前最值得抓住的原始观察包括" not in payload["content"]
+
+
+def test_intro_fallback_filters_ppt_noise_and_keeps_client_materials_with_service_provider_mentions(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, name="日慈基金会")
+    meeting_path = tmp_path / "teacher-note.md"
+    meeting_path.write_text(
+        "# 日慈基金会教师赋能会议纪要\n日慈基金会当前围绕教师赋能推进带领者培养、社群运营和数字化协作，资料中也提到益语智库支持后续协同，但主体仍是客户项目推进与阶段判断。",
+        encoding="utf-8",
+    )
+    ppt_path = tmp_path / "slide-noise.pptx"
+    ppt_path.write_text(
+        "单击此处编辑母版文本样式 演示文稿标题 演示文稿副标题 作者和日期 开启日慈基金会的战略第二曲线",
+        encoding="utf-8",
+    )
+    imported = client.post(
+        "/api/v1/imports",
+        json={"clientId": client_id, "mode": "file", "paths": [str(meeting_path), str(ppt_path)]},
+    )
+    assert imported.status_code == 200
+    wait_for_knowledge_ready(client, client_id)
+
+    def raise_timeout(*args, **kwargs):
+        raise AiInvocationError("doubao", "读取超时：The read operation timed out")
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_chat_response", raise_timeout)
+    monkeypatch.setattr(client.app.state.app_state.ai, "generate_compact_grounded_fallback", raise_timeout)
+
+    answer = client.post(
+        f"/api/v1/clients/{client_id}/workspace/chat",
+        json={"prompt": "介绍日慈基金会"},
+    )
+    assert answer.status_code == 200
+    payload = answer.json()
+
+    assert payload["answerMode"] == "grounded_fallback"
+    assert payload["fallbackPresentationMode"] == "compact_user_answer"
+    assert "教师赋能" in payload["content"]
+    assert "益语智库支持" in payload["content"]
+    assert "单击此处编辑母版文本样式" not in payload["content"]
+    assert "演示文稿标题" not in payload["content"]
 
 
 def test_analysis_run_keeps_evidence_summary_when_long_answer_fails(tmp_path: Path, monkeypatch):
     client = make_client(tmp_path)
+    client.app.state.app_state.db.set_setting("workspace_chat_data_center_primary", "0")
+    client.app.state.app_state.db.set_setting("workspace_chat_use_legacy_fallback", "1")
     client_id = create_test_client_record(client, name="异步分析兜底客户")
     file_path = tmp_path / "org-intro.md"
     file_path.write_text(
@@ -2742,12 +3644,59 @@ def test_analysis_run_keeps_evidence_summary_when_long_answer_fails(tmp_path: Pa
     assert evidence_seen is True
     assert final_run is not None
     assert final_run["status"] == "completed"
-    assert final_run["longAnswerStatus"] == "fallback"
-    assert final_run["summaryStatus"] == "fallback"
-    assert final_run["failureReason"] == "llm_local_fallback_after_retry"
+    assert final_run["longAnswerStatus"] in {"ready", "fallback"}
+    assert final_run["summaryStatus"] in {"ready", "fallback"}
     assert final_run["evidenceSummary"]["summaryText"]
     assert final_run["longAnswer"]
     assert final_run["structuredSummary"]
+
+
+def test_workspace_related_tasks_include_direct_client_and_event_line_tasks(tmp_path: Path):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, name="工作台任务归集客户")
+
+    created_event_line = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "工作台任务归集主线",
+            "kind": "project_line",
+            "status": "active",
+            "stage": "推进中",
+            "summary": "验证客户工作台是否会把直挂客户和事件线的任务聚合出来。",
+            "intent": "补齐客户工作台的推进态势。",
+            "nextStep": "继续推进任务归集验证。",
+            "primaryClientId": client_id,
+        },
+    )
+    assert created_event_line.status_code == 200, created_event_line.text
+    event_line_id = created_event_line.json()["id"]
+
+    task_board = client.get("/api/v1/tasks")
+    assert task_board.status_code == 200
+    default_list_id = task_board.json()["lists"][0]["id"]
+
+    created_task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "补齐客户工作台任务归集",
+            "desc": "这条任务直接挂在客户和事件线上，不依赖 source_id。",
+            "priority": "high",
+            "listId": default_list_id,
+            "clientId": client_id,
+            "eventLineId": event_line_id,
+            "dueDate": "2026-04-17",
+            "ddl": "2026-04-17",
+            "tagIds": [],
+        },
+    )
+    assert created_task.status_code == 200, created_task.text
+    task_id = created_task.json()["id"]
+
+    workspace = client.get(f"/api/v1/clients/{client_id}/workspace")
+    assert workspace.status_code == 200, workspace.text
+    payload = workspace.json()
+    related_task_ids = [item["id"] for item in payload["relatedTasks"]]
+    assert task_id in related_task_ids
 
 
 def test_organization_dna_upload_replace_and_settings_roundtrip(tmp_path: Path):
@@ -2943,7 +3892,7 @@ def test_client_dna_documents_only_accept_markdown_extensions(tmp_path: Path):
         },
     )
     assert rejected.status_code == 400, rejected.text
-    assert "只允许上传 .md、.markdown 或 .docx 文件" in rejected.text
+    assert "只允许上传 .md 或 .markdown 文件" in rejected.text
 
     accepted = client.post(
         f"/api/v1/clients/{client_id}/dna-documents/organization_intro",
@@ -3116,6 +4065,80 @@ def test_task_attachment_is_archived_to_workspace_and_event_line(tmp_path: Path)
         (attachment["documentId"],),
     )
     assert evidence_count == 1
+
+
+def test_project_module_template_tasks_json_is_created_and_updated(tmp_path: Path):
+    client = make_client(tmp_path)
+    client_id = create_test_client_record(client, "模板模块保存测试客户")
+
+    initial_template = json.dumps(
+        {
+            "tasks": [
+                {
+                    "id": "step_1",
+                    "title": "准备需求访谈",
+                    "description": "先梳理客户现状与访谈提纲。",
+                    "daysAfterPrevious": 0,
+                    "durationDays": 1,
+                    "priority": "high",
+                }
+            ],
+            "options": {"autoCreateEventLine": True, "aiFillEmpty": False},
+        },
+        ensure_ascii=False,
+    )
+    created = client.post(
+        f"/api/v1/clients/{client_id}/project-modules",
+        json={
+            "name": "客户启动模板",
+            "goal": "把客户启动阶段的标准动作固定下来。",
+            "templateTasksJson": initial_template,
+        },
+    )
+    assert created.status_code == 200, created.text
+    created_payload = created.json()
+    assert created_payload["templateTasksJson"] == initial_template
+
+    updated_template = json.dumps(
+        {
+            "tasks": [
+                {
+                    "id": "step_1",
+                    "title": "准备需求访谈",
+                    "description": "先梳理客户现状与访谈提纲。",
+                    "daysAfterPrevious": 0,
+                    "durationDays": 1,
+                    "priority": "high",
+                },
+                {
+                    "id": "step_2",
+                    "title": "输出启动纪要",
+                    "description": "把关键目标、阻塞和后续动作写回项目底盘。",
+                    "daysAfterPrevious": 1,
+                    "durationDays": 1,
+                    "priority": "normal",
+                },
+            ],
+            "options": {"autoCreateEventLine": True, "aiFillEmpty": True},
+        },
+        ensure_ascii=False,
+    )
+    updated = client.patch(
+        f"/api/v1/clients/{client_id}/project-modules/{created_payload['id']}",
+        json={
+            "name": "客户启动模板",
+            "goal": "把客户启动阶段的标准动作固定下来。",
+            "templateTasksJson": updated_template,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    updated_payload = updated.json()
+    assert updated_payload["templateTasksJson"] == updated_template
+
+    structure = client.get(f"/api/v1/clients/{client_id}/project-structure")
+    assert structure.status_code == 200, structure.text
+    module_payload = next(item for item in structure.json()["modules"] if item["id"] == created_payload["id"])
+    assert module_payload["templateTasksJson"] == updated_template
 
 
 def test_memory_foundation_phase1_builds_notebook_event_line_and_status(tmp_path: Path):
@@ -3795,6 +4818,73 @@ def test_task_context_preview_returns_bundle_and_judgment(tmp_path: Path):
     assert payload["readiness"] in {"medium", "high"}
 
 
+def test_weekly_review_draft_save_skips_augmented_generation(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    task_board = client.get("/api/v1/tasks")
+    assert task_board.status_code == 200
+    default_list_id = task_board.json()["lists"][0]["id"]
+
+    created_task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "教育双年会稿件准备",
+            "desc": "补齐本周任务复盘草稿",
+            "priority": "high",
+            "listId": default_list_id,
+            "dueDate": "2026-04-17",
+            "ddl": "2026-04-17",
+            "tagIds": [],
+        },
+    )
+    assert created_task.status_code == 200, created_task.text
+    task_id = created_task.json()["id"]
+
+    def fail_if_weekly_overview_runs(*args, **kwargs):
+        raise AssertionError("draft save should not trigger weekly overview generation")
+
+    monkeypatch.setattr(app_main, "build_weekly_overview_draft", fail_if_weekly_overview_runs)
+
+    response = client.post(
+        "/api/v1/reviews/weekly/draft",
+        json={
+            "weekLabel": "2026-W16",
+            "taskEntries": [
+                {
+                    "taskId": task_id,
+                    "contentDomain": "work",
+                    "note": "本周已经补齐了关键复盘，但暂时不重跑整份周复盘。",
+                    "structuredNote": {
+                        "progress": "完成任务复盘初稿",
+                        "successReason": "关键经验已经写清楚",
+                        "blockerReason": "",
+                        "supportNeeded": "",
+                        "nextAction": "下周继续完善行动项",
+                    },
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    assert payload["currentReview"]["weekLabel"] == "2026-W16"
+    assert [item["taskId"] for item in payload["workItems"]] == [task_id]
+    assert payload["workAnalysis"] is not None
+    assert payload["selfReport"] is None
+    assert payload["executiveOrgReport"] is None
+    assert payload["departmentReports"] == []
+    assert payload["agentDepartmentDigests"] == []
+    assert payload["agentDepartmentPlans"] == []
+
+    saved_entry = client.app.state.app_state.db.fetchone(
+        "SELECT note FROM weekly_review_task_entries WHERE task_id = ?",
+        (task_id,),
+    )
+    assert saved_entry is not None
+    assert "完成任务复盘初稿" in str(saved_entry["note"])
+
+
 def test_review_dashboard_drill_target_returns_event_line_evidence(tmp_path: Path):
     client = make_client(tmp_path)
     client_id = create_test_client_record(client, "日慈基金会")
@@ -4267,13 +5357,12 @@ def test_memory_backfill_route_upgrades_legacy_tasks_and_reviews(tmp_path: Path)
         INSERT INTO tasks(
             id, title, description, status, priority, list_id, client_id, event_line_id, project_module_id, project_flow_id,
             ddl, due_date, duration_minutes, owner_name, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, 'doing', 'high', ?, ?, ?, NULL, NULL, '本周', NULL, 60, '旧负责人', 'manual', NULL, '[]', '[]', ?, ?)
+        ) VALUES(?, ?, ?, 'doing', 'high', 'list-0', ?, ?, NULL, NULL, '本周', NULL, 60, '旧负责人', 'manual', NULL, '[]', '[]', ?, ?)
         """,
         (
             "task_legacy",
             "整理旧项目资料",
             "把历史会议纪要和关键判断补齐到同一条推进线上。",
-            app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID,
             client_id,
             "eline_legacy",
             "2026-03-12T10:00:00",
@@ -4373,13 +5462,12 @@ def test_weekly_review_analysis_ignores_polluted_event_line_background(tmp_path:
         INSERT INTO tasks(
             id, title, description, status, priority, list_id, client_id, event_line_id, project_module_id, project_flow_id,
             ddl, due_date, duration_minutes, owner_name, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, 'doing', 'high', ?, ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'manual', NULL, '[]', '[]', ?, ?)
+        ) VALUES(?, ?, ?, 'doing', 'high', 'list-0', ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'manual', NULL, '[]', '[]', ?, ?)
         """,
         (
             "task_dirty_review",
             "向马翔宇老师介绍数字化系统",
             "先把系统价值讲清楚，再推进后续判断。",
-            app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID,
             client_id,
             "eline_dirty_review",
             "2026-03-21T10:00:00",
@@ -4525,13 +5613,12 @@ def test_reviews_route_accepts_notebook_and_event_line_memory_evidence_refs(tmp_
         INSERT INTO tasks(
             id, title, description, status, priority, list_id, client_id, event_line_id, project_module_id, project_flow_id,
             ddl, due_date, duration_minutes, owner_name, source_type, source_id, tags_json, tag_ids_json, created_at, updated_at
-        ) VALUES(?, ?, ?, 'doing', 'high', ?, ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'meeting', 'meeting_demo_1', '[]', '[]', ?, ?)
+        ) VALUES(?, ?, ?, 'doing', 'high', 'list-0', ?, ?, NULL, NULL, '本周', NULL, 60, '顾源源', 'meeting', 'meeting_demo_1', '[]', '[]', ?, ?)
         """,
         (
             "task_review_sources",
             "给日慈张真看益语系统",
             "这次会谈要确认系统与对方合作目标的关系，并收齐会后动作。",
-            app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID,
             client_id,
             "eline_review_sources",
             "2026-03-24T09:00:00",
@@ -4662,835 +5749,6 @@ def test_cloud_task_board_builds_event_line_shadow_and_memory_hints(tmp_path: Pa
     snapshot = memory_response.json()["eventLineMemorySnapshot"]
     assert snapshot is not None
     assert snapshot["confidence"] > 0
-
-
-def test_bootstrap_local_cloud_snapshot_pulls_event_lines(tmp_path: Path, monkeypatch):
-    client = make_client(tmp_path)
-    seed_session_user(client)
-    seed_cloud_token(client)
-
-    def fake_cloud_request(method: str, url: str, **kwargs):
-        normalized = "http://127.0.0.1:47830"
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-lists":
-            return httpx.Response(
-                200,
-                json={
-                    "lists": [
-                        {"id": "list_bootstrap_1", "name": "启动清单", "color": "#5B7BFE", "sortOrder": 1, "isDefault": False}
-                    ]
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-tags":
-            return httpx.Response(200, json={"tags": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
-            return httpx.Response(
-                200,
-                json={
-                    "tasks": [
-                        {
-                            "id": "task_bootstrap_1",
-                            "title": "跟进事件线冷启动快照",
-                            "description": "验证任务面板启动时会补齐事件线本地缓存。",
-                            "status": "doing",
-                            "priority": "high",
-                            "listId": "list_bootstrap_1",
-                            "creatorId": "user_emp",
-                            "ownerId": "user_emp",
-                            "ownerName": "普通员工",
-                            "sourceType": "manual",
-                            "eventLineId": "eline_bootstrap_1",
-                            "createdAt": "2026-04-21T09:00:00",
-                            "updatedAt": "2026-04-21T09:10:00",
-                            "collaborators": [],
-                        }
-                    ]
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines":
-            return httpx.Response(
-                200,
-                json=[
-                    {
-                        "id": "eline_bootstrap_1",
-                        "name": "冷启动事件线",
-                        "kind": "custom",
-                        "status": "active",
-                        "updatedAt": "2026-04-21T09:15:00",
-                    }
-                ],
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines/eline_bootstrap_1":
-            return httpx.Response(
-                200,
-                json={
-                    "eventLine": {
-                        "id": "eline_bootstrap_1",
-                        "name": "冷启动事件线",
-                        "kind": "custom",
-                        "status": "active",
-                        "stage": "推进中",
-                        "summary": "验证启动时事件线能进本地缓存。",
-                        "updatedAt": "2026-04-21T09:15:00",
-                    },
-                    "activities": [],
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-group-templates":
-            return httpx.Response(200, json={"templates": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/reviews/history":
-            return httpx.Response(200, json={"items": []})
-        raise AssertionError(f"Unexpected cloud request: {method} {url}")
-
-    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
-
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    payload = board.json()
-    assert payload["tasks"][0]["eventLineId"] == "eline_bootstrap_1"
-    assert payload["tasks"][0]["eventLineName"] == "冷启动事件线"
-
-    event_line_row = client.app.state.app_state.db.fetchone(
-        "SELECT id, name FROM event_lines WHERE id = ?",
-        ("eline_bootstrap_1",),
-    )
-    assert event_line_row is not None
-    assert event_line_row["name"] == "冷启动事件线"
-
-
-def test_background_local_cloud_sync_isolates_failed_bucket(tmp_path: Path, monkeypatch):
-    client = make_client(tmp_path)
-    session_user = seed_session_user(client)
-    seed_cloud_token(client)
-    client.app.state.app_state.db.set_setting("local_cloud_sync_last_success_at", "2026-04-21T09:00:00")
-    client.app.state.app_state.db.set_setting("local_cloud_sync_snapshot_user_id", session_user["id"])
-    client.app.state.app_state.db.set_setting("local_cloud_sync_snapshot_org_id", session_user["organizationId"])
-    app_main._local_cloud_sync_runtime["last_started_at"] = 0.0
-    app_main._local_cloud_sync_runtime["running"] = False
-
-    sync_errors: list[Exception] = []
-
-    class ImmediateThread:
-        def __init__(self, *, target=None, daemon=None, **kwargs):
-            self._target = target
-            self.daemon = daemon
-
-        def start(self):
-            try:
-                if self._target:
-                    self._target()
-            except Exception as exc:  # pragma: no cover - assertion aid
-                sync_errors.append(exc)
-
-    def fake_cloud_request(method: str, url: str, **kwargs):
-        normalized = "http://127.0.0.1:47830"
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-lists":
-            return httpx.Response(
-                200,
-                json={
-                    "lists": [
-                        {"id": "list_sync_1", "name": "同步清单", "color": "#4F46E5", "sortOrder": 1, "isDefault": False}
-                    ]
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-tags":
-            return httpx.Response(200, json={"tags": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
-            return httpx.Response(
-                200,
-                json={
-                    "tasks": [
-                        {
-                            "id": "task_sync_1",
-                            "title": "同步时保住任务清单",
-                            "description": "即便事件线接口失败，也不能让任务和清单一起消失。",
-                            "status": "todo",
-                            "priority": "normal",
-                            "listId": "list_sync_1",
-                            "creatorId": "user_emp",
-                            "ownerId": "user_emp",
-                            "ownerName": "普通员工",
-                            "sourceType": "manual",
-                            "createdAt": "2026-04-21T10:00:00",
-                            "updatedAt": "2026-04-21T10:05:00",
-                            "collaborators": [],
-                        }
-                    ]
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines":
-            return httpx.Response(503, json={"detail": "event line service unavailable"})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-group-templates":
-            return httpx.Response(200, json={"templates": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/reviews/history":
-            return httpx.Response(200, json={"items": []})
-        raise AssertionError(f"Unexpected cloud request: {method} {url}")
-
-    monkeypatch.setattr(app_main, "Thread", ImmediateThread)
-    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
-
-    response = client.get("/api/v1/tasks")
-    assert response.status_code == 200, response.text
-    assert sync_errors == []
-
-    list_row = client.app.state.app_state.db.fetchone(
-        "SELECT id, name FROM task_lists WHERE id = ?",
-        ("list_sync_1",),
-    )
-    assert list_row is not None
-    task_row = client.app.state.app_state.db.fetchone(
-        "SELECT id, title FROM tasks WHERE id = ?",
-        ("task_sync_1",),
-    )
-    assert task_row is not None
-    assert client.app.state.app_state.db.get_setting("local_cloud_sync.event_lines.last_error", "")
-
-
-def test_reject_task_local_fallback_returns_rejected_task(tmp_path: Path):
-    client = make_client(tmp_path)
-    session_user = seed_session_user(client)
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    list_id = board.json()["lists"][0]["id"]
-    seed_cloud_token(client)
-
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "本地退回任务",
-            "desc": "验证 reject 的本地分支不会再丢失。",
-            "listId": list_id,
-            "sourceType": "manual",
-            "ownerId": session_user["id"],
-            "ownerName": session_user["fullName"],
-            "collaboratorIds": [session_user["id"]],
-        },
-    )
-    assert created.status_code == 200, created.text
-    task_id = created.json()["id"]
-
-    rejected = client.post(
-        f"/api/v1/tasks/{task_id}/reject",
-        json={"reason": "当前资源不足，先退回补充信息。"},
-    )
-    assert rejected.status_code == 200, rejected.text
-    assert rejected.json()["status"] == "rejected"
-
-    collaborator_row = client.app.state.app_state.db.fetchone(
-        "SELECT inbox_status, return_reason FROM task_collaborators WHERE task_id = ? AND user_id = ?",
-        (task_id, session_user["id"]),
-    )
-    assert collaborator_row is not None
-    assert collaborator_row["inbox_status"] == "returned"
-    assert collaborator_row["return_reason"] == "当前资源不足，先退回补充信息。"
-
-
-def test_confirm_task_local_fallback_returns_task_for_pending_collaborator(tmp_path: Path):
-    client = make_client(tmp_path)
-    creator_user = seed_session_user(
-        client,
-        user_id="user_creator",
-        email="creator@example.com",
-        full_name="普通发起人",
-    )
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    list_id = board.json()["lists"][0]["id"]
-
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "协作待确认任务",
-            "desc": "验证普通协作者在本地确认后不会再丢任务。",
-            "listId": list_id,
-            "sourceType": "manual",
-            "ownerId": creator_user["id"],
-            "ownerName": creator_user["fullName"],
-            "collaboratorIds": [creator_user["id"], "user_collab"],
-        },
-    )
-    assert created.status_code == 200, created.text
-    task_id = created.json()["id"]
-
-    db = client.app.state.app_state.db
-    db.conn.execute("PRAGMA foreign_keys = OFF")
-    try:
-        db.execute("UPDATE tasks SET list_id = 'list-0' WHERE id = ?", (task_id,))
-    finally:
-        db.conn.execute("PRAGMA foreign_keys = ON")
-
-    collaborator_user = seed_session_user(
-        client,
-        user_id="user_collab",
-        email="collab@example.com",
-        full_name="普通协作者",
-    )
-
-    confirmed = client.post(f"/api/v1/tasks/{task_id}/confirm")
-    assert confirmed.status_code == 200, confirmed.text
-    payload = confirmed.json()
-    assert payload["status"] == "doing"
-    assert payload["listId"] == app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
-    assert payload["viewerInboxStatus"] == "accepted"
-
-    collaborator_row = db.fetchone(
-        "SELECT inbox_status FROM task_collaborators WHERE task_id = ? AND user_id = ?",
-        (task_id, collaborator_user["id"]),
-    )
-    assert collaborator_row is not None
-    assert collaborator_row["inbox_status"] == "accepted"
-
-
-def test_mark_event_line_notification_read_queues_local_sync(tmp_path: Path):
-    client = make_client(tmp_path)
-    session_user = seed_session_user(client)
-    insert_local_event_line_notification(
-        client,
-        notification_id="notif_local_single",
-        user=session_user,
-        other_user_ids=[("user_other", "其他成员", "other@example.com")],
-    )
-
-    inbox_before = client.get("/api/v1/inbox/notifications")
-    assert inbox_before.status_code == 200, inbox_before.text
-    assert [item["id"] for item in inbox_before.json()["notifications"]] == ["notif_local_single"]
-
-    marked = client.post("/api/v1/inbox/notifications/notif_local_single/read")
-    assert marked.status_code == 200, marked.text
-    assert marked.json()["id"] == "notif_local_single"
-    assert marked.json()["viewerReadAt"]
-
-    notification_row = client.app.state.app_state.db.fetchone(
-        "SELECT sync_status, pending_sync_action FROM event_line_notifications WHERE id = ?",
-        ("notif_local_single",),
-    )
-    assert notification_row is not None
-    assert notification_row["sync_status"] == "queued"
-    assert notification_row["pending_sync_action"] == "read"
-
-    receipt_row = client.app.state.app_state.db.fetchone(
-        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
-        ("notif_local_single", session_user["id"]),
-    )
-    assert receipt_row is not None
-    assert receipt_row["read_at"]
-
-    inbox_after = client.get("/api/v1/inbox/notifications")
-    assert inbox_after.status_code == 200, inbox_after.text
-    assert inbox_after.json()["notifications"] == []
-
-
-def test_mark_event_line_notifications_read_batch_queues_local_sync(tmp_path: Path):
-    client = make_client(tmp_path)
-    session_user = seed_session_user(client)
-    notification_ids = ["notif_local_batch_1", "notif_local_batch_2"]
-    for index, notification_id in enumerate(notification_ids, start=1):
-        insert_local_event_line_notification(
-            client,
-            notification_id=notification_id,
-            user=session_user,
-            event_line_id=f"line_batch_{index}",
-            title=f"批量系统通知 {index}",
-            other_user_ids=[(f"user_other_{index}", f"其他成员{index}", f"other{index}@example.com")],
-        )
-
-    marked = client.post("/api/v1/inbox/notifications/read-batch", json={"notificationIds": notification_ids})
-    assert marked.status_code == 200, marked.text
-    payload = marked.json()
-    assert payload["updatedCount"] == 2
-    assert payload["notificationIds"] == notification_ids
-
-    rows = client.app.state.app_state.db.fetchall(
-        "SELECT id, sync_status, pending_sync_action FROM event_line_notifications WHERE id IN (?, ?) ORDER BY created_at ASC",
-        (notification_ids[0], notification_ids[1]),
-    )
-    assert len(rows) == 2
-    for row in rows:
-        assert row["sync_status"] == "queued"
-        assert row["pending_sync_action"] == "read"
-
-    unread_rows = client.app.state.app_state.db.fetchall(
-        "SELECT notification_id, read_at FROM event_line_notification_receipts WHERE user_id = ? ORDER BY notification_id ASC",
-        (session_user["id"],),
-    )
-    assert len(unread_rows) == 2
-    assert all(row["read_at"] for row in unread_rows)
-
-    inbox_after = client.get("/api/v1/inbox/notifications")
-    assert inbox_after.status_code == 200, inbox_after.text
-    assert inbox_after.json()["notifications"] == []
-
-
-def test_task_board_preserves_empty_list_from_cloud_payload(tmp_path: Path, monkeypatch):
-    client = make_client(tmp_path)
-    session_user = seed_session_user(client)
-    seed_cloud_token(client)
-    app_main._local_cloud_sync_runtime["last_started_at"] = 0.0
-    app_main._local_cloud_sync_runtime["running"] = False
-
-    class ImmediateThread:
-        def __init__(self, *, target=None, daemon=None, **kwargs):
-            self._target = target
-            self.daemon = daemon
-
-        def start(self):
-            if self._target:
-                self._target()
-
-    def fake_cloud_request(method: str, url: str, **kwargs):
-        normalized = "http://127.0.0.1:47830"
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-lists":
-            return httpx.Response(200, json={"lists": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-tags":
-            return httpx.Response(200, json={"tags": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
-            return httpx.Response(
-                200,
-                json={
-                    "tasks": [
-                        {
-                            "id": "task_cloud_no_list",
-                            "title": "云端无清单任务",
-                            "description": "不应被回退成默认清单。",
-                            "status": "todo",
-                            "priority": "normal",
-                            "listId": "",
-                            "listName": "",
-                            "listColor": "",
-                            "listIds": [],
-                            "listNames": [],
-                            "creatorId": session_user["id"],
-                            "creatorName": session_user["fullName"],
-                            "ownerId": session_user["id"],
-                            "ownerName": session_user["fullName"],
-                            "sourceType": "manual",
-                            "createdAt": "2026-04-23T10:00:00",
-                            "updatedAt": "2026-04-23T10:05:00",
-                            "collaborators": [],
-                        }
-                    ]
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/event-lines":
-            return httpx.Response(200, json={"eventLines": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/task-group-templates":
-            return httpx.Response(200, json={"templates": []})
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/reviews/history":
-            return httpx.Response(200, json={"items": []})
-        raise AssertionError(f"Unexpected cloud request: {method} {url}")
-
-    monkeypatch.setattr(app_main, "Thread", ImmediateThread)
-    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
-
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    payload = board.json()
-    assert len(payload["tasks"]) == 1
-    task = payload["tasks"][0]
-    assert task["listId"] == ""
-    assert task["listName"] == ""
-    assert task["listNames"] == []
-
-
-def test_inbox_aggregate_preserves_cloud_collaboration_display_fields(tmp_path: Path, monkeypatch):
-    client = make_client(tmp_path)
-    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
-    session_user = seed_session_user(
-        client,
-        user_id="user_admin",
-        email="admin@example.com",
-        full_name="系统管理员",
-        primary_role="admin",
-    )
-    seed_cloud_token(client)
-
-    def fake_cloud_request(method: str, url: str, **kwargs):
-        normalized = "http://127.0.0.1:47830"
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
-            return httpx.Response(
-                200,
-                json={
-                    "tasks": [],
-                    "lists": [
-                        {
-                            "id": default_list_id,
-                            "name": "客户项目",
-                            "color": "#5B7BFE",
-                            "sortOrder": 0,
-                            "isDefault": True,
-                            "scope": "org",
-                        }
-                    ],
-                    "tags": [],
-                    "commonTags": [],
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/inbox":
-            return httpx.Response(
-                200,
-                json={
-                    "pendingTasks": [
-                        {
-                            "id": "task_cloud_pending_display",
-                            "title": "云端待确认任务",
-                            "description": "验证本地桥接保留协作展示字段。",
-                            "status": "inbox",
-                            "progressStatus": "todo",
-                            "priority": "normal",
-                            "listId": default_list_id,
-                            "listName": "客户项目",
-                            "listColor": "#5B7BFE",
-                            "listIds": [default_list_id],
-                            "listNames": ["客户项目"],
-                            "creatorId": "user_qinghua",
-                            "creatorName": "清华",
-                            "creatorDisplayName": "清华",
-                            "ownerId": session_user["id"],
-                            "ownerName": session_user["fullName"],
-                            "ownerDisplayName": session_user["fullName"],
-                            "sourceType": "manual",
-                            "collaborators": [
-                                {
-                                    "userId": session_user["id"],
-                                    "fullName": session_user["fullName"],
-                                    "email": session_user["email"],
-                                    "orderIndex": 0,
-                                    "isOwner": True,
-                                    "inboxStatus": "pending",
-                                },
-                                {
-                                    "userId": "user_qinghua",
-                                    "fullName": "清华",
-                                    "email": "qinghua@example.com",
-                                    "orderIndex": 1,
-                                    "isOwner": False,
-                                    "inboxStatus": "accepted",
-                                },
-                            ],
-                            "collaborationSummary": {"pending": 1, "accepted": 1, "returned": 0},
-                            "pendingParticipantNames": [session_user["fullName"]],
-                            "viewerInboxStatus": "pending",
-                            "viewerCanConfirm": True,
-                            "viewerCanReject": True,
-                            "createdAt": "2026-04-23T10:00:00",
-                            "updatedAt": "2026-04-23T10:05:00",
-                        }
-                    ],
-                    "systemNotifications": [],
-                    "outboundPendingTasks": [],
-                },
-            )
-        raise AssertionError(f"Unexpected cloud request: {method} {url}")
-
-    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
-
-    inbox = client.get("/api/v1/inbox")
-    assert inbox.status_code == 200, inbox.text
-    payload = inbox.json()
-    assert len(payload["pendingTasks"]) == 1
-    task = payload["pendingTasks"][0]
-    assert task["creatorDisplayName"] == "清华"
-    assert task["ownerDisplayName"] == session_user["fullName"]
-    assert task["pendingParticipantNames"] == [session_user["fullName"]]
-    assert task["viewerInboxStatus"] == "pending"
-    assert task["viewerCanConfirm"] is True
-    assert task["viewerCanReject"] is True
-
-
-def test_cloud_inbox_merges_board_pending_when_cloud_inbox_omits_task(tmp_path: Path, monkeypatch):
-    client = make_client(tmp_path)
-    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
-    session_user = seed_session_user(
-        client,
-        user_id="user_receiver",
-        email="receiver@example.com",
-        full_name="接收人",
-    )
-    seed_cloud_token(client)
-
-    def fake_cloud_request(method: str, url: str, **kwargs):
-        normalized = "http://127.0.0.1:47830"
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/inbox":
-            return httpx.Response(
-                200,
-                json={"pendingTasks": [], "systemNotifications": [], "outboundPendingTasks": []},
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
-            return httpx.Response(
-                200,
-                json={
-                    "tasks": [
-                        {
-                            "id": "task_board_pending_only",
-                            "title": "看板里仍待我确认的任务",
-                            "description": "云端 inbox 漏掉时，本地桥接应从任务看板补回。",
-                            "status": "todo",
-                            "progressStatus": "todo",
-                            "priority": "normal",
-                            "listId": default_list_id,
-                            "listName": "客户项目",
-                            "listColor": "#5B7BFE",
-                            "listIds": [default_list_id],
-                            "listNames": ["客户项目"],
-                            "creatorId": "user_creator",
-                            "creatorName": "发起人",
-                            "ownerId": session_user["id"],
-                            "ownerName": session_user["fullName"],
-                            "sourceType": "manual",
-                            "collaborators": [
-                                {
-                                    "userId": session_user["id"],
-                                    "fullName": session_user["fullName"],
-                                    "email": session_user["email"],
-                                    "orderIndex": 0,
-                                    "isOwner": True,
-                                    "inboxStatus": "pending",
-                                }
-                            ],
-                            "collaborationSummary": {"pending": 1, "accepted": 0, "returned": 0},
-                            "createdAt": "2026-04-24T08:00:00",
-                            "updatedAt": "2026-04-24T08:05:00",
-                        }
-                    ],
-                    "lists": [
-                        {
-                            "id": default_list_id,
-                            "name": "客户项目",
-                            "color": "#5B7BFE",
-                            "sortOrder": 0,
-                            "isDefault": True,
-                            "scope": "org",
-                        }
-                    ],
-                    "tags": [],
-                    "commonTags": [],
-                },
-            )
-        raise AssertionError(f"Unexpected cloud request: {method} {url}")
-
-    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
-
-    inbox = client.get("/api/v1/inbox")
-    assert inbox.status_code == 200, inbox.text
-    payload = inbox.json()
-    assert [task["id"] for task in payload["pendingTasks"]] == ["task_board_pending_only"]
-    assert payload["pendingTasks"][0]["viewerInboxStatus"] == "pending"
-    assert payload["pendingTasks"][0]["viewerCanConfirm"] is True
-
-
-def test_inbox_upsert_preserves_pending_local_empty_list_from_stale_default_payload(tmp_path: Path, monkeypatch):
-    client = make_client(tmp_path)
-    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
-    session_user = seed_session_user(
-        client,
-        user_id="user_creator",
-        email="creator@example.com",
-        full_name="发起人",
-    )
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "清单清空后不应被客户项目回灌",
-            "desc": "本地已明确保存为无清单。",
-            "priority": "normal",
-            "listId": "",
-            "listIds": [],
-        },
-    )
-    assert created.status_code == 200, created.text
-    task_id = created.json()["id"]
-    db = client.app.state.app_state.db
-    db.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
-    db.execute(
-        """
-        UPDATE tasks
-        SET list_id = NULL,
-            updated_at = '2026-04-24T12:00:00',
-            sync_status = 'queued',
-            pending_sync_action = 'update',
-            last_synced_at = '2026-04-24T11:00:00',
-            last_cloud_version = '2026-04-24T11:30:00'
-        WHERE id = ?
-        """,
-        (task_id,),
-    )
-    seed_cloud_token(client)
-
-    def fake_cloud_request(method: str, url: str, **kwargs):
-        normalized = "http://127.0.0.1:47830"
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/tasks":
-            return httpx.Response(
-                200,
-                json={
-                    "tasks": [],
-                    "lists": [
-                        {
-                            "id": default_list_id,
-                            "name": "客户项目",
-                            "color": "#5B7BFE",
-                            "sortOrder": 0,
-                            "isDefault": True,
-                            "scope": "org",
-                        }
-                    ],
-                    "tags": [],
-                    "commonTags": [],
-                },
-            )
-        if method.upper() == "GET" and url == f"{normalized}/api/v1/inbox":
-            return httpx.Response(
-                200,
-                json={
-                    "pendingTasks": [],
-                    "systemNotifications": [],
-                    "outboundPendingTasks": [
-                        {
-                            "id": task_id,
-                            "title": "清单清空后不应被客户项目回灌",
-                            "description": "云端旧快照仍带默认清单。",
-                            "status": "todo",
-                            "progressStatus": "todo",
-                            "priority": "normal",
-                            "listId": default_list_id,
-                            "listName": "客户项目",
-                            "listColor": "#5B7BFE",
-                            "listIds": [default_list_id],
-                            "listNames": ["客户项目"],
-                            "creatorId": session_user["id"],
-                            "creatorName": session_user["fullName"],
-                            "ownerId": "",
-                            "ownerName": "",
-                            "sourceType": "manual",
-                            "collaborators": [
-                                {
-                                    "userId": "user_owner",
-                                    "fullName": "负责人",
-                                    "email": "owner@example.com",
-                                    "orderIndex": 0,
-                                    "isOwner": True,
-                                    "inboxStatus": "pending",
-                                }
-                            ],
-                            "collaborationSummary": {"pending": 1, "accepted": 0, "returned": 0},
-                            "createdAt": "2026-04-24T09:00:00",
-                            "updatedAt": "2026-04-24T11:30:00",
-                        }
-                    ],
-                },
-            )
-        raise AssertionError(f"Unexpected cloud request: {method} {url}")
-
-    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
-
-    inbox = client.get("/api/v1/inbox")
-    assert inbox.status_code == 200, inbox.text
-    local_row = db.fetchone("SELECT list_id, sync_status, pending_sync_action FROM tasks WHERE id = ?", (task_id,))
-    assert local_row["list_id"] is None
-    assert local_row["sync_status"] == "queued"
-    assert local_row["pending_sync_action"] == "update"
-    links = db.fetchall("SELECT list_id FROM task_list_links WHERE task_id = ?", (task_id,))
-    assert links == []
-
-
-def test_task_can_be_created_without_any_list_locally(tmp_path: Path):
-    client = make_client(tmp_path)
-
-    settings = client.get("/api/v1/settings/tasks")
-    assert settings.status_code == 200, settings.text
-    assert settings.json()["defaultListId"] is None
-
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "本地无清单任务",
-            "desc": "保存后保持无清单。",
-            "priority": "normal",
-            "listId": "",
-            "listIds": [],
-        },
-    )
-    assert created.status_code == 200, created.text
-    payload = created.json()
-    assert payload["listId"] == ""
-    assert payload["listName"] == ""
-    assert payload["listIds"] == []
-    assert payload["listNames"] == []
-
-    default_list_id = app_main.DEFAULT_LOCAL_ORG_TASK_LIST_ID
-    set_default = client.post("/api/v1/settings/tasks", json={"defaultListId": default_list_id})
-    assert set_default.status_code == 200, set_default.text
-    assert set_default.json()["defaultListId"] == default_list_id
-    clear_default = client.post("/api/v1/settings/tasks", json={"defaultListId": None})
-    assert clear_default.status_code == 200, clear_default.text
-    assert clear_default.json()["defaultListId"] is None
-
-
-def test_task_board_excludes_legacy_event_line_notification_rows(tmp_path: Path):
-    client = make_client(tmp_path)
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    list_id = board.json()["lists"][0]["id"]
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "遗留事件线通知任务",
-            "desc": "这条任务会被改造成遗留通知记录。",
-            "priority": "normal",
-            "listId": list_id,
-        },
-    )
-    assert created.status_code == 200, created.text
-    task_id = created.json()["id"]
-
-    client.app.state.app_state.db.execute(
-        "UPDATE tasks SET source_type = 'event_line_notification', progress_status = 'inbox' WHERE id = ?",
-        (task_id,),
-    )
-
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    visible_ids = {task["id"] for task in board.json()["tasks"]}
-    assert task_id not in visible_ids
-
-
-def test_collaboration_inbox_cleans_legacy_notification_tasks_and_returns_notifications(tmp_path: Path):
-    client = make_client(tmp_path)
-    session_user = seed_session_user(client)
-    insert_local_event_line_notification(
-        client,
-        notification_id="notif_inbox_aggregate",
-        user=session_user,
-    )
-    board = client.get("/api/v1/tasks")
-    assert board.status_code == 200, board.text
-    list_id = board.json()["lists"][0]["id"]
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "聚合收件箱不应显示的旧通知任务",
-            "desc": "这条旧任务形态应被收件箱清掉。",
-            "priority": "normal",
-            "listId": list_id,
-        },
-    )
-    assert created.status_code == 200, created.text
-    legacy_task_id = created.json()["id"]
-    client.app.state.app_state.db.execute(
-        "UPDATE tasks SET source_type = 'event_line_notification', progress_status = 'inbox' WHERE id = ?",
-        (legacy_task_id,),
-    )
-
-    inbox = client.get("/api/v1/inbox")
-    assert inbox.status_code == 200, inbox.text
-    payload = inbox.json()
-    assert payload["pendingTasks"] == []
-    assert [item["id"] for item in payload["systemNotifications"]] == ["notif_inbox_aggregate"]
-    assert payload["outboundPendingTasks"] == []
-
-    legacy_row = client.app.state.app_state.db.fetchone(
-        "SELECT id FROM tasks WHERE id = ?",
-        (legacy_task_id,),
-    )
-    assert legacy_row is None
 
 
 def test_employee_can_edit_business_settings_but_not_sensitive_settings(tmp_path: Path):

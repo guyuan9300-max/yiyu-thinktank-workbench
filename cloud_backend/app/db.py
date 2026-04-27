@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import sqlite3
 import threading
@@ -106,7 +105,6 @@ class Database:
                     organization_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     scope TEXT NOT NULL DEFAULT 'org',
@@ -178,25 +176,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_clients_org_updated
                     ON clients(organization_id, updated_at DESC);
 
-                CREATE TABLE IF NOT EXISTS task_group_templates (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    scope TEXT NOT NULL DEFAULT 'organization',
-                    work_object_id TEXT,
-                    name TEXT NOT NULL,
-                    scenario_desc TEXT NOT NULL DEFAULT '',
-                    steps_json TEXT NOT NULL DEFAULT '[]',
-                    legacy_module_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_org_updated
-                    ON task_group_templates(organization_id, updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
-                    ON task_group_templates(legacy_module_id);
-
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,
@@ -214,7 +193,7 @@ class Database:
                     completion_note TEXT,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     priority TEXT NOT NULL,
-                    list_id TEXT,
+                    list_id TEXT NOT NULL,
                     progress_status TEXT NOT NULL DEFAULT 'todo',
                     source_type TEXT NOT NULL,
                     source_id TEXT,
@@ -242,19 +221,6 @@ class Database:
                     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
                     FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
-
-                CREATE TABLE IF NOT EXISTS task_list_links (
-                    task_id TEXT NOT NULL,
-                    list_id TEXT NOT NULL,
-                    order_index INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (task_id, list_id),
-                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
-                    ON task_list_links(list_id, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS mention_history (
                     actor_id TEXT NOT NULL,
@@ -292,7 +258,6 @@ class Database:
                     next_step TEXT,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     owner_id TEXT,
-                    owner_ids_json TEXT NOT NULL DEFAULT '[]',
                     primary_client_id TEXT,
                     primary_client_name TEXT,
                     primary_department_id TEXT,
@@ -316,46 +281,6 @@ class Database:
                     FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
                     FOREIGN KEY(actor_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
-
-                CREATE TABLE IF NOT EXISTS event_line_notifications (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    event_line_id TEXT NOT NULL,
-                    event_line_name TEXT NOT NULL DEFAULT '',
-                    activity_id TEXT,
-                    operation_label TEXT NOT NULL DEFAULT '',
-                    actor_id TEXT,
-                    actor_name TEXT NOT NULL DEFAULT '',
-                    title TEXT NOT NULL,
-                    summary TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    main_owner_names_json TEXT NOT NULL DEFAULT '[]',
-                    participant_names_json TEXT NOT NULL DEFAULT '[]',
-                    operated_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
-                    FOREIGN KEY(activity_id) REFERENCES event_line_activities(id) ON DELETE SET NULL,
-                    FOREIGN KEY(actor_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_line_notifications_org_created
-                    ON event_line_notifications(organization_id, created_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_event_line_notifications_line_created
-                    ON event_line_notifications(event_line_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS event_line_notification_receipts (
-                    notification_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    read_at TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (notification_id, user_id),
-                    FOREIGN KEY(notification_id) REFERENCES event_line_notifications(id) ON DELETE CASCADE,
-                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_line_notification_receipts_user
-                    ON event_line_notification_receipts(user_id, read_at, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS org_units (
                     id TEXT PRIMARY KEY,
@@ -406,7 +331,6 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS org_profiles (
                     organization_id TEXT PRIMARY KEY,
-                    work_object_mode TEXT NOT NULL DEFAULT 'project',
                     annual_goal TEXT NOT NULL DEFAULT '',
                     annual_strategy_year TEXT NOT NULL DEFAULT '',
                     annual_strategy_text TEXT NOT NULL DEFAULT '',
@@ -765,6 +689,139 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(report_id) REFERENCES aggregated_scope_reports(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS cloud_client_workspace_snapshots (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_workspace_snapshots_client
+                    ON cloud_client_workspace_snapshots(organization_id, client_id, updated_at DESC, published_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_client_dna_summaries (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_client_dna_client
+                    ON cloud_client_dna_summaries(organization_id, client_id, updated_at DESC, published_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_event_line_snapshots (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_event_line_snapshots_client
+                    ON cloud_event_line_snapshots(organization_id, client_id, updated_at DESC, published_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_meeting_summaries (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_meeting_summaries_client
+                    ON cloud_meeting_summaries(organization_id, client_id, updated_at DESC, published_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_knowledge_surrogates (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_knowledge_surrogates_client
+                    ON cloud_knowledge_surrogates(organization_id, client_id, updated_at DESC, published_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_strategic_cockpit_snapshots (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_cockpit_snapshots_client
+                    ON cloud_strategic_cockpit_snapshots(organization_id, client_id, updated_at DESC, published_at DESC);
+
+                CREATE TABLE IF NOT EXISTS cloud_context_bundle_cache (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT,
+                    event_line_id TEXT,
+                    snapshot_hash TEXT NOT NULL,
+                    context_quality_level TEXT NOT NULL DEFAULT 'none',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    available_sources_json TEXT NOT NULL DEFAULT '[]',
+                    missing_sources_json TEXT NOT NULL DEFAULT '[]',
+                    stale_sources_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(organization_id, snapshot_hash),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_context_bundle_cache_client
+                    ON cloud_context_bundle_cache(organization_id, client_id, updated_at DESC);
                 """
             )
             self._migrate_task_tag_library_schema()
@@ -787,68 +844,6 @@ class Database:
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
-            self._ensure_column("task_lists", "description", "TEXT NOT NULL DEFAULT ''")
-            self._repair_stale_task_legacy_references()
-            self.conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS task_list_links (
-                    task_id TEXT NOT NULL,
-                    list_id TEXT NOT NULL,
-                    order_index INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (task_id, list_id),
-                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
-                    ON task_list_links(list_id, updated_at DESC);
-                """
-            )
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO task_list_links(task_id, list_id, order_index, created_at, updated_at)
-                SELECT id, list_id, 0, COALESCE(created_at, ''), COALESCE(updated_at, '')
-                FROM tasks
-                WHERE TRIM(COALESCE(list_id, '')) <> ''
-                """
-            )
-            self.conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS task_group_templates (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    scope TEXT NOT NULL DEFAULT 'organization',
-                    work_object_id TEXT,
-                    name TEXT NOT NULL,
-                    scenario_desc TEXT NOT NULL DEFAULT '',
-                    steps_json TEXT NOT NULL DEFAULT '[]',
-                    legacy_module_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
-                )
-                """
-            )
-            self._ensure_column("task_group_templates", "scope", "TEXT NOT NULL DEFAULT 'organization'")
-            self._ensure_column("task_group_templates", "work_object_id", "TEXT")
-            self._ensure_column("task_group_templates", "scenario_desc", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "steps_json", "TEXT NOT NULL DEFAULT '[]'")
-            self._ensure_column("task_group_templates", "legacy_module_id", "TEXT")
-            self.conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_org_updated
-                ON task_group_templates(organization_id, updated_at DESC)
-                """
-            )
-            self.conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
-                ON task_group_templates(legacy_module_id)
-                """
-            )
-            self._ensure_column("org_profiles", "work_object_mode", "TEXT NOT NULL DEFAULT 'project'")
             self._ensure_column("org_profiles", "annual_strategy_year", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "annual_strategy_text", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "quarter_plans_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -890,17 +885,14 @@ class Database:
             self._ensure_column("tasks", "recent_decision", "TEXT")
             self._ensure_column("tasks", "completion_note", "TEXT")
             self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
-            self._migrate_tasks_allow_empty_list_id()
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
             self._ensure_column("event_lines", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("event_lines", "primary_client_name", "TEXT")
-            self._ensure_column("event_lines", "owner_name", "TEXT")
             self._ensure_column("event_lines", "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
             self._ensure_column("event_lines", "closed_at", "TEXT")
             self._ensure_column("event_lines", "closed_by_user_id", "TEXT")
-            self._ensure_column("event_lines", "owner_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self.conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS task_attachments (
@@ -909,6 +901,7 @@ class Database:
                     task_id TEXT NOT NULL,
                     client_id TEXT,
                     event_line_id TEXT,
+                    document_id TEXT,
                     title TEXT NOT NULL,
                     summary TEXT,
                     path TEXT NOT NULL,
@@ -1083,158 +1076,11 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_org_feishu_query_logs_sender
                     ON org_feishu_query_logs(sender_open_id, created_at DESC);
 
-                CREATE TABLE IF NOT EXISTS org_dingtalk_finance_integrations (
-                    organization_id TEXT PRIMARY KEY,
-                    app_key TEXT NOT NULL DEFAULT '',
-                    app_secret_encrypted TEXT NOT NULL DEFAULT '',
-                    encryption_nonce TEXT NOT NULL DEFAULT '',
-                    sync_enabled INTEGER NOT NULL DEFAULT 1,
-                    mapped_template_names_json TEXT NOT NULL DEFAULT '[]',
-                    enabled INTEGER NOT NULL DEFAULT 0,
-                    configured_by TEXT,
-                    configured_at TEXT,
-                    updated_at TEXT NOT NULL,
-                    last_validation_status TEXT NOT NULL DEFAULT 'idle',
-                    last_validation_message TEXT NOT NULL DEFAULT '',
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS expense_import_sources (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    source_system TEXT NOT NULL DEFAULT 'dingtalk_finance',
-                    source_instance_id TEXT NOT NULL,
-                    source_template_code TEXT,
-                    source_template_name TEXT,
-                    source_title TEXT NOT NULL,
-                    applicant_user_name TEXT NOT NULL DEFAULT '',
-                    amount REAL,
-                    currency TEXT NOT NULL DEFAULT 'CNY',
-                    submitted_at TEXT,
-                    approved_at TEXT,
-                    approval_status TEXT NOT NULL DEFAULT 'unknown',
-                    source_url TEXT,
-                    raw_payload_json TEXT NOT NULL DEFAULT '{}',
-                    imported_evidence_id TEXT,
-                    last_imported_at TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(organization_id, source_system, source_instance_id),
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_expense_import_sources_org_updated
-                    ON expense_import_sources(organization_id, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS expense_import_jobs (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    work_object_id TEXT,
-                    source_system TEXT NOT NULL DEFAULT 'dingtalk_finance',
-                    job_type TEXT NOT NULL DEFAULT 'metadata_sync',
-                    status TEXT NOT NULL DEFAULT 'queued',
-                    query_payload_json TEXT NOT NULL DEFAULT '{}',
-                    result_summary_json TEXT NOT NULL DEFAULT '{}',
-                    error_message TEXT,
-                    created_by_user_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL,
-                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS expense_evidences (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    work_object_id TEXT,
-                    source_system TEXT NOT NULL DEFAULT 'dingtalk_finance',
-                    source_instance_id TEXT NOT NULL,
-                    source_template_code TEXT,
-                    source_template_name TEXT,
-                    source_title TEXT NOT NULL,
-                    display_title TEXT NOT NULL,
-                    applicant_user_name TEXT NOT NULL DEFAULT '',
-                    amount REAL,
-                    currency TEXT NOT NULL DEFAULT 'CNY',
-                    submitted_at TEXT,
-                    approved_at TEXT,
-                    approval_status TEXT NOT NULL DEFAULT 'unknown',
-                    source_url TEXT,
-                    normalized_category TEXT,
-                    tags_json TEXT NOT NULL DEFAULT '[]',
-                    summary TEXT NOT NULL DEFAULT '',
-                    last_imported_at TEXT,
-                    created_by_user_id TEXT,
-                    updated_by_user_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(organization_id, source_system, source_instance_id),
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL,
-                    FOREIGN KEY(created_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
-                    FOREIGN KEY(updated_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_expense_evidences_org_work_object
-                    ON expense_evidences(organization_id, work_object_id, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS expense_evidence_attachments (
-                    id TEXT PRIMARY KEY,
-                    expense_evidence_id TEXT NOT NULL,
-                    source_file_id TEXT,
-                    file_name TEXT NOT NULL,
-                    mime_type TEXT,
-                    size_bytes INTEGER NOT NULL DEFAULT 0,
-                    download_status TEXT NOT NULL DEFAULT 'not_fetched',
-                    ocr_status TEXT NOT NULL DEFAULT 'pending',
-                    ocr_summary TEXT,
-                    storage_path TEXT,
-                    preview_url TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(expense_evidence_id) REFERENCES expense_evidences(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_expense_evidence_attachments_evidence
-                    ON expense_evidence_attachments(expense_evidence_id, created_at ASC);
-
-                CREATE TABLE IF NOT EXISTS event_line_expense_evidence_links (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    event_line_id TEXT NOT NULL,
-                    expense_evidence_id TEXT NOT NULL,
-                    note TEXT NOT NULL DEFAULT '',
-                    linked_by_user_id TEXT,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(event_line_id, expense_evidence_id),
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
-                    FOREIGN KEY(expense_evidence_id) REFERENCES expense_evidences(id) ON DELETE CASCADE,
-                    FOREIGN KEY(linked_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_line_expense_links_event_line
-                    ON event_line_expense_evidence_links(event_line_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS task_expense_evidence_links (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    expense_evidence_id TEXT NOT NULL,
-                    note TEXT NOT NULL DEFAULT '',
-                    linked_by_user_id TEXT,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(task_id, expense_evidence_id),
-                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                    FOREIGN KEY(expense_evidence_id) REFERENCES expense_evidences(id) ON DELETE CASCADE,
-                    FOREIGN KEY(linked_by_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_expense_links_task
-                    ON task_expense_evidence_links(task_id, created_at DESC);
-
                 CREATE TABLE IF NOT EXISTS event_line_attachments (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,
                     event_line_id TEXT NOT NULL,
+                    document_id TEXT,
                     title TEXT NOT NULL,
                     summary TEXT,
                     path TEXT NOT NULL,
@@ -1304,10 +1150,8 @@ class Database:
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
                 """
             )
-            self._ensure_column("org_dingtalk_finance_integrations", "operator_mobile", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("org_dingtalk_finance_integrations", "resolved_operator_user_id", "TEXT")
-            self._ensure_column("expense_evidence_attachments", "source_space_id", "TEXT")
-            self._ensure_column("expense_evidence_attachments", "source_file_type", "TEXT")
+            self._ensure_column("task_attachments", "document_id", "TEXT")
+            self._ensure_column("event_line_attachments", "document_id", "TEXT")
             self.conn.execute(
                 """
                 UPDATE employee_accounts
@@ -1316,11 +1160,9 @@ class Database:
                        rejected_reason = NULL,
                        disabled_at = NULL,
                        updated_at = COALESCE(updated_at, created_at)
-                WHERE account_status = 'pending'
+                 WHERE account_status = 'pending'
                 """
             )
-            self._backfill_legacy_event_line_notifications()
-            self._delete_legacy_event_line_notification_tasks()
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:
@@ -1333,44 +1175,6 @@ class Database:
         if column_name in self._table_columns(table_name):
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
-
-    def _rewrite_schema_sql(self, updates: list[tuple[str, str, str]]) -> None:
-        if not updates:
-            return
-        self.conn.execute("PRAGMA foreign_keys=OFF")
-        self.conn.execute("PRAGMA writable_schema=ON")
-        for obj_type, name, sql in updates:
-            self.conn.execute(
-                "UPDATE sqlite_master SET sql = ? WHERE type = ? AND name = ?",
-                (sql, obj_type, name),
-            )
-        self.conn.execute("PRAGMA writable_schema=OFF")
-        current_version = int(self.conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
-        self.conn.execute(f"PRAGMA schema_version = {current_version + 1}")
-        self.conn.commit()
-        self.conn.execute("PRAGMA foreign_keys=ON")
-
-    def _repair_stale_task_legacy_references(self) -> None:
-        rows = self.conn.execute(
-            """
-            SELECT type, name, sql
-            FROM sqlite_master
-            WHERE sql IS NOT NULL AND sql LIKE '%tasks_legacy_list_id%'
-            """
-        ).fetchall()
-        updates: list[tuple[str, str, str]] = []
-        for row in rows:
-            raw_sql = str(row["sql"] or "")
-            if "tasks_legacy_list_id" not in raw_sql:
-                continue
-            updates.append(
-                (
-                    str(row["type"]),
-                    str(row["name"]),
-                    raw_sql.replace("tasks_legacy_list_id", "tasks"),
-                )
-            )
-        self._rewrite_schema_sql(updates)
 
     def _migrate_task_tag_library_schema(self) -> None:
         columns = self._table_columns("task_tag_library")
@@ -1400,141 +1204,6 @@ class Database:
             """
         )
         self.conn.execute("DROP TABLE task_tag_library_legacy")
-
-    def _migrate_tasks_allow_empty_list_id(self) -> None:
-        task_row = self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
-        ).fetchone()
-        if task_row is None:
-            return
-        task_sql = str(task_row["sql"] or "")
-        if "list_id TEXT NOT NULL" not in task_sql:
-            return
-        self._rewrite_schema_sql(
-            [("table", "tasks", task_sql.replace("list_id TEXT NOT NULL", "list_id TEXT"))]
-        )
-
-    def _parse_legacy_event_line_notification(self, title: str, description: str) -> dict[str, object]:
-        values: dict[str, str] = {}
-        for raw_line in description.splitlines():
-            line = raw_line.strip()
-            if not line or "：" not in line:
-                continue
-            label, value = line.split("：", 1)
-            label = label.strip()
-            value = value.strip()
-            if label and value:
-                values[label] = value
-        operation = values.get("事件线操作", "").strip()
-        if not operation:
-            match = re.match(r"^事件线(.+?)：", title.strip())
-            if match:
-                operation = match.group(1).strip()
-        return {
-            "event_line_name": values.get("事件线标题", "").strip(),
-            "operation_label": operation,
-            "actor_name": values.get("操作者", "").strip(),
-            "operated_at": values.get("操作时间", "").strip(),
-            "main_owner_names": [item.strip() for item in values.get("主要负责人", "").split("、") if item.strip()],
-            "participant_names": [item.strip() for item in values.get("参与者", "").split("、") if item.strip()],
-        }
-
-    def _backfill_legacy_event_line_notifications(self) -> None:
-        rows = self.conn.execute(
-            """
-            SELECT *
-            FROM tasks
-            WHERE source_type = 'event_line_notification'
-            ORDER BY created_at ASC
-            """
-        ).fetchall()
-        for row in rows:
-            notification_id = str(row["id"] or "").strip()
-            if not notification_id:
-                continue
-            existing = self.conn.execute(
-                "SELECT 1 FROM event_line_notifications WHERE id = ?",
-                (notification_id,),
-            ).fetchone()
-            if existing is not None:
-                continue
-            parsed = self._parse_legacy_event_line_notification(
-                str(row["title"] or ""),
-                str(row["description"] or ""),
-            )
-            event_line_id = str(row["event_line_id"] or row["source_id"] or "").strip()
-            if not event_line_id:
-                continue
-            self.conn.execute(
-                """
-                INSERT INTO event_line_notifications(
-                    id, organization_id, event_line_id, event_line_name, activity_id, operation_label,
-                    actor_id, actor_name, title, summary, metadata_json, main_owner_names_json,
-                    participant_names_json, operated_at, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
-                """,
-                (
-                    notification_id,
-                    str(row["organization_id"] or ""),
-                    event_line_id,
-                    str(parsed["event_line_name"] or ""),
-                    str(parsed["operation_label"] or ""),
-                    str(row["creator_id"] or "") or None,
-                    str(parsed["actor_name"] or ""),
-                    str(row["title"] or ""),
-                    str(row["description"] or ""),
-                    json.dumps(parsed["main_owner_names"], ensure_ascii=False),
-                    json.dumps(parsed["participant_names"], ensure_ascii=False),
-                    str(parsed["operated_at"] or row["created_at"] or row["updated_at"] or ""),
-                    str(row["created_at"] or ""),
-                    str(row["updated_at"] or row["created_at"] or ""),
-                ),
-            )
-            collaborator_rows = self.conn.execute(
-                """
-                SELECT user_id, handled_at, created_at, updated_at
-                FROM task_collaborators
-                WHERE task_id = ?
-                ORDER BY order_index ASC
-                """,
-                (notification_id,),
-            ).fetchall()
-            for collaborator_row in collaborator_rows:
-                self.conn.execute(
-                    """
-                    INSERT OR IGNORE INTO event_line_notification_receipts(
-                        notification_id, user_id, read_at, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?)
-                    """,
-                    (
-                        notification_id,
-                        str(collaborator_row["user_id"] or ""),
-                        str(collaborator_row["handled_at"]) if collaborator_row["handled_at"] else None,
-                        str(collaborator_row["created_at"] or row["created_at"] or ""),
-                        str(collaborator_row["updated_at"] or row["updated_at"] or row["created_at"] or ""),
-                    ),
-                )
-
-    def _delete_legacy_event_line_notification_tasks(self) -> None:
-        rows = self.conn.execute(
-            """
-            SELECT id
-            FROM tasks
-            WHERE source_type = 'event_line_notification'
-            """
-        ).fetchall()
-        legacy_task_ids = [str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()]
-        for task_id in legacy_task_ids:
-            self.conn.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_activity_events WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_plan_links WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_org_links WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_expense_evidence_links WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_notes WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM weekly_review_task_entries WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
     def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None:
         with self._lock:

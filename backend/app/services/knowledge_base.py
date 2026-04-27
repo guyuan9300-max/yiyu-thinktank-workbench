@@ -17,6 +17,8 @@ from typing import Any, Callable
 from xml.etree import ElementTree as ET
 
 from app.db import Database, from_json, to_json
+from app.services.embedding_provider import build_embedding_provider
+from app.services.retrieval_model_settings import get_retrieval_model_settings, retrieval_embedding_signature
 
 try:
     from fastembed import TextEmbedding
@@ -464,8 +466,8 @@ def is_overview_query(text: str) -> bool:
 
 
 def is_intro_profile_query(text: str) -> bool:
-    normalized = re.sub(r"\s+", "", (text or "").lower())
-    return any(hint in normalized for hint in INTRO_PROFILE_HINTS)
+    del text
+    return False
 
 
 def is_strategy_analysis_query(text: str) -> bool:
@@ -506,31 +508,13 @@ def intro_document_score_adjustment(
     folder_category: str,
     path: str | None,
 ) -> float:
-    haystack = " ".join(part.lower() for part in (title, summary, document_role, folder_category, path or "") if part)
-    adjustment = 0.0
-    if any(marker in haystack for marker in INTRO_NOISE_HINTS):
-        adjustment -= 1.8
-    if any(marker in haystack for marker in ("核心业务介绍", "业务介绍", "组织介绍")):
-        adjustment += 0.9
-    if any(marker in haystack for marker in INTRO_PRIORITY_HINTS):
-        adjustment += 0.35
-    if document_role == "机构介绍":
-        adjustment += 0.55
-    if folder_category in {"组织与战略", "项目与业务"}:
-        adjustment += 0.12
-    return adjustment
+    del title, summary, document_role, folder_category, path
+    return 0.0
 
 
 def intro_chunk_score_adjustment(*, title: str, excerpt: str, section_label: str | None, path: str | None) -> float:
-    haystack = " ".join(part.lower() for part in (title, excerpt, section_label or "", path or "") if part)
-    adjustment = 0.0
-    if any(marker in haystack for marker in INTRO_NOISE_HINTS):
-        adjustment -= 1.4
-    if any(marker in haystack for marker in ("核心业务介绍", "业务介绍", "组织介绍")):
-        adjustment += 0.42
-    if any(marker in haystack for marker in INTRO_PRIORITY_HINTS):
-        adjustment += 0.22
-    return adjustment
+    del title, excerpt, section_label, path
+    return 0.0
 
 
 def is_intro_noise_text(*parts: str | None) -> bool:
@@ -1054,9 +1038,20 @@ def qdrant_store_root(data_dir: Path) -> Path:
     return data_dir / "vector_store" / "_qdrant"
 
 
-def collection_name(prefix: str, client_id: str) -> str:
+def collection_name(prefix: str, client_id: str, embedding_signature: str | None = None) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_]+", "_", client_id)
-    return f"{prefix}_{normalized}"
+    if not embedding_signature:
+        return f"{prefix}_{normalized}"
+    suffix = hashlib.sha1(embedding_signature.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}_{normalized}_{suffix}"
+
+
+def legacy_collection_name(prefix: str, client_id: str) -> str:
+    return collection_name(prefix, client_id, embedding_signature=None)
+
+
+def active_collection_name(prefix: str, client_id: str, embedding_signature: str) -> str:
+    return collection_name(prefix, client_id, embedding_signature=embedding_signature)
 
 
 def qdrant_client_for(data_dir: Path) -> Any | None:
@@ -1141,7 +1136,18 @@ def embedding_backend_status(data_dir: Path) -> dict[str, Any]:
     return {"mode": "hash_fallback", "model": None, "error": "fastembed_not_installed"}
 
 
-def current_embedding_signature(data_dir: Path, *, ensure_ready: bool = False) -> str:
+def current_embedding_signature(
+    data_dir: Path,
+    *,
+    db: Database | None = None,
+    ensure_ready: bool = False,
+    ai_service: Any | None = None,
+) -> str:
+    if db is not None:
+        settings = get_retrieval_model_settings(db)
+        if ensure_ready:
+            embed_texts(["知识底座"], data_dir=data_dir, db=db, ai_service=ai_service)
+        return retrieval_embedding_signature(settings)
     if ensure_ready:
         embed_texts(["知识底座"], data_dir=data_dir)
     status = embedding_backend_status(data_dir)
@@ -1175,9 +1181,26 @@ def embedding_backend_for(data_dir: Path) -> Any | None:
         return None
 
 
-def embed_texts(texts: list[str], *, data_dir: Path) -> tuple[list[list[float]], str]:
+def embed_texts(
+    texts: list[str],
+    *,
+    data_dir: Path,
+    db: Database | None = None,
+    ai_service: Any | None = None,
+) -> tuple[list[list[float]], str]:
     if not texts:
         return [], "hash_fallback"
+    if db is not None:
+        settings = get_retrieval_model_settings(db)
+        provider = build_embedding_provider(settings, ai_service=ai_service)
+        vectors, meta = provider.embed_texts(texts)
+        _set_embedding_state(
+            data_dir,
+            mode=meta.provider,
+            model=meta.model if meta.model else None,
+            error=meta.error,
+        )
+        return vectors, meta.provider
     embedder = embedding_backend_for(data_dir)
     if embedder is None:
         return [hashed_embedding(text) for text in texts], "hash_fallback"
@@ -1191,22 +1214,36 @@ def embed_texts(texts: list[str], *, data_dir: Path) -> tuple[list[list[float]],
         return [hashed_embedding(text) for text in texts], "hash_fallback"
 
 
-def ensure_qdrant_collection(client: Any, name: str) -> None:
+def ensure_qdrant_collection(client: Any, name: str, *, vector_size: int = QDRANT_VECTOR_SIZE) -> None:
     existing = {item.name for item in client.get_collections().collections}
     if name in existing:
         return
     client.create_collection(
         collection_name=name,
-        vectors_config=VectorParams(size=QDRANT_VECTOR_SIZE, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
     )
 
 
-def ensure_qdrant_collections(data_dir: Path, client_id: str) -> Any | None:
+def ensure_qdrant_collections(
+    data_dir: Path,
+    client_id: str,
+    *,
+    embedding_signature: str | None = None,
+    vector_size: int = QDRANT_VECTOR_SIZE,
+) -> Any | None:
     client = qdrant_client_for(data_dir)
     if client is None:
         return None
-    ensure_qdrant_collection(client, collection_name("master_index", client_id))
-    ensure_qdrant_collection(client, collection_name("raw_chunk", client_id))
+    ensure_qdrant_collection(
+        client,
+        collection_name("master_index", client_id, embedding_signature=embedding_signature),
+        vector_size=vector_size,
+    )
+    ensure_qdrant_collection(
+        client,
+        collection_name("raw_chunk", client_id, embedding_signature=embedding_signature),
+        vector_size=vector_size,
+    )
     return client
 
 
@@ -1218,12 +1255,74 @@ def qdrant_payload_count(client: Any, name: str) -> int:
         return 0
 
 
-def qdrant_ready(data_dir: Path, client_id: str) -> bool:
+def _resolve_vector_runtime(
+    db: Database | None,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any | None = None,
+) -> tuple[str | None, int]:
+    if db is None:
+        return None, QDRANT_VECTOR_SIZE
+    settings = get_retrieval_model_settings(db)
+    signature = retrieval_embedding_signature(settings)
+    dimension = int(settings.embeddingDimension or QDRANT_VECTOR_SIZE)
+    if dimension <= 0:
+        dimension = QDRANT_VECTOR_SIZE
+    _ = ai_service
+    return signature, dimension
+
+
+def resolve_vector_collection_names(
+    db: Database | None,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any | None = None,
+) -> dict[str, str]:
+    signature, _dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    return {
+        "masterActive": collection_name("master_index", client_id, embedding_signature=signature),
+        "chunkActive": collection_name("raw_chunk", client_id, embedding_signature=signature),
+        "masterLegacy": legacy_collection_name("master_index", client_id),
+        "chunkLegacy": legacy_collection_name("raw_chunk", client_id),
+        "signature": signature or "",
+    }
+
+
+def _pick_collection_with_fallback(
+    client: Any,
+    *,
+    active_name: str,
+    legacy_name: str,
+) -> str:
+    active_count = qdrant_payload_count(client, active_name)
+    if active_count > 0:
+        return active_name
+    legacy_count = qdrant_payload_count(client, legacy_name)
+    if legacy_count > 0:
+        return legacy_name
+    return active_name
+
+
+def qdrant_ready(
+    data_dir: Path,
+    client_id: str,
+    *,
+    db: Database | None = None,
+    ai_service: Any | None = None,
+) -> bool:
     client = qdrant_client_for(data_dir)
     if client is None:
         return False
     try:
-        ensure_qdrant_collections(data_dir, client_id)
+        signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+        ensure_qdrant_collections(
+            data_dir,
+            client_id,
+            embedding_signature=signature,
+            vector_size=dimension,
+        )
         return True
     except Exception:
         return False
@@ -1240,11 +1339,19 @@ def upsert_master_index_vector(
     surrogate_md_path: str,
     folder_category: str,
     document_role: str,
+    db: Database | None = None,
+    ai_service: Any | None = None,
 ) -> None:
-    client = ensure_qdrant_collections(data_dir, client_id)
+    signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    client = ensure_qdrant_collections(
+        data_dir,
+        client_id,
+        embedding_signature=signature,
+        vector_size=dimension,
+    )
     if client is None or PointStruct is None:
         return
-    vector, _ = embed_texts([searchable_text], data_dir=data_dir)
+    vector, _ = embed_texts([searchable_text], data_dir=data_dir, db=db, ai_service=ai_service)
     payload = {
         "entry_id": entry_id,
         "client_id": client_id,
@@ -1255,19 +1362,32 @@ def upsert_master_index_vector(
         "document_role": document_role,
     }
     client.upsert(
-        collection_name=collection_name("master_index", client_id),
+        collection_name=collection_name("master_index", client_id, embedding_signature=signature),
         points=[
             PointStruct(
                 id=qdrant_point_id("master", entry_id),
-                vector=vector[0] if vector else hashed_embedding(searchable_text),
+                vector=vector[0] if vector else hashed_embedding(searchable_text, size=dimension),
                 payload=payload,
             )
         ],
     )
 
 
-def upsert_chunk_vectors(*, db: Database, data_dir: Path, client_id: str, knowledge_document_id: str) -> None:
-    client = ensure_qdrant_collections(data_dir, client_id)
+def upsert_chunk_vectors(
+    *,
+    db: Database,
+    data_dir: Path,
+    client_id: str,
+    knowledge_document_id: str,
+    ai_service: Any | None = None,
+) -> None:
+    signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    client = ensure_qdrant_collections(
+        data_dir,
+        client_id,
+        embedding_signature=signature,
+        vector_size=dimension,
+    )
     if client is None or PointStruct is None:
         return
     rows = db.fetchall(
@@ -1284,14 +1404,14 @@ def upsert_chunk_vectors(*, db: Database, data_dir: Path, client_id: str, knowle
     if not rows:
         return
     texts = [f"{row['section_label'] or '概览'}\n{row['content']}" for row in rows]
-    vectors, _ = embed_texts(texts, data_dir=data_dir)
+    vectors, _ = embed_texts(texts, data_dir=data_dir, db=db, ai_service=ai_service)
     points = []
     for index, row in enumerate(rows):
         text = texts[index]
         points.append(
             PointStruct(
                 id=qdrant_point_id("chunk", str(row["id"])),
-                vector=vectors[index] if index < len(vectors) else hashed_embedding(text),
+                vector=vectors[index] if index < len(vectors) else hashed_embedding(text, size=dimension),
                 payload={
                     "chunk_id": str(row["id"]),
                     "knowledge_document_id": knowledge_document_id,
@@ -1302,18 +1422,33 @@ def upsert_chunk_vectors(*, db: Database, data_dir: Path, client_id: str, knowle
                 },
             )
         )
-    client.upsert(collection_name=collection_name("raw_chunk", client_id), points=points)
+    client.upsert(
+        collection_name=collection_name("raw_chunk", client_id, embedding_signature=signature),
+        points=points,
+    )
 
 
-def sync_qdrant_for_client(db: Database, *, data_dir: Path, client_id: str) -> None:
-    client = ensure_qdrant_collections(data_dir, client_id)
+def sync_qdrant_for_client(
+    db: Database,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any | None = None,
+) -> None:
+    signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    client = ensure_qdrant_collections(
+        data_dir,
+        client_id,
+        embedding_signature=signature,
+        vector_size=dimension,
+    )
     if client is None:
         return
-    current_signature = current_embedding_signature(data_dir, ensure_ready=True)
+    current_signature = current_embedding_signature(data_dir, db=db, ensure_ready=True, ai_service=ai_service)
     signature_key = f"knowledge.embedding_signature:{client_id}"
     stored_signature = db.get_setting(signature_key, "")
-    master_name = collection_name("master_index", client_id)
-    chunk_name = collection_name("raw_chunk", client_id)
+    master_name = collection_name("master_index", client_id, embedding_signature=signature)
+    chunk_name = collection_name("raw_chunk", client_id, embedding_signature=signature)
     master_count = int(
         db.scalar("SELECT COUNT(1) AS count FROM knowledge_master_index WHERE client_id = ?", (client_id,))
     )
@@ -1343,11 +1478,11 @@ def sync_qdrant_for_client(db: Database, *, data_dir: Path, client_id: str) -> N
     )
     if needs_master_sync and PointStruct is not None:
         texts = [str(row["searchable_text"]) for row in master_rows]
-        vectors, _ = embed_texts(texts, data_dir=data_dir)
+        vectors, _ = embed_texts(texts, data_dir=data_dir, db=db, ai_service=ai_service)
         points = [
             PointStruct(
                 id=qdrant_point_id("master", str(row["id"])),
-                vector=vectors[index] if index < len(vectors) else hashed_embedding(str(row["searchable_text"])),
+                vector=vectors[index] if index < len(vectors) else hashed_embedding(str(row["searchable_text"]), size=dimension),
                 payload={
                     "entry_id": str(row["id"]),
                     "client_id": client_id,
@@ -1365,20 +1500,43 @@ def sync_qdrant_for_client(db: Database, *, data_dir: Path, client_id: str) -> N
     if needs_chunk_sync:
         document_rows = db.fetchall("SELECT id FROM knowledge_documents WHERE client_id = ?", (client_id,))
         for row in document_rows:
-            upsert_chunk_vectors(db=db, data_dir=data_dir, client_id=client_id, knowledge_document_id=str(row["id"]))
+            upsert_chunk_vectors(
+                db=db,
+                data_dir=data_dir,
+                client_id=client_id,
+                knowledge_document_id=str(row["id"]),
+                ai_service=ai_service,
+            )
     if needs_master_sync or needs_chunk_sync:
         db.set_setting(signature_key, current_signature)
 
 
-def search_master_index_qdrant(data_dir: Path, client_id: str, prompt: str, limit: int = 8) -> dict[str, float]:
-    client = ensure_qdrant_collections(data_dir, client_id)
+def search_master_index_qdrant(
+    data_dir: Path,
+    client_id: str,
+    prompt: str,
+    limit: int = 8,
+    *,
+    db: Database | None = None,
+    ai_service: Any | None = None,
+) -> dict[str, float]:
+    signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    client = ensure_qdrant_collections(
+        data_dir,
+        client_id,
+        embedding_signature=signature,
+        vector_size=dimension,
+    )
     if client is None:
         return {}
-    vectors, _ = embed_texts([prompt], data_dir=data_dir)
+    vectors, _ = embed_texts([prompt], data_dir=data_dir, db=db, ai_service=ai_service)
+    active_name = collection_name("master_index", client_id, embedding_signature=signature)
+    legacy_name = legacy_collection_name("master_index", client_id)
+    target_collection = _pick_collection_with_fallback(client, active_name=active_name, legacy_name=legacy_name)
     try:
         results = client.search(
-            collection_name=collection_name("master_index", client_id),
-            query_vector=vectors[0] if vectors else hashed_embedding(prompt),
+            collection_name=target_collection,
+            query_vector=vectors[0] if vectors else hashed_embedding(prompt, size=dimension),
             limit=limit,
             with_payload=True,
         )
@@ -1399,16 +1557,28 @@ def search_raw_chunks_qdrant(
     prompt: str,
     knowledge_document_ids: list[str],
     limit: int = 12,
+    *,
+    db: Database | None = None,
+    ai_service: Any | None = None,
 ) -> dict[str, float]:
-    client = ensure_qdrant_collections(data_dir, client_id)
+    signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    client = ensure_qdrant_collections(
+        data_dir,
+        client_id,
+        embedding_signature=signature,
+        vector_size=dimension,
+    )
     if client is None:
         return {}
     scores: dict[str, float] = {}
-    vectors, _ = embed_texts([prompt], data_dir=data_dir)
+    vectors, _ = embed_texts([prompt], data_dir=data_dir, db=db, ai_service=ai_service)
+    active_name = collection_name("raw_chunk", client_id, embedding_signature=signature)
+    legacy_name = legacy_collection_name("raw_chunk", client_id)
+    target_collection = _pick_collection_with_fallback(client, active_name=active_name, legacy_name=legacy_name)
     try:
         results = client.search(
-            collection_name=collection_name("raw_chunk", client_id),
-            query_vector=vectors[0] if vectors else hashed_embedding(prompt),
+            collection_name=target_collection,
+            query_vector=vectors[0] if vectors else hashed_embedding(prompt, size=dimension),
             limit=max(limit, 24),
             with_payload=True,
         )
@@ -1427,6 +1597,247 @@ def search_raw_chunks_qdrant(
         if len(scores) >= limit:
             break
     return scores
+
+
+def reindex_client_vector(
+    db: Database,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any | None = None,
+) -> dict[str, Any]:
+    ensure_vector_manifest_schema(db)
+    signature, dimension = _resolve_vector_runtime(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    if signature is None:
+        signature = current_embedding_signature(data_dir, db=db, ensure_ready=True, ai_service=ai_service)
+    names = resolve_vector_collection_names(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    upsert_vector_manifest(
+        db,
+        client_id=client_id,
+        embedding_signature=signature,
+        active_collection=names["masterActive"],
+        legacy_collection=names["masterLegacy"],
+        status="building",
+        master_indexed=0,
+        chunk_indexed=0,
+        error=None,
+    )
+    client = ensure_qdrant_collections(
+        data_dir,
+        client_id,
+        embedding_signature=signature,
+        vector_size=dimension,
+    )
+    if client is None:
+        return {
+            "clientId": client_id,
+            "embeddingSignature": signature,
+            "masterIndexed": 0,
+            "chunkIndexed": 0,
+            "fallbackUsed": True,
+            "status": "failed",
+        }
+    names = resolve_vector_collection_names(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    sync_qdrant_for_client(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    master_indexed = qdrant_payload_count(client, names["masterActive"])
+    chunk_indexed = qdrant_payload_count(client, names["chunkActive"])
+    db.set_setting(f"knowledge.active_embedding_signature:{client_id}", signature)
+    upsert_vector_manifest(
+        db,
+        client_id=client_id,
+        embedding_signature=signature,
+        active_collection=names["masterActive"],
+        legacy_collection=names["masterLegacy"],
+        status="ready" if (master_indexed + chunk_indexed) > 0 else "stale",
+        master_indexed=int(master_indexed),
+        chunk_indexed=int(chunk_indexed),
+        error=None,
+    )
+    return {
+        "clientId": client_id,
+        "embeddingSignature": signature,
+        "masterIndexed": int(master_indexed),
+        "chunkIndexed": int(chunk_indexed),
+        "fallbackUsed": False,
+        "status": "completed",
+    }
+
+
+def get_vector_runtime_status(
+    db: Database,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any | None = None,
+) -> dict[str, Any]:
+    ensure_vector_manifest_schema(db)
+    settings = get_retrieval_model_settings(db)
+    signature = retrieval_embedding_signature(settings)
+    active_signature = db.get_setting(f"knowledge.active_embedding_signature:{client_id}", "")
+    names = resolve_vector_collection_names(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    client = qdrant_client_for(data_dir)
+    active_master_count = qdrant_payload_count(client, names["masterActive"]) if client is not None else 0
+    active_chunk_count = qdrant_payload_count(client, names["chunkActive"]) if client is not None else 0
+    legacy_master_count = qdrant_payload_count(client, names["masterLegacy"]) if client is not None else 0
+    legacy_chunk_count = qdrant_payload_count(client, names["chunkLegacy"]) if client is not None else 0
+    active_ready = (active_master_count + active_chunk_count) > 0 and active_signature == signature
+    if client is None:
+        vector_index_status = "failed"
+    elif active_ready:
+        vector_index_status = "ready"
+    elif active_signature != signature:
+        vector_index_status = "stale"
+    elif (legacy_master_count + legacy_chunk_count) > 0:
+        vector_index_status = "stale"
+    else:
+        vector_index_status = "building"
+
+    provider_error = None
+    embedding_status = embedding_backend_status(data_dir)
+    if settings.embeddingProvider == "doubao" and ai_service is not None:
+        try:
+            store = ai_service._store_for("doubao")  # type: ignore[attr-defined]
+            has_key = bool(store and str(store.get_api_key() or "").strip())
+        except Exception:
+            has_key = False
+        if not has_key:
+            provider_error = "doubao_api_key_missing"
+    if provider_error is None:
+        provider_error = embedding_status.get("error")
+
+    active_collection = names["masterActive"] if active_ready else (names["masterLegacy"] if legacy_master_count > 0 else names["masterActive"])
+    upsert_vector_manifest(
+        db,
+        client_id=client_id,
+        embedding_signature=signature,
+        active_collection=names["masterActive"],
+        legacy_collection=names["masterLegacy"],
+        status=vector_index_status,
+        master_indexed=int(active_master_count),
+        chunk_indexed=int(active_chunk_count),
+        error=provider_error,
+    )
+    return {
+        "embeddingProvider": settings.embeddingProvider,
+        "embeddingModel": settings.embeddingModel,
+        "embeddingDimension": int(settings.embeddingDimension or QDRANT_VECTOR_SIZE),
+        "embeddingSignature": signature,
+        "activeVectorCollection": active_collection,
+        "vectorIndexStatus": vector_index_status,
+        "qdrantReady": client is not None,
+        "embeddingMode": settings.embeddingMode,
+        "embeddingError": provider_error,
+        "routerEnabled": settings.routerEnabled,
+        "routerModel": settings.routerModel or None,
+        "rerankEnabled": settings.rerankEnabled,
+    }
+
+
+def ensure_vector_manifest_schema(db: Database) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vector_index_manifests (
+            client_id TEXT NOT NULL,
+            embedding_signature TEXT NOT NULL,
+            active_collection TEXT NOT NULL DEFAULT '',
+            legacy_collection TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'stale',
+            master_indexed INTEGER NOT NULL DEFAULT 0,
+            chunk_indexed INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (client_id, embedding_signature)
+        )
+        """
+    )
+
+
+def upsert_vector_manifest(
+    db: Database,
+    *,
+    client_id: str,
+    embedding_signature: str,
+    active_collection: str,
+    legacy_collection: str,
+    status: str,
+    master_indexed: int,
+    chunk_indexed: int,
+    error: str | None,
+) -> None:
+    ensure_vector_manifest_schema(db)
+    db.execute(
+        """
+        INSERT INTO vector_index_manifests(
+            client_id, embedding_signature, active_collection, legacy_collection,
+            status, master_indexed, chunk_indexed, error, updated_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(client_id, embedding_signature) DO UPDATE SET
+            active_collection = excluded.active_collection,
+            legacy_collection = excluded.legacy_collection,
+            status = excluded.status,
+            master_indexed = excluded.master_indexed,
+            chunk_indexed = excluded.chunk_indexed,
+            error = excluded.error,
+            updated_at = excluded.updated_at
+        """,
+        (
+            client_id,
+            embedding_signature,
+            active_collection,
+            legacy_collection,
+            status,
+            int(master_indexed),
+            int(chunk_indexed),
+            error,
+            now_iso(),
+        ),
+    )
+
+
+def get_vector_index_manifest_status(
+    db: Database,
+    *,
+    data_dir: Path,
+    client_id: str,
+    ai_service: Any | None = None,
+) -> dict[str, Any]:
+    runtime = get_vector_runtime_status(db, data_dir=data_dir, client_id=client_id, ai_service=ai_service)
+    signature = str(runtime.get("embeddingSignature") or "")
+    ensure_vector_manifest_schema(db)
+    row = db.fetchone(
+        """
+        SELECT *
+        FROM vector_index_manifests
+        WHERE client_id = ? AND embedding_signature = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (client_id, signature),
+    )
+    if row is None:
+        return {
+            "clientId": client_id,
+            "embeddingSignature": signature,
+            "activeCollection": runtime.get("activeVectorCollection"),
+            "legacyCollection": None,
+            "status": runtime.get("vectorIndexStatus", "stale"),
+            "masterIndexed": 0,
+            "chunkIndexed": 0,
+            "error": runtime.get("embeddingError"),
+            "updatedAt": now_iso(),
+        }
+    return {
+        "clientId": client_id,
+        "embeddingSignature": signature,
+        "activeCollection": str(row["active_collection"] or ""),
+        "legacyCollection": str(row["legacy_collection"] or "") or None,
+        "status": str(row["status"] or runtime.get("vectorIndexStatus") or "stale"),
+        "masterIndexed": int(row["master_indexed"] or 0),
+        "chunkIndexed": int(row["chunk_indexed"] or 0),
+        "error": str(row["error"]) if row["error"] else runtime.get("embeddingError"),
+        "updatedAt": str(row["updated_at"] or now_iso()),
+    }
 
 
 def ensure_client_workspace(data_dir: Path, client_id: str) -> dict[str, Path]:
@@ -2977,18 +3388,26 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         (client_id,),
     )
     pending_jobs = db.scalar(
-        "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status = 'queued'",
+        """
+        SELECT COUNT(1) AS count
+        FROM knowledge_jobs
+        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'queued'
+        """,
         (client_id,),
     )
     running_jobs = db.scalar(
-        "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status = 'running'",
+        """
+        SELECT COUNT(1) AS count
+        FROM knowledge_jobs
+        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'running'
+        """,
         (client_id,),
     )
     latest_job = db.fetchone(
         """
         SELECT status, last_error, finished_at
         FROM knowledge_jobs
-        WHERE client_id = ?
+        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates'
         ORDER BY updated_at DESC
         LIMIT 1
         """,
@@ -2998,7 +3417,7 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         """
         SELECT finished_at
         FROM knowledge_jobs
-        WHERE client_id = ? AND status = 'completed' AND finished_at IS NOT NULL
+        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'completed' AND finished_at IS NOT NULL
         ORDER BY finished_at DESC
         LIMIT 1
         """,
@@ -3137,21 +3556,82 @@ def fetch_recent_knowledge_jobs(db: Database, client_id: str, limit: int = 8) ->
         """,
         (client_id, limit),
     )
+    def _job_item_labels(row: Any) -> list[str]:
+        payload = from_json(str(row["payload_json"] or "{}"), {})
+        documents = payload.get("documents") if isinstance(payload, dict) else None
+        if not isinstance(documents, list):
+            return []
+        labels: list[str] = []
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("title") or item.get("originalSourcePath") or item.get("sourcePath") or "").strip()
+            if label:
+                labels.append(Path(label).name)
+        return labels
+
+    def _job_recent_events(job_id: str) -> list[dict[str, Any]]:
+        event_rows = db.fetchall(
+            """
+            SELECT *
+            FROM knowledge_job_events
+            WHERE job_id = ?
+            ORDER BY created_at DESC
+            LIMIT 6
+            """,
+            (job_id,),
+        )
+        events: list[dict[str, Any]] = []
+        for event_row in event_rows:
+            detail = from_json(str(event_row["detail_json"] or "{}"), {})
+            processed = detail.get("processedItems") if isinstance(detail, dict) else None
+            message = str(event_row["message"] or "")
+            item_label = message.removeprefix("已处理 ").strip() if message.startswith("已处理 ") else None
+            events.append(
+                {
+                    "level": str(event_row["level"]),
+                    "message": message,
+                    "processedItems": int(processed) if isinstance(processed, (int, float)) else None,
+                    "itemLabel": item_label,
+                    "createdAt": str(event_row["created_at"]),
+                }
+            )
+        return events
+
+    def _current_item_label(row: Any, labels: list[str], events: list[dict[str, Any]]) -> str | None:
+        status = str(row["status"] or "")
+        processed = int(row["processed_items"] or 0)
+        total = int(row["total_items"] or 0)
+        if status in {"queued", "running"} and labels and processed < len(labels):
+            return labels[processed]
+        for event in events:
+            label = event.get("itemLabel")
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+        if labels and total > 0:
+            return labels[min(processed, len(labels) - 1)]
+        return None
+
     return [
-        {
-            "id": str(row["id"]),
-            "workObjectId": str(row["client_id"]),
-            "clientId": str(row["client_id"]),
-            "jobType": str(row["job_type"]),
-            "status": str(row["status"]),
-            "totalItems": int(row["total_items"]),
-            "processedItems": int(row["processed_items"]),
-            "lastError": str(row["last_error"]) if row["last_error"] else None,
-            "createdAt": str(row["created_at"]),
-            "startedAt": str(row["started_at"]) if row["started_at"] else None,
-            "finishedAt": str(row["finished_at"]) if row["finished_at"] else None,
-            "updatedAt": str(row["updated_at"]),
-        }
+        (
+            lambda labels, events: {
+                "id": str(row["id"]),
+                "clientId": str(row["client_id"]),
+                "jobType": str(row["job_type"]),
+                "status": str(row["status"]),
+                "totalItems": int(row["total_items"]),
+                "processedItems": int(row["processed_items"]),
+                "lastError": str(row["last_error"]) if row["last_error"] else None,
+                "currentItemLabel": _current_item_label(row, labels, events),
+                "lastEventMessage": events[0]["message"] if events else None,
+                "recentEvents": events,
+                "queuedItemLabels": labels[:20],
+                "createdAt": str(row["created_at"]),
+                "startedAt": str(row["started_at"]) if row["started_at"] else None,
+                "finishedAt": str(row["finished_at"]) if row["finished_at"] else None,
+                "updatedAt": str(row["updated_at"]),
+            }
+        )(_job_item_labels(row), _job_recent_events(str(row["id"])))
         for row in rows
     ]
 
@@ -3855,6 +4335,7 @@ def batch_enrich_surrogates(
                 surrogate_md_path=md_path,
                 folder_category=folder_category,
                 document_role=document_role,
+                db=db,
             )
 
         enriched += 1

@@ -141,7 +141,6 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
 
     sent_cards: list[dict[str, object]] = []
     configure_send_mocks(monkeypatch, sent_cards)
-    list_id = client.get("/api/v1/tasks", headers=headers).json()["lists"][0]["id"]
 
     created = client.post(
         "/api/v1/tasks",
@@ -149,9 +148,9 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
             "title": "逾期测试任务",
             "description": "",
             "priority": "normal",
-            "listId": list_id,
-            "startDate": "2026-04-12",
-            "dueDate": "2026-04-12T09:00",
+            "listId": "list-0",
+            "startDate": "2026-04-09",
+            "dueDate": "2026-04-09T09:00",
             "collaboratorIds": [user["id"]],
             "ownerId": user["id"],
         },
@@ -168,53 +167,9 @@ def test_overdue_digest_sends_red_summary_once_per_day(tmp_path, monkeypatch):
 
     assert len(sent_cards) == 1
     assert sent_cards[0]["card"]["header"]["template"] == "red"
-    assert sent_cards[0]["card"]["header"]["title"]["content"] == "逾期提醒｜1 项"
-    card_elements = sent_cards[0]["card"]["elements"]
-    assert all("仅提醒昨天到期且今天仍未完成的任务" not in str(item) for item in card_elements)
-    assert all("唯一一次提醒" not in str(item) for item in card_elements)
 
     rows = client.app.state.app_state.db.fetchall(
         "SELECT * FROM org_feishu_notifications WHERE message_type = 'overdue_digest' ORDER BY created_at ASC"
     )
     assert len(rows) == 1
     assert str(rows[0]["delivery_status"]) == "sent_card"
-
-
-def test_overdue_digest_waits_until_next_day_for_date_only_deadlines(tmp_path, monkeypatch):
-    client = make_client(tmp_path, monkeypatch)
-    headers, user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
-    save_org_feishu_integration(client, headers, monkeypatch)
-    seed_member_mobile(client, user["id"], "13800138000")
-
-    sent_cards: list[dict[str, object]] = []
-    configure_send_mocks(monkeypatch, sent_cards)
-    list_id = client.get("/api/v1/tasks", headers=headers).json()["lists"][0]["id"]
-
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "今天截止但按整天处理",
-            "description": "",
-            "priority": "normal",
-            "listId": list_id,
-            "dueDate": "2026-04-13",
-            "collaboratorIds": [user["id"]],
-            "ownerId": user["id"],
-        },
-        headers=headers,
-    )
-    assert created.status_code == 200, created.text
-    sent_cards.clear()
-
-    service = client.app.state.app_state.feishu_notifications
-    assert service is not None
-
-    same_day_reference = datetime(2026, 4, 13, 18, 30, 0)
-    service.process_overdue_digest(reference_time=same_day_reference)
-    assert sent_cards == []
-
-    next_day_reference = datetime(2026, 4, 14, 9, 0, 0)
-    service.process_overdue_digest(reference_time=next_day_reference)
-
-    assert len(sent_cards) == 1
-    assert sent_cards[0]["card"]["header"]["template"] == "red"

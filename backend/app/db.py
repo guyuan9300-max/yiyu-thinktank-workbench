@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import sqlite3
 import threading
 from pathlib import Path
+
+BACKEND_SCHEMA_VERSION = 20260420
 
 
 class Database:
@@ -23,6 +24,7 @@ class Database:
                 """
                 PRAGMA journal_mode=WAL;
                 PRAGMA foreign_keys=ON;
+                PRAGMA busy_timeout=5000;
 
                 -- ══ 纯本地表（不同步到云端） ══
 
@@ -52,6 +54,7 @@ class Database:
                     type TEXT NOT NULL,
                     intro TEXT NOT NULL,
                     stage TEXT NOT NULL,
+                    color TEXT NOT NULL DEFAULT '#5B7BFE',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -211,6 +214,7 @@ class Database:
                     preview_text TEXT NOT NULL DEFAULT '',
                     doc_index_text TEXT NOT NULL DEFAULT '',
                     content_hash TEXT NOT NULL DEFAULT '',
+                    markdown_content TEXT NOT NULL DEFAULT '',
                     classification_confidence REAL NOT NULL DEFAULT 0.0,
                     section_count INTEGER NOT NULL DEFAULT 0,
                     chunk_count INTEGER NOT NULL DEFAULT 0,
@@ -375,6 +379,333 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_client_analysis_runs_client ON client_analysis_runs(client_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_client_analysis_runs_thread ON client_analysis_runs(thread_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS analysis_jobs (
+                    id TEXT PRIMARY KEY,
+                    job_type TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    priority TEXT NOT NULL DEFAULT 'normal',
+                    trigger_type TEXT NOT NULL DEFAULT 'manual',
+                    question TEXT NOT NULL DEFAULT '',
+                    source_snapshot TEXT NOT NULL DEFAULT '',
+                    feature_flags_json TEXT NOT NULL DEFAULT '{}',
+                    progress REAL NOT NULL DEFAULT 0,
+                    stage_label TEXT,
+                    run_log_id TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_analysis_jobs_client ON analysis_jobs(client_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_analysis_jobs_scope ON analysis_jobs(client_id, scope_type, scope_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS job_stage_runs (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    stage_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    provider TEXT,
+                    model_name TEXT,
+                    lane TEXT NOT NULL DEFAULT 'cloud_final',
+                    cache_key TEXT,
+                    cache_hit INTEGER NOT NULL DEFAULT 0,
+                    degraded INTEGER NOT NULL DEFAULT 0,
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    topic_count INTEGER NOT NULL DEFAULT 0,
+                    conflict_count INTEGER NOT NULL DEFAULT 0,
+                    context_time_range TEXT,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    detail TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(job_id) REFERENCES analysis_jobs(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_job_stage_runs_job ON job_stage_runs(job_id, created_at ASC);
+
+                CREATE TABLE IF NOT EXISTS doc_skeletons (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    outline_json TEXT NOT NULL DEFAULT '[]',
+                    entities_json TEXT NOT NULL DEFAULT '[]',
+                    time_range TEXT,
+                    parser_version TEXT NOT NULL DEFAULT 'analysis-center-v1',
+                    source_snapshot TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_doc_skeletons_client ON doc_skeletons(client_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS evidence_cards (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_ref TEXT NOT NULL DEFAULT '',
+                    quote TEXT NOT NULL,
+                    normalized_claim TEXT NOT NULL,
+                    evidence_type TEXT NOT NULL DEFAULT 'general',
+                    polarity TEXT NOT NULL DEFAULT 'neutral',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    topic_keys_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    time_anchor TEXT,
+                    document_id TEXT,
+                    event_line_id TEXT,
+                    task_id TEXT,
+                    meeting_id TEXT,
+                    module_id TEXT,
+                    flow_id TEXT,
+                    review_state TEXT NOT NULL DEFAULT 'draft',
+                    fingerprint TEXT NOT NULL,
+                    normalized_claim_hash TEXT NOT NULL DEFAULT '',
+                    source_ref_hash TEXT NOT NULL DEFAULT '',
+                    evidence_fingerprint TEXT NOT NULL DEFAULT '',
+                    normalizer_version TEXT NOT NULL DEFAULT 'analysis-center-v0.3.3',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_evidence_cards_client_scope ON evidence_cards(client_id, scope_type, scope_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_evidence_cards_fingerprint ON evidence_cards(client_id, fingerprint);
+
+                CREATE TABLE IF NOT EXISTS theme_clusters (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    theme_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    support_ids_json TEXT NOT NULL DEFAULT '[]',
+                    oppose_ids_json TEXT NOT NULL DEFAULT '[]',
+                    gap_summary TEXT NOT NULL DEFAULT '',
+                    latest_change_summary TEXT NOT NULL DEFAULT '',
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_theme_clusters_scope ON theme_clusters(client_id, scope_type, scope_id, updated_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_theme_clusters_unique_key
+                    ON theme_clusters(client_id, scope_type, scope_id, theme_key);
+
+                CREATE TABLE IF NOT EXISTS conflict_groups (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    conflict_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    unresolved_question_ids_json TEXT NOT NULL DEFAULT '[]',
+                    resolution_status TEXT NOT NULL DEFAULT 'draft',
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    context_pack_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(context_pack_id) REFERENCES context_packs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_conflict_groups_scope ON conflict_groups(client_id, scope_type, scope_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS open_questions (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    theme_key TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    blocker_level TEXT NOT NULL DEFAULT 'medium',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_open_questions_scope ON open_questions(client_id, scope_type, scope_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS context_packs (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    job_id TEXT,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    prompt_version TEXT NOT NULL DEFAULT 'analysis-center-v1',
+                    source_count INTEGER NOT NULL DEFAULT 0,
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    stale_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(job_id) REFERENCES analysis_jobs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_context_packs_target ON context_packs(client_id, target_type, target_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS dna_deltas (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    dimension TEXT NOT NULL,
+                    previous_version TEXT,
+                    proposed_change TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    confidence TEXT NOT NULL DEFAULT 'medium',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    context_pack_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(context_pack_id) REFERENCES context_packs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_dna_deltas_client_status ON dna_deltas(client_id, status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS judgment_versions (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    summary TEXT NOT NULL,
+                    evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+                    context_pack_id TEXT,
+                    risk_level TEXT NOT NULL DEFAULT 'medium',
+                    confidence TEXT NOT NULL DEFAULT 'medium',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(context_pack_id) REFERENCES context_packs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_judgment_versions_client_target ON judgment_versions(client_id, target_type, target_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS runtime_run_logs (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    job_id TEXT,
+                    provider TEXT,
+                    model TEXT,
+                    lane TEXT NOT NULL DEFAULT 'cloud_final',
+                    cache_hit INTEGER NOT NULL DEFAULT 0,
+                    degraded INTEGER NOT NULL DEFAULT 0,
+                    document_count INTEGER NOT NULL DEFAULT 0,
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    conflict_count INTEGER NOT NULL DEFAULT 0,
+                    context_time_range TEXT,
+                    prompt_version TEXT,
+                    schema_version TEXT,
+                    summary TEXT NOT NULL DEFAULT '',
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(job_id) REFERENCES analysis_jobs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runtime_run_logs_client ON runtime_run_logs(client_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS sync_memory_records (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    sync_mode TEXT NOT NULL DEFAULT 'derived_only',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    source_fingerprint TEXT NOT NULL DEFAULT '',
+                    synced_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_sync_memory_scope ON sync_memory_records(client_id, scope_type, scope_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS approval_records (
+                    id TEXT PRIMARY KEY,
+                    object_type TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    actor_id TEXT NOT NULL DEFAULT '',
+                    actor_name TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_approval_records_object ON approval_records(object_type, object_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS proposal_records (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending_review',
+                    risk_level TEXT NOT NULL DEFAULT 'medium',
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    rationale TEXT NOT NULL DEFAULT '',
+                    target_refs_json TEXT NOT NULL DEFAULT '[]',
+                    source_refs_json TEXT NOT NULL DEFAULT '[]',
+                    boundary_notes_json TEXT NOT NULL DEFAULT '[]',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_by TEXT NOT NULL DEFAULT '',
+                    decided_by TEXT,
+                    decided_at TEXT,
+                    rejected_reason TEXT,
+                    execution_ticket_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_proposal_records_client_status ON proposal_records(client_id, status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_proposal_records_status ON proposal_records(status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS execution_tickets (
+                    id TEXT PRIMARY KEY,
+                    proposal_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    execution_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    idempotency_key TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 3,
+                    last_error TEXT,
+                    last_attempt_at TEXT,
+                    error_message TEXT,
+                    executed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(proposal_id) REFERENCES proposal_records(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_execution_tickets_proposal ON execution_tickets(proposal_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_execution_tickets_status ON execution_tickets(status, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS execution_ticket_logs (
+                    id TEXT PRIMARY KEY,
+                    ticket_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(ticket_id) REFERENCES execution_tickets(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_execution_ticket_logs_ticket
+                    ON execution_ticket_logs(ticket_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS client_template_fill_runs (
                     id TEXT PRIMARY KEY,
@@ -645,7 +976,6 @@ class Database:
                     organization_id TEXT NOT NULL DEFAULT '',
                     name TEXT NOT NULL,
                     color TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
                     sort_order INTEGER NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     scope TEXT NOT NULL DEFAULT 'org',
@@ -719,7 +1049,7 @@ class Database:
                     description TEXT NOT NULL,
                     status TEXT NOT NULL,
                     priority TEXT NOT NULL,
-                    list_id TEXT,
+                    list_id TEXT NOT NULL,
                     creator_id TEXT NOT NULL DEFAULT '',
                     owner_id TEXT,
                     owner_name TEXT NOT NULL,
@@ -766,19 +1096,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_task_collaborators_user
                     ON task_collaborators(user_id, updated_at DESC);
 
-                CREATE TABLE IF NOT EXISTS task_list_links (
-                    task_id TEXT NOT NULL,
-                    list_id TEXT NOT NULL,
-                    order_index INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (task_id, list_id),
-                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
-                    ON task_list_links(list_id, updated_at DESC);
-
                 CREATE TABLE IF NOT EXISTS event_lines (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL DEFAULT '',
@@ -794,7 +1111,6 @@ class Database:
                     next_step TEXT,
                     evidence_count INTEGER NOT NULL DEFAULT 0,
                     owner_id TEXT,
-                    owner_ids_json TEXT NOT NULL DEFAULT '[]',
                     owner_name TEXT,
                     primary_client_id TEXT,
                     primary_client_name TEXT,
@@ -827,50 +1143,6 @@ class Database:
                     created_at TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
                 );
-
-                CREATE TABLE IF NOT EXISTS event_line_notifications (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL DEFAULT '',
-                    event_line_id TEXT NOT NULL,
-                    event_line_name TEXT NOT NULL DEFAULT '',
-                    operation_label TEXT NOT NULL DEFAULT '',
-                    actor_id TEXT,
-                    actor_name TEXT NOT NULL DEFAULT '',
-                    title TEXT NOT NULL,
-                    summary TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    main_owner_names_json TEXT NOT NULL DEFAULT '[]',
-                    participant_names_json TEXT NOT NULL DEFAULT '[]',
-                    operated_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    sync_status TEXT NOT NULL DEFAULT 'local',
-                    cloud_id TEXT,
-                    cloud_payload_json TEXT NOT NULL DEFAULT '',
-                    last_synced_at TEXT NOT NULL DEFAULT '',
-                    last_cloud_version TEXT NOT NULL DEFAULT '',
-                    pending_sync_action TEXT NOT NULL DEFAULT '',
-                    last_sync_error TEXT NOT NULL DEFAULT ''
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_line_notifications_org_created
-                    ON event_line_notifications(organization_id, created_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_event_line_notifications_line_created
-                    ON event_line_notifications(event_line_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS event_line_notification_receipts (
-                    notification_id TEXT NOT NULL,
-                    organization_id TEXT NOT NULL DEFAULT '',
-                    user_id TEXT NOT NULL,
-                    full_name TEXT NOT NULL DEFAULT '',
-                    email TEXT NOT NULL DEFAULT '',
-                    read_at TEXT,
-                    created_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (notification_id, user_id),
-                    FOREIGN KEY(notification_id) REFERENCES event_line_notifications(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_line_notification_receipts_user
-                    ON event_line_notification_receipts(user_id, read_at, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS organization_notebook_snapshots (
                     id TEXT PRIMARY KEY,
@@ -917,6 +1189,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS event_line_attachments (
                     id TEXT PRIMARY KEY,
                     event_line_id TEXT NOT NULL,
+                    document_id TEXT,
                     file_name TEXT NOT NULL DEFAULT '',
                     file_type TEXT NOT NULL DEFAULT '',
                     display_mode TEXT NOT NULL DEFAULT 'collapsed',
@@ -925,7 +1198,8 @@ class Database:
                     uploaded_at TEXT NOT NULL DEFAULT '',
                     local_path TEXT,
                     preview_url TEXT,
-                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE CASCADE,
+                    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE SET NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_el_attachments_line
                     ON event_line_attachments(event_line_id);
@@ -998,6 +1272,58 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_strategic_cockpit_snapshots_updated
                     ON strategic_cockpit_snapshots(updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS strategic_thought_reviews (
+                    id TEXT PRIMARY KEY,
+                    thought_id TEXT NOT NULL UNIQUE,
+                    client_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    note TEXT NOT NULL DEFAULT '',
+                    task_id TEXT,
+                    judgment_id TEXT,
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_id TEXT NOT NULL DEFAULT '',
+                    reviewed_by_id TEXT NOT NULL DEFAULT '',
+                    reviewed_by_name TEXT NOT NULL DEFAULT '',
+                    reviewed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategic_thought_reviews_client_status
+                    ON strategic_thought_reviews(client_id, status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_strategic_thought_reviews_thought
+                    ON strategic_thought_reviews(thought_id);
+
+                CREATE TABLE IF NOT EXISTS strategic_thought_insights (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL DEFAULT 'client',
+                    client_id TEXT,
+                    client_name TEXT NOT NULL DEFAULT '',
+                    project_module_id TEXT,
+                    project_module_name TEXT,
+                    title TEXT NOT NULL,
+                    insight_type TEXT NOT NULL DEFAULT 'strategic_shift',
+                    insight_text TEXT NOT NULL,
+                    future_judgment TEXT NOT NULL DEFAULT '',
+                    recommended_action TEXT NOT NULL DEFAULT '',
+                    evidence_summary TEXT NOT NULL DEFAULT '',
+                    evidence_labels_json TEXT NOT NULL DEFAULT '[]',
+                    source_refs_json TEXT NOT NULL DEFAULT '[]',
+                    source_fingerprint TEXT NOT NULL DEFAULT '',
+                    signal_score INTEGER NOT NULL DEFAULT 0,
+                    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+                    is_favorite INTEGER NOT NULL DEFAULT 0,
+                    is_deleted INTEGER NOT NULL DEFAULT 0,
+                    generated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(project_module_id) REFERENCES project_modules(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategic_thought_insights_scope
+                    ON strategic_thought_insights(client_id, project_module_id, is_deleted, signal_score DESC, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_strategic_thought_insights_favorite
+                    ON strategic_thought_insights(is_favorite, is_deleted, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS project_modules (
                     id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
@@ -1035,31 +1361,6 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_project_flows_client_module_updated
                     ON project_flows(client_id, module_id, updated_at DESC);
-
-                CREATE TABLE IF NOT EXISTS task_group_templates (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL DEFAULT '',
-                    scope TEXT NOT NULL DEFAULT 'local',
-                    work_object_id TEXT,
-                    name TEXT NOT NULL,
-                    scenario_desc TEXT NOT NULL DEFAULT '',
-                    steps_json TEXT NOT NULL DEFAULT '[]',
-                    legacy_module_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    sync_status TEXT NOT NULL DEFAULT 'local',
-                    cloud_id TEXT,
-                    cloud_payload_json TEXT NOT NULL DEFAULT '',
-                    last_synced_at TEXT NOT NULL DEFAULT '',
-                    last_cloud_version TEXT NOT NULL DEFAULT '',
-                    pending_sync_action TEXT NOT NULL DEFAULT '',
-                    last_sync_error TEXT NOT NULL DEFAULT '',
-                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_scope_updated
-                    ON task_group_templates(organization_id, scope, updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
-                    ON task_group_templates(legacy_module_id);
 
                 CREATE TABLE IF NOT EXISTS task_notes (
                     id TEXT PRIMARY KEY,
@@ -1617,6 +1918,7 @@ class Database:
             self._ensure_column("learning_recommendations", "linked_contexts_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("knowledge_documents", "reclass_confidence", "REAL NOT NULL DEFAULT 0.0")
             self._ensure_column("v2_documents", "markdown_path", "TEXT")
+            self._ensure_column("v2_documents", "markdown_content", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("answer_runs", "retrieval_mode", "TEXT NOT NULL DEFAULT 'legacy'")
             self._ensure_column("answer_runs", "llm_invoked", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("answer_runs", "provider_used", "TEXT")
@@ -1630,6 +1932,17 @@ class Database:
             self._ensure_column("chat_messages", "failure_reason", "TEXT")
             self._ensure_column("chat_messages", "timing_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("chat_messages", "retrieval_summary_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("execution_tickets", "idempotency_key", "TEXT")
+            self._ensure_column("execution_tickets", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("execution_tickets", "max_retries", "INTEGER NOT NULL DEFAULT 3")
+            self._ensure_column("execution_tickets", "last_error", "TEXT")
+            self._ensure_column("execution_tickets", "last_attempt_at", "TEXT")
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_execution_tickets_idempotency
+                ON execution_tickets(idempotency_key, updated_at DESC)
+                """
+            )
             self._ensure_column("topic_candidates", "source_url", "TEXT")
             self._ensure_column("topic_candidates", "published_at", "TEXT")
             self._ensure_column("topic_candidates", "capture_method", "TEXT NOT NULL DEFAULT 'manual'")
@@ -1643,6 +1956,7 @@ class Database:
             self._ensure_column("task_tags", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_tags", "color", "TEXT NOT NULL DEFAULT '#5B7BFE'")
             self._ensure_column("task_tags", "owner_operator_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("task_tags", "operator_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "created_by", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "updated_at", "TEXT NOT NULL DEFAULT ''")
@@ -1655,6 +1969,25 @@ class Database:
             self._ensure_column("task_tags", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_tags", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                UPDATE task_tags
+                SET operator_id = COALESCE(NULLIF(operator_id, ''), owner_operator_id, '')
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE task_tags
+                SET owner_operator_id = COALESCE(NULLIF(owner_operator_id, ''), operator_id, '')
+                WHERE scope = 'self'
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_tags_operator_id
+                ON task_tags(operator_id)
+                """
+            )
             self._ensure_column("task_lists", "is_default", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("task_lists", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_lists", "archived_at", "TEXT")
@@ -1666,7 +1999,7 @@ class Database:
             self._ensure_column("task_lists", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_lists", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_lists", "description", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "color", "TEXT NOT NULL DEFAULT '#5B7BFE'")
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "creator_id", "TEXT NOT NULL DEFAULT ''")
@@ -1693,8 +2026,6 @@ class Database:
             self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
-            self._repair_stale_task_legacy_references()
-            self._migrate_tasks_allow_empty_list_id()
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_collaborators (
@@ -1715,30 +2046,6 @@ class Database:
                 )
                 """
             )
-            self.conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS task_list_links (
-                    task_id TEXT NOT NULL,
-                    list_id TEXT NOT NULL,
-                    order_index INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (task_id, list_id),
-                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-                    FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_list_links_list
-                    ON task_list_links(list_id, updated_at DESC);
-                """
-            )
-            self.conn.execute(
-                """
-                INSERT OR IGNORE INTO task_list_links(task_id, list_id, order_index, created_at, updated_at)
-                SELECT id, list_id, 0, COALESCE(created_at, ''), COALESCE(updated_at, '')
-                FROM tasks
-                WHERE TRIM(COALESCE(list_id, '')) <> ''
-                """
-            )
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
@@ -1754,65 +2061,9 @@ class Database:
             self._ensure_column("event_lines", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_lines", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("event_lines", "owner_ids_json", "TEXT NOT NULL DEFAULT '[]'")
-            self._ensure_column("event_line_notifications", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
-            self._ensure_column("event_line_notifications", "cloud_id", "TEXT")
-            self._ensure_column("event_line_notifications", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("event_line_notifications", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("event_line_notifications", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("event_line_notifications", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("event_line_notifications", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
-            self.conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS task_group_templates (
-                    id TEXT PRIMARY KEY,
-                    organization_id TEXT NOT NULL DEFAULT '',
-                    scope TEXT NOT NULL DEFAULT 'local',
-                    work_object_id TEXT,
-                    name TEXT NOT NULL,
-                    scenario_desc TEXT NOT NULL DEFAULT '',
-                    steps_json TEXT NOT NULL DEFAULT '[]',
-                    legacy_module_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    sync_status TEXT NOT NULL DEFAULT 'local',
-                    cloud_id TEXT,
-                    cloud_payload_json TEXT NOT NULL DEFAULT '',
-                    last_synced_at TEXT NOT NULL DEFAULT '',
-                    last_cloud_version TEXT NOT NULL DEFAULT '',
-                    pending_sync_action TEXT NOT NULL DEFAULT '',
-                    last_sync_error TEXT NOT NULL DEFAULT '',
-                    FOREIGN KEY(work_object_id) REFERENCES clients(id) ON DELETE SET NULL
-                )
-                """
-            )
-            self._ensure_column("task_group_templates", "organization_id", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "scope", "TEXT NOT NULL DEFAULT 'local'")
-            self._ensure_column("task_group_templates", "work_object_id", "TEXT")
-            self._ensure_column("task_group_templates", "scenario_desc", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "steps_json", "TEXT NOT NULL DEFAULT '[]'")
-            self._ensure_column("task_group_templates", "legacy_module_id", "TEXT")
-            self._ensure_column("task_group_templates", "sync_status", "TEXT NOT NULL DEFAULT 'local'")
-            self._ensure_column("task_group_templates", "cloud_id", "TEXT")
-            self._ensure_column("task_group_templates", "cloud_payload_json", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "last_synced_at", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column("task_group_templates", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
-            self.conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_scope_updated
-                ON task_group_templates(organization_id, scope, updated_at DESC)
-                """
-            )
-            self.conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_task_group_templates_legacy_module
-                ON task_group_templates(legacy_module_id)
-                """
-            )
             self._ensure_column("event_line_activities", "created_at", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("event_line_activities", "is_key", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("event_line_attachments", "document_id", "TEXT")
             # Backfill is_key: key events = task created, manual note, attachment
             self.conn.execute("""
                 UPDATE event_line_activities SET is_key = 1
@@ -1854,6 +2105,237 @@ class Database:
             self._ensure_column("weekly_review_task_entries", "organization_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_review_task_entries", "user_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("weekly_review_task_entries", "structured_note_json", "TEXT NOT NULL DEFAULT '{}'")
+            for table_name in ("documents", "document_chunks", "v2_documents"):
+                self._ensure_column(table_name, "document_family_id", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "canonical_kind", "TEXT NOT NULL DEFAULT 'raw_file'")
+                self._ensure_column(table_name, "origin_type", "TEXT NOT NULL DEFAULT 'file_import'")
+                self._ensure_column(table_name, "origin_id", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "is_searchable", "INTEGER NOT NULL DEFAULT 1")
+            for table_name in ("documents", "v2_documents"):
+                self._ensure_column(table_name, "organization_id", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "department_id", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "department_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+                self._ensure_column(table_name, "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "source_entity_type", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "source_entity_id", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
+                self._ensure_column(table_name, "content_domain", "TEXT NOT NULL DEFAULT 'work'")
+                self._ensure_column(table_name, "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
+            self._ensure_column("memory_facts", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("memory_facts", "department_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("memory_facts", "department_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("memory_facts", "owner_user_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("memory_facts", "source_entity_type", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("memory_facts", "source_entity_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("memory_facts", "visibility_scope", "TEXT NOT NULL DEFAULT 'project_public'")
+            self._ensure_column("memory_facts", "content_domain", "TEXT NOT NULL DEFAULT 'work'")
+            self._ensure_column("memory_facts", "lifecycle_status", "TEXT NOT NULL DEFAULT 'active'")
+            self._ensure_column("memory_facts", "superseded_by_event_id", "TEXT NOT NULL DEFAULT ''")
+            for table_name in ("documents", "v2_documents", "memory_facts"):
+                rows = self.conn.execute(
+                    f"""
+                    SELECT id, department_id
+                    FROM {table_name}
+                    WHERE COALESCE(department_id, '') != ''
+                      AND COALESCE(department_ids_json, '[]') IN ('', '[]')
+                    """
+                ).fetchall()
+                for row in rows:
+                    self.conn.execute(
+                        f"UPDATE {table_name} SET department_ids_json = ? WHERE id = ?",
+                        (to_json([str(row["department_id"])]), str(row["id"])),
+                    )
+
+            self.conn.execute(
+                """
+                UPDATE documents
+                SET
+                    document_family_id = CASE
+                        WHEN COALESCE(document_family_id, '') != '' THEN document_family_id
+                        ELSE 'doc:' || id
+                    END,
+                    canonical_kind = CASE
+                        WHEN COALESCE(canonical_kind, '') != '' THEN canonical_kind
+                        ELSE 'raw_file'
+                    END,
+                    origin_type = CASE
+                        WHEN COALESCE(origin_type, '') != '' THEN origin_type
+                        ELSE 'file_import'
+                    END,
+                    is_searchable = COALESCE(is_searchable, 1)
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE document_chunks
+                SET
+                    document_family_id = COALESCE(
+                        NULLIF(document_family_id, ''),
+                        (
+                            SELECT COALESCE(NULLIF(d.document_family_id, ''), 'doc:' || d.id)
+                            FROM knowledge_documents kd
+                            JOIN documents d ON d.id = kd.document_id
+                            WHERE kd.id = document_chunks.knowledge_document_id
+                            LIMIT 1
+                        ),
+                        'chunk:' || id
+                    ),
+                    canonical_kind = COALESCE(
+                        NULLIF(canonical_kind, ''),
+                        (
+                            SELECT COALESCE(NULLIF(d.canonical_kind, ''), 'raw_file')
+                            FROM knowledge_documents kd
+                            JOIN documents d ON d.id = kd.document_id
+                            WHERE kd.id = document_chunks.knowledge_document_id
+                            LIMIT 1
+                        ),
+                        'raw_file'
+                    ),
+                    origin_type = COALESCE(
+                        NULLIF(origin_type, ''),
+                        (
+                            SELECT COALESCE(NULLIF(d.origin_type, ''), 'file_import')
+                            FROM knowledge_documents kd
+                            JOIN documents d ON d.id = kd.document_id
+                            WHERE kd.id = document_chunks.knowledge_document_id
+                            LIMIT 1
+                        ),
+                        'file_import'
+                    ),
+                    origin_id = COALESCE(
+                        NULLIF(origin_id, ''),
+                        (
+                            SELECT COALESCE(d.origin_id, '')
+                            FROM knowledge_documents kd
+                            JOIN documents d ON d.id = kd.document_id
+                            WHERE kd.id = document_chunks.knowledge_document_id
+                            LIMIT 1
+                        ),
+                        ''
+                    ),
+                    is_searchable = COALESCE(
+                        is_searchable,
+                        (
+                            SELECT COALESCE(d.is_searchable, 1)
+                            FROM knowledge_documents kd
+                            JOIN documents d ON d.id = kd.document_id
+                            WHERE kd.id = document_chunks.knowledge_document_id
+                            LIMIT 1
+                        ),
+                        1
+                    )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE v2_documents
+                SET
+                    document_family_id = COALESCE(
+                        NULLIF(document_family_id, ''),
+                        (
+                            SELECT COALESCE(NULLIF(d.document_family_id, ''), 'doc:' || d.id)
+                            FROM documents d
+                            WHERE d.id = v2_documents.document_id
+                            LIMIT 1
+                        ),
+                        'doc:' || document_id
+                    ),
+                    canonical_kind = COALESCE(
+                        NULLIF(canonical_kind, ''),
+                        (
+                            SELECT COALESCE(NULLIF(d.canonical_kind, ''), 'raw_file')
+                            FROM documents d
+                            WHERE d.id = v2_documents.document_id
+                            LIMIT 1
+                        ),
+                        'raw_file'
+                    ),
+                    origin_type = COALESCE(
+                        NULLIF(origin_type, ''),
+                        (
+                            SELECT COALESCE(NULLIF(d.origin_type, ''), 'file_import')
+                            FROM documents d
+                            WHERE d.id = v2_documents.document_id
+                            LIMIT 1
+                        ),
+                        'file_import'
+                    ),
+                    origin_id = COALESCE(
+                        NULLIF(origin_id, ''),
+                        (
+                            SELECT COALESCE(d.origin_id, '')
+                            FROM documents d
+                            WHERE d.id = v2_documents.document_id
+                            LIMIT 1
+                        ),
+                        ''
+                    ),
+                    is_searchable = COALESCE(
+                        is_searchable,
+                        (
+                            SELECT COALESCE(d.is_searchable, 1)
+                            FROM documents d
+                            WHERE d.id = v2_documents.document_id
+                            LIMIT 1
+                        ),
+                        1
+                    )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_documents_family_search
+                ON documents(client_id, document_family_id, canonical_kind, is_searchable)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_v2_documents_family_search
+                ON v2_documents(client_id, document_family_id, canonical_kind, is_searchable)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_documents_data_center_scope
+                ON documents(client_id, visibility_scope, content_domain, lifecycle_status, created_at)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_v2_documents_data_center_scope
+                ON v2_documents(client_id, visibility_scope, content_domain, lifecycle_status, updated_at)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_v2_documents_source_entity
+                ON v2_documents(source_entity_type, source_entity_id, lifecycle_status, updated_at)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_facts_data_center_scope
+                ON memory_facts(scope_type, scope_id, visibility_scope, content_domain, lifecycle_status, updated_at)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_documents_access_scope
+                ON documents(organization_id, department_id, owner_user_id, lifecycle_status, is_searchable)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_v2_documents_access_scope
+                ON v2_documents(organization_id, department_id, owner_user_id, lifecycle_status, is_searchable)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_facts_access_scope
+                ON memory_facts(organization_id, department_id, owner_user_id, lifecycle_status)
+                """
+            )
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sync_outbox (
@@ -1913,6 +2395,139 @@ class Database:
             self._ensure_column("topic_candidates", "event_line_id", "TEXT")
             self._ensure_column("memory_facts", "valid_from", "TEXT")
             self._ensure_column("memory_facts", "valid_to", "TEXT")
+            self._ensure_column("analysis_jobs", "source_snapshot_hash", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("analysis_jobs", "dedupe_key", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("analysis_jobs", "intent_profile", "TEXT NOT NULL DEFAULT 'client_overview'")
+            self._ensure_column("analysis_jobs", "locked_by", "TEXT")
+            self._ensure_column("analysis_jobs", "locked_at", "TEXT")
+            self._ensure_column("analysis_jobs", "lock_expires_at", "TEXT")
+            self._ensure_column("analysis_jobs", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("analysis_jobs", "last_error", "TEXT")
+            self._ensure_column("job_stage_runs", "correlation_id", "TEXT")
+            self._ensure_column("evidence_cards", "normalized_claim_hash", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("evidence_cards", "source_ref_hash", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("evidence_cards", "evidence_fingerprint", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("evidence_cards", "normalizer_version", "TEXT NOT NULL DEFAULT 'analysis-center-v0.3.3'")
+            for table_name in (
+                "evidence_cards",
+                "theme_clusters",
+                "conflict_groups",
+                "open_questions",
+                "context_packs",
+                "dna_deltas",
+                "judgment_versions",
+            ):
+                self._ensure_column(table_name, "origin_type", "TEXT NOT NULL DEFAULT 'projection'")
+                self._ensure_column(table_name, "authority_level", "TEXT NOT NULL DEFAULT 'fallback'")
+                self._ensure_column(table_name, "quality_tier", "TEXT NOT NULL DEFAULT 'legacy'")
+            for table_name in ("context_packs", "dna_deltas", "judgment_versions"):
+                self._ensure_column(table_name, "supersedes_id", "TEXT")
+                self._ensure_column(table_name, "source_snapshot_hash", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(table_name, "stale_reason", "TEXT")
+                self._ensure_column(table_name, "invalidated_by", "TEXT")
+            self._ensure_column("conflict_groups", "context_pack_id", "TEXT")
+            self._ensure_column("runtime_run_logs", "analysis_job_id", "TEXT")
+            self._ensure_column("runtime_run_logs", "stage_run_id", "TEXT")
+            self._ensure_column("runtime_run_logs", "context_pack_id", "TEXT")
+            self._ensure_column("runtime_run_logs", "judgment_version_id", "TEXT")
+            self._ensure_column("runtime_run_logs", "correlation_id", "TEXT")
+            self._ensure_column("approval_records", "approval_target_type", "TEXT")
+            self._ensure_column("approval_records", "approval_target_id", "TEXT")
+            self._ensure_column("approval_records", "policy_type", "TEXT NOT NULL DEFAULT 'analysis_review'")
+            self._ensure_column("approval_records", "decision", "TEXT")
+            self._ensure_column("approval_records", "comment", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("approval_records", "decided_by", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("approval_records", "decided_at", "TEXT")
+            self._ensure_column("approval_records", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_analysis_jobs_status_priority
+                ON analysis_jobs(status, priority, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_jobs_active_dedupe
+                ON analysis_jobs(dedupe_key)
+                WHERE status IN ('queued', 'running')
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_job_stage_runs_status
+                ON job_stage_runs(job_id, stage_name, status, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_evidence_cards_event_line
+                ON evidence_cards(client_id, event_line_id, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_evidence_cards_dedupe
+                ON evidence_cards(client_id, scope_type, scope_id, evidence_fingerprint)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_theme_clusters_theme_key
+                ON theme_clusters(client_id, theme_key, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conflict_groups_severity
+                ON conflict_groups(client_id, severity, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_judgment_versions_status
+                ON judgment_versions(client_id, target_type, target_id, status, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_runtime_run_logs_job
+                ON runtime_run_logs(job_id, created_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_approval_records_target_decided
+                ON approval_records(approval_target_type, approval_target_id, decided_at DESC)
+                """
+            )
+            current_schema_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+            if current_schema_version < BACKEND_SCHEMA_VERSION:
+                self.conn.execute(f"PRAGMA user_version={BACKEND_SCHEMA_VERSION}")
+            analysis_truth_tables = (
+                "evidence_cards",
+                "theme_clusters",
+                "conflict_groups",
+                "open_questions",
+                "context_packs",
+                "dna_deltas",
+                "judgment_versions",
+            )
+            for table_name in analysis_truth_tables:
+                for operation in ("INSERT", "UPDATE"):
+                    self.conn.execute(
+                        f"""
+                        CREATE TRIGGER IF NOT EXISTS trg_{table_name}_{operation.lower()}_truth_boundary
+                        BEFORE {operation} ON {table_name}
+                        FOR EACH ROW
+                        WHEN
+                            (NEW.origin_type = 'human_override' AND NEW.authority_level = 'fallback')
+                            OR (NEW.authority_level = 'approved' AND NEW.quality_tier != 'reviewed')
+                            OR (NEW.origin_type = 'projection' AND NEW.authority_level = 'approved')
+                        BEGIN
+                            SELECT RAISE(ABORT, 'invalid_analysis_truth_boundary');
+                        END;
+                        """
+                    )
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_settings (
@@ -1971,8 +2586,6 @@ class Database:
                 )
                 """
             )
-            self._backfill_legacy_event_line_notifications()
-            self._delete_legacy_event_line_notification_tasks()
             self.conn.commit()
 
     def _ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
@@ -1984,181 +2597,27 @@ class Database:
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
-    def _rewrite_schema_sql(self, updates: list[tuple[str, str, str]]) -> None:
-        if not updates:
-            return
-        self.conn.execute("PRAGMA foreign_keys=OFF")
-        self.conn.execute("PRAGMA writable_schema=ON")
-        for obj_type, name, sql in updates:
-            self.conn.execute(
-                "UPDATE sqlite_master SET sql = ? WHERE type = ? AND name = ?",
-                (sql, obj_type, name),
-            )
-        self.conn.execute("PRAGMA writable_schema=OFF")
-        current_version = int(self.conn.execute("PRAGMA schema_version").fetchone()[0] or 0)
-        self.conn.execute(f"PRAGMA schema_version = {current_version + 1}")
-        self.conn.commit()
-        self.conn.execute("PRAGMA foreign_keys=ON")
+    def has_column(self, table_name: str, column_name: str) -> bool:
+        with self._lock:
+            existing = {
+                str(row["name"])
+                for row in self.conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            }
+            return column_name in existing
 
-    def _repair_stale_task_legacy_references(self) -> None:
-        rows = self.conn.execute(
-            """
-            SELECT type, name, sql
-            FROM sqlite_master
-            WHERE sql IS NOT NULL AND sql LIKE '%tasks_legacy_list_id%'
-            """
-        ).fetchall()
-        updates: list[tuple[str, str, str]] = []
-        for row in rows:
-            raw_sql = str(row["sql"] or "")
-            if "tasks_legacy_list_id" not in raw_sql:
-                continue
-            updates.append(
-                (
-                    str(row["type"]),
-                    str(row["name"]),
-                    raw_sql.replace("tasks_legacy_list_id", "tasks"),
-                )
-            )
-        self._rewrite_schema_sql(updates)
+    def ensure_column(self, table_name: str, column_name: str, definition: str) -> None:
+        with self._lock:
+            try:
+                self._ensure_column(table_name, column_name, definition)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
-    def _migrate_tasks_allow_empty_list_id(self) -> None:
-        task_row = self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
-        ).fetchone()
-        if task_row is None:
-            return
-        task_sql = str(task_row["sql"] or "")
-        if "list_id TEXT NOT NULL" not in task_sql:
-            return
-        self._rewrite_schema_sql(
-            [("table", "tasks", task_sql.replace("list_id TEXT NOT NULL", "list_id TEXT"))]
-        )
-
-    def _parse_legacy_event_line_notification(self, title: str, description: str) -> dict[str, object]:
-        values: dict[str, str] = {}
-        for raw_line in description.splitlines():
-            line = raw_line.strip()
-            if not line or "：" not in line:
-                continue
-            label, value = line.split("：", 1)
-            label = label.strip()
-            value = value.strip()
-            if label and value:
-                values[label] = value
-        operation = values.get("事件线操作", "").strip()
-        if not operation:
-            match = re.match(r"^事件线(.+?)：", title.strip())
-            if match:
-                operation = match.group(1).strip()
-        return {
-            "event_line_name": values.get("事件线标题", "").strip(),
-            "operation_label": operation,
-            "actor_name": values.get("操作者", "").strip(),
-            "operated_at": values.get("操作时间", "").strip(),
-            "main_owner_names": [item.strip() for item in values.get("主要负责人", "").split("、") if item.strip()],
-            "participant_names": [item.strip() for item in values.get("参与者", "").split("、") if item.strip()],
-        }
-
-    def _backfill_legacy_event_line_notifications(self) -> None:
-        rows = self.conn.execute(
-            """
-            SELECT *
-            FROM tasks
-            WHERE source_type = 'event_line_notification'
-            ORDER BY created_at ASC
-            """
-        ).fetchall()
-        for row in rows:
-            notification_id = str(row["id"] or "").strip()
-            if not notification_id:
-                continue
-            existing = self.conn.execute(
-                "SELECT 1 FROM event_line_notifications WHERE id = ?",
-                (notification_id,),
-            ).fetchone()
-            if existing is not None:
-                continue
-            parsed = self._parse_legacy_event_line_notification(
-                str(row["title"] or ""),
-                str(row["description"] or ""),
-            )
-            event_line_id = str(row["event_line_id"] or row["source_id"] or "").strip()
-            if not event_line_id:
-                continue
-            self.conn.execute(
-                """
-                INSERT INTO event_line_notifications(
-                    id, organization_id, event_line_id, event_line_name, operation_label, actor_id, actor_name,
-                    title, summary, metadata_json, main_owner_names_json, participant_names_json, operated_at,
-                    created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at, last_cloud_version,
-                    pending_sync_action, last_sync_error
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, 'synced', ?, '{}', ?, ?, '', '')
-                """,
-                (
-                    notification_id,
-                    str(row["organization_id"] or ""),
-                    event_line_id,
-                    str(parsed["event_line_name"] or ""),
-                    str(parsed["operation_label"] or ""),
-                    str(row["creator_id"] or "") or None,
-                    str(parsed["actor_name"] or ""),
-                    str(row["title"] or ""),
-                    str(row["description"] or ""),
-                    json.dumps(parsed["main_owner_names"], ensure_ascii=False),
-                    json.dumps(parsed["participant_names"], ensure_ascii=False),
-                    str(parsed["operated_at"] or row["created_at"] or row["updated_at"] or ""),
-                    str(row["created_at"] or ""),
-                    str(row["updated_at"] or row["created_at"] or ""),
-                    notification_id,
-                    str(row["updated_at"] or row["created_at"] or ""),
-                    str(row["updated_at"] or row["created_at"] or ""),
-                ),
-            )
-            collaborator_rows = self.conn.execute(
-                """
-                SELECT user_id, full_name, email, handled_at, created_at, updated_at
-                FROM task_collaborators
-                WHERE task_id = ?
-                ORDER BY order_index ASC
-                """,
-                (notification_id,),
-            ).fetchall()
-            for collaborator_row in collaborator_rows:
-                self.conn.execute(
-                    """
-                    INSERT OR IGNORE INTO event_line_notification_receipts(
-                        notification_id, organization_id, user_id, full_name, email, read_at, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        notification_id,
-                        str(row["organization_id"] or ""),
-                        str(collaborator_row["user_id"] or ""),
-                        str(collaborator_row["full_name"] or ""),
-                        str(collaborator_row["email"] or ""),
-                        str(collaborator_row["handled_at"]) if collaborator_row["handled_at"] else None,
-                        str(collaborator_row["created_at"] or row["created_at"] or ""),
-                        str(collaborator_row["updated_at"] or row["updated_at"] or row["created_at"] or ""),
-                    ),
-                )
-
-    def _delete_legacy_event_line_notification_tasks(self) -> None:
-        rows = self.conn.execute(
-            """
-            SELECT id
-            FROM tasks
-            WHERE source_type = 'event_line_notification'
-            """
-        ).fetchall()
-        legacy_task_ids = [str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()]
-        for task_id in legacy_task_ids:
-            self.conn.execute("DELETE FROM task_collaborators WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_list_links WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_notes WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM weekly_review_task_entries WHERE task_id = ?", (task_id,))
-            self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    def get_schema_version(self) -> int:
+        with self._lock:
+            row = self.conn.execute("PRAGMA user_version").fetchone()
+        return int(row[0] or 0) if row else 0
 
     def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None:
         with self._lock:
@@ -2172,18 +2631,41 @@ class Database:
 
     def execute(self, query: str, params: tuple = ()) -> None:
         with self._lock:
-            self.conn.execute(query, params)
-            self.conn.commit()
+            try:
+                self.conn.execute(query, params)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def executemany(self, query: str, params: list[tuple]) -> None:
         with self._lock:
-            self.conn.executemany(query, params)
-            self.conn.commit()
+            try:
+                self.conn.executemany(query, params)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def executescript(self, script: str) -> None:
         with self._lock:
-            self.conn.executescript(script)
-            self.conn.commit()
+            try:
+                self.conn.executescript(script)
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def run_in_transaction(self, callback, mode: str = "IMMEDIATE"):
+        with self._lock:
+            try:
+                self.conn.execute(f"BEGIN {mode}")
+                result = callback(self.conn)
+                self.conn.commit()
+                return result
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def scalar(self, query: str, params: tuple = ()) -> int:
         row = self.fetchone(query, params)

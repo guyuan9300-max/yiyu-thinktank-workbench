@@ -26,7 +26,6 @@ OrgTaskEditScope = Literal["self", "manager", "department", "organization"]
 OrgTaskControlLevel = Literal["normal", "leader_control", "department_control", "organization_control"]
 OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organization_lead", "creator"]
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
-WorkObjectMode = Literal["client", "project"]
 DnaSourceLevel = Literal["organization", "client"]
 OrganizationDnaModuleKey = Literal["organization_intro", "business_intro", "team_intro", "market_intro"]
 FeishuReceiveIdType = Literal["open_id", "user_id", "email", "chat_id"]
@@ -41,6 +40,34 @@ GrowthValidationState = Literal["candidate", "observed", "validated", "instituti
 BadgeState = Literal["locked", "progress", "ready", "lit", "mastered"]
 MemoryScopeType = Literal["client", "person", "product", "event_line", "task"]
 ClarificationStatus = Literal["pending", "answered", "dismissed"]
+AnalysisScopeType = Literal["client", "event_line", "meeting", "task", "module", "flow"]
+AnalysisJobType = Literal["asset_ingest", "evidence_extract", "customer_compare", "meeting_enhance", "dna_refresh", "strategy_pack"]
+AnalysisJobStatus = Literal["queued", "running", "preparing", "extracting", "clustering", "comparing", "drafting", "awaiting_review", "completed", "failed", "cancelled", "rolled_back"]
+AnalysisStageStatus = Literal["queued", "running", "completed", "failed", "skipped"]
+AnalysisReviewState = Literal["draft", "awaiting_review", "awaiting_revision", "approved", "rejected", "superseded"]
+AnalysisLane = Literal["light_extractor", "local_deep", "cloud_final"]
+AnalysisOriginType = Literal["projection", "analysis", "human_override"]
+AnalysisAuthorityLevel = Literal["fallback", "candidate", "approved"]
+AnalysisQualityTier = Literal["legacy", "normalized", "reviewed"]
+AnalysisIntentProfile = Literal["task_ai", "weekly_review", "meeting_enhance", "client_overview", "strategic_cockpit", "dna_summary"]
+AnalysisStaleReason = Literal[
+    "superseded_by_newer_judgment",
+    "source_snapshot_changed",
+    "approval_revoked",
+    "scope_no_longer_primary",
+    "insufficient_evidence",
+    "manual_invalidation",
+]
+AnalysisRejectedReason = Literal[
+    "authority_too_low",
+    "scope_less_relevant",
+    "stale",
+    "superseded",
+    "insufficient_evidence",
+    "not_approved_for_official_use",
+]
+ApprovalDecision = Literal["approved", "rejected", "returned_for_revision"]
+ApprovalTargetType = Literal["judgment_version", "dna_delta", "conflict_group", "proposal_record"]
 
 
 class OperatorRecord(BaseModel):
@@ -67,7 +94,6 @@ class AppSettingsResponse(BaseModel):
     dataDir: str
     backupDir: str
     cloudApiUrl: str = "http://127.0.0.1:47830"
-    localWorkObjectMode: WorkObjectMode | None = None
     lastBackupAt: str | None = None
     foldersRootLabel: str
     aiConfigured: bool
@@ -90,6 +116,15 @@ class HealthResponse(BaseModel):
     appName: str
     appVersion: str
     buildVersion: str
+    gitCommit: str | None = None
+    bundleManifestId: str | None = None
+    backendBuildHash: str
+    backendSourceHash: str
+    frontendRendererEntry: str | None = None
+    frontendRendererHash: str | None = None
+    backendSchemaVersion: int
+    runtimeMode: Literal["packaged", "dev"]
+    installPathStatus: Literal["recommended", "unexpected", "dev"]
     startedAt: str
     featureFlags: list[str] = Field(default_factory=list)
     dataDir: str
@@ -122,11 +157,6 @@ class AuthStateResponse(BaseModel):
 class CloudConfigResponse(BaseModel):
     mode: Literal["disabled", "official_test", "custom"] = "disabled"
     apiBaseUrl: str | None = None
-
-
-class CloudDirectAccessResponse(BaseModel):
-    apiBaseUrl: str
-    accessToken: str
 
 
 class AccountOverviewResponse(BaseModel):
@@ -206,6 +236,8 @@ class LocalInputMemoryAiSettings(BaseModel):
 class LocalInputMemoryFeishuIntegration(BaseModel):
     rememberInputs: bool = False
     appId: str = ""
+    callbackMode: str = "cloud_relay"
+    customCallbackUrl: str = ""
     appSecret: str = ""
 
 
@@ -230,6 +262,8 @@ class SaveAiInputMemoryPayload(BaseModel):
 class SaveFeishuInputMemoryPayload(BaseModel):
     rememberInputs: bool = False
     appId: str | None = None
+    callbackMode: str | None = None
+    customCallbackUrl: str | None = None
     appSecret: str | None = None
 
 
@@ -278,7 +312,6 @@ class DepartmentOptionRecord(BaseModel):
 class OrgProfileRecord(BaseModel):
     organizationId: str
     name: str
-    workObjectMode: WorkObjectMode = "project"
     annualGoal: str = ""
     annualStrategyYear: str = ""
     annualStrategy: str = ""
@@ -287,21 +320,6 @@ class OrgProfileRecord(BaseModel):
     leaderUserId: str | None = None
     managementUserIds: list[str] = Field(default_factory=list)
     updatedAt: str
-
-
-class WorkObjectTerminologyStateRecord(BaseModel):
-    localMode: WorkObjectMode | None = None
-    organizationMode: WorkObjectMode | None = None
-    effectiveMode: WorkObjectMode = "project"
-    source: Literal["default", "local", "organization"] = "default"
-    lockedByOrganization: bool = False
-    needsOnboarding: bool = False
-    updatedAt: str
-
-
-class WorkObjectTerminologyUpdatePayload(BaseModel):
-    mode: WorkObjectMode
-    target: Literal["local", "organization"] = "local"
 
 
 class OrgQuarterPlanRecord(BaseModel):
@@ -590,19 +608,17 @@ class LegacyScanResponse(BaseModel):
     message: str
 
 
-class WorkObjectMutationPayload(BaseModel):
+class ClientMutationPayload(BaseModel):
     name: str
     alias: str
     domain: str
     type: str
     intro: str
     stage: str
+    color: str | None = None
 
 
-ClientMutationPayload = WorkObjectMutationPayload
-
-
-class WorkObjectRecord(BaseModel):
+class ClientSummary(BaseModel):
     id: str
     name: str
     alias: str
@@ -610,18 +626,15 @@ class WorkObjectRecord(BaseModel):
     type: str
     intro: str
     stage: str
+    color: str = "#5B7BFE"
     folderCount: int
     documentCount: int
     taskCount: int
     lastActivityAt: str | None = None
 
 
-ClientSummary = WorkObjectRecord
-
-
-class WorkObjectFolder(BaseModel):
+class ClientFolder(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     label: str
     path: str
@@ -629,12 +642,8 @@ class WorkObjectFolder(BaseModel):
     lastScannedAt: str | None = None
 
 
-ClientFolder = WorkObjectFolder
-
-
 class ImportRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     sourcePath: str
     mode: Literal["folder", "file"]
@@ -645,7 +654,6 @@ class ImportRecord(BaseModel):
 
 
 class ImportPayload(BaseModel):
-    workObjectId: str | None = None
     clientId: str
     mode: Literal["folder", "file"]
     paths: list[str]
@@ -663,7 +671,6 @@ class WorkspaceImportBackfillResponse(BaseModel):
 
 class DocumentRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     folderId: str | None = None
     title: str
@@ -695,6 +702,14 @@ class KnowledgeStatusRecord(BaseModel):
     embeddingMode: str = "hash_fallback"
     embeddingModel: str | None = None
     embeddingError: str | None = None
+    embeddingProvider: str | None = None
+    embeddingDimension: int | None = None
+    embeddingSignature: str | None = None
+    activeVectorCollection: str | None = None
+    vectorIndexStatus: Literal["ready", "stale", "building", "failed"] | None = None
+    routerEnabled: bool | None = None
+    routerModel: str | None = None
+    rerankEnabled: bool | None = None
 
 
 class DocumentCardRecord(BaseModel):
@@ -741,7 +756,6 @@ class DocumentCardRecord(BaseModel):
 
 class GoalRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     title: str
     quarter: str
@@ -758,7 +772,6 @@ class GoalPayload(BaseModel):
 
 class DnaTerm(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     category: str
     canonicalName: str
@@ -780,11 +793,24 @@ class EvidenceItem(BaseModel):
     excerpt: str
     sourceType: str
     documentId: str | None = None
+    documentFamilyId: str | None = None
+    canonicalKind: str | None = None
+    originType: str | None = None
+    originId: str | None = None
+    isSearchable: bool | None = None
     path: str | None = None
+    originalPath: str | None = None
+    managedPath: str | None = None
+    markdownPath: str | None = None
+    openableKind: Literal["original_file", "machine_markdown", "system_card", "unknown"] | None = None
+    sourceAvailability: Literal["original_available", "machine_readable_only", "invalid_source", "unknown"] | None = None
+    originalAvailable: bool | None = None
+    machineReadableAvailable: bool | None = None
+    openOriginalDisabledReason: str | None = None
     score: float | None = None
     coverage: float | None = None
     sectionLabel: str | None = None
-    retrievalStage: Literal["master_index", "surrogate", "raw_chunk"] | None = None
+    retrievalStage: Literal["master_index", "surrogate", "raw_chunk", "state_pool"] | None = None
     isFallback: bool = False
     matchedTerms: list[str] = Field(default_factory=list)
 
@@ -795,6 +821,136 @@ class AiStructuredResponse(BaseModel):
     analysis: str
     actions: str
     timeline: str
+
+
+ChatRetrievalDecisionReason = Literal[
+    "state_first_default",
+    "document_drilldown_requested",
+    "search_cache_requested",
+    "intro_query_needs_evidence",
+    "identity_query_needs_evidence",
+    "project_intro_needs_evidence",
+    "meeting_summary_needs_evidence",
+    "next_actions_needs_evidence",
+    "evidence_question_needs_evidence",
+    "official_registry_requested",
+    "status_progress_needs_hybrid_evidence",
+    "default_hybrid_evidence",
+    "state_pool_insufficient",
+    "state_pool_empty",
+]
+
+JudgmentQueryMode = Literal["registry_only", "hybrid", "evidence_based_synthesis"]
+
+WorkspaceAnswerIntent = Literal[
+    "intro_profile",
+    "business_profile",
+    "strategy_profile",
+    "project_intro",
+    "meeting_summary",
+    "next_actions",
+    "official_judgment_registry",
+    "evidence_question",
+    "status_progress",
+    "general",
+]
+
+EvidenceSupportMode = Literal[
+    "none",
+    "linked_state_evidence",
+    "evidence_cards",
+    "raw_doc_drilldown",
+    "generic_retrieval_fallback",
+]
+
+PageContextPage = Literal[
+    "client_workspace",
+    "workspace_chat",
+    "task_detail",
+    "task_ai",
+    "meeting_detail",
+    "event_line_detail",
+    "project_module_detail",
+    "project_flow_detail",
+    "mobile_consult",
+    "topic_radar",
+    "strategic_cockpit",
+]
+
+PageIntentType = Literal[
+    "intro_profile",
+    "business_profile",
+    "strategy_profile",
+    "project_intro",
+    "meeting_summary",
+    "next_actions",
+    "official_judgment_registry",
+    "evidence_question",
+    "status_progress",
+    "task_context",
+    "task_next_action",
+    "proposal_gap",
+    "general",
+]
+
+SemanticSourceRole = Literal[
+    "institution_identity",
+    "problem_definition",
+    "program_overview",
+    "method_or_model",
+    "strategy_direction",
+    "operational_update",
+    "risk_or_open_issue",
+    "financial_or_admin",
+    "derived_profile_support",
+    "noise_or_template",
+]
+
+QuestionFocusGoal = Literal["define", "explain", "status", "evidence", "judgment", "risk", "advice"]
+QuestionFocusFacet = Literal["identity", "method", "project", "strategy", "progress", "risk", "action", "general"]
+QuestionFocusDepth = Literal["concise", "focused", "expanded", "advisory"]
+
+AnswerLevel = Literal["official", "candidate", "evidence_based", "fallback", "insufficient"]
+ContextQualityLevel = Literal["none", "weak", "usable", "strong"]
+RouteMode = Literal[
+    "state_first",
+    "registry_only",
+    "raw_doc_drilldown",
+    "meeting_evidence",
+    "task_context",
+    "hybrid",
+]
+
+
+class EvidenceSupportItemRecord(BaseModel):
+    title: str
+    summary: str
+    sourceType: Literal["judgment", "dna", "meeting", "task", "open_question", "conflict", "evidence_card", "raw_doc", "context_pack"]
+    sourceId: str | None = None
+    sourceRef: str | None = None
+    authority: Literal["approved", "candidate", "radar", "raw"] = "radar"
+    timeAnchor: str | None = None
+    confidence: float | None = None
+    linkedFindingId: str | None = None
+
+
+class StateAnswerSectionsRecord(BaseModel):
+    official: list[str] = Field(default_factory=list)
+    candidate: list[str] = Field(default_factory=list)
+    draftFindings: list[str] = Field(default_factory=list)
+    evidenceSupport: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
+
+
+class StateSourceSummaryRecord(BaseModel):
+    judgments: int = 0
+    meetings: int = 0
+    tasks: int = 0
+    openQuestions: int = 0
+    conflicts: int = 0
+    documents: int = 0
 
 
 class ChatMessageRecord(BaseModel):
@@ -810,6 +966,17 @@ class ChatMessageRecord(BaseModel):
     answerMode: Literal["grounded_answer", "grounded_fallback", "low_confidence_answer", "general_answer", "system_failure"] | None = None
     evidenceStatus: Literal["sufficient", "partial", "none"] | None = None
     failureReason: str | None = None
+    fallbackReason: str | None = None
+    fallbackPresentationMode: Literal["state_cards_only", "compact_user_answer", "full_answer"] | None = None
+    stateConfidence: Literal["low", "medium", "high"] | None = None
+    stateSources: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    answerIntent: WorkspaceAnswerIntent | None = None
+    retrievalDecisionReason: ChatRetrievalDecisionReason | None = None
+    judgmentQueryMode: JudgmentQueryMode | None = None
+    evidenceSupportMode: EvidenceSupportMode | None = None
+    stateAnswerSections: StateAnswerSectionsRecord | None = None
+    stateSourceSummary: StateSourceSummaryRecord | None = None
     timing: dict[str, float] = Field(default_factory=dict)
     retrievalSummary: dict[str, object] = Field(default_factory=dict)
     structuredData: AiStructuredResponse | None = None
@@ -932,7 +1099,6 @@ class ClarificationRecord(BaseModel):
 
 
 class MemoryStatus(BaseModel):
-    workObjectId: str
     clientId: str
     notebookCompleteness: float = 0.0
     notebookConfidence: float = 0.0
@@ -958,20 +1124,15 @@ class TaskRecord(BaseModel):
     status: TaskStatus
     creatorId: str | None = None
     creatorName: str | None = None
-    creatorDisplayName: str | None = None
     priority: Priority
     listId: str
     listName: str
     listColor: str
-    listIds: list[str] = Field(default_factory=list)
-    listNames: list[str] = Field(default_factory=list)
     ddl: str
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
-    workObjectId: str | None = None
-    workObjectName: str | None = None
     clientId: str | None = None
     clientName: str | None = None
     eventLineId: str | None = None
@@ -982,7 +1143,6 @@ class TaskRecord(BaseModel):
     projectFlowName: str | None = None
     ownerId: str | None = None
     ownerName: str
-    ownerDisplayName: str | None = None
     sourceType: str
     sourceId: str | None = None
     businessCategory: str | None = None
@@ -993,13 +1153,9 @@ class TaskRecord(BaseModel):
     tags: list["TaskTagRecord"] = Field(default_factory=list)
     note: str | None = None
     attachments: list["TaskAttachmentRecord"] = Field(default_factory=list)
-    expenseEvidenceLinks: list["TaskExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     collaborators: list["TaskCollaboratorRecord"] = Field(default_factory=list)
     collaborationSummary: dict[str, int] = Field(default_factory=dict)
-    pendingParticipantNames: list[str] = Field(default_factory=list)
     viewerInboxStatus: CollaboratorInboxStatus | None = None
-    viewerCanConfirm: bool = False
-    viewerCanReject: bool = False
     orgContext: "TaskOrgContextRecord | None" = None
     projectContext: "TaskProjectContextRecord | None" = None
     memoryHints: list[str] = Field(default_factory=list)
@@ -1012,7 +1168,6 @@ class TaskRecord(BaseModel):
 class TaskAttachmentRecord(BaseModel):
     id: str
     taskId: str
-    workObjectId: str
     clientId: str
     eventLineId: str | None = None
     documentId: str | None = None
@@ -1041,8 +1196,6 @@ class TaskOrgContextRecord(BaseModel):
 
 
 class TaskProjectContextRecord(BaseModel):
-    workObjectId: str
-    workObjectName: str
     clientId: str
     clientName: str
     stage: str | None = None
@@ -1065,7 +1218,6 @@ class TaskProjectContextRecord(BaseModel):
 
 class ProjectModuleRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     name: str
     alias: str | None = None
@@ -1081,7 +1233,6 @@ class ProjectModuleRecord(BaseModel):
 
 class ProjectFlowRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     moduleId: str
     moduleName: str | None = None
@@ -1103,76 +1254,6 @@ class ProjectStructureResponse(BaseModel):
     flows: list[ProjectFlowRecord] = Field(default_factory=list)
 
 
-class TaskGroupTemplateStepAttachment(BaseModel):
-    name: str
-    size: int | None = None
-
-
-class TaskGroupTemplateStep(BaseModel):
-    title: str
-    description: str = ""
-    daysAfterPrevious: int = 0
-    durationDays: float = 1.0
-    priority: Priority = "normal"
-    ownerId: str | None = None
-    ownerName: str | None = None
-    collaboratorIds: list[str] = Field(default_factory=list)
-    collaboratorNames: list[str] = Field(default_factory=list)
-    attachments: list[TaskGroupTemplateStepAttachment] = Field(default_factory=list)
-
-
-class TaskGroupTemplateRecord(BaseModel):
-    id: str
-    name: str
-    scenarioDesc: str = ""
-    scope: Literal["local", "organization"] = "local"
-    workObjectId: str | None = None
-    clientId: str | None = None
-    legacyModuleId: str | None = None
-    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
-    createdAt: str
-    updatedAt: str
-
-
-class ApplyTaskGroupTemplateEventLineDraft(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
-    primaryWorkObjectId: str | None = None
-    primaryClientId: str | None = None
-    ownerId: str | None = None
-    participantIds: list[str] = Field(default_factory=list)
-
-
-class TaskGroupTemplateApplyStepOverride(BaseModel):
-    stepIndex: int = Field(ge=0)
-    title: str | None = None
-    description: str | None = None
-    ownerId: str | None = None
-    ownerName: str | None = None
-    collaboratorIds: list[str] | None = None
-    collaboratorNames: list[str] | None = None
-    priority: Priority | None = None
-    durationDays: float | None = Field(default=None, ge=0.5)
-    daysAfterPrevious: int | None = Field(default=None, ge=0)
-
-
-class ApplyTaskGroupTemplatePayload(BaseModel):
-    startDateTime: str
-    listId: str = ""
-    workObjectId: str | None = None
-    clientId: str | None = None
-    eventLineMode: Literal["none", "existing", "create"] = "none"
-    eventLineId: str | None = None
-    eventLineDraft: ApplyTaskGroupTemplateEventLineDraft | None = None
-    stepOverrides: list[TaskGroupTemplateApplyStepOverride] = Field(default_factory=list)
-
-
-class ApplyTaskGroupTemplateResult(BaseModel):
-    createdTaskIds: list[str] = Field(default_factory=list)
-    createdEventLineId: str | None = None
-    createdCount: int = 0
-
-
 class ProjectModuleDetailRecord(ProjectModuleRecord):
     relatedTaskIds: list[str] = Field(default_factory=list)
     relatedTaskTitles: list[str] = Field(default_factory=list)
@@ -1189,7 +1270,6 @@ class ProjectFlowDetailRecord(ProjectFlowRecord):
 
 class MeetingSummary(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     title: str
     stage: MeetingStage
@@ -1242,7 +1322,6 @@ class TaskListRecord(BaseModel):
     id: str
     name: str
     color: str
-    description: str | None = None
     sortOrder: int = 0
     isDefault: bool = False
     scope: Literal["org", "personal"] = "org"
@@ -1312,35 +1391,6 @@ class TaskBoardResponse(BaseModel):
     commonTags: list[str] = Field(default_factory=list)
 
 
-class InboxNotificationRecord(BaseModel):
-    id: str
-    kind: Literal["event_line_operation"] = "event_line_operation"
-    eventLineId: str | None = None
-    eventLineName: str | None = None
-    operationLabel: str
-    actorId: str | None = None
-    actorName: str
-    title: str
-    summary: str
-    mainOwnerNames: list[str] = Field(default_factory=list)
-    participantNames: list[str] = Field(default_factory=list)
-    metadata: dict[str, object] = Field(default_factory=dict)
-    operatedAt: str
-    viewerReadAt: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class InboxNotificationListResponse(BaseModel):
-    notifications: list[InboxNotificationRecord] = Field(default_factory=list)
-
-
-class InboxAggregateResponse(BaseModel):
-    pendingTasks: list[TaskRecord] = Field(default_factory=list)
-    systemNotifications: list[InboxNotificationRecord] = Field(default_factory=list)
-    outboundPendingTasks: list[TaskRecord] = Field(default_factory=list)
-
-
 class TaskCollaboratorRecord(BaseModel):
     userId: str
     fullName: str
@@ -1362,30 +1412,11 @@ class TaskActivityRecord(BaseModel):
     createdAt: str
 
 
-class TaskNotificationBatchReadPayload(BaseModel):
-    taskIds: list[str] = Field(default_factory=list)
-
-
-class TaskNotificationBatchReadResponse(BaseModel):
-    taskIds: list[str] = Field(default_factory=list)
-    updatedCount: int = 0
-
-
-class InboxNotificationBatchReadPayload(BaseModel):
-    notificationIds: list[str] = Field(default_factory=list)
-
-
-class InboxNotificationBatchReadResponse(BaseModel):
-    notificationIds: list[str] = Field(default_factory=list)
-    updatedCount: int = 0
-
-
 class TaskPayload(BaseModel):
     title: str
     desc: str = ""
     priority: Priority = "normal"
     listId: str
-    listIds: list[str] = Field(default_factory=list)
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int = 60
@@ -1398,7 +1429,6 @@ class TaskPayload(BaseModel):
     ownerId: str | None = None
     ownerName: str = ""
     collaboratorIds: list[str] = Field(default_factory=list)
-    collaboratorNames: list[str] = Field(default_factory=list)
     tagIds: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     sourceType: str = "manual"
@@ -1416,7 +1446,6 @@ class TaskUpdatePayload(BaseModel):
     status: TaskStatus | None = None
     priority: Priority | None = None
     listId: str | None = None
-    listIds: list[str] | None = None
     startDate: str | None = None
     dueDate: str | None = None
     durationMinutes: int | None = None
@@ -1429,7 +1458,6 @@ class TaskUpdatePayload(BaseModel):
     ownerId: str | None = None
     ownerName: str | None = None
     collaboratorIds: list[str] | None = None
-    collaboratorNames: list[str] | None = None
     tagIds: list[str] | None = None
     tags: list[str] | None = None
     businessCategory: str | None = None
@@ -1482,8 +1510,7 @@ class TaskTagMutationPayload(BaseModel):
 
 class TaskListMutationPayload(BaseModel):
     name: str = Field(min_length=1, max_length=30)
-    description: str | None = None
-    color: str | None = Field(default=None, min_length=4, max_length=16)
+    color: str = Field(min_length=4, max_length=16)
     isDefault: bool | None = None
     scope: Literal["org", "personal"] | None = None
     archived: bool | None = None
@@ -1547,15 +1574,6 @@ class ProjectModulePayload(BaseModel):
     templateTasksJson: str | None = None
 
 
-class TaskGroupTemplatePayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    scenarioDesc: str = ""
-    scope: Literal["local", "organization"] | None = None
-    workObjectId: str | None = None
-    clientId: str | None = None
-    steps: list[TaskGroupTemplateStep] = Field(default_factory=list)
-
-
 class ProjectFlowPayload(BaseModel):
     moduleId: str = Field(min_length=1)
     name: str = Field(min_length=1, max_length=80)
@@ -1569,8 +1587,7 @@ class ProjectFlowPayload(BaseModel):
     riskPoints: list[str] = Field(default_factory=list)
 
 
-class WorkObjectDnaModuleRecord(BaseModel):
-    workObjectId: str
+class ClientDnaModuleRecord(BaseModel):
     clientId: str
     moduleKey: OrganizationDnaModuleKey
     title: str
@@ -1586,15 +1603,12 @@ class WorkObjectDnaModuleRecord(BaseModel):
     hasDocument: bool = False
 
 
-ClientDnaModuleRecord = WorkObjectDnaModuleRecord
-
-
 class ClientDnaGeneratePayload(BaseModel):
     refreshGenerated: bool = False
 
 
 class ClientDnaModulesResponse(BaseModel):
-    modules: list[WorkObjectDnaModuleRecord]
+    modules: list[ClientDnaModuleRecord]
 
 
 class ClientWorkspaceSettingsRecord(BaseModel):
@@ -1605,12 +1619,6 @@ class ClientWorkspaceSettingsRecord(BaseModel):
     defaultGoalQuarter: str = ""
     defaultMeetingTitlePrefix: str = "客户会议"
     clientDnaModeLabel: str = "DNA"
-    clientEditPermission: Literal["admin_only", "owner", "owner_and_collaborators"] = "owner_and_collaborators"
-    clientDnaGenerationMode: Literal["manual", "prompt_on_material_change", "auto_draft_on_material_change"] = "prompt_on_material_change"
-    knowledgeIngestMeetingNotes: bool = True
-    knowledgeIngestAttachments: bool = True
-    knowledgeIngestTaskReviews: bool = False
-    meetingActionItemMode: Literal["candidate_only", "pending_tasks", "direct_tasks"] = "candidate_only"
     updatedAt: str
 
 
@@ -1622,26 +1630,6 @@ class ClientWorkspaceSettingsPayload(BaseModel):
     defaultGoalQuarter: str | None = None
     defaultMeetingTitlePrefix: str | None = None
     clientDnaModeLabel: str | None = None
-    clientEditPermission: Literal["admin_only", "owner", "owner_and_collaborators"] | None = None
-    clientDnaGenerationMode: Literal["manual", "prompt_on_material_change", "auto_draft_on_material_change"] | None = None
-    knowledgeIngestMeetingNotes: bool | None = None
-    knowledgeIngestAttachments: bool | None = None
-    knowledgeIngestTaskReviews: bool | None = None
-    meetingActionItemMode: Literal["candidate_only", "pending_tasks", "direct_tasks"] | None = None
-
-
-class TopicFocusDomainRecord(BaseModel):
-    id: str
-    name: str
-    keywords: str = ""
-    description: str = ""
-
-
-class TopicSourcePreferenceRecord(BaseModel):
-    id: str
-    name: str
-    trustLevel: Literal["high", "medium", "low"] = "medium"
-    enabled: bool = True
 
 
 class TopicsSettingsRecord(BaseModel):
@@ -1652,10 +1640,6 @@ class TopicsSettingsRecord(BaseModel):
     defaultSourceStrategy: str = "google_bing_news"
     useOrgDnaForInsight: bool = True
     useOrgDnaForTaskPlan: bool = True
-    refreshCadence: Literal["manual", "daily", "weekly"] = "manual"
-    focusDomains: list[TopicFocusDomainRecord] = Field(default_factory=list)
-    sourcePreferences: list[TopicSourcePreferenceRecord] = Field(default_factory=list)
-    candidateRetentionDays: int = 90
     updatedAt: str
 
 
@@ -1667,41 +1651,6 @@ class TopicsSettingsPayload(BaseModel):
     defaultSourceStrategy: str | None = None
     useOrgDnaForInsight: bool | None = None
     useOrgDnaForTaskPlan: bool | None = None
-    refreshCadence: Literal["manual", "daily", "weekly"] | None = None
-    focusDomains: list[TopicFocusDomainRecord] | None = None
-    sourcePreferences: list[TopicSourcePreferenceRecord] | None = None
-    candidateRetentionDays: int | None = None
-
-
-class StrategicSettingsRecord(BaseModel):
-    visibilityScope: Literal["admin_only", "admin_and_owner", "admin_owner_collaborators"] = "admin_and_owner"
-    snapshotConfirmationEnabled: bool = True
-    snapshotConfirmRoles: list[str] = Field(default_factory=lambda: ["admin", "client_owner"])
-    stalledDays: int = 14
-    stalledRiskLevel: Literal["watch", "risk"] = "watch"
-    meetingPackSections: list[str] = Field(default_factory=lambda: [
-        "client_background",
-        "recent_progress",
-        "key_findings",
-        "risks",
-        "suggested_agenda",
-        "pending_decisions",
-        "evidence_summary",
-    ])
-    evidenceMinCount: int = 2
-    markUncalibratedWhenEvidenceInsufficient: bool = True
-    updatedAt: str
-
-
-class StrategicSettingsPayload(BaseModel):
-    visibilityScope: Literal["admin_only", "admin_and_owner", "admin_owner_collaborators"] | None = None
-    snapshotConfirmationEnabled: bool | None = None
-    snapshotConfirmRoles: list[str] | None = None
-    stalledDays: int | None = None
-    stalledRiskLevel: Literal["watch", "risk"] | None = None
-    meetingPackSections: list[str] | None = None
-    evidenceMinCount: int | None = None
-    markUncalibratedWhenEvidenceInsufficient: bool | None = None
 
 
 class DiagnosisProfileRecord(BaseModel):
@@ -1894,31 +1843,6 @@ class HandbookSettingsRecord(BaseModel):
     allowTaskSource: bool = True
     allowAnalysisSource: bool = True
     visibilityBoundary: str = "organization_and_personal"
-    experienceVisibility: Literal["personal", "team_requires_confirmation", "team_default"] = "team_requires_confirmation"
-    captureSources: dict[str, bool] = Field(default_factory=lambda: {
-        "weeklyReview": True,
-        "meetingNotes": True,
-        "aiOverview": True,
-        "taskReview": True,
-        "strategicInsight": True,
-    })
-    handbookSources: dict[str, bool] = Field(default_factory=lambda: {
-        "task": True,
-        "analysis": True,
-        "meeting": True,
-        "strategic": True,
-    })
-    notificationSettings: dict[str, bool] = Field(default_factory=lambda: {
-        "badgeToSelf": True,
-        "xpToSelf": True,
-        "importantBadgeToTeam": False,
-    })
-    organizationCategories: list[dict[str, str]] = Field(default_factory=lambda: [
-        {"id": "experience", "name": "经验卡片", "description": "记录一次有效做法"},
-        {"id": "method", "name": "方法卡片", "description": "沉淀可复用步骤"},
-        {"id": "correction", "name": "纠偏卡片", "description": "记录错误、教训和修正方式"},
-        {"id": "template", "name": "模板/SOP", "description": "可直接复用的流程或模板"},
-    ])
     updatedAt: str
 
 
@@ -1928,11 +1852,6 @@ class HandbookSettingsPayload(BaseModel):
     allowTaskSource: bool | None = None
     allowAnalysisSource: bool | None = None
     visibilityBoundary: str | None = None
-    experienceVisibility: Literal["personal", "team_requires_confirmation", "team_default"] | None = None
-    captureSources: dict[str, bool] | None = None
-    handbookSources: dict[str, bool] | None = None
-    notificationSettings: dict[str, bool] | None = None
-    organizationCategories: list[dict[str, str]] | None = None
 
 
 class SystemAdminSettingsRecord(BaseModel):
@@ -1952,6 +1871,73 @@ class SystemAdminSettingsPayload(BaseModel):
     protectAiAndCloud: bool | None = None
     protectCloudSecurity: bool | None = None
     brandLogoDataUrl: str | None = None
+
+
+class AnalysisWorkerCounterSnapshotRecord(BaseModel):
+    claimCounts: dict[str, int] = Field(default_factory=dict)
+    lockContention: dict[str, int] = Field(default_factory=dict)
+    backfillThrottle: dict[str, int] = Field(default_factory=dict)
+
+
+class MainChainCanaryObservationRecord(BaseModel):
+    recordedAt: str
+    timeRange: str = ""
+    clientCount: int = 0
+    enqueuedJobs: int = 0
+    completedJobs: int = 0
+    failedJobs: int = 0
+    newObjectHitRateBefore: float = 0.0
+    newObjectHitRateAfter: float = 0.0
+    fallbackRateBefore: float = 0.0
+    fallbackRateAfter: float = 0.0
+    resolverMismatchRateBefore: float = 0.0
+    resolverMismatchRateAfter: float = 0.0
+    approvalBacklog: int = 0
+    approvalLagHoursMedian: float = 0.0
+    claimCounts: dict[str, int] = Field(default_factory=dict)
+    lockContention: dict[str, int] = Field(default_factory=dict)
+    backfillThrottle: dict[str, int] = Field(default_factory=dict)
+    impactedRealtimeTasks: bool = False
+    latestJudgmentsShadowOff: bool = False
+    verdict: Literal["pass", "watch", "fail"] = "watch"
+    conclusion: str = ""
+
+
+class MainChainCanaryObservationPayload(BaseModel):
+    timeRange: str | None = None
+    clientCount: int | None = None
+    enqueuedJobs: int | None = None
+    completedJobs: int | None = None
+    failedJobs: int | None = None
+    newObjectHitRateBefore: float | None = None
+    newObjectHitRateAfter: float | None = None
+    fallbackRateBefore: float | None = None
+    fallbackRateAfter: float | None = None
+    resolverMismatchRateBefore: float | None = None
+    resolverMismatchRateAfter: float | None = None
+    approvalBacklog: int | None = None
+    approvalLagHoursMedian: float | None = None
+    claimCounts: dict[str, int] | None = None
+    lockContention: dict[str, int] | None = None
+    backfillThrottle: dict[str, int] | None = None
+    impactedRealtimeTasks: bool | None = None
+    latestJudgmentsShadowOff: bool | None = None
+    verdict: Literal["pass", "watch", "fail"] | None = None
+    conclusion: str | None = None
+
+
+class MainChainStabilitySettingsRecord(BaseModel):
+    latestJudgmentsShadowOff: bool = False
+    backfillPaused: bool = False
+    workerCounters: AnalysisWorkerCounterSnapshotRecord = Field(default_factory=AnalysisWorkerCounterSnapshotRecord)
+    lastCanaryObservation: MainChainCanaryObservationRecord | None = None
+    updatedAt: str
+
+
+class MainChainStabilitySettingsPayload(BaseModel):
+    latestJudgmentsShadowOff: bool | None = None
+    backfillPaused: bool | None = None
+    lastCanaryObservation: MainChainCanaryObservationPayload | None = None
 
 
 class FeishuBotSettingsRecord(BaseModel):
@@ -2066,195 +2052,34 @@ class FeishuDeliveryProfileSavePayload(BaseModel):
     mobile: str | None = None
 
 
-class OrgDingtalkFinanceIntegrationRecord(BaseModel):
+class FeishuMemberAuthorizationRecord(BaseModel):
+    linked: bool = False
+    readyForAuthorization: bool = False
     organizationId: str | None = None
     organizationName: str | None = None
-    appKey: str = ""
-    operatorMobile: str = ""
-    resolvedOperatorUserId: str | None = None
-    enabled: bool = False
-    hasAppSecret: bool = False
-    syncEnabled: bool = True
-    mappedTemplateNames: list[str] = Field(default_factory=list)
-    configuredBy: str | None = None
-    configuredAt: str | None = None
-    updatedAt: str
-    lastValidationStatus: Literal["idle", "success", "failed"] = "idle"
-    lastValidationMessage: str | None = None
+    appId: str = ""
+    userId: str = ""
+    openId: str | None = None
+    unionId: str | None = None
+    feishuUserId: str | None = None
+    name: str | None = None
+    enName: str | None = None
+    avatarUrl: str | None = None
+    email: str | None = None
+    tenantKey: str | None = None
+    boundAt: str | None = None
+    lastVerifiedAt: str | None = None
+    lastError: str | None = None
+    blockedReason: str | None = None
 
 
-class OrgDingtalkFinanceIntegrationSavePayload(BaseModel):
-    appKey: str | None = None
-    appSecret: str | None = None
-    operatorMobile: str | None = None
-    clearAppSecret: bool = False
-    syncEnabled: bool = True
-    mappedTemplateNames: list[str] = Field(default_factory=list)
-
-
-class ExpenseImportSourceRecord(BaseModel):
-    id: str
-    organizationId: str
-    sourceSystem: Literal["dingtalk_finance"] = "dingtalk_finance"
-    sourceInstanceId: str
-    sourceTemplateCode: str | None = None
-    sourceTemplateName: str | None = None
-    sourceTitle: str
-    applicantUserName: str = ""
-    amount: float | None = None
-    currency: str = "CNY"
-    submittedAt: str | None = None
-    approvedAt: str | None = None
-    approvalStatus: str = "unknown"
-    sourceUrl: str | None = None
-    attachments: list["ExpenseEvidenceAttachmentImportPayload"] = Field(default_factory=list)
-    rawPayload: dict[str, object] = Field(default_factory=dict)
-    importedEvidenceId: str | None = None
-    lastImportedAt: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class ExpenseImportSearchPayload(BaseModel):
-    query: str = ""
-    applicantUserName: str = ""
-    approvalStatus: str | None = None
-    submittedFrom: str | None = None
-    submittedTo: str | None = None
-    includeImported: bool = True
-    limit: int = Field(default=20, ge=1, le=100)
-
-
-class ExpenseImportSearchResponse(BaseModel):
-    items: list[ExpenseImportSourceRecord] = Field(default_factory=list)
-    total: int = 0
-    message: str | None = None
-
-
-class ExpenseEvidenceAttachmentImportPayload(BaseModel):
-    sourceFileId: str | None = None
-    sourceSpaceId: str | None = None
-    sourceFileType: str | None = None
-    fileName: str = Field(min_length=1)
-    mimeType: str | None = None
-    sizeBytes: int = 0
-    previewUrl: str | None = None
-
-
-class ExpenseEvidenceImportItemPayload(BaseModel):
-    sourceInstanceId: str = Field(min_length=1)
-    sourceTemplateCode: str | None = None
-    sourceTemplateName: str | None = None
-    sourceTitle: str = Field(min_length=1)
-    applicantUserName: str = ""
-    amount: float | None = None
-    currency: str = "CNY"
-    submittedAt: str | None = None
-    approvedAt: str | None = None
-    approvalStatus: str = "unknown"
-    sourceUrl: str | None = None
-    displayTitle: str | None = None
-    normalizedCategory: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    summary: str = ""
-    attachments: list[ExpenseEvidenceAttachmentImportPayload] = Field(default_factory=list)
-    rawPayload: dict[str, object] = Field(default_factory=dict)
-
-
-class ExpenseEvidenceImportPayload(BaseModel):
-    items: list[ExpenseEvidenceImportItemPayload] = Field(default_factory=list)
-
-
-class ExpenseEvidenceAttachmentRecord(BaseModel):
-    id: str
-    expenseEvidenceId: str
-    sourceFileId: str | None = None
-    sourceSpaceId: str | None = None
-    sourceFileType: str | None = None
-    fileName: str
-    mimeType: str | None = None
-    sizeBytes: int = 0
-    downloadStatus: Literal["not_fetched", "fetched", "failed"] = "not_fetched"
-    ocrStatus: Literal["pending", "done", "failed", "skipped"] = "pending"
-    ocrSummary: str | None = None
-    storagePath: str | None = None
-    previewUrl: str | None = None
-    createdAt: str
-    updatedAt: str
-
-
-class ExpenseEvidenceRecord(BaseModel):
-    id: str
-    organizationId: str
-    workObjectId: str | None = None
-    sourceSystem: Literal["dingtalk_finance"] = "dingtalk_finance"
-    sourceInstanceId: str
-    sourceTemplateCode: str | None = None
-    sourceTemplateName: str | None = None
-    sourceTitle: str
-    displayTitle: str
-    applicantUserName: str = ""
-    amount: float | None = None
-    currency: str = "CNY"
-    submittedAt: str | None = None
-    approvedAt: str | None = None
-    approvalStatus: str = "unknown"
-    sourceUrl: str | None = None
-    normalizedCategory: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    summary: str = ""
-    lastImportedAt: str | None = None
-    createdByUserId: str | None = None
-    updatedByUserId: str | None = None
-    createdAt: str
-    updatedAt: str
-    attachments: list[ExpenseEvidenceAttachmentRecord] = Field(default_factory=list)
-
-
-class ExpenseEvidenceUpdatePayload(BaseModel):
-    workObjectId: str | None = None
-    displayTitle: str | None = None
-    normalizedCategory: str | None = None
-    tags: list[str] | None = None
-    summary: str | None = None
-
-
-class ExpenseEvidenceImportResult(BaseModel):
-    imported: list[ExpenseEvidenceRecord] = Field(default_factory=list)
-    importedCount: int = 0
-    skippedCount: int = 0
-
-
-class EventLineExpenseEvidenceLinkRecord(BaseModel):
-    id: str
-    eventLineId: str
-    evidenceId: str
-    note: str = ""
-    linkedByUserId: str | None = None
-    linkedByUserName: str | None = None
-    createdAt: str
-    evidence: ExpenseEvidenceRecord | None = None
-
-
-class EventLineExpenseEvidenceLinkPayload(BaseModel):
-    evidenceId: str = Field(min_length=1)
-    note: str = ""
-
-
-class TaskExpenseEvidenceLinkRecord(BaseModel):
-    id: str
-    taskId: str
-    evidenceId: str
-    note: str = ""
-    linkedByUserId: str | None = None
-    linkedByUserName: str | None = None
-    createdAt: str
-    evidence: ExpenseEvidenceRecord | None = None
-
-
-class TaskExpenseEvidenceLinkPayload(BaseModel):
-    evidenceId: str = Field(min_length=1)
-    note: str = ""
+class FeishuMemberAuthorizationStartResponse(BaseModel):
+    authorizeUrl: str
+    state: str
+    expiresAt: str
+    callbackUrl: str
+    qrReady: bool = False
+    qrBlockedReason: str | None = None
 
 
 class AiTagSuggestionPayload(BaseModel):
@@ -2305,7 +2130,6 @@ class WeeklyReviewRecord(BaseModel):
 
 class WeeklyReviewTaskSnapshotRecord(BaseModel):
     title: str
-    desc: str = ""
     status: TaskStatus
     startDate: str | None = None
     dueDate: str | None = None
@@ -2372,10 +2196,6 @@ class EventLineRecord(BaseModel):
     evidenceCount: int = 0
     ownerId: str | None = None
     ownerName: str | None = None
-    ownerIds: list[str] = Field(default_factory=list)
-    ownerNames: list[str] = Field(default_factory=list)
-    primaryWorkObjectId: str | None = None
-    primaryWorkObjectName: str | None = None
     primaryClientId: str | None = None
     primaryClientName: str | None = None
     primaryDepartmentId: str | None = None
@@ -2405,7 +2225,6 @@ class EventLineDetailRecord(BaseModel):
     eventLine: EventLineRecord
     tasks: list[TaskRecord] = Field(default_factory=list)
     activities: list[EventLineActivityRecord] = Field(default_factory=list)
-    expenseEvidenceLinks: list["EventLineExpenseEvidenceLinkRecord"] = Field(default_factory=list)
     memorySnapshot: EventLineMemorySnapshot | None = None
     predictionReadiness: float | None = None
     clarificationNeeds: list[str] = Field(default_factory=list)
@@ -2450,8 +2269,6 @@ class EventLineCreatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
-    ownerIds: list[str] = Field(default_factory=list)
-    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] = Field(default_factory=list)
@@ -2470,11 +2287,10 @@ class EventLineUpdatePayload(BaseModel):
     nextStep: str | None = None
     evidenceCount: int | None = None
     ownerId: str | None = None
-    ownerIds: list[str] | None = None
-    primaryWorkObjectId: str | None = None
     primaryClientId: str | None = None
     primaryDepartmentId: str | None = None
     participantIds: list[str] | None = None
+    syncLinkedTaskClientIds: bool | None = None
 
 
 class EventLineClarificationDraftPayload(BaseModel):
@@ -2769,6 +2585,43 @@ class WeeklyReviewAnalysisRecord(BaseModel):
     narrativeAnalyses: list[NarrativeAnalysisRecord] = Field(default_factory=list)
 
 
+class WeeklyMainlineCardRecord(BaseModel):
+    id: str = ""
+    title: str
+    taskCount: int = 0
+    completedCount: int = 0
+    pendingCount: int = 0
+    progressText: str = ""
+    nextGoalText: str = ""
+
+
+class WeeklyMainlineCardsRecord(BaseModel):
+    summaryText: str = ""
+    mainlines: list[WeeklyMainlineCardRecord] = Field(default_factory=list)
+    generatedBy: Literal["ai", "fallback"] = "fallback"
+    evidenceMeta: dict[str, object] = Field(default_factory=dict)
+
+
+class WeeklyEventReviewCardRecord(BaseModel):
+    id: str = ""
+    title: str
+    cardKind: Literal["event_line", "task_cluster", "single_task", "needs_assignment"] = "single_task"
+    taskIds: list[str] = Field(default_factory=list)
+    taskTitles: list[str] = Field(default_factory=list)
+    reflectionPromptText: str = ""
+    progressText: str = ""
+    nextActionText: str = ""
+    materialSuggestionText: str = ""
+    confidence: Literal["low", "medium", "high"] = "medium"
+    generatedBy: Literal["ai", "fallback"] = "fallback"
+
+
+class WeeklyEventReviewCardsRecord(BaseModel):
+    cards: list[WeeklyEventReviewCardRecord] = Field(default_factory=list)
+    generatedBy: Literal["ai", "fallback"] = "fallback"
+    evidenceMeta: dict[str, object] = Field(default_factory=dict)
+
+
 class TaskContextPreviewRecord(BaseModel):
     taskId: str
     clientId: str | None = None
@@ -2802,6 +2655,1764 @@ class TaskSmartBriefRecord(BaseModel):
     summary: str
     summarySourceLabels: list[str] = Field(default_factory=list)
     actionItems: list[TaskSmartBriefActionItem] = Field(default_factory=list)
+
+
+class WorkspaceStateItemRecord(BaseModel):
+    id: str
+    signalType: Literal["change", "progress", "risk", "question", "judgment", "meeting", "task", "noise"]
+    sourceType: str
+    sourceId: str
+    title: str
+    summary: str
+    authority: Literal["approved", "candidate", "informational", "warning"] = "informational"
+    updatedAt: str | None = None
+
+
+class WorkspaceStateProjectionRecord(BaseModel):
+    changeItems: list[WorkspaceStateItemRecord] = Field(default_factory=list)
+    progressItems: list[WorkspaceStateItemRecord] = Field(default_factory=list)
+    signalNoiseFlags: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    stateConfidence: Literal["low", "medium", "high"] = "low"
+
+
+class StateQueryPlanRecord(BaseModel):
+    primaryIntent: Literal["overview", "changes", "progress", "risk", "questions", "judgment", "timeline"] = "overview"
+    focusAreas: list[str] = Field(default_factory=list)
+    needsBoundaryGuard: bool = True
+
+
+class StateQueryHitRecord(BaseModel):
+    sourceType: str
+    sourceId: str
+    label: str
+    summary: str
+    signalKind: Literal["change", "progress", "risk", "question", "judgment", "timeline"]
+    authorityLevel: Literal["approved", "candidate", "informational", "warning"] = "informational"
+
+
+class StateAnswerContextPackRecord(BaseModel):
+    plan: StateQueryPlanRecord
+    summary: str
+    stateSources: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    stateConfidence: Literal["low", "medium", "high"] = "low"
+    hits: list[StateQueryHitRecord] = Field(default_factory=list)
+    sections: StateAnswerSectionsRecord = Field(default_factory=StateAnswerSectionsRecord)
+    sourceSummary: StateSourceSummaryRecord = Field(default_factory=StateSourceSummaryRecord)
+    candidateLeakageCount: int = 0
+    fallbackReason: str | None = None
+
+
+class HybridJudgmentContextPackRecord(BaseModel):
+    judgmentQueryMode: JudgmentQueryMode = "hybrid"
+    evidenceSupportMode: EvidenceSupportMode = "none"
+    summary: str
+    stateSources: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    stateConfidence: Literal["low", "medium", "high"] = "low"
+    sections: StateAnswerSectionsRecord = Field(default_factory=StateAnswerSectionsRecord)
+    sourceSummary: StateSourceSummaryRecord = Field(default_factory=StateSourceSummaryRecord)
+    evidenceSupportItems: list[EvidenceSupportItemRecord] = Field(default_factory=list)
+    approvedJudgments: list[str] = Field(default_factory=list)
+    registeredCandidateJudgments: list[str] = Field(default_factory=list)
+    synthesizedCandidateFindings: list[str] = Field(default_factory=list)
+    dnaSignals: list[str] = Field(default_factory=list)
+    meetingSignals: list[str] = Field(default_factory=list)
+    taskSignals: list[str] = Field(default_factory=list)
+    openQuestionSignals: list[str] = Field(default_factory=list)
+    conflictSignals: list[str] = Field(default_factory=list)
+    rawExcerpts: list[str] = Field(default_factory=list)
+    unknownsAndNextSteps: list[str] = Field(default_factory=list)
+    fallbackReason: str | None = None
+
+
+class PageScopeRecord(BaseModel):
+    page: PageContextPage
+    scopeType: str
+    scopeId: str
+    clientId: str | None = None
+    eventLineId: str | None = None
+    taskId: str | None = None
+    meetingId: str | None = None
+
+
+class PageIntentRecord(BaseModel):
+    rawPrompt: str = ""
+    intent: PageIntentType = "general"
+    requiresOfficialJudgment: bool = False
+    requiresRawEvidence: bool = False
+    requiresNextActions: bool = False
+    requiresIntroProfile: bool = False
+    requiresTaskContext: bool = False
+    routeReason: str = ""
+
+
+class ContextQualityRecord(BaseModel):
+    stateObjectCount: int = 0
+    approvedJudgmentCount: int = 0
+    candidateJudgmentCount: int = 0
+    evidenceCardCount: int = 0
+    rawEvidenceCount: int = 0
+    openQuestionCount: int = 0
+    taskCount: int = 0
+    meetingCount: int = 0
+    contextQuality: ContextQualityLevel = "none"
+    canUseAnalysisFirst: bool = False
+    mustFallbackToLegacy: bool = False
+
+
+class AnswerPolicyRecord(BaseModel):
+    canAnswer: bool = True
+    answerLevel: AnswerLevel = "insufficient"
+    mustDiscloseCandidateBoundary: bool = False
+    mustUseRawEvidence: bool = False
+    shouldCreateProposal: bool = False
+    fallbackToLegacyRetrieval: bool = False
+    reason: str = ""
+
+
+class RetrievalModelSettingsRecord(BaseModel):
+    embeddingProvider: str = "local_fastembed"
+    embeddingModel: str = "BAAI/bge-small-zh-v1.5"
+    embeddingDimension: int = 256
+    embeddingMode: Literal["local", "doubao", "hash_fallback"] = "local"
+    embeddingProfile: Literal["legacy_fastembed_256", "bge_small_native", "bge_m3_dense"] = "legacy_fastembed_256"
+    embeddingProjection: bool = True
+    routerEnabled: bool = False
+    routerProvider: Literal["rules", "local_semantic", "local_llm", "doubao"] = "rules"
+    routerMode: Literal["rules", "semantic_shadow", "semantic", "semantic_plus_llm"] = "rules"
+    routerModel: str = ""
+    routerConfidenceThreshold: float = 0.72
+    rerankEnabled: bool = False
+    rerankProvider: Literal["rules", "bge_reranker", "reserved"] = "rules"
+    rerankModel: str = ""
+    answerLayerEnabled: bool = True
+    dataCenterKernelEnabled: bool = True
+    chatKernelPrimaryEnabled: bool = False
+    chatKernelPrimaryClientAllowlist: list[str] = Field(default_factory=list)
+    qualityGateMode: Literal["observe", "warn", "block"] = "observe"
+    shadowMode: bool = True
+    updatedAt: str = ""
+
+
+class RetrievalModelSettingsPayload(BaseModel):
+    embeddingProvider: str | None = None
+    embeddingModel: str | None = None
+    embeddingDimension: int | None = None
+    embeddingMode: Literal["local", "doubao", "hash_fallback"] | None = None
+    embeddingProfile: Literal["legacy_fastembed_256", "bge_small_native", "bge_m3_dense"] | None = None
+    embeddingProjection: bool | None = None
+    routerEnabled: bool | None = None
+    routerProvider: Literal["rules", "local_semantic", "local_llm", "doubao"] | None = None
+    routerMode: Literal["rules", "semantic_shadow", "semantic", "semantic_plus_llm"] | None = None
+    routerModel: str | None = None
+    routerConfidenceThreshold: float | None = None
+    rerankEnabled: bool | None = None
+    rerankProvider: Literal["rules", "bge_reranker", "reserved"] | None = None
+    rerankModel: str | None = None
+    answerLayerEnabled: bool | None = None
+    dataCenterKernelEnabled: bool | None = None
+    chatKernelPrimaryEnabled: bool | None = None
+    chatKernelPrimaryClientAllowlist: list[str] | None = None
+    qualityGateMode: Literal["observe", "warn", "block"] | None = None
+    shadowMode: bool | None = None
+
+
+class RouteDecisionRecord(BaseModel):
+    intent: PageIntentType = "general"
+    routeMode: RouteMode = "state_first"
+    dataSources: list[str] = Field(default_factory=list)
+    retrievalMode: Literal["state_only", "raw_only", "hybrid", "deferred"] = "deferred"
+    judgmentQueryMode: JudgmentQueryMode | None = None
+    evidenceSupportMode: EvidenceSupportMode | None = None
+    shouldUseRawEvidence: bool = False
+    shouldUseStatePool: bool = True
+    shouldUseTaskContext: bool = False
+    shouldUseMeetingContext: bool = False
+    shouldCreateProposal: bool = False
+    queryPlan: list[str] = Field(default_factory=list)
+    embeddingProfile: str = "default"
+    rerankNeeded: bool = False
+    answerLevelHint: Literal["auto", "official", "candidate", "evidence_based", "fallback", "insufficient"] = "auto"
+    confidence: float = 0.0
+    routeReason: str = ""
+    routerSource: Literal["rules", "local_semantic", "local_llm", "smart_router", "fallback"] = "rules"
+    fallbackUsed: bool = False
+
+
+class RetrievalTraceRecord(BaseModel):
+    routeDecision: RouteDecisionRecord
+    embeddingProvider: str = "local_fastembed"
+    embeddingModel: str = "BAAI/bge-small-zh-v1.5"
+    embeddingDimension: int = 256
+    embeddingSignature: str = "local_fastembed:BAAI/bge-small-zh-v1.5:256"
+    vectorCollection: str | None = None
+    lexicalHitCount: int = 0
+    vectorHitCount: int = 0
+    mergedHitCount: int = 0
+    rerankHitCount: int = 0
+    rawChunkHitCount: int = 0
+    readingPassCount: int = 1
+    selectedDocumentFamilyCount: int = 0
+    selectedCanonicalKinds: list[str] = Field(default_factory=list)
+    softwareMaterialIncluded: bool = False
+    fallbackUsed: bool = False
+    latencyMs: dict[str, float] = Field(default_factory=dict)
+
+
+class RetrievalHealthComponentRecord(BaseModel):
+    provider: str
+    model: str
+    dimension: int | None = None
+    signature: str | None = None
+    ready: bool
+    error: str | None = None
+
+
+class RetrievalHealthRecord(BaseModel):
+    embedding: RetrievalHealthComponentRecord
+    router: RetrievalHealthComponentRecord
+    rerank: dict[str, object] = Field(default_factory=dict)
+    shadowMode: bool = True
+
+
+class RetrievalShadowRunRecord(BaseModel):
+    id: str
+    clientId: str
+    page: str
+    prompt: str
+    baselineSummary: dict[str, object] = Field(default_factory=dict)
+    candidateSummary: dict[str, object] = Field(default_factory=dict)
+    overlapRate: float = 0.0
+    candidateBetter: bool = False
+    failureReason: str | None = None
+    createdAt: str
+
+
+class RetrievalShadowSummaryRecord(BaseModel):
+    total: int = 0
+    candidateBetterRate: float = 0.0
+    overlapRateAvg: float = 0.0
+    latencyDeltaMsAvg: float = 0.0
+    failures: int = 0
+
+
+class DataCenterShadowRunRecord(BaseModel):
+    id: str
+    scopeType: str
+    scopeId: str
+    page: str
+    mode: str
+    prompt: str
+    baseline: dict[str, object] = Field(default_factory=dict)
+    candidate: dict[str, object] = Field(default_factory=dict)
+    routeDecision: dict[str, object] = Field(default_factory=dict)
+    retrievalTrace: dict[str, object] = Field(default_factory=dict)
+    answerPlan: dict[str, object] = Field(default_factory=dict)
+    answerQuality: dict[str, object] = Field(default_factory=dict)
+    actionSuggestion: list[dict[str, object]] = Field(default_factory=list)
+    overlapRate: float = 0.0
+    candidateFailed: bool = False
+    failureReason: str | None = None
+    createdAt: str
+
+
+class DataCenterShadowSummaryRecord(BaseModel):
+    total: int = 0
+    answerQualityPassRate: float = 0.0
+    directAnswerPassRate: float = 0.0
+    evidenceListOnlyFailRate: float = 0.0
+    candidateBetterRate: float = 0.0
+    candidateBetterByGradeRate: float = 0.0
+    gradeDeltaAvg: float = 0.0
+    independentChainPassRate: float = 0.0
+    overlapRateAvg: float = 0.0
+    failures: int = 0
+
+
+class PageContextPackRecord(BaseModel):
+    page: PageContextPage
+    scopeType: str
+    scopeId: str
+    clientId: str | None = None
+    intent: PageIntentType = "general"
+    officialJudgments: list[dict[str, object]] = Field(default_factory=list)
+    candidateJudgments: list[dict[str, object]] = Field(default_factory=list)
+    overlayJudgments: list[dict[str, object]] = Field(default_factory=list)
+    evidenceCards: list[dict[str, object]] = Field(default_factory=list)
+    rawEvidence: list[dict[str, object]] = Field(default_factory=list)
+    openQuestions: list[dict[str, object]] = Field(default_factory=list)
+    conflicts: list[dict[str, object]] = Field(default_factory=list)
+    themeClusters: list[dict[str, object]] = Field(default_factory=list)
+    relatedTasks: list[dict[str, object]] = Field(default_factory=list)
+    relatedMeetings: list[dict[str, object]] = Field(default_factory=list)
+    relatedDocuments: list[dict[str, object]] = Field(default_factory=list)
+    notebookSummary: dict[str, object] | None = None
+    memoryFacts: list[str] = Field(default_factory=list)
+    contextPack: dict[str, object] | None = None
+    judgmentBundle: dict[str, object] | None = None
+    resolutionTrace: dict[str, object] | None = None
+    stateProjection: dict[str, object] | None = None
+    missingContext: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    sourceSummary: dict[str, int] = Field(default_factory=dict)
+    answerPolicy: AnswerPolicyRecord = Field(default_factory=AnswerPolicyRecord)
+    retrievalPlan: dict[str, object] = Field(default_factory=dict)
+    quality: ContextQualityRecord = Field(default_factory=ContextQualityRecord)
+    routeDecision: RouteDecisionRecord | None = None
+    retrievalTrace: RetrievalTraceRecord | None = None
+
+
+class DataCenterScopeRecord(BaseModel):
+    page: PageContextPage
+    scopeType: Literal[
+        "client",
+        "task",
+        "meeting",
+        "event_line",
+        "project_module",
+        "project_flow",
+        "topic",
+        "strategic_cockpit",
+        "system",
+    ]
+    scopeId: str
+    clientId: str | None = None
+    taskId: str | None = None
+    meetingId: str | None = None
+    eventLineId: str | None = None
+    projectModuleId: str | None = None
+    projectFlowId: str | None = None
+    topicId: str | None = None
+
+
+class DataCenterRequestRecord(BaseModel):
+    scope: DataCenterScopeRecord
+    prompt: str = ""
+    mode: Literal["answer", "page_context", "search", "prep", "proposal", "diagnostic"] = "answer"
+    includeRawEvidence: bool = False
+    includeActionSuggestions: bool = False
+    shadow: bool = True
+    persistDrafts: bool = False
+    persistQuality: bool = False
+
+
+class AnswerPlanRecord(BaseModel):
+    intent: PageIntentType = "general"
+    answerShape: Literal[
+        "open_answer",
+        "direct_profile",
+        "business_profile",
+        "strategy_profile",
+        "status_brief",
+        "evidence_answer",
+        "meeting_summary",
+        "task_next_action",
+        "official_registry",
+        "candidate_judgment",
+        "insufficient",
+    ] = "open_answer"
+    requiredSections: list[str] = Field(default_factory=list)
+    mustStartWithDirectAnswer: bool = True
+    mustCiteEvidence: bool = True
+    mustDiscloseBoundary: bool = False
+    allowCandidateJudgment: bool = True
+    maxEvidenceItems: int = 12
+    maxAnswerChars: int = 4200
+    routeReason: str = ""
+
+
+class AnswerMaterialRecord(BaseModel):
+    directAnswerSeed: str = ""
+    keyFacts: list[str] = Field(default_factory=list)
+    structuredPoints: list[str] = Field(default_factory=list)
+    evidenceHighlights: list[EvidenceItem] = Field(default_factory=list)
+    stateHighlights: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    missingContext: list[str] = Field(default_factory=list)
+    nextActions: list[str] = Field(default_factory=list)
+    sourceLabels: list[str] = Field(default_factory=list)
+    businessProfile: BusinessProfileSlotsRecord | None = None
+    strategyProfile: StrategyProfileSlotsRecord | None = None
+
+
+class BusinessProfileSlotsRecord(BaseModel):
+    businessModules: list[str] = Field(default_factory=list)
+    serviceObjects: list[str] = Field(default_factory=list)
+    productsOrPrograms: list[str] = Field(default_factory=list)
+    deliveryModel: list[str] = Field(default_factory=list)
+    evidenceRefs: list[str] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
+
+
+class StrategyProfileSlotsRecord(BaseModel):
+    strategicDirections: list[str] = Field(default_factory=list)
+    keyActions: list[str] = Field(default_factory=list)
+    timeBoundary: str = ""
+    risks: list[str] = Field(default_factory=list)
+    evidenceRefs: list[str] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
+
+
+class QuestionFocusFrameRecord(BaseModel):
+    goal: QuestionFocusGoal = "explain"
+    subjectFacet: QuestionFocusFacet = "general"
+    depth: QuestionFocusDepth = "focused"
+    suppressedExpansions: list[str] = Field(default_factory=list)
+    preferredRoles: list[SemanticSourceRole] = Field(default_factory=list)
+    discouragedRoles: list[SemanticSourceRole] = Field(default_factory=list)
+    reasonTrace: list[str] = Field(default_factory=list)
+
+
+class SourceReachabilityRecord(BaseModel):
+    title: str
+    path: str = ""
+    documentId: str | None = None
+    semanticRoles: list[SemanticSourceRole] = Field(default_factory=list)
+    roleReasons: list[str] = Field(default_factory=list)
+    sourcePresence: Literal["present", "missing"] = "present"
+    sourceReachability: Literal[
+        "indexed_primary",
+        "reachable_support",
+        "unreachable_local",
+        "parse_failed",
+        "state_pool",
+        "missing",
+    ] = "indexed_primary"
+    sourceSelectionPool: Literal["included", "excluded", "not_applicable"] = "not_applicable"
+    sourcePriorityReason: list[str] = Field(default_factory=list)
+    sourceFinalDecision: Literal[
+        "selected",
+        "not_selected",
+        "support_only",
+        "parse_failed",
+        "unreachable",
+        "missing",
+    ] = "not_selected"
+    matchScore: float = 0.0
+
+
+class EvidenceDecisionTraceRecord(BaseModel):
+    title: str
+    path: str = ""
+    documentId: str | None = None
+    semanticRoles: list[SemanticSourceRole] = Field(default_factory=list)
+    roleReasons: list[str] = Field(default_factory=list)
+    sourcePresence: Literal["present", "missing"] = "present"
+    sourceReachability: Literal[
+        "indexed_primary",
+        "reachable_support",
+        "unreachable_local",
+        "parse_failed",
+        "state_pool",
+        "missing",
+    ] = "indexed_primary"
+    sourceSelectionPool: Literal["included", "excluded", "not_applicable"] = "included"
+    sourcePriorityReason: list[str] = Field(default_factory=list)
+    sourceFinalDecision: Literal["selected", "not_selected", "filtered_noise", "filtered_low_relevance"] = "not_selected"
+    score: float = 0.0
+    baseScore: float = 0.0
+
+
+class EvidenceQualitySignalRecord(BaseModel):
+    isNoise: bool = False
+    noiseReasons: list[str] = Field(default_factory=list)
+    sourceKind: Literal[
+        "raw_document",
+        "meeting_note",
+        "meeting_decision",
+        "meeting_action",
+        "meeting_risk",
+        "task_attachment",
+        "judgment",
+        "topic_candidate",
+        "generated_answer",
+        "memory_answer",
+        "ppt_visual",
+        "ppt_master",
+        "template_page",
+        "short_excerpt",
+        "unknown",
+    ] = "unknown"
+    qualityScore: float = 0.0
+    demotionScore: float = 0.0
+    freshnessScore: float = 0.0
+    authorityHint: Literal["raw", "state", "candidate", "generated", "unknown"] = "unknown"
+    semanticRoles: list[SemanticSourceRole] = Field(default_factory=list)
+    roleReasons: list[str] = Field(default_factory=list)
+
+
+class EvidenceQualityAnnotationRecord(BaseModel):
+    id: str
+    sourceType: str
+    sourceId: str
+    documentId: str | None = None
+    path: str | None = None
+    excerptHash: str
+    sourceKind: Literal[
+        "raw_document",
+        "meeting_note",
+        "meeting_decision",
+        "meeting_action",
+        "meeting_risk",
+        "task_attachment",
+        "judgment",
+        "topic_candidate",
+        "generated_answer",
+        "memory_answer",
+        "ppt_visual",
+        "ppt_master",
+        "template_page",
+        "short_excerpt",
+        "unknown",
+    ] = "unknown"
+    qualityScore: float = 0.0
+    demotionScore: float = 0.0
+    noiseReasons: list[str] = Field(default_factory=list)
+    authorityHint: Literal["raw", "state", "candidate", "generated", "unknown"] = "unknown"
+    humanLabel: Literal["useful", "noise", "needs_review"] | None = None
+    humanNote: str = ""
+    createdAt: str
+    updatedAt: str
+
+
+class EvidenceQualityAnnotationLabelPayloadRecord(BaseModel):
+    label: Literal["useful", "noise", "needs_review"]
+    note: str = ""
+
+
+class ActionSuggestionRecord(BaseModel):
+    id: str
+    actionType: Literal[
+        "create_task",
+        "create_proposal",
+        "request_evidence",
+        "refresh_context_pack",
+        "confirm_candidate_judgment",
+        "prepare_meeting",
+        "record_handbook",
+    ]
+    title: str
+    summary: str
+    rationale: str
+    riskLevel: Literal["low", "medium", "high"] = "low"
+    requiresApproval: bool = False
+    sourceRefs: list[str] = Field(default_factory=list)
+    targetRefs: list["ProposalTargetRefRecord"] = Field(default_factory=list)
+
+
+class AnswerQualityReportRecord(BaseModel):
+    hasDirectAnswer: bool = False
+    evidenceListOnly: bool = False
+    evidenceQuoteOnly: bool = False
+    leakedInternalMarkers: list[str] = Field(default_factory=list)
+    candidateAsOfficialRisk: bool = False
+    officialBoundaryViolation: bool = False
+    missingRawEvidenceForIntent: bool = False
+    offTopicRisk: bool = False
+    factSlotHit: bool = False
+    factSlotMissingReason: str | None = None
+    grade: Literal["pass", "warn", "fail"] = "pass"
+    reason: str = ""
+
+
+class GenerationRuntimeStateRecord(BaseModel):
+    clientId: str
+    answerIntent: str
+    provider: str | None = None
+    model: str | None = None
+    recentTotal: int = 0
+    recentTimeouts: int = 0
+    recentLocalFallbacks: int = 0
+    recentSuccesses: int = 0
+    stableFallbackActive: bool = False
+    stableFallbackReason: str | None = None
+    cooldownUntil: str | None = None
+    updatedAt: str
+
+
+class GenerationRuntimeDecisionRecord(BaseModel):
+    shouldAttemptLlm: bool = True
+    shouldUseCompactFirst: bool = False
+    shouldUseLocalOnly: bool = False
+    shouldQueueLongAnswerRetry: bool = False
+    shouldProbeAfterCooldown: bool = False
+    reason: str = ""
+    cooldownActive: bool = False
+
+
+class GenerationRuntimeResetPayloadRecord(BaseModel):
+    clientId: str
+    answerIntent: str = "general"
+    provider: str | None = None
+    model: str | None = None
+    resetScope: Literal["client", "intent", "model"] = "intent"
+
+
+class LlmHealthcheckPayloadRecord(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    prompt: str | None = None
+
+
+class LlmHealthcheckRecord(BaseModel):
+    provider: str
+    model: str
+    success: bool
+    latencyMs: int = 0
+    error: str | None = None
+    errorKind: Literal[
+        "connect_timeout",
+        "read_timeout",
+        "ssl_handshake_timeout",
+        "auth_error",
+        "rate_limit",
+        "unknown",
+    ] | None = None
+
+
+class LlmProviderProbePayloadRecord(BaseModel):
+    clientId: str | None = None
+    providers: list[str] = Field(default_factory=list)
+    prompt: str | None = None
+
+
+class LlmProviderProbeResultRecord(BaseModel):
+    clientId: str | None = None
+    prompt: str
+    generatedAt: str
+    results: list[LlmHealthcheckRecord] = Field(default_factory=list)
+
+
+class DataCenterSearchHitRecord(BaseModel):
+    title: str
+    excerpt: str
+    sourceType: str
+    documentId: str | None = None
+    path: str | None = None
+    originalPath: str | None = None
+    managedPath: str | None = None
+    markdownPath: str | None = None
+    openableKind: Literal["original_file", "machine_markdown", "system_card", "unknown"] | None = None
+    sourceAvailability: Literal["original_available", "machine_readable_only", "invalid_source", "unknown"] | None = None
+    originalAvailable: bool | None = None
+    machineReadableAvailable: bool | None = None
+    openOriginalDisabledReason: str | None = None
+    score: float | None = None
+    sectionLabel: str | None = None
+    retrievalStage: str | None = None
+    selectedForAnswer: bool = False
+    qualityFlags: list[str] = Field(default_factory=list)
+    annotationId: str | None = None
+    humanLabel: Literal["useful", "noise", "needs_review"] | None = None
+
+
+class DataCenterSearchResultRecord(BaseModel):
+    query: str
+    routeDecision: RouteDecisionRecord
+    retrievalTrace: RetrievalTraceRecord | None = None
+    answerPlan: AnswerPlanRecord | None = None
+    hits: list[DataCenterSearchHitRecord] = Field(default_factory=list)
+    selectedHits: list[DataCenterSearchHitRecord] = Field(default_factory=list)
+    missingContext: list[str] = Field(default_factory=list)
+    suggestedFollowups: list[str] = Field(default_factory=list)
+
+
+class DataCenterPrepSectionRecord(BaseModel):
+    title: str
+    bullets: list[str] = Field(default_factory=list)
+    evidenceRefs: list[str] = Field(default_factory=list)
+
+
+class DataCenterPrepResultRecord(BaseModel):
+    prepType: Literal["task", "meeting", "client_conversation"]
+    title: str
+    objective: str = ""
+    knownFacts: list[str] = Field(default_factory=list)
+    keyRisks: list[str] = Field(default_factory=list)
+    openQuestions: list[str] = Field(default_factory=list)
+    recommendedAgenda: list[str] = Field(default_factory=list)
+    nextActions: list[str] = Field(default_factory=list)
+    materials: list["PrepPackMaterialRecord"] = Field(default_factory=list)
+    sections: list[DataCenterPrepSectionRecord] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+
+
+class DataCenterProposalDraftRecord(BaseModel):
+    id: str | None = None
+    kind: Literal[
+        "task_prep",
+        "meeting_prep",
+        "meeting_followup",
+        "evidence_request",
+        "judgment_review",
+        "context_refresh",
+    ]
+    title: str
+    summary: str
+    rationale: str
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    targetRefs: list["ProposalTargetRefRecord"] = Field(default_factory=list)
+    sourceRefs: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    payload: dict[str, object] = Field(default_factory=dict)
+    requiresApproval: bool = True
+    status: Literal["draft", "reviewed", "rejected", "promoted", "expired"] = "draft"
+    dedupeKey: str | None = None
+    sourcePrompt: str = ""
+    scopeType: str | None = None
+    scopeId: str | None = None
+    clientId: str | None = None
+    page: str | None = None
+    mode: str = "proposal"
+    reviewedAt: str | None = None
+    rejectedAt: str | None = None
+    rejectedReason: str | None = None
+    promotedProposalId: str | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+
+
+class ExternalEvidenceLiteRecord(BaseModel):
+    sourceType: Literal["topic_candidate"] = "topic_candidate"
+    sourceId: str
+    title: str
+    summary: str
+    sourceUrl: str | None = None
+    publishedAt: str | None = None
+    confidence: float = 0.0
+    relatedClientIds: list[str] = Field(default_factory=list)
+
+
+class KnowledgeParseFailureRecord(BaseModel):
+    documentId: str
+    title: str
+    path: str
+    kind: str
+    parseStatus: str
+    error: str
+    failureType: str = "unknown"
+    recoverable: bool = False
+    pageCount: int | None = None
+    lastRetryAt: str | None = None
+    recommendedAction: str
+
+
+class KnowledgeParseFailureRetryPayloadRecord(BaseModel):
+    documentIds: list[str] = Field(default_factory=list)
+    force: bool = False
+    ocrMaxPages: int = 60
+    ocrBatchSize: int = 8
+    ocrContinueToEnd: bool = True
+    forceOcr: bool = False
+
+
+class KnowledgeParseFailureRetryItemRecord(BaseModel):
+    documentId: str
+    title: str = ""
+    status: Literal["succeeded", "failed", "skipped"]
+    failureType: Literal[
+        "file_missing",
+        "empty_text",
+        "empty_pdf",
+        "unsupported_format",
+        "ocr_required",
+        "parser_exception",
+        "permission_denied",
+        "managed_path_missing",
+        "unknown",
+    ] | None = None
+    message: str = ""
+
+
+class KnowledgeParseFailureRetryResultRecord(BaseModel):
+    batchId: str
+    attempted: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    failureBuckets: dict[str, int] = Field(default_factory=dict)
+    items: list[KnowledgeParseFailureRetryItemRecord] = Field(default_factory=list)
+
+
+class WorkspaceDocumentProcessingStatusRecord(BaseModel):
+    documentId: str
+    v2DocumentId: str | None = None
+    knowledgeDocumentId: str | None = None
+    title: str
+    fileName: str
+    kind: str
+    materialLayer: str = "evidence"
+    parseStatus: str = "queued"
+    parseError: str | None = None
+    parseErrorCategory: Literal[
+        "file_missing",
+        "permission_denied",
+        "unsupported_format",
+        "ocr_required",
+        "empty_text",
+        "empty_pdf",
+        "parser_exception",
+        "unknown",
+    ] | None = None
+    hasDocumentCard: bool = False
+    hasSurrogate: bool = False
+    hasMasterIndex: bool = False
+    vectorStatus: str | None = None
+    chunkCount: int = 0
+    sectionCount: int = 0
+    usedByLatestContextPack: bool = False
+    lastHitAt: str | None = None
+    updatedAt: str
+    sourceAvailability: Literal["original_available", "machine_readable_only", "invalid_source", "unknown"] = "unknown"
+    originalAvailable: bool = False
+    machineReadableAvailable: bool = False
+    openOriginalDisabledReason: str | None = None
+
+
+class WorkspaceDataCenterReadinessSummaryRecord(BaseModel):
+    totalDocuments: int = 0
+    readyDocuments: int = 0
+    partialReadyDocuments: int = 0
+    parsingDocuments: int = 0
+    queuedDocuments: int = 0
+    runningDocuments: int = 0
+    failedDocuments: int = 0
+    invalidDocuments: int = 0
+    sourceMissingDocuments: int = 0
+    placeholderOnlyDocuments: int = 0
+    parseFailureBuckets: dict[str, int] = Field(default_factory=dict)
+    ocrRecoverableCount: int = 0
+    documentCards: int = 0
+    surrogates: int = 0
+    masterIndexEntries: int = 0
+    vectorReadyDocuments: int = 0
+    vectorStatus: str = "unknown"
+    vectorMasterIndexed: int = 0
+    vectorChunkIndexed: int = 0
+    latestContextPackAt: str | None = None
+    contextQuality: str = "none"
+    missingContextCount: int = 0
+    refreshEventQueuedCount: int = 0
+    refreshEventRunningCount: int = 0
+    refreshEventFailedCount: int = 0
+
+
+class WorkspaceDataCenterReadinessJobEventRecord(BaseModel):
+    jobId: str
+    level: str
+    message: str
+    createdAt: str
+
+
+class WorkspaceDataCenterReadinessRecentJobRecord(BaseModel):
+    id: str
+    jobType: str
+    status: str
+    processedItems: int = 0
+    totalItems: int = 0
+    lastError: str | None = None
+    updatedAt: str
+
+
+class WorkspaceDataCenterReadinessJobsRecord(BaseModel):
+    runningKnowledgeJobs: int = 0
+    failedKnowledgeJobs: int = 0
+    latestJobEvents: list[WorkspaceDataCenterReadinessJobEventRecord] = Field(default_factory=list)
+
+
+class WorkspaceDataCenterReadinessFixRecord(BaseModel):
+    id: str
+    label: str
+    actionType: Literal[
+        "retry_parse",
+        "rebuild_client_knowledge",
+        "regenerate_document_cards",
+        "sync_master_index",
+        "sync_vector_index",
+        "refresh_context_pack",
+        "inspect_failed_documents",
+        "cleanup_invalid_documents",
+        "rebind_original_file",
+    ]
+    severity: Literal["info", "warning", "critical"] = "info"
+    reason: str = ""
+    targetIds: list[str] = Field(default_factory=list)
+    estimatedImpact: str = ""
+
+
+class WorkspaceDataCenterReadinessRecord(BaseModel):
+    clientId: str
+    generatedAt: str
+    summary: WorkspaceDataCenterReadinessSummaryRecord
+    documents: list[WorkspaceDocumentProcessingStatusRecord] = Field(default_factory=list)
+    jobs: WorkspaceDataCenterReadinessJobsRecord = Field(default_factory=WorkspaceDataCenterReadinessJobsRecord)
+    recommendedFixes: list[WorkspaceDataCenterReadinessFixRecord] = Field(default_factory=list)
+    recentJobs: list[WorkspaceDataCenterReadinessRecentJobRecord] = Field(default_factory=list)
+    recentRefreshEvents: list["WorkspaceContextRefreshEventRecord"] = Field(default_factory=list)
+
+
+class WorkspaceDataCenterReadinessActionPayloadRecord(BaseModel):
+    actionType: Literal[
+        "retry_parse",
+        "rebuild_client_knowledge",
+        "regenerate_document_cards",
+        "sync_master_index",
+        "sync_vector_index",
+        "refresh_context_pack",
+        "inspect_failed_documents",
+        "cleanup_invalid_documents",
+        "rebind_original_file",
+    ]
+    targetIds: list[str] = Field(default_factory=list)
+    reason: str = ""
+    ocrMaxPages: int = 60
+    ocrBatchSize: int = 8
+    ocrContinueToEnd: bool = True
+    forceOcr: bool = False
+
+
+class WorkspaceDataCenterReadinessActionResultRecord(BaseModel):
+    actionType: str
+    status: Literal["queued", "running", "completed", "failed"] = "completed"
+    jobId: str | None = None
+    refreshEventId: str | None = None
+    affectedCount: int = 0
+    message: str = ""
+    errors: list[str] = Field(default_factory=list)
+
+
+class WorkspaceContextRefreshEnqueuePayloadRecord(BaseModel):
+    sourceType: str
+    sourceId: str | None = None
+    reason: str
+    scopeType: Literal["client", "task", "meeting", "event_line", "project_module", "project_flow", "strategic_cockpit"] = "client"
+    scopeId: str | None = None
+    priority: Literal["low", "normal", "high"] = "normal"
+
+
+class WorkspaceContextRefreshEventRecord(BaseModel):
+    id: str
+    clientId: str
+    scopeType: str
+    scopeId: str
+    sourceType: str
+    sourceId: str | None = None
+    reason: str
+    priority: Literal["low", "normal", "high"] = "normal"
+    status: Literal["queued", "running", "completed", "failed", "canceled"] = "queued"
+    jobId: str | None = None
+    dedupeKey: str
+    error: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class WorkspaceContextRefreshEnqueueResultRecord(BaseModel):
+    event: WorkspaceContextRefreshEventRecord
+    deduped: bool = False
+
+
+class WorkspaceProposalDraftCreatePayloadRecord(BaseModel):
+    sourceMessageId: str | None = None
+    sourceType: Literal["action_suggestion", "proposal_draft", "manual"] = "manual"
+    actionSuggestionId: str | None = None
+    sourceMessageDraftId: str | None = None
+    sourceMessageDraftPayload: dict[str, object] = Field(default_factory=dict)
+    kind: Literal[
+        "task_prep",
+        "meeting_prep",
+        "meeting_followup",
+        "evidence_request",
+        "judgment_review",
+        "context_refresh",
+    ]
+    title: str
+    summary: str
+    rationale: str = ""
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    targetRefs: list["ProposalTargetRefRecord"] = Field(default_factory=list)
+    sourceRefs: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    payload: dict[str, object] = Field(default_factory=dict)
+    scopeType: Literal["client", "task", "meeting", "event_line", "project_module", "project_flow", "strategic_cockpit"] = "client"
+    scopeId: str | None = None
+
+
+class DiagnosticsBucketRecord(BaseModel):
+    status: Literal["ok", "warning", "critical"] = "ok"
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class WorkspaceChatDiagnosticsRecord(BaseModel):
+    clientId: str
+    recentMessages: int = 0
+    groundedFallbackRate: float = 0.0
+    llmTimeoutRate: float = 0.0
+    sourceIntegrityMatch: bool | None = None
+    runningBuildVersion: str | None = None
+    expectedBuildVersion: str | None = None
+    dominantLlmErrorKind: str | None = None
+    fallbackTemplateUsedRate: float = 0.0
+    dataCenterPrimaryEnabledRate: float = 0.0
+    partialPreservedRate: float = 0.0
+    systemFailureRate: float = 0.0
+    stableFallbackActive: bool = False
+    stableFallbackReason: str | None = None
+    avgRetrievalMs: float = 0.0
+    avgLlmMs: float = 0.0
+    intentDistribution: dict[str, int] = Field(default_factory=dict)
+    materialQuality: dict[str, float] = Field(default_factory=dict)
+    dataCenterQuality: dict[str, object] = Field(default_factory=dict)
+    breakdown: dict[str, DiagnosticsBucketRecord] = Field(default_factory=dict)
+    rootCauseSummary: list[str] = Field(default_factory=list)
+    recommendedFixes: list[str] = Field(default_factory=list)
+    kernelP95Ms: float = 0.0
+    kernelSlowRunCount: int = 0
+    kernelSlowestStage: str | None = None
+
+
+class WorkspaceAnswerFinalizationRecord(BaseModel):
+    content: str
+    answerMode: Literal["grounded_answer", "grounded_fallback", "low_confidence_answer", "general_answer", "system_failure"]
+    failureReason: str | None = None
+    fallbackPresentationMode: Literal["state_cards_only", "compact_user_answer", "full_answer"] | None = None
+    userVisibleQualityStatus: Literal["ready", "usable_with_boundary", "degraded", "needs_retry"] = "ready"
+    shouldShowRetryBanner: bool = False
+    qualityGrade: Literal["pass", "warn", "fail"] = "pass"
+    internalGenerationStatus: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
+class WorkspaceAnswerEvidenceChipRecord(BaseModel):
+    id: str = ""
+    title: str = ""
+    sourceType: str = ""
+    sourceKind: str = ""
+    excerpt: str = ""
+    qualityLabel: Literal["high", "medium", "low", "noise"] = "medium"
+    documentId: str | None = None
+    path: str | None = None
+
+
+class WorkspaceAnswerActionCardRecord(BaseModel):
+    actionType: Literal[
+        "create_proposal",
+        "create_task",
+        "request_evidence",
+        "review_judgment",
+        "refresh_context",
+        "prepare_meeting",
+    ]
+    title: str
+    summary: str = ""
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    draftId: str | None = None
+    proposalId: str | None = None
+    enabled: bool = True
+    disabledReason: str = ""
+
+
+class WorkspaceAnswerExperienceRecord(BaseModel):
+    status: Literal["ready", "usable_with_boundary", "degraded", "needs_retry"] = "ready"
+    headline: str = ""
+    directAnswer: str = ""
+    keyPoints: list[str] = Field(default_factory=list)
+    evidenceChips: list[WorkspaceAnswerEvidenceChipRecord] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    nextActions: list[str] = Field(default_factory=list)
+    actionCards: list[WorkspaceAnswerActionCardRecord] = Field(default_factory=list)
+    trustSignals: list[str] = Field(default_factory=list)
+    userMessage: str = ""
+
+
+class WorkspaceAnswerValueTopItemRecord(BaseModel):
+    key: str
+    count: int = 0
+
+
+class WorkspaceAnswerValueDiagnosticsRecord(BaseModel):
+    clientId: str
+    recentMessages: int = 0
+    answerModeDistribution: dict[str, int] = Field(default_factory=dict)
+    fallbackReasonDistribution: dict[str, int] = Field(default_factory=dict)
+    fallbackPresentationModeDistribution: dict[str, int] = Field(default_factory=dict)
+    retryBannerWouldShowCount: int = 0
+    retryBannerWouldShowRate: float = 0.0
+    lowConfidenceCount: int = 0
+    groundedFallbackCount: int = 0
+    groundedAnswerCount: int = 0
+    usableAnswerCount: int = 0
+    usableAnswerRate: float = 0.0
+    readyOrUsableCount: int = 0
+    readyOrUsableRate: float = 0.0
+    needsRetryCount: int = 0
+    needsRetryRate: float = 0.0
+    degradedCount: int = 0
+    degradedRate: float = 0.0
+    kernelPrimaryUsedCount: int = 0
+    kernelPrimaryFallbackUsedCount: int = 0
+    kernelPrimaryUsedRate: float = 0.0
+    llmTimeoutCount: int = 0
+    llmTimeoutRate: float = 0.0
+    answerQualityPassCount: int = 0
+    answerQualityFailCount: int = 0
+    groundedAnswerPassRate: float = 0.0
+    officialBoundaryViolationCount: int = 0
+    candidateBoundaryViolationCount: int = 0
+    avgSelectedEvidenceCount: float = 0.0
+    evidenceSupportedCount: int = 0
+    evidenceSupportedRate: float = 0.0
+    businessSlotAnswerCount: int = 0
+    businessSlotAnswerRate: float = 0.0
+    strategySlotAnswerCount: int = 0
+    strategySlotAnswerRate: float = 0.0
+    answerTooShortCount: int = 0
+    answerTooShortRate: float = 0.0
+    answerTooTemplateLikeCount: int = 0
+    answerTooTemplateLikeRate: float = 0.0
+    topFailureReasons: list[WorkspaceAnswerValueTopItemRecord] = Field(default_factory=list)
+    recommendedFixes: list[str] = Field(default_factory=list)
+    metricErrors: list[str] = Field(default_factory=list)
+
+
+class WorkspaceAnswerValueReviewPayloadRecord(BaseModel):
+    clientId: str
+    messageId: str
+    prompt: str = ""
+    answerMode: str = ""
+    userVisibleQualityStatus: Literal["ready", "usable_with_boundary", "degraded", "needs_retry"] = "ready"
+    shouldShowRetryBanner: bool = False
+    usableAnswer: bool | None = None
+    reviewerNote: str = ""
+    manualBaselineMinutes: float | None = None
+    dataCenterReviewMinutes: float | None = None
+
+
+class WorkspaceAnswerValueReviewRecord(BaseModel):
+    id: str
+    clientId: str
+    messageId: str
+    prompt: str
+    answerMode: str
+    userVisibleQualityStatus: Literal["ready", "usable_with_boundary", "degraded", "needs_retry"] = "ready"
+    shouldShowRetryBanner: bool = False
+    usableAnswer: bool | None = None
+    reviewerNote: str = ""
+    manualBaselineMinutes: float | None = None
+    dataCenterReviewMinutes: float | None = None
+    savedMinutes: float | None = None
+    createdAt: str
+
+
+class WorkspaceAnswerValueSummaryRecord(BaseModel):
+    clientId: str
+    reviewCount: int = 0
+    usableAnswerRate: float = 0.0
+    retryBannerRate: float = 0.0
+    averageManualBaselineMinutes: float = 0.0
+    averageDataCenterReviewMinutes: float = 0.0
+    estimatedTimeSavedRate: float = 0.0
+    positiveReviewCount: int = 0
+    negativeReviewCount: int = 0
+    lastReviewedAt: str | None = None
+    proposalCreatedFromAnswerCount: int = 0
+    executionTicketCreatedFromAnswerCount: int = 0
+    metricErrors: list[str] = Field(default_factory=list)
+
+
+class WorkspaceValueValidationQuestionRecord(BaseModel):
+    id: str
+    prompt: str
+
+
+class WorkspaceValueValidationSessionSummaryRecord(BaseModel):
+    sessionId: str = ""
+    clientId: str = ""
+    completed: int = 0
+    usableAnswerRate: float = 0.0
+    estimatedTimeSavedRate: float = 0.0
+    retryBannerRate: float = 0.0
+    proposalCreatedCount: int = 0
+    executionTicketCreatedCount: int = 0
+    verdict: Literal["pass", "hold", "fail"] = "hold"
+
+
+class WorkspaceValueValidationSessionRecord(BaseModel):
+    id: str
+    clientId: str
+    status: Literal["running", "completed", "failed"] = "running"
+    questionSet: list[WorkspaceValueValidationQuestionRecord] = Field(default_factory=list)
+    completedQuestionIds: list[str] = Field(default_factory=list)
+    summary: WorkspaceValueValidationSessionSummaryRecord = Field(default_factory=WorkspaceValueValidationSessionSummaryRecord)
+    createdAt: str
+    updatedAt: str
+
+
+class WorkspaceValueValidationSessionCreatePayloadRecord(BaseModel):
+    clientId: str
+
+
+class WorkspaceValueValidationSessionCompleteQuestionPayloadRecord(BaseModel):
+    questionId: str
+    reviewId: str | None = None
+    messageId: str | None = None
+    usableAnswer: bool | None = None
+    retryBannerShown: bool | None = None
+    manualBaselineMinutes: float | None = None
+    dataCenterReviewMinutes: float | None = None
+    proposalCreated: bool = False
+    executionTicketCreated: bool = False
+    reviewerNote: str = ""
+
+
+class WorkspaceAnswerActionCardResultRecord(BaseModel):
+    messageId: str
+    actionType: str
+    status: Literal["created", "reused"] = "created"
+    summary: str = ""
+    draftId: str | None = None
+    proposalId: str | None = None
+    taskId: str | None = None
+    autoApproved: bool = False
+    autoExecuted: bool = False
+
+
+class WorkspaceAnswerQualityFailureRecord(BaseModel):
+    id: str
+    clientId: str
+    messageId: str | None = None
+    prompt: str = ""
+    failureType: Literal[
+        "retry_banner",
+        "too_template_like",
+        "no_evidence",
+        "no_direct_answer",
+        "boundary_violation",
+        "kernel_not_used",
+        "answer_too_short",
+        "user_marked_not_usable",
+    ]
+    severity: Literal["low", "medium", "high"] = "medium"
+    details: dict[str, object] = Field(default_factory=dict)
+    status: Literal["open", "resolved"] = "open"
+    createdAt: str
+    updatedAt: str
+
+
+class WorkspaceAnswerQualityFailureResolvePayloadRecord(BaseModel):
+    note: str = ""
+
+
+class DataCenterCandidateChainRecord(BaseModel):
+    routeDecision: RouteDecisionRecord
+    selectedEvidence: list[EvidenceItem] = Field(default_factory=list)
+    searchHits: list[DataCenterSearchHitRecord] = Field(default_factory=list)
+    answerPlan: AnswerPlanRecord | None = None
+    answerMaterial: AnswerMaterialRecord | None = None
+    answerQuality: dict[str, object] = Field(default_factory=dict)
+    actionSuggestions: list[ActionSuggestionRecord] = Field(default_factory=list)
+    questionFocusFrame: QuestionFocusFrameRecord | None = None
+    evidenceDecisionTrace: list[EvidenceDecisionTraceRecord] = Field(default_factory=list)
+    selectedEvidenceRoles: list[SemanticSourceRole] = Field(default_factory=list)
+    unselectedHighPrioritySources: list[dict[str, object]] = Field(default_factory=list)
+    sourceReachability: dict[str, object] = Field(default_factory=dict)
+    failed: bool = False
+    failureReason: str | None = None
+
+
+class DataCenterProposalDraftRejectPayloadRecord(BaseModel):
+    reason: str = ""
+
+
+class DataCenterProposalDraftReviewPayloadRecord(BaseModel):
+    note: str = ""
+
+
+class DataCenterProposalDraftPromotePayloadRecord(BaseModel):
+    createdBy: str = "data_center"
+    note: str = ""
+    promoteTo: Literal[
+        "proposal",
+        "proposal_record",
+        "task",
+        "evidence_request",
+        "meeting_prep",
+        "judgment_confirmation",
+        "context_refresh",
+    ] | None = None
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class DataCenterProposalDraftPromoteResponseRecord(BaseModel):
+    draft: DataCenterProposalDraftRecord
+    proposalId: str | None = None
+    taskId: str | None = None
+    refreshEventId: str | None = None
+    effectType: Literal[
+        "proposal",
+        "proposal_record",
+        "task",
+        "evidence_request",
+        "meeting_prep",
+        "judgment_confirmation",
+        "context_refresh",
+    ] = "proposal_record"
+
+
+class DataCenterKernelResultRecord(BaseModel):
+    scope: DataCenterScopeRecord
+    pageContext: PageContextPackRecord | None = None
+    routeDecision: RouteDecisionRecord | None = None
+    retrievalTrace: RetrievalTraceRecord | None = None
+    answerPlan: AnswerPlanRecord | None = None
+    answerMaterial: AnswerMaterialRecord | None = None
+    searchResult: DataCenterSearchResultRecord | None = None
+    prepResult: DataCenterPrepResultRecord | None = None
+    proposalDrafts: list[DataCenterProposalDraftRecord] = Field(default_factory=list)
+    persistedProposalDraftIds: list[str] = Field(default_factory=list)
+    dedupedDraftIds: list[str] = Field(default_factory=list)
+    actionSuggestions: list[ActionSuggestionRecord] = Field(default_factory=list)
+    quality: ContextQualityRecord | None = None
+    debug: dict[str, object] = Field(default_factory=dict)
+
+
+class PrepPackMaterialRecord(BaseModel):
+    sourceType: str
+    sourceId: str
+    title: str
+    summary: str
+    authorityLevel: str = ""
+
+
+class PrepPackCardRecord(BaseModel):
+    taskId: str
+    title: str
+    summary: str
+    materials: list[PrepPackMaterialRecord] = Field(default_factory=list)
+    openQuestions: list[str] = Field(default_factory=list)
+    judgments: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    sourceLabels: list[str] = Field(default_factory=list)
+    proposalId: str | None = None
+
+
+class ExternalEvidenceCardRecord(BaseModel):
+    id: str
+    sourceUrl: str
+    sourceDomain: str
+    sourceTier: Literal["official", "trusted_media", "partner", "unknown"] = "unknown"
+    title: str
+    publishedAt: str | None = None
+    factExcerpt: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    relatedScopeType: str
+    relatedScopeId: str
+    confidence: float = 0.0
+    status: Literal["candidate", "accepted", "rejected"] = "candidate"
+    reviewedBy: str | None = None
+    reviewedAt: str | None = None
+    reviewNote: str = ""
+    linkedProposalIds: list[str] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class ProposalTargetRefRecord(BaseModel):
+    targetType: Literal["client", "task", "meeting", "event_line", "judgment"]
+    targetId: str
+    label: str = ""
+
+
+class ExecutionArtifactRefRecord(BaseModel):
+    artifactType: str
+    refId: str
+    title: str
+
+
+class ExecutionTicketResultRecord(BaseModel):
+    resultType: Literal["recorded_only", "prep_artifact_ready", "followup_task_created", "failed"] = "recorded_only"
+    summary: str = ""
+    createdTaskIds: list[str] = Field(default_factory=list)
+    artifactRefs: list[ExecutionArtifactRefRecord] = Field(default_factory=list)
+
+
+class ProposalRecordRecord(BaseModel):
+    id: str
+    clientId: str
+    kind: Literal[
+        "task_prep",
+        "meeting_prep",
+        "meeting_followup",
+        "evidence_request",
+        "judgment_review",
+        "context_refresh",
+    ]
+    status: Literal["draft", "pending_review", "approved", "rejected", "execution_pending", "executed", "failed"]
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    title: str
+    summary: str = ""
+    rationale: str = ""
+    targetRefs: list[ProposalTargetRefRecord] = Field(default_factory=list)
+    sourceRefs: list[str] = Field(default_factory=list)
+    boundaryNotes: list[str] = Field(default_factory=list)
+    payload: dict[str, object] = Field(default_factory=dict)
+    createdBy: str = ""
+    decidedBy: str | None = None
+    decidedAt: str | None = None
+    rejectedReason: str | None = None
+    executionTicketId: str | None = None
+    executionTicket: ExecutionTicketRecord | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ExecutionTicketRecord(BaseModel):
+    id: str
+    proposalId: str
+    clientId: str
+    executionType: str
+    status: Literal["pending", "running", "executed", "failed"] = "pending"
+    payload: dict[str, object] = Field(default_factory=dict)
+    result: ExecutionTicketResultRecord = Field(default_factory=ExecutionTicketResultRecord)
+    idempotencyKey: str | None = None
+    retryCount: int = 0
+    maxRetries: int = 3
+    lastError: str | None = None
+    lastAttemptAt: str | None = None
+    errorMessage: str | None = None
+    executedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ExecutionTicketLogRecord(BaseModel):
+    id: str
+    ticketId: str
+    stage: Literal["validate", "prepare_payload", "execute_action", "write_result", "update_proposal_status", "retry"]
+    status: Literal["started", "success", "failed"]
+    message: str = ""
+    payload: dict[str, object] = Field(default_factory=dict)
+    createdAt: str
+
+
+class ProposalDecisionPayload(BaseModel):
+    comment: str = ""
+
+
+class ProposalApprovalPayloadRecord(BaseModel):
+    decidedBy: str = "user"
+    note: str = ""
+    comment: str | None = None
+
+
+class ProposalExecutionPayloadRecord(BaseModel):
+    requestedBy: str = "user"
+    dryRun: bool = False
+
+
+class ProposalExecutionPreviewRecord(BaseModel):
+    proposalId: str
+    executionType: str
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    willCreateTask: bool = False
+    willCreatePrepArtifact: bool = False
+    willCreateEvidenceRequest: bool = False
+    willUpdateEventLine: bool = False
+    summary: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProposalApprovalResultRecord(BaseModel):
+    proposal: ProposalRecordRecord
+    executionPreview: ProposalExecutionPreviewRecord | None = None
+
+
+class ProposalExecutionResultRecord(BaseModel):
+    proposal: ProposalRecordRecord
+    executionTicket: ExecutionTicketRecord | None = None
+
+
+class ProposalExecutionResponse(BaseModel):
+    proposal: ProposalRecordRecord
+    executionTicket: ExecutionTicketRecord | None = None
+
+
+class ProposalBatchActionPayloadRecord(BaseModel):
+    proposalIds: list[str] = Field(default_factory=list)
+    decidedBy: str = "user"
+    note: str = ""
+
+
+class ProposalBatchResultRecord(BaseModel):
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    failedIds: list[str] = Field(default_factory=list)
+
+
+class KernelPrimaryRolloutStartPayloadRecord(BaseModel):
+    stage: Literal["stage_1_client", "stage_3_clients", "stage_10_clients"]
+    clientIds: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class KernelPrimaryRolloutRollbackPayloadRecord(BaseModel):
+    reason: str = ""
+
+
+class KernelPrimaryRolloutRunRecord(BaseModel):
+    id: str
+    stage: Literal["stage_1_client", "stage_3_clients", "stage_10_clients"]
+    clientIds: list[str] = Field(default_factory=list)
+    status: Literal["planned", "running", "completed", "rolled_back", "failed"] = "planned"
+    metricsBefore: dict[str, object] = Field(default_factory=dict)
+    metricsAfter: dict[str, object] = Field(default_factory=dict)
+    verdict: Literal["pass", "fail", "watch"] | None = None
+    recommendedAction: Literal["keep", "rollback"] | None = None
+    note: str = ""
+    rollbackReason: str | None = None
+    startedAt: str | None = None
+    completedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ExecutionRetryMetricTopItemRecord(BaseModel):
+    key: str
+    count: int = 0
+
+
+class ExecutionRetryMetricAlertRecord(BaseModel):
+    level: Literal["info", "warning", "critical"] = "info"
+    message: str
+
+
+class ExecutionRetryMetricsRecord(BaseModel):
+    windowDays: int = 7
+    totalTickets: int = 0
+    failedTickets: int = 0
+    retriedTickets: int = 0
+    retryExhaustedTickets: int = 0
+    retrySuccessRate: float = 0.0
+    avgRetryCount: float = 0.0
+    oldestFailedTicketAgeHours: float = 0.0
+    failureReasonTopN: list[ExecutionRetryMetricTopItemRecord] = Field(default_factory=list)
+    failedStageTopN: list[ExecutionRetryMetricTopItemRecord] = Field(default_factory=list)
+    alerts: list[ExecutionRetryMetricAlertRecord] = Field(default_factory=list)
+
+
+class EvidenceQualityFeedbackSnapshotCreatePayloadRecord(BaseModel):
+    days: int = Field(default=7, ge=1, le=90)
+
+
+class EvidenceQualityFeedbackSnapshotRecord(BaseModel):
+    id: str
+    windowStart: str
+    windowEnd: str
+    labelCounts: dict[str, int] = Field(default_factory=dict)
+    usefulExamples: list[dict[str, object]] = Field(default_factory=list)
+    noiseExamples: list[dict[str, object]] = Field(default_factory=list)
+    needsReviewExamples: list[dict[str, object]] = Field(default_factory=list)
+    recommendedRules: list[str] = Field(default_factory=list)
+    createdAt: str
+
+
+class DataCenterRollbackDrillPayloadRecord(BaseModel):
+    clientIds: list[str] = Field(default_factory=list)
+    dryRun: bool = True
+
+
+class DataCenterRollbackDrillResultRecord(BaseModel):
+    dryRun: bool = True
+    wouldDisableWorkspacePrimary: bool = True
+    wouldDisableChatKernelPrimary: bool = True
+    wouldClearAllowlist: bool = True
+    wouldKeepDrafts: bool = True
+    wouldKeepExecutionTickets: bool = True
+    wouldKeepEvidenceLabels: bool = True
+    warnings: list[str] = Field(default_factory=list)
+    affectedClientIds: list[str] = Field(default_factory=list)
+    applied: bool = False
+
+
+class DataCenterOperationalStatusRecord(BaseModel):
+    fullRegressionVerdict: Literal["pass", "fail", "hold", "unknown"] = "unknown"
+    p22StrictPass: bool = False
+    p23StrictPass: bool = False
+    rolloutStage: str = "not_started"
+    rolloutLatestVerdict: str = "hold"
+    retryAlerts: list[str] = Field(default_factory=list)
+    latestSnapshotAt: str | None = None
+    rollbackDrillPass: bool = False
+    releaseReportVerdict: Literal["pass", "fail", "hold", "unknown"] = "unknown"
+    blockingIssues: list[str] = Field(default_factory=list)
+
+
+class DataCenterArtifactStatusItemRecord(BaseModel):
+    key: str
+    label: str
+    path: str = ""
+    exists: bool = False
+    verdict: Literal["pass", "fail", "hold", "unknown"] = "unknown"
+    stale: bool = True
+    generatedAt: str | None = None
+    gitCommit: str | None = None
+    backendBuildHash: str | None = None
+    runtimeMode: str | None = None
+    dataDir: str | None = None
+    sourceRunId: str | None = None
+    blockingIssues: list[str] = Field(default_factory=list)
+
+
+class DataCenterArtifactStatusRecord(BaseModel):
+    generatedAt: str
+    overallPass: bool = False
+    items: list[DataCenterArtifactStatusItemRecord] = Field(default_factory=list)
+
+
+class DataCenterSchemaStatusRecord(BaseModel):
+    generatedAt: str
+    ensuredTables: list[str] = Field(default_factory=list)
+    missingTables: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    permissionDiagnostics: dict[str, int] = Field(default_factory=dict)
+
+
+class DigitalAssetMetricRecord(BaseModel):
+    key: str
+    label: str
+    value: int = 0
+    hint: str = ""
+
+
+class DigitalAssetSourceRefRecord(BaseModel):
+    sourceType: str
+    sourceId: str
+    title: str
+    excerpt: str = ""
+    updatedAt: str | None = None
+
+
+class DigitalAssetInsightRecord(BaseModel):
+    dimensionKey: str
+    title: str
+    summary: str
+    evidenceCount: int = 0
+
+
+class DigitalAssetDepositSuggestionRecord(BaseModel):
+    priority: Literal["high", "medium", "low"] = "medium"
+    dimensionKey: str
+    title: str
+    reason: str
+    examples: list[str] = Field(default_factory=list)
+    expectedGain: int = 0
+    analysisValueUnlocked: str = ""
+    suggestedDocumentContent: list[str] = Field(default_factory=list)
+    sourceHighlights: list[str] = Field(default_factory=list)
+
+
+class DigitalAssetScoreBreakdownRecord(BaseModel):
+    deposited: int = 0
+    understood: int = 0
+    computable: int = 0
+    compounding: int = 0
+
+
+class DigitalAssetUnitRecord(BaseModel):
+    key: str
+    label: str
+    level: Literal["required", "advanced", "opportunity"] = "required"
+    covered: bool = False
+    evidenceCount: int = 0
+
+
+class DigitalAssetMapNodeRecord(BaseModel):
+    key: str
+    label: str
+    description: str = ""
+    trackTitle: str = ""
+    currentStage: str = "整理"
+    stageIndex: int = 0
+    coverageScore: int = 0
+    maturityPercent: int = 0
+    evidenceCount: int = 0
+    coveredUnits: list[DigitalAssetUnitRecord] = Field(default_factory=list)
+    missingUnits: list[DigitalAssetUnitRecord] = Field(default_factory=list)
+    unlockedValue: str = ""
+    nextDeposit: str = ""
+    seenSummary: str = ""
+    missingSummary: str = ""
+    suggestedDocumentTitle: str = ""
+    suggestedDocumentContent: list[str] = Field(default_factory=list)
+    unlockedAnalysisValue: str = ""
+    sourceHighlights: list[str] = Field(default_factory=list)
+    representativeSources: list[DigitalAssetSourceRefRecord] = Field(default_factory=list)
+
+
+class DigitalAssetDimensionRecord(BaseModel):
+    key: str
+    label: str
+    description: str
+    maturity: int = 0
+    scoreBreakdown: DigitalAssetScoreBreakdownRecord = Field(default_factory=DigitalAssetScoreBreakdownRecord)
+    evidenceCount: int = 0
+    sourceTypes: list[str] = Field(default_factory=list)
+    representativeSources: list[DigitalAssetSourceRefRecord] = Field(default_factory=list)
+    valueInsights: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    depositSuggestions: list[str] = Field(default_factory=list)
+    formedValue: str = ""
+    nextBestDeposit: str = ""
+    expectedGain: int = 0
+    analysisValueUnlocked: str = ""
+    statusLabels: list[str] = Field(default_factory=list)
+
+
+class DigitalAssetClientSummaryRecord(BaseModel):
+    id: str
+    name: str
+    stage: str = ""
+    intro: str = ""
+    assetCompletionScore: int = 0
+    understandingScore: int = 0
+    understandingStatement: str = ""
+    depositedValueLevel: str = ""
+    nextValueSpace: str = ""
+    depositXp: int = 0
+    assetStage: str = "资料整理期"
+    assetTrackTitle: str = "组织资产型"
+    growthMode: Literal["均衡成长", "单项突破", "结构偏科"] = "均衡成长"
+    stageProgress: int = 0
+    nextStage: str = ""
+    unlockedCapabilities: list[str] = Field(default_factory=list)
+    stageBlockers: list[str] = Field(default_factory=list)
+    nextBestDeposits: list[DigitalAssetDepositSuggestionRecord] = Field(default_factory=list)
+    assetMapNodes: list[DigitalAssetMapNodeRecord] = Field(default_factory=list)
+    assetDimensionCount: int = 0
+    strongestDimensions: list[str] = Field(default_factory=list)
+    highValueSignals: list[str] = Field(default_factory=list)
+    criticalGaps: list[str] = Field(default_factory=list)
+    nextDeposits: list[str] = Field(default_factory=list)
+    metrics: list[DigitalAssetMetricRecord] = Field(default_factory=list)
+    emptyState: bool = False
+    updatedAt: str | None = None
+
+
+class DigitalAssetDashboardRecord(BaseModel):
+    generatedAt: str
+    clients: list[DigitalAssetClientSummaryRecord] = Field(default_factory=list)
+
+
+class DigitalAssetClientDetailRecord(DigitalAssetClientSummaryRecord):
+    dimensions: list[DigitalAssetDimensionRecord] = Field(default_factory=list)
+    valueInsights: list[DigitalAssetInsightRecord] = Field(default_factory=list)
+    depositSuggestions: list[DigitalAssetDepositSuggestionRecord] = Field(default_factory=list)
+    sourceMetrics: list[DigitalAssetMetricRecord] = Field(default_factory=list)
 
 
 class StrategicPermissionRecord(BaseModel):
@@ -2922,6 +4533,11 @@ class StrategicCockpitSnapshotRecord(BaseModel):
     meetingPackDraft: StrategicMeetingPackDraftRecord
     evidencePreview: StrategicEvidencePreviewRecord
     assetCandidates: list[StrategicAssetCandidateRecord] = Field(default_factory=list)
+    officialLayer: dict[str, object] = Field(default_factory=dict)
+    radarLayer: dict[str, object] = Field(default_factory=dict)
+    officialLayerStatus: Literal["ready", "empty"] = "empty"
+    officialEmptyReason: str | None = None
+    resolutionTrace: dict[str, object] = Field(default_factory=dict)
     notebookSummary: OrganizationNotebookSnapshot | None = None
     memoryStatus: MemoryStatus | None = None
     linkedEventLineMemories: list[EventLineMemorySnapshot] = Field(default_factory=list)
@@ -2941,6 +4557,122 @@ class StrategicCockpitConfirmPayload(BaseModel):
     mainContradiction: str = ""
     coreBreakthrough: str = ""
     focusItems: list[str] = Field(default_factory=list)
+
+
+StrategicThoughtScope = Literal["client", "project", "system"]
+StrategicThoughtStatus = Literal["draft", "confirmed", "dismissed", "task_created", "waiting_evidence"]
+StrategicThoughtConfidenceLevel = Literal["low", "medium", "high", "none"]
+StrategicInsightType = Literal[
+    "strategic_shift",
+    "risk_signal",
+    "opportunity_window",
+    "execution_bottleneck",
+    "narrative_upgrade",
+    "operating_model",
+]
+
+StrategicThoughtSourceType = Literal[
+    "strategic_cockpit",
+    "strategic_line",
+    "headline",
+    "pending_decision",
+    "pending_material",
+    "brain_dashboard",
+    "judgment_version",
+    "theme_cluster",
+    "conflict_group",
+    "open_question",
+    "event_line",
+    "meeting",
+    "review",
+    "knowledge",
+    "analysis_run",
+    "client_dna",
+    "document",
+    "task",
+    "project_module",
+    "project_flow",
+    "system",
+]
+
+
+class StrategicThoughtSourceRecord(BaseModel):
+    sourceType: StrategicThoughtSourceType
+    sourceId: str | None = None
+    label: str
+    detail: str | None = None
+
+
+class StrategicThoughtReviewRecord(BaseModel):
+    thoughtId: str
+    status: StrategicThoughtStatus
+    note: str = ""
+    taskId: str | None = None
+    judgmentId: str | None = None
+    reviewedAt: str | None = None
+    reviewedBy: str | None = None
+
+
+class StrategicThoughtRecord(BaseModel):
+    id: str
+    scope: StrategicThoughtScope
+    clientId: str | None = None
+    clientName: str = ""
+    projectModuleId: str | None = None
+    projectModuleName: str | None = None
+    line: str
+    observation: str
+    suggestion: str
+    confidence: int | None = None
+    confidenceLevel: StrategicThoughtConfidenceLevel = "none"
+    status: StrategicThoughtStatus = "draft"
+    isSystem: bool = False
+    dueDateHint: str = ""
+    tags: list[str] = Field(default_factory=list)
+    sources: list[StrategicThoughtSourceRecord] = Field(default_factory=list)
+    evidenceCount: int = 0
+    generatedAt: str
+    staleReason: str | None = None
+    evidenceLevel: Literal["none", "weak", "medium", "strong"] | None = None
+    reason: str | None = None
+    insightType: StrategicInsightType | None = None
+    insightText: str | None = None
+    futureJudgment: str | None = None
+    whyItMatters: str | None = None
+    recommendedAction: str | None = None
+    evidenceSummary: str | None = None
+    evidenceLabels: list[str] = Field(default_factory=list)
+    signalScore: int = 0
+    sourceFingerprint: str | None = None
+    isFavorite: bool = False
+    isDeleted: bool = False
+    review: StrategicThoughtReviewRecord | None = None
+
+
+class StrategicThoughtsResponseRecord(BaseModel):
+    items: list[StrategicThoughtRecord] = Field(default_factory=list)
+    total: int = 0
+    generatedAt: str
+    selectedClientId: str | None = None
+    selectedProjectModuleId: str | None = None
+    usingMockData: bool = False
+
+
+class StrategicThoughtRefreshPayload(BaseModel):
+    clientId: str | None = None
+    projectModuleId: str | None = None
+    limit: int = Field(default=8, ge=1, le=12)
+
+
+class StrategicThoughtStatePayload(BaseModel):
+    action: Literal["favorite", "unfavorite", "delete", "restore"]
+
+
+class StrategicThoughtReviewPayload(BaseModel):
+    action: Literal["confirm", "dismiss", "mark_task_created"]
+    note: str = ""
+    taskId: str | None = None
+    createJudgment: bool = True
 
 
 class ManagementSignalCardRecord(BaseModel):
@@ -3470,6 +5202,9 @@ class GrowthWorkbenchSnapshotRecord(BaseModel):
     supportCopy: GrowthWorkbenchSupportCopyRecord = Field(default_factory=GrowthWorkbenchSupportCopyRecord)
     robotPlan: list[str] = Field(default_factory=list)
     sourceMode: Literal["task", "growth_seed", "empty"] = "empty"
+    scopeMode: Literal["global", "strategic"] | None = None
+    scopeClientId: str | None = None
+    scopeClientName: str | None = None
     updatedAt: str
 
 
@@ -3700,6 +5435,8 @@ class ReviewResponse(BaseModel):
     personalItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)
     workAnalysis: WeeklyReviewAnalysisRecord | None = None
     personalAnalysis: WeeklyReviewAnalysisRecord | None = None
+    weeklyMainlineCards: WeeklyMainlineCardsRecord | None = None
+    weeklyEventReviewCards: WeeklyEventReviewCardsRecord | None = None
     selfReport: HierarchyReportRecord | None = None
     workSignalCard: ManagementSignalCardRecord | None = None
     personalGrowthCard: PersonalGrowthCardRecord | None = None
@@ -4009,26 +5746,42 @@ class FileReclassEventRecord(BaseModel):
     createdAt: str
 
 
+class KnowledgeJobEventRecord(BaseModel):
+    level: str
+    message: str
+    processedItems: int | None = None
+    itemLabel: str | None = None
+    createdAt: str
+
+
 class KnowledgeJobRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     jobType: str
     status: Literal["queued", "running", "completed", "failed"]
     totalItems: int
     processedItems: int
     lastError: str | None = None
+    currentItemLabel: str | None = None
+    lastEventMessage: str | None = None
+    recentEvents: list[KnowledgeJobEventRecord] = Field(default_factory=list)
+    queuedItemLabels: list[str] = Field(default_factory=list)
     createdAt: str
     startedAt: str | None = None
     finishedAt: str | None = None
     updatedAt: str
 
 
+class KnowledgeProgressRecord(BaseModel):
+    knowledgeStatus: KnowledgeStatusRecord
+    knowledgeJobs: list[KnowledgeJobRecord] = Field(default_factory=list)
+
+
 class KnowledgeSearchHitRecord(BaseModel):
     title: str
     excerpt: str
     score: float
-    stage: Literal["master_index", "surrogate", "raw_chunk"]
+    stage: Literal["master_index", "surrogate", "raw_chunk", "state_pool"]
     path: str | None = None
     sectionLabel: str | None = None
     matchedTerms: list[str] = Field(default_factory=list)
@@ -4058,7 +5811,7 @@ class KnowledgeSearchResponse(BaseModel):
     previewSummary: str | None = None
 
 
-class WorkObjectAnalysisEvidenceSummaryRecord(BaseModel):
+class ClientAnalysisEvidenceSummaryRecord(BaseModel):
     summaryText: str = ""
     masterHitCount: int = 0
     surrogateHitCount: int = 0
@@ -4069,12 +5822,8 @@ class WorkObjectAnalysisEvidenceSummaryRecord(BaseModel):
     evidenceList: list[KnowledgeSearchHitRecord] = Field(default_factory=list)
 
 
-ClientAnalysisEvidenceSummaryRecord = WorkObjectAnalysisEvidenceSummaryRecord
-
-
-class WorkObjectAnalysisRunRecord(BaseModel):
+class ClientAnalysisRunRecord(BaseModel):
     id: str
-    workObjectId: str
     clientId: str
     threadId: str
     userMessageId: str
@@ -4087,7 +5836,7 @@ class WorkObjectAnalysisRunRecord(BaseModel):
     progressCeiling: float = 25.0
     stageLabel: str | None = None
     elapsedMs: float = 0.0
-    evidenceSummary: WorkObjectAnalysisEvidenceSummaryRecord = Field(default_factory=WorkObjectAnalysisEvidenceSummaryRecord)
+    evidenceSummary: ClientAnalysisEvidenceSummaryRecord = Field(default_factory=ClientAnalysisEvidenceSummaryRecord)
     longAnswerStatus: Literal["pending", "ready", "fallback", "failed"] = "pending"
     summaryStatus: Literal["pending", "ready", "fallback", "failed"] = "pending"
     longAnswer: str | None = None
@@ -4102,13 +5851,412 @@ class WorkObjectAnalysisRunRecord(BaseModel):
     updatedAt: str
 
 
-ClientAnalysisRunRecord = WorkObjectAnalysisRunRecord
+class AnalysisJobCreatePayload(BaseModel):
+    jobType: AnalysisJobType
+    clientId: str
+    scopeType: AnalysisScopeType = "client"
+    scopeId: str
+    priority: Priority = "normal"
+    triggerType: str = "manual"
+    question: str = ""
+    sourceScope: dict[str, list[str]] = Field(default_factory=dict)
+    featureFlags: dict[str, bool] = Field(default_factory=dict)
+    intentProfile: AnalysisIntentProfile = "client_overview"
 
 
-class WorkObjectWorkspaceResponse(BaseModel):
-    workObject: WorkObjectRecord
-    client: WorkObjectRecord
-    folders: list[WorkObjectFolder]
+class AnalysisJobStageRunRecord(BaseModel):
+    id: str
+    jobId: str
+    stageName: str
+    status: AnalysisStageStatus
+    provider: str | None = None
+    modelName: str | None = None
+    lane: AnalysisLane = "cloud_final"
+    cacheKey: str | None = None
+    cacheHit: bool = False
+    degraded: bool = False
+    evidenceCount: int = 0
+    topicCount: int = 0
+    conflictCount: int = 0
+    contextTimeRange: str | None = None
+    metrics: dict[str, float | int | str] = Field(default_factory=dict)
+    detail: str | None = None
+    correlationId: str | None = None
+    startedAt: str | None = None
+    finishedAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class RuntimeRunLogRecord(BaseModel):
+    id: str
+    clientId: str
+    jobId: str | None = None
+    analysisJobId: str | None = None
+    stageRunId: str | None = None
+    contextPackId: str | None = None
+    judgmentVersionId: str | None = None
+    correlationId: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    lane: AnalysisLane = "cloud_final"
+    cacheHit: bool = False
+    degraded: bool = False
+    documentCount: int = 0
+    evidenceCount: int = 0
+    conflictCount: int = 0
+    contextTimeRange: str | None = None
+    promptVersion: str | None = None
+    schemaVersion: str | None = None
+    summary: str = ""
+    detail: dict[str, object] = Field(default_factory=dict)
+    createdAt: str
+
+
+class AnalysisJobRecord(BaseModel):
+    id: str
+    jobType: AnalysisJobType
+    clientId: str
+    scopeType: AnalysisScopeType
+    scopeId: str
+    status: AnalysisJobStatus
+    priority: Priority = "normal"
+    triggerType: str = "manual"
+    intentProfile: AnalysisIntentProfile = "client_overview"
+    question: str = ""
+    sourceSnapshot: str = ""
+    sourceSnapshotHash: str = ""
+    dedupeKey: str = ""
+    featureFlags: dict[str, bool] = Field(default_factory=dict)
+    progress: float = 0.0
+    stageLabel: str | None = None
+    runLogId: str | None = None
+    error: str | None = None
+    lockedBy: str | None = None
+    lockedAt: str | None = None
+    lockExpiresAt: str | None = None
+    attemptCount: int = 0
+    lastError: str | None = None
+    createdAt: str
+    updatedAt: str
+    startedAt: str | None = None
+    finishedAt: str | None = None
+
+
+class DocSkeletonRecord(BaseModel):
+    id: str
+    clientId: str
+    documentId: str
+    title: str
+    outline: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    timeRange: str | None = None
+    parserVersion: str = "analysis-center-v1"
+    sourceSnapshot: str = ""
+    createdAt: str
+    updatedAt: str
+
+
+class EvidenceCardRecord(BaseModel):
+    id: str
+    clientId: str
+    scopeType: AnalysisScopeType
+    scopeId: str
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    sourceType: str
+    sourceId: str
+    sourceRef: str = ""
+    quote: str
+    normalizedClaim: str
+    evidenceType: str = "general"
+    polarity: Literal["support", "oppose", "neutral"] = "neutral"
+    tags: list[str] = Field(default_factory=list)
+    topicKeys: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    timeAnchor: str | None = None
+    documentId: str | None = None
+    eventLineId: str | None = None
+    taskId: str | None = None
+    meetingId: str | None = None
+    moduleId: str | None = None
+    flowId: str | None = None
+    reviewState: AnalysisReviewState = "draft"
+    fingerprint: str
+    normalizedClaimHash: str = ""
+    sourceRefHash: str = ""
+    evidenceFingerprint: str = ""
+    normalizerVersion: str = "analysis-center-v0.3.3"
+    createdAt: str
+    updatedAt: str
+
+
+class ThemeClusterRecord(BaseModel):
+    id: str
+    clientId: str
+    scopeType: AnalysisScopeType
+    scopeId: str
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    themeKey: str
+    title: str
+    supportIds: list[str] = Field(default_factory=list)
+    opposeIds: list[str] = Field(default_factory=list)
+    gapSummary: str = ""
+    latestChangeSummary: str = ""
+    evidenceCount: int = 0
+    version: int = 1
+    createdAt: str
+    updatedAt: str
+
+
+class ConflictGroupRecord(BaseModel):
+    id: str
+    clientId: str
+    scopeType: AnalysisScopeType
+    scopeId: str
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    conflictType: str
+    title: str
+    summary: str
+    evidenceIds: list[str] = Field(default_factory=list)
+    unresolvedQuestionIds: list[str] = Field(default_factory=list)
+    resolutionStatus: AnalysisReviewState = "draft"
+    severity: Literal["low", "medium", "high"] = "medium"
+    createdAt: str
+    updatedAt: str
+
+
+class OpenQuestionRecord(BaseModel):
+    id: str
+    clientId: str
+    scopeType: AnalysisScopeType
+    scopeId: str
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    themeKey: str
+    question: str
+    reason: str = ""
+    blockerLevel: Literal["low", "medium", "high"] = "medium"
+    status: AnalysisReviewState = "draft"
+    createdAt: str
+    updatedAt: str
+
+
+class ContextPackRecord(BaseModel):
+    id: str
+    clientId: str
+    jobId: str | None = None
+    targetType: AnalysisScopeType
+    targetId: str
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    supersedesId: str | None = None
+    sourceSnapshotHash: str = ""
+    staleReason: AnalysisStaleReason | None = None
+    invalidatedBy: str | None = None
+    promptVersion: str = "analysis-center-v1"
+    sourceCount: int = 0
+    evidenceCount: int = 0
+    payload: dict[str, object] = Field(default_factory=dict)
+    staleAt: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class DnaDeltaRecord(BaseModel):
+    id: str
+    clientId: str
+    dimension: str
+    previousVersion: str | None = None
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    supersedesId: str | None = None
+    sourceSnapshotHash: str = ""
+    staleReason: AnalysisStaleReason | None = None
+    invalidatedBy: str | None = None
+    proposedChange: str
+    summary: str = ""
+    evidenceIds: list[str] = Field(default_factory=list)
+    confidence: Literal["low", "medium", "high"] = "medium"
+    status: AnalysisReviewState = "draft"
+    contextPackId: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class DnaDeltaCreatePayload(BaseModel):
+    clientId: str
+    dimension: str
+    proposedChange: str
+    summary: str = ""
+    evidenceIds: list[str] = Field(default_factory=list)
+    confidence: Literal["low", "medium", "high"] = "medium"
+    contextPackId: str | None = None
+
+
+class JudgmentVersionRecord(BaseModel):
+    id: str
+    clientId: str
+    targetType: AnalysisScopeType
+    targetId: str
+    topic: str
+    version: int = 1
+    status: AnalysisReviewState = "draft"
+    originType: AnalysisOriginType = "projection"
+    authorityLevel: AnalysisAuthorityLevel = "fallback"
+    qualityTier: AnalysisQualityTier = "legacy"
+    supersedesId: str | None = None
+    sourceSnapshotHash: str = ""
+    staleReason: AnalysisStaleReason | None = None
+    invalidatedBy: str | None = None
+    summary: str
+    evidenceIds: list[str] = Field(default_factory=list)
+    contextPackId: str | None = None
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    confidence: Literal["low", "medium", "high"] = "medium"
+    createdAt: str
+    updatedAt: str
+
+
+class JudgmentConfirmPayload(BaseModel):
+    judgmentId: str
+    action: ApprovalDecision
+    note: str = ""
+
+
+class ApprovalDecisionPayload(BaseModel):
+    targetType: ApprovalTargetType
+    targetId: str
+    decision: ApprovalDecision
+    comment: str = ""
+    policyType: str = "analysis_review"
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ApprovalRecordRecord(BaseModel):
+    id: str
+    approvalTargetType: ApprovalTargetType
+    approvalTargetId: str
+    clientId: str
+    policyType: str = "analysis_review"
+    decision: ApprovalDecision
+    comment: str = ""
+    decidedBy: str = ""
+    decidedAt: str
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ApprovalStateRecord(BaseModel):
+    targetType: ApprovalTargetType
+    targetId: str
+    currentDecision: ApprovalDecision | None = None
+    currentStatus: AnalysisReviewState | None = None
+    lastApproval: ApprovalRecordRecord | None = None
+
+
+class ResolutionScopeRecord(BaseModel):
+    scopeType: AnalysisScopeType
+    scopeId: str
+
+
+class ResolutionCandidateRecord(BaseModel):
+    objectId: str | None = None
+    topic: str | None = None
+    scopeType: AnalysisScopeType
+    scopeId: str
+    originType: AnalysisOriginType | None = None
+    authorityLevel: AnalysisAuthorityLevel | None = None
+    qualityTier: AnalysisQualityTier | None = None
+    staleReason: AnalysisStaleReason | None = None
+    status: AnalysisReviewState | None = None
+    rejectedReason: AnalysisRejectedReason | None = None
+
+
+class ResolutionTraceRecord(BaseModel):
+    selectedCandidate: ResolutionCandidateRecord | None = None
+    consideredCandidates: list[ResolutionCandidateRecord] = Field(default_factory=list)
+    requestedScope: ResolutionScopeRecord
+    resolvedScope: ResolutionScopeRecord | None = None
+    writebackScope: ResolutionScopeRecord
+    fallbackUsed: bool = False
+    fallbackReason: str | None = None
+
+
+class JudgmentBundleRecord(BaseModel):
+    baselineJudgment: JudgmentVersionRecord | None = None
+    overlayDeltas: list[JudgmentVersionRecord] = Field(default_factory=list)
+    resolutionTrace: ResolutionTraceRecord
+
+
+class AnalysisMigrationMetricsRecord(BaseModel):
+    windowDays: int = 7
+    newObjectHitRate: float = 0.0
+    fallbackRate: float = 0.0
+    approvalBacklog: int = 0
+    approvalLagHoursMedian: float = 0.0
+    candidateReviewWarningCount: int = 0
+    candidateReviewOverdueCount: int = 0
+    newCandidateUnreviewed24h: int = 0
+    candidateToApprovedConversionRate: float = 0.0
+    staleApprovedJudgmentCount: int = 0
+    resolverMismatchRate: float = 0.0
+    pageBreakdown: dict[str, dict[str, float | int]] = Field(default_factory=dict)
+
+
+class AnalysisCenterSummaryRecord(BaseModel):
+    clientId: str
+    evidenceCardCount: int = 0
+    themeClusterCount: int = 0
+    conflictGroupCount: int = 0
+    openQuestionCount: int = 0
+    draftJudgmentCount: int = 0
+    approvedJudgmentCount: int = 0
+    analysisJobCount: int = 0
+    latestJobStatus: AnalysisJobStatus | None = None
+    latestJobLabel: str | None = None
+    latestContextPackUpdatedAt: str | None = None
+    latestRunLogId: str | None = None
+    latestRunSummary: str | None = None
+
+
+class AnalysisBackfillMainChainPayload(BaseModel):
+    clientIds: list[str] = Field(default_factory=list)
+    dryRun: bool = False
+    batchSize: int = 20
+    maxJobs: int = 100
+    pauseRequested: bool = False
+
+
+class AnalysisBackfillMainChainJobRecord(BaseModel):
+    clientId: str
+    scopeType: AnalysisScopeType
+    scopeId: str
+    jobType: AnalysisJobType = "strategy_pack"
+    triggerType: str = "backfill"
+    intentProfile: AnalysisIntentProfile = "client_overview"
+
+
+class AnalysisBackfillMainChainResultRecord(BaseModel):
+    dryRun: bool = False
+    pauseRequested: bool = False
+    paused: bool = False
+    scannedClients: int = 0
+    queuedJobs: int = 0
+    skippedJobs: int = 0
+    candidates: list[AnalysisBackfillMainChainJobRecord] = Field(default_factory=list)
+
+
+class ClientWorkspaceResponse(BaseModel):
+    client: ClientSummary
+    folders: list[ClientFolder]
     documents: list[DocumentRecord]
     documentCards: list[DocumentCardRecord] = Field(default_factory=list)
     imports: list[ImportRecord]
@@ -4117,21 +6265,29 @@ class WorkObjectWorkspaceResponse(BaseModel):
     recentReclassEvents: list[FileReclassEventRecord] = Field(default_factory=list)
     surrogateCount: int = 0
     memoryDocCount: int = 0
+    memoryCards: list["KnowledgeMemoryRecord"] = Field(default_factory=list)
     threads: list[ChatThread]
     recentMessages: list[ChatMessageRecord]
-    analysisRuns: list[WorkObjectAnalysisRunRecord] = Field(default_factory=list)
+    analysisRuns: list[ClientAnalysisRunRecord] = Field(default_factory=list)
     meetings: list[MeetingSummary]
     goals: list[GoalRecord]
-    dnaModules: list[WorkObjectDnaModuleRecord] = Field(default_factory=list)
+    dnaModules: list[ClientDnaModuleRecord] = Field(default_factory=list)
     projectModules: list[ProjectModuleRecord] = Field(default_factory=list)
     projectFlows: list[ProjectFlowRecord] = Field(default_factory=list)
     dnaTerms: list[DnaTerm]
     relatedTasks: list[TaskRecord]
     notebookSummary: OrganizationNotebookSnapshot | None = None
     memoryStatus: MemoryStatus | None = None
-
-
-ClientWorkspaceResponse = WorkObjectWorkspaceResponse
+    analysisCenter: AnalysisCenterSummaryRecord | None = None
+    latestContextPack: ContextPackRecord | None = None
+    judgmentBundle: JudgmentBundleRecord | None = None
+    latestResolutionTrace: ResolutionTraceRecord | None = None
+    latestJudgments: list[JudgmentVersionRecord] = Field(default_factory=list)
+    latestTopics: list[ThemeClusterRecord] = Field(default_factory=list)
+    latestConflicts: list[ConflictGroupRecord] = Field(default_factory=list)
+    latestOpenQuestions: list[OpenQuestionRecord] = Field(default_factory=list)
+    latestRunLogs: list[RuntimeRunLogRecord] = Field(default_factory=list)
+    stateProjection: WorkspaceStateProjectionRecord | None = None
 
 
 class ClientNotebookResponse(BaseModel):
@@ -4243,8 +6399,6 @@ class ClientTextDocumentResponse(BaseModel):
     title: str
     fileName: str
     path: str
-    sourceType: str | None = None
-    surrogateMdPath: str | None = None
 
 
 class ClientTemplateFillFieldRecord(BaseModel):
@@ -4305,6 +6459,10 @@ class KnowledgeMemoryRecord(BaseModel):
     title: str
     folderCategory: str
     surrogateMdPath: str
+    overviewSummary: str = ""
+    retrievalSummary: str = ""
+    documentRole: str = ""
+    sourceLinks: list[dict[str, object]] = Field(default_factory=list)
     createdAt: str
     updatedAt: str
 

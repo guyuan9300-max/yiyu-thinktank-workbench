@@ -156,6 +156,8 @@ type WeeklyReviewStructuredFieldsProps = {
   onStatusChange?: (nextStatus: 'done' | 'delayed' | 'cancelled') => void;
   isStatusChanging?: boolean;
   statusScopeLabel?: string;
+  textareaLabel?: string;
+  reflectionPlaceholder?: string;
 };
 
 export function WeeklyReviewStructuredFields({
@@ -170,6 +172,8 @@ export function WeeklyReviewStructuredFields({
   onStatusChange,
   isStatusChanging = false,
   statusScopeLabel = '本条任务状态',
+  textareaLabel: textareaLabelOverride,
+  reflectionPlaceholder,
 }: WeeklyReviewStructuredFieldsProps) {
   const mode = reviewModeFromValue(value, taskStatus);
   const helperLabel = mode === 'done'
@@ -181,12 +185,13 @@ export function WeeklyReviewStructuredFields({
         : taskStatus === 'doing'
           ? '仍在推进'
           : '未完成 / 逾期';
-  const textareaLabel = mode === 'done' ? '完成心得' : '需要支持 / 这周思考';
+  const textareaLabel = textareaLabelOverride || (mode === 'done' ? '完成心得' : '需要支持 / 这周思考');
   const placeholder = mode === 'done'
     ? '任务完成了，有什么心得？'
     : scope === 'work'
       ? '这项任务还没收口，需要什么支持，或者有什么思考？'
       : '这件事还没推进完，需要什么支持，或者有什么思考？';
+  const resolvedPlaceholder = reflectionPlaceholder?.trim() || placeholder;
   const currentValue = getSimpleReviewText(value, taskStatus);
   const growthHints = detectGrowthHints(currentValue);
   const contributionPremiumHint = detectContributionPremiumHint(currentValue);
@@ -277,8 +282,8 @@ export function WeeklyReviewStructuredFields({
         <textarea
           value={currentValue}
           onChange={(event) => onChange(applySimpleReviewText(value, event.target.value, taskStatus))}
-          placeholder={placeholder}
-          className="w-full min-h-[96px] rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] leading-6 text-gray-800 outline-none"
+          placeholder={resolvedPlaceholder}
+          className="w-full min-h-[96px] rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] leading-6 text-gray-800 outline-none placeholder:text-gray-400"
         />
       </div>
 

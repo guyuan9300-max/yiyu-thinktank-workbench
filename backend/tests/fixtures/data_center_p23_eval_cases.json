@@ -1,0 +1,222 @@
+[
+  {
+    "id": "proposal_approval_001",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_002",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_003",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_004",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_005",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_006",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_007",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "proposal_approval_008",
+    "category": "proposal_approval"
+  },
+  {
+    "id": "execution_ticket_001",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_002",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_003",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_004",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_005",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_006",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_007",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_ticket_008",
+    "category": "execution_ticket"
+  },
+  {
+    "id": "execution_retry_001",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_002",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_003",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_004",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_005",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_006",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_007",
+    "category": "execution_retry"
+  },
+  {
+    "id": "execution_retry_008",
+    "category": "execution_retry"
+  },
+  {
+    "id": "meeting_followup_execution_001",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_002",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_003",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_004",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_005",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_006",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_007",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "meeting_followup_execution_008",
+    "category": "meeting_followup_execution"
+  },
+  {
+    "id": "kernel_chat_primary_001",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_002",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_003",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_004",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_005",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_006",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_007",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "kernel_chat_primary_008",
+    "category": "kernel_chat_primary"
+  },
+  {
+    "id": "evidence_quality_feedback_001",
+    "category": "evidence_quality_feedback"
+  },
+  {
+    "id": "evidence_quality_feedback_002",
+    "category": "evidence_quality_feedback"
+  },
+  {
+    "id": "evidence_quality_feedback_003",
+    "category": "evidence_quality_feedback"
+  },
+  {
+    "id": "evidence_quality_feedback_004",
+    "category": "evidence_quality_feedback"
+  },
+  {
+    "id": "evidence_quality_feedback_005",
+    "category": "evidence_quality_feedback"
+  },
+  {
+    "id": "evidence_quality_feedback_006",
+    "category": "evidence_quality_feedback"
+  },
+  {
+    "id": "external_evidence_review_001",
+    "category": "external_evidence_review"
+  },
+  {
+    "id": "external_evidence_review_002",
+    "category": "external_evidence_review"
+  },
+  {
+    "id": "external_evidence_review_003",
+    "category": "external_evidence_review"
+  },
+  {
+    "id": "external_evidence_review_004",
+    "category": "external_evidence_review"
+  },
+  {
+    "id": "external_evidence_review_005",
+    "category": "external_evidence_review"
+  },
+  {
+    "id": "ops_panel_contract_001",
+    "category": "ops_panel_contract"
+  },
+  {
+    "id": "ops_panel_contract_002",
+    "category": "ops_panel_contract"
+  },
+  {
+    "id": "ops_panel_contract_003",
+    "category": "ops_panel_contract"
+  },
+  {
+    "id": "ops_panel_contract_004",
+    "category": "ops_panel_contract"
+  }
+]

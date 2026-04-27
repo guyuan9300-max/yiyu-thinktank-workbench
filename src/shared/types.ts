@@ -32,7 +32,6 @@ export type TaskPlanLinkSource = 'ai' | 'manager' | 'rule';
 export type SupportRequestTargetScope = 'manager' | 'department' | 'organization' | 'cross_department';
 export type SupportRequestType = 'resource' | 'decision' | 'collaboration' | 'workload' | 'clarification';
 export type SupportRequestStatus = 'open' | 'accepted' | 'resolved' | 'dismissed';
-export type WorkObjectMode = 'client' | 'project';
 export type DnaSourceLevel = 'organization' | 'client';
 export type OrganizationDnaModuleKey = 'organization_intro' | 'business_intro' | 'team_intro' | 'market_intro';
 export type FeishuReceiveIdType = 'open_id' | 'user_id' | 'email' | 'chat_id';
@@ -45,6 +44,44 @@ export type GrowthContributionTag = 'knowledge_asset' | 'critical_resolution' | 
 export type GrowthValidationState = 'candidate' | 'observed' | 'validated' | 'institutionalized';
 export type GrowthPendingCaptureState = 'open' | 'dismissed' | 'reviewed' | 'promoted';
 export type BadgeState = 'locked' | 'progress' | 'ready' | 'lit' | 'mastered';
+export type AnalysisScopeType = 'client' | 'event_line' | 'meeting' | 'task' | 'module' | 'flow';
+export type AnalysisJobType = 'asset_ingest' | 'evidence_extract' | 'customer_compare' | 'meeting_enhance' | 'dna_refresh' | 'strategy_pack';
+export type AnalysisJobStatus =
+  | 'queued'
+  | 'running'
+  | 'preparing'
+  | 'extracting'
+  | 'clustering'
+  | 'comparing'
+  | 'drafting'
+  | 'awaiting_review'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'rolled_back';
+export type AnalysisReviewState = 'draft' | 'awaiting_review' | 'awaiting_revision' | 'approved' | 'rejected' | 'superseded';
+export type AnalysisStageStatus = 'queued' | 'running' | 'completed' | 'failed' | 'skipped';
+export type AnalysisOriginType = 'projection' | 'analysis' | 'human_override';
+export type AnalysisAuthorityLevel = 'fallback' | 'candidate' | 'approved';
+export type AnalysisQualityTier = 'legacy' | 'normalized' | 'reviewed';
+export type AnalysisIntentProfile = 'task_ai' | 'weekly_review' | 'meeting_enhance' | 'client_overview' | 'strategic_cockpit' | 'dna_summary';
+export type AnalysisStaleReason =
+  | 'superseded_by_newer_judgment'
+  | 'source_snapshot_changed'
+  | 'approval_revoked'
+  | 'scope_no_longer_primary'
+  | 'insufficient_evidence'
+  | 'manual_invalidation';
+export type AnalysisRejectedReason =
+  | 'authority_too_low'
+  | 'scope_less_relevant'
+  | 'stale'
+  | 'superseded'
+  | 'insufficient_evidence'
+  | 'not_approved_for_official_use';
+export type ApprovalDecision = 'approved' | 'rejected' | 'returned_for_revision';
+export type ApprovalTargetType = 'judgment_version' | 'dna_delta' | 'conflict_group' | 'proposal_record';
+export type AnalysisLane = 'light_extractor' | 'local_deep' | 'cloud_final';
 
 export interface Operator {
   id: string;
@@ -62,7 +99,6 @@ export interface AppSettings {
   dataDir: string;
   backupDir: string;
   cloudApiUrl: string;
-  localWorkObjectMode?: WorkObjectMode | null;
   lastBackupAt?: string | null;
   foldersRootLabel: string;
   aiConfigured: boolean;
@@ -150,7 +186,6 @@ export interface DepartmentOption {
 export interface OrgProfileSettings {
   organizationId: string;
   name: string;
-  workObjectMode?: WorkObjectMode;
   annualGoal: string;
   annualStrategyYear: string;
   annualStrategy: string;
@@ -393,11 +428,14 @@ export interface HealthResponse {
   appName: string;
   appVersion: string;
   buildVersion: string;
+  gitCommit?: string | null;
+  backendBuildHash?: string;
+  backendSchemaVersion?: number;
+  runtimeMode?: 'packaged' | 'dev';
   startedAt: string;
   featureFlags: string[];
   dataDir: string;
   stats: {
-    workObjects?: number;
     clients: number;
     tasks: number;
     topics: number;
@@ -414,7 +452,7 @@ export interface HealthResponse {
   };
 }
 
-export interface WorkObjectRecord {
+export interface ClientSummary {
   id: string;
   name: string;
   alias: string;
@@ -422,17 +460,15 @@ export interface WorkObjectRecord {
   type: string;
   intro: string;
   stage: string;
+  color?: string;
   folderCount: number;
   documentCount: number;
   taskCount: number;
   lastActivityAt?: string | null;
 }
 
-export type ClientSummary = WorkObjectRecord;
-
-export interface WorkObjectFolder {
+export interface ClientFolder {
   id: string;
-  workObjectId: string;
   clientId: string;
   label: string;
   path: string;
@@ -440,11 +476,8 @@ export interface WorkObjectFolder {
   lastScannedAt?: string | null;
 }
 
-export type ClientFolder = WorkObjectFolder;
-
 export interface DocumentRecord {
   id: string;
-  workObjectId?: string | null;
   clientId: string;
   folderId?: string | null;
   title: string;
@@ -476,11 +509,18 @@ export interface KnowledgeStatus {
   embeddingMode: string;
   embeddingModel?: string | null;
   embeddingError?: string | null;
+  embeddingProvider?: string | null;
+  embeddingDimension?: number | null;
+  embeddingSignature?: string | null;
+  activeVectorCollection?: string | null;
+  vectorIndexStatus?: 'ready' | 'stale' | 'building' | 'failed' | null;
+  routerEnabled?: boolean;
+  routerModel?: string | null;
+  rerankEnabled?: boolean;
 }
 
 export interface OrganizationNotebookSnapshot {
   id: string;
-  workObjectId?: string | null;
   clientId: string;
   organizationIntro: string;
   collaborationRelationship: string;
@@ -545,7 +585,6 @@ export interface ClarificationRecord {
 }
 
 export interface MemoryStatus {
-  workObjectId?: string | null;
   clientId: string;
   notebookCompleteness: number;
   notebookConfidence: number;
@@ -567,7 +606,6 @@ export interface BackgroundReadiness {
 export interface DocumentCard {
   id: string;
   docId: string;
-  workObjectId?: string | null;
   clientId: string;
   documentId: string;
   title: string;
@@ -609,7 +647,6 @@ export interface DocumentCard {
 
 export interface ImportRecord {
   id: string;
-  workObjectId?: string | null;
   clientId: string;
   sourcePath: string;
   mode: 'folder' | 'file';
@@ -628,7 +665,7 @@ export interface WorkspaceImportBackfillResponse {
   skipped: number;
 }
 
-export interface WorkObjectTemplateFillField {
+export interface ClientTemplateFillField {
   label: string;
   value: string;
   status: 'filled' | 'missing';
@@ -643,9 +680,7 @@ export interface WorkObjectTemplateFillField {
   reviewRequired?: boolean;
 }
 
-export type ClientTemplateFillField = WorkObjectTemplateFillField;
-
-export interface WorkObjectTemplateFillResponse {
+export interface ClientTemplateFillResponse {
   path: string;
   fileName: string;
   fieldCount: number;
@@ -653,14 +688,11 @@ export interface WorkObjectTemplateFillResponse {
   missingCount: number;
   reviewFieldCount?: number;
   attachmentChecklist?: string[];
-  fields: WorkObjectTemplateFillField[];
+  fields: ClientTemplateFillField[];
 }
 
-export type ClientTemplateFillResponse = WorkObjectTemplateFillResponse;
-
-export interface WorkObjectTemplateFillRun {
+export interface ClientTemplateFillRun {
   id: string;
-  workObjectId: string;
   clientId: string;
   templateName: string;
   templatePath: string;
@@ -677,18 +709,15 @@ export interface WorkObjectTemplateFillRun {
   currentFieldLabel?: string | null;
   evidenceTitles: string[];
   attachmentChecklist?: string[];
-  fields: WorkObjectTemplateFillField[];
+  fields: ClientTemplateFillField[];
   outputPath?: string | null;
   errorMessage?: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export type ClientTemplateFillRun = WorkObjectTemplateFillRun;
-
 export interface GoalRecord {
   id: string;
-  workObjectId: string;
   clientId: string;
   title: string;
   quarter: string;
@@ -698,7 +727,6 @@ export interface GoalRecord {
 
 export interface DnaTerm {
   id: string;
-  workObjectId: string;
   clientId: string;
   category: string;
   canonicalName: string;
@@ -713,11 +741,24 @@ export interface EvidenceItem {
   excerpt: string;
   sourceType: string;
   documentId?: string | null;
+  documentFamilyId?: string | null;
+  canonicalKind?: string | null;
+  originType?: string | null;
+  originId?: string | null;
+  isSearchable?: boolean | null;
   path?: string | null;
+  originalPath?: string | null;
+  managedPath?: string | null;
+  markdownPath?: string | null;
+  openableKind?: 'original_file' | 'machine_markdown' | 'system_card' | 'unknown' | string | null;
+  sourceAvailability?: 'original_available' | 'machine_readable_only' | 'invalid_source' | 'unknown' | string | null;
+  originalAvailable?: boolean | null;
+  machineReadableAvailable?: boolean | null;
+  openOriginalDisabledReason?: string | null;
   score?: number | null;
   coverage?: number | null;
   sectionLabel?: string | null;
-  retrievalStage?: 'master_index' | 'surrogate' | 'raw_chunk' | null;
+  retrievalStage?: 'master_index' | 'surrogate' | 'raw_chunk' | 'state_pool' | null;
   isFallback?: boolean;
   matchedTerms: string[];
 }
@@ -728,6 +769,1163 @@ export interface AiStructuredResponse {
   analysis: string;
   actions: string;
   timeline: string;
+}
+
+export type JudgmentQueryMode = 'registry_only' | 'hybrid' | 'evidence_based_synthesis';
+
+export type EvidenceSupportMode =
+  | 'none'
+  | 'linked_state_evidence'
+  | 'evidence_cards'
+  | 'raw_doc_drilldown'
+  | 'generic_retrieval_fallback';
+
+export type WorkspaceAnswerIntent =
+  | 'intro_profile'
+  | 'business_profile'
+  | 'strategy_profile'
+  | 'project_intro'
+  | 'meeting_summary'
+  | 'next_actions'
+  | 'official_judgment_registry'
+  | 'evidence_question'
+  | 'status_progress'
+  | 'general';
+
+export type RetrievalDecisionReason =
+  | 'state_first_default'
+  | 'document_drilldown_requested'
+  | 'search_cache_requested'
+  | 'intro_query_needs_evidence'
+  | 'identity_query_needs_evidence'
+  | 'project_intro_needs_evidence'
+  | 'meeting_summary_needs_evidence'
+  | 'next_actions_needs_evidence'
+  | 'evidence_question_needs_evidence'
+  | 'official_registry_requested'
+  | 'status_progress_needs_hybrid_evidence'
+  | 'default_hybrid_evidence'
+  | 'state_pool_insufficient'
+  | 'state_pool_empty';
+
+export type PageContextPage =
+  | 'client_workspace'
+  | 'workspace_chat'
+  | 'task_detail'
+  | 'task_ai'
+  | 'meeting_detail'
+  | 'event_line_detail'
+  | 'project_module_detail'
+  | 'project_flow_detail'
+  | 'mobile_consult'
+  | 'topic_radar'
+  | 'strategic_cockpit';
+
+export type PageIntentType =
+  | 'intro_profile'
+  | 'business_profile'
+  | 'strategy_profile'
+  | 'project_intro'
+  | 'meeting_summary'
+  | 'next_actions'
+  | 'official_judgment_registry'
+  | 'evidence_question'
+  | 'status_progress'
+  | 'task_context'
+  | 'task_next_action'
+  | 'proposal_gap'
+  | 'general';
+
+export type AnswerLevel = 'official' | 'candidate' | 'evidence_based' | 'fallback' | 'insufficient';
+export type ContextQualityLevel = 'none' | 'weak' | 'usable' | 'strong';
+
+export interface PageIntent {
+  rawPrompt: string;
+  intent: PageIntentType;
+  requiresOfficialJudgment: boolean;
+  requiresRawEvidence: boolean;
+  requiresNextActions: boolean;
+  requiresIntroProfile: boolean;
+  requiresTaskContext: boolean;
+  routeReason: string;
+}
+
+export interface ContextQuality {
+  stateObjectCount: number;
+  approvedJudgmentCount: number;
+  candidateJudgmentCount: number;
+  evidenceCardCount: number;
+  rawEvidenceCount: number;
+  openQuestionCount: number;
+  taskCount: number;
+  meetingCount: number;
+  contextQuality: ContextQualityLevel;
+  canUseAnalysisFirst: boolean;
+  mustFallbackToLegacy: boolean;
+}
+
+export type RouteMode =
+  | 'registry_only'
+  | 'raw_doc_drilldown'
+  | 'meeting_evidence'
+  | 'task_context'
+  | 'state_first'
+  | 'hybrid';
+
+export interface RetrievalModelSettings {
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingDimension: number;
+  embeddingMode: 'local' | 'doubao' | 'hash_fallback';
+  embeddingProfile?: 'legacy_fastembed_256' | 'bge_small_native' | 'bge_m3_dense';
+  embeddingProjection?: boolean;
+  routerEnabled: boolean;
+  routerProvider: 'rules' | 'local_semantic' | 'local_llm' | 'doubao';
+  routerMode?: 'rules' | 'semantic_shadow' | 'semantic' | 'semantic_plus_llm';
+  routerModel: string;
+  routerConfidenceThreshold?: number;
+  rerankEnabled: boolean;
+  rerankProvider: 'rules' | 'bge_reranker' | 'reserved';
+  rerankModel?: string;
+  answerLayerEnabled?: boolean;
+  dataCenterKernelEnabled?: boolean;
+  chatKernelPrimaryEnabled?: boolean;
+  chatKernelPrimaryClientAllowlist?: string[];
+  qualityGateMode?: 'observe' | 'warn' | 'block';
+  shadowMode: boolean;
+  updatedAt: string;
+}
+
+export type RetrievalMode = 'state_only' | 'raw_only' | 'hybrid' | 'deferred';
+
+export interface RouteDecision {
+  intent: PageIntentType;
+  routeMode: RouteMode;
+  dataSources: string[];
+  retrievalMode: RetrievalMode;
+  judgmentQueryMode?: JudgmentQueryMode | null;
+  evidenceSupportMode?: EvidenceSupportMode | null;
+  shouldUseRawEvidence: boolean;
+  shouldUseStatePool: boolean;
+  shouldUseTaskContext: boolean;
+  shouldUseMeetingContext: boolean;
+  shouldCreateProposal: boolean;
+  queryPlan: string[];
+  embeddingProfile: string;
+  rerankNeeded: boolean;
+  answerLevelHint: 'auto' | AnswerLevel;
+  confidence: number;
+  routeReason: string;
+  routerSource: 'rules' | 'local_semantic' | 'local_llm' | 'smart_router' | 'fallback';
+  fallbackUsed: boolean;
+}
+
+export interface RetrievalTrace {
+  routeDecision: RouteDecision;
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingDimension: number;
+  embeddingSignature: string;
+  vectorCollection?: string | null;
+  lexicalHitCount: number;
+  vectorHitCount: number;
+  mergedHitCount: number;
+  rerankHitCount: number;
+  rawChunkHitCount: number;
+  fallbackUsed: boolean;
+  latencyMs: Record<string, number>;
+}
+
+export interface RetrievalHealthComponent {
+  provider: string;
+  model: string;
+  dimension?: number | null;
+  signature?: string | null;
+  ready: boolean;
+  error?: string | null;
+}
+
+export interface RetrievalHealth {
+  embedding: RetrievalHealthComponent;
+  router: RetrievalHealthComponent;
+  rerank: {
+    enabled?: boolean;
+    provider?: string;
+  };
+  shadowMode: boolean;
+}
+
+export interface RetrievalShadowRun {
+  id: string;
+  clientId: string;
+  page: string;
+  prompt: string;
+  baselineSummary: Record<string, unknown>;
+  candidateSummary: Record<string, unknown>;
+  overlapRate: number;
+  candidateBetter: boolean;
+  failureReason?: string | null;
+  createdAt: string;
+}
+
+export interface RetrievalShadowSummary {
+  total: number;
+  candidateBetterRate: number;
+  overlapRateAvg: number;
+  latencyDeltaMsAvg: number;
+  failures: number;
+}
+
+export interface DataCenterShadowRun {
+  id: string;
+  scopeType: string;
+  scopeId: string;
+  page: string;
+  mode: string;
+  prompt: string;
+  baseline: Record<string, unknown>;
+  candidate: Record<string, unknown>;
+  routeDecision: Record<string, unknown>;
+  retrievalTrace: Record<string, unknown>;
+  answerPlan: Record<string, unknown>;
+  answerQuality: Record<string, unknown>;
+  actionSuggestion: Array<Record<string, unknown>>;
+  overlapRate: number;
+  candidateFailed: boolean;
+  failureReason?: string | null;
+  createdAt: string;
+}
+
+export interface DataCenterShadowSummary {
+  total: number;
+  answerQualityPassRate: number;
+  directAnswerPassRate: number;
+  evidenceListOnlyFailRate: number;
+  candidateBetterRate: number;
+  candidateBetterByGradeRate?: number;
+  gradeDeltaAvg?: number;
+  independentChainPassRate?: number;
+  overlapRateAvg: number;
+  failures: number;
+}
+
+export interface GenerationRuntimeState {
+  clientId: string;
+  answerIntent: string;
+  provider?: string | null;
+  model?: string | null;
+  recentTotal: number;
+  recentTimeouts: number;
+  recentLocalFallbacks: number;
+  recentSuccesses: number;
+  stableFallbackActive: boolean;
+  stableFallbackReason?: string | null;
+  cooldownUntil?: string | null;
+  updatedAt: string;
+}
+
+export interface GenerationRuntimeDecision {
+  shouldAttemptLlm: boolean;
+  shouldUseCompactFirst: boolean;
+  shouldUseLocalOnly: boolean;
+  shouldQueueLongAnswerRetry: boolean;
+  shouldProbeAfterCooldown: boolean;
+  reason: string;
+  cooldownActive: boolean;
+}
+
+export interface DiagnosticsBucket {
+  status: 'ok' | 'warning' | 'critical';
+  details: Record<string, unknown>;
+}
+
+export interface WorkspaceChatDiagnostics {
+  clientId: string;
+  recentMessages: number;
+  groundedFallbackRate: number;
+  llmTimeoutRate: number;
+  sourceIntegrityMatch?: boolean | null;
+  runningBuildVersion?: string | null;
+  expectedBuildVersion?: string | null;
+  dominantLlmErrorKind?: string | null;
+  fallbackTemplateUsedRate?: number;
+  dataCenterPrimaryEnabledRate?: number;
+  partialPreservedRate?: number;
+  systemFailureRate?: number;
+  stableFallbackActive: boolean;
+  stableFallbackReason?: string | null;
+  avgRetrievalMs: number;
+  avgLlmMs: number;
+  intentDistribution: Record<string, number>;
+  materialQuality: {
+    pptNoiseRatio: number;
+    generatedDraftRatio: number;
+    memoryAnswerRatio: number;
+  };
+  dataCenterQuality: {
+    approvedJudgmentCount: number;
+    candidateJudgmentCount: number;
+    parseFailedDocuments: number;
+    parseFailureBuckets?: Record<string, number>;
+    lastParseRetryAt?: string | null;
+    lastParseRetrySucceeded?: boolean | null;
+    contextQuality: string;
+  };
+  breakdown: Record<string, DiagnosticsBucket>;
+  rootCauseSummary: string[];
+  recommendedFixes: string[];
+  kernelP95Ms?: number;
+  kernelSlowRunCount?: number;
+  kernelSlowestStage?: string | null;
+}
+
+export interface WorkspaceAnswerFinalization {
+  content: string;
+  answerMode: 'grounded_answer' | 'grounded_fallback' | 'low_confidence_answer' | 'general_answer' | 'system_failure';
+  failureReason?: string | null;
+  fallbackPresentationMode?: FallbackPresentationMode | null;
+  userVisibleQualityStatus: 'ready' | 'usable_with_boundary' | 'degraded' | 'needs_retry';
+  shouldShowRetryBanner: boolean;
+  qualityGrade: 'pass' | 'warn' | 'fail';
+  internalGenerationStatus?: string;
+  notes?: string[];
+}
+
+export interface WorkspaceAnswerPresentationSection {
+  // P2.12 FREEZE(answer-section-titles): 当前回答卡 section 标题先冻结，
+  // 避免前后端在验证期内继续扩张或改名。
+  title: '直接回答' | '关键依据' | '边界与待确认' | '下一步建议' | string;
+  content?: string;
+  items?: string[];
+}
+
+export interface WorkspaceAnswerPresentation {
+  sections: WorkspaceAnswerPresentationSection[];
+}
+
+export interface WorkspaceAnswerEvidenceChip {
+  id: string;
+  title: string;
+  sourceType: string;
+  sourceKind: string;
+  excerpt: string;
+  qualityLabel: 'high' | 'medium' | 'low' | 'noise';
+  documentId?: string | null;
+  path?: string | null;
+}
+
+export interface WorkspaceAnswerActionCard {
+  actionType: 'create_proposal' | 'create_task' | 'request_evidence' | 'review_judgment' | 'refresh_context' | 'prepare_meeting';
+  title: string;
+  summary: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  draftId?: string | null;
+  proposalId?: string | null;
+  enabled?: boolean;
+  disabledReason?: string;
+}
+
+export interface WorkspaceAnswerExperience {
+  status: 'ready' | 'usable_with_boundary' | 'degraded' | 'needs_retry';
+  headline: string;
+  directAnswer: string;
+  keyPoints: string[];
+  evidenceChips: WorkspaceAnswerEvidenceChip[];
+  boundaryNotes: string[];
+  nextActions: string[];
+  actionCards: WorkspaceAnswerActionCard[];
+  trustSignals: string[];
+  userMessage: string;
+}
+
+export interface WorkspaceAnswerValueTopItem {
+  key: string;
+  count: number;
+}
+
+export interface WorkspaceAnswerValueDiagnostics {
+  clientId: string;
+  recentMessages: number;
+  answerModeDistribution: Record<string, number>;
+  fallbackReasonDistribution: Record<string, number>;
+  fallbackPresentationModeDistribution: Record<string, number>;
+  retryBannerWouldShowCount: number;
+  retryBannerWouldShowRate: number;
+  lowConfidenceCount: number;
+  groundedFallbackCount: number;
+  groundedAnswerCount: number;
+  usableAnswerCount: number;
+  usableAnswerRate: number;
+  readyOrUsableCount: number;
+  readyOrUsableRate: number;
+  needsRetryCount: number;
+  needsRetryRate: number;
+  degradedCount: number;
+  degradedRate: number;
+  kernelPrimaryUsedCount: number;
+  kernelPrimaryFallbackUsedCount: number;
+  kernelPrimaryUsedRate: number;
+  llmTimeoutCount: number;
+  llmTimeoutRate: number;
+  answerQualityPassCount: number;
+  answerQualityFailCount: number;
+  groundedAnswerPassRate: number;
+  officialBoundaryViolationCount: number;
+  candidateBoundaryViolationCount: number;
+  avgSelectedEvidenceCount: number;
+  evidenceSupportedCount: number;
+  evidenceSupportedRate: number;
+  businessSlotAnswerCount: number;
+  businessSlotAnswerRate: number;
+  strategySlotAnswerCount: number;
+  strategySlotAnswerRate: number;
+  answerTooShortCount: number;
+  answerTooShortRate: number;
+  answerTooTemplateLikeCount: number;
+  answerTooTemplateLikeRate: number;
+  topFailureReasons: WorkspaceAnswerValueTopItem[];
+  recommendedFixes: string[];
+  metricErrors: string[];
+}
+
+export interface WorkspaceAnswerValueReview {
+  id: string;
+  clientId: string;
+  messageId: string;
+  prompt: string;
+  answerMode: string;
+  userVisibleQualityStatus: 'ready' | 'usable_with_boundary' | 'degraded' | 'needs_retry';
+  shouldShowRetryBanner: boolean;
+  usableAnswer?: boolean | null;
+  reviewerNote: string;
+  manualBaselineMinutes?: number | null;
+  dataCenterReviewMinutes?: number | null;
+  savedMinutes?: number | null;
+  createdAt: string;
+}
+
+export interface WorkspaceAnswerValueSummary {
+  clientId: string;
+  reviewCount: number;
+  usableAnswerRate: number;
+  retryBannerRate: number;
+  averageManualBaselineMinutes: number;
+  averageDataCenterReviewMinutes: number;
+  estimatedTimeSavedRate: number;
+  positiveReviewCount: number;
+  negativeReviewCount: number;
+  lastReviewedAt?: string | null;
+  proposalCreatedFromAnswerCount?: number;
+  executionTicketCreatedFromAnswerCount?: number;
+  metricErrors: string[];
+}
+
+export interface WorkspaceValueValidationQuestion {
+  id: string;
+  prompt: string;
+}
+
+export interface WorkspaceValueValidationSessionSummary {
+  sessionId: string;
+  clientId: string;
+  completed: number;
+  usableAnswerRate: number;
+  estimatedTimeSavedRate: number;
+  retryBannerRate: number;
+  proposalCreatedCount: number;
+  executionTicketCreatedCount: number;
+  verdict: 'pass' | 'hold' | 'fail';
+}
+
+export interface WorkspaceValueValidationSession {
+  id: string;
+  clientId: string;
+  status: 'running' | 'completed' | 'failed';
+  questionSet: WorkspaceValueValidationQuestion[];
+  completedQuestionIds: string[];
+  summary: WorkspaceValueValidationSessionSummary;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DataCenterArtifactStatusItem {
+  key: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  verdict: 'pass' | 'fail' | 'hold' | 'unknown';
+  stale: boolean;
+  generatedAt?: string | null;
+  gitCommit?: string | null;
+  backendBuildHash?: string | null;
+  runtimeMode?: string | null;
+  dataDir?: string | null;
+  sourceRunId?: string | null;
+  blockingIssues: string[];
+}
+
+export interface DataCenterArtifactStatus {
+  generatedAt: string;
+  overallPass: boolean;
+  items: DataCenterArtifactStatusItem[];
+}
+
+export interface DataCenterSchemaStatus {
+  generatedAt: string;
+  ensuredTables: string[];
+  missingTables: string[];
+  errors: string[];
+  permissionDiagnostics?: Record<string, number>;
+}
+
+export interface WorkspaceAnswerActionCardResult {
+  messageId: string;
+  actionType: string;
+  status: 'created' | 'reused';
+  summary: string;
+  draftId?: string | null;
+  proposalId?: string | null;
+  taskId?: string | null;
+  autoApproved?: boolean;
+  autoExecuted?: boolean;
+}
+
+export interface WorkspaceAnswerQualityFailure {
+  id: string;
+  clientId: string;
+  messageId?: string | null;
+  prompt: string;
+  failureType:
+    | 'retry_banner'
+    | 'too_template_like'
+    | 'no_evidence'
+    | 'no_direct_answer'
+    | 'boundary_violation'
+    | 'kernel_not_used'
+    | 'answer_too_short'
+    | 'user_marked_not_usable';
+  severity: 'low' | 'medium' | 'high';
+  details: Record<string, unknown>;
+  status: 'open' | 'resolved';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourceIntegrityReport {
+  runningBackendRoot: string;
+  workspaceBackendRoot?: string | null;
+  runningHash: string;
+  workspaceHash?: string | null;
+  match: boolean | null;
+  warning?: string | null;
+  buildVersion?: string | null;
+  gitCommit?: string | null;
+  runtimeMode?: 'packaged' | 'dev' | string | null;
+  frontendBuildVersion?: string | null;
+  frontendGitCommit?: string | null;
+  workspaceBuildVersion?: string | null;
+  workspaceGitCommit?: string | null;
+}
+
+export interface LlmHealthcheckResult {
+  provider: string;
+  model: string;
+  success: boolean;
+  latencyMs: number;
+  error?: string | null;
+  errorKind?: 'connect_timeout' | 'read_timeout' | 'ssl_handshake_timeout' | 'auth_error' | 'rate_limit' | 'unknown' | null;
+}
+
+export interface LlmProviderProbeResult {
+  clientId?: string | null;
+  prompt: string;
+  generatedAt: string;
+  results: LlmHealthcheckResult[];
+}
+
+export interface AnswerPolicy {
+  canAnswer: boolean;
+  answerLevel: AnswerLevel;
+  mustDiscloseCandidateBoundary: boolean;
+  mustUseRawEvidence: boolean;
+  shouldCreateProposal: boolean;
+  fallbackToLegacyRetrieval: boolean;
+  reason: string;
+}
+
+export interface PageContextPack {
+  page: PageContextPage;
+  scopeType: string;
+  scopeId: string;
+  clientId?: string | null;
+  intent: PageIntentType;
+  officialJudgments: Array<Record<string, unknown>>;
+  candidateJudgments: Array<Record<string, unknown>>;
+  overlayJudgments: Array<Record<string, unknown>>;
+  evidenceCards: Array<Record<string, unknown>>;
+  rawEvidence: Array<Record<string, unknown>>;
+  openQuestions: Array<Record<string, unknown>>;
+  conflicts: Array<Record<string, unknown>>;
+  themeClusters: Array<Record<string, unknown>>;
+  relatedTasks: Array<Record<string, unknown>>;
+  relatedMeetings: Array<Record<string, unknown>>;
+  relatedDocuments: Array<Record<string, unknown>>;
+  notebookSummary?: Record<string, unknown> | null;
+  memoryFacts: string[];
+  contextPack?: Record<string, unknown> | null;
+  judgmentBundle?: Record<string, unknown> | null;
+  resolutionTrace?: Record<string, unknown> | null;
+  stateProjection?: Record<string, unknown> | null;
+  missingContext: string[];
+  boundaryNotes: string[];
+  sourceSummary: Record<string, number>;
+  answerPolicy: AnswerPolicy;
+  retrievalPlan: Record<string, unknown>;
+  quality: ContextQuality;
+  routeDecision?: RouteDecision | null;
+  retrievalTrace?: RetrievalTrace | null;
+}
+
+export interface AnswerPlan {
+  intent: PageIntentType;
+  answerShape:
+    | 'open_answer'
+    | 'direct_profile'
+    | 'business_profile'
+    | 'strategy_profile'
+    | 'status_brief'
+    | 'evidence_answer'
+    | 'meeting_summary'
+    | 'task_next_action'
+    | 'official_registry'
+    | 'candidate_judgment'
+    | 'insufficient';
+  requiredSections: string[];
+  mustStartWithDirectAnswer: boolean;
+  mustCiteEvidence: boolean;
+  mustDiscloseBoundary: boolean;
+  allowCandidateJudgment: boolean;
+  maxEvidenceItems: number;
+  maxAnswerChars: number;
+  routeReason: string;
+}
+
+export interface AnswerMaterial {
+  directAnswerSeed: string;
+  keyFacts: string[];
+  structuredPoints: string[];
+  evidenceHighlights: EvidenceItem[];
+  stateHighlights: string[];
+  boundaryNotes: string[];
+  missingContext: string[];
+  nextActions: string[];
+  sourceLabels: string[];
+  businessProfile?: BusinessProfileSlots | null;
+  strategyProfile?: StrategyProfileSlots | null;
+}
+
+export interface BusinessProfileSlots {
+  businessModules: string[];
+  serviceObjects: string[];
+  productsOrPrograms: string[];
+  deliveryModel: string[];
+  evidenceRefs: string[];
+  unknowns: string[];
+}
+
+export interface StrategyProfileSlots {
+  strategicDirections: string[];
+  keyActions: string[];
+  timeBoundary: string;
+  risks: string[];
+  evidenceRefs: string[];
+  unknowns: string[];
+}
+
+export interface EvidenceQualitySignal {
+  isNoise: boolean;
+  noiseReasons: string[];
+  sourceKind:
+    | 'raw_document'
+    | 'meeting_note'
+    | 'meeting_decision'
+    | 'meeting_action'
+    | 'meeting_risk'
+    | 'task_attachment'
+    | 'judgment'
+    | 'topic_candidate'
+    | 'generated_answer'
+    | 'memory_answer'
+    | 'ppt_visual'
+    | 'ppt_master'
+    | 'template_page'
+    | 'short_excerpt'
+    | 'unknown';
+  qualityScore: number;
+  demotionScore: number;
+  freshnessScore: number;
+  authorityHint: 'raw' | 'state' | 'candidate' | 'generated' | 'unknown';
+}
+
+export interface ActionSuggestion {
+  id: string;
+  actionType:
+    | 'create_task'
+    | 'create_proposal'
+    | 'request_evidence'
+    | 'refresh_context_pack'
+    | 'confirm_candidate_judgment'
+    | 'prepare_meeting'
+    | 'record_handbook';
+  title: string;
+  summary: string;
+  rationale: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  requiresApproval: boolean;
+  sourceRefs: string[];
+  targetRefs: ProposalTargetRef[];
+}
+
+export interface DataCenterSearchHit {
+  title: string;
+  excerpt: string;
+  sourceType: string;
+  documentId?: string | null;
+  path?: string | null;
+  originalPath?: string | null;
+  managedPath?: string | null;
+  markdownPath?: string | null;
+  openableKind?: 'original_file' | 'machine_markdown' | 'system_card' | 'unknown' | string | null;
+  sourceAvailability?: 'original_available' | 'machine_readable_only' | 'invalid_source' | 'unknown' | string | null;
+  originalAvailable?: boolean | null;
+  machineReadableAvailable?: boolean | null;
+  openOriginalDisabledReason?: string | null;
+  score?: number | null;
+  sectionLabel?: string | null;
+  retrievalStage?: string | null;
+  selectedForAnswer: boolean;
+  qualityFlags: string[];
+  annotationId?: string | null;
+  humanLabel?: 'useful' | 'noise' | 'needs_review' | null;
+}
+
+export interface DataCenterSearchResult {
+  query: string;
+  routeDecision: RouteDecision;
+  retrievalTrace?: RetrievalTrace | null;
+  answerPlan?: AnswerPlan | null;
+  hits: DataCenterSearchHit[];
+  selectedHits: DataCenterSearchHit[];
+  missingContext: string[];
+  suggestedFollowups: string[];
+}
+
+export interface DataCenterPrepSection {
+  title: string;
+  bullets: string[];
+  evidenceRefs: string[];
+}
+
+export interface DataCenterPrepResult {
+  prepType: 'task' | 'meeting' | 'client_conversation';
+  title: string;
+  objective: string;
+  knownFacts: string[];
+  keyRisks: string[];
+  openQuestions: string[];
+  recommendedAgenda: string[];
+  nextActions: string[];
+  materials: PrepPackMaterial[];
+  sections: DataCenterPrepSection[];
+  boundaryNotes: string[];
+}
+
+export interface DataCenterProposalDraft {
+  id?: string | null;
+  kind:
+    | 'task_prep'
+    | 'meeting_prep'
+    | 'meeting_followup'
+    | 'evidence_request'
+    | 'judgment_review'
+    | 'context_refresh';
+  title: string;
+  summary: string;
+  rationale: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  targetRefs: ProposalTargetRef[];
+  sourceRefs: string[];
+  boundaryNotes: string[];
+  payload: Record<string, unknown>;
+  requiresApproval: boolean;
+  status?: 'draft' | 'reviewed' | 'rejected' | 'promoted' | 'expired';
+  dedupeKey?: string | null;
+  sourcePrompt?: string;
+  scopeType?: string | null;
+  scopeId?: string | null;
+  clientId?: string | null;
+  page?: string | null;
+  mode?: string;
+  reviewedAt?: string | null;
+  rejectedAt?: string | null;
+  rejectedReason?: string | null;
+  promotedProposalId?: string | null;
+  proposalStatus?: ProposalRecord['status'] | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface DataCenterProposalDraftPromoteResponse {
+  draft: DataCenterProposalDraft;
+  proposalId?: string | null;
+  taskId?: string | null;
+  refreshEventId?: string | null;
+  effectType?:
+    | 'proposal'
+    | 'proposal_record'
+    | 'task'
+    | 'evidence_request'
+    | 'meeting_prep'
+    | 'judgment_confirmation'
+    | 'context_refresh';
+}
+
+export interface ExternalEvidenceCard {
+  id: string;
+  sourceUrl: string;
+  sourceDomain: string;
+  sourceTier: 'official' | 'trusted_media' | 'partner' | 'unknown';
+  title: string;
+  publishedAt?: string | null;
+  factExcerpt: string;
+  summary: string;
+  tags: string[];
+  relatedScopeType: string;
+  relatedScopeId: string;
+  confidence: number;
+  status: 'candidate' | 'accepted' | 'rejected';
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
+  reviewNote?: string;
+  linkedProposalIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeParseFailure {
+  documentId: string;
+  title: string;
+  path: string;
+  kind: string;
+  parseStatus: string;
+  error: string;
+  failureType: string;
+  recoverable: boolean;
+  pageCount?: number | null;
+  lastRetryAt?: string | null;
+  recommendedAction: string;
+}
+
+export interface DataCenterScope {
+  page: PageContextPage;
+  scopeType:
+    | 'client'
+    | 'task'
+    | 'meeting'
+    | 'event_line'
+    | 'project_module'
+    | 'project_flow'
+    | 'topic'
+    | 'strategic_cockpit'
+    | 'system';
+  scopeId: string;
+  clientId?: string | null;
+  taskId?: string | null;
+  meetingId?: string | null;
+  eventLineId?: string | null;
+  projectModuleId?: string | null;
+  projectFlowId?: string | null;
+  topicId?: string | null;
+}
+
+export interface DataCenterRequest {
+  scope: DataCenterScope;
+  prompt?: string;
+  mode?: 'answer' | 'page_context' | 'search' | 'prep' | 'proposal' | 'diagnostic';
+  includeRawEvidence?: boolean;
+  includeActionSuggestions?: boolean;
+  shadow?: boolean;
+  persistDrafts?: boolean;
+  persistQuality?: boolean;
+}
+
+export interface AnswerQualityReport {
+  hasDirectAnswer: boolean;
+  evidenceListOnly: boolean;
+  evidenceQuoteOnly: boolean;
+  leakedInternalMarkers: string[];
+  candidateAsOfficialRisk: boolean;
+  officialBoundaryViolation?: boolean;
+  missingRawEvidenceForIntent: boolean;
+  offTopicRisk: boolean;
+  factSlotHit?: boolean;
+  factSlotMissingReason?: string | null;
+  grade: 'pass' | 'warn' | 'fail';
+  reason: string;
+}
+
+export interface DataCenterKernelResult {
+  scope: DataCenterScope;
+  pageContext?: PageContextPack | null;
+  routeDecision?: RouteDecision | null;
+  retrievalTrace?: RetrievalTrace | null;
+  answerPlan?: AnswerPlan | null;
+  answerMaterial?: AnswerMaterial | null;
+  searchResult?: DataCenterSearchResult | null;
+  prepResult?: DataCenterPrepResult | null;
+  proposalDrafts: DataCenterProposalDraft[];
+  persistedProposalDraftIds: string[];
+  dedupedDraftIds: string[];
+  actionSuggestions: ActionSuggestion[];
+  quality?: ContextQuality | null;
+  debug: Record<string, unknown>;
+}
+
+export interface KnowledgeParseFailureRetryItem {
+  documentId: string;
+  title: string;
+  status: 'succeeded' | 'failed' | 'skipped';
+  failureType?:
+    | 'file_missing'
+    | 'empty_text'
+    | 'empty_pdf'
+    | 'unsupported_format'
+    | 'ocr_required'
+    | 'parser_exception'
+    | 'permission_denied'
+    | 'managed_path_missing'
+    | 'unknown'
+    | null;
+  message: string;
+}
+
+export interface KnowledgeParseFailureRetryResult {
+  batchId: string;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  failureBuckets: Record<string, number>;
+  items: KnowledgeParseFailureRetryItem[];
+}
+
+export type WorkspaceDataCenterReadinessActionType =
+  | 'retry_parse'
+  | 'rebuild_client_knowledge'
+  | 'regenerate_document_cards'
+  | 'sync_master_index'
+  | 'sync_vector_index'
+  | 'refresh_context_pack'
+  | 'inspect_failed_documents'
+  | 'cleanup_invalid_documents'
+  | 'rebind_original_file';
+
+export interface WorkspaceDocumentProcessingStatus {
+  documentId: string;
+  v2DocumentId?: string | null;
+  knowledgeDocumentId?: string | null;
+  title: string;
+  fileName: string;
+  kind: string;
+  materialLayer: string;
+  parseStatus: string;
+  parseError?: string | null;
+  parseErrorCategory?:
+    | 'file_missing'
+    | 'permission_denied'
+    | 'unsupported_format'
+    | 'ocr_required'
+    | 'empty_text'
+    | 'empty_pdf'
+    | 'parser_exception'
+    | 'unknown'
+    | null;
+  hasDocumentCard: boolean;
+  hasSurrogate: boolean;
+  hasMasterIndex: boolean;
+  vectorStatus?: string | null;
+  chunkCount: number;
+  sectionCount: number;
+  usedByLatestContextPack: boolean;
+  lastHitAt?: string | null;
+  updatedAt: string;
+  sourceAvailability: 'original_available' | 'machine_readable_only' | 'invalid_source' | 'unknown' | string;
+  originalAvailable: boolean;
+  machineReadableAvailable: boolean;
+  openOriginalDisabledReason?: string | null;
+}
+
+export interface WorkspaceDataCenterReadinessSummary {
+  totalDocuments: number;
+  readyDocuments: number;
+  partialReadyDocuments: number;
+  parsingDocuments: number;
+  queuedDocuments: number;
+  runningDocuments: number;
+  failedDocuments: number;
+  invalidDocuments: number;
+  sourceMissingDocuments: number;
+  placeholderOnlyDocuments: number;
+  parseFailureBuckets: Record<string, number>;
+  ocrRecoverableCount: number;
+  documentCards: number;
+  surrogates: number;
+  masterIndexEntries: number;
+  vectorReadyDocuments: number;
+  vectorStatus: string;
+  vectorMasterIndexed: number;
+  vectorChunkIndexed: number;
+  latestContextPackAt?: string | null;
+  contextQuality: string;
+  missingContextCount: number;
+  refreshEventQueuedCount: number;
+  refreshEventRunningCount: number;
+  refreshEventFailedCount: number;
+}
+
+export interface WorkspaceDataCenterReadinessJobEvent {
+  jobId: string;
+  level: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface WorkspaceDataCenterReadinessJobs {
+  runningKnowledgeJobs: number;
+  failedKnowledgeJobs: number;
+  latestJobEvents: WorkspaceDataCenterReadinessJobEvent[];
+}
+
+export interface WorkspaceDataCenterReadinessFix {
+  id: string;
+  label: string;
+  actionType: WorkspaceDataCenterReadinessActionType;
+  severity: 'info' | 'warning' | 'critical';
+  reason: string;
+  targetIds: string[];
+  estimatedImpact: string;
+}
+
+export interface WorkspaceDataCenterReadinessRecentJob {
+  id: string;
+  jobType: string;
+  status: string;
+  processedItems: number;
+  totalItems: number;
+  lastError?: string | null;
+  updatedAt: string;
+}
+
+export interface WorkspaceDataCenterReadiness {
+  clientId: string;
+  generatedAt: string;
+  summary: WorkspaceDataCenterReadinessSummary;
+  documents: WorkspaceDocumentProcessingStatus[];
+  jobs: WorkspaceDataCenterReadinessJobs;
+  recommendedFixes: WorkspaceDataCenterReadinessFix[];
+  recentJobs: WorkspaceDataCenterReadinessRecentJob[];
+  recentRefreshEvents: WorkspaceContextRefreshEvent[];
+}
+
+export interface WorkspaceDataCenterReadinessActionPayload {
+  actionType: WorkspaceDataCenterReadinessActionType;
+  targetIds?: string[];
+  reason?: string;
+  ocrMaxPages?: number;
+  ocrBatchSize?: number;
+  ocrContinueToEnd?: boolean;
+  forceOcr?: boolean;
+}
+
+export interface WorkspaceDataCenterReadinessActionResult {
+  actionType: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  jobId?: string | null;
+  refreshEventId?: string | null;
+  affectedCount: number;
+  message: string;
+  errors: string[];
+}
+
+export interface WorkspaceContextRefreshEvent {
+  id: string;
+  clientId: string;
+  scopeType: string;
+  scopeId: string;
+  sourceType: string;
+  sourceId?: string | null;
+  reason: string;
+  priority: 'low' | 'normal' | 'high';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+  jobId?: string | null;
+  dedupeKey: string;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceContextRefreshEnqueuePayload {
+  sourceType: string;
+  sourceId?: string | null;
+  reason: string;
+  scopeType?: 'client' | 'task' | 'meeting' | 'event_line' | 'project_module' | 'project_flow' | 'strategic_cockpit';
+  scopeId?: string | null;
+  priority?: 'low' | 'normal' | 'high';
+}
+
+export interface WorkspaceContextRefreshEnqueueResult {
+  event: WorkspaceContextRefreshEvent;
+  deduped: boolean;
+}
+
+export interface WorkspaceProposalDraftCreatePayload {
+  sourceMessageId?: string | null;
+  sourceType?: 'action_suggestion' | 'proposal_draft' | 'manual';
+  actionSuggestionId?: string | null;
+  sourceMessageDraftId?: string | null;
+  sourceMessageDraftPayload?: Record<string, unknown>;
+  kind: DataCenterProposalDraft['kind'];
+  title: string;
+  summary: string;
+  rationale?: string;
+  riskLevel?: DataCenterProposalDraft['riskLevel'];
+  targetRefs?: ProposalTargetRef[];
+  sourceRefs?: string[];
+  boundaryNotes?: string[];
+  payload?: Record<string, unknown>;
+  scopeType?: 'client' | 'task' | 'meeting' | 'event_line' | 'project_module' | 'project_flow' | 'strategic_cockpit';
+  scopeId?: string | null;
+}
+
+export type FallbackPresentationMode = 'state_cards_only' | 'compact_user_answer' | 'full_answer';
+
+export interface StateAnswerSections {
+  official: string[];
+  candidate: string[];
+  draftFindings: string[];
+  evidenceSupport: string[];
+  actions: string[];
+  risks: string[];
+  unknowns: string[];
+}
+
+export interface StateSourceSummary {
+  judgments: number;
+  meetings: number;
+  tasks: number;
+  openQuestions: number;
+  conflicts: number;
+  documents: number;
 }
 
 export interface ChatMessage {
@@ -743,15 +1941,27 @@ export interface ChatMessage {
   answerMode?: 'grounded_answer' | 'grounded_fallback' | 'low_confidence_answer' | 'general_answer' | 'system_failure' | null;
   evidenceStatus?: 'sufficient' | 'partial' | 'none' | null;
   failureReason?: string | null;
+  fallbackReason?: string | null;
+  fallbackPresentationMode?: FallbackPresentationMode | null;
+  stateConfidence?: 'low' | 'medium' | 'high' | null;
+  stateSources?: string[];
+  boundaryNotes?: string[];
+  answerIntent?: WorkspaceAnswerIntent | null;
+  retrievalDecisionReason?: RetrievalDecisionReason | null;
+  judgmentQueryMode?: JudgmentQueryMode | null;
+  evidenceSupportMode?: EvidenceSupportMode | null;
+  stateAnswerSections?: StateAnswerSections | null;
+  stateSourceSummary?: StateSourceSummary | null;
   timing?: Record<string, number>;
   retrievalSummary?: Record<string, unknown>;
+  answerVariant?: 'standard' | 'compact' | 'long_retry' | 'manual_retry' | null;
+  parentAssistantMessageId?: string | null;
   structuredData?: AiStructuredResponse | null;
   evidence: EvidenceItem[];
 }
 
 export interface ChatThread {
   id: string;
-  workObjectId: string;
   clientId: string;
   title: string;
   createdAt: string;
@@ -768,6 +1978,53 @@ export interface ChatStartResponse {
 export interface ChatThreadDetailResponse {
   thread: ChatThread;
   messages: ChatMessage[];
+}
+
+export interface WorkspaceStateItem {
+  id: string;
+  signalType: 'change' | 'progress' | 'risk' | 'question' | 'judgment' | 'meeting' | 'task' | 'noise';
+  sourceType: string;
+  sourceId: string;
+  title: string;
+  summary: string;
+  authority: 'approved' | 'candidate' | 'informational' | 'warning';
+  updatedAt?: string | null;
+}
+
+export interface WorkspaceStateProjection {
+  changeItems: WorkspaceStateItem[];
+  progressItems: WorkspaceStateItem[];
+  signalNoiseFlags: string[];
+  boundaryNotes: string[];
+  stateConfidence: 'low' | 'medium' | 'high';
+}
+
+export interface StateQueryPlan {
+  primaryIntent: 'overview' | 'changes' | 'progress' | 'risk' | 'questions' | 'judgment' | 'timeline';
+  focusAreas: string[];
+  needsBoundaryGuard: boolean;
+}
+
+export interface StateQueryHit {
+  sourceType: string;
+  sourceId: string;
+  label: string;
+  summary: string;
+  signalKind: 'change' | 'progress' | 'risk' | 'question' | 'judgment' | 'timeline';
+  authorityLevel: 'approved' | 'candidate' | 'informational' | 'warning';
+}
+
+export interface StateAnswerContextPack {
+  plan: StateQueryPlan;
+  summary: string;
+  stateSources: string[];
+  boundaryNotes: string[];
+  stateConfidence: 'low' | 'medium' | 'high';
+  hits: StateQueryHit[];
+  sections: StateAnswerSections;
+  sourceSummary: StateSourceSummary;
+  candidateLeakageCount: number;
+  fallbackReason?: string | null;
 }
 
 export interface AgendaItem {
@@ -796,7 +2053,6 @@ export interface AmbiguityItem {
 
 export interface MeetingSummary {
   id: string;
-  workObjectId: string;
   clientId: string;
   title: string;
   stage: MeetingStage;
@@ -828,7 +2084,6 @@ export interface TaskList {
   id: string;
   name: string;
   color: string;
-  description?: string | null;
   sortOrder: number;
   isDefault: boolean;
   scope?: 'org' | 'personal';
@@ -853,20 +2108,15 @@ export interface Task {
   status: TaskStatus;
   creatorId?: string | null;
   creatorName?: string | null;
-  creatorDisplayName?: string | null;
   priority: Priority;
   listId: string;
   listName: string;
   listColor: string;
-  listIds?: string[];
-  listNames?: string[];
   ddl: string;
   startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
   scopeMode?: TaskScopeMode;
-  workObjectId?: string | null;
-  workObjectName?: string | null;
   clientId?: string | null;
   clientName?: string | null;
   eventLineId?: string | null;
@@ -877,7 +2127,6 @@ export interface Task {
   projectFlowName?: string | null;
   ownerId?: string | null;
   ownerName: string;
-  ownerDisplayName?: string | null;
   sourceType: string;
   sourceId?: string | null;
   businessCategory?: string | null;
@@ -890,50 +2139,20 @@ export interface Task {
   attachments: TaskAttachment[];
   collaborators: TaskCollaborator[];
   collaborationSummary: Record<string, number>;
-  pendingParticipantNames?: string[];
   viewerInboxStatus?: CollaboratorInboxStatus | null;
-  viewerCanConfirm?: boolean;
-  viewerCanReject?: boolean;
   orgContext?: TaskOrgContext | null;
   projectContext?: TaskProjectContext | null;
   memoryHints?: string[];
   backgroundReadiness?: BackgroundReadiness | null;
   linkedFactsPreview?: MemoryFact[];
-  expenseEvidenceLinks?: TaskExpenseEvidenceLink[];
   syncStatus?: 'local' | 'syncing' | 'synced' | 'pending' | 'error' | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface InboxNotification {
-  id: string;
-  kind: 'event_line_operation';
-  eventLineId?: string | null;
-  eventLineName?: string | null;
-  operationLabel: string;
-  actorId?: string | null;
-  actorName: string;
-  title: string;
-  summary: string;
-  mainOwnerNames: string[];
-  participantNames: string[];
-  metadata: Record<string, unknown>;
-  operatedAt: string;
-  viewerReadAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface InboxAggregate {
-  pendingTasks: Task[];
-  systemNotifications: InboxNotification[];
-  outboundPendingTasks: Task[];
-}
-
 export interface TaskAttachment {
   id: string;
   taskId: string;
-  workObjectId: string;
   clientId: string;
   eventLineId?: string | null;
   documentId?: string | null;
@@ -964,8 +2183,6 @@ export interface TaskOrgContext {
 }
 
 export interface TaskProjectContext {
-  workObjectId: string;
-  workObjectName: string;
   clientId: string;
   clientName: string;
   stage?: string | null;
@@ -1006,10 +2223,6 @@ export interface EventLine {
   evidenceCount: number;
   ownerId?: string | null;
   ownerName?: string | null;
-  ownerIds?: string[];
-  ownerNames?: string[];
-  primaryWorkObjectId?: string | null;
-  primaryWorkObjectName?: string | null;
   primaryClientId?: string | null;
   primaryClientName?: string | null;
   primaryDepartmentId?: string | null;
@@ -1039,7 +2252,6 @@ export interface EventLineDetail {
   eventLine: EventLine;
   tasks: Task[];
   activities: EventLineActivity[];
-  expenseEvidenceLinks: EventLineExpenseEvidenceLink[];
   memorySnapshot?: EventLineMemorySnapshot | null;
   predictionReadiness?: number | null;
   clarificationNeeds?: string[];
@@ -1064,9 +2276,294 @@ export interface TaskSmartBrief {
   actionItems: TaskSmartBriefActionItem[];
 }
 
+export interface PrepPackMaterial {
+  sourceType: string;
+  sourceId: string;
+  title: string;
+  summary: string;
+  authorityLevel?: string;
+}
+
+export interface PrepPackCard {
+  taskId: string;
+  title: string;
+  summary: string;
+  materials: PrepPackMaterial[];
+  openQuestions: string[];
+  judgments: string[];
+  risks: string[];
+  boundaryNotes: string[];
+  sourceLabels: string[];
+  proposalId?: string | null;
+}
+
+export interface ProposalTargetRef {
+  targetType: 'client' | 'task' | 'meeting' | 'event_line' | 'judgment';
+  targetId: string;
+  label: string;
+}
+
+export interface ProposalRecord {
+  id: string;
+  clientId: string;
+  kind:
+    | 'task_prep'
+    | 'meeting_prep'
+    | 'meeting_followup'
+    | 'evidence_request'
+    | 'judgment_review'
+    | 'context_refresh';
+  status: 'draft' | 'pending_review' | 'approved' | 'rejected' | 'execution_pending' | 'executed' | 'failed';
+  riskLevel: 'low' | 'medium' | 'high';
+  title: string;
+  summary: string;
+  rationale: string;
+  targetRefs: ProposalTargetRef[];
+  sourceRefs: string[];
+  boundaryNotes: string[];
+  payload: Record<string, unknown>;
+  createdBy: string;
+  decidedBy?: string | null;
+  decidedAt?: string | null;
+  rejectedReason?: string | null;
+  executionTicketId?: string | null;
+  executionTicket?: ExecutionTicket | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ExecutionTicketResultType = 'recorded_only' | 'prep_artifact_ready' | 'followup_task_created' | 'failed';
+
+export interface ExecutionTicketArtifactRef {
+  artifactType: string;
+  refId: string;
+  title: string;
+}
+
+export interface ExecutionTicketResult {
+  resultType: ExecutionTicketResultType;
+  summary: string;
+  createdTaskIds: string[];
+  artifactRefs: ExecutionTicketArtifactRef[];
+}
+
+export interface ExecutionTicket {
+  id: string;
+  proposalId: string;
+  clientId: string;
+  executionType: string;
+  status: 'pending' | 'running' | 'executed' | 'failed';
+  payload: Record<string, unknown>;
+  result: ExecutionTicketResult;
+  idempotencyKey?: string | null;
+  retryCount?: number;
+  maxRetries?: number;
+  lastError?: string | null;
+  lastAttemptAt?: string | null;
+  errorMessage?: string | null;
+  executedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExecutionTicketLog {
+  id: string;
+  ticketId: string;
+  stage: 'validate' | 'prepare_payload' | 'execute_action' | 'write_result' | 'update_proposal_status' | 'retry';
+  status: 'started' | 'success' | 'failed';
+  message: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ProposalExecutionResponse {
+  proposal: ProposalRecord;
+  executionTicket?: ExecutionTicket | null;
+}
+
+export interface ProposalApprovalPayload {
+  decidedBy?: string;
+  note?: string;
+  comment?: string;
+}
+
+export interface ProposalExecutionPayload {
+  requestedBy?: string;
+  dryRun?: boolean;
+}
+
+export interface ProposalExecutionPreview {
+  proposalId: string;
+  executionType: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  willCreateTask: boolean;
+  willCreatePrepArtifact: boolean;
+  willCreateEvidenceRequest: boolean;
+  willUpdateEventLine: boolean;
+  summary: string;
+  warnings: string[];
+}
+
+export interface ProposalApprovalResult {
+  proposal: ProposalRecord;
+  executionPreview?: ProposalExecutionPreview | null;
+}
+
+export interface ProposalExecutionResult {
+  proposal: ProposalRecord;
+  executionTicket?: ExecutionTicket | null;
+}
+
+export interface ProposalBatchActionPayload {
+  proposalIds: string[];
+  decidedBy?: string;
+  note?: string;
+}
+
+export interface ProposalBatchResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  failedIds: string[];
+}
+
+export type KernelPrimaryRolloutStage = 'stage_1_client' | 'stage_3_clients' | 'stage_10_clients';
+export type KernelPrimaryRolloutStatus = 'planned' | 'running' | 'completed' | 'rolled_back' | 'failed';
+
+export interface KernelPrimaryRolloutRun {
+  id: string;
+  stage: KernelPrimaryRolloutStage;
+  clientIds: string[];
+  status: KernelPrimaryRolloutStatus;
+  metricsBefore: Record<string, unknown>;
+  metricsAfter: Record<string, unknown>;
+  verdict?: 'pass' | 'fail' | 'watch' | null;
+  recommendedAction?: 'keep' | 'rollback' | null;
+  note: string;
+  rollbackReason?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KernelPrimaryRolloutStartPayload {
+  stage: KernelPrimaryRolloutStage;
+  clientIds: string[];
+  note?: string;
+}
+
+export interface KernelPrimaryRolloutRollbackPayload {
+  reason?: string;
+}
+
+export interface ExecutionRetryMetricsTopItem {
+  key: string;
+  count: number;
+}
+
+export interface ExecutionRetryMetricsAlert {
+  level: 'info' | 'warning' | 'critical';
+  message: string;
+}
+
+export interface ExecutionRetryMetrics {
+  windowDays: number;
+  totalTickets: number;
+  failedTickets: number;
+  retriedTickets: number;
+  retryExhaustedTickets: number;
+  retrySuccessRate?: number;
+  avgRetryCount?: number;
+  oldestFailedTicketAgeHours?: number;
+  failureReasonTopN: ExecutionRetryMetricsTopItem[];
+  failedStageTopN: ExecutionRetryMetricsTopItem[];
+  alerts: ExecutionRetryMetricsAlert[];
+}
+
+export interface EvidenceQualityFeedbackSnapshot {
+  id: string;
+  windowStart: string;
+  windowEnd: string;
+  labelCounts: Record<string, number>;
+  usefulExamples: Array<Record<string, unknown>>;
+  noiseExamples: Array<Record<string, unknown>>;
+  needsReviewExamples: Array<Record<string, unknown>>;
+  recommendedRules: string[];
+  createdAt: string;
+}
+
+export interface RollbackDrillPayload {
+  clientIds?: string[];
+  dryRun?: boolean;
+}
+
+export interface RollbackDrillResult {
+  dryRun: boolean;
+  wouldDisableWorkspacePrimary: boolean;
+  wouldDisableChatKernelPrimary: boolean;
+  wouldClearAllowlist: boolean;
+  wouldKeepDrafts: boolean;
+  wouldKeepExecutionTickets: boolean;
+  wouldKeepEvidenceLabels?: boolean;
+  warnings: string[];
+  affectedClientIds: string[];
+  applied: boolean;
+}
+
+export interface DataCenterOperationalStatus {
+  fullRegressionVerdict?: 'pass' | 'fail' | 'hold' | 'unknown';
+  p22StrictPass?: boolean;
+  p23StrictPass?: boolean;
+  rolloutStage?: string;
+  rolloutLatestVerdict?: string;
+  retryAlerts?: string[];
+  latestSnapshotAt?: string | null;
+  rollbackDrillPass?: boolean;
+  releaseReportVerdict?: 'pass' | 'fail' | 'hold' | 'unknown';
+  blockingIssues?: string[];
+}
+
+export interface MobileDataCenterSnapshotSummary {
+  clientId: string;
+  latestContextPack?: Record<string, unknown> | null;
+  latestJudgments: Array<Record<string, unknown>>;
+  openQuestions: Array<Record<string, unknown>>;
+  conflicts: Array<Record<string, unknown>>;
+  relatedTasks: Array<Record<string, unknown>>;
+  recentMeetings: Array<Record<string, unknown>>;
+  stateProjection?: Record<string, unknown> | null;
+  proposalDraftSummary?: Record<string, number>;
+  openProposalSummary?: Record<string, number>;
+  latestExecutionTickets?: ExecutionTicket[];
+  evidenceQualitySummary?: Record<string, number>;
+  kernelReadiness?: 'ready' | 'partial' | 'weak';
+  generatedAt: string;
+}
+
+export interface EvidenceQualityAnnotation {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  documentId?: string | null;
+  path?: string | null;
+  excerptHash: string;
+  sourceKind: EvidenceQualitySignal['sourceKind'];
+  qualityScore: number;
+  demotionScore: number;
+  noiseReasons: string[];
+  authorityHint: EvidenceQualitySignal['authorityHint'];
+  humanLabel?: 'useful' | 'noise' | 'needs_review' | null;
+  humanNote: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface EventLineReportAttachment {
   id: string;
   taskId: string;
+  documentId?: string | null;
+  sourceKind?: 'task_attachment' | 'event_line_attachment' | null;
   title: string;
   kind: string;
   mimeType?: string | null;
@@ -1074,6 +2571,38 @@ export interface EventLineReportAttachment {
   downloadUrl: string;
   actorName?: string | null;
   createdAt: string;
+  parseStatus?: string | null;
+  parsedPreview?: string;
+  chunkCount?: number;
+  sectionCount?: number;
+}
+
+export type EventLineTimelineNodeKind =
+  | 'project_start'
+  | 'material_intake'
+  | 'project_review'
+  | 'continuing_task'
+  | 'admin_archive'
+  | 'needs_review'
+  | 'system_trace';
+
+export type EventLineTimelineNodeWarning = string;
+
+export interface EventLineTimelineNode {
+  id: string;
+  kind: EventLineTimelineNodeKind;
+  title: string;
+  time: string;
+  summary: string;
+  sourceTaskIds?: string[];
+  sourceTaskId?: string;
+  sourceActivityIds: string[];
+  attachments: EventLineReportAttachment[];
+  evidenceSummary: string;
+  warnings: EventLineTimelineNodeWarning[];
+  tags: string[];
+  actorName?: string | null;
+  ownerName?: string | null;
 }
 
 export interface EventLineReportSnapshot {
@@ -1081,6 +2610,7 @@ export interface EventLineReportSnapshot {
   activities: EventLineActivity[];
   tasks: Task[];
   attachments: EventLineReportAttachment[];
+  timelineNodes?: EventLineTimelineNode[];
   participantNames: string[];
   snapshotAt: string;
 }
@@ -1131,11 +2661,10 @@ export interface EventLineMutationPayload {
   nextStep?: string | null;
   evidenceCount?: number | null;
   ownerId?: string | null;
-  ownerIds?: string[];
-  primaryWorkObjectId?: string | null;
   primaryClientId?: string | null;
   primaryDepartmentId?: string | null;
   participantIds?: string[];
+  syncLinkedTaskClientIds?: boolean;
 }
 
 export interface EventLineClarificationDraftPayload {
@@ -1155,7 +2684,6 @@ export interface EventLineClarificationDraftResult {
 
 export interface ProjectModule {
   id: string;
-  workObjectId: string;
   clientId: string;
   name: string;
   alias?: string | null;
@@ -1171,7 +2699,6 @@ export interface ProjectModule {
 
 export interface ProjectFlow {
   id: string;
-  workObjectId: string;
   clientId: string;
   moduleId: string;
   moduleName?: string | null;
@@ -1191,88 +2718,6 @@ export interface ProjectFlow {
 export interface ProjectStructureResponse {
   modules: ProjectModule[];
   flows: ProjectFlow[];
-}
-
-export type TaskGroupTemplateScope = 'local' | 'organization';
-
-export interface TaskGroupTemplateStepAttachment {
-  name: string;
-  size?: number;
-}
-
-export interface TaskGroupTemplateStep {
-  title: string;
-  description: string;
-  daysAfterPrevious: number;
-  durationDays: number;
-  priority: Priority;
-  ownerId?: string;
-  ownerName?: string;
-  collaboratorIds?: string[];
-  collaboratorNames?: string[];
-  attachments?: TaskGroupTemplateStepAttachment[];
-}
-
-export interface TaskGroupTemplateRecord {
-  id: string;
-  name: string;
-  scenarioDesc: string;
-  scope: TaskGroupTemplateScope;
-  workObjectId?: string | null;
-  clientId?: string | null;
-  legacyModuleId?: string | null;
-  steps: TaskGroupTemplateStep[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface TaskGroupTemplatePayload {
-  name: string;
-  scenarioDesc?: string;
-  scope?: TaskGroupTemplateScope;
-  workObjectId?: string | null;
-  steps: TaskGroupTemplateStep[];
-}
-
-export type TaskGroupTemplateEventLineMode = 'none' | 'existing' | 'create';
-
-export interface TaskGroupTemplateApplyEventLineDraft {
-  name: string;
-  kind?: EventLineKind;
-  primaryWorkObjectId?: string | null;
-  primaryClientId?: string | null;
-  ownerId?: string | null;
-  participantIds?: string[];
-}
-
-export interface TaskGroupTemplateApplyStepOverride {
-  stepIndex: number;
-  title?: string;
-  description?: string;
-  ownerId?: string;
-  ownerName?: string;
-  collaboratorIds?: string[];
-  collaboratorNames?: string[];
-  priority?: Priority;
-  durationDays?: number;
-  daysAfterPrevious?: number;
-}
-
-export interface ApplyTaskGroupTemplatePayload {
-  startDateTime: string;
-  listId: string;
-  workObjectId?: string | null;
-  clientId?: string | null;
-  eventLineMode: TaskGroupTemplateEventLineMode;
-  eventLineId?: string | null;
-  eventLineDraft?: TaskGroupTemplateApplyEventLineDraft | null;
-  stepOverrides?: TaskGroupTemplateApplyStepOverride[];
-}
-
-export interface ApplyTaskGroupTemplateResult {
-  createdTaskIds: string[];
-  createdEventLineId?: string | null;
-  createdCount: number;
 }
 
 export interface ProjectModuleDetail extends ProjectModule {
@@ -1400,7 +2845,6 @@ export interface AgentWeeklyPlanPayload {
 
 export interface WeeklyReviewTaskSnapshot {
   title: string;
-  desc?: string;
   status: TaskStatus;
   startDate?: string | null;
   dueDate?: string | null;
@@ -1718,6 +3162,45 @@ export interface WeeklyReviewAnalysis {
   narrativeAnalyses: NarrativeAnalysis[];
 }
 
+export interface WeeklyMainlineCard {
+  id?: string;
+  title: string;
+  taskCount: number;
+  completedCount: number;
+  pendingCount: number;
+  progressText: string;
+  nextGoalText: string;
+}
+
+export interface WeeklyMainlineCards {
+  summaryText: string;
+  mainlines: WeeklyMainlineCard[];
+  generatedBy: 'ai' | 'fallback';
+  evidenceMeta?: Record<string, unknown>;
+}
+
+export type WeeklyEventReviewCardKind = 'event_line' | 'task_cluster' | 'single_task' | 'needs_assignment';
+
+export interface WeeklyEventReviewCard {
+  id?: string;
+  title: string;
+  cardKind: WeeklyEventReviewCardKind;
+  taskIds: string[];
+  taskTitles: string[];
+  reflectionPromptText: string;
+  progressText: string;
+  nextActionText: string;
+  materialSuggestionText: string;
+  confidence: 'low' | 'medium' | 'high';
+  generatedBy: 'ai' | 'fallback';
+}
+
+export interface WeeklyEventReviewCards {
+  cards: WeeklyEventReviewCard[];
+  generatedBy: 'ai' | 'fallback';
+  evidenceMeta?: Record<string, unknown>;
+}
+
 export interface TaskContextPreview {
   taskId: string;
   clientId?: string | null;
@@ -1902,6 +3385,8 @@ export interface ReviewDashboard {
   personalItems: WeeklyReviewTaskEntry[];
   workAnalysis?: WeeklyReviewAnalysis | null;
   personalAnalysis?: WeeklyReviewAnalysis | null;
+  weeklyMainlineCards?: WeeklyMainlineCards | null;
+  weeklyEventReviewCards?: WeeklyEventReviewCards | null;
   selfReport?: HierarchyReport | null;
   workSignalCard?: ManagementSignalCard | null;
   personalGrowthCard?: PersonalGrowthCard | null;
@@ -1920,7 +3405,7 @@ export interface ReviewDashboard {
 export type UnderstandingMode = 'basic' | 'enhanced';
 
 export interface UnderstandingSourceBreakdown {
-  sourceType: 'org_dna' | 'client_background' | 'quarterly_focus' | 'task_title' | 'task_desc' | 'review_note' | 'event_line_memory' | 'meeting' | 'support_request' | 'knowledge_base' | 'calendar' | 'attachment';
+  sourceType: 'org_dna' | 'client_background' | 'quarterly_focus' | 'task_title' | 'task_desc' | 'review_note' | 'event_line_memory' | 'meeting' | 'support_request' | 'calendar' | 'attachment';
   available: boolean;
   label: string;
 }
@@ -2152,6 +3637,11 @@ export interface StrategicCockpitSnapshot {
   meetingPackDraft: StrategicMeetingPackDraft;
   evidencePreview: StrategicEvidencePreview;
   assetCandidates: StrategicAssetCandidate[];
+  officialLayer: Record<string, unknown>;
+  radarLayer: Record<string, unknown>;
+  officialLayerStatus: 'ready' | 'empty';
+  officialEmptyReason?: string | null;
+  resolutionTrace: Record<string, unknown>;
   notebookSummary?: OrganizationNotebookSnapshot | null;
   memoryStatus?: MemoryStatus | null;
   linkedEventLineMemories?: EventLineMemorySnapshot[];
@@ -2162,6 +3652,119 @@ export interface StrategicCockpitConfirmPayload {
   mainContradiction: string;
   coreBreakthrough: string;
   focusItems: string[];
+}
+
+export type StrategicThoughtScope = 'client' | 'project' | 'system';
+export type StrategicThoughtStatus = 'draft' | 'confirmed' | 'dismissed' | 'task_created' | 'waiting_evidence';
+export type StrategicThoughtConfidenceLevel = 'low' | 'medium' | 'high' | 'none';
+export type StrategicInsightType =
+  | 'strategic_shift'
+  | 'risk_signal'
+  | 'opportunity_window'
+  | 'execution_bottleneck'
+  | 'narrative_upgrade'
+  | 'operating_model';
+
+export type StrategicThoughtSourceType =
+  | 'strategic_cockpit'
+  | 'strategic_line'
+  | 'headline'
+  | 'pending_decision'
+  | 'pending_material'
+  | 'brain_dashboard'
+  | 'judgment_version'
+  | 'theme_cluster'
+  | 'conflict_group'
+  | 'open_question'
+  | 'event_line'
+  | 'meeting'
+  | 'review'
+  | 'knowledge'
+  | 'analysis_run'
+  | 'client_dna'
+  | 'document'
+  | 'task'
+  | 'project_module'
+  | 'project_flow'
+  | 'system';
+
+export interface StrategicThoughtSource {
+  sourceType: StrategicThoughtSourceType;
+  sourceId?: string | null;
+  label: string;
+  detail?: string | null;
+}
+
+export interface StrategicThoughtReview {
+  thoughtId: string;
+  status: StrategicThoughtStatus;
+  note: string;
+  taskId?: string | null;
+  judgmentId?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+}
+
+export interface StrategicThought {
+  id: string;
+  scope: StrategicThoughtScope;
+  clientId?: string | null;
+  clientName: string;
+  projectModuleId?: string | null;
+  projectModuleName?: string | null;
+  line: string;
+  observation: string;
+  suggestion: string;
+  confidence?: number | null;
+  confidenceLevel: StrategicThoughtConfidenceLevel;
+  status: StrategicThoughtStatus;
+  isSystem: boolean;
+  dueDateHint: string;
+  tags: string[];
+  sources: StrategicThoughtSource[];
+  evidenceCount: number;
+  generatedAt: string;
+  staleReason?: string | null;
+  evidenceLevel?: 'none' | 'weak' | 'medium' | 'strong' | null;
+  reason?: string | null;
+  insightType?: StrategicInsightType | null;
+  insightText?: string | null;
+  futureJudgment?: string | null;
+  whyItMatters?: string | null;
+  recommendedAction?: string | null;
+  evidenceSummary?: string | null;
+  evidenceLabels?: string[];
+  signalScore?: number;
+  sourceFingerprint?: string | null;
+  isFavorite?: boolean;
+  isDeleted?: boolean;
+  review?: StrategicThoughtReview | null;
+}
+
+export interface StrategicThoughtsResponse {
+  items: StrategicThought[];
+  total: number;
+  generatedAt: string;
+  selectedClientId?: string | null;
+  selectedProjectModuleId?: string | null;
+  usingMockData?: boolean;
+}
+
+export interface StrategicThoughtRefreshPayload {
+  clientId?: string | null;
+  projectModuleId?: string | null;
+  limit?: number;
+}
+
+export interface StrategicThoughtStatePayload {
+  action: 'favorite' | 'unfavorite' | 'delete' | 'restore';
+}
+
+export interface StrategicThoughtReviewPayload {
+  action: 'confirm' | 'dismiss' | 'mark_task_created';
+  note?: string;
+  taskId?: string | null;
+  createJudgment?: boolean;
 }
 
 export interface ReviewHistoryEntry {
@@ -2237,8 +3840,7 @@ export interface DnaReadinessQuestion {
   evidence?: string | null;
 }
 
-export interface WorkObjectDnaModule {
-  workObjectId: string;
+export interface ClientDnaModule {
   clientId: string;
   moduleKey: OrganizationDnaModuleKey;
   title: string;
@@ -2254,13 +3856,9 @@ export interface WorkObjectDnaModule {
   hasDocument: boolean;
 }
 
-export type ClientDnaModule = WorkObjectDnaModule;
-
-export interface WorkObjectDnaModulesResponse {
-  modules: WorkObjectDnaModule[];
+export interface ClientDnaModulesResponse {
+  modules: ClientDnaModule[];
 }
-
-export type ClientDnaModulesResponse = WorkObjectDnaModulesResponse;
 
 export interface ClientDnaGeneratePayload {
   refreshGenerated?: boolean;
@@ -2274,27 +3872,7 @@ export interface ClientWorkspaceSettings {
   defaultGoalQuarter: string;
   defaultMeetingTitlePrefix: string;
   clientDnaModeLabel: string;
-  clientEditPermission: 'admin_only' | 'owner' | 'owner_and_collaborators';
-  clientDnaGenerationMode: 'manual' | 'prompt_on_material_change' | 'auto_draft_on_material_change';
-  knowledgeIngestMeetingNotes: boolean;
-  knowledgeIngestAttachments: boolean;
-  knowledgeIngestTaskReviews: boolean;
-  meetingActionItemMode: 'candidate_only' | 'pending_tasks' | 'direct_tasks';
   updatedAt: string;
-}
-
-export interface TopicFocusDomain {
-  id: string;
-  name: string;
-  keywords: string;
-  description: string;
-}
-
-export interface TopicSourcePreference {
-  id: string;
-  name: string;
-  trustLevel: 'high' | 'medium' | 'low';
-  enabled: boolean;
 }
 
 export interface TopicsSettings {
@@ -2305,22 +3883,6 @@ export interface TopicsSettings {
   defaultSourceStrategy: string;
   useOrgDnaForInsight: boolean;
   useOrgDnaForTaskPlan: boolean;
-  refreshCadence: 'manual' | 'daily' | 'weekly';
-  focusDomains: TopicFocusDomain[];
-  sourcePreferences: TopicSourcePreference[];
-  candidateRetentionDays: number;
-  updatedAt: string;
-}
-
-export interface StrategicSettings {
-  visibilityScope: 'admin_only' | 'admin_and_owner' | 'admin_owner_collaborators';
-  snapshotConfirmationEnabled: boolean;
-  snapshotConfirmRoles: string[];
-  stalledDays: number;
-  stalledRiskLevel: 'watch' | 'risk';
-  meetingPackSections: string[];
-  evidenceMinCount: number;
-  markUncalibratedWhenEvidenceInsufficient: boolean;
   updatedAt: string;
 }
 
@@ -2499,26 +4061,6 @@ export interface HandbookSettings {
   allowTaskSource: boolean;
   allowAnalysisSource: boolean;
   visibilityBoundary: string;
-  experienceVisibility: 'personal' | 'team_requires_confirmation' | 'team_default';
-  captureSources: {
-    weeklyReview: boolean;
-    meetingNotes: boolean;
-    aiOverview: boolean;
-    taskReview: boolean;
-    strategicInsight: boolean;
-  };
-  handbookSources: {
-    task: boolean;
-    analysis: boolean;
-    meeting: boolean;
-    strategic: boolean;
-  };
-  notificationSettings: {
-    badgeToSelf: boolean;
-    xpToSelf: boolean;
-    importantBadgeToTeam: boolean;
-  };
-  organizationCategories: Array<{ id: string; name: string; description: string }>;
   updatedAt: string;
 }
 
@@ -2630,197 +4172,6 @@ export interface FeishuDeliveryProfile {
 
 export interface FeishuDeliveryProfilePayload {
   mobile?: string | null;
-}
-
-export interface OrgDingtalkFinanceIntegration {
-  organizationId?: string | null;
-  organizationName?: string | null;
-  appKey: string;
-  operatorMobile: string;
-  resolvedOperatorUserId?: string | null;
-  enabled: boolean;
-  hasAppSecret: boolean;
-  syncEnabled: boolean;
-  mappedTemplateNames: string[];
-  configuredBy?: string | null;
-  configuredAt?: string | null;
-  updatedAt: string;
-  lastValidationStatus: 'idle' | 'success' | 'failed';
-  lastValidationMessage?: string | null;
-}
-
-export interface OrgDingtalkFinanceIntegrationPayload {
-  appKey?: string | null;
-  appSecret?: string | null;
-  operatorMobile?: string | null;
-  clearAppSecret?: boolean;
-  syncEnabled?: boolean;
-  mappedTemplateNames?: string[];
-}
-
-export interface ExpenseImportSource {
-  id: string;
-  organizationId: string;
-  sourceSystem: 'dingtalk_finance';
-  sourceInstanceId: string;
-  sourceTemplateCode?: string | null;
-  sourceTemplateName?: string | null;
-  sourceTitle: string;
-  applicantUserName: string;
-  amount?: number | null;
-  currency: string;
-  submittedAt?: string | null;
-  approvedAt?: string | null;
-  approvalStatus: string;
-  sourceUrl?: string | null;
-  attachments: ExpenseEvidenceAttachmentImportPayload[];
-  rawPayload: Record<string, unknown>;
-  importedEvidenceId?: string | null;
-  lastImportedAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ExpenseImportSearchPayload {
-  query?: string;
-  applicantUserName?: string;
-  approvalStatus?: string | null;
-  submittedFrom?: string | null;
-  submittedTo?: string | null;
-  includeImported?: boolean;
-  limit?: number;
-}
-
-export interface ExpenseImportSearchResponse {
-  items: ExpenseImportSource[];
-  total: number;
-  message?: string | null;
-}
-
-export interface ExpenseEvidenceAttachmentImportPayload {
-  sourceFileId?: string | null;
-  sourceSpaceId?: string | null;
-  sourceFileType?: string | null;
-  fileName: string;
-  mimeType?: string | null;
-  sizeBytes?: number;
-  previewUrl?: string | null;
-}
-
-export interface ExpenseEvidenceImportItemPayload {
-  sourceInstanceId: string;
-  sourceTemplateCode?: string | null;
-  sourceTemplateName?: string | null;
-  sourceTitle: string;
-  applicantUserName?: string;
-  amount?: number | null;
-  currency?: string;
-  submittedAt?: string | null;
-  approvedAt?: string | null;
-  approvalStatus?: string;
-  sourceUrl?: string | null;
-  displayTitle?: string | null;
-  normalizedCategory?: string | null;
-  tags?: string[];
-  summary?: string;
-  attachments?: ExpenseEvidenceAttachmentImportPayload[];
-  rawPayload?: Record<string, unknown>;
-}
-
-export interface ExpenseEvidenceImportPayload {
-  items: ExpenseEvidenceImportItemPayload[];
-}
-
-export interface ExpenseEvidenceAttachment {
-  id: string;
-  expenseEvidenceId: string;
-  sourceFileId?: string | null;
-  sourceSpaceId?: string | null;
-  sourceFileType?: string | null;
-  fileName: string;
-  mimeType?: string | null;
-  sizeBytes: number;
-  downloadStatus: 'not_fetched' | 'fetched' | 'failed';
-  ocrStatus: 'pending' | 'done' | 'failed' | 'skipped';
-  ocrSummary?: string | null;
-  storagePath?: string | null;
-  previewUrl?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ExpenseEvidenceRecord {
-  id: string;
-  organizationId: string;
-  workObjectId?: string | null;
-  sourceSystem: 'dingtalk_finance';
-  sourceInstanceId: string;
-  sourceTemplateCode?: string | null;
-  sourceTemplateName?: string | null;
-  sourceTitle: string;
-  displayTitle: string;
-  applicantUserName: string;
-  amount?: number | null;
-  currency: string;
-  submittedAt?: string | null;
-  approvedAt?: string | null;
-  approvalStatus: string;
-  sourceUrl?: string | null;
-  normalizedCategory?: string | null;
-  tags: string[];
-  summary: string;
-  lastImportedAt?: string | null;
-  createdByUserId?: string | null;
-  updatedByUserId?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  attachments: ExpenseEvidenceAttachment[];
-}
-
-export interface ExpenseEvidenceUpdatePayload {
-  workObjectId?: string | null;
-  displayTitle?: string | null;
-  normalizedCategory?: string | null;
-  tags?: string[] | null;
-  summary?: string | null;
-}
-
-export interface ExpenseEvidenceImportResult {
-  imported: ExpenseEvidenceRecord[];
-  importedCount: number;
-  skippedCount: number;
-}
-
-export interface EventLineExpenseEvidenceLink {
-  id: string;
-  eventLineId: string;
-  evidenceId: string;
-  note: string;
-  linkedByUserId?: string | null;
-  linkedByUserName?: string | null;
-  createdAt: string;
-  evidence?: ExpenseEvidenceRecord | null;
-}
-
-export interface EventLineExpenseEvidenceLinkPayload {
-  evidenceId: string;
-  note?: string;
-}
-
-export interface TaskExpenseEvidenceLink {
-  id: string;
-  taskId: string;
-  evidenceId: string;
-  note: string;
-  linkedByUserId?: string | null;
-  linkedByUserName?: string | null;
-  createdAt: string;
-  evidence?: ExpenseEvidenceRecord | null;
-}
-
-export interface TaskExpenseEvidenceLinkPayload {
-  evidenceId: string;
-  note?: string;
 }
 
 export interface FeishuMemberAuthorization {
@@ -3444,6 +4795,9 @@ export interface GrowthWorkbenchSnapshot {
   supportCopy: GrowthWorkbenchSupportCopy;
   robotPlan: string[];
   sourceMode: 'task' | 'growth_seed' | 'empty';
+  scopeMode?: 'global' | 'strategic';
+  scopeClientId?: string | null;
+  scopeClientName?: string | null;
   updatedAt: string;
 }
 
@@ -3559,7 +4913,7 @@ export interface GrowthValidationActionResponse {
   createdAt: string;
 }
 
-export interface WorkObjectAnalysisEvidenceSummary {
+export interface ClientAnalysisEvidenceSummary {
   summaryText: string;
   masterHitCount: number;
   surrogateHitCount: number;
@@ -3570,11 +4924,8 @@ export interface WorkObjectAnalysisEvidenceSummary {
   evidenceList: KnowledgeSearchHit[];
 }
 
-export type ClientAnalysisEvidenceSummary = WorkObjectAnalysisEvidenceSummary;
-
-export interface WorkObjectAnalysisRun {
+export interface ClientAnalysisRun {
   id: string;
-  workObjectId: string;
   clientId: string;
   threadId: string;
   userMessageId: string;
@@ -3587,7 +4938,7 @@ export interface WorkObjectAnalysisRun {
   progressCeiling: number;
   stageLabel?: string | null;
   elapsedMs: number;
-  evidenceSummary: WorkObjectAnalysisEvidenceSummary;
+  evidenceSummary: ClientAnalysisEvidenceSummary;
   longAnswerStatus: 'pending' | 'ready' | 'fallback' | 'failed';
   summaryStatus: 'pending' | 'ready' | 'fallback' | 'failed';
   longAnswer?: string | null;
@@ -3602,12 +4953,410 @@ export interface WorkObjectAnalysisRun {
   updatedAt: string;
 }
 
-export type ClientAnalysisRun = WorkObjectAnalysisRun;
+export interface AnalysisJobCreatePayload {
+  jobType: AnalysisJobType;
+  clientId: string;
+  scopeType?: AnalysisScopeType;
+  scopeId: string;
+  priority?: Priority;
+  triggerType?: string;
+  intentProfile?: AnalysisIntentProfile;
+  question?: string;
+  sourceScope?: Record<string, string[]>;
+  featureFlags?: Record<string, boolean>;
+}
 
-export interface WorkObjectWorkspace {
-  workObject: WorkObjectRecord;
-  client: WorkObjectRecord;
-  folders: WorkObjectFolder[];
+export interface AnalysisJob {
+  id: string;
+  jobType: AnalysisJobType;
+  clientId: string;
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+  status: AnalysisJobStatus;
+  priority: Priority;
+  triggerType: string;
+  intentProfile: AnalysisIntentProfile;
+  question: string;
+  sourceSnapshot: string;
+  sourceSnapshotHash: string;
+  dedupeKey: string;
+  featureFlags: Record<string, boolean>;
+  progress: number;
+  stageLabel?: string | null;
+  runLogId?: string | null;
+  error?: string | null;
+  lockedBy?: string | null;
+  lockedAt?: string | null;
+  lockExpiresAt?: string | null;
+  attemptCount: number;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface AnalysisJobStageRun {
+  id: string;
+  jobId: string;
+  stageName: string;
+  status: AnalysisStageStatus;
+  provider?: string | null;
+  modelName?: string | null;
+  lane: AnalysisLane;
+  cacheKey?: string | null;
+  cacheHit: boolean;
+  degraded: boolean;
+  evidenceCount: number;
+  topicCount: number;
+  conflictCount: number;
+  contextTimeRange?: string | null;
+  metrics: Record<string, number | string>;
+  detail?: string | null;
+  correlationId?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeRunLog {
+  id: string;
+  clientId: string;
+  jobId?: string | null;
+  analysisJobId?: string | null;
+  stageRunId?: string | null;
+  contextPackId?: string | null;
+  judgmentVersionId?: string | null;
+  correlationId?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  lane: AnalysisLane;
+  cacheHit: boolean;
+  degraded: boolean;
+  documentCount: number;
+  evidenceCount: number;
+  conflictCount: number;
+  contextTimeRange?: string | null;
+  promptVersion?: string | null;
+  schemaVersion?: string | null;
+  summary: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ThemeCluster {
+  id: string;
+  clientId: string;
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+  originType: AnalysisOriginType;
+  authorityLevel: AnalysisAuthorityLevel;
+  qualityTier: AnalysisQualityTier;
+  themeKey: string;
+  title: string;
+  supportIds: string[];
+  opposeIds: string[];
+  gapSummary: string;
+  latestChangeSummary: string;
+  evidenceCount: number;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConflictGroup {
+  id: string;
+  clientId: string;
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+  originType: AnalysisOriginType;
+  authorityLevel: AnalysisAuthorityLevel;
+  qualityTier: AnalysisQualityTier;
+  conflictType: string;
+  title: string;
+  summary: string;
+  evidenceIds: string[];
+  unresolvedQuestionIds: string[];
+  resolutionStatus: AnalysisReviewState;
+  severity: 'low' | 'medium' | 'high';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenQuestion {
+  id: string;
+  clientId: string;
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+  originType: AnalysisOriginType;
+  authorityLevel: AnalysisAuthorityLevel;
+  qualityTier: AnalysisQualityTier;
+  themeKey: string;
+  question: string;
+  reason: string;
+  blockerLevel: 'low' | 'medium' | 'high';
+  status: AnalysisReviewState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContextPack {
+  id: string;
+  clientId: string;
+  jobId?: string | null;
+  targetType: AnalysisScopeType;
+  targetId: string;
+  originType: AnalysisOriginType;
+  authorityLevel: AnalysisAuthorityLevel;
+  qualityTier: AnalysisQualityTier;
+  supersedesId?: string | null;
+  sourceSnapshotHash: string;
+  staleReason?: AnalysisStaleReason | null;
+  invalidatedBy?: string | null;
+  promptVersion: string;
+  sourceCount: number;
+  evidenceCount: number;
+  payload: Record<string, unknown>;
+  staleAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DnaDelta {
+  id: string;
+  clientId: string;
+  dimension: string;
+  previousVersion?: string | null;
+  originType: AnalysisOriginType;
+  authorityLevel: AnalysisAuthorityLevel;
+  qualityTier: AnalysisQualityTier;
+  supersedesId?: string | null;
+  sourceSnapshotHash: string;
+  staleReason?: AnalysisStaleReason | null;
+  invalidatedBy?: string | null;
+  proposedChange: string;
+  summary: string;
+  evidenceIds: string[];
+  confidence: GrowthConfidence;
+  status: AnalysisReviewState;
+  contextPackId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DnaDeltaCreatePayload {
+  clientId: string;
+  dimension: string;
+  proposedChange: string;
+  summary?: string;
+  evidenceIds?: string[];
+  confidence?: GrowthConfidence;
+  contextPackId?: string | null;
+}
+
+export interface JudgmentVersion {
+  id: string;
+  clientId: string;
+  targetType: AnalysisScopeType;
+  targetId: string;
+  topic: string;
+  version: number;
+  status: AnalysisReviewState;
+  originType: AnalysisOriginType;
+  authorityLevel: AnalysisAuthorityLevel;
+  qualityTier: AnalysisQualityTier;
+  supersedesId?: string | null;
+  sourceSnapshotHash: string;
+  staleReason?: AnalysisStaleReason | null;
+  invalidatedBy?: string | null;
+  summary: string;
+  evidenceIds: string[];
+  contextPackId?: string | null;
+  riskLevel: 'low' | 'medium' | 'high';
+  confidence: GrowthConfidence;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JudgmentConfirmPayload {
+  judgmentId: string;
+  action: ApprovalDecision;
+  note?: string;
+}
+
+export interface ApprovalDecisionPayload {
+  targetType: ApprovalTargetType;
+  targetId: string;
+  decision: ApprovalDecision;
+  comment?: string;
+  policyType?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ApprovalRecord {
+  id: string;
+  approvalTargetType: ApprovalTargetType;
+  approvalTargetId: string;
+  clientId: string;
+  policyType: string;
+  decision: ApprovalDecision;
+  comment: string;
+  decidedBy: string;
+  decidedAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ApprovalState {
+  targetType: ApprovalTargetType;
+  targetId: string;
+  currentDecision?: ApprovalDecision | null;
+  currentStatus?: AnalysisReviewState | null;
+  lastApproval?: ApprovalRecord | null;
+}
+
+export interface ResolutionScope {
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+}
+
+export interface ResolutionCandidate {
+  objectId?: string | null;
+  topic?: string | null;
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+  originType?: AnalysisOriginType | null;
+  authorityLevel?: AnalysisAuthorityLevel | null;
+  qualityTier?: AnalysisQualityTier | null;
+  staleReason?: AnalysisStaleReason | null;
+  status?: AnalysisReviewState | null;
+  rejectedReason?: AnalysisRejectedReason | null;
+}
+
+export interface ResolutionTrace {
+  selectedCandidate?: ResolutionCandidate | null;
+  consideredCandidates: ResolutionCandidate[];
+  requestedScope: ResolutionScope;
+  resolvedScope?: ResolutionScope | null;
+  writebackScope: ResolutionScope;
+  fallbackUsed: boolean;
+  fallbackReason?: string | null;
+}
+
+export interface JudgmentBundle {
+  baselineJudgment?: JudgmentVersion | null;
+  overlayDeltas: JudgmentVersion[];
+  resolutionTrace: ResolutionTrace;
+}
+
+export interface AnalysisMigrationMetrics {
+  windowDays: number;
+  newObjectHitRate: number;
+  fallbackRate: number;
+  approvalBacklog: number;
+  approvalLagHoursMedian: number;
+  candidateReviewWarningCount: number;
+  candidateReviewOverdueCount: number;
+  newCandidateUnreviewed24h: number;
+  candidateToApprovedConversionRate: number;
+  staleApprovedJudgmentCount: number;
+  resolverMismatchRate: number;
+  pageBreakdown: Record<string, AnalysisMigrationMetricBucket>;
+}
+
+export interface AnalysisMigrationMetricBucket {
+  newObjectHitRate: number;
+  fallbackRate: number;
+  resolverMismatchRate: number;
+  totalRuns: number;
+}
+
+export interface AnalysisWorkerCounterSnapshot {
+  claimCounts: Record<string, number>;
+  lockContention: Record<string, number>;
+  backfillThrottle: Record<string, number>;
+}
+
+export interface MainChainCanaryObservation {
+  recordedAt: string;
+  timeRange: string;
+  clientCount: number;
+  enqueuedJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  newObjectHitRateBefore: number;
+  newObjectHitRateAfter: number;
+  fallbackRateBefore: number;
+  fallbackRateAfter: number;
+  resolverMismatchRateBefore: number;
+  resolverMismatchRateAfter: number;
+  approvalBacklog: number;
+  approvalLagHoursMedian: number;
+  claimCounts: Record<string, number>;
+  lockContention: Record<string, number>;
+  backfillThrottle: Record<string, number>;
+  impactedRealtimeTasks: boolean;
+  latestJudgmentsShadowOff: boolean;
+  verdict: 'pass' | 'watch' | 'fail';
+  conclusion: string;
+}
+
+export interface MainChainCanaryObservationPayload {
+  timeRange?: string | null;
+  clientCount?: number | null;
+  enqueuedJobs?: number | null;
+  completedJobs?: number | null;
+  failedJobs?: number | null;
+  newObjectHitRateBefore?: number | null;
+  newObjectHitRateAfter?: number | null;
+  fallbackRateBefore?: number | null;
+  fallbackRateAfter?: number | null;
+  resolverMismatchRateBefore?: number | null;
+  resolverMismatchRateAfter?: number | null;
+  approvalBacklog?: number | null;
+  approvalLagHoursMedian?: number | null;
+  claimCounts?: Record<string, number> | null;
+  lockContention?: Record<string, number> | null;
+  backfillThrottle?: Record<string, number> | null;
+  impactedRealtimeTasks?: boolean | null;
+  latestJudgmentsShadowOff?: boolean | null;
+  verdict?: 'pass' | 'watch' | 'fail' | null;
+  conclusion?: string | null;
+}
+
+export interface MainChainStabilitySettings {
+  latestJudgmentsShadowOff: boolean;
+  backfillPaused: boolean;
+  workerCounters: AnalysisWorkerCounterSnapshot;
+  lastCanaryObservation?: MainChainCanaryObservation | null;
+  updatedAt: string;
+}
+
+export interface MainChainStabilitySettingsPayload {
+  latestJudgmentsShadowOff?: boolean | null;
+  backfillPaused?: boolean | null;
+  lastCanaryObservation?: MainChainCanaryObservationPayload | null;
+}
+
+export interface AnalysisCenterSummary {
+  clientId: string;
+  evidenceCardCount: number;
+  themeClusterCount: number;
+  conflictGroupCount: number;
+  openQuestionCount: number;
+  draftJudgmentCount: number;
+  approvedJudgmentCount: number;
+  analysisJobCount: number;
+  latestJobStatus?: AnalysisJobStatus | null;
+  latestJobLabel?: string | null;
+  latestContextPackUpdatedAt?: string | null;
+  latestRunLogId?: string | null;
+  latestRunSummary?: string | null;
+}
+
+export interface ClientWorkspace {
+  client: ClientSummary;
+  folders: ClientFolder[];
   documents: DocumentRecord[];
   documentCards: DocumentCard[];
   imports: ImportRecord[];
@@ -3616,20 +5365,57 @@ export interface WorkObjectWorkspace {
   recentReclassEvents: FileReclassEvent[];
   surrogateCount: number;
   memoryDocCount: number;
+  memoryCards: KnowledgeMemoryRecord[];
   threads: ChatThread[];
   recentMessages: ChatMessage[];
-  analysisRuns: WorkObjectAnalysisRun[];
+  analysisRuns: ClientAnalysisRun[];
   meetings: MeetingSummary[];
   goals: GoalRecord[];
-  dnaModules: WorkObjectDnaModule[];
+  dnaModules: ClientDnaModule[];
   projectModules: ProjectModule[];
   projectFlows: ProjectFlow[];
   dnaTerms: DnaTerm[];
   relatedTasks: Task[];
-  expenseEvidences?: ExpenseEvidenceRecord[];
+  notebookSummary?: OrganizationNotebookSnapshot | null;
+  memoryStatus?: MemoryStatus | null;
+  analysisCenter?: AnalysisCenterSummary | null;
+  latestContextPack?: ContextPack | null;
+  judgmentBundle?: JudgmentBundle | null;
+  latestResolutionTrace?: ResolutionTrace | null;
+  latestJudgments: JudgmentVersion[];
+  latestTopics: ThemeCluster[];
+  latestConflicts: ConflictGroup[];
+  latestOpenQuestions: OpenQuestion[];
+  latestRunLogs: RuntimeRunLog[];
+  stateProjection?: WorkspaceStateProjection | null;
 }
 
-export type ClientWorkspace = WorkObjectWorkspace;
+export interface AnalysisBackfillMainChainJob {
+  clientId: string;
+  scopeType: AnalysisScopeType;
+  scopeId: string;
+  jobType: AnalysisJobType;
+  triggerType: string;
+  intentProfile: AnalysisIntentProfile;
+}
+
+export interface AnalysisBackfillMainChainPayload {
+  clientIds?: string[];
+  dryRun?: boolean;
+  batchSize?: number;
+  maxJobs?: number;
+  pauseRequested?: boolean;
+}
+
+export interface AnalysisBackfillMainChainResult {
+  dryRun: boolean;
+  pauseRequested: boolean;
+  paused: boolean;
+  scannedClients: number;
+  queuedJobs: number;
+  skippedJobs: number;
+  candidates: AnalysisBackfillMainChainJob[];
+}
 
 export interface FileReclassEvent {
   id: string;
@@ -3645,17 +5431,33 @@ export interface FileReclassEvent {
 
 export interface KnowledgeJob {
   id: string;
-  workObjectId: string;
   clientId: string;
   jobType: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
   totalItems: number;
   processedItems: number;
   lastError?: string | null;
+  currentItemLabel?: string | null;
+  lastEventMessage?: string | null;
+  recentEvents?: KnowledgeJobEvent[];
+  queuedItemLabels?: string[];
   createdAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
   updatedAt: string;
+}
+
+export interface KnowledgeJobEvent {
+  level: string;
+  message: string;
+  processedItems?: number | null;
+  itemLabel?: string | null;
+  createdAt: string;
+}
+
+export interface KnowledgeProgress {
+  knowledgeStatus: KnowledgeStatus;
+  knowledgeJobs: KnowledgeJob[];
 }
 
 export interface KnowledgeSearchHit {
@@ -3699,6 +5501,10 @@ export interface KnowledgeMemoryRecord {
   title: string;
   folderCategory: string;
   surrogateMdPath: string;
+  overviewSummary?: string;
+  retrievalSummary?: string;
+  documentRole?: string;
+  sourceLinks?: Array<Record<string, unknown>>;
   createdAt: string;
   updatedAt: string;
 }
@@ -3724,7 +5530,6 @@ export interface LegacyScanReport {
 
 export interface DemoDataReport {
   loaded: boolean;
-  workObjects?: number;
   clients: number;
   documents: number;
   tasks: number;
@@ -3732,40 +5537,14 @@ export interface DemoDataReport {
   handbookEntries: number;
 }
 
-export interface WorkObjectMutationPayload {
+export interface ClientMutationPayload {
   name: string;
   alias: string;
   domain: string;
   type: string;
   intro: string;
   stage: string;
-}
-
-export type ClientMutationPayload = WorkObjectMutationPayload;
-
-export interface WorkObjectTerminologyState {
-  localMode?: WorkObjectMode | null;
-  organizationMode?: WorkObjectMode | null;
-  effectiveMode: WorkObjectMode;
-  source: 'default' | 'local' | 'organization';
-  lockedByOrganization: boolean;
-  needsOnboarding: boolean;
-  updatedAt: string;
-}
-
-export interface ResolvedTerminologyConfig extends WorkObjectTerminologyState {
-  singularLabel: string;
-  pluralLabel: string;
-  workspaceLabel: string;
-  recentLabel: string;
-  statsLabel: string;
-  associateLabel: string;
-  structureLabel: string;
-}
-
-export interface WorkObjectTerminologyUpdatePayload {
-  mode: WorkObjectMode;
-  target?: 'local' | 'organization';
+  color?: string;
 }
 
 export interface TaskMutationPayload {
@@ -3773,7 +5552,6 @@ export interface TaskMutationPayload {
   desc: string;
   priority: Priority;
   listId: string;
-  listIds?: string[];
   startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
@@ -3786,7 +5564,6 @@ export interface TaskMutationPayload {
   ownerId?: string | null;
   ownerName: string;
   collaboratorIds: string[];
-  collaboratorNames?: string[];
   tagIds: string[];
   tags?: string[];
   sourceType?: string;
@@ -3836,6 +5613,8 @@ export interface LocalInputMemoryAiSettings {
 export interface LocalInputMemoryFeishuIntegration {
   rememberInputs: boolean;
   appId: string;
+  callbackMode: string;
+  customCallbackUrl: string;
   appSecret: string;
 }
 
@@ -3860,6 +5639,8 @@ export interface SaveAiInputMemoryPayload {
 export interface SaveFeishuInputMemoryPayload {
   rememberInputs: boolean;
   appId?: string | null;
+  callbackMode?: string | null;
+  customCallbackUrl?: string | null;
   appSecret?: string | null;
 }
 
@@ -3906,8 +5687,7 @@ export interface TaskTagMutationPayload {
 
 export interface TaskListMutationPayload {
   name: string;
-  description?: string | null;
-  color?: string;
+  color: string;
   isDefault?: boolean;
   scope?: 'org' | 'personal';
   archived?: boolean;
@@ -3967,12 +5747,6 @@ export interface ClientWorkspaceSettingsPayload {
   defaultGoalQuarter?: string;
   defaultMeetingTitlePrefix?: string;
   clientDnaModeLabel?: string;
-  clientEditPermission?: ClientWorkspaceSettings['clientEditPermission'];
-  clientDnaGenerationMode?: ClientWorkspaceSettings['clientDnaGenerationMode'];
-  knowledgeIngestMeetingNotes?: boolean;
-  knowledgeIngestAttachments?: boolean;
-  knowledgeIngestTaskReviews?: boolean;
-  meetingActionItemMode?: ClientWorkspaceSettings['meetingActionItemMode'];
 }
 
 export interface TopicsSettingsPayload {
@@ -3983,21 +5757,6 @@ export interface TopicsSettingsPayload {
   defaultSourceStrategy?: string;
   useOrgDnaForInsight?: boolean;
   useOrgDnaForTaskPlan?: boolean;
-  refreshCadence?: TopicsSettings['refreshCadence'];
-  focusDomains?: TopicFocusDomain[];
-  sourcePreferences?: TopicSourcePreference[];
-  candidateRetentionDays?: number;
-}
-
-export interface StrategicSettingsPayload {
-  visibilityScope?: StrategicSettings['visibilityScope'];
-  snapshotConfirmationEnabled?: boolean;
-  snapshotConfirmRoles?: string[];
-  stalledDays?: number;
-  stalledRiskLevel?: StrategicSettings['stalledRiskLevel'];
-  meetingPackSections?: string[];
-  evidenceMinCount?: number;
-  markUncalibratedWhenEvidenceInsufficient?: boolean;
 }
 
 export interface AnalysisWorkbenchSettingsPayload {
@@ -4021,11 +5780,6 @@ export interface HandbookSettingsPayload {
   allowTaskSource?: boolean;
   allowAnalysisSource?: boolean;
   visibilityBoundary?: string;
-  experienceVisibility?: HandbookSettings['experienceVisibility'];
-  captureSources?: HandbookSettings['captureSources'];
-  handbookSources?: HandbookSettings['handbookSources'];
-  notificationSettings?: HandbookSettings['notificationSettings'];
-  organizationCategories?: HandbookSettings['organizationCategories'];
 }
 
 export interface SystemAdminSettingsPayload {
@@ -4178,6 +5932,10 @@ export interface BettaFishSignal {
 
 export interface DesktopAppInfo {
   appVersion: string;
+  frontendBuildVersion?: string | null;
+  frontendGitCommit?: string | null;
+  bundleManifestId?: string | null;
+  runtimeMode?: 'packaged' | 'dev';
   isPackaged: boolean;
   platform: string;
   arch: string;
@@ -4190,8 +5948,21 @@ export interface DesktopAppInfo {
   recommendedInstallPath: string;
   installStatus: 'ok' | 'warning';
   installWarning: string | null;
+  currentRendererEntry?: string | null;
+  currentRendererHash?: string | null;
+  backendSourceHash?: string | null;
+  startupGateStatus?: 'ok' | 'warning' | 'blocked';
+  startupGateReason?: string | null;
+  installReceiptStatus?: 'ok' | 'missing' | 'mismatch';
+  installSmokeStatus?: 'ok' | 'missing' | 'failed';
   detectedAppPaths: string[];
   legacyAppPaths: string[];
+}
+
+export interface DesktopStartupGateResumeResult {
+  resumed: boolean;
+  appInfo: DesktopAppInfo;
+  loadMode: 'blocked' | 'dev' | 'http' | 'app' | 'error';
 }
 
 export type CollabChangeGroupKey =
@@ -4319,6 +6090,7 @@ declare global {
     yiyuWorkbench: {
       backendBaseUrl: string;
       getDesktopAppInfo(): Promise<DesktopAppInfo>;
+      resumeFromStartupGate(): Promise<DesktopStartupGateResumeResult>;
       selectFiles(): Promise<string[]>;
       selectFolder(): Promise<string | null>;
       selectCollabRepo(): Promise<string | null>;
@@ -4334,6 +6106,7 @@ declare global {
       openExternalUrl(targetUrl: string): Promise<boolean>;
       revealInFinder(targetPath: string): Promise<boolean>;
       saveFileAs(sourcePath: string, suggestedName?: string): Promise<string | null>;
+      quitApp(): Promise<boolean>;
     };
   }
 }

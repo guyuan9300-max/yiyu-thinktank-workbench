@@ -87,6 +87,16 @@ ABILITY_STAGE_RULES = [
     {"label": "带动", "minXp": 150},
 ]
 
+ABILITY_STAGE_SCORE_RULES = [
+    {"label": "见习", "minScore": 0},
+    {"label": "上手", "minScore": 20},
+    {"label": "稳态", "minScore": 40},
+    {"label": "独立", "minScore": 60},
+    {"label": "带动", "minScore": 80},
+]
+
+ABILITY_SCORE_HALF_SATURATION_XP = 96
+
 ABILITY_WEIGHTS = {
     "reflection": {"l1": 5, "l2": 10, "l3": 14},
     "codification": {"l1": 8, "l2": 12, "l3": 16},
@@ -678,17 +688,23 @@ def _derive_level(text: str, *, source_type: str) -> GrowthEvidenceLevel:
 
 
 def _ability_stage(total_xp: int) -> tuple[str, str]:
-    stage = ABILITY_STAGE_RULES[0]["label"]
-    next_stage = ABILITY_STAGE_RULES[-1]["label"]
-    for index, rule in enumerate(ABILITY_STAGE_RULES):
-        if total_xp >= int(rule["minXp"]):
+    score = _current_score(total_xp)
+    stage = ABILITY_STAGE_SCORE_RULES[0]["label"]
+    next_stage = ABILITY_STAGE_SCORE_RULES[-1]["label"]
+    for index, rule in enumerate(ABILITY_STAGE_SCORE_RULES):
+        if score >= int(rule["minScore"]):
             stage = str(rule["label"])
-            next_stage = str(ABILITY_STAGE_RULES[min(index + 1, len(ABILITY_STAGE_RULES) - 1)]["label"])
+            next_stage = str(ABILITY_STAGE_SCORE_RULES[min(index + 1, len(ABILITY_STAGE_SCORE_RULES) - 1)]["label"])
     return stage, next_stage
 
 
 def _current_score(total_xp: int) -> int:
-    return max(8, min(100, int(round((total_xp / 120) * 100))))
+    if total_xp <= 0:
+        return 8
+    # Use a saturating curve instead of a hard linear cap so mature abilities do not all
+    # collapse to 100 once cumulative XP crosses an early milestone.
+    normalized = (total_xp / (total_xp + ABILITY_SCORE_HALF_SATURATION_XP)) * 100
+    return max(8, min(100, int(round(normalized))))
 
 
 def _score_delta(evidence_type: GrowthEvidenceType, level: GrowthEvidenceLevel, confidence: GrowthConfidence) -> int:

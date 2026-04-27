@@ -209,12 +209,17 @@ def _parse_time_range(text: str) -> tuple[str | None, int | None]:
     normalized = _normalize_spoken_text(text)
     match = _TIME_RANGE_PATTERN.search(normalized)
     if not match:
-        single_time = re.search(r"(上午|早上|中午|下午|晚上)?\s*(\d{1,2})(?:[:：点时](\d{1,2}))", normalized)
-        if not single_time:
-            single_time = re.search(r"(上午|早上|中午|下午|晚上)?\s*(\d{1,2})点", normalized)
+        single_time = re.search(
+            r"(?P<meridiem>上午|早上|中午|下午|晚上)?\s*(?P<hour>\d{1,2})(?:[:：点时](?P<minute>\d{1,2}))?",
+            normalized,
+        )
         if not single_time:
             return None, None
-        hour, minute = _convert_clock(int(single_time.group(2)), int(single_time.group(3) or 0), single_time.group(1))
+        match_payload = single_time.groupdict()
+        hour = int(match_payload.get("hour") or 0)
+        minute = int(match_payload.get("minute") or 0)
+        meridiem = match_payload.get("meridiem")
+        hour, minute = _convert_clock(hour, minute, meridiem)
         return f"{hour:02d}:{minute:02d}", None
 
     start_hour, start_minute = _convert_clock(int(match.group(2)), int(match.group(3) or 0), match.group(1))

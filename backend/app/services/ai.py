@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from time import perf_counter
 from typing import Any, Callable
 
 import httpx
@@ -22,6 +23,30 @@ DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
 QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 PROVIDER_LABELS = {"qwen": "Qwen 3.5", "doubao": "豆包 Seed 2.0 Pro", "mock": "Mock"}
+HTTP_TIMEOUT_GRACE_SECONDS = 15.0
+
+
+def classify_llm_error_kind(detail: str | None) -> str:
+    text = str(detail or "").strip().lower()
+    if not text:
+        return "unknown"
+    if (
+        "ssl" in text
+        or "handshake" in text
+        or "_ssl.c" in text
+    ) and ("timeout" in text or "timed out" in text):
+        return "ssl_handshake_timeout"
+    if "read timeout" in text or "read operation timed out" in text:
+        return "read_timeout"
+    if ("connect timeout" in text or "connection timed out" in text) and "read" not in text:
+        return "connect_timeout"
+    if "401" in text or "unauthorized" in text or "invalid api key" in text or "api key" in text:
+        return "auth_error"
+    if "429" in text or "rate limit" in text or "too many requests" in text:
+        return "rate_limit"
+    if "timeout" in text or "timed out" in text:
+        return "read_timeout"
+    return "unknown"
 
 
 @dataclass
@@ -39,6 +64,18 @@ class AiInvocationError(RuntimeError):
         super().__init__(detail)
         self.provider = provider
         self.detail = detail
+
+
+@dataclass(frozen=True)
+class ChatGenerationProfile:
+    primary_context: str
+    primary_timeout_seconds: float
+    primary_max_tokens: int
+    primary_enable_thinking: bool
+    fallback_context: str
+    fallback_timeout_seconds: float
+    fallback_max_tokens: int
+    fallback_enable_thinking: bool
 
 
 class AiService:
@@ -128,6 +165,96 @@ class AiService:
             fingerprint=health.fingerprint,
         )
 
+    def healthcheck(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        prompt: str | None = None,
+    ) -> dict[str, object]:
+        target_provider = provider or self.current_provider()
+        if target_provider not in DEFAULT_MODELS:
+            target_provider = self.current_provider()
+        target_model = model or (
+            self.current_model() if target_provider == self.current_provider() else DEFAULT_MODELS[target_provider]
+        )
+        start = perf_counter()
+        if target_provider == "mock":
+            return {
+                "provider": target_provider,
+                "model": target_model,
+                "success": True,
+                "latencyMs": 0,
+                "error": None,
+                "errorKind": None,
+            }
+        store = self._store_for(target_provider)
+        api_key = store.get_api_key() if store else ""
+        if not api_key:
+            return {
+                "provider": target_provider,
+                "model": target_model,
+                "success": False,
+                "latencyMs": 0,
+                "error": f"{PROVIDER_LABELS.get(target_provider, target_provider)} API Key 未配置。",
+                "errorKind": "auth_error",
+            }
+        try:
+            self._qwen_generate(
+                prompt=(prompt or "请只回复：连接成功。"),
+                system_instruction="你是系统健康检查助手。只返回纯文本。",
+                response_schema=None,
+                timeout_seconds=12.0,
+                max_tokens=60,
+                temperature=0.0,
+                top_p=1.0,
+                enable_thinking=False,
+                provider_override=target_provider,
+                model_override=target_model,
+            )
+            return {
+                "provider": target_provider,
+                "model": target_model,
+                "success": True,
+                "latencyMs": int(round((perf_counter() - start) * 1000)),
+                "error": None,
+                "errorKind": None,
+            }
+        except Exception as error:
+            detail = str(getattr(error, "detail", error) or "").strip() or str(error)
+            return {
+                "provider": target_provider,
+                "model": target_model,
+                "success": False,
+                "latencyMs": int(round((perf_counter() - start) * 1000)),
+                "error": detail,
+                "errorKind": classify_llm_error_kind(detail),
+            }
+
+    def provider_probe(
+        self,
+        *,
+        client_id: str | None = None,
+        providers: list[str] | None = None,
+        prompt: str | None = None,
+    ) -> dict[str, object]:
+        ordered_providers: list[str] = []
+        for item in (providers or [self.current_provider(), "doubao", "qwen"]):
+            provider_name = str(item or "").strip()
+            if provider_name in DEFAULT_MODELS and provider_name not in ordered_providers:
+                ordered_providers.append(provider_name)
+        if not ordered_providers:
+            ordered_providers = [self.current_provider()]
+        return {
+            "clientId": client_id,
+            "prompt": prompt or "请只回复：连接成功。",
+            "generatedAt": datetime.now().replace(microsecond=0).isoformat(),
+            "results": [
+                self.healthcheck(provider=provider_name, prompt=prompt)
+                for provider_name in ordered_providers
+            ],
+        }
+
     def generate_structured(self, prompt: str, system_instruction: str, context_summary: str) -> AiStructuredResponse:
         health = self.get_health()
         if health.provider in ("qwen", "doubao") and health.ready:
@@ -139,9 +266,101 @@ class AiService:
         if health.provider in ("qwen", "doubao") and health.ready:
             try:
                 return self._qwen_generate_general_fallback(prompt, note, subject_name=subject_name)
-            except Exception as error:
-                raise AiInvocationError("qwen", self._format_provider_error(error)) from error
+            except Exception:
+                subject_hint = f"{subject_name} 的通用背景初步判断。" if subject_name else "当前问题的通用背景初步判断。"
+                background_note = (
+                    f"{subject_hint} "
+                    + (
+                        note.strip()
+                        if note and note.strip()
+                        else "当前没有命中足够的原始材料，以下只保留保守、非正式的背景判断。"
+                    )
+                )
+                return self._mock_generate(prompt, background_note)
         return self._mock_generate(prompt, note or "当前资料回答阶段失败，以下为本地保守兜底判断。")
+
+    def generate_workspace_state_response(
+        self,
+        prompt: str,
+        state_context_summary: str,
+        *,
+        on_partial: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AiStructuredResponse:
+        health = self.get_health()
+        compact_context = self._compact_context_summary(state_context_summary, max_chars=2600)
+        if health.provider in ("qwen", "doubao") and health.ready:
+            if on_partial is not None:
+                opening = "正在优先整理客户状态池，先生成一版边界清晰的结构化状态回答。"
+                on_partial(
+                    {
+                        "stageLabel": "正在生成状态回答",
+                        "progress": 54.0,
+                        "content": opening,
+                        "structured": {
+                            "content": opening,
+                            "judgment": "",
+                            "analysis": "",
+                            "actions": "",
+                            "timeline": "",
+                        },
+                    }
+                )
+            instruction = (
+                "你是益语智库的客户状态顾问。"
+                "请优先基于客户状态池直接回答，不要退回成资料摘要。"
+                "回答必须明确区分：正式判断、待确认判断、本周动作、风险提醒、缺失信息。"
+                "candidate、risk、unknown 不能改写成已证实事实。"
+                "不要解释系统过程，不要输出 JSON，不要输出 Markdown 代码块。"
+                "先求稳定、清楚、可执行，再求长。"
+            )
+            prompt_text = (
+                f"用户问题：{prompt}\n\n"
+                f"客户状态池：\n{compact_context or state_context_summary}\n\n"
+                "请直接给出一版可展示的状态回答。"
+            )
+            first_error: Exception | None = None
+            try:
+                text = self._qwen_generate(
+                    prompt=prompt_text,
+                    system_instruction=instruction,
+                    response_schema=None,
+                    timeout_seconds=14.0,
+                    max_tokens=1400,
+                    temperature=0.22,
+                    top_p=0.88,
+                    enable_thinking=False,
+                )
+                return self._structured_from_plain_answer(str(text))
+            except Exception as error:
+                first_error = error
+            retry_context = self._compact_context_summary(state_context_summary, max_chars=1600)
+            try:
+                text = self._qwen_generate(
+                    prompt=(
+                        f"用户问题：{prompt}\n\n"
+                        f"客户状态池：\n{retry_context or compact_context or state_context_summary}\n\n"
+                        "请只保留最重要的状态判断和下一步动作，直接回答。"
+                    ),
+                    system_instruction=instruction,
+                    response_schema=None,
+                    timeout_seconds=10.0,
+                    max_tokens=900,
+                    temperature=0.18,
+                    top_p=0.85,
+                    enable_thinking=False,
+                )
+                return self._structured_from_plain_answer(str(text))
+            except Exception as retry_error:
+                detail = "；".join(
+                    part
+                    for part in (
+                        f"状态回答主调用失败：{self._format_provider_error(first_error)}" if first_error else "",
+                        f"状态回答紧凑重试失败：{self._format_provider_error(retry_error)}",
+                    )
+                    if part
+                )
+                raise AiInvocationError(health.provider, detail) from retry_error
+        return self._mock_generate(prompt, compact_context or state_context_summary)
 
     def generate_chat_response(
         self,
@@ -153,6 +372,8 @@ class AiService:
     ) -> AiStructuredResponse:
         health = self.get_health()
         if health.provider in ("qwen", "doubao") and health.ready:
+            provider = health.provider
+            chat_profile = self._build_chat_generation_profile(context_summary)
             if on_partial is not None:
                 opening = "正在围绕核心判断、关键张力和潜在风险整合原始证据，准备输出连续长文分析。"
                 on_partial(
@@ -173,7 +394,10 @@ class AiService:
                 return self._qwen_generate_chat_response(
                     prompt,
                     system_instruction,
-                    context_summary,
+                    chat_profile.primary_context,
+                    timeout_seconds=chat_profile.primary_timeout_seconds,
+                    max_tokens=chat_profile.primary_max_tokens,
+                    enable_thinking=chat_profile.primary_enable_thinking,
                     on_partial=on_partial,
                 )
             except Exception as error:
@@ -182,21 +406,129 @@ class AiService:
                     return self._qwen_generate_textual_fallback(
                         prompt,
                         system_instruction,
-                        context_summary,
-                        timeout_seconds=30.0,
-                        max_tokens=3500,
+                        chat_profile.fallback_context or chat_profile.primary_context or context_summary,
+                        timeout_seconds=chat_profile.fallback_timeout_seconds,
+                        max_tokens=chat_profile.fallback_max_tokens,
+                        enable_thinking=chat_profile.fallback_enable_thinking,
                     )
                 except Exception as retry_error:
                     detail = "；".join(
                         part
                         for part in (
                             f"主长文生成失败：{self._format_provider_error(primary_error)}",
-                            f"长文重试失败：{self._format_provider_error(retry_error)}",
+                            f"快速兜底失败：{self._format_provider_error(retry_error)}",
                         )
                         if part
                     )
-                    raise AiInvocationError("qwen", detail) from retry_error
+                    raise AiInvocationError(provider, detail) from retry_error
         return self._mock_generate(prompt, context_summary)
+
+    def generate_raw_evidence_response(
+        self,
+        prompt: str,
+        system_instruction: str,
+        raw_evidence_pack: str,
+        *,
+        on_partial: Callable[[dict[str, Any]], None] | None = None,
+        timeout_seconds: float = 300.0,
+        max_tokens: int = 5200,
+        enable_thinking: bool = True,
+    ) -> AiStructuredResponse:
+        health = self.get_health()
+        if health.provider in ("qwen", "doubao") and health.ready:
+            if on_partial is not None:
+                opening = "模型正在直接阅读原始文档资料包并生成回答。"
+                on_partial(
+                    {
+                        "stageLabel": "正在读取原始文档资料并生成回答",
+                        "progress": 62.0,
+                        "content": opening,
+                        "structured": {
+                            "content": opening,
+                            "judgment": "",
+                            "analysis": "",
+                            "actions": "",
+                            "timeline": "",
+                        },
+                    }
+                )
+            base_instruction = (
+                f"{system_instruction}\n"
+                "你现在直接基于后面的原始文档资料包回答用户问题。\n"
+                "不要把回答写成摘要器、系统说明或文件目录。\n"
+                "你可以自由决定结构、段落和篇幅，只要把问题讲清楚即可。\n"
+                "不要暴露系统过程、路由、检索、命中规则或技术细节。\n"
+                "只基于提供资料判断，不要编造资料里没有的硬事实、数字、会议结论、人物身份或项目状态。"
+            )
+            try:
+                text = self._qwen_generate(
+                    prompt=f"用户问题：{prompt}\n\n原始文档资料包：\n{str(raw_evidence_pack or '').strip()}",
+                    system_instruction=base_instruction,
+                    response_schema=None,
+                    timeout_seconds=timeout_seconds,
+                    max_tokens=max_tokens,
+                    temperature=0.5,
+                    top_p=0.97,
+                    enable_thinking=enable_thinking,
+                )
+                return self._structured_from_plain_answer(str(text))
+            except Exception as error:
+                raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
+        return self._mock_generate(prompt, raw_evidence_pack)
+
+    def _build_chat_generation_profile(self, context_summary: str) -> ChatGenerationProfile:
+        context = str(context_summary or "").strip()
+        context_length = len(context)
+        evidence_count = context.count("[原始证据 ")
+        high_load = context_length >= 22000 or evidence_count >= 10
+        extreme_load = context_length >= 52000 or evidence_count >= 22
+
+        primary_context = context if not high_load else self._compact_context_summary(context, max_chars=32000)
+        # P2.10 hotfix: prioritize first-answer success over long-form expansion.
+        # Real failures show the model can read ~5k context quickly, but long-form
+        # generation often overruns a 22s read timeout. Use a shorter generation
+        # budget with a slightly wider read window so users get a stable answer.
+        primary_timeout_seconds = 300.0
+        primary_max_tokens = 2400
+        primary_enable_thinking = False
+
+        if high_load:
+            # 统一口径：
+            # - primary_timeout_seconds 是 provider read timeout
+            # - _build_http_timeout 会在此基础上追加固定 grace，形成 provider hard limit
+            # - primary + fallback 构成 workspace generation budget
+            primary_timeout_seconds = 300.0
+            primary_max_tokens = 2600
+            primary_enable_thinking = True
+        if extreme_load:
+            primary_context = self._compact_context_summary(context, max_chars=26000)
+            primary_timeout_seconds = max(primary_timeout_seconds, 300.0)
+            primary_max_tokens = 2200
+            primary_enable_thinking = False
+
+        fallback_max_chars = 10000 if high_load else 7000
+        fallback_context = self._compact_context_summary(context, max_chars=fallback_max_chars)
+        if high_load:
+            primary_context_for_compare = primary_context or context
+            if len(fallback_context) >= len(primary_context_for_compare):
+                tighter_max_chars = max(600, int(len(primary_context_for_compare) * 0.6))
+                fallback_context = self._compact_context_summary(
+                    context,
+                    max_chars=min(fallback_max_chars, tighter_max_chars),
+                )
+        fallback_timeout_seconds = 20.0 if high_load else 16.0
+        fallback_max_tokens = 1000 if high_load else 800
+
+        return ChatGenerationProfile(
+            primary_context=primary_context or context,
+            primary_timeout_seconds=primary_timeout_seconds,
+            primary_max_tokens=primary_max_tokens,
+            primary_enable_thinking=primary_enable_thinking,
+            fallback_context=fallback_context,
+            fallback_timeout_seconds=fallback_timeout_seconds,
+            fallback_max_tokens=fallback_max_tokens,
+            fallback_enable_thinking=False,
+        )
 
     def generate_topic_candidate_chat_response(
         self,
@@ -371,8 +703,8 @@ class AiService:
                     prompt=prompt,
                     system_instruction=system_instruction,
                     response_schema=schema,
-                    timeout_seconds=75.0,
-                    max_tokens=min(4200, max(1800, 520 * len(field_contexts))),
+                    timeout_seconds=min(18.0, max(10.0, 6.0 + 1.8 * len(field_contexts))),
+                    max_tokens=min(3200, max(1200, 360 * len(field_contexts))),
                     temperature=0.28,
                     top_p=0.9,
                     enable_thinking=False,
@@ -404,6 +736,9 @@ class AiService:
         system_instruction: str,
         context_summary: str,
         *,
+        timeout_seconds: float = 22.0,
+        max_tokens: int = 3600,
+        enable_thinking: bool = True,
         on_partial: Callable[[dict[str, Any]], None] | None = None,
     ) -> AiStructuredResponse:
         detailed_context = str(context_summary or "").strip()
@@ -412,27 +747,14 @@ class AiService:
             "你现在是在直接回答用户，不要把答案写成系统产物。"
             "请把后面的原始材料当作你已经完整读过的材料直接使用。"
             "不要解释检索过程、系统过程、命中规则或技术细节。"
-            "不要满足于字面摘录、材料摘要或安全概括。"
-            "请主动做更高层的综合判断，讲清因果关系、结构性矛盾、关键张力、利益约束、风险与机会。"
-            "允许把多条材料共同指向的信号组织成更高层的结论。"
-            "只有材料里没有出现过的具体事实、数字、人名、时间和身份，不要直接写成已被证实。\n\n"
-            "【深度要求——最重要】\n"
-            "- 每个层次不能只给结论，必须展开讲 **为什么** 和 **具体怎么体现**\n"
-            "- 对于核心业务，要说清楚：做什么、为什么有价值、现在怎么做、未来方向\n"
-            "- 对于战略判断，要说清楚：从什么变成什么、为什么要变、变的过程中有什么张力\n"
-            "- 允许在一个层次下写 3-5 段话来充分展开，不要为了格式整齐而牺牲深度\n"
-            "- 总字数不少于 1500 字，除非用户明确要求简短\n\n"
-            "【排版规则】\n"
-            "1. 用「一、二、三、四」作为一级小标题，将回答分成 4-6 个层次\n"
-            "2. 并列要点用「- 」列表，列表项之后可以跟解释段落\n"
-            "3. 加粗规则：只加粗完整的判断句，不要加粗单个词或短语。\n"
-            "   正确示范：**它的核心工作不是替行业发声，而是把分散的经验组织成可复用的工具**\n"
-            "   错误示范：它的核心工作不是替**行业**发声（不要只加粗关键词）\n"
-            "4. 多用判断句式：「不是X，而是Y」「核心在于」「关键区别是」\n"
-            "5. 每个小标题下至少写 150 字，核心层次写 300 字以上\n"
-            "6. 写完最后一个层次后，必须有 2-3 句总结收束全篇\n"
+            "优先输出可执行、可读的回答，不要凑篇幅。"
+            "可以做综合判断，但不要把未证实事实写成确定结论。\n\n"
+            "【输出约束】\n"
+            "1. 回答结构由问题复杂度和资料密度决定，不要机械收成 3-4 个小节。\n"
+            "2. 如果问题本身适合长回答，请充分展开；优先把机构定位、核心问题、方法、业务线、升级方向讲透。\n"
+            "3. 不要为了节省篇幅省掉关键结构，也不要为了凑篇幅重复表达。\n"
+            "4. 待确认或边界信息只有在确实影响结论时才自然说明，不要机械单列为固定板块。\n"
         )
-        errors: list[str] = []
         try:
             if on_partial is not None:
                 on_partial(
@@ -453,26 +775,15 @@ class AiService:
                 prompt=f"用户问题：{prompt}\n\n参考材料：\n{detailed_context}",
                 system_instruction=base_instruction,
                 response_schema=None,
-                timeout_seconds=45.0,
-                max_tokens=6000,
+                timeout_seconds=timeout_seconds,
+                max_tokens=max_tokens,
                 temperature=0.48,
                 top_p=0.96,
-                enable_thinking=True,
+                enable_thinking=enable_thinking,
             )
             return self._structured_from_plain_answer(str(text))
         except Exception as error:
-            errors.append(self._format_provider_error(error))
-        try:
-            return self._qwen_generate_textual_fallback(
-                prompt,
-                system_instruction,
-                detailed_context,
-                timeout_seconds=140.0,
-                max_tokens=6200,
-            )
-        except Exception as error:
-            errors.append(f"长文重试仍失败：{self._format_provider_error(error)}")
-        raise AiInvocationError("qwen", "；".join(part for part in errors if part))
+            raise AiInvocationError(self.current_provider(), self._format_provider_error(error)) from error
 
     def _qwen_generate_progressive_chat_response(
         self,
@@ -2244,6 +2555,105 @@ class AiService:
             pass
         return fallback
 
+    def generate_visual_markdown(
+        self,
+        *,
+        title: str,
+        image_base64: str,
+        mime_type: str = "image/png",
+        page_number: int | None = None,
+        source_kind: str = "视觉资料",
+    ) -> str:
+        health = self.get_health()
+        if not health.ready or not image_base64:
+            return ""
+        base_url, api_key, model = self._resolve_llm_config()
+        system_instruction = (
+            "你是文档 OCR 和版面还原助手。"
+            "你的任务是把视觉资料截图转成 clean markdown 原文。"
+            "不要总结，不要改写，不要补充页面上没有的信息。"
+            "如果页面几乎没有可读正文，只返回空字符串。"
+        )
+        page_line = f"页码：{page_number}\n" if page_number is not None else ""
+        prompt = (
+            f"文件名：{title}\n"
+            f"资料类型：{source_kind}\n"
+            f"{page_line}\n"
+            "请按阅读顺序提取图像中的文字，尽量保留标题、项目符号、表格行列关系。"
+            "删除页码、装饰线、明显水印和重复页眉页脚。"
+            "只输出 markdown 正文。"
+        )
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
+                        },
+                    ],
+                },
+            ],
+            "temperature": 0.05,
+            "top_p": 0.8,
+            "max_tokens": 2500,
+            "stream": False,
+        }
+
+        def _do_request():
+            with httpx.Client(timeout=self._build_http_timeout(45.0)) as _client:
+                _resp = _client.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                _resp.raise_for_status()
+                return _resp.json()
+
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(_do_request)
+        try:
+            result = future.result(timeout=60.0)
+        except FutureTimeout:
+            future.cancel()
+            return ""
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        text = (
+            result.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        cleaned = str(text or "").strip()
+        cleaned = re.sub(r"^```(?:markdown|md)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+        return cleaned
+
+    def generate_pdf_page_markdown(
+        self,
+        *,
+        title: str,
+        page_number: int,
+        image_base64: str,
+        mime_type: str = "image/png",
+    ) -> str:
+        return self.generate_visual_markdown(
+            title=title,
+            page_number=page_number,
+            image_base64=image_base64,
+            mime_type=mime_type,
+            source_kind="PDF 页面",
+        )
+
     def generate_memory_surrogate(
         self,
         *,
@@ -2281,6 +2691,89 @@ class AiService:
         except Exception:
             pass
         return fallback
+
+    def generate_strategic_insights(
+        self,
+        *,
+        context_pack: dict[str, object],
+        limit: int = 8,
+    ) -> dict[str, object]:
+        health = self.get_health()
+        if not health.ready:
+            return {"insights": []}
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "insights": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "title": {"type": "STRING"},
+                            "insightType": {
+                                "type": "STRING",
+                                "enum": [
+                                    "strategic_shift",
+                                    "risk_signal",
+                                    "opportunity_window",
+                                    "execution_bottleneck",
+                                    "narrative_upgrade",
+                                    "operating_model",
+                                ],
+                            },
+                            "insightText": {"type": "STRING"},
+                            "futureJudgment": {"type": "STRING"},
+                            "recommendedAction": {"type": "STRING"},
+                            "evidenceSummary": {"type": "STRING"},
+                            "evidenceLabels": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            "sourceRefs": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "sourceId": {"type": "STRING"},
+                                        "label": {"type": "STRING"},
+                                        "detail": {"type": "STRING"},
+                                    },
+                                },
+                            },
+                            "signalScore": {"type": "NUMBER"},
+                        },
+                    },
+                }
+            },
+        }
+        system_instruction = (
+            "你是资深战略顾问，负责从客户资料中生成少量高价值、未来导向的思考与研判。"
+            "你只能基于输入材料判断，不能套用固定模板，不能照搬示例标题，不能输出泛泛而谈的管理建议。"
+            "每条洞察必须同时包含当前判断、形成原因、未来可能性和下一步动作。"
+            "如果已经同时存在稳定底座和动态材料，就应该尽量形成审慎洞察；资料不完美时请写清判断边界、限制条件和下一步观察点，不要直接返回空。"
+            "只有 stableBase 或 dynamicSignals 完全为空，或材料内容几乎为空时，才返回空 insights。"
+            "如果 stableBase 和 dynamicSignals 均非空，至少输出 1 条最有把握的洞察。"
+            "不要把碎片任务直接当主轴；任务、会议、事件线和附件只能作为证据或动态信号。"
+        )
+        prompt = (
+            f"请生成 1 到 {max(1, min(12, int(limit or 8)))} 条洞察。"
+            "标题必须是客户/项目专属表达，不能使用固定通用标题。"
+            "insightText 用 220-450 个中文字符写成完整顾问式分析；futureJudgment 写未来可能性或判断条件；"
+            "recommendedAction 写清晰下一步动作；sourceRefs 必须引用输入材料中的 sourceId。\n\n"
+            "生成方法：先同时阅读 stableBase 和 dynamicSignals；每条洞察都要把长期背景、近期变化、限制条件和未来动作放在同一段判断里。"
+            "不要只摘关键词，也不要因为证据还不完美就放弃判断；可以用“如果……则……”说明未来条件。"
+            "本次请求已经由系统做过最低证据检查，只要 stableBase 和 dynamicSignals 非空，就不要返回空数组。\n\n"
+            f"上下文资料包：\n{json.dumps(context_pack, ensure_ascii=False)}"
+        )
+        try:
+            result = self._qwen_generate(
+                prompt,
+                system_instruction,
+                schema,
+                timeout_seconds=75.0,
+                max_tokens=5200,
+                temperature=0.35,
+            )
+            return result if isinstance(result, dict) else {"insights": []}
+        except Exception:
+            return {"insights": []}
 
     def enrich_retrieval_summary(
         self,
@@ -2727,24 +3220,32 @@ class AiService:
         connect_timeout = min(10.0, max(5.0, read_timeout / 3))
         write_timeout = min(20.0, max(8.0, read_timeout))
         pool_timeout = min(10.0, max(5.0, read_timeout / 2))
-        # 硬上限：总超时 = read_timeout + 15秒缓冲，防止 TCP 连接永久挂死
-        total_timeout = read_timeout + 15.0
+        # 统一 provider hard limit：read timeout + 固定 grace，避免 socket 长时间悬挂。
+        total_timeout = read_timeout + HTTP_TIMEOUT_GRACE_SECONDS
         return httpx.Timeout(timeout=total_timeout, connect=connect_timeout, read=read_timeout, write=write_timeout, pool=pool_timeout)
 
-    def _resolve_llm_config(self) -> tuple[str, str, str]:
+    def _resolve_llm_config(
+        self,
+        *,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+    ) -> tuple[str, str, str]:
         """Returns (base_url, api_key, model) for the current provider."""
-        provider = self.current_provider()
+        provider = provider_override or self.current_provider()
+        model = model_override or (
+            self.current_model() if provider == self.current_provider() else DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
+        )
         if provider == "doubao":
             store = self._store_for("doubao")
             api_key = store.get_api_key() if store else ""
             if not api_key:
                 raise RuntimeError("豆包 API Key 未配置。")
-            return DOUBAO_BASE_URL, api_key, self.current_model()
+            return DOUBAO_BASE_URL, api_key, model
         store = self._store_for("qwen")
         api_key = store.get_api_key() if store else ""
         if not api_key:
             raise RuntimeError("Qwen API Key 未配置。")
-        return QWEN_BASE_URL, api_key, self.current_model()
+        return QWEN_BASE_URL, api_key, model
 
     def _qwen_generate(
         self,
@@ -2757,8 +3258,13 @@ class AiService:
         temperature: float = 0.45,
         top_p: float = 0.9,
         enable_thinking: bool = False,
+        provider_override: str | None = None,
+        model_override: str | None = None,
     ) -> object:
-        base_url, api_key, model = self._resolve_llm_config()
+        base_url, api_key, model = self._resolve_llm_config(
+            provider_override=provider_override,
+            model_override=model_override,
+        )
         user_prompt = prompt
         if response_schema:
             user_prompt = (
@@ -2794,14 +3300,18 @@ class AiService:
                 return _resp.json()
         # 硬超时：用线程池确保不会永久挂死
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-        hard_limit = timeout_seconds + 15.0
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_do_request)
-            try:
-                result = future.result(timeout=hard_limit)
-            except FutureTimeout:
-                future.cancel()
-                raise RuntimeError(f"AI 调用硬超时（{hard_limit:.0f}秒），服务可能不可用")
+        hard_limit = timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(_do_request)
+        try:
+            result = future.result(timeout=hard_limit)
+        except FutureTimeout:
+            future.cancel()
+            raise RuntimeError(f"AI 调用硬超时（{hard_limit:.0f}秒），服务可能不可用")
+        finally:
+            # 不要在超时后等待工作线程自然结束，否则外层调用会被 shutdown(wait=True)
+            # 卡死，自动填表 run 会永久停在 running。
+            pool.shutdown(wait=False, cancel_futures=True)
         text = (
             result.get("choices", [{}])[0]
             .get("message", {})
@@ -2875,8 +3385,8 @@ class AiService:
                 "5. 多用判断句：「不是X，而是Y」「核心在于」\n"
             ),
             response_schema=None,
-            timeout_seconds=20.0,
-            max_tokens=1500,
+            timeout_seconds=12.0,
+            max_tokens=1200,
             temperature=0.35,
             top_p=0.92,
         )
@@ -2947,8 +3457,9 @@ class AiService:
         system_instruction: str,
         context_summary: str,
         *,
-        timeout_seconds: float = 110.0,
-        max_tokens: int = 5200,
+        timeout_seconds: float = 18.0,
+        max_tokens: int = 2400,
+        enable_thinking: bool = False,
     ) -> AiStructuredResponse:
         fallback_instruction = (
             f"{system_instruction}\n"
@@ -2965,7 +3476,7 @@ class AiService:
             max_tokens=max_tokens,
             temperature=0.4,
             top_p=0.95,
-            enable_thinking=True,
+            enable_thinking=enable_thinking,
         )
         return self._structured_from_plain_answer(str(text))
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from datetime import date
 from pathlib import Path
@@ -20,9 +21,13 @@ from app.simulation_seed import seed_simulated_review_org  # noqa: E402
 
 
 def setup_function():
+    os.environ["YIYU_CLOUD_DATA_DIR"] = str(TEST_DATA_DIR)
     if TEST_DATA_DIR.exists():
         for child in TEST_DATA_DIR.iterdir():
-            child.unlink()
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
     else:
         TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -30,7 +35,10 @@ def setup_function():
 def teardown_function():
     if TEST_DATA_DIR.exists():
         for child in TEST_DATA_DIR.iterdir():
-            child.unlink()
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
 
 def auth_headers(client: TestClient, email: str, password: str) -> dict[str, str]:

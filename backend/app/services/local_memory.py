@@ -146,6 +146,61 @@ def write_event_line_memory(
     return path
 
 
+def _strip_frontmatter_markdown(content: str) -> str:
+    if not content.startswith("---"):
+        return content
+    lines = content.splitlines()
+    if not lines or lines[0] != "---":
+        return content
+    for index in range(1, len(lines)):
+        if lines[index] == "---":
+            return "\n".join(lines[index + 1 :]).lstrip("\n")
+    return content
+
+
+def rehome_event_line_memory(
+    data_dir: str | Path,
+    source_client_id: str | None,
+    target_client_id: str,
+    eline_id: str,
+    eline_name: str,
+    target_client_name: str,
+) -> Path | None:
+    normalized_target_client_id = str(target_client_id or "").strip()
+    if not normalized_target_client_id:
+        return None
+
+    source_path = (
+        event_line_memory_dir(data_dir, source_client_id) / f"{eline_id}.md"
+        if source_client_id
+        else None
+    )
+    target_path = event_line_memory_dir(data_dir, normalized_target_client_id) / f"{eline_id}.md"
+
+    raw_content = ""
+    if source_path and source_path.exists():
+        raw_content = read_memory_file(source_path)
+    elif target_path.exists():
+        raw_content = read_memory_file(target_path)
+    else:
+        return None
+
+    body = _strip_frontmatter_markdown(raw_content)
+    written_path = write_event_line_memory(
+        data_dir,
+        normalized_target_client_id,
+        eline_id,
+        eline_name,
+        target_client_name,
+        body,
+    )
+
+    if source_path and source_path.exists() and source_path != written_path:
+        source_path.unlink()
+
+    return written_path
+
+
 # ── Weekly Snapshot ──
 
 def read_weekly_memory(data_dir: str | Path, week_label: str) -> str:

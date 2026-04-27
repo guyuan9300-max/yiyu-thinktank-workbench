@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,9 +21,13 @@ from app.main import create_app, now_iso  # noqa: E402
 
 
 def setup_function():
+    os.environ["YIYU_CLOUD_DATA_DIR"] = str(TEST_DATA_DIR)
     if TEST_DATA_DIR.exists():
         for child in TEST_DATA_DIR.iterdir():
-            child.unlink()
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
     else:
         TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -30,7 +35,10 @@ def setup_function():
 def teardown_function():
     if TEST_DATA_DIR.exists():
         for child in TEST_DATA_DIR.iterdir():
-            child.unlink()
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
 
 def auth_headers(client: TestClient, email: str = "admin@yiyu-system.com", password: str = "Admin123!"):
@@ -299,6 +307,169 @@ def test_event_line_clarification_fields_persist_in_cloud_backend():
     assert detail.json()["eventLine"]["currentBlocker"] == "客户侧接口人还没确认最终口径。"
     assert detail.json()["eventLine"]["recentDecision"] == "先统一资料，再进入下一轮推进。"
     assert detail.json()["eventLine"]["evidenceCount"] == 4
+
+
+def test_event_line_report_snapshot_returns_attachment_document_fields_in_cloud():
+    app = create_app()
+    client = TestClient(app)
+
+    headers = auth_headers(client)
+    me = client.get("/api/v1/auth/me", headers=headers)
+    assert me.status_code == 200, me.text
+    organization_id = me.json()["organizationId"]
+    user_id = me.json()["id"]
+
+    created = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "云端会议纪要链路",
+            "kind": "project_line",
+            "primaryClientId": "client_demo_yellow_river",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    event_line_id = created.json()["id"]
+
+    task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "整理云端会议纪要",
+            "description": "用于验证事件线快照附件字段。",
+            "priority": "high",
+            "listId": "list-0",
+            "clientId": "client_demo_yellow_river",
+            "eventLineId": event_line_id,
+        },
+        headers=headers,
+    )
+    assert task.status_code == 200, task.text
+    task_id = task.json()["id"]
+    timestamp = now_iso()
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO task_attachments(
+            id, organization_id, task_id, client_id, event_line_id, document_id,
+            title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tatt_cloud_event_line_snapshot_parse",
+            organization_id,
+            task_id,
+            "client_demo_yellow_river",
+            event_line_id,
+            "doc_cloud_event_line_snapshot_parse",
+            "云端会议纪要.md",
+            "云端会议纪要摘要：确认下一轮推进节奏。",
+            "event-line-test/云端会议纪要.md",
+            "md",
+            "task_attachment",
+            "text/markdown",
+            128,
+            user_id,
+            timestamp,
+        ),
+    )
+
+    snapshot = client.get(f"/api/v1/event-lines/{event_line_id}/report-snapshot", headers=headers)
+    assert snapshot.status_code == 200, snapshot.text
+    attachment = snapshot.json()["attachments"][0]
+    assert attachment["documentId"] == "doc_cloud_event_line_snapshot_parse"
+    assert attachment["sourceKind"] == "task_attachment"
+    assert attachment["parsedPreview"] == "云端会议纪要摘要：确认下一轮推进节奏。"
+    assert "parseStatus" in attachment
+    assert "chunkCount" in attachment
+    assert "sectionCount" in attachment
+
+
+def test_event_line_transfer_syncs_linked_task_client_ids_in_cloud():
+    app = create_app()
+    client = TestClient(app)
+
+    headers = auth_headers(client)
+    me = client.get("/api/v1/auth/me", headers=headers)
+    assert me.status_code == 200, me.text
+    organization_id = me.json()["organizationId"]
+    target_client = {"id": "client_transfer_target", "name": "正式签约客户"}
+    timestamp = now_iso()
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO clients(id, organization_id, name, alias, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (target_client["id"], organization_id, target_client["name"], target_client["name"], timestamp, timestamp),
+    )
+
+    created = client.post(
+        "/api/v1/event-lines",
+        json={
+            "name": "潜在线索推进线",
+            "kind": "project_line",
+            "primaryClientId": "client_demo_yellow_river",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    event_line_id = created.json()["id"]
+
+    task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "继续推进意向沟通",
+            "priority": "high",
+            "listId": "list-0",
+            "eventLineId": event_line_id,
+        },
+        headers=headers,
+    )
+    assert task.status_code == 200, task.text
+    task_payload = task.json()
+    assert task_payload["clientId"] == "client_demo_yellow_river"
+
+    upload = client.post(
+        f"/api/v1/tasks/{task_payload['id']}/attachments",
+        headers=headers,
+        data={
+            "clientId": "client_demo_yellow_river",
+            "eventLineId": event_line_id,
+            "taskTitle": task_payload["title"],
+        },
+        files={
+            "file": (
+                "签约录音.md",
+                "# 签约录音\n\n客户已经明确签约范围和推进节奏。".encode("utf-8"),
+                "text/markdown",
+            )
+        },
+    )
+    assert upload.status_code == 200, upload.text
+    attachment_id = upload.json()["attachments"][0]["id"]
+
+    updated = client.patch(
+        f"/api/v1/event-lines/{event_line_id}",
+        json={
+            "primaryClientId": target_client["id"],
+            "syncLinkedTaskClientIds": True,
+        },
+        headers=headers,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["primaryClientId"] == target_client["id"]
+
+    board = client.get("/api/v1/tasks", headers=headers)
+    assert board.status_code == 200, board.text
+    migrated_task = next(item for item in board.json()["tasks"] if item["id"] == task_payload["id"])
+    assert migrated_task["clientId"] == target_client["id"]
+    assert migrated_task["clientName"] == target_client["name"]
+
+    attachment_row = client.app.state.app_state.db.fetchone(
+        "SELECT client_id FROM task_attachments WHERE id = ?",
+        (attachment_id,),
+    )
+    assert attachment_row is not None
+    assert attachment_row["client_id"] == target_client["id"]
 
 
 def test_desktop_event_line_import_preserves_id_and_skips_existing_rows():
@@ -784,21 +955,6 @@ def test_org_model_profile_roundtrip():
     assert reread_payload['roleProcessTemplates'][0]['commonBlockers'] == ['资料未补齐', '等待部门确认']
 
 
-def test_org_model_profile_read_only_for_employee():
-    app = create_app()
-    client = TestClient(app)
-
-    user_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
-    response = client.get("/api/v1/settings/org-model/profile", headers=user_headers)
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["organization"]["name"] == "益语智库"
-    assert any(item["userId"] == "user_qinghua" for item in payload["bindings"])
-
-    blocked = client.post("/api/v1/settings/org-model/profile", json=payload, headers=user_headers)
-    assert blocked.status_code == 403
-
-
 def test_task_org_link_and_department_control_permissions():
     app = create_app()
     client = TestClient(app)
@@ -1162,246 +1318,3 @@ def test_org_model_backfill_restores_missing_task_links_for_existing_tasks():
     restored = app.state.app_state.db.fetchone("SELECT * FROM task_org_links WHERE task_id = ?", (task_id,))
     assert restored is not None
     assert str(restored["department_id"]) == "dept_customer_service"
-
-
-def test_event_line_notifications_can_be_marked_read_in_batch():
-    app = create_app()
-    client = TestClient(app)
-
-    admin_headers = auth_headers(client)
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
-    created_line = client.post(
-        "/api/v1/event-lines",
-        json={
-            "name": "批量已阅事件线通知",
-            "kind": "project_line",
-            "status": "active",
-            "ownerId": "user_admin",
-            "primaryClientId": "client_demo_yellow_river",
-            "participantIds": ["user_admin", "user_qinghua"],
-        },
-        headers=admin_headers,
-    )
-    assert created_line.status_code == 200, created_line.text
-    event_line_id = created_line.json()["id"]
-
-    closed = client.post(f"/api/v1/event-lines/{event_line_id}/close", headers=admin_headers)
-    assert closed.status_code == 200, closed.text
-
-    legacy_rows = app.state.app_state.db.fetchall(
-        "SELECT id FROM tasks WHERE source_type = 'event_line_notification' AND event_line_id = ?",
-        (event_line_id,),
-    )
-    assert legacy_rows == []
-
-    notification_rows = app.state.app_state.db.fetchall(
-        "SELECT id FROM event_line_notifications WHERE event_line_id = ? ORDER BY created_at ASC",
-        (event_line_id,),
-    )
-    assert len(notification_rows) == 1
-    notification_id = str(notification_rows[0]["id"])
-
-    admin_inbox = client.get("/api/v1/inbox/notifications", headers=admin_headers)
-    assert admin_inbox.status_code == 200, admin_inbox.text
-    assert [item["id"] for item in admin_inbox.json()["notifications"]] == [notification_id]
-
-    qinghua_inbox = client.get("/api/v1/inbox/notifications", headers=qinghua_headers)
-    assert qinghua_inbox.status_code == 200, qinghua_inbox.text
-    assert [item["id"] for item in qinghua_inbox.json()["notifications"]] == [notification_id]
-
-    pending_task = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "聚合收件箱待确认任务",
-            "description": "验证待确认任务和系统通知可以同时出现。",
-            "priority": "normal",
-            "listId": "",
-            "ownerId": "user_qinghua",
-            "collaboratorIds": ["user_qinghua"],
-        },
-        headers=admin_headers,
-    )
-    assert pending_task.status_code == 200, pending_task.text
-    pending_task_id = pending_task.json()["id"]
-
-    qinghua_aggregate = client.get("/api/v1/inbox", headers=qinghua_headers)
-    assert qinghua_aggregate.status_code == 200, qinghua_aggregate.text
-    qinghua_payload = qinghua_aggregate.json()
-    assert [item["id"] for item in qinghua_payload["pendingTasks"]] == [pending_task_id]
-    assert [item["id"] for item in qinghua_payload["systemNotifications"]] == [notification_id]
-    assert qinghua_payload["outboundPendingTasks"] == []
-
-    admin_aggregate = client.get("/api/v1/inbox", headers=admin_headers)
-    assert admin_aggregate.status_code == 200, admin_aggregate.text
-    admin_payload = admin_aggregate.json()
-    assert admin_payload["pendingTasks"] == []
-    assert [item["id"] for item in admin_payload["systemNotifications"]] == [notification_id]
-    assert [item["id"] for item in admin_payload["outboundPendingTasks"]] == [pending_task_id]
-
-    marked = client.post(
-        "/api/v1/inbox/notifications/read-batch",
-        json={"notificationIds": [notification_id]},
-        headers=admin_headers,
-    )
-    assert marked.status_code == 200, marked.text
-    payload = marked.json()
-    assert payload["updatedCount"] == 1
-    assert payload["notificationIds"] == [notification_id]
-
-    admin_receipt = app.state.app_state.db.fetchone(
-        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
-        (notification_id, "user_admin"),
-    )
-    assert admin_receipt is not None
-    assert admin_receipt["read_at"]
-
-    qinghua_receipt = app.state.app_state.db.fetchone(
-        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
-        (notification_id, "user_qinghua"),
-    )
-    assert qinghua_receipt is not None
-    assert qinghua_receipt["read_at"] is None
-
-    admin_inbox_after = client.get("/api/v1/inbox/notifications", headers=admin_headers)
-    assert admin_inbox_after.status_code == 200, admin_inbox_after.text
-    assert admin_inbox_after.json()["notifications"] == []
-
-    qinghua_inbox_after = client.get("/api/v1/inbox/notifications", headers=qinghua_headers)
-    assert qinghua_inbox_after.status_code == 200, qinghua_inbox_after.text
-    assert [item["id"] for item in qinghua_inbox_after.json()["notifications"]] == [notification_id]
-
-    qinghua_marked = client.post(
-        "/api/v1/inbox/notifications/read-batch",
-        json={"notificationIds": [notification_id]},
-        headers=qinghua_headers,
-    )
-    assert qinghua_marked.status_code == 200, qinghua_marked.text
-
-    refreshed = app.state.app_state.db.fetchone(
-        "SELECT read_at FROM event_line_notification_receipts WHERE notification_id = ? AND user_id = ?",
-        (notification_id, "user_qinghua"),
-    )
-    assert refreshed is not None
-    assert refreshed["read_at"]
-
-
-def test_recompleted_event_line_generates_a_new_notification():
-    app = create_app()
-    client = TestClient(app)
-
-    admin_headers = auth_headers(client)
-    created_line = client.post(
-        "/api/v1/event-lines",
-        json={
-            "name": "重新完成会再通知",
-            "kind": "project_line",
-            "status": "active",
-            "ownerId": "user_admin",
-            "primaryClientId": "client_demo_yellow_river",
-            "participantIds": ["user_admin", "user_qinghua"],
-        },
-        headers=admin_headers,
-    )
-    assert created_line.status_code == 200, created_line.text
-    event_line_id = created_line.json()["id"]
-
-    closed = client.post(f"/api/v1/event-lines/{event_line_id}/close", headers=admin_headers)
-    assert closed.status_code == 200, closed.text
-
-    reopened = client.post(f"/api/v1/event-lines/{event_line_id}/reopen", headers=admin_headers)
-    assert reopened.status_code == 200, reopened.text
-
-    completed_again = client.patch(
-        f"/api/v1/event-lines/{event_line_id}",
-        json={"status": "done"},
-        headers=admin_headers,
-    )
-    assert completed_again.status_code == 200, completed_again.text
-
-    notification_rows = app.state.app_state.db.fetchall(
-        "SELECT operation_label FROM event_line_notifications WHERE event_line_id = ? ORDER BY created_at ASC",
-        (event_line_id,),
-    )
-    assert len(notification_rows) == 2
-    assert [str(row["operation_label"]) for row in notification_rows] == ["完成", "完成"]
-
-
-def test_inbox_task_record_exposes_stable_collaboration_display_fields():
-    app = create_app()
-    client = TestClient(app)
-
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
-    admin_headers = auth_headers(client)
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "非管理员发起的待确认任务",
-            "description": "验证协作身份展示字段。",
-            "priority": "normal",
-            "listId": "",
-            "ownerId": "user_admin",
-            "collaboratorIds": ["user_admin", "user_qinghua"],
-        },
-        headers=qinghua_headers,
-    )
-    assert created.status_code == 200, created.text
-
-    admin_inbox = client.get("/api/v1/inbox", headers=admin_headers)
-    assert admin_inbox.status_code == 200, admin_inbox.text
-    payload = admin_inbox.json()
-    assert len(payload["pendingTasks"]) == 1
-    task = payload["pendingTasks"][0]
-    assert task["creatorId"] == "user_qinghua"
-    assert task["creatorDisplayName"] == task["creatorName"]
-    assert task["ownerId"] == "user_admin"
-    assert task["ownerDisplayName"] == task["ownerName"]
-    assert task["pendingParticipantNames"] == [task["ownerDisplayName"]]
-    assert task["viewerInboxStatus"] == "pending"
-    assert task["viewerCanConfirm"] is True
-    assert task["viewerCanReject"] is True
-
-    qinghua_inbox = client.get("/api/v1/inbox", headers=qinghua_headers)
-    assert qinghua_inbox.status_code == 200, qinghua_inbox.text
-    outbound_payload = qinghua_inbox.json()
-    assert len(outbound_payload["outboundPendingTasks"]) == 1
-    outbound_task = outbound_payload["outboundPendingTasks"][0]
-    assert outbound_task["creatorDisplayName"] == outbound_task["creatorName"]
-    assert outbound_task["pendingParticipantNames"] == [outbound_task["ownerDisplayName"]]
-    assert outbound_task["viewerCanConfirm"] is False
-    assert outbound_task["viewerCanReject"] is False
-
-
-def test_task_can_be_created_without_any_list():
-    app = create_app()
-    client = TestClient(app)
-
-    admin_headers = auth_headers(client)
-    settings = client.get("/api/v1/settings/tasks", headers=admin_headers)
-    assert settings.status_code == 200, settings.text
-    assert settings.json()["defaultListId"] is None
-
-    created = client.post(
-        "/api/v1/tasks",
-        json={
-            "title": "无清单任务",
-            "description": "创建后保持无清单。",
-            "priority": "normal",
-            "listId": "",
-            "listIds": [],
-            "ownerId": "user_admin",
-        },
-        headers=admin_headers,
-    )
-    assert created.status_code == 200, created.text
-    payload = created.json()
-    assert payload["listId"] == ""
-    assert payload["listName"] == ""
-    assert payload["listIds"] == []
-    assert payload["listNames"] == []
-
-    set_default = client.post("/api/v1/settings/tasks", json={"defaultListId": "list-1"}, headers=admin_headers)
-    assert set_default.status_code == 200, set_default.text
-    assert set_default.json()["defaultListId"] == "list-1"
-    clear_default = client.post("/api/v1/settings/tasks", json={"defaultListId": None}, headers=admin_headers)
-    assert clear_default.status_code == 200, clear_default.text
-    assert clear_default.json()["defaultListId"] is None

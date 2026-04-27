@@ -10,6 +10,8 @@ import http from 'node:http';
 import net from 'node:net';
 import type {
   CommitAndPushToMainPayload,
+  DesktopAppInfo,
+  DesktopStartupGateResumeResult,
   PullSelectedFromMainPayload,
 } from '../shared/types.js';
 import {
@@ -20,6 +22,10 @@ import {
   previewPushToMain,
   pullSelectedFromMain,
 } from './collabGit.js';
+import {
+  buildDesktopAppInfo,
+  type BackendHealthPayload,
+} from './runtimeManifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BACKEND_PORT = 47829;
@@ -27,17 +33,16 @@ const DEFAULT_CLOUD_BACKEND_PORT = 47830;
 const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
-const APP_DISPLAY_NAME = '益语智库自用平台';
-const APP_BUNDLE_ID = 'com.yiyu.selfworkbench';
-const WORKBENCH_DATA_DIR_NAME = 'YiyuThinkTankWorkbench';
+const REQUIRED_BACKEND_SCHEMA_VERSION = 20260420;
+const APP_DISPLAY_NAME = '益语智库自用平台 2.0';
+const APP_BUNDLE_ID = 'com.yiyu.selfworkbench2';
 const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.md');
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
-const fixedUserDataPath = path.join(app.getPath('appData'), WORKBENCH_DATA_DIR_NAME);
+const fixedUserDataPath = path.join(app.getPath('appData'), 'YiyuThinkTankWorkbench2');
 const runtimeLogsDir = path.join(fixedUserDataPath, 'runtime', 'logs');
 const runtimeUiDir = path.join(fixedUserDataPath, 'runtime', 'ui');
 const electronLaunchLogPath = path.join(runtimeLogsDir, 'electron-launch.log');
 const collabRebuildLogPath = path.join(runtimeLogsDir, 'collab-rebuild.log');
-const runtimeManifestPath = path.join(runtimeLogsDir, 'runtime-manifest.json');
 const emergencyBootstrapLogPath = '/tmp/yiyu-thinktank-electron-bootstrap.log';
 const savedApplicationStatePath = path.join(app.getPath('home'), 'Library', 'Saved Application State', `${APP_BUNDLE_ID}.savedState`);
 app.setName(APP_DISPLAY_NAME);
@@ -52,27 +57,6 @@ type RuntimeSyncMetadata = {
   fingerprint: string;
   syncedAt: string;
   project: 'backend' | 'cloud_backend';
-};
-
-type RuntimeLaunchManifest = {
-  writtenAt: string;
-  appVersion: string;
-  isPackaged: boolean;
-  pid: number;
-  executablePath: string;
-  appPath: string;
-  userDataPath: string;
-  appDbPath: string;
-  runtimeLogsDir: string;
-  backendUrl: string;
-  cloudBackendUrl: string;
-  remoteCloudBackendUrl: string | null;
-  usingRemoteCloudBackend: boolean;
-  backendPort: number;
-  cloudBackendPort: number;
-  rendererPort: number;
-  backendRuntimeVenv?: string;
-  cloudBackendRuntimeVenv?: string;
 };
 
 let mainWindow: BrowserWindow | null = null;
@@ -90,6 +74,7 @@ let ownsBackendProcess = false;
 let ownsCloudBackendProcess = false;
 let backendExitDetail: string | null = null;
 const backendRecentLogLines: string[] = [];
+let latestDesktopAppInfo: DesktopAppInfo | null = null;
 const LOCAL_DEV_CLOUD_SEED_ENV = {
   YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD: process.env.YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD || 'Admin123!',
   YIYU_CLOUD_GUYUAN_PASSWORD: process.env.YIYU_CLOUD_GUYUAN_PASSWORD || 'Guyuan31',
@@ -99,8 +84,10 @@ const LOCAL_DEV_CLOUD_SEED_ENV = {
 } satisfies NodeJS.ProcessEnv;
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
 const legacyAppBasenames = new Set(['益语智库.app', '益语智库工作台.app']);
+const staleInstallBundlePrefix = `.${APP_DISPLAY_NAME}.installing-`;
 const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
 const DEPRECATED_PACKAGED_REMOTE_CLOUD_API_URLS = new Set(['https://api.yiyu.love', 'http://api.yiyu.love']);
+const RENDERER_QUERY_ARG = '--yiyu-renderer-query';
 
 function normalizeHttpUrl(rawUrl?: string | null) {
   const trimmed = rawUrl?.trim();
@@ -126,6 +113,28 @@ function shouldUseRemoteCloudBackend() {
   return Boolean(remoteCloudBackendUrl());
 }
 
+function rendererLaunchQuery() {
+  const inlineArg = process.argv.find((value) => value.startsWith(`${RENDERER_QUERY_ARG}=`));
+  const rawValue = (
+    inlineArg?.slice(`${RENDERER_QUERY_ARG}=`.length)
+    || (() => {
+      const argIndex = process.argv.indexOf(RENDERER_QUERY_ARG);
+      return argIndex >= 0 ? process.argv[argIndex + 1] : '';
+    })()
+    || process.env.YIYU_RENDERER_QUERY
+    || ''
+  ).trim();
+  const query = rawValue.replace(/^\?+/, '');
+  const params = new URLSearchParams(query);
+  if (app.isPackaged && !params.has('workspaceThread')) {
+    // Default packaged launches back to the latest workspace thread so
+    // previously asked questions remain visible after restart.
+    params.set('workspaceThread', 'latest');
+  }
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : '';
+}
+
 function appendElectronLaunchLog(level: 'INFO' | 'ERROR', message: string) {
   try {
     fs.mkdirSync(runtimeLogsDir, { recursive: true });
@@ -137,42 +146,25 @@ function appendElectronLaunchLog(level: 'INFO' | 'ERROR', message: string) {
   }
 }
 
+function writeProcessStreamSafely(stream: NodeJS.WriteStream | undefined, text: string) {
+  if (!stream) return;
+  if ('destroyed' in stream && stream.destroyed) return;
+  if (typeof stream.writable === 'boolean' && !stream.writable) return;
+  try {
+    stream.write(text);
+  } catch {
+    // Packaged macOS launches may not have a live stdio sink. Logging must stay non-fatal.
+  }
+}
+
 function logElectronInfo(message: string) {
-  console.log(message);
   appendElectronLaunchLog('INFO', message);
+  writeProcessStreamSafely(process.stdout, `${message}\n`);
 }
 
 function logElectronError(message: string) {
-  console.error(message);
   appendElectronLaunchLog('ERROR', message);
-}
-
-function writeRuntimeLaunchManifest(extra: Partial<RuntimeLaunchManifest> = {}) {
-  try {
-    fs.mkdirSync(runtimeLogsDir, { recursive: true });
-    const manifest: RuntimeLaunchManifest = {
-      writtenAt: new Date().toISOString(),
-      appVersion: app.getVersion(),
-      isPackaged: app.isPackaged,
-      pid: process.pid,
-      executablePath: app.getPath('exe'),
-      appPath: app.getAppPath(),
-      userDataPath: fixedUserDataPath,
-      appDbPath: path.join(fixedUserDataPath, 'app.db'),
-      runtimeLogsDir,
-      backendUrl: backendUrl(),
-      cloudBackendUrl: cloudBackendUrl(),
-      remoteCloudBackendUrl: remoteCloudBackendUrl(),
-      usingRemoteCloudBackend: shouldUseRemoteCloudBackend(),
-      backendPort,
-      cloudBackendPort,
-      rendererPort,
-      ...extra,
-    };
-    fs.writeFileSync(runtimeManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  } catch {
-    // Diagnostics should never block app startup.
-  }
+  writeProcessStreamSafely(process.stderr, `${message}\n`);
 }
 
 function rememberBackendLogLine(line: string) {
@@ -240,6 +232,29 @@ async function collectInstalledAppPaths(currentAppBundlePath: string) {
   return Array.from(candidates).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
 }
 
+async function cleanupStaleInstallBundles() {
+  const userApplications = path.join(app.getPath('home'), 'Applications');
+  const removedPaths: string[] = [];
+  const entries = await fs.promises.readdir(userApplications, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(staleInstallBundlePrefix) || !entry.name.endsWith('.app')) {
+      continue;
+    }
+    const targetPath = path.join(userApplications, entry.name);
+    try {
+      await fs.promises.rm(targetPath, { recursive: true, force: true });
+      removedPaths.push(targetPath);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logElectronError(`[install-cleanup] failed to remove stale bundle ${targetPath}: ${detail}`);
+    }
+  }
+  if (removedPaths.length > 0) {
+    logElectronInfo(`[install-cleanup] removed ${removedPaths.length} stale install bundle(s)`);
+  }
+  return removedPaths;
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'app',
@@ -255,6 +270,23 @@ protocol.registerSchemesAsPrivileged([
 
 async function runTaskWindowDiagnostics(window: BrowserWindow) {
   if (!parseBooleanEnv(process.env.YIYU_ELECTRON_TASK_DIAGNOSTICS, false)) return;
+
+  const inspectEvidenceQuery = async () => window.webContents.executeJavaScript(`
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const evidenceMode = params.get('evidenceMode');
+      if (!evidenceMode) return null;
+      const bodyText = document.body?.innerText || '';
+      return {
+        tab: params.get('tab') || params.get('activeTab') || '',
+        evidenceMode,
+        taskId: params.get('taskId') || '',
+        clientId: params.get('clientId') || '',
+        hasRcEvidenceLabel: bodyText.includes('RC Evidence'),
+        bodySnippet: bodyText.slice(0, 600),
+      };
+    })()
+  `, true);
 
   const inspectTargets = async () => window.webContents.executeJavaScript(`
     (() => {
@@ -301,7 +333,7 @@ async function runTaskWindowDiagnostics(window: BrowserWindow) {
         })(),
         targets: [
           summarize('我的月历'),
-          summarize('清单列表'),
+          summarize('任务列表'),
           summarize('新建任务'),
         ],
       };
@@ -316,13 +348,26 @@ async function runTaskWindowDiagnostics(window: BrowserWindow) {
   };
 
   try {
+    const evidenceQuery = await inspectEvidenceQuery() as null | {
+      tab: string;
+      evidenceMode: string;
+      taskId: string;
+      clientId: string;
+      hasRcEvidenceLabel: boolean;
+      bodySnippet: string;
+    };
+    if (evidenceQuery) {
+      logElectronInfo(`[renderer:task-diagnostics] evidence=${JSON.stringify(evidenceQuery)}`);
+      return;
+    }
+
     const before = await inspectTargets() as {
       heading: string;
       bodyIncludesToday: boolean;
       navTaskButton: { found: boolean; centerX?: number; centerY?: number; text?: string };
       targets: Array<{ label: string; found: boolean; centerX?: number; centerY?: number; pointerEvents?: string }>;
     };
-    console.log(`[renderer:task-diagnostics] before=${JSON.stringify(before)}`);
+    logElectronInfo(`[renderer:task-diagnostics] before=${JSON.stringify(before)}`);
 
     const navTaskButton = before.navTaskButton && before.navTaskButton.found && before.navTaskButton.centerX !== undefined && before.navTaskButton.centerY !== undefined
       ? before.navTaskButton
@@ -336,7 +381,7 @@ async function runTaskWindowDiagnostics(window: BrowserWindow) {
       bodyIncludesToday: boolean;
       targets: Array<{ label: string; found: boolean; centerX?: number; centerY?: number; pointerEvents?: string }>;
     };
-    console.log(`[renderer:task-diagnostics] onTasksPage=${JSON.stringify(onTasksPage)}`);
+    logElectronInfo(`[renderer:task-diagnostics] onTasksPage=${JSON.stringify(onTasksPage)}`);
 
     const calendarTarget = onTasksPage.targets.find((item) => item.label === '我的月历' && item.found && item.centerX !== undefined && item.centerY !== undefined);
     if (calendarTarget && calendarTarget.centerX !== undefined && calendarTarget.centerY !== undefined) {
@@ -349,12 +394,12 @@ async function runTaskWindowDiagnostics(window: BrowserWindow) {
         bodyIncludesMonthTitle: document.body.innerText.includes('我的月历'),
       }))()
     `, true);
-    console.log(`[renderer:task-diagnostics] afterCalendar=${JSON.stringify(afterCalendar)}`);
+    logElectronInfo(`[renderer:task-diagnostics] afterCalendar=${JSON.stringify(afterCalendar)}`);
 
     const listTargetPayload = await inspectTargets() as {
       targets: Array<{ label: string; found: boolean; centerX?: number; centerY?: number }>;
     };
-    const listTarget = listTargetPayload.targets.find((item) => item.label === '清单列表' && item.found && item.centerX !== undefined && item.centerY !== undefined);
+    const listTarget = listTargetPayload.targets.find((item) => item.label === '任务列表' && item.found && item.centerX !== undefined && item.centerY !== undefined);
     if (listTarget && listTarget.centerX !== undefined && listTarget.centerY !== undefined) {
       await clickAt(listTarget.centerX, listTarget.centerY);
     }
@@ -383,9 +428,9 @@ async function runTaskWindowDiagnostics(window: BrowserWindow) {
         };
       })()
     `, true);
-    console.log(`[renderer:task-diagnostics] afterCreate=${JSON.stringify(afterCreate)}`);
+    logElectronInfo(`[renderer:task-diagnostics] afterCreate=${JSON.stringify(afterCreate)}`);
   } catch (error) {
-    console.error(`[renderer:task-diagnostics] failed=${error instanceof Error ? error.message : String(error)}`);
+    logElectronError(`[renderer:task-diagnostics] failed=${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -437,7 +482,7 @@ async function runEventLineCreateDiagnostics(window: BrowserWindow) {
     logElectronInfo(`[renderer:event-line-diagnostics] start=${JSON.stringify(await inspectState('start'))}`);
     logElectronInfo(`[renderer:event-line-diagnostics] nav-task=${JSON.stringify(await clickText('button', '任务与日程'))}`);
     await sleep(500);
-    logElectronInfo(`[renderer:event-line-diagnostics] list-mode=${JSON.stringify(await clickText('button', '清单列表'))}`);
+    logElectronInfo(`[renderer:event-line-diagnostics] list-mode=${JSON.stringify(await clickText('button', '任务列表'))}`);
     await sleep(500);
     const openTaskResult = await window.webContents.executeJavaScript(
       `
@@ -464,6 +509,300 @@ async function runEventLineCreateDiagnostics(window: BrowserWindow) {
     logElectronInfo(`[renderer:event-line-diagnostics] after-click=${JSON.stringify(await inspectState('after-click'))}`);
   } catch (error) {
     logElectronError(`[renderer:event-line-diagnostics] failed=${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function runUiSurfaceAudit(window: BrowserWindow) {
+  const outputPath = (process.env.YIYU_UI_RUNTIME_AUDIT_OUTPUT || '').trim();
+  if (!outputPath) return;
+
+  const specPath = (
+    process.env.YIYU_UI_RUNTIME_AUDIT_SPEC
+    || path.join(projectRoot, 'output', 'ui-consistency-audit', 'runtime_surface_spec.json')
+  ).trim();
+  const autoQuit = parseBooleanEnv(process.env.YIYU_UI_RUNTIME_AUDIT_AUTOQUIT, true);
+  const ensureOutputDir = () => mkdirSync(path.dirname(outputPath), { recursive: true });
+  const sleep = async (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const writeAuditResult = (payload: Record<string, unknown>) => {
+    ensureOutputDir();
+    writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  };
+  const finishAudit = (payload: Record<string, unknown>) => {
+    writeAuditResult(payload);
+    if (autoQuit) {
+      setTimeout(() => {
+        try {
+          app.quit();
+        } catch {}
+      }, 800);
+    }
+  };
+
+  let surfaceSpecs: Array<Record<string, unknown>> = [];
+  try {
+    surfaceSpecs = JSON.parse(fs.readFileSync(specPath, 'utf8'));
+    if (!Array.isArray(surfaceSpecs)) {
+      throw new Error('runtime surface spec must be an array');
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    logElectronError(`[renderer:ui-audit] failed to read spec ${specPath}: ${detail}`);
+    finishAudit({
+      generatedAt: new Date().toISOString(),
+      specPath,
+      error: `failed_to_read_spec: ${detail}`,
+      hits: [],
+    });
+    return;
+  }
+
+  const waitForReady = async () => {
+    const startedAt = Date.now();
+    let lastState: Record<string, unknown> | null = null;
+    while (Date.now() - startedAt < 75000) {
+      try {
+        const state = await window.webContents.executeJavaScript(
+          `
+            (() => {
+              const bodyText = document.body?.innerText || '';
+              const normalizedBodyText = bodyText.replace(/\\s+/g, '');
+              const navReady = Array.from(document.querySelectorAll('button'))
+                .some((button) => ((button.textContent || '').replace(/\\s+/g, '')).includes('任务与日程'));
+              const bodyReady = normalizedBodyText.includes('当前登录')
+                && normalizedBodyText.includes('客户工作台')
+                && normalizedBodyText.includes('系统设置');
+              const root = document.getElementById('root');
+              const rootChildCount = root?.childElementCount || 0;
+              const rootHtmlLength = root?.innerHTML.length || 0;
+              const splashVisible = normalizedBodyText.includes('正在载入核心模块数据')
+                || normalizedBodyText.includes('正在连接本地后端')
+                || normalizedBodyText.includes('正在恢复登录状态')
+                || normalizedBodyText.includes('正在读取系统设置')
+                || normalizedBodyText.includes('正在载入客户工作区')
+                || normalizedBodyText.includes('正在读取员工与组织数据');
+              return {
+                navReady,
+                bodyReady,
+                ready: (navReady || bodyReady) && !splashVisible && rootChildCount >= 2 && rootHtmlLength > 12000,
+                href: window.location.href,
+                heading: document.querySelector('h1')?.textContent || '',
+                rootChildCount,
+                rootHtmlLength,
+                splashVisible,
+                bodySnippet: bodyText.slice(0, 240),
+              };
+            })()
+          `,
+          true,
+        ) as { ready?: boolean };
+        lastState = state as Record<string, unknown>;
+        if (state?.ready) {
+          return;
+        }
+      } catch (error) {
+        logElectronInfo(`[renderer:ui-audit] waiting for renderer: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      await sleep(500);
+    }
+    throw new Error(`ui_audit_renderer_not_ready:${JSON.stringify(lastState || {})}`);
+  };
+
+  const installAuditHooks = async () => {
+    await window.webContents.executeJavaScript(
+      `
+        (() => {
+          if (window.__YIYU_UI_AUDIT__) return true;
+          const state = {
+            apiCalls: [],
+            ipcCalls: [],
+          };
+          const preview = (value) => {
+            if (value == null) return value;
+            if (typeof value === 'string') return value.slice(0, 160);
+            if (typeof value === 'number' || typeof value === 'boolean') return value;
+            if (Array.isArray(value)) return value.slice(0, 3).map(preview);
+            if (typeof value === 'object') {
+              const entries = Object.entries(value).slice(0, 6);
+              return Object.fromEntries(entries.map(([key, inner]) => [key, preview(inner)]));
+            }
+            return String(value);
+          };
+          const normalizeUrl = (value) => {
+            try {
+              const parsed = new URL(String(value), window.location.origin);
+              return parsed.pathname + parsed.search;
+            } catch {
+              return String(value || '');
+            }
+          };
+          const originalFetch = window.fetch.bind(window);
+          window.fetch = async (...args) => {
+            const [input, init] = args;
+            const method =
+              String(
+                init?.method
+                || (typeof input === 'object' && input && 'method' in input ? input.method : '')
+                || 'GET',
+              ).toUpperCase();
+            const url = typeof input === 'string' ? input : (input?.url || '');
+            state.apiCalls.push({
+              ts: new Date().toISOString(),
+              method,
+              url: normalizeUrl(url),
+            });
+            return await originalFetch(...args);
+          };
+          const workbench = window.yiyuWorkbench;
+          if (workbench && !workbench.__uiAuditWrapped) {
+            for (const key of Object.keys(workbench)) {
+              if (key === 'backendBaseUrl') continue;
+              if (typeof workbench[key] !== 'function') continue;
+              const original = workbench[key].bind(workbench);
+              workbench[key] = (...args) => {
+                state.ipcCalls.push({
+                  ts: new Date().toISOString(),
+                  method: key,
+                  args: preview(args),
+                });
+                return original(...args);
+              };
+            }
+            Object.defineProperty(workbench, '__uiAuditWrapped', {
+              value: true,
+              configurable: false,
+              enumerable: false,
+              writable: false,
+            });
+          }
+          window.__YIYU_UI_AUDIT__ = {
+            reset() {
+              state.apiCalls.length = 0;
+              state.ipcCalls.length = 0;
+            },
+            snapshot() {
+              return JSON.parse(JSON.stringify(state));
+            },
+          };
+          return true;
+        })()
+      `,
+      true,
+    );
+  };
+
+  const inspectSurface = async (surfaceSpec: Record<string, unknown>) => {
+    const serializedSpec = JSON.stringify(surfaceSpec);
+    return await window.webContents.executeJavaScript(
+      `
+        (async () => {
+          const spec = ${serializedSpec};
+          const audit = window.__YIYU_UI_AUDIT__;
+          const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+          const backendBaseUrl = window.yiyuWorkbench?.backendBaseUrl || '';
+          const readJson = async (targetPath) => {
+            if (!backendBaseUrl) return null;
+            try {
+              const response = await fetch(backendBaseUrl + targetPath);
+              if (!response.ok) return null;
+              return await response.json();
+            } catch {
+              return null;
+            }
+          };
+          const fillDynamicParams = async (params) => {
+            if (params.get('taskId') === '{taskId}') {
+              const board = await readJson('/api/v1/tasks');
+              const taskId = Array.isArray(board?.tasks) ? board.tasks[0]?.id : '';
+              if (taskId) params.set('taskId', String(taskId));
+              else params.delete('taskId');
+            }
+            if (params.get('clientId') === '{clientId}') {
+              const clients = await readJson('/api/v1/clients');
+              const clientId = Array.isArray(clients) ? clients[0]?.id : Array.isArray(clients?.clients) ? clients.clients[0]?.id : '';
+              if (clientId) params.set('clientId', String(clientId));
+              else params.delete('clientId');
+            }
+          };
+
+          const params = new URLSearchParams();
+          Object.entries(spec.queryParamGate || {}).forEach(([key, value]) => {
+            if (value == null) return;
+            params.set(key, String(value));
+          });
+          await fillDynamicParams(params);
+          audit.reset();
+          const nextUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+          window.history.pushState({}, '', nextUrl);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+          let previousCount = -1;
+          let stableTicks = 0;
+          for (let index = 0; index < 40; index += 1) {
+            await sleep(300);
+            const snapshot = audit.snapshot();
+            const currentCount = snapshot.apiCalls.length + snapshot.ipcCalls.length;
+            if (currentCount === previousCount) stableTicks += 1;
+            else stableTicks = 0;
+            previousCount = currentCount;
+            if (index >= 4 && stableTicks >= 3) break;
+          }
+          const snapshot = audit.snapshot();
+          const bodyText = document.body?.innerText || '';
+          const search = window.location.search || '';
+          const evidenceNode = document.querySelector('[data-evidence-mode]');
+          const querySatisfied = Object.entries(spec.queryParamGate || {}).every(([key, value]) => {
+            const currentValue = new URLSearchParams(search).get(key);
+            if (String(value).startsWith('{')) return Boolean(currentValue);
+            return currentValue === String(value);
+          });
+          const markerHit = Array.isArray(spec.domMarkers)
+            ? spec.domMarkers.find((marker) => marker && bodyText.includes(String(marker))) || ''
+            : '';
+          return {
+            surfaceId: spec.surfaceId,
+            entryType: spec.entryType || '',
+            roleConstraint: spec.roleConstraint || '',
+            query: params.toString(),
+            href: window.location.href,
+            heading: document.querySelector('h1')?.textContent?.trim() || '',
+            evidenceMode: evidenceNode?.getAttribute('data-evidence-mode') || '',
+            markerHit,
+            hit: querySatisfied,
+            apiCalls: snapshot.apiCalls,
+            ipcCalls: snapshot.ipcCalls,
+            bodySnippet: bodyText.slice(0, 500),
+          };
+        })()
+      `,
+      true,
+    );
+  };
+
+  try {
+    await waitForReady();
+    await installAuditHooks();
+    const hits: Array<Record<string, unknown>> = [];
+    for (const surfaceSpec of surfaceSpecs) {
+      const hit = await inspectSurface(surfaceSpec);
+      hits.push(hit);
+    }
+    logElectronInfo(`[renderer:ui-audit] collected ${hits.length} surface hits`);
+    finishAudit({
+      generatedAt: new Date().toISOString(),
+      specPath,
+      appPackaged: app.isPackaged,
+      hits,
+      hitCount: hits.filter((hit) => hit.hit).length,
+      surfaceCount: hits.length,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    logElectronError(`[renderer:ui-audit] failed=${detail}`);
+    finishAudit({
+      generatedAt: new Date().toISOString(),
+      specPath,
+      error: detail,
+      hits: [],
+    });
   }
 }
 
@@ -625,6 +964,20 @@ function buildRuntimeFingerprint(projectDirName: 'backend' | 'cloud_backend') {
   }).join('|');
 }
 
+function evaluateBackendRuntimeWarning(payload: BackendHealthPayload): string | null {
+  const schemaVersion = Number(payload.backendSchemaVersion || 0);
+  if (schemaVersion > 0 && schemaVersion < REQUIRED_BACKEND_SCHEMA_VERSION) {
+    return `后端 schema 版本过低：${schemaVersion} < ${REQUIRED_BACKEND_SCHEMA_VERSION}`;
+  }
+  if (app.isPackaged && payload.runtimeMode && payload.runtimeMode !== 'packaged') {
+    return `后端运行模式异常：当前为打包环境，但 runtimeMode=${payload.runtimeMode}`;
+  }
+  if (!app.isPackaged && payload.runtimeMode && payload.runtimeMode !== 'dev') {
+    return `后端运行模式异常：当前为开发环境，但 runtimeMode=${payload.runtimeMode}`;
+  }
+  return null;
+}
+
 async function extractPlatformDnaText(targetPath: string) {
   const pythonPath = getBackendPythonPath();
   if (!isExecutable(pythonPath)) {
@@ -685,11 +1038,11 @@ function cloudBackendUrl() {
 }
 
 function rendererUrl() {
-  return `http://127.0.0.1:${rendererPort}`;
+  return `http://127.0.0.1:${rendererPort}${rendererLaunchQuery()}`;
 }
 
 function rendererProtocolUrl() {
-  return 'app://renderer/index.html';
+  return `app://renderer/index.html${rendererLaunchQuery()}`;
 }
 
 function writeRendererDiagnosticPage(fileName: string, html: string) {
@@ -705,6 +1058,10 @@ function rendererBootstrapPageUrl(detail = '正在连接本地界面与后台服
 
 function rendererFailurePageUrl(detail: string) {
   return writeRendererDiagnosticPage('__renderer_failure__.html', buildRendererFailurePage(detail));
+}
+
+function startupRepairPageUrl(appInfo: DesktopAppInfo, rebuildRepoPath: string | null) {
+  return writeRendererDiagnosticPage('__startup_gate_blocked__.html', buildStartupRepairPage(appInfo, rebuildRepoPath));
 }
 
 async function registerRendererProtocol() {
@@ -758,7 +1115,7 @@ async function checkBackendHealthAt(port: number, requiredFeatures: string[]): P
       res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
       res.on('end', () => {
         try {
-          const payload = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as { featureFlags?: string[] };
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as BackendHealthPayload;
           const featureFlags = Array.isArray(payload.featureFlags) ? payload.featureFlags : [];
           const missing = requiredFeatures.filter((feature) => !featureFlags.includes(feature));
           resolve(missing.length === 0);
@@ -791,6 +1148,105 @@ async function checkCloudBackendHealth(targetUrl: string): Promise<boolean> {
       resolve(false);
     });
   });
+}
+
+async function fetchBackendHealthSnapshot(port = backendPort): Promise<BackendHealthPayload | null> {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/api/v1/system/health`, (res) => {
+      if ((res.statusCode ?? 500) >= 500) {
+        res.resume();
+        resolve(null);
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')) as BackendHealthPayload);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(1000, () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+async function resolveDesktopAppInfo(healthOverride?: BackendHealthPayload | null): Promise<DesktopAppInfo> {
+  await cleanupStaleInstallBundles();
+  const executablePath = process.execPath;
+  const appBundlePath = resolveBundlePath(executablePath);
+  const recommendedInstallPath = path.join(app.getPath('home'), 'Applications', `${APP_DISPLAY_NAME}.app`);
+  const detectedAppPaths = await collectInstalledAppPaths(appBundlePath);
+  const legacyAppPaths: string[] = [];
+
+  for (const targetPath of detectedAppPaths) {
+    if (targetPath === appBundlePath) continue;
+    const baseName = path.basename(targetPath);
+    const bundleId = await readBundleId(targetPath);
+    if (legacyAppBasenames.has(baseName) || (bundleId && bundleId !== APP_BUNDLE_ID)) {
+      legacyAppPaths.push(targetPath);
+    }
+  }
+
+  const appInfo = buildDesktopAppInfo({
+    appVersion: app.getVersion(),
+    runtimeMode: app.isPackaged ? 'packaged' : 'dev',
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    appBundlePath,
+    executablePath,
+    releasePlanPath,
+    releaseArtifactsPath,
+    updateChannel: 'stable',
+    updaterPhase: 'planning',
+    recommendedInstallPath,
+    detectedAppPaths,
+    legacyAppPaths,
+    health: healthOverride === undefined ? await fetchBackendHealthSnapshot() : healthOverride,
+    requiredFeatures: REQUIRED_BACKEND_FEATURES,
+    requiredSchemaVersion: REQUIRED_BACKEND_SCHEMA_VERSION,
+  });
+  latestDesktopAppInfo = appInfo;
+  return appInfo;
+}
+
+async function resumeFromStartupGate(): Promise<DesktopStartupGateResumeResult> {
+  purgeSavedApplicationState();
+  const appInfo = await resolveDesktopAppInfo(await fetchBackendHealthSnapshot());
+  if (appInfo.startupGateStatus === 'blocked') {
+    return {
+      resumed: false,
+      appInfo,
+      loadMode: 'blocked',
+    };
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    await createMainWindow({ startupGateInfo: appInfo });
+    return {
+      resumed: true,
+      appInfo,
+      loadMode: 'app',
+    };
+  }
+  const loadMode = await loadRendererWithFallback(mainWindow);
+  if (loadMode !== 'error') {
+    if (!mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+    mainWindow.focus();
+    app.focus({ steal: true });
+  }
+  return {
+    resumed: loadMode !== 'error',
+    appInfo,
+    loadMode,
+  };
 }
 
 async function isPortAvailable(port: number): Promise<boolean> {
@@ -847,10 +1303,14 @@ function purgeSavedApplicationState() {
 function logBackend(pipe: NodeJS.ReadableStream, label: string, onLine?: (line: string) => void) {
   pipe.on('data', (chunk) => {
     const text = chunk.toString();
-    process.stdout.write(`[backend:${label}] ${text}`);
-    if (!onLine) return;
+    writeProcessStreamSafely(process.stdout, `[backend:${label}] ${text}`);
     for (const line of text.split(/\r?\n/)) {
-      onLine(line);
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      appendElectronLaunchLog('INFO', `[backend:${label}] ${trimmed}`);
+      if (onLine) {
+        onLine(trimmed);
+      }
     }
   });
 }
@@ -878,14 +1338,14 @@ function startBackend() {
   logBackend(backendProcess.stderr, 'stderr', rememberBackendLogLine);
   backendProcess.on('error', (error) => {
     backendExitDetail = `后端子进程启动失败：${error.message}`;
-    console.error(`后端服务启动失败: ${error.message}`);
+    logElectronError(`后端服务启动失败: ${error.message}`);
   });
 
   backendProcess.on('exit', (code) => {
     backendExitDetail = `后端服务已退出，退出码=${code ?? 'unknown'}`;
     backendProcess = null;
     ownsBackendProcess = false;
-    console.error(`后端服务已退出，退出码=${code ?? 'unknown'}`);
+    logElectronError(`后端服务已退出，退出码=${code ?? 'unknown'}`);
   });
 }
 
@@ -912,13 +1372,13 @@ function startCloudBackend() {
   logBackend(cloudBackendProcess.stdout, 'cloud:stdout');
   logBackend(cloudBackendProcess.stderr, 'cloud:stderr');
   cloudBackendProcess.on('error', (error) => {
-    console.error(`中心后端启动失败: ${error.message}`);
+    logElectronError(`中心后端启动失败: ${error.message}`);
   });
 
   cloudBackendProcess.on('exit', (code) => {
     cloudBackendProcess = null;
     ownsCloudBackendProcess = false;
-    console.error(`中心后端已退出，退出码=${code ?? 'unknown'}`);
+    logElectronError(`中心后端已退出，退出码=${code ?? 'unknown'}`);
   });
 }
 
@@ -1007,20 +1467,7 @@ function stopRendererStaticServer() {
 }
 
 function buildRendererFailurePage(detail: string) {
-  const message = detail.replace(/[&<>"]/g, (char) => {
-    switch (char) {
-      case '&':
-        return '&amp;';
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
-      case '"':
-        return '&quot;';
-      default:
-        return char;
-    }
-  });
+  const message = escapeHtml(detail);
   return `<!doctype html>
 <html lang="zh-CN">
   <head>
@@ -1071,13 +1518,7 @@ function buildRendererFailurePage(detail: string) {
 }
 
 function buildRendererBootstrapPage(detail = '正在连接本地界面与后台服务，请稍候…') {
-  const message = detail
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/\n/g, '<br />');
+  const message = escapeHtml(detail).replace(/\n/g, '<br />');
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -1161,6 +1602,286 @@ function buildRendererBootstrapPage(detail = '正在连接本地界面与后台�
 </html>`;
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildStartupRepairPage(appInfo: DesktopAppInfo, rebuildRepoPath: string | null) {
+  const payload = JSON.stringify({
+    appBundlePath: appInfo.appBundlePath,
+    recommendedInstallPath: appInfo.recommendedInstallPath,
+    startupGateReason: appInfo.startupGateReason,
+    detectedAppPaths: appInfo.detectedAppPaths,
+    legacyAppPaths: appInfo.legacyAppPaths,
+    rebuildRepoPath,
+  }).replace(/</g, '\\u003c');
+
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${APP_DISPLAY_NAME}</title>
+    <style>
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: radial-gradient(circle at top, #fff7ed 0%, #fff1f2 48%, #f8fafc 100%);
+        font-family: "PingFang SC", "SF Pro Display", "Helvetica Neue", sans-serif;
+        color: #111827;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+      }
+      .panel {
+        width: min(760px, calc(100vw - 56px));
+        border-radius: 28px;
+        border: 1px solid #fecaca;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 24px 80px rgba(127, 29, 29, 0.12);
+        padding: 28px;
+      }
+      .eyebrow {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: #b91c1c;
+      }
+      h1 {
+        margin: 12px 0 0;
+        font-size: 28px;
+        line-height: 1.3;
+      }
+      p {
+        margin: 14px 0 0;
+        font-size: 14px;
+        line-height: 1.8;
+        color: #4b5563;
+      }
+      .reason {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
+        color: #9a3412;
+        font-size: 13px;
+        line-height: 1.8;
+        white-space: pre-wrap;
+      }
+      .card {
+        margin-top: 16px;
+        border-radius: 18px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        padding: 16px 18px;
+      }
+      .card h2 {
+        margin: 0;
+        font-size: 13px;
+      }
+      .card p, .card li {
+        margin-top: 8px;
+        font-size: 12px;
+        line-height: 1.8;
+        color: #475569;
+        word-break: break-all;
+      }
+      ul {
+        margin: 8px 0 0;
+        padding-left: 18px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 22px;
+      }
+      button {
+        border: 0;
+        border-radius: 16px;
+        padding: 12px 16px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .primary {
+        background: #5b7bfe;
+        color: white;
+      }
+      .secondary {
+        background: white;
+        border: 1px solid #d1d5db;
+        color: #374151;
+      }
+      .disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .status {
+        margin-top: 14px;
+        min-height: 20px;
+        font-size: 12px;
+        color: #475569;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <p class="eyebrow">Startup Gate Blocked</p>
+      <h1>客户工作台已被安全拦截</h1>
+      <p>当前安装态没有通过启动门禁。系统已阻止进入客户工作台主界面，避免继续使用旧包、错包或不一致运行态。</p>
+      <div class="reason" id="reason"></div>
+      <div class="card">
+        <h2>当前运行包</h2>
+        <p id="current-path"></p>
+      </div>
+      <div class="card">
+        <h2>唯一建议安装入口</h2>
+        <p id="recommended-path"></p>
+      </div>
+      <div class="card">
+        <h2>检测到的相关安装包</h2>
+        <ul id="detected-paths"></ul>
+      </div>
+      <div class="actions">
+        <button class="primary" id="rebuild-button">从源码仓库重装</button>
+        <button class="secondary" id="refresh-button">重新检查启动门禁</button>
+        <button class="secondary" id="reveal-button">在 Finder 中显示当前包</button>
+        <button class="secondary" id="quit-button">退出</button>
+      </div>
+      <div class="status" id="status"></div>
+    </main>
+    <script>
+      const payload = ${payload};
+      const currentPath = document.getElementById('current-path');
+      const recommendedPath = document.getElementById('recommended-path');
+      const reason = document.getElementById('reason');
+      const detectedPaths = document.getElementById('detected-paths');
+      const status = document.getElementById('status');
+      const rebuildButton = document.getElementById('rebuild-button');
+      const refreshButton = document.getElementById('refresh-button');
+      const revealButton = document.getElementById('reveal-button');
+      const quitButton = document.getElementById('quit-button');
+
+      function renderPayload(nextPayload) {
+        currentPath.textContent = nextPayload.appBundlePath || '(未知)';
+        recommendedPath.textContent = nextPayload.recommendedInstallPath || '(未知)';
+        reason.textContent = nextPayload.startupGateReason || '未返回具体阻断原因。';
+        detectedPaths.innerHTML = '';
+        if (Array.isArray(nextPayload.detectedAppPaths) && nextPayload.detectedAppPaths.length > 0) {
+          for (const item of nextPayload.detectedAppPaths) {
+            const li = document.createElement('li');
+            const tag = Array.isArray(nextPayload.legacyAppPaths) && nextPayload.legacyAppPaths.includes(item)
+              ? '旧入口'
+              : (item === nextPayload.appBundlePath ? '当前运行包' : '重复安装包');
+            li.textContent = tag + '：' + item;
+            detectedPaths.appendChild(li);
+          }
+        } else {
+          const li = document.createElement('li');
+          li.textContent = '没有检测到其他相关入口。';
+          detectedPaths.appendChild(li);
+        }
+      }
+
+      renderPayload(payload);
+
+      if (!payload.rebuildRepoPath || !window.yiyuWorkbench?.rebuildAndInstallFromRepo) {
+        rebuildButton.disabled = true;
+        rebuildButton.classList.add('disabled');
+      }
+
+      if (!window.yiyuWorkbench?.getDesktopAppInfo || !window.yiyuWorkbench?.resumeFromStartupGate) {
+        refreshButton.disabled = true;
+        refreshButton.classList.add('disabled');
+      }
+
+      async function recheckStartupGate(auto = false) {
+        if (!window.yiyuWorkbench?.getDesktopAppInfo || !window.yiyuWorkbench?.resumeFromStartupGate) {
+          return;
+        }
+        if (!auto) {
+          status.textContent = '正在重新检查当前安装态…';
+        }
+        try {
+          const latestInfo = await window.yiyuWorkbench.getDesktopAppInfo();
+          renderPayload(latestInfo);
+          if (latestInfo.startupGateStatus !== 'blocked') {
+            status.textContent = '启动门禁已解除，正在进入客户工作台…';
+            const resumeResult = await window.yiyuWorkbench.resumeFromStartupGate();
+            if (!resumeResult?.resumed) {
+              renderPayload(resumeResult?.appInfo || latestInfo);
+              status.textContent = '当前包仍未通过启动门禁，请稍后重试。';
+            }
+            return;
+          }
+          if (!auto) {
+            status.textContent = '当前安装态仍未通过启动门禁。';
+          }
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      rebuildButton.addEventListener('click', async () => {
+        if (!payload.rebuildRepoPath) {
+          status.textContent = '当前机器没有可直接重装的源码仓库。';
+          return;
+        }
+        status.textContent = '正在从源码仓库重装最新安装包…';
+        try {
+          await window.yiyuWorkbench.rebuildAndInstallFromRepo(payload.rebuildRepoPath);
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        }
+      });
+
+      refreshButton.addEventListener('click', () => {
+        void recheckStartupGate(false);
+      });
+
+      revealButton.addEventListener('click', async () => {
+        if (!payload.appBundlePath) {
+          status.textContent = '当前包路径为空。';
+          return;
+        }
+        try {
+          await window.yiyuWorkbench.revealInFinder(payload.appBundlePath);
+          status.textContent = '已在 Finder 中定位当前包。';
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        }
+      });
+
+      quitButton.addEventListener('click', async () => {
+        try {
+          await window.yiyuWorkbench.quitApp();
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        }
+      });
+
+      const autoTimer = window.setInterval(() => {
+        if (document.hidden) return;
+        void recheckStartupGate(true);
+      }, 2500);
+      window.addEventListener('beforeunload', () => window.clearInterval(autoTimer));
+    </script>
+  </body>
+</html>`;
+}
+
 async function loadRendererWithFallback(window: BrowserWindow) {
   const devServerUrl = !app.isPackaged ? process.env.VITE_DEV_SERVER_URL : undefined;
   if (devServerUrl) {
@@ -1211,14 +1932,14 @@ function buildBackendStartupError(prefix: string) {
   return prefix;
 }
 
-async function waitForBackend(timeoutMs = 45000): Promise<void> {
+async function waitForBackend(timeoutMs = 45000): Promise<BackendHealthPayload> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (backendExitDetail) {
       throw new Error(buildBackendStartupError(backendExitDetail));
     }
     try {
-      await new Promise<void>((resolve, reject) => {
+      const payload = await new Promise<BackendHealthPayload>((resolve, reject) => {
         const req = http.get(`${backendUrl()}/api/v1/system/health`, (res) => {
           if ((res.statusCode ?? 500) >= 500) {
             reject(new Error(`status=${res.statusCode}`));
@@ -1228,14 +1949,18 @@ async function waitForBackend(timeoutMs = 45000): Promise<void> {
           res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
           res.on('end', () => {
             try {
-              const payload = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as { featureFlags?: string[] };
+              const payload = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as BackendHealthPayload;
               const featureFlags = Array.isArray(payload.featureFlags) ? payload.featureFlags : [];
               const missing = REQUIRED_BACKEND_FEATURES.filter((feature) => !featureFlags.includes(feature));
               if (missing.length > 0) {
                 reject(new Error(`backend_missing_features:${missing.join(',')}`));
                 return;
               }
-              resolve();
+              const runtimeWarning = evaluateBackendRuntimeWarning(payload);
+              if (runtimeWarning) {
+                logElectronError(`[backend:runtime-warning] ${runtimeWarning}`);
+              }
+              resolve(payload);
             } catch (error) {
               reject(error);
             }
@@ -1243,7 +1968,7 @@ async function waitForBackend(timeoutMs = 45000): Promise<void> {
         });
         req.on('error', reject);
       });
-      return;
+      return payload;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
@@ -1274,7 +1999,7 @@ async function waitForCloudBackend(timeoutMs = 20000): Promise<void> {
   throw new Error('中心后端启动超时');
 }
 
-async function createMainWindow() {
+async function createMainWindow(options: { startupGateInfo?: DesktopAppInfo | null } = {}) {
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 980,
@@ -1348,6 +2073,17 @@ async function createMainWindow() {
     mainWindow.focus();
   }
 
+  if (options.startupGateInfo?.startupGateStatus === 'blocked') {
+    const rebuildRepoPath = await findSuggestedCollabRepoPath(getCollabSuggestedCandidates()).catch(() => null);
+    await mainWindow.loadURL(startupRepairPageUrl(options.startupGateInfo, rebuildRepoPath));
+    if (!mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+    mainWindow.focus();
+    app.focus({ steal: true });
+    return;
+  }
+
   const loadMode = await loadRendererWithFallback(mainWindow);
   if (loadMode === 'dev') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -1364,10 +2100,12 @@ async function createMainWindow() {
   if (loadMode !== 'error' && mainWindow && !mainWindow.isDestroyed()) {
     await runTaskWindowDiagnostics(mainWindow);
     await runEventLineCreateDiagnostics(mainWindow);
+    await runUiSurfaceAudit(mainWindow);
   }
 }
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const uiRuntimeAuditMode = Boolean((process.env.YIYU_UI_RUNTIME_AUDIT_OUTPUT || '').trim());
+const gotSingleInstanceLock = uiRuntimeAuditMode ? true : app.requestSingleInstanceLock();
 appendElectronLaunchLog('INFO', `[app] singleInstanceLock=${gotSingleInstanceLock}`);
 
 if (!gotSingleInstanceLock) {
@@ -1391,7 +2129,7 @@ app.on('second-instance', () => {
     existingWindow.focus();
     return;
   }
-  void createMainWindow();
+  void resolveDesktopAppInfo().then((appInfo) => createMainWindow({ startupGateInfo: appInfo }));
 });
 
 app.whenReady().then(async () => {
@@ -1424,10 +2162,6 @@ app.whenReady().then(async () => {
   const runtimeRoot = path.join(app.getPath('userData'), 'runtime');
   backendRuntimeVenv = path.join(runtimeRoot, 'backend-venv');
   cloudBackendRuntimeVenv = path.join(runtimeRoot, 'cloud-backend-venv');
-  writeRuntimeLaunchManifest({
-    backendRuntimeVenv,
-    cloudBackendRuntimeVenv,
-  });
   try {
     await ensureProjectRuntime('backend', backendRuntimeVenv);
     if (!usingRemoteCloudBackend) {
@@ -1436,6 +2170,7 @@ app.whenReady().then(async () => {
     await registerRendererProtocol();
     await recyclePackagedRuntimeProcesses();
     purgeSavedApplicationState();
+    await cleanupStaleInstallBundles();
   } catch (error) {
     dialog.showErrorBox('后端运行时准备失败', error instanceof Error ? error.message : String(error));
     app.quit();
@@ -1447,8 +2182,9 @@ app.whenReady().then(async () => {
   if (!reuseExistingBackend) {
     startBackend();
   }
+  let backendHealth: BackendHealthPayload | null = null;
   try {
-    await waitForBackend();
+    backendHealth = await waitForBackend();
   } catch (firstError) {
     logElectronError(`[backend:start] first attempt failed: ${firstError instanceof Error ? firstError.message : String(firstError)}`);
     if (!reuseExistingBackend) {
@@ -1460,7 +2196,7 @@ app.whenReady().then(async () => {
       stopBackend();
       startBackend();
       try {
-        await waitForBackend(30000);
+        backendHealth = await waitForBackend(30000);
       } catch (secondError) {
         dialog.showErrorBox('本地后端启动失败', secondError instanceof Error ? secondError.message : String(secondError));
         app.quit();
@@ -1472,9 +2208,10 @@ app.whenReady().then(async () => {
       return;
     }
   }
+  const desktopAppInfo = await resolveDesktopAppInfo(backendHealth);
   appendElectronLaunchLog('INFO', '[app] creating main window');
   try {
-    await createMainWindow();
+    await createMainWindow({ startupGateInfo: desktopAppInfo });
   } catch (error) {
     dialog.showErrorBox('桌面界面启动失败', error instanceof Error ? error.message : String(error));
     app.quit();
@@ -1482,7 +2219,7 @@ app.whenReady().then(async () => {
   }
   appendElectronLaunchLog('INFO', '[app] main window created successfully');
   void waitForCloudBackend().catch((error) => {
-    console.error(error);
+    logElectronError(error instanceof Error ? (error.stack || error.message) : String(error));
   });
   appendElectronLaunchLog('INFO', '[app] startup sequence complete, app should stay alive');
 
@@ -1527,11 +2264,22 @@ app.whenReady().then(async () => {
     }
     if (!mainWindow || mainWindow.isDestroyed() || BrowserWindow.getAllWindows().length === 0) {
       try {
-        await createMainWindow();
+        const appInfo = await resolveDesktopAppInfo();
+        await createMainWindow({ startupGateInfo: appInfo });
       } catch (error) {
         dialog.showErrorBox('桌面界面启动失败', error instanceof Error ? error.message : String(error));
       }
     } else {
+      if (latestDesktopAppInfo?.startupGateStatus === 'blocked') {
+        try {
+          const resumeResult = await resumeFromStartupGate();
+          if (resumeResult.resumed) {
+            return;
+          }
+        } catch (error) {
+          logElectronError(`[app:activate] startup gate refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       mainWindow.show();
       mainWindow.focus();
     }
@@ -1562,50 +2310,11 @@ ipcMain.handle('yiyu-workbench:selectFiles', async () => {
 });
 
 ipcMain.handle('yiyu-workbench:getDesktopAppInfo', async () => {
-  const executablePath = process.execPath;
-  const appBundlePath = resolveBundlePath(executablePath);
-  const recommendedInstallPath = path.join(app.getPath('home'), 'Applications', `${APP_DISPLAY_NAME}.app`);
-  const detectedAppPaths = await collectInstalledAppPaths(appBundlePath);
-  const legacyAppPaths: string[] = [];
-  const duplicateAppPaths: string[] = [];
+  return resolveDesktopAppInfo();
+});
 
-  for (const targetPath of detectedAppPaths) {
-    if (targetPath === appBundlePath) continue;
-    const baseName = path.basename(targetPath);
-    const bundleId = await readBundleId(targetPath);
-    if (legacyAppBasenames.has(baseName) || (bundleId && bundleId !== APP_BUNDLE_ID)) {
-      legacyAppPaths.push(targetPath);
-    } else {
-      duplicateAppPaths.push(targetPath);
-    }
-  }
-
-  let installWarning: string | null = null;
-  if (legacyAppPaths.length > 0) {
-    installWarning = `检测到 ${legacyAppPaths.length} 个旧入口，容易误开历史包。`;
-  } else if (duplicateAppPaths.length > 0) {
-    installWarning = `检测到 ${duplicateAppPaths.length} 个重复安装包，请保留单一入口。`;
-  } else if (app.isPackaged && appBundlePath !== recommendedInstallPath) {
-    installWarning = '当前运行包不在建议安装位置，后续升级时容易装错包。';
-  }
-
-  return {
-    appVersion: app.getVersion(),
-    isPackaged: app.isPackaged,
-    platform: process.platform,
-    arch: process.arch,
-    appBundlePath,
-    executablePath,
-    releasePlanPath,
-    releaseArtifactsPath,
-    updateChannel: 'stable',
-    updaterPhase: 'planning',
-    recommendedInstallPath,
-    installStatus: installWarning ? 'warning' : 'ok',
-    installWarning,
-    detectedAppPaths,
-    legacyAppPaths,
-  };
+ipcMain.handle('yiyu-workbench:resumeFromStartupGate', async () => {
+  return resumeFromStartupGate();
 });
 
 ipcMain.handle('yiyu-workbench:selectFolder', async () => {
@@ -1667,7 +2376,6 @@ ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPa
     `cd ${JSON.stringify(normalizedRepoPath)}`,
     `mkdir -p ${JSON.stringify(runtimeLogsDir)}`,
     `npm run dist:mac-local >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
-    `npm run install:mac-local >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
     `node scripts/open-installed-app.mjs >> ${JSON.stringify(collabRebuildLogPath)} 2>&1`,
   ].join(' && ');
   fs.mkdirSync(runtimeLogsDir, { recursive: true });
@@ -1681,6 +2389,11 @@ ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPa
   setTimeout(() => {
     app.quit();
   }, 300);
+  return true;
+});
+
+ipcMain.handle('yiyu-workbench:quitApp', async () => {
+  setTimeout(() => app.quit(), 50);
   return true;
 });
 
@@ -1703,9 +2416,59 @@ ipcMain.handle('yiyu-workbench:readTextFile', async (_event, targetPath: string)
   return fs.promises.readFile(resolvedPath, 'utf-8');
 });
 
+function inferClientWorkspaceRootFromPath(targetPath: string) {
+  const normalized = path.resolve(targetPath);
+  const parts = normalized.split(path.sep);
+  const index = parts.indexOf('client_workspace');
+  if (index < 0 || parts.length <= index + 1) return null;
+  const root = path.join(path.sep, ...parts.slice(1, index + 2));
+  return fs.existsSync(root) ? root : null;
+}
+
+function findSameNamedWorkspaceFile(targetPath: string) {
+  const root = inferClientWorkspaceRootFromPath(targetPath);
+  if (!root) return null;
+  const targetName = path.basename(targetPath);
+  if (!targetName) return null;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isFile() && entry.name === targetName) {
+        return fullPath;
+      }
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      }
+    }
+  }
+  return null;
+}
+
 ipcMain.handle('yiyu-workbench:openPath', async (_event, targetPath: string) => {
   const message = await shell.openPath(targetPath);
-  return message === '';
+  if (message === '') {
+    return true;
+  }
+  const recoveredPath = findSameNamedWorkspaceFile(targetPath);
+  if (recoveredPath && recoveredPath !== targetPath) {
+    const recoveredMessage = await shell.openPath(recoveredPath);
+    if (recoveredMessage === '') {
+      console.warn(`[openPath] recovered stale path=${targetPath} -> ${recoveredPath}`);
+      return true;
+    }
+    console.warn(`[openPath] recovered path failed path=${recoveredPath} message=${recoveredMessage}`);
+  }
+  console.warn(`[openPath] failed path=${targetPath} message=${message}`);
+  return false;
 });
 
 // --- File watcher for document edit detection ---

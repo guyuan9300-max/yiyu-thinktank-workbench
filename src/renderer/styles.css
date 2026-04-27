@@ -59,6 +59,29 @@ textarea {
   display: none;
 }
 
+.workspace-thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.34) transparent;
+}
+
+.workspace-thin-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.workspace-thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.workspace-thin-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.32);
+  border-radius: 999px;
+}
+
+.workspace-thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(91, 123, 254, 0.42);
+}
+
 .animate-in {
   animation: fadeIn 240ms ease-out both;
 }

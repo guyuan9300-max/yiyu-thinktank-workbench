@@ -86,12 +86,12 @@ def _source_breakdown(
     has_review = bool(note.strip() or structured_note_reflection.strip())
 
     return [
-        UnderstandingSourceBreakdownRecord(sourceType="org_dna", available=has_org_dna, label="机构背景"),
-        UnderstandingSourceBreakdownRecord(sourceType="client_background", available=has_client, label="项目背景"),
-        UnderstandingSourceBreakdownRecord(sourceType="quarterly_focus", available=has_quarterly, label="组织重点"),
+        UnderstandingSourceBreakdownRecord(sourceType="org_dna", available=has_org_dna, label="益语背景卡"),
+        UnderstandingSourceBreakdownRecord(sourceType="client_background", available=has_client, label="客户/项目背景卡"),
+        UnderstandingSourceBreakdownRecord(sourceType="quarterly_focus", available=has_quarterly, label="季度主线卡"),
         UnderstandingSourceBreakdownRecord(sourceType="task_title", available=has_title, label="任务标题"),
         UnderstandingSourceBreakdownRecord(sourceType="task_desc", available=has_desc, label="任务说明"),
-        UnderstandingSourceBreakdownRecord(sourceType="review_note", available=has_review, label="补充说明"),
+        UnderstandingSourceBreakdownRecord(sourceType="review_note", available=has_review, label="任务复盘资料"),
     ]
 
 
@@ -204,15 +204,11 @@ def _build_basic_with_rules(
             unknowns_parts.append(s.label)
     unknowns = f"系统尚未看到以下信息：{'、'.join(unknowns_parts)}。" if unknowns_parts else "最小输入已全部可用。"
 
-    facts: list[str] = []
+    facts = [f"任务标题：{snapshot.title}", f"状态：{snapshot.status}"]
     if client_name:
-        facts.append(f"关联项目：{client_name}")
-    if snapshot.listName:
-        facts.append(f"所属清单：{snapshot.listName}")
-    if getattr(snapshot, "eventLineName", None):
-        facts.append(f"关联事件线：{snapshot.eventLineName}")
-    if getattr(snapshot, "ownerName", None):
-        facts.append(f"负责人：{snapshot.ownerName}")
+        facts.append(f"关联客户：{client_name}")
+    if note.strip():
+        facts.append(f"已有复盘说明")
 
     return UnderstandingSnapshotV1Record(
         taskId=getattr(snapshot, "id", "") or "",

@@ -4,6 +4,7 @@ import type {
   CollabRepoStatus,
   CommitAndPushToMainPayload,
   DesktopAppInfo,
+  DesktopStartupGateResumeResult,
   PullPreview,
   PullSelectedFromMainPayload,
   PushPreview,
@@ -14,6 +15,7 @@ const backendBaseUrl = process.env.YIYU_BACKEND_URL ?? 'http://127.0.0.1:47829';
 contextBridge.exposeInMainWorld('yiyuWorkbench', {
   backendBaseUrl,
   getDesktopAppInfo: (): Promise<DesktopAppInfo> => ipcRenderer.invoke('yiyu-workbench:getDesktopAppInfo'),
+  resumeFromStartupGate: (): Promise<DesktopStartupGateResumeResult> => ipcRenderer.invoke('yiyu-workbench:resumeFromStartupGate'),
   selectFiles: (): Promise<string[]> => ipcRenderer.invoke('yiyu-workbench:selectFiles'),
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('yiyu-workbench:selectFolder'),
   selectCollabRepo: (): Promise<string | null> => ipcRenderer.invoke('yiyu-workbench:selectCollabRepo'),
@@ -42,6 +44,7 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   revealInFinder: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:revealInFinder', targetPath),
   saveFileAs: (sourcePath: string, suggestedName?: string): Promise<string | null> =>
     ipcRenderer.invoke('yiyu-workbench:saveFileAs', sourcePath, suggestedName),
+  quitApp: (): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:quitApp'),
   watchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:watchFile', targetPath),
   unwatchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:unwatchFile', targetPath),
   onFileChanged: (callback: (filePath: string) => void) => {

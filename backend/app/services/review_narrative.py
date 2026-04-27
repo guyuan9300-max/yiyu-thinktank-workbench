@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.db import Database
@@ -30,6 +31,10 @@ from app.models import (
     EventLineWeeklySnapshotRecord,
     NarrativeAnalysisRecord,
     OrganizationDnaModuleRecord,
+    WeeklyEventReviewCardRecord,
+    WeeklyEventReviewCardsRecord,
+    WeeklyMainlineCardRecord,
+    WeeklyMainlineCardsRecord,
     WeeklyReviewTaskEntryRecord,
 )
 
@@ -184,6 +189,1270 @@ WEEKLY_OVERVIEW_RESPONSE_SCHEMA = {
     },
     "required": ["headline", "needsAttention", "onTrack", "blockerSummary", "nextWeekHint", "nextWeekFocus"],
 }
+
+WEEKLY_MAINLINE_INTERNAL_TERMS = (
+    "客户DNA",
+    "数据中心",
+    "附件未读",
+    "系统不能假装理解",
+    "证据包",
+    "内部诊断",
+)
+WEEKLY_MAINLINE_BANNED_PHRASES = (
+    "继续推进",
+    "推进收束",
+    "沉淀为可复用记录",
+    "开放风险",
+    "判断是否闭环",
+)
+WEEKLY_MAINLINE_ACTION_KEYWORDS = (
+    "完成",
+    "确认",
+    "核对",
+    "整理",
+    "补充",
+    "输出",
+    "重写",
+    "拆分",
+    "发起",
+    "对接",
+    "明确",
+    "导出",
+    "提交",
+    "安排",
+    "更新",
+    "定稿",
+    "列出",
+    "锁定",
+    "校准",
+    "约",
+)
+
+WEEKLY_MAINLINE_SYSTEM_INSTRUCTION = """\
+你是益语智库的周复盘主线卡写作助手。你会收到本周任务、任务复盘、关联材料摘要、项目/客户背景和事件线字段。
+
+输出目标：
+1. 生成一个本周总览 summaryText。
+2. 选择最多 3 条重点主线，每条只写两个段落：progressText（本周推进）和 nextGoalText（下一步目标）。
+
+写作规则：
+- progressText 写 2-4 句，必须说明：做了什么、推进到什么阶段、这件事对业务/交付/合作有什么意义。
+- nextGoalText 写 2-3 句，必须是 action，必须说明：优先做什么、为什么现在做、产出标准是什么。
+- 如果需要用户补充资料，必须写清楚“补什么”和“补齐后能带来什么价值”。例如：补材料文字大纲后，可以判断版本是否服务资方决策、客户沟通或内部执行。
+- 如果材料不足，不要假装已经理解材料内容；直接把下一步写成补齐资料、负责人、交付物和完成时间的动作。
+- 不要输出资料来源、读取状态、内部诊断、模型置信度。
+
+禁止输出：
+- 客户DNA、数据中心、附件未读、系统不能假装理解、证据包、内部诊断
+- 继续推进、推进收束、沉淀为可复用记录、开放风险、判断是否闭环
+- 没有证据支撑的具体功能或动作，例如输入里没有“下载按钮”，就不能写“上线下载按钮”。
+"""
+
+WEEKLY_MAINLINE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summaryText": {"type": "string", "description": "本周总览，2-3句"},
+        "mainlines": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "taskCount": {"type": "integer"},
+                    "completedCount": {"type": "integer"},
+                    "pendingCount": {"type": "integer"},
+                    "progressText": {"type": "string"},
+                    "nextGoalText": {"type": "string"},
+                },
+                "required": ["title", "taskCount", "completedCount", "pendingCount", "progressText", "nextGoalText"],
+            },
+            "description": "最多3条重点主线",
+        },
+    },
+    "required": ["summaryText", "mainlines"],
+}
+
+WEEKLY_EVENT_REVIEW_BANNED_PHRASES = (
+    *WEEKLY_MAINLINE_BANNED_PHRASES,
+    "持续推进",
+    "夯实",
+    "闭环",
+    "打下坚实基础",
+    "坚实基础",
+    "统一复盘",
+    "下一步动作",
+    "补充资料",
+    "请回答以下问题",
+    "请逐条回答",
+    "复盘正文",
+)
+
+WEEKLY_EVENT_REVIEW_SYSTEM_INSTRUCTION = """\
+你是益语智库的事件复盘整理助手。你的任务不是代替用户写复盘，而是把候选事件复盘卡改成更自然的事项标题，并为复盘输入框生成灰色提示。
+
+重要边界：
+- 必须保留输入候选卡的 taskIds 集合；不要合并候选卡，不要拆分候选卡，不要新增或遗漏任务。
+- 每张卡只输出 title、reflectionPromptText 和 confidence；不要输出复盘正文，不要输出下一步动作。
+- title 要像一个真实的复盘事项，例如“云南儿童资助研究材料调整”。
+- reflectionPromptText 写 2-4 句开放提醒，放在输入框 placeholder 里使用；要贴合该项目，但不强迫用户逐条回答。
+- 提醒可以启发用户想：这组任务完成后项目状态有什么变化、还缺哪个判断、下周最小动作、负责人/交付物/时间点是否需要确认。
+- 用“可以回想一下…”“也可以顺手想想…”这类开放口吻，不要写成表单题或汇报结论。
+
+禁止输出：
+- 客户DNA、数据中心、附件未读、系统不能假装理解、证据包、内部诊断
+- 统一复盘、下一步动作、补充资料、请回答以下问题、请逐条回答
+- 继续推进、持续推进、推进收束、沉淀为可复用记录、开放风险、判断是否闭环、夯实、闭环、打下坚实基础
+"""
+
+WEEKLY_EVENT_REVIEW_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "cards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "cardKind": {"type": "string", "enum": ["event_line", "task_cluster", "single_task", "needs_assignment"]},
+                    "taskIds": {"type": "array", "items": {"type": "string"}},
+                    "reflectionPromptText": {"type": "string"},
+                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                },
+                "required": ["id", "title", "cardKind", "taskIds", "reflectionPromptText", "confidence"],
+            },
+        },
+    },
+    "required": ["cards"],
+}
+
+
+def _weekly_mainline_row_value(row: Any, key: str, default: Any = "") -> Any:
+    try:
+        value = row[key]
+    except Exception:
+        return default
+    return default if value is None else value
+
+
+def _weekly_mainline_clean(value: Any, *, limit: int | None = None) -> str:
+    text = str(value or "").replace("\u3000", " ")
+    text = " ".join(text.split())
+    if limit is not None and len(text) > limit:
+        return f"{text[: max(0, limit - 1)]}…"
+    return text
+
+
+def _weekly_mainline_first_text(values: list[Any], *, min_length: int = 12, limit: int = 900) -> str:
+    for value in values:
+        cleaned = _weekly_mainline_clean(value, limit=limit)
+        if len(cleaned) >= min_length and "提取失败" not in cleaned and "No module" not in cleaned:
+            return cleaned
+    return ""
+
+
+def _weekly_mainline_material_suggestion(title: str, kind: str) -> str:
+    lower = f"{title} {kind}".lower()
+    if any(token in lower for token in ("ppt", "pptx", "keynote", "演示", "路演")):
+        return (
+            "建议补充这份演示材料的文字大纲或导出的 PDF；补齐后可以判断材料是否服务资方决策、"
+            "客户沟通或内部执行，并把下一步改成具体修改清单。"
+        )
+    if any(token in lower for token in ("pdf", "报告", "方案", "说明")):
+        return (
+            "建议补充可复制的报告目录、摘要或关键结论；补齐后可以判断当前版本是否已经满足交付对象的阅读和决策需要。"
+        )
+    return (
+        "建议补充这份材料的文字摘要、使用对象和期望产出；补齐后可以把复盘从任务完成状态推进到交付价值判断。"
+    )
+
+
+def _weekly_mainline_task_lookup_ids(db: Database, task_ids: list[str]) -> dict[str, str]:
+    lookup: dict[str, str] = {task_id: task_id for task_id in task_ids}
+    if not task_ids:
+        return lookup
+    placeholders = ",".join("?" for _ in task_ids)
+    try:
+        rows = db.fetchall(
+            f"""
+            SELECT id, cloud_id
+            FROM tasks
+            WHERE id IN ({placeholders}) OR cloud_id IN ({placeholders})
+            """,
+            tuple([*task_ids, *task_ids]),
+        )
+    except Exception:
+        return lookup
+    for row in rows:
+        local_id = str(_weekly_mainline_row_value(row, "id", "") or "")
+        cloud_id = str(_weekly_mainline_row_value(row, "cloud_id", "") or "")
+        canonical = local_id if local_id in lookup else cloud_id if cloud_id in lookup else local_id
+        if local_id:
+            lookup[local_id] = canonical
+        if cloud_id:
+            lookup[cloud_id] = canonical
+    return lookup
+
+
+def _weekly_mainline_task_descriptions(db: Database, task_ids: list[str]) -> dict[str, str]:
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    try:
+        rows = db.fetchall(
+            f"SELECT id, description FROM tasks WHERE id IN ({placeholders})",
+            tuple(task_ids),
+        )
+    except Exception:
+        return {}
+    return {
+        str(_weekly_mainline_row_value(row, "id", "") or ""): _weekly_mainline_clean(
+            _weekly_mainline_row_value(row, "description", ""),
+            limit=240,
+        )
+        for row in rows
+        if str(_weekly_mainline_row_value(row, "id", "") or "")
+    }
+
+
+def build_weekly_mainline_evidence_pack(
+    *,
+    db: Database,
+    data_dir: Any,
+    week_label: str,
+    items: list[WeeklyReviewTaskEntryRecord],
+    include_data_center: bool = True,
+    access_context: Any | None = None,
+) -> dict[str, Any]:
+    task_ids = sorted({str(item.taskId) for item in items if str(item.taskId or "").strip()})
+    task_lookup = _weekly_mainline_task_lookup_ids(db, task_ids)
+    task_descriptions = _weekly_mainline_task_descriptions(db, task_ids)
+    item_by_lookup_id: dict[str, WeeklyReviewTaskEntryRecord] = {}
+    for item in items:
+        item_by_lookup_id[str(item.taskId)] = item
+    for lookup_id, canonical_id in task_lookup.items():
+        item = item_by_lookup_id.get(canonical_id)
+        if item is not None:
+            item_by_lookup_id[lookup_id] = item
+
+    task_records: list[dict[str, Any]] = []
+    client_names: dict[str, str] = {}
+    client_ids: list[str] = []
+    for item in items:
+        snap = item.taskSnapshot
+        structured = item.structuredNote
+        project = snap.projectContext
+        event_context = snap.eventLineContext
+        client_id = (
+            snap.clientId
+            or (project.clientId if project else None)
+            or (event_context.primaryClientId if event_context else None)
+            or ""
+        )
+        client_name = (
+            snap.clientName
+            or (project.clientName if project else None)
+            or (event_context.primaryClientName if event_context else None)
+            or ""
+        )
+        if client_id and client_id not in client_ids:
+            client_ids.append(client_id)
+        if client_id and client_name:
+            client_names[client_id] = client_name
+        task_records.append(
+            {
+                "taskId": item.taskId,
+                "title": snap.title,
+                "status": str(snap.status),
+                "clientId": client_id,
+                "clientName": client_name,
+                "eventLineId": snap.eventLineId or (event_context.id if event_context else "") or "",
+                "eventLineName": snap.eventLineName or (event_context.name if event_context else "") or "",
+                "taskDescription": task_descriptions.get(item.taskId, ""),
+                "reviewNote": item.note,
+                "structuredNote": {
+                    "reflection": structured.reflection,
+                    "progress": structured.progress,
+                    "successExperience": structured.successExperience,
+                    "blockerReason": structured.blockerReason,
+                    "failureInsight": structured.failureInsight,
+                    "supportNeeded": structured.supportNeeded,
+                    "nextAction": structured.nextAction,
+                    "completionStatus": structured.completionStatus,
+                },
+                "projectContext": {
+                    "backgroundSummary": project.backgroundSummary if project else "",
+                    "goalSummary": project.goalSummary if project else "",
+                    "riskSummary": project.riskSummary if project else "",
+                    "currentFocus": project.currentFocus if project else "",
+                    "currentBlocker": project.currentBlocker if project else "",
+                    "nextAction": project.nextAction if project else "",
+                    "recentProgress": project.recentProgress if project else "",
+                },
+                "eventLineContext": {
+                    "summary": event_context.summary if event_context else "",
+                    "intent": event_context.intent if event_context else "",
+                    "currentBlocker": event_context.currentBlocker if event_context else "",
+                    "recentDecision": event_context.recentDecision if event_context else "",
+                    "nextStep": event_context.nextStep if event_context else "",
+                    "stage": event_context.stage if event_context else "",
+                },
+            }
+        )
+
+    material_pack: dict[str, Any] | None = None
+    if include_data_center:
+        try:
+            from app.services.weekly_review_material_pack import build_weekly_review_material_pack
+
+            material_pack = build_weekly_review_material_pack(
+                db=db,
+                data_dir=data_dir,
+                access_context=access_context,
+                week_label=week_label,
+            )
+        except Exception as exc:
+            logger.warning("Weekly review material pack build failed: %s", exc)
+            material_pack = None
+
+    attachments: list[dict[str, Any]] = []
+    lookup_ids = sorted(task_lookup.keys())
+    if material_pack and material_pack.get("attachments"):
+        for item in material_pack.get("attachments") or []:
+            if not isinstance(item, dict):
+                continue
+            row_task_id = str(item.get("taskId") or "")
+            attachments.append(
+                {
+                    "attachmentId": str(item.get("attachmentId") or ""),
+                    "sourceTable": str(item.get("sourceTable") or ""),
+                    "taskId": row_task_id,
+                    "canonicalTaskId": task_lookup.get(row_task_id, row_task_id),
+                    "taskTitle": str(item.get("taskTitle") or ""),
+                    "clientId": str(item.get("clientId") or ""),
+                    "eventLineId": str(item.get("eventLineId") or ""),
+                    "documentId": str(item.get("documentId") or ""),
+                    "title": _weekly_mainline_clean(item.get("title"), limit=90),
+                    "kind": _weekly_mainline_clean(item.get("kind"), limit=40),
+                    "createdAt": str(item.get("createdAt") or ""),
+                    "documentUpdatedAt": str(item.get("documentUpdatedAt") or ""),
+                    "contentHash": str(item.get("contentHash") or ""),
+                    "parseStatus": str(item.get("parseStatus") or ""),
+                    "readableText": _weekly_mainline_clean(item.get("summary"), limit=1200),
+                    "suggestedMaterial": "" if item.get("summary") else _weekly_mainline_material_suggestion(str(item.get("title") or ""), str(item.get("kind") or "")),
+                }
+            )
+    elif lookup_ids:
+        placeholders = ",".join("?" for _ in lookup_ids)
+        attachment_sql = f"""
+            SELECT
+                'task_attachments' AS source_table,
+                a.id,
+                a.task_id,
+                a.client_id,
+                a.event_line_id,
+                a.document_id,
+                a.title,
+                a.path,
+                a.kind,
+                a.source,
+                a.size_bytes,
+                a.created_at,
+                d.excerpt AS document_excerpt,
+                vd.markdown_content AS markdown_content,
+                vd.preview_text AS preview_text,
+                vd.doc_index_text AS doc_index_text,
+                vd.content_hash AS content_hash,
+                vd.updated_at AS document_updated_at,
+                vd.parse_status AS parse_status
+            FROM task_attachments a
+            LEFT JOIN documents d ON d.id = a.document_id
+            LEFT JOIN v2_documents vd ON vd.document_id = a.document_id
+            WHERE a.task_id IN ({placeholders})
+            UNION ALL
+            SELECT
+                'task_attachments_cloud' AS source_table,
+                a.id,
+                a.task_id,
+                a.client_id,
+                a.event_line_id,
+                a.document_id,
+                a.title,
+                a.path,
+                a.kind,
+                a.source,
+                a.size_bytes,
+                a.created_at,
+                d.excerpt AS document_excerpt,
+                vd.markdown_content AS markdown_content,
+                vd.preview_text AS preview_text,
+                vd.doc_index_text AS doc_index_text,
+                vd.content_hash AS content_hash,
+                vd.updated_at AS document_updated_at,
+                vd.parse_status AS parse_status
+            FROM task_attachments_cloud a
+            LEFT JOIN documents d ON d.id = a.document_id
+            LEFT JOIN v2_documents vd ON vd.document_id = a.document_id
+            WHERE a.task_id IN ({placeholders})
+        """
+        try:
+            attachment_rows = db.fetchall(attachment_sql, tuple([*lookup_ids, *lookup_ids]))
+        except Exception as exc:
+            logger.warning("Weekly mainline attachment evidence query failed: %s", exc)
+            attachment_rows = []
+        for row in attachment_rows:
+            row_task_id = str(_weekly_mainline_row_value(row, "task_id", "") or "")
+            item = item_by_lookup_id.get(row_task_id)
+            title = _weekly_mainline_clean(_weekly_mainline_row_value(row, "title", ""))
+            kind = _weekly_mainline_clean(_weekly_mainline_row_value(row, "kind", ""))
+            readable_text = _weekly_mainline_first_text(
+                [
+                    _weekly_mainline_row_value(row, "markdown_content", ""),
+                    _weekly_mainline_row_value(row, "preview_text", ""),
+                    _weekly_mainline_row_value(row, "doc_index_text", ""),
+                    _weekly_mainline_row_value(row, "document_excerpt", ""),
+                ],
+                min_length=20,
+                limit=1200,
+            )
+            attachments.append(
+                {
+                    "attachmentId": str(_weekly_mainline_row_value(row, "id", "") or ""),
+                    "sourceTable": str(_weekly_mainline_row_value(row, "source_table", "") or ""),
+                    "taskId": row_task_id,
+                    "canonicalTaskId": task_lookup.get(row_task_id, row_task_id),
+                    "taskTitle": item.taskSnapshot.title if item else "",
+                    "clientId": str(_weekly_mainline_row_value(row, "client_id", "") or ""),
+                    "eventLineId": str(_weekly_mainline_row_value(row, "event_line_id", "") or ""),
+                    "documentId": str(_weekly_mainline_row_value(row, "document_id", "") or ""),
+                    "title": title,
+                    "kind": kind,
+                    "createdAt": str(_weekly_mainline_row_value(row, "created_at", "") or ""),
+                    "documentUpdatedAt": str(_weekly_mainline_row_value(row, "document_updated_at", "") or ""),
+                    "contentHash": str(_weekly_mainline_row_value(row, "content_hash", "") or ""),
+                    "parseStatus": str(_weekly_mainline_row_value(row, "parse_status", "") or ""),
+                    "readableText": readable_text,
+                    "suggestedMaterial": "" if readable_text else _weekly_mainline_material_suggestion(title, kind),
+                }
+            )
+
+    data_context: list[dict[str, Any]] = []
+    if material_pack and material_pack.get("documents"):
+        for item in material_pack.get("documents") or []:
+            if not isinstance(item, dict):
+                continue
+            client_id = str(item.get("clientId") or "")
+            data_context.append(
+                {
+                    "clientId": client_id,
+                    "clientName": client_names.get(client_id, ""),
+                    "title": _weekly_mainline_clean(item.get("title"), limit=90),
+                    "excerpt": _weekly_mainline_clean(item.get("excerpt"), limit=800),
+                    "canonicalKind": str(item.get("canonicalKind") or ""),
+                    "originType": str(item.get("originType") or ""),
+                    "score": item.get("score") or 0.0,
+                }
+            )
+    elif include_data_center and client_ids:
+        try:
+            from app.services.knowledge_v2 import retrieve_knowledge_bundle
+        except Exception:
+            retrieve_knowledge_bundle = None  # type: ignore[assignment]
+        if retrieve_knowledge_bundle is not None:
+            query_parts = [week_label]
+            query_parts.extend(record["title"] for record in task_records[:12] if record.get("title"))
+            query_parts.extend(record["eventLineName"] for record in task_records[:12] if record.get("eventLineName"))
+            query_parts.extend(
+                str(record.get("structuredNote", {}).get("nextAction", ""))
+                for record in task_records[:12]
+                if record.get("structuredNote", {}).get("nextAction")
+            )
+            retrieval_prompt = _weekly_mainline_clean(" ".join(query_parts), limit=900)
+            for client_id in client_ids[:4]:
+                try:
+                    bundle = retrieve_knowledge_bundle(db, data_dir, client_id, retrieval_prompt, access_context=access_context)
+                except Exception as exc:
+                    logger.warning("Weekly mainline data context retrieval failed for %s: %s", client_id, exc)
+                    continue
+                for citation in getattr(bundle, "citations", [])[:4]:
+                    data_context.append(
+                        {
+                            "clientId": client_id,
+                            "clientName": client_names.get(client_id, ""),
+                            "title": _weekly_mainline_clean(getattr(citation, "title", ""), limit=90),
+                            "excerpt": _weekly_mainline_clean(getattr(citation, "excerpt", ""), limit=800),
+                            "canonicalKind": getattr(citation, "canonical_kind", "") or "",
+                            "originType": getattr(citation, "origin_type", "") or "",
+                            "score": getattr(citation, "score", 0.0) or 0.0,
+                        }
+                    )
+
+    evidence_pack = {
+        "weekLabel": week_label,
+        "tasks": task_records,
+        "attachments": attachments,
+        "dataContext": data_context,
+        "evidenceMeta": {
+            "taskCount": len(task_records),
+            "taskIdCount": len(task_ids),
+            "attachmentCount": len(attachments),
+            "readableAttachmentCount": len([item for item in attachments if item.get("readableText")]),
+            "dataContextCount": len(data_context),
+            "materialPackFingerprint": (material_pack or {}).get("packFingerprint", ""),
+            "materialPackSourceCounts": (material_pack or {}).get("sourceCounts", {}),
+        },
+        "materialPack": material_pack or {},
+    }
+    return evidence_pack
+
+
+def weekly_mainline_attachment_texts(evidence_pack: dict[str, Any], *, limit: int = 6) -> list[str]:
+    texts: list[str] = []
+    for attachment in evidence_pack.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        readable = _weekly_mainline_clean(attachment.get("readableText", ""), limit=1800)
+        title = _weekly_mainline_clean(attachment.get("title", "") or attachment.get("taskTitle", ""), limit=80)
+        if readable and len(readable) > 80:
+            texts.append(f"【{title or '关联材料'}】\n{readable}")
+        if len(texts) >= limit:
+            break
+    return texts
+
+
+def weekly_mainline_evidence_fingerprint(evidence_pack: dict[str, Any]) -> str:
+    source = json.dumps(evidence_pack, ensure_ascii=False, sort_keys=True, default=str)
+    import hashlib
+
+    return hashlib.sha1(source.encode("utf-8")).hexdigest()
+
+
+def _weekly_event_task_text(task: dict[str, Any]) -> str:
+    structured = task.get("structuredNote") if isinstance(task.get("structuredNote"), dict) else {}
+    project = task.get("projectContext") if isinstance(task.get("projectContext"), dict) else {}
+    event_line = task.get("eventLineContext") if isinstance(task.get("eventLineContext"), dict) else {}
+    return _weekly_mainline_clean(
+        " ".join(
+            str(value or "")
+            for value in [
+                task.get("title"),
+                task.get("taskDescription"),
+                task.get("reviewNote"),
+                task.get("clientName"),
+                task.get("eventLineName"),
+                structured.get("progress"),
+                structured.get("nextAction"),
+                project.get("backgroundSummary"),
+                project.get("goalSummary"),
+                event_line.get("summary"),
+                event_line.get("nextStep"),
+            ]
+        ),
+        limit=900,
+    )
+
+
+def _weekly_event_normalize_title(title: str) -> str:
+    cleaned = _weekly_mainline_clean(title).lower()
+    cleaned = re.sub(r"^\[[^\]]+\]\s*", "", cleaned)
+    cleaned = re.sub(r"[（(].*?[）)]", "", cleaned)
+    cleaned = re.sub(r"[\s·,，。:：;；/\\_-]+", "", cleaned)
+    return cleaned
+
+
+def _weekly_event_topic_group(task: dict[str, Any]) -> tuple[str, str] | None:
+    text = _weekly_event_task_text(task)
+    lower = text.lower()
+    if any(token in text for token in ("模拟", "测试")):
+        return ("needs_assignment:测试/模拟事项", "测试/模拟事项")
+    if "云南" in text or "士平" in text or ("工作坊说明" in text and "报告" in text):
+        return ("topic:云南儿童资助研究交付材料", "云南儿童资助研究交付材料")
+    if any(token in text for token in ("县域", "学校招募", "音乐课堂", "大山里的音乐课堂")):
+        return ("topic:大山里的音乐课堂落地筹备", "大山里的音乐课堂落地筹备")
+    if "为爱黔行" in text or "詹瑶" in text or "张瑶" in text:
+        return ("topic:为爱黔行下一步陪伴", "为爱黔行下一步陪伴")
+    if any(token in lower for token in ("codex", "code x", "codeX".lower())) or any(token in text for token in ("佳维", "发布版", "软件功能实施")):
+        return ("topic:益语发布版功能与工具支持", "益语发布版功能与工具支持")
+    if "教育双年会" in text:
+        return ("topic:教育双年会传播", "教育双年会传播")
+    return None
+
+
+def _weekly_event_task_status_counts(tasks: list[dict[str, Any]]) -> tuple[int, int]:
+    completed = len([task for task in tasks if str(task.get("status") or "") == "done"])
+    pending = max(0, len(tasks) - completed)
+    return completed, pending
+
+
+def _weekly_event_task_titles(tasks: list[dict[str, Any]]) -> list[str]:
+    return [_weekly_mainline_clean(task.get("title"), limit=80) or "未命名任务" for task in tasks]
+
+
+def _weekly_event_join_titles(titles: list[str], *, limit: int = 4) -> str:
+    deduped: list[str] = []
+    for title in titles:
+        if title and title not in deduped:
+            deduped.append(title)
+    if len(deduped) <= limit:
+        return "、".join(deduped)
+    return "、".join(deduped[:limit]) + f"等 {len(deduped)} 项"
+
+
+def _weekly_event_attachment_suggestions(evidence_pack: dict[str, Any], task_ids: set[str]) -> list[str]:
+    suggestions: list[str] = []
+    for attachment in evidence_pack.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        canonical_task_id = str(attachment.get("canonicalTaskId") or attachment.get("taskId") or "")
+        if canonical_task_id not in task_ids:
+            continue
+        suggestion = _weekly_mainline_clean(attachment.get("suggestedMaterial"), limit=220)
+        if suggestion and suggestion not in suggestions:
+            suggestions.append(suggestion)
+    return suggestions
+
+
+def _weekly_event_first_action(tasks: list[dict[str, Any]], title: str, material_suggestions: list[str]) -> str:
+    candidates: list[str] = []
+    for task in tasks:
+        structured = task.get("structuredNote") if isinstance(task.get("structuredNote"), dict) else {}
+        project = task.get("projectContext") if isinstance(task.get("projectContext"), dict) else {}
+        event_line = task.get("eventLineContext") if isinstance(task.get("eventLineContext"), dict) else {}
+        candidates.extend(
+            [
+                structured.get("nextAction"),
+                task.get("taskDescription") if "下一步" in str(task.get("taskDescription") or "") else "",
+                project.get("nextAction"),
+                project.get("currentFocus"),
+                event_line.get("nextStep"),
+            ]
+        )
+    for candidate in candidates:
+        cleaned = _weekly_mainline_clean(candidate, limit=180)
+        cleaned = re.sub(r"^下一步动作[:：]\s*", "", cleaned)
+        if not cleaned:
+            continue
+        if any(phrase in cleaned for phrase in WEEKLY_EVENT_REVIEW_BANNED_PHRASES):
+            continue
+        if "先补齐项目背景" in cleaned and len(tasks) > 1:
+            continue
+        if _weekly_mainline_has_action(cleaned):
+            return f"下一步先{cleaned.lstrip('先')}。产出标准是把负责人、交付物和完成时间说清楚。"
+    if material_suggestions:
+        return f"下一步先按复盘卡补齐关键资料。产出标准是让这条事件能判断下周是否继续跟、由谁跟、交付什么。"
+    return f"下一步先确认“{title}”是否需要下周继续跟进，并补齐负责人、交付物和完成时间。"
+
+
+def _weekly_event_material_text(tasks: list[dict[str, Any]], evidence_pack: dict[str, Any], task_ids: set[str]) -> str:
+    suggestions = _weekly_event_attachment_suggestions(evidence_pack, task_ids)
+    if suggestions:
+        return suggestions[0]
+    has_context = any(
+        len(
+            _weekly_mainline_clean(
+                " ".join(
+                    [
+                        str(task.get("taskDescription") or ""),
+                        str(task.get("reviewNote") or ""),
+                        str((task.get("structuredNote") or {}).get("progress") if isinstance(task.get("structuredNote"), dict) else ""),
+                        str((task.get("projectContext") or {}).get("backgroundSummary") if isinstance(task.get("projectContext"), dict) else ""),
+                        str((task.get("eventLineContext") or {}).get("summary") if isinstance(task.get("eventLineContext"), dict) else ""),
+                    ]
+                )
+            )
+        )
+        >= 30
+        for task in tasks
+    )
+    if has_context:
+        return ""
+    return "建议补充这条事件的背景、负责人、交付物和完成时间；补齐后可以判断它是否需要进入下周重点跟进。"
+
+
+def _weekly_event_reflection_prompt_text(
+    *,
+    title: str,
+    card_kind: str,
+    tasks: list[dict[str, Any]],
+    evidence_pack: dict[str, Any],
+    task_ids: set[str],
+) -> str:
+    task_titles = _weekly_event_task_titles(tasks)
+    title_list = _weekly_event_join_titles(task_titles, limit=3)
+    material_suggestions = _weekly_event_attachment_suggestions(evidence_pack, task_ids)
+    combined = _weekly_mainline_clean(
+        " ".join(
+            [
+                title,
+                title_list,
+                *[
+                    _weekly_mainline_clean(
+                        " ".join(
+                            [
+                                str(task.get("title") or ""),
+                                str(task.get("taskDescription") or ""),
+                                str(task.get("reviewNote") or ""),
+                                str((task.get("structuredNote") or {}).get("progress") if isinstance(task.get("structuredNote"), dict) else ""),
+                                str((task.get("structuredNote") or {}).get("nextAction") if isinstance(task.get("structuredNote"), dict) else ""),
+                                str((task.get("projectContext") or {}).get("goalSummary") if isinstance(task.get("projectContext"), dict) else ""),
+                                str((task.get("projectContext") or {}).get("backgroundSummary") if isinstance(task.get("projectContext"), dict) else ""),
+                                str((task.get("eventLineContext") or {}).get("summary") if isinstance(task.get("eventLineContext"), dict) else ""),
+                            ]
+                        ),
+                        limit=260,
+                    )
+                    for task in tasks
+                ],
+            ]
+        ),
+        limit=900,
+    )
+    completed, pending = _weekly_event_task_status_counts(tasks)
+    pending_hint = (
+        f"这组里还有 {pending} 项没完成，也可以顺手写清楚它卡在谁、卡在哪个交付物或时间点上。"
+        if pending
+        else ""
+    )
+    material_hint = (
+        "如果还缺材料，可以补一份最小文字说明；补上后，这条复盘会更容易判断项目状态、责任边界和下周优先级。"
+        if material_suggestions
+        else ""
+    )
+
+    if card_kind == "needs_assignment":
+        prompt = (
+            f"可以先判断“{title_list}”是否应该进入正式复盘，还是只是测试、模拟或临时协作记录。"
+            "如果要纳入，建议写清它对应哪个客户、项目或事件线，以及这条记录对真实工作有什么影响。"
+        )
+    elif any(keyword in combined for keyword in ["云南", "报告", "PPT", "工作坊"]):
+        prompt = (
+            "可以回想一下：这组材料调整之后，云南项目是更接近资方决策、机构执行，还是内部沟通。"
+            "也可以写下目前最需要确认的版本边界、修改清单、负责人和交付时间。"
+        )
+    elif any(keyword in combined for keyword in ["合同", "报价", "签约", "交付范围"]):
+        prompt = (
+            f"可以回想一下：围绕“{title}”这次合同或报价确认，真正锁定的是价格、范围、责任边界，还是下一阶段启动条件。"
+            "也可以写下还有哪个条款、交付物或对方确认点会影响项目进入执行。"
+        )
+    elif "益语" in combined or any(keyword in combined for keyword in ["开源页", "开源页面", "首屏价值", "价值表达"]):
+        prompt = (
+            "可以回想一下：这组任务是否让目标用户更容易理解益语平台的价值，而不只是看到功能列表。"
+            "也可以写下页面表达、目标读者和转化路径里，哪一处判断还需要你亲自确认。"
+        )
+    elif any(keyword in combined for keyword in ["县域", "学校", "招募", "音乐课堂", "落地"]):
+        prompt = (
+            "可以回想一下：学校招募和县域落地计划完成后，项目准备度发生了什么变化。"
+            "也可以写下名单、筛选标准、沟通节奏或现场落地条件里，哪一项最影响后续推进。"
+        )
+    elif card_kind == "single_task":
+        prompt = (
+            f"可以回想一下：“{title_list}”完成后，这件事对当前项目有什么实际变化。"
+            "如果它只是一个独立任务，也可以只写最关键的一点：结果、遗留判断，或是否需要带到下周。"
+        )
+    else:
+        prompt = (
+            f"可以回想一下：这组围绕“{title}”的任务完成后，项目状态有什么变化。"
+            "也可以写下还缺哪个判断、谁需要接手，以及下周最小可推进事项是什么。"
+        )
+
+    return _weekly_mainline_clean("".join([prompt, pending_hint, material_hint]), limit=420)
+
+
+def _weekly_event_make_fallback_card(
+    *,
+    index: int,
+    title: str,
+    card_kind: str,
+    tasks: list[dict[str, Any]],
+    evidence_pack: dict[str, Any],
+    confidence: str,
+) -> WeeklyEventReviewCardRecord:
+    task_ids = [str(task.get("taskId") or "") for task in tasks if str(task.get("taskId") or "")]
+    task_id_set = set(task_ids)
+    task_titles = _weekly_event_task_titles(tasks)
+    reflection_prompt = _weekly_event_reflection_prompt_text(
+        title=title,
+        card_kind=card_kind,
+        tasks=tasks,
+        evidence_pack=evidence_pack,
+        task_ids=task_id_set,
+    )
+    return WeeklyEventReviewCardRecord(
+        id=f"fallback-weekly-event-{index}",
+        title=title,
+        cardKind=card_kind,  # type: ignore[arg-type]
+        taskIds=task_ids,
+        taskTitles=task_titles,
+        reflectionPromptText=reflection_prompt,
+        progressText="",
+        nextActionText="",
+        materialSuggestionText="",
+        confidence=confidence,  # type: ignore[arg-type]
+        generatedBy="fallback",
+    )
+
+
+def build_weekly_event_review_cards_fallback(
+    evidence_pack: dict[str, Any],
+    *,
+    reason: str = "",
+) -> WeeklyEventReviewCardsRecord:
+    tasks = [task for task in (evidence_pack.get("tasks") or []) if isinstance(task, dict) and str(task.get("taskId") or "")]
+    remaining: dict[str, dict[str, Any]] = {str(task.get("taskId")): task for task in tasks}
+    raw_groups: list[tuple[str, str, str, list[dict[str, Any]], str]] = []
+
+    event_groups: dict[str, list[dict[str, Any]]] = {}
+    event_titles: dict[str, str] = {}
+    for task_id, task in list(remaining.items()):
+        event_line_id = _weekly_mainline_clean(task.get("eventLineId"), limit=80)
+        if not event_line_id:
+            continue
+        key = f"event:{event_line_id}"
+        event_groups.setdefault(key, []).append(task)
+        event_titles[key] = _weekly_mainline_clean(task.get("eventLineName"), limit=80) or _weekly_mainline_clean(task.get("title"), limit=80)
+        del remaining[task_id]
+    for key, grouped_tasks in event_groups.items():
+        raw_groups.append((key, event_titles.get(key) or "事件线复盘", "event_line", grouped_tasks, "high"))
+
+    topic_groups: dict[str, list[dict[str, Any]]] = {}
+    topic_titles: dict[str, str] = {}
+    topic_kinds: dict[str, str] = {}
+    for task_id, task in list(remaining.items()):
+        topic = _weekly_event_topic_group(task)
+        if topic is None:
+            continue
+        key, title = topic
+        topic_groups.setdefault(key, []).append(task)
+        topic_titles[key] = title
+        topic_kinds[key] = "needs_assignment" if key.startswith("needs_assignment:") else "task_cluster"
+        del remaining[task_id]
+    for key, grouped_tasks in topic_groups.items():
+        if len(grouped_tasks) > 1 or topic_kinds.get(key) == "needs_assignment":
+            raw_groups.append((key, topic_titles.get(key) or "任务簇复盘", topic_kinds.get(key, "task_cluster"), grouped_tasks, "medium"))
+        else:
+            task = grouped_tasks[0]
+            remaining[str(task.get("taskId"))] = task
+
+    duplicate_groups: dict[str, list[dict[str, Any]]] = {}
+    duplicate_titles: dict[str, str] = {}
+    for task_id, task in list(remaining.items()):
+        normalized_title = _weekly_event_normalize_title(str(task.get("title") or ""))
+        if not normalized_title:
+            continue
+        duplicate_groups.setdefault(normalized_title, []).append(task)
+        duplicate_titles[normalized_title] = _weekly_mainline_clean(task.get("title"), limit=80)
+    for key, grouped_tasks in list(duplicate_groups.items()):
+        if len(grouped_tasks) < 2:
+            continue
+        raw_groups.append((f"duplicate:{key}", duplicate_titles.get(key) or "重复任务复盘", "task_cluster", grouped_tasks, "medium"))
+        for task in grouped_tasks:
+            remaining.pop(str(task.get("taskId")), None)
+
+    for task in remaining.values():
+        title = _weekly_mainline_clean(task.get("title"), limit=80) or "单项复盘"
+        raw_groups.append((f"single:{task.get('taskId')}", title, "single_task", [task], "low"))
+
+    cards = [
+        _weekly_event_make_fallback_card(
+            index=index,
+            title=title,
+            card_kind=card_kind,
+            tasks=grouped_tasks,
+            evidence_pack=evidence_pack,
+            confidence=confidence,
+        )
+        for index, (_key, title, card_kind, grouped_tasks, confidence) in enumerate(raw_groups, start=1)
+    ]
+    meta = dict(evidence_pack.get("evidenceMeta") or {})
+    if reason:
+        meta["failureReason"] = reason
+    meta["cardCount"] = len(cards)
+    return WeeklyEventReviewCardsRecord(cards=cards, generatedBy="fallback", evidenceMeta=meta)
+
+
+def _weekly_event_candidate_prompt_lines(cards: list[WeeklyEventReviewCardRecord]) -> str:
+    lines: list[str] = []
+    for card in cards:
+        lines.append(
+            "\n".join(
+                [
+                    f"- id={card.id}",
+                    f"  title={card.title}",
+                    f"  cardKind={card.cardKind}",
+                    f"  taskIds={json.dumps(card.taskIds, ensure_ascii=False)}",
+                    f"  taskTitles={json.dumps(card.taskTitles, ensure_ascii=False)}",
+                    f"  fallbackReflectionPrompt={card.reflectionPromptText}",
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def _weekly_event_expected_task_sets(cards: list[WeeklyEventReviewCardRecord]) -> list[tuple[str, ...]]:
+    return sorted(tuple(sorted(card.taskIds)) for card in cards)
+
+
+def _coerce_weekly_event_review_cards(
+    raw: Any,
+    evidence_pack: dict[str, Any],
+    fallback_cards: WeeklyEventReviewCardsRecord,
+) -> tuple[WeeklyEventReviewCardsRecord | None, str]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None, "ai_returned_non_json_string"
+    if not isinstance(raw, dict):
+        return None, "ai_returned_non_dict"
+    raw_cards = raw.get("cards") or []
+    if not isinstance(raw_cards, list) or not raw_cards:
+        return None, "cards_empty"
+
+    source_tasks = {
+        str(task.get("taskId")): task
+        for task in (evidence_pack.get("tasks") or [])
+        if isinstance(task, dict) and str(task.get("taskId") or "")
+    }
+    expected_ids = set(source_tasks.keys())
+    seen_ids: list[str] = []
+    cards: list[WeeklyEventReviewCardRecord] = []
+    combined_text_parts: list[str] = []
+    for index, item in enumerate(raw_cards, start=1):
+        if not isinstance(item, dict):
+            continue
+        task_ids = [str(task_id) for task_id in item.get("taskIds") or [] if str(task_id).strip()]
+        if not task_ids:
+            return None, "card_without_task_ids"
+        unknown_ids = [task_id for task_id in task_ids if task_id not in expected_ids]
+        if unknown_ids:
+            return None, f"unknown_task_ids:{','.join(unknown_ids)}"
+        seen_ids.extend(task_ids)
+        title = _weekly_mainline_clean(item.get("title"), limit=90)
+        card_kind = str(item.get("cardKind") or "single_task")
+        if card_kind not in {"event_line", "task_cluster", "single_task", "needs_assignment"}:
+            return None, f"invalid_card_kind:{card_kind}"
+        if _weekly_mainline_clean(item.get("progressText"), limit=40) or _weekly_mainline_clean(item.get("nextActionText"), limit=40) or _weekly_mainline_clean(item.get("materialSuggestionText"), limit=40):
+            return None, f"unexpected_draft_text:{title or index}"
+        reflection_prompt = _weekly_mainline_clean(item.get("reflectionPromptText"), limit=420)
+        confidence = str(item.get("confidence") or "medium")
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "medium"
+        if not title:
+            return None, "card_title_empty"
+        if len(reflection_prompt) < 24:
+            return None, f"reflection_prompt_too_short:{title}"
+        task_titles = [_weekly_mainline_clean(source_tasks[task_id].get("title"), limit=90) for task_id in task_ids]
+        combined_text_parts.extend([title, reflection_prompt])
+        cards.append(
+            WeeklyEventReviewCardRecord(
+                id=str(item.get("id") or f"ai-weekly-event-{index}"),
+                title=title,
+                cardKind=card_kind,  # type: ignore[arg-type]
+                taskIds=task_ids,
+                taskTitles=task_titles,
+                reflectionPromptText=reflection_prompt,
+                progressText="",
+                nextActionText="",
+                materialSuggestionText="",
+                confidence=confidence,  # type: ignore[arg-type]
+                generatedBy="ai",
+            )
+        )
+    if not cards:
+        return None, "cards_empty_after_clean"
+    if set(seen_ids) != expected_ids:
+        return None, "task_coverage_mismatch"
+    if len(seen_ids) != len(set(seen_ids)):
+        return None, "duplicate_task_ids"
+    if _weekly_event_expected_task_sets(cards) != _weekly_event_expected_task_sets(fallback_cards.cards):
+        return None, "task_group_boundary_changed"
+    combined_text = "\n".join(combined_text_parts)
+    for term in WEEKLY_MAINLINE_INTERNAL_TERMS:
+        if term and term in combined_text:
+            return None, f"internal_term:{term}"
+    for phrase in WEEKLY_EVENT_REVIEW_BANNED_PHRASES:
+        if phrase and phrase in combined_text:
+            return None, f"banned_phrase:{phrase}"
+    meta = dict(evidence_pack.get("evidenceMeta") or {})
+    meta["validated"] = True
+    meta["cardCount"] = len(cards)
+    return WeeklyEventReviewCardsRecord(cards=cards, generatedBy="ai", evidenceMeta=meta), ""
+
+
+def build_weekly_event_review_cards_draft(
+    *,
+    ai: AiService,
+    week_label: str,
+    evidence_pack: dict[str, Any],
+) -> WeeklyEventReviewCardsRecord:
+    fallback_cards = build_weekly_event_review_cards_fallback(evidence_pack)
+    health = ai.get_health()
+    if health.provider == "mock" or not health.ready:
+        return build_weekly_event_review_cards_fallback(evidence_pack, reason="ai_not_ready")
+    task_lines = _weekly_mainline_task_prompt_lines(evidence_pack)
+    attachment_lines = _weekly_mainline_attachment_prompt_lines(evidence_pack)
+    candidate_lines = _weekly_event_candidate_prompt_lines(fallback_cards.cards)
+    prompt = "\n\n".join(
+        part
+        for part in [
+            f"【周标签】\n{week_label}",
+            f"【本周任务包】\n{task_lines}" if task_lines else "",
+            attachment_lines,
+            f"【候选事件复盘卡】\n{candidate_lines}" if candidate_lines else "",
+            (
+                "【输出要求】\n"
+                "只输出 JSON。cards 必须和候选卡数量一致，且每张卡的 taskIds 必须保持不变。"
+                "只可以优化 title、reflectionPromptText 和 confidence。"
+                "不要输出旧的复盘正文、行动建议或材料建议字段，不要写资料来源、读取状态或内部诊断。"
+            ),
+        ]
+        if part
+    )
+    try:
+        raw = ai._qwen_generate(
+            prompt=prompt,
+            system_instruction=WEEKLY_EVENT_REVIEW_SYSTEM_INSTRUCTION,
+            response_schema=WEEKLY_EVENT_REVIEW_RESPONSE_SCHEMA,
+            timeout_seconds=120.0,
+            max_tokens=5200,
+            temperature=0.25,
+            top_p=0.9,
+            enable_thinking=False,
+        )
+        cards, reason = _coerce_weekly_event_review_cards(raw, evidence_pack, fallback_cards)
+        if cards is None:
+            logger.warning("Weekly event review cards validation failed: %s", reason)
+            return build_weekly_event_review_cards_fallback(evidence_pack, reason=reason)
+        return cards
+    except Exception as exc:
+        logger.warning("Weekly event review card generation failed: %s", exc)
+        return build_weekly_event_review_cards_fallback(evidence_pack, reason="generation_exception")
+
+
+def _weekly_mainline_task_prompt_lines(evidence_pack: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for task in evidence_pack.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        structured = task.get("structuredNote") if isinstance(task.get("structuredNote"), dict) else {}
+        project = task.get("projectContext") if isinstance(task.get("projectContext"), dict) else {}
+        event_line = task.get("eventLineContext") if isinstance(task.get("eventLineContext"), dict) else {}
+        parts = [
+            f"标题={_weekly_mainline_clean(task.get('title'), limit=80)}",
+            f"状态={_weekly_mainline_clean(task.get('status'), limit=20)}",
+        ]
+        if task.get("clientName") or task.get("eventLineName"):
+            parts.append(
+                "归属="
+                + _weekly_mainline_clean(" / ".join([str(task.get("clientName") or ""), str(task.get("eventLineName") or "")]).strip(" /"), limit=80)
+            )
+        for label, value in [
+            ("任务描述", task.get("taskDescription")),
+            ("复盘说明", task.get("reviewNote")),
+            ("复盘进展", structured.get("progress")),
+            ("复盘反思", structured.get("reflection")),
+            ("下一步", structured.get("nextAction")),
+            ("项目近期进展", project.get("recentProgress")),
+            ("项目目标", project.get("goalSummary")),
+            ("项目背景", project.get("backgroundSummary")),
+            ("事件线决策", event_line.get("recentDecision")),
+            ("事件线下一步", event_line.get("nextStep")),
+            ("事件线卡点", event_line.get("currentBlocker")),
+        ]:
+            cleaned = _weekly_mainline_clean(value, limit=140)
+            if cleaned:
+                parts.append(f"{label}={cleaned}")
+        lines.append("- " + "；".join(parts))
+    return "\n".join(lines)
+
+
+def _weekly_mainline_attachment_prompt_lines(evidence_pack: dict[str, Any]) -> str:
+    readable_lines: list[str] = []
+    suggested_lines: list[str] = []
+    for attachment in evidence_pack.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        title = _weekly_mainline_clean(attachment.get("title") or attachment.get("taskTitle") or "关联材料", limit=90)
+        task_title = _weekly_mainline_clean(attachment.get("taskTitle"), limit=70)
+        readable = _weekly_mainline_clean(attachment.get("readableText"), limit=900)
+        if readable:
+            readable_lines.append(f"- {title}（对应任务：{task_title or '未标注'}）：{readable}")
+            continue
+        suggestion = _weekly_mainline_clean(attachment.get("suggestedMaterial"), limit=220)
+        if suggestion:
+            suggested_lines.append(f"- {title}（对应任务：{task_title or '未标注'}）：{suggestion}")
+    blocks = []
+    if readable_lines:
+        blocks.append("【本周任务关联材料摘要】\n" + "\n".join(readable_lines[:8]))
+    if suggested_lines:
+        blocks.append("【需要用户补充后会提升复盘质量的资料】\n" + "\n".join(suggested_lines[:6]))
+    return "\n\n".join(blocks)
+
+
+def _weekly_mainline_data_context_prompt_lines(evidence_pack: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for item in evidence_pack.get("dataContext") or []:
+        if not isinstance(item, dict):
+            continue
+        title = _weekly_mainline_clean(item.get("title"), limit=90)
+        excerpt = _weekly_mainline_clean(item.get("excerpt"), limit=520)
+        client_name = _weekly_mainline_clean(item.get("clientName"), limit=40)
+        if title and excerpt:
+            prefix = f"{client_name} / {title}" if client_name else title
+            lines.append(f"- {prefix}：{excerpt}")
+    return "\n".join(lines[:10])
+
+
+def _weekly_mainline_fallback_result(evidence_pack: dict[str, Any], reason: str) -> WeeklyMainlineCardsRecord:
+    meta = dict(evidence_pack.get("evidenceMeta") or {})
+    meta["failureReason"] = reason
+    return WeeklyMainlineCardsRecord(
+        summaryText="",
+        mainlines=[],
+        generatedBy="fallback",
+        evidenceMeta=meta,
+    )
+
+
+def _weekly_mainline_has_action(text: str) -> bool:
+    return any(keyword in text for keyword in WEEKLY_MAINLINE_ACTION_KEYWORDS)
+
+
+def _coerce_weekly_mainline_cards(raw: Any, evidence_pack: dict[str, Any]) -> tuple[WeeklyMainlineCardsRecord | None, str]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None, "ai_returned_non_json_string"
+    if not isinstance(raw, dict):
+        return None, "ai_returned_non_dict"
+    summary_text = _weekly_mainline_clean(raw.get("summaryText"), limit=420)
+    raw_lines = raw.get("mainlines") or []
+    if not isinstance(raw_lines, list) or not raw_lines:
+        return None, "mainlines_empty"
+    if len(summary_text) < 30:
+        return None, "summary_too_short"
+    cards: list[WeeklyMainlineCardRecord] = []
+    combined_text_parts = [summary_text]
+    for index, item in enumerate(raw_lines[:3], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = _weekly_mainline_clean(item.get("title"), limit=80)
+        progress_text = _weekly_mainline_clean(item.get("progressText"), limit=520)
+        next_goal_text = _weekly_mainline_clean(item.get("nextGoalText"), limit=420)
+        if not title:
+            return None, "mainline_title_empty"
+        if len(progress_text) < 24:
+            return None, f"progress_too_short:{title}"
+        if len(next_goal_text) < 24:
+            return None, f"next_goal_too_short:{title}"
+        if not _weekly_mainline_has_action(next_goal_text):
+            return None, f"next_goal_has_no_action:{title}"
+        combined_text_parts.extend([title, progress_text, next_goal_text])
+        try:
+            task_count = max(0, int(item.get("taskCount") or 0))
+        except Exception:
+            task_count = 0
+        try:
+            completed_count = max(0, int(item.get("completedCount") or 0))
+        except Exception:
+            completed_count = 0
+        try:
+            pending_count = max(0, int(item.get("pendingCount") or 0))
+        except Exception:
+            pending_count = 0
+        if task_count <= 0:
+            task_count = max(1, completed_count + pending_count)
+        cards.append(
+            WeeklyMainlineCardRecord(
+                id=f"ai-weekly-mainline-{index}",
+                title=title,
+                taskCount=task_count,
+                completedCount=completed_count,
+                pendingCount=pending_count,
+                progressText=progress_text,
+                nextGoalText=next_goal_text,
+            )
+        )
+    if not cards:
+        return None, "mainlines_empty_after_clean"
+    combined_text = "\n".join(combined_text_parts)
+    for term in WEEKLY_MAINLINE_INTERNAL_TERMS:
+        if term and term in combined_text:
+            return None, f"internal_term:{term}"
+    for phrase in WEEKLY_MAINLINE_BANNED_PHRASES:
+        if phrase and phrase in combined_text:
+            return None, f"banned_phrase:{phrase}"
+    evidence_text = json.dumps(evidence_pack, ensure_ascii=False, default=str)
+    if "下载按钮" in combined_text and "下载按钮" not in evidence_text:
+        return None, "unsupported_download_button_claim"
+    meta = dict(evidence_pack.get("evidenceMeta") or {})
+    meta["validated"] = True
+    return (
+        WeeklyMainlineCardsRecord(
+            summaryText=summary_text,
+            mainlines=cards,
+            generatedBy="ai",
+            evidenceMeta=meta,
+        ),
+        "",
+    )
+
+
+def build_weekly_mainline_cards_draft(
+    *,
+    ai: AiService,
+    week_label: str,
+    evidence_pack: dict[str, Any],
+) -> WeeklyMainlineCardsRecord:
+    health = ai.get_health()
+    if health.provider == "mock" or not health.ready:
+        return _weekly_mainline_fallback_result(evidence_pack, "ai_not_ready")
+
+    task_lines = _weekly_mainline_task_prompt_lines(evidence_pack)
+    attachment_lines = _weekly_mainline_attachment_prompt_lines(evidence_pack)
+    data_context_lines = _weekly_mainline_data_context_prompt_lines(evidence_pack)
+    meta = evidence_pack.get("evidenceMeta") if isinstance(evidence_pack.get("evidenceMeta"), dict) else {}
+    prompt = "\n\n".join(
+        part
+        for part in [
+            f"【周标签】\n{week_label}",
+            (
+                "【统计】\n"
+                f"任务数：{meta.get('taskCount', 0)}；"
+                f"任务关联材料数：{meta.get('attachmentCount', 0)}；"
+                f"有文字摘要的材料数：{meta.get('readableAttachmentCount', 0)}"
+            ),
+            f"【本周任务包】\n{task_lines}" if task_lines else "",
+            attachment_lines,
+            f"【组织与项目背景材料】\n{data_context_lines}" if data_context_lines else "",
+            (
+                "【输出要求】\n"
+                "只输出 JSON。不要解释。mainlines 最多 3 条。每条 progressText 2-4 句，nextGoalText 2-3 句。"
+                "不要写任何资料来源、读取状态或内部诊断。"
+            ),
+        ]
+        if part
+    )
+    try:
+        raw = ai._qwen_generate(
+            prompt=prompt,
+            system_instruction=WEEKLY_MAINLINE_SYSTEM_INSTRUCTION,
+            response_schema=WEEKLY_MAINLINE_RESPONSE_SCHEMA,
+            timeout_seconds=120.0,
+            max_tokens=3600,
+            temperature=0.3,
+            top_p=0.9,
+            enable_thinking=False,
+        )
+        cards, reason = _coerce_weekly_mainline_cards(raw, evidence_pack)
+        if cards is None:
+            logger.warning("Weekly mainline cards validation failed: %s", reason)
+            return _weekly_mainline_fallback_result(evidence_pack, reason)
+        return cards
+    except Exception as exc:
+        logger.warning("Weekly mainline card generation failed: %s", exc)
+        return _weekly_mainline_fallback_result(evidence_pack, "generation_exception")
 
 
 def _week_start_iso(week_label: str) -> str:

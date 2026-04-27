@@ -1,0 +1,90 @@
+generatedAt: "2026-04-20"
+policy:
+  allowedCategory: semantic_drift
+  disallowedCategories:
+    - infra
+    - deterministic_bug
+failures:
+  - suite: backend
+    test_name: "tests/test_api_smoke.py::test_template_fill_start_reuses_existing_active_run_for_same_template"
+    reason: "模板填充 active run 复用语义待产品裁决。"
+    owner: backend-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: backend
+    test_name: "tests/test_api_smoke.py::test_chat_local_fallback_includes_workspace_state_summary"
+    reason: "fallback 展示结构从六段转为紧凑摘要，断言待同步。"
+    owner: backend-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: backend
+    test_name: "tests/test_api_smoke.py::test_cloud_task_board_builds_event_line_shadow_and_memory_hints"
+    reason: "backgroundReadiness 评分等级变化，需确认是否预期升级。"
+    owner: backend-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: backend
+    test_name: "tests/test_feishu_org_integration.py::test_local_mode_feishu_collaboration_requires_cloud_and_org"
+    reason: "本地模式协作文案返回为空，需确认提示语契约。"
+    owner: backend-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_simulation_seed.py::test_seed_simulated_review_org_populates_week_and_visibility"
+    reason: "fixture 修复后，断言收敛为 currentReview 语义偏差。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_local_first_auth.py::test_personal_register_can_upgrade_to_shared_org_and_invite_member"
+    reason: "旧接口 /api/v1/account/membership 404，需确认是否被 /api/v1/me/org-membership 替代。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_local_first_auth.py::test_import_local_structured_data_creates_lists_tasks_and_tags"
+    reason: "旧接口 /api/v1/sync/import-local 404，需确认是否已废弃或改路径。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_auth_tasks.py::test_register_approve_login_and_collaboration_flow"
+    reason: "注册后审批门禁语义与断言不一致。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_auth_tasks.py::test_task_org_link_and_department_control_permissions"
+    reason: "needsReview 预期与运行时返回不一致。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_auth_tasks.py::test_task_review_approve_and_return_follow_org_permissions"
+    reason: "审批后组织权限链路语义待确认。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_auth_tasks.py::test_personal_growth_content_is_self_only_and_excluded_from_team_report"
+    reason: "teamReport 产出策略与断言不一致。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"
+
+  - suite: cloud_backend
+    test_name: "tests/test_auth_tasks.py::test_feishu_binding_relay_session_roundtrip"
+    reason: "飞书回传依赖组织级接入状态，测试假设可能过期。"
+    owner: cloud-product
+    decision: unknown_needs_decision
+    due_date: "2026-04-24"

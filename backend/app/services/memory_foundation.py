@@ -1176,7 +1176,6 @@ def get_client_memory_status(db: Database, client_id: str) -> MemoryStatus:
             low_evidence += 1
     total = len(linked_event_lines)
     return MemoryStatus(
-        workObjectId=client_id,
         clientId=client_id,
         notebookCompleteness=_ratio(
             sum(
@@ -1422,10 +1421,6 @@ def get_task_memory_enrichment(
         score = min(1.0, score + 0.12)
     if missing_slots:
         score = max(0.0, score - 0.1)
-    if normalized_client_id and task_facts:
-        score = max(score, 0.4)
-    if normalized_event_line_id and (event_line_snapshot or matched_event_line_facts or task_reference_facts):
-        score = max(score, 0.46)
     level: str = "high" if score >= 0.75 else "medium" if score >= 0.45 else "low"
     readiness = BackgroundReadiness(
         score=round(score, 2),
@@ -2119,8 +2114,8 @@ def extract_chat_facts_to_memory(
     """Extract key facts from a completed chat exchange and persist to memory_facts."""
     if ai_service is None:
         return []
-    # Skip non-grounded or failed answers — they lack reliable information
-    if answer_mode in ("system_failure", ""):
+    # Only keep memory from fully grounded answers to avoid fallback noise and extra LLM contention.
+    if answer_mode != "grounded_answer":
         return []
     # Skip trivially short exchanges
     if len(user_prompt.strip()) < 10 or len(assistant_content.strip()) < 30:
@@ -2138,9 +2133,10 @@ def extract_chat_facts_to_memory(
             prompt=prompt,
             system_instruction=CHAT_FACT_EXTRACTION_SYSTEM,
             response_schema=CHAT_FACT_EXTRACTION_SCHEMA,
-            timeout_seconds=20.0,
-            max_tokens=1200,
+            timeout_seconds=12.0,
+            max_tokens=800,
             temperature=0.3,
+            enable_thinking=False,
         )
     except Exception:
         logger.warning("[chat-fact-extract] AI extraction failed", exc_info=True)

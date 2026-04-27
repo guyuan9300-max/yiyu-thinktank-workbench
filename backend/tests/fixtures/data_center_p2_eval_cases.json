@@ -1,0 +1,46 @@
+[
+  {
+    "id": "answer_business_001",
+    "mode": "answer",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "CFFC 核心业务是什么？",
+    "expectedIntent": "business_profile"
+  },
+  {
+    "id": "answer_strategy_001",
+    "mode": "answer",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "日慈的最新战略是什么？",
+    "expectedIntent": "strategy_profile"
+  },
+  {
+    "id": "search_001",
+    "mode": "search",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "请检索当前客户核心资料"
+  },
+  {
+    "id": "prep_task_001",
+    "mode": "prep",
+    "page": "task_detail",
+    "scopeType": "task",
+    "prompt": "这条任务下一步应该做什么？"
+  },
+  {
+    "id": "proposal_001",
+    "mode": "proposal",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "当前缺什么证据？"
+  },
+  {
+    "id": "diagnostic_001",
+    "mode": "diagnostic",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "为什么最近回答质量下降？"
+  }
+]

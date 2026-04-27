@@ -1,0 +1,44 @@
+[
+  {
+    "id": "answer_business_001",
+    "mode": "answer",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "CFFC 核心业务是什么？"
+  },
+  {
+    "id": "answer_strategy_001",
+    "mode": "answer",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "日慈最新战略是什么？"
+  },
+  {
+    "id": "proposal_001",
+    "mode": "proposal",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "还缺哪些关键资料？"
+  },
+  {
+    "id": "search_001",
+    "mode": "search",
+    "page": "workspace_chat",
+    "scopeType": "client",
+    "prompt": "系统里有哪些正式判断？"
+  },
+  {
+    "id": "prep_task_001",
+    "mode": "prep",
+    "page": "task_ai",
+    "scopeType": "task",
+    "prompt": "这条任务会前准备包"
+  },
+  {
+    "id": "meeting_prep_001",
+    "mode": "prep",
+    "page": "meeting_detail",
+    "scopeType": "meeting",
+    "prompt": "帮我整理会议准备重点"
+  }
+]

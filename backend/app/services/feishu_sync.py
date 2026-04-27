@@ -441,7 +441,7 @@ def build_task_overdue_card(
     return {
         "header": {
             "template": "red",
-            "title": {"tag": "plain_text", "content": f"⏰ 逾期提醒｜{len(tasks)} 项"},
+            "title": {"tag": "plain_text", "content": f"⏰ {user_name}，有 {len(tasks)} 项任务已逾期"},
         },
         "elements": [
             {
@@ -450,7 +450,7 @@ def build_task_overdue_card(
             },
             {
                 "tag": "markdown",
-                "content": "请回到益语智库处理或调整截止时间。",
+                "content": "请尽快处理或调整截止日期。",
             },
         ],
     }

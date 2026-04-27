@@ -1,6 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, GripVertical, Plus, Trash2, ChevronDown, ArrowUp, ArrowDown, ClipboardPaste, User, UploadCloud, Paperclip, Users, Check } from 'lucide-react';
-import type { MentionCandidate } from '../../../src/shared/types';
+import { X, GripVertical, Plus, Trash2, ChevronDown, ArrowUp, ArrowDown, ClipboardPaste, User, UploadCloud, Paperclip } from 'lucide-react';
 
 export interface TemplateTask {
   id: string;
@@ -10,11 +9,8 @@ export interface TemplateTask {
   daysAfterPrevious: number;
   /** Duration in days (0.5 step: 0.5, 1, 1.5, 2...) */
   durationDays: number;
-  priority: 'low' | 'normal' | 'high';
-  ownerId?: string;
+  priority: 'normal' | 'high';
   ownerName?: string;
-  collaboratorIds?: string[];
-  collaboratorNames?: string[];
   attachments?: { name: string; size?: number }[];
   // Legacy compat
   relativeDays?: number;
@@ -25,7 +21,7 @@ export interface TemplateData {
   name: string;
   scenarioDesc: string;
   tasks: TemplateTask[];
-  options?: {
+  options: {
     autoCreateEventLine: boolean;
     aiFillEmpty: boolean;
   };
@@ -34,7 +30,7 @@ export interface TemplateData {
 interface Props {
   mode: 'create' | 'edit';
   initialData: TemplateData | null;
-  memberOptions?: MentionCandidate[];
+  memberNames?: string[];
   onClose: () => void;
   onSave: (data: TemplateData) => void;
 }
@@ -53,15 +49,12 @@ function parseBulkText(raw: string): TemplateTask[] {
       const title = firstLineMatch[1].trim();
       // Rest is description
       const descLines = trimmed.split('\n').slice(1).map((l) => l.trim()).filter(Boolean);
-      const descText = descLines.join('\n');
-      const daysAfterMatch = descText.match(/(?:上一步后|上个任务后|前一步后|延后|等待)\s*(\d+)\s*天/);
-      const durationMatch = descText.match(/(?:耗时|持续|预计用时|预计耗时)\s*(\d+(?:\.\d+)?)\s*天/);
       tasks.push({
         id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
         title,
-        description: descText,
-        daysAfterPrevious: daysAfterMatch ? parseInt(daysAfterMatch[1], 10) || 0 : 0,
-        durationDays: durationMatch ? parseFloat(durationMatch[1]) || 1 : 1,
+        description: descLines.join('\n'),
+        daysAfterPrevious: 0,
+        durationDays: 1,
         priority: 'normal',
       });
     }
@@ -69,18 +62,9 @@ function parseBulkText(raw: string): TemplateTask[] {
   return tasks;
 }
 
-export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [], onClose, onSave }: Props) {
+export function TaskTemplateEditorModal({ mode, initialData, memberNames = [], onClose, onSave }: Props) {
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
-  const memberCandidates = memberOptions.length > 0
-    ? memberOptions
-    : ['顾源源', '佳乐', '乐乐', '大周', '庆华', '花花', '罗茜茜'].map((fullName, index) => ({
-      id: `fallback-${index}`,
-      fullName,
-      email: '',
-      primaryRole: 'employee' as const,
-      isSelf: false,
-    }));
 
   const [templateName, setTemplateName] = useState(initialData?.name || '');
   const [scenarioDesc, setScenarioDesc] = useState(initialData?.scenarioDesc || '');
@@ -89,15 +73,14 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
     return (initialData?.tasks || []).map((t) => ({
       ...t,
       daysAfterPrevious: t.daysAfterPrevious ?? t.relativeDays ?? 0,
-      durationDays: t.durationDays ?? (t.durationMinutes ? t.durationMinutes / 1440 : 1),
-      collaboratorIds: t.collaboratorIds || [],
-      collaboratorNames: t.collaboratorNames || [],
+      durationDays: t.durationDays ?? (t.durationMinutes ? t.durationMinutes / 480 : 1),
     }));
   });
+  const [autoCreateEventLine, setAutoCreateEventLine] = useState(initialData?.options?.autoCreateEventLine ?? true);
+  const [aiFillEmpty, setAiFillEmpty] = useState(initialData?.options?.aiFillEmpty ?? false);
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [pasteText, setPasteText] = useState('');
-  const [assigningOwnerTaskId, setAssigningOwnerTaskId] = useState<string | null>(null);
-  const [assigningCollaboratorTaskId, setAssigningCollaboratorTaskId] = useState<string | null>(null);
+  const [assigningTaskId, setAssigningTaskId] = useState<string | null>(null);
 
   const handleAddTask = () => {
     setTasks([...tasks, {
@@ -107,8 +90,6 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
       daysAfterPrevious: 0,
       durationDays: 1,
       priority: 'normal',
-      collaboratorIds: [],
-      collaboratorNames: [],
     }]);
   };
 
@@ -118,36 +99,6 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
 
   const updateTask = (id: string, field: keyof TemplateTask, value: unknown) => {
     setTasks(tasks.map((t) => (t.id === id ? { ...t, [field]: value } : t)));
-  };
-
-  const toggleTaskCollaborator = (taskId: string, candidate: MentionCandidate) => {
-    setTasks((prev) => prev.map((task) => {
-      if (task.id !== taskId) return task;
-      const currentIds = task.collaboratorIds || [];
-      const current = task.collaboratorNames || [];
-      const selected = currentIds.includes(candidate.id);
-      return {
-        ...task,
-        collaboratorIds: selected
-          ? currentIds.filter((item) => item !== candidate.id)
-          : [...currentIds, candidate.id],
-        collaboratorNames: selected
-          ? current.filter((item) => item !== candidate.fullName)
-          : [...current, candidate.fullName],
-      };
-    }));
-  };
-
-  const removeTaskCollaborator = (taskId: string, identifier: string) => {
-    setTasks((prev) => prev.map((task) => (
-      task.id === taskId
-        ? {
-          ...task,
-          collaboratorIds: (task.collaboratorIds || []).filter((item) => item !== identifier),
-          collaboratorNames: (task.collaboratorNames || []).filter((_, index) => (task.collaboratorIds || [])[index] !== identifier),
-        }
-        : task
-    )));
   };
 
   const handleParsePaste = () => {
@@ -173,7 +124,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
       name: templateName.trim(),
       scenarioDesc: scenarioDesc.trim(),
       tasks: tasks.filter((t) => t.title.trim()),
-      options: { autoCreateEventLine: false, aiFillEmpty: false },
+      options: { autoCreateEventLine, aiFillEmpty },
     });
   };
 
@@ -205,7 +156,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="text-lg font-semibold text-gray-800">
-            {mode === 'edit' ? '编辑任务组模板' : '新建任务组模板'}
+            {mode === 'edit' ? '编辑任务模板' : '新建任务模板'}
           </h2>
           <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded-full text-gray-500 transition-colors">
             <X className="w-5 h-5" />
@@ -224,7 +175,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 value={templateName}
                 onChange={(e) => setTemplateName(e.target.value)}
-                placeholder="例如：新客户启动任务组"
+                placeholder="例如：益语智库咨询标准流程"
               />
             </div>
             <div>
@@ -242,7 +193,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
           <div>
             <div className="flex items-center text-sm font-medium text-gray-500 mb-4">
               <div className="flex-1 border-t border-gray-200" />
-              <span className="px-3">预设任务步骤</span>
+              <span className="px-3">预设任务清单</span>
               <div className="flex-1 border-t border-gray-200" />
             </div>
 
@@ -270,7 +221,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                     {/* Task form */}
                     <div className="flex-1 space-y-3">
                       <div className="flex gap-2 items-start">
-                          <span className="text-xs font-semibold text-gray-400 mt-2.5 w-12 shrink-0">步骤 {index + 1}</span>
+                        <span className="text-xs font-semibold text-gray-400 mt-2.5 w-12 shrink-0">任务 {index + 1}</span>
                         <input
                           type="text"
                           value={task.title}
@@ -282,10 +233,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                         <div className="relative">
                           <button
                             type="button"
-                            onClick={() => {
-                              setAssigningOwnerTaskId(assigningOwnerTaskId === task.id ? null : task.id);
-                              setAssigningCollaboratorTaskId(null);
-                            }}
+                            onClick={() => setAssigningTaskId(assigningTaskId === task.id ? null : task.id)}
                             className={`flex items-center gap-1 px-2 py-1.5 rounded border text-[12px] transition ${
                               task.ownerName
                                 ? 'border-blue-200 bg-blue-50 text-blue-700'
@@ -296,77 +244,25 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                             <User className="w-3.5 h-3.5" />
                             <span className="max-w-[60px] truncate">{task.ownerName || '指派'}</span>
                           </button>
-                          {assigningOwnerTaskId === task.id && (
+                          {assigningTaskId === task.id && (
                             <div className="absolute right-0 top-full mt-1 w-40 bg-white border border-gray-200 rounded-lg shadow-lg z-10 py-1 max-h-[200px] overflow-y-auto">
                               <button
                                 type="button"
                                 className="w-full text-left px-3 py-1.5 text-[12px] text-gray-400 hover:bg-gray-50"
-                                onClick={() => {
-                                  setTasks((prev) => prev.map((item) => item.id === task.id ? {
-                                    ...item,
-                                    ownerId: '',
-                                    ownerName: '',
-                                  } : item));
-                                  setAssigningOwnerTaskId(null);
-                                }}
+                                onClick={() => { updateTask(task.id, 'ownerName', ''); setAssigningTaskId(null); }}
                               >
                                 不指派
                               </button>
-                              {memberCandidates.map((candidate) => (
+                              {(memberNames.length > 0 ? memberNames : ['顾源源', '佳乐', '乐乐', '大周', '庆华', '花花', '罗茜茜']).map((name) => (
                                 <button
-                                  key={candidate.id}
+                                  key={name}
                                   type="button"
-                                  className={`w-full text-left px-3 py-1.5 text-[12px] hover:bg-blue-50 ${task.ownerId === candidate.id ? 'text-blue-600 font-bold' : 'text-gray-700'}`}
-                                  onClick={() => {
-                                    setTasks((prev) => prev.map((item) => item.id === task.id ? {
-                                      ...item,
-                                      ownerId: candidate.id,
-                                      ownerName: candidate.fullName,
-                                    } : item));
-                                    setAssigningOwnerTaskId(null);
-                                  }}
+                                  className={`w-full text-left px-3 py-1.5 text-[12px] hover:bg-blue-50 ${task.ownerName === name ? 'text-blue-600 font-bold' : 'text-gray-700'}`}
+                                  onClick={() => { updateTask(task.id, 'ownerName', name); setAssigningTaskId(null); }}
                                 >
-                                  {candidate.fullName}
+                                  {name}
                                 </button>
                               ))}
-                            </div>
-                          )}
-                        </div>
-                        <div className="relative">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAssigningCollaboratorTaskId(assigningCollaboratorTaskId === task.id ? null : task.id);
-                              setAssigningOwnerTaskId(null);
-                            }}
-                            className={`flex items-center gap-1 px-2 py-1.5 rounded border text-[12px] transition ${
-                              (task.collaboratorNames || []).length > 0
-                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                : 'border-gray-300 text-gray-400 hover:border-emerald-400 hover:text-emerald-600'
-                            }`}
-                            title={(task.collaboratorNames || []).join('、') || '选择协作者'}
-                          >
-                            <Users className="w-3.5 h-3.5" />
-                            <span className="max-w-[72px] truncate">
-                              {(task.collaboratorNames || []).length > 0 ? `协作 ${task.collaboratorNames?.length}` : '协作者'}
-                            </span>
-                          </button>
-                          {assigningCollaboratorTaskId === task.id && (
-                            <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg z-10 py-1 max-h-[220px] overflow-y-auto">
-                              {memberCandidates.map((candidate) => {
-                                const selected = (task.collaboratorIds || []).includes(candidate.id);
-                                return (
-                                  <button
-                                    key={`${task.id}-${candidate.id}`}
-                                    type="button"
-                                    className={`flex w-full items-center justify-between px-3 py-1.5 text-[12px] hover:bg-emerald-50 ${selected ? 'text-emerald-700 font-bold' : 'text-gray-700'}`}
-                                    onClick={() => toggleTaskCollaborator(task.id, candidate)}
-                                  >
-                                    <span>{candidate.fullName}</span>
-                                    {selected ? <Check className="h-3.5 w-3.5" /> : null}
-                                  </button>
-                                );
-                              })}
                             </div>
                           )}
                         </div>
@@ -376,26 +272,13 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                         <textarea
                           value={task.description}
                           onChange={(e) => updateTask(task.id, 'description', e.target.value)}
-                          placeholder="步骤说明（选填）"
+                          placeholder="任务说明（选填，支持 {{客户名}} 占位符）"
                           className="flex-1 px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 text-sm min-h-[60px]"
                         />
                       </div>
 
                       {/* Attachments + upload */}
                       <div className="flex items-center gap-2 pl-[56px] flex-wrap">
-                        {(task.collaboratorNames || []).map((name, index) => (
-                          <button
-                            key={`${task.id}-collab-${(task.collaboratorIds || [])[index] || name}`}
-                            type="button"
-                            onClick={() => removeTaskCollaborator(task.id, (task.collaboratorIds || [])[index] || name)}
-                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700 transition hover:bg-emerald-100"
-                            title={`移除协作者 ${name}`}
-                          >
-                            <Users className="w-2.5 h-2.5" />
-                            <span className="truncate max-w-[120px]">{name}</span>
-                            <span className="text-[10px]">×</span>
-                          </button>
-                        ))}
                         {(task.attachments || []).map((att, ai) => (
                           <span key={ai} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-0.5 text-[10px] text-gray-600">
                             <Paperclip className="w-2.5 h-2.5 text-gray-400" />
@@ -416,7 +299,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
 
                       <div className="flex flex-wrap gap-4 items-center pl-[56px]">
                         <div className="flex items-center">
-                          <label className="text-xs text-gray-500 mr-2">{index === 0 ? '从起始时间后' : '上一步后'}</label>
+                          <label className="text-xs text-gray-500 mr-2">{index === 0 ? '开始延迟' : '上一步后'}</label>
                           <input
                             type="number"
                             value={task.daysAfterPrevious}
@@ -424,7 +307,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                             className="w-14 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
                             min="0"
                           />
-                          <span className="ml-1 text-xs text-gray-400">天开始</span>
+                          <span className="ml-1 text-xs text-gray-400">天</span>
                         </div>
 
                         <div className="flex items-center">
@@ -448,18 +331,12 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                               onChange={(e) => updateTask(task.id, 'priority', e.target.value)}
                               className="appearance-none bg-white border border-gray-300 text-sm rounded pl-3 pr-8 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
                             >
-                              <option value="low">低</option>
                               <option value="normal">普通</option>
                               <option value="high">高</option>
                             </select>
                             <ChevronDown className="w-3 h-3 absolute right-2 top-2 text-gray-500 pointer-events-none" />
                           </div>
                         </div>
-                      </div>
-                      <div className="pl-[56px]">
-                        <p className="text-[11px] text-gray-400 leading-5">
-                          1 天按 24 小时计算，所以 1.5 天会排成 36 小时。
-                        </p>
                       </div>
                     </div>
 
@@ -482,22 +359,53 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                 className="flex-1 py-2.5 border-2 border-dashed border-gray-300 rounded-lg text-sm font-medium text-gray-500 hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center"
               >
                 <Plus className="w-4 h-4 mr-1" />
-                添加一步
+                添加一条预设任务
               </button>
               <button
                 onClick={() => setShowPasteModal(true)}
                 className="py-2.5 px-4 border-2 border-dashed border-gray-300 rounded-lg text-sm font-medium text-gray-500 hover:border-blue-500 hover:text-blue-600 transition-colors flex items-center justify-center"
               >
                 <ClipboardPaste className="w-4 h-4 mr-1" />
-                粘贴批量步骤
+                粘贴批量任务
               </button>
+            </div>
+          </div>
+
+          {/* Options */}
+          <div>
+            <div className="flex items-center text-sm font-medium text-gray-500 mb-4 mt-6">
+              <div className="flex-1 border-t border-gray-200" />
+              <span className="px-3">模板选项</span>
+              <div className="flex-1 border-t border-gray-200" />
+            </div>
+
+            <div className="space-y-3">
+              <label className="flex items-center cursor-pointer group w-fit">
+                <input
+                  type="checkbox"
+                  checked={autoCreateEventLine}
+                  onChange={(e) => setAutoCreateEventLine(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                />
+                <span className="ml-3 text-sm text-gray-700 group-hover:text-gray-900">套用时自动创建事件线（用模板名作为事件线名）</span>
+              </label>
+
+              <label className="flex items-center cursor-pointer group w-fit">
+                <input
+                  type="checkbox"
+                  checked={aiFillEmpty}
+                  onChange={(e) => setAiFillEmpty(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                />
+                <span className="ml-3 text-sm text-gray-700 group-hover:text-gray-900">任务说明留空的部分由 AI 根据客户背景自动填写</span>
+              </label>
             </div>
           </div>
         </div>
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-between items-center rounded-b-xl">
-          <span className="text-[12px] text-gray-400">{tasks.length} 个预设步骤</span>
+          <span className="text-[12px] text-gray-400">{tasks.length} 个预设任务</span>
           <div className="flex space-x-3">
             <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
               取消
@@ -519,7 +427,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
           <div className="bg-white w-full max-w-lg rounded-xl shadow-2xl p-6">
             <h3 className="text-[16px] font-bold text-gray-800 mb-3">粘贴批量任务</h3>
             <p className="text-[12px] text-gray-500 mb-3">
-              这里走的是规则解析，不需要 AI。系统会按“第 X 步”拆分步骤；如果正文里写了“上一步后 2 天”“耗时 1.5 天”，也会一并识别。
+              粘贴包含多个步骤的文本，系统会自动按"第X步："拆分成多个任务。
             </p>
             <textarea
               value={pasteText}
@@ -530,7 +438,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
             />
             {pasteText.trim() && (
               <p className="mt-2 text-[11px] text-blue-600">
-                预览：识别到 {parseBulkText(pasteText).length} 个步骤
+                预览：识别到 {parseBulkText(pasteText).length} 个任务
               </p>
             )}
             <div className="mt-4 flex justify-end gap-2">
@@ -545,7 +453,7 @@ export function TaskTemplateEditorModal({ mode, initialData, memberOptions = [],
                 disabled={parseBulkText(pasteText).length === 0}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
               >
-                解析并添加 {parseBulkText(pasteText).length} 个步骤
+                解析并添加 {parseBulkText(pasteText).length} 个任务
               </button>
             </div>
           </div>

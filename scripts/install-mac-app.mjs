@@ -4,31 +4,61 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  APP_NAME,
+  APP_DISPLAY_NAME,
+  DEFAULT_INSTALL_RECEIPT_PATH,
+  DEFAULT_INSTALL_SMOKE_PATH,
+  inspectAppBundle as inspectBundle,
+} from './app-manifest.mjs';
 
-const APP_NAME = '益语智库自用平台.app';
 const APP_BASENAME = APP_NAME.replace(/\.app$/, '');
-const WORKBENCH_DATA_DIR_NAME = 'YiyuThinkTankWorkbench';
-const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
-const sourceApp = process.argv[2]
-  ? path.resolve(process.argv[2])
-  : path.join(projectRoot, 'dist', 'mac-arm64', APP_NAME);
+const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const userApplicationsDir = path.join(os.homedir(), 'Applications');
 const targetApp = path.join(userApplicationsDir, APP_NAME);
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
 const stagingApp = path.join(userApplicationsDir, `.${APP_BASENAME}.installing-${timestamp}.app`);
-const runtimeRoot = path.join(os.homedir(), 'Library', 'Application Support', WORKBENCH_DATA_DIR_NAME, 'runtime');
-const backupRoot = path.join(runtimeRoot, 'install-backups');
-const backupApp = path.join(backupRoot, `益语智库自用平台.old-${timestamp}.app`);
+const backupRoot = path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench-2', 'runtime', 'install-backups');
+const backupApp = path.join(backupRoot, `${APP_BASENAME}.old-${timestamp}.app`);
+const defaultReceiptPath = DEFAULT_INSTALL_RECEIPT_PATH;
+const defaultSmokePath = DEFAULT_INSTALL_SMOKE_PATH;
 const legacyCandidates = [
   '/Applications/益语智库.app',
-  path.join(os.homedir(), 'Desktop', APP_NAME),
-  path.join(runtimeRoot, 'local-electron', '益语智库工作台.app'),
-  path.join(runtimeRoot, 'local-electron-dist', '益语智库工作台.app'),
+  path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron', '益语智库工作台.app'),
+  path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron-dist', '益语智库工作台.app'),
 ];
 
-function fail(message) {
-  console.error(`[install-mac-app] ${message}`);
-  process.exit(1);
+function parseArgs(argv) {
+  let source = null;
+  let receipt = defaultReceiptPath;
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (current === '--receipt') {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error('missing value for --receipt');
+      }
+      receipt = path.resolve(value);
+      index += 1;
+      continue;
+    }
+    if (current.startsWith('--receipt=')) {
+      receipt = path.resolve(current.slice('--receipt='.length));
+      continue;
+    }
+    if (current.startsWith('--')) {
+      throw new Error(`unknown option: ${current}`);
+    }
+    if (source) {
+      throw new Error(`unexpected extra argument: ${current}`);
+    }
+    source = path.resolve(current);
+  }
+  return {
+    sourceApp: source || path.join(projectRoot, 'dist', 'mac-arm64', APP_NAME),
+    receiptPath: receipt,
+  };
 }
 
 function info(message) {
@@ -38,10 +68,10 @@ function info(message) {
 function runOrFail(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit' });
   if (result.error) {
-    fail(`${command} failed: ${result.error.message}`);
+    throw new Error(`${command} failed: ${result.error.message}`);
   }
   if (result.status !== 0) {
-    fail(`${command} exited with status ${result.status}`);
+    throw new Error(`${command} exited with status ${result.status}`);
   }
 }
 
@@ -53,42 +83,103 @@ function stabilizeInstalledApp(targetPath) {
   const scriptPath = path.join(projectRoot, 'scripts', 'stabilize-mac-app.mjs');
   const result = spawnSync(process.execPath, [scriptPath, targetPath], { stdio: 'inherit' });
   if (result.error) {
-    fail(`stabilize script failed: ${result.error.message}`);
+    throw new Error(`stabilize script failed: ${result.error.message}`);
   }
   if (result.status !== 0) {
-    fail(`stabilize script exited with status ${result.status}`);
+    throw new Error(`stabilize script exited with status ${result.status}`);
   }
 }
 
 function stopRunningApp() {
   info('stopping running app instances before install');
-  runQuiet('osascript', ['-e', 'tell application "益语智库自用平台" to quit']);
-  runQuiet('pkill', ['-x', '益语智库自用平台']);
+  runQuiet('osascript', ['-e', `tell application "${APP_DISPLAY_NAME}" to quit`]);
+  runQuiet('pkill', ['-x', APP_DISPLAY_NAME]);
   runQuiet('pkill', ['-f', `${targetApp}/Contents/MacOS/${APP_BASENAME}`]);
-  runQuiet('pkill', ['-f', `${APP_NAME}/Contents/MacOS/${APP_BASENAME}`]);
   const waitResult = spawnSync(
     'bash',
-    ['-lc', 'for _ in {1..30}; do pgrep -x "益语智库自用平台" >/dev/null || exit 0; sleep 0.2; done; exit 0'],
+    ['-lc', `for _ in {1..30}; do pgrep -x "${APP_DISPLAY_NAME}" >/dev/null || exit 0; sleep 0.2; done; exit 0`],
     { stdio: 'ignore' },
   );
   if (waitResult.status !== 0) {
-    fail('timed out waiting for running app instance to stop');
+    throw new Error('timed out waiting for running app instance to stop');
   }
 }
 
-function pickRendererEntry(assetDir) {
-  const files = fs.readdirSync(assetDir).filter((name) => /^(main|index)-.*\.js$/.test(name)).sort();
-  const preferred = files.find((name) => /^main-.*\.js$/.test(name));
-  return preferred || files[0] || null;
-}
-
 function snapshotSourceBundle(sourcePath) {
+  const inspection = inspectBundle(sourcePath);
   const sourceFrameworksDir = path.join(sourcePath, 'Contents', 'Frameworks');
-  const sourceRendererAssetDir = path.join(sourcePath, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
   return {
     frameworkEntries: fs.existsSync(sourceFrameworksDir) ? fs.readdirSync(sourceFrameworksDir).sort() : null,
-    rendererEntry: fs.existsSync(sourceRendererAssetDir) ? pickRendererEntry(sourceRendererAssetDir) : null,
+    manifest: inspection.manifest,
+    bundleManifestId: inspection.bundleManifestId,
+    rendererEntry: inspection.rendererEntry,
+    rendererHash: inspection.rendererHash,
   };
+}
+
+function scanStagingBundles(sourceRendererEntry) {
+  if (!fs.existsSync(userApplicationsDir)) {
+    return [];
+  }
+  return fs.readdirSync(userApplicationsDir)
+    .filter((name) => name.startsWith(`.${APP_BASENAME}.installing-`) && name.endsWith('.app'))
+    .map((name) => {
+      const appPath = path.join(userApplicationsDir, name);
+      const metadata = inspectBundle(appPath);
+      return {
+        path: appPath,
+        modifiedAt: metadata.modifiedAt,
+        rendererEntry: metadata.rendererEntry,
+        staleForCurrentInstall: Boolean(
+          sourceRendererEntry
+            ? metadata.rendererEntry !== sourceRendererEntry
+            : true
+        ),
+      };
+    })
+    .sort((left, right) => left.path.localeCompare(right.path, 'zh-Hans-CN'));
+}
+
+function cleanupStagingBundles(sourceRendererEntry) {
+  const removedPaths = [];
+  for (const candidate of scanStagingBundles(sourceRendererEntry)) {
+    if (path.resolve(candidate.path) === path.resolve(stagingApp)) {
+      continue;
+    }
+    safeRemove(candidate.path);
+    removedPaths.push(candidate.path);
+  }
+  return removedPaths;
+}
+
+function writeReceipt(receiptPath, payload) {
+  const target = path.resolve(receiptPath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  info(`wrote install receipt: ${target}`);
+}
+
+function writeInstallSeedSmoke(smokePath, receiptPayload) {
+  const target = path.resolve(smokePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify({
+    recordedAt: new Date().toISOString(),
+    seededByInstall: true,
+    targetAppExists: true,
+    sourceRendererEntry: receiptPayload.sourceRendererEntry,
+    sourceRendererHash: receiptPayload.sourceRendererHash,
+    sourceBundleManifestId: receiptPayload.sourceBundleManifestId,
+    targetRendererEntry: receiptPayload.targetRendererEntry,
+    targetRendererHash: receiptPayload.targetRendererHash,
+    targetBundleManifestId: receiptPayload.targetBundleManifestId,
+    rendererEntryMatch: receiptPayload.rendererEntryMatch,
+    bundleManifestMatch: receiptPayload.bundleManifestMatch,
+    readyToResumeA0: receiptPayload.bundleManifestMatch === true,
+    readyToOpenWorkbench: receiptPayload.bundleManifestMatch === true,
+    blockerClass: receiptPayload.bundleManifestMatch === true ? 'none' : 'packaging',
+    reason: '安装流程已验证包身份；启动脚本会在首次打开后覆盖为真实冒烟结果。',
+  }, null, 2)}\n`, 'utf8');
+  info(`seeded install smoke: ${target}`);
 }
 
 function verifyInstalledBundle(targetPath, sourceSnapshot) {
@@ -103,15 +194,33 @@ function verifyInstalledBundle(targetPath, sourceSnapshot) {
 
   for (const requiredPath of requiredPaths) {
     if (!fs.existsSync(requiredPath)) {
-      fail(`installed app bundle is incomplete, missing: ${requiredPath}`);
+      throw new Error(`installed app bundle is incomplete, missing: ${requiredPath}`);
     }
   }
 
   const targetFrameworksDir = path.join(targetPath, 'Contents', 'Frameworks');
   const targetFrameworkEntries = fs.readdirSync(targetFrameworksDir).sort();
   if (sourceSnapshot.frameworkEntries && sourceSnapshot.frameworkEntries.length !== targetFrameworkEntries.length) {
-    fail(
+    throw new Error(
       `installed app framework count mismatch: source=${sourceSnapshot.frameworkEntries.length} target=${targetFrameworkEntries.length}`,
+    );
+  }
+
+  const targetInspection = inspectBundle(targetPath);
+  if (!sourceSnapshot.bundleManifestId || !sourceSnapshot.manifest) {
+    throw new Error('source app version-manifest.json missing or invalid');
+  }
+  if (!targetInspection.bundleManifestId || !targetInspection.manifest) {
+    throw new Error('installed app version-manifest.json missing or invalid');
+  }
+  if (sourceSnapshot.bundleManifestId !== targetInspection.bundleManifestId) {
+    throw new Error(
+      `installed app manifest mismatch: source=${sourceSnapshot.bundleManifestId} target=${targetInspection.bundleManifestId}`,
+    );
+  }
+  if (sourceSnapshot.rendererHash !== targetInspection.rendererHash) {
+    throw new Error(
+      `installed app renderer hash mismatch: source=${sourceSnapshot.rendererHash} target=${targetInspection.rendererHash}`,
     );
   }
 }
@@ -123,49 +232,107 @@ function safeRemove(targetPath) {
   fs.rmSync(targetPath, { recursive: true, force: true });
 }
 
-if (!fs.existsSync(sourceApp)) {
-  fail(`source app not found: ${sourceApp}`);
+let sourceApp = path.join(projectRoot, 'dist', 'mac-arm64', APP_NAME);
+let receiptPath = defaultReceiptPath;
+let currentStep = 'validate-source';
+let promoted = false;
+
+function buildReceipt({ failureStep = null, errorMessage = null } = {}) {
+  const sourceInfo = inspectBundle(sourceApp);
+  const targetInfo = inspectBundle(targetApp);
+  return {
+    recordedAt: new Date().toISOString(),
+    sourceApp,
+    sourceAppMTime: sourceInfo.modifiedAt,
+    sourceRendererEntry: sourceInfo.rendererEntry,
+    sourceRendererHash: sourceInfo.rendererHash,
+    sourceBundleManifestId: sourceInfo.bundleManifestId,
+    stagingApp,
+    targetApp,
+    targetAppMTime: targetInfo.modifiedAt,
+    targetRendererEntry: targetInfo.rendererEntry,
+    targetRendererHash: targetInfo.rendererHash,
+    targetBundleManifestId: targetInfo.bundleManifestId,
+    rendererEntryMatch: Boolean(
+      sourceInfo.rendererEntry
+        && targetInfo.rendererEntry
+        && sourceInfo.rendererEntry === targetInfo.rendererEntry
+    ),
+    bundleManifestMatch: Boolean(
+      sourceInfo.bundleManifestId
+        && targetInfo.bundleManifestId
+        && sourceInfo.bundleManifestId === targetInfo.bundleManifestId
+    ),
+    promoted,
+    failureStep,
+    errorMessage,
+    staleCandidates: scanStagingBundles(sourceInfo.rendererEntry),
+  };
 }
 
-const sourceSnapshot = snapshotSourceBundle(sourceApp);
-
-fs.mkdirSync(userApplicationsDir, { recursive: true });
-fs.mkdirSync(backupRoot, { recursive: true });
-
-stopRunningApp();
-
-safeRemove(stagingApp);
-
-info(`installing ${sourceApp} -> ${stagingApp}`);
-runOrFail('ditto', [sourceApp, stagingApp]);
-stabilizeInstalledApp(stagingApp);
-verifyInstalledBundle(stagingApp, sourceSnapshot);
-
-const targetRendererAssetDir = path.join(stagingApp, 'Contents', 'Resources', 'app', 'dist', 'renderer', 'assets');
-const sourceEntry = sourceSnapshot.rendererEntry;
-const targetEntry = pickRendererEntry(targetRendererAssetDir);
-if (!sourceEntry || !targetEntry) {
-  fail('unable to verify installed renderer assets');
-}
-if (sourceEntry !== targetEntry) {
-  fail(`installed app renderer asset mismatch: source=${sourceEntry} target=${targetEntry}`);
-}
-info(`verified installed renderer asset: ${targetEntry}`);
-
-if (fs.existsSync(targetApp)) {
-  info(`existing app detected, backing up to: ${backupApp}`);
-  fs.renameSync(targetApp, backupApp);
-}
-
-info(`promoting verified app into place: ${stagingApp} -> ${targetApp}`);
-fs.renameSync(stagingApp, targetApp);
-
-const legacyHits = legacyCandidates.filter((targetPath) => fs.existsSync(targetPath));
-if (legacyHits.length > 0) {
-  info('legacy/duplicate app entries still exist. clean these manually if they are no longer needed:');
-  for (const targetPath of legacyHits) {
-    console.log(` - ${targetPath}`);
+try {
+  ({ sourceApp, receiptPath } = parseArgs(process.argv.slice(2)));
+  if (!fs.existsSync(sourceApp)) {
+    throw new Error(`source app not found: ${sourceApp}`);
   }
-}
 
-info(`recommended launch entry: ${targetApp}`);
+  const sourceSnapshot = snapshotSourceBundle(sourceApp);
+
+  fs.mkdirSync(userApplicationsDir, { recursive: true });
+  fs.mkdirSync(backupRoot, { recursive: true });
+
+  currentStep = 'stop-running-app';
+  stopRunningApp();
+
+  currentStep = 'clear-staging';
+  safeRemove(stagingApp);
+
+  currentStep = 'copy-to-staging';
+  info(`installing ${sourceApp} -> ${stagingApp}`);
+  runOrFail('ditto', [sourceApp, stagingApp]);
+
+  currentStep = 'stabilize-staging';
+  stabilizeInstalledApp(stagingApp);
+
+  currentStep = 'verify-staging-bundle';
+  verifyInstalledBundle(stagingApp, sourceSnapshot);
+
+  currentStep = 'verify-manifest-identity';
+  info(`verified installed bundle manifest: ${sourceSnapshot.bundleManifestId}`);
+
+  if (fs.existsSync(targetApp)) {
+    currentStep = 'backup-existing-target';
+    info(`existing app detected, backing up to: ${backupApp}`);
+    fs.renameSync(targetApp, backupApp);
+  }
+
+  currentStep = 'promote-target-app';
+  info(`promoting verified app into place: ${stagingApp} -> ${targetApp}`);
+  fs.renameSync(stagingApp, targetApp);
+  promoted = true;
+
+  currentStep = 'cleanup-staging-bundles';
+  const removedStagingBundles = cleanupStagingBundles(sourceSnapshot.rendererEntry);
+  if (removedStagingBundles.length > 0) {
+    info(`cleaned ${removedStagingBundles.length} stale staging bundle(s)`);
+  }
+
+  const receiptPayload = buildReceipt();
+  writeReceipt(receiptPath, receiptPayload);
+  writeInstallSeedSmoke(defaultSmokePath, receiptPayload);
+
+  const legacyHits = legacyCandidates.filter((targetPath) => fs.existsSync(targetPath));
+  if (legacyHits.length > 0) {
+    info('legacy/duplicate app entries still exist. clean these manually if they are no longer needed:');
+    for (const targetPath of legacyHits) {
+      console.log(` - ${targetPath}`);
+    }
+  }
+
+  info(`recommended launch entry: ${targetApp}`);
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  writeReceipt(receiptPath, buildReceipt({ failureStep: currentStep, errorMessage: message }));
+  console.error(`[install-mac-app] ${message}`);
+  process.exit(1);
+}

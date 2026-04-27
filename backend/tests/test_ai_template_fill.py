@@ -131,3 +131,84 @@ def test_quantitative_field_cannot_use_vague_description_as_fact(tmp_path: Path,
     )
 
     assert value.startswith("【待确认】")
+
+
+def test_generate_chat_response_extreme_context_uses_relaxed_profile(tmp_path: Path, monkeypatch):
+    db = Database(tmp_path / "app.db")
+    service = AiService(db, {"qwen": SimpleNamespace()})
+    monkeypatch.setattr(
+        service,
+        "get_health",
+        lambda: AiHealth(provider="qwen", model="qwen3.5-plus", ready=True, detail="ok", credential_source="local", fingerprint=None),
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_qwen_generate(**kwargs):
+        calls.append(kwargs)
+        return "这是最终回答。"
+
+    monkeypatch.setattr(service, "_qwen_generate", fake_qwen_generate)
+
+    long_context = "\n\n".join(
+        f"[原始证据 {index}]\n标题：材料{index}\n片段：{'原文片段' * 400}"
+        for index in range(1, 45)
+    )
+
+    response = service.generate_chat_response("请介绍这家组织", "你是顾问。", long_context)
+
+    assert response.content == "这是最终回答。"
+    assert len(calls) == 1
+    first_call = calls[0]
+    assert float(first_call["timeout_seconds"]) >= 36.0
+    assert int(first_call["max_tokens"]) <= 1000
+    assert first_call["enable_thinking"] is False
+    assert len(str(first_call["prompt"])) < len(f"用户问题：请介绍这家组织\n\n参考材料：\n{long_context}")
+
+
+def test_generate_chat_response_retry_downgrades_to_fast_non_thinking(tmp_path: Path, monkeypatch):
+    db = Database(tmp_path / "app.db")
+    service = AiService(db, {"qwen": SimpleNamespace()})
+    monkeypatch.setattr(
+        service,
+        "get_health",
+        lambda: AiHealth(provider="qwen", model="qwen3.5-plus", ready=True, detail="ok", credential_source="local", fingerprint=None),
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_qwen_generate(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("read timeout")
+        return "兜底回答"
+
+    monkeypatch.setattr(service, "_qwen_generate", fake_qwen_generate)
+
+    medium_context = "\n\n".join(
+        f"[原始证据 {index}]\n标题：材料{index}\n片段：{'背景信息' * 280}"
+        for index in range(1, 22)
+    )
+
+    response = service.generate_chat_response("请给出完整判断", "你是顾问。", medium_context)
+
+    assert response.content == "兜底回答"
+    assert len(calls) == 2
+    first_call, second_call = calls
+    assert first_call["enable_thinking"] is True
+    assert second_call["enable_thinking"] is False
+    assert float(second_call["timeout_seconds"]) >= 20.0
+    assert int(second_call["max_tokens"]) <= 600
+    assert len(str(second_call["prompt"])) < len(str(first_call["prompt"]))
+
+
+def test_build_chat_generation_profile_prefers_shorter_first_answer_budget(tmp_path: Path):
+    db = Database(tmp_path / "app.db")
+    service = AiService(db, {"qwen": SimpleNamespace()})
+
+    profile = service._build_chat_generation_profile("背景信息" * 900)
+
+    assert profile.primary_timeout_seconds >= 30.0
+    assert profile.primary_max_tokens <= 900
+    assert profile.fallback_timeout_seconds >= 16.0
+    assert profile.fallback_max_tokens <= 420

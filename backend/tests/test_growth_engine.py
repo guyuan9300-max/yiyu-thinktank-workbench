@@ -25,6 +25,8 @@ from app.models import (
     WeeklyReviewTaskStructuredNoteRecord,
 )
 from app.services.growth_engine import (
+    _ability_stage,
+    _current_score,
     build_growth_overview,
     ingest_handbook_codification,
     ingest_meeting_growth_candidate,
@@ -298,6 +300,28 @@ def test_review_ingestion_is_idempotent_and_records_reflection_xp(tmp_path: Path
     assert overview.rank.key
     assert overview.rank.fullLabel
     assert 0 <= overview.rank.progress <= 1
+
+
+def test_ability_scores_do_not_flatten_to_100_after_small_xp_threshold():
+    score_map = {
+        169: _current_score(169),
+        227: _current_score(227),
+        462: _current_score(462),
+        539: _current_score(539),
+        593: _current_score(593),
+        907: _current_score(907),
+    }
+
+    assert score_map[169] == 64
+    assert score_map[227] == 70
+    assert score_map[462] == 83
+    assert score_map[539] == 85
+    assert score_map[593] == 86
+    assert score_map[907] == 90
+    assert score_map[169] < score_map[227] < score_map[462] < score_map[593] < score_map[907]
+    assert max(score_map.values()) < 100
+    assert _ability_stage(169)[0] == "独立"
+    assert _ability_stage(907)[0] == "带动"
 
 
 def test_handbook_codification_updates_write_ability_and_generates_recommendations(tmp_path: Path):

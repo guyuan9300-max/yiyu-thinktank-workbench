@@ -4,16 +4,21 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  APP_DISPLAY_NAME,
+  APP_NAME,
+  DEFAULT_INSTALL_SMOKE_PATH,
+  DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL,
+  DEFAULT_WORKSPACE_CHAT_SMOKE_PATH,
+  inspectAppBundle,
+} from './app-manifest.mjs';
 
-const APP_NAME = '益语智库自用平台.app';
-const WORKBENCH_DATA_DIR_NAME = 'YiyuThinkTankWorkbench';
-const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
+const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const installedApp = path.join(os.homedir(), 'Applications', APP_NAME);
-const binaryPath = path.join(installedApp, 'Contents', 'MacOS', '益语智库自用平台');
-const userDataPath = path.join(os.homedir(), 'Library', 'Application Support', WORKBENCH_DATA_DIR_NAME);
-const runtimeManifestPath = path.join(userDataPath, 'runtime', 'logs', 'runtime-manifest.json');
+const binaryPath = path.join(installedApp, 'Contents', 'MacOS', APP_DISPLAY_NAME);
 const rawElectronPattern = `${projectRoot}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \\.`;
-const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
+const RENDERER_QUERY_ARG = '--yiyu-renderer-query';
 
 function sanitizedLaunchEnv() {
   const env = { ...process.env };
@@ -31,50 +36,162 @@ function run(command, args, options = {}) {
   });
 }
 
+function runOrFail(command, args, options = {}) {
+  const result = run(command, args, options);
+  if (result.error) {
+    throw new Error(`${command} failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${command} exited with status ${result.status}`);
+  }
+  return result;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function countAppProcesses() {
-  const result = run('pgrep', ['-f', '益语智库自用平台']);
+  const result = run('pgrep', ['-f', APP_DISPLAY_NAME]);
   return (result.stdout || '').trim().split('\n').filter(Boolean).length;
 }
 
-const exists = run('test', ['-d', installedApp]);
-if (exists.status !== 0) {
-  console.error(`[open-installed-app] installed app not found: ${installedApp}`);
-  console.error('[open-installed-app] run `npm run dist:mac-local && npm run install:mac-local` first.');
-  process.exit(1);
+function parseArgs(argv) {
+  const queryParams = new URLSearchParams();
+  let skipValidation = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (current === '--skip-validation') {
+      skipValidation = true;
+      continue;
+    }
+    if (current === '--tab') {
+      const value = argv[index + 1];
+      if (value) {
+        queryParams.set('tab', value);
+        index += 1;
+      }
+      continue;
+    }
+    if (current === '--settings-section') {
+      const value = argv[index + 1];
+      if (value) {
+        queryParams.set('settingsSection', value);
+        index += 1;
+      }
+      continue;
+    }
+    if (current === '--query') {
+      const value = argv[index + 1];
+      if (value) {
+        for (const [key, paramValue] of new URLSearchParams(value.replace(/^\?+/, ''))) {
+          queryParams.set(key, paramValue);
+        }
+        index += 1;
+      }
+      continue;
+    }
+    throw new Error(`unknown option: ${current}`);
+  }
+  const serialized = queryParams.toString();
+  return {
+    skipValidation,
+    launchArgs: serialized ? [`${RENDERER_QUERY_ARG}=${serialized}`] : [],
+  };
 }
 
-// 杀掉旧的 dev electron 进程
-run('pkill', ['-f', rawElectronPattern], { stdio: 'ignore' });
+async function launchInstalledApp(launchArgs) {
+  const exists = run('test', ['-d', installedApp]);
+  if (exists.status !== 0) {
+    throw new Error(`installed app not found: ${installedApp}`);
+  }
 
-// 方式 1: open -a
-console.log('[open-installed-app] trying open -a ...');
-run('open', ['-a', installedApp], { stdio: 'inherit' });
-await sleep(4000);
+  run('pkill', ['-f', rawElectronPattern], { stdio: 'ignore' });
 
-if (countAppProcesses() >= 2) {
-  console.log('[open-installed-app] launched via open -a');
-  console.log(`[open-installed-app] runtime manifest: ${runtimeManifestPath}`);
-  run('osascript', ['-e', 'tell application "益语智库自用平台" to activate'], { stdio: 'ignore' });
+  console.log('[open-installed-app] trying open -a ...');
+  const openArgs = ['-na', installedApp, ...(launchArgs.length > 0 ? ['--args', ...launchArgs] : [])];
+  run('open', openArgs, { stdio: 'inherit' });
+  await sleep(4000);
+
+  if (countAppProcesses() >= 2) {
+    console.log('[open-installed-app] launched via open -a');
+    run('osascript', ['-e', `tell application "${APP_DISPLAY_NAME}" to activate`], { stdio: 'ignore' });
+    return;
+  }
+
+  console.log('[open-installed-app] open -a failed, falling back to direct binary with tty ...');
+  if (!fs.existsSync(binaryPath)) {
+    throw new Error(`binary not found: ${binaryPath}`);
+  }
+
+  const child = spawn('script', ['-q', '/dev/null', binaryPath, ...launchArgs], {
+    detached: true,
+    stdio: 'ignore',
+    env: sanitizedLaunchEnv(),
+  });
+  child.unref();
+  console.log(`[open-installed-app] launched via script+binary (pid: ${child.pid})`);
+}
+
+function ensureLatestInstalledBundle(sourceApp) {
+  const sourceExists = fs.existsSync(sourceApp);
+  const targetExists = fs.existsSync(installedApp);
+  const sourceInfo = sourceExists ? inspectAppBundle(sourceApp) : null;
+  const targetInfo = targetExists ? inspectAppBundle(installedApp) : null;
+
+  if (!targetExists && !sourceExists) {
+    throw new Error('installed app missing and no source dist app found. run `npm run dist:mac-local` first.');
+  }
+  if (!sourceExists) {
+    return installedApp;
+  }
+  if (!sourceInfo?.bundleManifestId) {
+    throw new Error(`source app manifest missing or invalid: ${sourceApp}`);
+  }
+  if (targetInfo?.bundleManifestId === sourceInfo.bundleManifestId) {
+    return installedApp;
+  }
+
+  console.log('[open-installed-app] installed app is stale or missing, reinstalling latest local bundle ...');
+  runOrFail(process.execPath, [path.join(projectRoot, 'scripts', 'install-mac-app.mjs'), sourceApp], { stdio: 'inherit' });
+  return installedApp;
+}
+
+function runValidation(sourceApp) {
+  runOrFail(
+    process.execPath,
+    [
+      path.join(projectRoot, 'scripts', 'check-installed-runtime.mjs'),
+      '--source-app',
+      sourceApp,
+      '--output',
+      DEFAULT_INSTALL_SMOKE_PATH,
+    ],
+    { stdio: 'inherit' },
+  );
+  runOrFail(
+    'python3',
+    [
+      path.join(projectRoot, 'scripts', 'smoke_workspace_chat_generation.py'),
+      '--backend-url',
+      process.env.YIYU_BACKEND_URL || 'http://127.0.0.1:47829',
+      '--output',
+      DEFAULT_WORKSPACE_CHAT_SMOKE_PATH,
+    ],
+    { stdio: 'inherit' },
+  );
+}
+
+const { skipValidation, launchArgs } = parseArgs(process.argv.slice(2));
+
+if (skipValidation) {
+  await launchInstalledApp(launchArgs);
   process.exit(0);
 }
 
-// 方式 2: 直接执行二进制（Sequoia 需要 tty）
-console.log('[open-installed-app] open -a failed, falling back to direct binary with tty ...');
-if (!fs.existsSync(binaryPath)) {
-  console.error(`[open-installed-app] binary not found: ${binaryPath}`);
-  process.exit(1);
-}
+const sourceApp = path.join(projectRoot, 'dist', 'mac-arm64', APP_NAME);
+const validationSourceApp = fs.existsSync(sourceApp) ? sourceApp : installedApp;
 
-// 用 script -q /dev/null 模拟 tty — Electron 在 macOS Sequoia 上需要 tty 才能正常启动
-const child = spawn('script', ['-q', '/dev/null', binaryPath], {
-  detached: true,
-  stdio: 'ignore',
-  env: sanitizedLaunchEnv(),
-});
-child.unref();
-console.log(`[open-installed-app] launched via script+binary (pid: ${child.pid})`);
-console.log(`[open-installed-app] runtime manifest: ${runtimeManifestPath}`);
+ensureLatestInstalledBundle(sourceApp);
+runValidation(validationSourceApp);
+console.log('[open-installed-app] verified install receipt + install smoke + workspace chat smoke');

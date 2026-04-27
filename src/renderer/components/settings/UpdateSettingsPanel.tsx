@@ -23,6 +23,45 @@ function phaseLabel(phase: DesktopAppInfo['updaterPhase']) {
   }
 }
 
+function startupGateLabel(status?: DesktopAppInfo['startupGateStatus']) {
+  switch (status) {
+    case 'blocked':
+      return '已阻断';
+    case 'warning':
+      return '有警告';
+    case 'ok':
+      return '通过';
+    default:
+      return '未校验';
+  }
+}
+
+function receiptLabel(status?: DesktopAppInfo['installReceiptStatus']) {
+  switch (status) {
+    case 'ok':
+      return 'install-receipt 已通过';
+    case 'mismatch':
+      return 'install-receipt 不一致';
+    case 'missing':
+      return 'install-receipt 缺失';
+    default:
+      return 'install-receipt 未知';
+  }
+}
+
+function smokeLabel(status?: DesktopAppInfo['installSmokeStatus']) {
+  switch (status) {
+    case 'ok':
+      return 'install-smoke 已通过';
+    case 'failed':
+      return 'install-smoke 失败';
+    case 'missing':
+      return 'install-smoke 缺失';
+    default:
+      return 'install-smoke 未知';
+  }
+}
+
 export function UpdateSettingsPanel({ appInfo, onOpenPlan, onOpenArtifacts, onRevealPath }: UpdateSettingsPanelProps) {
   return (
     <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
@@ -82,6 +121,23 @@ export function UpdateSettingsPanel({ appInfo, onOpenPlan, onOpenArtifacts, onRe
                 <p className="font-bold text-slate-800">唯一建议安装入口</p>
                 <p className="mt-1 break-all">{appInfo.recommendedInstallPath}</p>
                 <p className="mt-2 text-[11px] text-slate-500">日常只从这个路径启动，避免继续误开历史包或临时构建包。</p>
+              </div>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+              <span className={`rounded-full px-2.5 py-1 font-bold ${appInfo?.startupGateStatus === 'blocked' ? 'bg-rose-100 text-rose-700' : appInfo?.startupGateStatus === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                启动门禁：{startupGateLabel(appInfo?.startupGateStatus)}
+              </span>
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 font-bold text-slate-700">
+                {receiptLabel(appInfo?.installReceiptStatus)}
+              </span>
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 font-bold text-slate-700">
+                {smokeLabel(appInfo?.installSmokeStatus)}
+              </span>
+            </div>
+            {appInfo?.startupGateReason && (
+              <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50/80 px-3 py-3 text-[11px] text-rose-700">
+                <p className="font-bold">当前阻断原因</p>
+                <p className="mt-1 leading-6">{appInfo.startupGateReason}</p>
               </div>
             )}
           </div>
