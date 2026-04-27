@@ -47,7 +47,7 @@ export function CollabSyncCard({
             className="w-10 h-10 rounded-2xl border border-gray-200 bg-white text-gray-600 hover:text-gray-900 hover:bg-gray-50 disabled:opacity-50"
             onClick={onPreviewPull}
             disabled={actionDisabled}
-            title="预览并同步最新版本"
+            title="按日期预览 main 修改"
           >
             {busyAction === 'pull' ? <RefreshCw size={16} className="mx-auto animate-spin" /> : <Download size={16} className="mx-auto" />}
           </button>
@@ -114,7 +114,7 @@ export function CollabSyncCard({
             disabled={actionDisabled}
           >
             {busyAction === 'pull' ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
-            预览并同步最新版本
+            按日期预览 main 修改
           </button>
         </div>
       </div>

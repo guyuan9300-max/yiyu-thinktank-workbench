@@ -2,7 +2,7 @@
   "name": "yiyu-thinktank-workbench",
   "version": "0.1.0",
   "private": true,
-  "description": "益语智库自用平台 2.0 桌面版",
+  "description": "益语智库自用平台 V2.0 桌面版",
   "type": "module",
   "main": "build/main/main.js",
   "scripts": {
@@ -23,11 +23,11 @@
     "start:raw": "node scripts/run-local-electron.mjs .",
     "install:mac-local": "npm run dist:mac-local && node scripts/install-mac-app.mjs",
     "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && electron-builder --mac dmg zip",
-    "dist:mac-local": "npm run build && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 2.0.app\" && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库自用平台 2.0.app\""
+    "dist:mac-local": "npm run build && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\" && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库自用平台 V2.0.app\""
   },
   "build": {
     "appId": "com.yiyu.selfworkbench2",
-    "productName": "益语智库自用平台 2.0",
+    "productName": "益语智库自用平台 V2.0",
     "asar": false,
     "directories": {
       "buildResources": "build-resources"

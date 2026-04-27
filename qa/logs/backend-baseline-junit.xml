@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="1.121" timestamp="2026-04-20T07:41:09.959474+08:00" hostname="MacBook-Pro-2.lan"><testcase classname="" name="tests.test_agent_worklogs" time="0.000"><error message="collection failure">ImportError while importing test module '/Users/guyuanyuan/openclaw/workspace/yiyu-thinktank-workbench/backend/tests/test_agent_worklogs.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-../../../../.local/share/uv/python/cpython-3.11.14-macos-aarch64-none/lib/python3.11/importlib/__init__.py:126: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../../.openclaw/workspace/yiyu-thinktank-workbench/backend/tests/test_agent_worklogs.py:3: in &lt;module&gt;
-    from app.db import Database
-E   ModuleNotFoundError: No module named 'app'</error></testcase></testsuite></testsuites>

@@ -144,6 +144,7 @@ from app.models import (
 from app.smart_input import build_smart_task_draft, transcribe_audio_with_doubao
 from app.bootstrap_security import DEFAULT_BOOTSTRAP_ADMIN_EMAIL, ensure_cloud_secret, resolve_seed_users
 from app.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.services.event_line_timeline import build_event_line_timeline_nodes
 
 
 APP_NAME = "益语智库中心任务后端"
@@ -234,6 +235,7 @@ def _sql_placeholders(values: list[str] | tuple[str, ...]) -> str:
 
 
 def _row_user(row) -> SessionUser:
+    department = get_department_entry(str(row["department_id"]) if "department_id" in row.keys() and row["department_id"] else None, str(row["department_name"]) if "department_name" in row.keys() and row["department_name"] else None)
     return SessionUser(
         id=str(row["id"]),
         organizationId=str(row["organization_id"]),
@@ -241,6 +243,9 @@ def _row_user(row) -> SessionUser:
         fullName=str(row["full_name"]),
         primaryRole=str(row["primary_role"]),
         accountStatus=str(row["account_status"]),
+        departmentId=department.id if department else (str(row["department_id"]) if "department_id" in row.keys() and row["department_id"] else None),
+        departmentName=department.name if department else (str(row["department_name"]) if "department_name" in row.keys() and row["department_name"] else None),
+        isDepartmentLead=bool(int(row["is_department_lead"] or 0)) if "is_department_lead" in row.keys() else False,
     )
 
 
@@ -9171,29 +9176,75 @@ def create_app() -> FastAPI:
             "SELECT * FROM event_line_activities WHERE event_line_id = ? ORDER BY happened_at ASC",
             (event_line_id,),
         )
+        referenced_task_ids: set[str] = set()
+        referenced_attachment_ids: set[str] = set()
+        for activity in activity_rows:
+            metadata = from_json(activity["metadata_json"], {})
+            metadata = metadata if isinstance(metadata, dict) else {}
+            source_type = str(activity["source_type"] or "")
+            source_id = str(activity["source_id"] or "").strip()
+            if source_type == "task_activity" and source_id:
+                referenced_task_ids.add(source_id)
+            if source_type == "attachment" and source_id:
+                referenced_attachment_ids.add(source_id)
+            for key in ("taskId", "task_id"):
+                value = str(metadata.get(key) or "").strip()
+                if value:
+                    referenced_task_ids.add(value)
+            for key in ("attachmentId", "attachment_id", "taskAttachmentId", "task_attachment_id"):
+                value = str(metadata.get(key) or "").strip()
+                if value:
+                    referenced_attachment_ids.add(value)
+
+        task_where = "event_line_id = ? AND organization_id = ?"
+        task_params: list[str] = [event_line_id, current_user.organizationId]
+        normalized_task_ids = sorted({item for item in referenced_task_ids if item})
+        if normalized_task_ids:
+            placeholders = ", ".join("?" for _ in normalized_task_ids)
+            task_where = f"(event_line_id = ? OR id IN ({placeholders})) AND organization_id = ?"
+            task_params = [event_line_id, *normalized_task_ids, current_user.organizationId]
         task_rows = state.db.fetchall(
-            "SELECT * FROM tasks WHERE event_line_id = ? AND organization_id = ? ORDER BY updated_at DESC",
-            (event_line_id, current_user.organizationId),
+            f"SELECT * FROM tasks WHERE {task_where} ORDER BY updated_at DESC",
+            tuple(task_params),
         )
+        task_attachment_conditions = ["event_line_id = ?"]
+        task_attachment_params: list[str] = [event_line_id]
+        event_attachment_conditions = ["event_line_id = ?"]
+        event_attachment_params: list[str] = [event_line_id]
+        normalized_attachment_ids = sorted({item for item in referenced_attachment_ids if item})
+        if normalized_attachment_ids:
+            placeholders = ", ".join("?" for _ in normalized_attachment_ids)
+            task_attachment_conditions.append(f"id IN ({placeholders})")
+            task_attachment_params.extend(normalized_attachment_ids)
+            event_attachment_conditions.append(f"id IN ({placeholders})")
+            event_attachment_params.extend(normalized_attachment_ids)
+        if normalized_task_ids:
+            placeholders = ", ".join("?" for _ in normalized_task_ids)
+            task_attachment_conditions.append(f"task_id IN ({placeholders})")
+            task_attachment_params.extend(normalized_task_ids)
+        task_attachment_where = f"({' OR '.join(task_attachment_conditions)}) AND organization_id = ?"
+        task_attachment_params.append(current_user.organizationId)
+        event_attachment_where = f"({' OR '.join(event_attachment_conditions)}) AND organization_id = ?"
+        event_attachment_params.append(current_user.organizationId)
         if _has_event_line_attachments_table():
             attachment_rows = state.db.fetchall(
-                """
-                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id, 'task_attachment' AS source_kind FROM task_attachments WHERE event_line_id = ? AND organization_id = ?
+                f"""
+                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id, 'task_attachment' AS source_kind FROM task_attachments WHERE {task_attachment_where}
                 UNION ALL
-                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id, 'event_line_attachment' AS source_kind FROM event_line_attachments WHERE event_line_id = ? AND organization_id = ?
+                SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, '' as task_id, 'event_line_attachment' AS source_kind FROM event_line_attachments WHERE {event_attachment_where}
                 ORDER BY created_at ASC
                 """,
-                (event_line_id, current_user.organizationId, event_line_id, current_user.organizationId),
+                tuple(task_attachment_params + event_attachment_params),
             )
         else:
             attachment_rows = state.db.fetchall(
-                """
+                f"""
                 SELECT id, organization_id, event_line_id, document_id, title, summary, path, kind, source, mime_type, size_bytes, created_by_user_id, created_at, task_id, 'task_attachment' AS source_kind
                 FROM task_attachments
-                WHERE event_line_id = ? AND organization_id = ?
+                WHERE {task_attachment_where}
                 ORDER BY created_at ASC
                 """,
-                (event_line_id, current_user.organizationId),
+                tuple(task_attachment_params),
             )
         participant_ids = [str(item) for item in from_json(row["participant_ids_json"], []) if str(item).strip()]
         participant_names = []
@@ -9201,34 +9252,56 @@ def create_app() -> FastAPI:
             user_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (uid,))
             if user_row:
                 participant_names.append(str(user_row["full_name"]))
-        return EventLineReportSnapshotRecord(
-            eventLine=event_line,
-            activities=[_event_line_activity_record(state, item) for item in activity_rows],
-            tasks=[_task_record(state, item, current_user.id) for item in task_rows],
-            attachments=[
+        activity_records = [_event_line_activity_record(state, item) for item in activity_rows]
+        task_records = [_task_record(state, item, current_user.id) for item in task_rows]
+        attachment_records: list[EventLineReportAttachmentRecord] = []
+        for att in attachment_rows:
+            actor_name = None
+            if att["created_by_user_id"]:
+                actor_row = state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),))
+                actor_name = str(actor_row["full_name"]) if actor_row and actor_row["full_name"] else None
+            title = str(att["title"] or "附件")
+            document_id = str(att["document_id"]) if att["document_id"] else None
+            parsed_preview = str(att["summary"] or "")
+            parse_status = "ready" if document_id and parsed_preview else ("pending" if document_id else "missing_document")
+            download_url = f"/api/public/task-attachments/{att['id']}"
+            attachment_records.append(
                 EventLineReportAttachmentRecord(
                     id=str(att["id"]),
                     taskId=str(att["task_id"]),
-                    documentId=str(att["document_id"]) if att["document_id"] else None,
+                    documentId=document_id,
                     sourceKind=str(att["source_kind"]) if att["source_kind"] else None,
-                    title=str(att["title"]),
+                    title=title,
+                    fileName=title,
                     kind=str(att["kind"]),
                     mimeType=str(att["mime_type"]) if att["mime_type"] else None,
                     sizeBytes=int(att["size_bytes"] or 0),
-                    downloadUrl=f"/api/public/task-attachments/{att['id']}",
-                    actorName=str(
-                        state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),))["full_name"]
-                    ) if att["created_by_user_id"] and state.db.fetchone("SELECT full_name FROM employee_accounts WHERE id = ?", (str(att["created_by_user_id"]),)) else None,
+                    downloadUrl=download_url,
+                    openUrl=download_url,
+                    actorName=actor_name,
                     createdAt=str(att["created_at"]),
-                    parseStatus=None,
-                    parsedPreview=str(att["summary"] or ""),
+                    parseStatus=parse_status,
+                    parsedPreview=parsed_preview,
                     chunkCount=0,
                     sectionCount=0,
                 )
-                for att in attachment_rows
-            ],
+            )
+        snapshot_at = now_iso()
+        timeline_nodes = build_event_line_timeline_nodes(
+            event_line=event_line.model_dump(mode="json"),
+            activities=[item.model_dump(mode="json") for item in activity_records],
+            tasks=[item.model_dump(mode="json") for item in task_records],
+            attachments=[item.model_dump(mode="json") for item in attachment_records],
+            snapshot_at=snapshot_at,
+        )
+        return EventLineReportSnapshotRecord(
+            eventLine=event_line,
+            activities=activity_records,
+            tasks=task_records,
+            attachments=attachment_records,
+            timelineNodes=timeline_nodes,
             participantNames=participant_names,
-            snapshotAt=now_iso(),
+            snapshotAt=snapshot_at,
         )
 
     @app.post("/api/v1/event-lines/{event_line_id}/attachments")

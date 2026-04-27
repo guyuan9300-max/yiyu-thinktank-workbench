@@ -25,8 +25,8 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:previewPushToMain', repoPath),
   commitAndPushToMain: (payload: CommitAndPushToMainPayload): Promise<CollabActionResult> =>
     ipcRenderer.invoke('yiyu-workbench:commitAndPushToMain', payload),
-  previewPullFromMain: (repoPath: string): Promise<PullPreview> =>
-    ipcRenderer.invoke('yiyu-workbench:previewPullFromMain', repoPath),
+  previewPullFromMain: (repoPath: string, targetCommit?: string | null): Promise<PullPreview> =>
+    ipcRenderer.invoke('yiyu-workbench:previewPullFromMain', repoPath, targetCommit ?? null),
   pullSelectedFromMain: (payload: PullSelectedFromMainPayload): Promise<CollabActionResult> =>
     ipcRenderer.invoke('yiyu-workbench:pullSelectedFromMain', payload),
   rebuildAndInstallFromRepo: (repoPath: string): Promise<boolean> =>

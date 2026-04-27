@@ -1,0 +1,182 @@
+{
+  "recordedAt": "2026-04-20T12:14:57",
+  "generatedAt": "2026-04-20T12:14:57",
+  "commitSha": "70614405f4bdadc7fa48c9f2364cd8b41823c169",
+  "backendUrl": "http://127.0.0.1:47829",
+  "databasePath": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench/app.db",
+  "dataDir": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench",
+  "dirtyWorktree": true,
+  "dirtyPaths": [
+    "backend/app/db.py",
+    "backend/app/main.py",
+    "backend/app/models.py",
+    "backend/app/services/ai.py",
+    "backend/app/services/analysis_center.py",
+    "backend/app/services/growth_engine.py",
+    "backend/app/services/knowledge_base.py",
+    "backend/app/services/knowledge_v2.py",
+    "backend/app/services/local_memory.py",
+    "backend/pyproject.toml",
+    "backend/scripts/main_chain_canary.py",
+    "backend/scripts/main_chain_rc_contract.py",
+    "backend/scripts/main_chain_rc_ops.py",
+    "backend/tests/test_analysis_main_chain.py",
+    "backend/tests/test_api_smoke.py",
+    "backend/tests/test_growth_engine.py",
+    "backend/tests/test_knowledge_v2.py",
+    "backend/tests/test_local_input_memory.py",
+    "backend/tests/test_main_chain_canary.py",
+    "backend/tests/test_main_chain_rc_ops.py",
+    "backend/tests/test_task_cloud_writeback.py",
+    "backend/tests/test_workspace_analysis_first.py",
+    "cloud_backend/app/db.py",
+    "cloud_backend/app/main.py",
+    "cloud_backend/app/models.py",
+    "cloud_backend/app/smart_input.py",
+    "cloud_backend/pyproject.toml",
+    "cloud_backend/tests/test_auth_tasks.py",
+    "cloud_backend/tests/test_mobile_consult_context.py",
+    "cloud_backend/tests/test_simulation_seed.py",
+    "docs/main-chain-v0.3.4-rc-runbook.md",
+    "docs/main-chain-value-proof-manual-template.json",
+    "mobile",
+    "output/main-chain/wave-before.json",
+    "output/main-chain/wave1-candidates-365d.json",
+    "output/main-chain/wave1-candidates.json",
+    "output/main-chain/wave1.json",
+    "output/main-chain/wave2-before.json",
+    "output/main-chain/wave2-candidates.json",
+    "qa/known-failures-p2.yaml",
+    "qa/logs/backend-after-p1-junit.xml",
+    "qa/logs/backend-baseline-junit.xml",
+    "qa/logs/cloud-backend-after-p1-junit.xml",
+    "qa/logs/cloud-backend-baseline-junit.xml",
+    "qa/semantic-decisions.md",
+    "qa/test-triage.yaml",
+    "scripts/check-installed-runtime.mjs",
+    "scripts/install-mac-app.mjs",
+    "scripts/open-installed-app.mjs",
+    "scripts/publish-desktop-client-knowledge-to-cloud.py",
+    "src/main/main.ts",
+    "src/renderer/App.tsx",
+    "src/renderer/components/tasks/EventLineReportPanel.tsx",
+    "src/renderer/components/tasks/TaskCalendarView.tsx",
+    "src/renderer/lib/api.ts",
+    "src/shared/mainChainPresentation.test.ts",
+    "src/shared/mainChainPresentation.ts",
+    "src/shared/types.ts"
+  ],
+  "installedApp": {
+    "path": "/Users/guyuanyuan/Applications/益语智库自用平台.app",
+    "exists": true,
+    "rendererEntry": "main-CUsIF3Gb.js",
+    "rendererAssets": [
+      "main-CUsIF3Gb.js"
+    ],
+    "modifiedAt": "2026-04-20T11:48:11"
+  },
+  "installedRuntimeSignature": {
+    "appBundleMTime": "2026-04-20T11:48:11",
+    "rendererEntry": "main-CUsIF3Gb.js",
+    "backendStartedByInstalledApp": true,
+    "backendPid": 5859,
+    "backendCommand": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench/runtime/backend-venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 47829"
+  },
+  "health": {
+    "appVersion": "0.1.0",
+    "buildVersion": "2026.03.15-v2-migration-1",
+    "startedAt": "2026-04-20T11:49:15"
+  },
+  "fixedGate": {
+    "status": "pass",
+    "commands": [
+      ".venv/bin/python -m pytest -q tests/test_analysis_main_chain.py",
+      ".venv/bin/python -m pytest -q tests/test_knowledge_v2.py",
+      ".venv/bin/python -m pytest -q tests/test_api_smoke.py -k \"strategic_cockpit or workspace_import_builds_document_cards_and_knowledge_status or workspace_import_auto_generates_client_dna_candidates or main_chain_canary_closes_import_analysis_approval_and_cockpit\"",
+      "npm run build:main",
+      "npm run build:renderer"
+    ]
+  },
+  "fullSmoke": {
+    "summary": "6 failed / 88 passed"
+  },
+  "classification": {
+    "aClassCount": 0,
+    "bClassSummary": [
+      "Template fill / active run reuse",
+      "Chat / retrieval / vectorize fallback",
+      "Event-line / task context / cloud task board"
+    ],
+    "cClassSummary": [
+      "API / validation contract drift，暂不处理"
+    ]
+  },
+  "latestJudgmentsShadowOff": true,
+  "mainChainStability": {
+    "latestJudgmentsShadowOff": true,
+    "backfillPaused": false,
+    "workerCounters": {
+      "claimCounts": {
+        "interactive": 46,
+        "updatedAt": 0,
+        "backfill": 6
+      },
+      "lockContention": {},
+      "backfillThrottle": {}
+    },
+    "lastCanaryObservation": {
+      "recordedAt": "2026-04-18T15:05:21",
+      "timeRange": "Wave 2 / Day 0 @ 2026-04-18T15:05:21",
+      "clientCount": 3,
+      "enqueuedJobs": 7,
+      "completedJobs": 7,
+      "failedJobs": 0,
+      "newObjectHitRateBefore": 0.913,
+      "newObjectHitRateAfter": 0.9245,
+      "fallbackRateBefore": 0.0,
+      "fallbackRateAfter": 0.0,
+      "resolverMismatchRateBefore": 0.0,
+      "resolverMismatchRateAfter": 0.0,
+      "approvalBacklog": 3,
+      "approvalLagHoursMedian": 0.0,
+      "claimCounts": {
+        "interactive": 46,
+        "updatedAt": 0,
+        "backfill": 6
+      },
+      "lockContention": {},
+      "backfillThrottle": {},
+      "impactedRealtimeTasks": false,
+      "latestJudgmentsShadowOff": true,
+      "verdict": "pass",
+      "conclusion": "Day 0 预热通过：关闭旧结果通道、同 snapshot 重跑与极小真实 backfill 均保持稳定。"
+    },
+    "updatedAt": "2026-04-18T15:05:21"
+  },
+  "metrics": {
+    "windowDays": 7,
+    "newObjectHitRate": 0.9245,
+    "fallbackRate": 0.0,
+    "approvalBacklog": 3,
+    "approvalLagHoursMedian": 0.0,
+    "candidateReviewWarningCount": 3,
+    "candidateReviewOverdueCount": 3,
+    "newCandidateUnreviewed24h": 0,
+    "candidateToApprovedConversionRate": 0.0,
+    "staleApprovedJudgmentCount": 0,
+    "resolverMismatchRate": 0.0,
+    "pageBreakdown": {
+      "client_overview": {
+        "newObjectHitRate": 0.9245,
+        "fallbackRate": 0.0,
+        "resolverMismatchRate": 0.0,
+        "totalRuns": 53
+      }
+    }
+  },
+  "notes": "2026-04-20 full_regeneration after install signature drift recovery; fallback-presentation guard landed and fixed-gate green.",
+  "rcMode": "installed-runtime",
+  "tupleHash": "63791a6a85b5217725a12a5ab8de31cc6ae20f3a410d55242e1d8576b2efadb2",
+  "sessionId": "rc-20260420-121457-63791a6a85b5",
+  "baselineHash": "32dfbdf5512c6fd91cc0cd41db6169f42273490fdd34bbeb98388aede35d5518"
+}

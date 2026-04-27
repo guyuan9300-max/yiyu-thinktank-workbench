@@ -195,6 +195,7 @@ import type {
   TopicRadar,
   TopicRadarPayload,
   ReviewDashboard,
+  ReviewPerspectiveKey,
   ReviewHistoryResponse,
   ReviewGovernanceSettings,
   ReviewGovernanceSettingsPayload,
@@ -2602,12 +2603,14 @@ export async function getTaskTagSuggestions(payload: TaskTagSuggestionPayload) {
   });
 }
 
-export async function getReviews(weekLabel?: string, options?: { skipAi?: boolean }) {
+export async function getReviews(weekLabel?: string, options?: { skipAi?: boolean; perspective?: ReviewPerspectiveKey; departmentId?: string | null; signal?: AbortSignal }) {
   const search = new URLSearchParams();
   if (weekLabel) search.set('weekLabel', weekLabel);
   if (options?.skipAi) search.set('skipAi', '1');
+  if (options?.perspective) search.set('perspective', options.perspective);
+  if (options?.departmentId) search.set('departmentId', options.departmentId);
   const suffix = search.toString() ? `?${search.toString()}` : '';
-  return request<ReviewDashboard>(`/api/v1/reviews${suffix}`);
+  return request<ReviewDashboard>(`/api/v1/reviews${suffix}`, { signal: options?.signal });
 }
 
 export async function getReviewDashboardDrillTarget(params: {
@@ -2928,8 +2931,8 @@ export async function commitAndPushToMain(payload: CommitAndPushToMainPayload) {
   return window.yiyuWorkbench.commitAndPushToMain(payload) as Promise<CollabActionResult>;
 }
 
-export async function previewPullFromMain(repoPath: string) {
-  return window.yiyuWorkbench.previewPullFromMain(repoPath) as Promise<PullPreview>;
+export async function previewPullFromMain(repoPath: string, targetCommit?: string | null) {
+  return window.yiyuWorkbench.previewPullFromMain(repoPath, targetCommit ?? null) as Promise<PullPreview>;
 }
 
 export async function pullSelectedFromMain(payload: PullSelectedFromMainPayload) {

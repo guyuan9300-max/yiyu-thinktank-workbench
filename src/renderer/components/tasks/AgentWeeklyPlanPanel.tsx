@@ -30,7 +30,7 @@ function statusClass(status: string) {
 export function AgentWeeklyPlanPanel({
   plans,
   title = '三个部门本周计划',
-  subtitle = '这些计划不是手工编造，而是基于真实工作痕迹和部门职责自动推演出的 CEO 视角计划板。',
+  subtitle = '这些计划不是手工编造，而是基于真实工作痕迹和部门职责自动推演出的组织视角计划板。',
 }: AgentWeeklyPlanPanelProps) {
   if (plans.length === 0) return null;
 

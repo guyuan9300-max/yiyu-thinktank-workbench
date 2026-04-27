@@ -2268,14 +2268,14 @@ def _build_admin_work_hypotheses(
                 reason=(
                     "这条判断直接读取机构季度重点与正式 focusItems，并结合部门视角判断是否需要继续收束本周重点。"
                     if viewer_role == "department_lead"
-                    else "这条判断直接读取机构季度重点与正式 focusItems，不再使用部门对齐度来替代 CEO 视角。"
+                    else "这条判断直接读取机构季度重点与正式 focusItems，不再使用部门对齐度来替代组织视角。"
                 ),
                 relatedTaskIds=[item.taskId for item in items[:4]],
                 evidenceSources=["task_fact", "focus_plan"],
                 assumptionNote=(
                     "部门负责人视角会优先看部门本周重点和机构方向是否一致，不再退回到员工口径。"
                     if viewer_role == "department_lead"
-                    else "CEO 视角只看与机构战略和关键项目的关系，不再输出个人-部门对齐度。"
+                    else "组织视角只看与机构战略和关键项目的关系，不再输出个人-部门对齐度。"
                 ),
             )
         )

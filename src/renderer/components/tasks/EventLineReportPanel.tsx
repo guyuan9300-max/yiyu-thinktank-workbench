@@ -8,6 +8,7 @@ import {
   FileBadge,
   FileText,
   Image,
+  ExternalLink,
 } from 'lucide-react';
 import type {
   EventLineReportSnapshot,
@@ -160,6 +161,8 @@ type EventLineTimelineNode = Omit<BackendEventLineTimelineNode, 'kind'> & {
   sourceTaskIds?: string[];
   sourceActivityIds: string[];
   attachments: EventLineReportAttachment[];
+  materialCount?: number;
+  includeInReport?: boolean;
   evidenceSummary: string;
   warnings: string[];
   tags: string[];
@@ -380,6 +383,21 @@ function resolveAttachmentUrl(att: EventLineReportAttachment, backendBaseUrl: st
   return `${backendBaseUrl}${url}`;
 }
 
+function resolveAttachmentOpenUrl(att: EventLineReportAttachment, backendBaseUrl: string) {
+  const url = normalizeText(att.openUrl) || normalizeText(att.downloadUrl);
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${backendBaseUrl}${url}`;
+}
+
+function attachmentDisplayTags(att: EventLineReportAttachment) {
+  return [
+    att.sourceKind === 'task_attachment' ? '强相关' : '原始文件',
+    att.documentId ? '已入本轮材料' : '待确认',
+    att.parseStatus === 'ready' ? '已解析' : '',
+  ].filter(Boolean);
+}
+
 function isTestAttachment(att: EventLineReportAttachment) {
   const title = normalizeText(att.title).toLowerCase();
   return /(^|[\/\s_.-])(test|smoke|dummy|sample|demo)([\/\s_.-]|$)/i.test(title) || title.includes('测试');
@@ -411,7 +429,7 @@ function taskStatusLabel(status: string) {
 }
 
 function materialSourceLabel(kind: EventLineMaterialBundleKind, fallback: string) {
-  if (kind === 'loose') return fallback || '待归属素材';
+  if (kind === 'loose') return fallback || '待确认材料';
   if (kind === 'task') return fallback || '关联任务';
   if (kind === 'system') return fallback || '系统痕迹';
   return fallback || '活动';
@@ -522,6 +540,64 @@ function deriveEventLineMaterialModel(snapshot: EventLineReportSnapshot, draft: 
     supplement: [],
     system: [],
   };
+  const backendNodes = (snapshot.timelineNodes || []).filter((node) => Boolean(node && node.id && node.title));
+  if (backendNodes.length > 0) {
+    let duplicateAttachmentCount = 0;
+    let testAttachmentCount = 0;
+    let looseAttachmentCount = 0;
+    for (const node of backendNodes) {
+      const attachments = Array.isArray(node.attachments) ? node.attachments : [];
+      const analysis = analyzeMaterialAttachments(attachments);
+      duplicateAttachmentCount += analysis.duplicateAttachmentCount;
+      testAttachmentCount += analysis.testAttachmentCount;
+      if (node.kind === 'needs_review') looseAttachmentCount += attachments.filter((att) => !normalizeText(att.taskId)).length;
+      const group: EventLineMaterialGroupKey = node.kind === 'system_trace'
+        ? 'system'
+        : node.kind === 'needs_review'
+          ? 'review'
+          : node.kind === 'admin_archive'
+            ? 'supplement'
+            : 'core';
+      groups[group].push({
+        id: `node:${node.id}`,
+        group,
+        kind: node.kind === 'system_trace' ? 'system' : node.sourceTaskId || (node.sourceTaskIds || []).length > 0 ? 'task' : 'activity',
+        title: node.title,
+        summary: truncateText(node.summary || node.evidenceSummary || '', 180),
+        sourceLabel: TIMELINE_KIND_LABELS[node.kind] || '事件节点',
+        happenedAt: node.time || draft.snapshotAt,
+        actorName: node.ownerName || node.actorName,
+        statusLabel: node.kind === 'needs_review' ? '待确认' : '',
+        tags: [
+          ...(node.tags || []),
+          ...materialAttachmentTags(analysis),
+        ].filter(Boolean),
+        warnings: materialAttachmentWarnings(analysis, node.warnings || []),
+        attachments,
+        attachmentGroups: analysis.attachmentGroups,
+        duplicateCount: analysis.duplicateAttachmentCount || undefined,
+        versionCount: analysis.versionConflictCount || undefined,
+        testAttachmentCount: analysis.testAttachmentCount || undefined,
+        missingDownloadCount: analysis.missingDownloadCount || undefined,
+      });
+    }
+    for (const key of Object.keys(groups) as EventLineMaterialGroupKey[]) {
+      groups[key] = groups[key].sort(materialTimeDesc);
+    }
+    const gaps = [
+      normalizeText(snapshot.eventLine.recentDecision) ? '' : '缺关键决策：建议补“为什么形成今天这个判断”。',
+      normalizeText(snapshot.eventLine.nextStep) ? '' : '缺下一步：建议补负责人、动作和时间点。',
+      normalizeText(snapshot.eventLine.currentBlocker) ? '' : '缺当前阻塞：建议补这条线现在卡在哪里。',
+      groups.review.length > 0 ? `存在待确认材料：${groups.review.length} 个节点需要补归属、清理测试素材或等待解析。` : '',
+    ].filter(Boolean);
+    return {
+      groups,
+      gaps,
+      duplicateAttachmentCount,
+      testAttachmentCount,
+      looseAttachmentCount,
+    };
+  }
   const taskMap = new Map((draft.tasks || []).map((task) => [task.id, task]));
   let duplicateAttachmentCount = 0;
   let testAttachmentCount = 0;
@@ -618,13 +694,13 @@ function deriveEventLineMaterialModel(snapshot: EventLineReportSnapshot, draft: 
       id: `loose:${looseKey}`,
       group: 'review',
       kind: 'loose',
-      title: looseKey === 'image' ? '未归属图片素材' : `待归属素材：${familyLabel}`,
-      summary: `这些附件没有明确任务上下文，暂时只能作为待确认材料保留。建议后续绑定到具体任务或补充说明。`,
-      sourceLabel: materialSourceLabel('loose', '待归属素材'),
+      title: looseKey === 'image' ? '图片材料主题待确认' : `${familyLabel}主题待确认`,
+      summary: `这些附件暂时缺少清晰业务上下文，先作为待确认材料保留。建议后续绑定到具体任务或补充说明。`,
+      sourceLabel: materialSourceLabel('loose', '待确认材料'),
       happenedAt: latest?.createdAt || draft.snapshotAt,
       actorName: latest?.actorName,
-      statusLabel: '待归属',
-      tags: ['待归属', ...materialAttachmentTags(analysis)],
+      statusLabel: '待确认',
+      tags: ['待确认', ...materialAttachmentTags(analysis)],
       warnings: materialAttachmentWarnings(analysis, ['缺少任务/活动归属']),
       attachments,
       attachmentGroups: analysis.attachmentGroups,
@@ -704,7 +780,7 @@ function deriveEventLineMaterialModel(snapshot: EventLineReportSnapshot, draft: 
     duplicateAttachmentCount || testAttachmentCount
       ? `存在待清理素材：${duplicateAttachmentCount ? `重复附件 ${duplicateAttachmentCount} 条` : ''}${duplicateAttachmentCount && testAttachmentCount ? '，' : ''}${testAttachmentCount ? `测试文件 ${testAttachmentCount} 条` : ''}。`
       : '',
-    looseAttachmentCount ? `存在未归属素材：${looseAttachmentCount} 个附件缺少任务或活动上下文，建议后续绑定到具体任务。` : '',
+    looseAttachmentCount ? `存在待确认素材：${looseAttachmentCount} 个附件缺少任务或活动上下文，建议后续绑定到具体任务。` : '',
   ].filter(Boolean);
 
   return {
@@ -828,14 +904,14 @@ function deriveEventLineTimelineModel(snapshot: EventLineReportSnapshot, draft: 
     mainNodes.push({
       id: `event-line:${snapshot.eventLine.id}:overview`,
       kind: 'project_milestone',
-      title: '主线形成',
+      title: '项目启动',
       time: snapshot.eventLine.createdAt || draft.snapshotAt,
       summary: truncateText(normalizeText(snapshot.eventLine.intent) || normalizeText(snapshot.eventLine.summary), 220),
       sourceActivityIds: [],
       attachments: [],
       evidenceSummary: '',
       warnings: [],
-      tags: ['事件线主线'],
+      tags: ['项目启动'],
       actorName: snapshot.eventLine.ownerName,
       ownerName: snapshot.eventLine.ownerName,
     });
@@ -902,13 +978,13 @@ function deriveEventLineTimelineModel(snapshot: EventLineReportSnapshot, draft: 
       id: `loose:${key}`,
       kind,
       title: kind === 'meeting_material'
-        ? '未归属会议材料'
+        ? '会议材料主题待确认'
         : kind === 'admin_material'
-          ? '未归属行政材料'
-          : latest && isImageAttachment(latest) ? '未归属图片素材' : `待归属素材：${latest?.title || key}`,
+          ? '行政材料主题待确认'
+          : latest && isImageAttachment(latest) ? '图片材料主题待确认' : `${latest?.title || key}主题待确认`,
       time: latest?.createdAt || draft.snapshotAt,
       summary: timelineNodeSummary({
-        title: latest?.title || '待归属素材',
+        title: latest?.title || '待确认素材',
         description: '',
         attachments: nonTestAttachments,
         kind,
@@ -918,10 +994,10 @@ function deriveEventLineTimelineModel(snapshot: EventLineReportSnapshot, draft: 
       evidenceSummary: parsedEvidenceSummary(nonTestAttachments),
       warnings: [
         '缺少任务/活动归属。',
-        attachments.some((att) => !att.documentId) ? '部分附件尚未接入数据中心 documentId。' : '',
+        attachments.some((att) => !att.documentId) ? '部分附件尚未完成资料库解析。' : '',
         attachments.some((att) => att.documentId && att.parseStatus !== 'ready') ? '部分附件仍待数据中心解析完成。' : '',
       ].filter(Boolean),
-      tags: ['待归属', ...attachmentBasisTags(nonTestAttachments), attachments.length > 0 ? `附件 ${attachments.length}` : ''].filter(Boolean),
+      tags: ['待确认', ...attachmentBasisTags(nonTestAttachments), attachments.length > 0 ? `附件 ${attachments.length}` : ''].filter(Boolean),
       actorName: latest?.actorName,
     };
     if (kind === 'meeting_material' || kind === 'admin_material') mainNodes.push(node);
@@ -1297,8 +1373,15 @@ function DocContentViewer({ att, backendBaseUrl }: { att: EventLineReportAttachm
   const [loading, setLoading] = useState(true);
   const badge = fileTypeBadge(att.title);
   const downloadUrl = resolveAttachmentUrl(att, backendBaseUrl);
+  const openUrl = resolveAttachmentOpenUrl(att, backendBaseUrl);
+  const tags = attachmentDisplayTags(att);
 
   useEffect(() => {
+    if (normalizeText(att.parsedPreview)) {
+      setSummary(att.parsedPreview || null);
+      setLoading(false);
+      return;
+    }
     // Try text-content first, fall back to ocr-summary
     void fetch(`${backendBaseUrl}/api/public/task-attachments/${att.id}/text-content`)
       .then((r) => r.json())
@@ -1321,7 +1404,7 @@ function DocContentViewer({ att, backendBaseUrl }: { att: EventLineReportAttachm
       })
       .catch(() => setSummary(null))
       .finally(() => setLoading(false));
-  }, [att.id, backendBaseUrl]);
+  }, [att.id, att.parsedPreview, backendBaseUrl]);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
@@ -1335,8 +1418,26 @@ function DocContentViewer({ att, backendBaseUrl }: { att: EventLineReportAttachm
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-[12px] font-medium text-gray-800 truncate">{att.title}</p>
-          <p className="text-[10px] text-gray-400">{fileSizeLabel(att.sizeBytes)}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {tags.map((tag) => (
+              <span key={tag} className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${tag === '已解析' ? 'bg-emerald-50 text-emerald-700' : tag === '待确认' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-[#4B66D8]'}`}>
+                {tag}
+              </span>
+            ))}
+            <span className="text-[10px] text-gray-400">{fileSizeLabel(att.sizeBytes)}</span>
+          </div>
         </div>
+        {openUrl ? (
+          <a
+            href={openUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-shrink-0 rounded-lg px-2 py-1 text-[11px] font-bold text-[#4B66D8] hover:bg-blue-50 transition"
+            title="打开原文"
+          >
+            打开原文
+          </a>
+        ) : null}
         {downloadUrl ? (
           <a
             href={downloadUrl}
@@ -1373,8 +1474,15 @@ function ImageWithOcr({ att, backendBaseUrl }: { att: EventLineReportAttachment;
   const [ocrText, setOcrText] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const imageUrl = resolveAttachmentUrl(att, backendBaseUrl);
+  const openUrl = resolveAttachmentOpenUrl(att, backendBaseUrl);
+  const tags = attachmentDisplayTags(att);
 
   useEffect(() => {
+    if (normalizeText(att.parsedPreview)) {
+      setOcrText(att.parsedPreview || null);
+      setLoading(false);
+      return;
+    }
     void fetch(`${backendBaseUrl}/api/public/task-attachments/${att.id}/ocr-summary`)
       .then((r) => r.json())
       .then((data: { summary?: string; unsupported?: boolean }) => {
@@ -1386,7 +1494,7 @@ function ImageWithOcr({ att, backendBaseUrl }: { att: EventLineReportAttachment;
       })
       .catch(() => setOcrText(null))
       .finally(() => setLoading(false));
-  }, [att.id, backendBaseUrl]);
+  }, [att.id, att.parsedPreview, backendBaseUrl]);
 
   return (
     <div className="rounded-xl border border-gray-200 overflow-hidden bg-gray-50">
@@ -1403,6 +1511,18 @@ function ImageWithOcr({ att, backendBaseUrl }: { att: EventLineReportAttachment;
       )}
       <div className="px-2 py-1.5">
         <p className="text-[10px] text-gray-500 truncate">{att.title}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          {tags.map((tag) => (
+            <span key={tag} className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${tag === '已解析' ? 'bg-emerald-50 text-emerald-700' : tag === '待确认' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-[#4B66D8]'}`}>
+              {tag}
+            </span>
+          ))}
+          {openUrl ? (
+            <a href={openUrl} target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[9px] font-bold text-[#4B66D8]">
+              <ExternalLink size={10} /> 打开原文
+            </a>
+          ) : null}
+        </div>
         {loading ? (
           <div className="mt-1 flex items-center gap-1">
             <div className="h-2 w-2 animate-spin rounded-full border border-gray-300 border-t-[#5B7BFE]" />
@@ -1497,6 +1617,7 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
           tasks: [...(data.tasks || [])],
           participantNames: [...data.participantNames],
           snapshotAt: data.snapshotAt,
+          timelineNodes: [...(data.timelineNodes || [])].map(normalizeBackendTimelineNode),
         };
       });
     } catch (err) {
@@ -1581,6 +1702,8 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
     const imageKey = `timeline-images:${nodeId}`;
     const isDocsExpanded = docsExpandedActivities.has(docKey);
     const isImagesExpanded = imagesExpandedActivities.has(imageKey);
+    const primaryOpenAtt = attachments.find((att) => resolveAttachmentOpenUrl(att, backendBaseUrl));
+    const primaryOpenUrl = primaryOpenAtt ? resolveAttachmentOpenUrl(primaryOpenAtt, backendBaseUrl) : '';
 
     return (
       <div className="mt-3 rounded-2xl border border-gray-100 bg-[#FAFBFF] p-3">
@@ -1751,6 +1874,20 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             ))}
           </div>
         )}
+
+        {primaryOpenUrl && (
+          <div className="mt-3 flex justify-end">
+            <a
+              href={primaryOpenUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-blue-50 px-3 py-2 text-[11px] font-bold text-[#4B66D8] transition hover:bg-blue-100"
+            >
+              <ExternalLink size={12} />
+              打开原文
+            </a>
+          </div>
+        )}
       </div>
     );
   };
@@ -1845,7 +1982,13 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             onClick={() => {
               const exportDraft = {
                 ...draft,
-                timelineNodes: timelineModel?.mainNodes ?? [],
+                timelineNodes: timelineModel
+                  ? [
+                    ...timelineModel.mainNodes,
+                    ...timelineModel.reviewNodes,
+                    ...(showSystemTraces ? timelineModel.systemNodes : []),
+                  ]
+                  : [],
                 expandedAttachmentIds: Array.from(expandedAttachments),
                 docsExpandedActivityIds: Array.from(docsExpandedActivities),
                 imagesExpandedActivityIds: Array.from(imagesExpandedActivities),

@@ -10,6 +10,7 @@ import type {
   CollabEffectPreview,
   CollabFileChange,
   CollabFileChangeType,
+  CollabRemoteCommit,
   CollabRepoStatus,
   CommitAndPushToMainPayload,
   PullPreview,
@@ -20,6 +21,7 @@ import type {
 type RunCommandOptions = {
   cwd?: string;
   allowNonZero?: boolean;
+  input?: string;
 };
 
 type RunCommandResult = {
@@ -61,6 +63,7 @@ type RepoSnapshot = {
   localBranchEntries: ParsedDiffEntry[];
   localChangeCount: number;
   remoteChangeCount: number;
+  remoteTargetRevision: string;
   statusText: string;
 };
 
@@ -69,6 +72,7 @@ type RepoOptions = {
   suggestedCandidates: string[];
   fetchRemote?: boolean;
   appDbPath?: string | null;
+  targetCommit?: string | null;
 };
 
 type RepoWorkContext = {
@@ -175,6 +179,19 @@ const IGNORABLE_LOCAL_STATUS_PATHS = new Set([
 
 const IGNORABLE_LOCAL_STATUS_PREFIXES = [
   'mobile/',
+];
+
+const GENERATED_LOCAL_STATUS_SEGMENTS = new Set([
+  '__pycache__',
+  '.pytest_cache',
+]);
+
+const GENERATED_LOCAL_STATUS_SUFFIXES = [
+  '.pyc',
+  '.pyo',
+  '.pyd',
+  '.DS_Store',
+  '.tsbuildinfo',
 ];
 
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
@@ -559,9 +576,12 @@ function hasBinaryExtension(targetPath: string) {
 }
 
 function isIgnorableLocalStatusPath(targetPath: string) {
-  const normalizedPath = targetPath.replace(/\\/g, '/');
+  const normalizedPath = normalizeRelativePath(targetPath).replace(/\/+$/, '');
+  const pathSegments = normalizedPath.split('/').filter(Boolean);
   return IGNORABLE_LOCAL_STATUS_PATHS.has(normalizedPath)
-    || IGNORABLE_LOCAL_STATUS_PREFIXES.some((prefix) => normalizedPath === prefix.slice(0, -1) || normalizedPath.startsWith(prefix));
+    || IGNORABLE_LOCAL_STATUS_PREFIXES.some((prefix) => normalizedPath === prefix.slice(0, -1) || normalizedPath.startsWith(prefix))
+    || pathSegments.some((segment) => GENERATED_LOCAL_STATUS_SEGMENTS.has(segment))
+    || GENERATED_LOCAL_STATUS_SUFFIXES.some((suffix) => normalizedPath.endsWith(suffix));
 }
 
 function addPathsToSet(targetSet: Set<string>, targetPath: string, previousPath?: string | null) {
@@ -800,15 +820,32 @@ async function runCommand(command: string, args: string[], options: RunCommandOp
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       env: process.env,
     });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => {
+    const childStdout = child.stdout;
+    const childStderr = child.stderr;
+    const childStdin = child.stdin;
+    if (!childStdout || !childStderr || (options.input !== undefined && !childStdin)) {
+      child.kill();
+      reject(new Error(`${command} stdio is not available`));
+      return;
+    }
+    if (options.input !== undefined) {
+      if (!childStdin) {
+        child.kill();
+        reject(new Error(`${command} stdin is not available`));
+        return;
+      }
+      childStdin.write(options.input);
+      childStdin.end();
+    }
+    childStdout.on('data', (chunk) => {
       stdout += chunk.toString();
     });
-    child.stderr.on('data', (chunk) => {
+    childStderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
     child.on('error', reject);
@@ -831,7 +868,27 @@ async function runGit(repoPath: string, args: string[], options: RunCommandOptio
   return runCommand('git', args, {
     cwd: repoPath,
     allowNonZero: options.allowNonZero,
+    input: options.input,
   });
+}
+
+async function getGitIgnoredPathSet(repoRoot: string, targetPaths: string[]) {
+  const normalizedPaths = Array.from(new Set(
+    targetPaths
+      .map((targetPath) => normalizeRelativePath(targetPath))
+      .filter(Boolean),
+  ));
+  if (!normalizedPaths.length) return new Set<string>();
+  const result = await runGit(repoRoot, ['check-ignore', '--stdin'], {
+    allowNonZero: true,
+    input: `${normalizedPaths.join('\n')}\n`,
+  });
+  return new Set(
+    result.stdout
+      .split(/\r?\n/)
+      .map((line) => normalizeRelativePath(line.trim()))
+      .filter(Boolean),
+  );
 }
 
 async function resolveGitRepoTopLevel(targetPath: string) {
@@ -878,7 +935,8 @@ async function expandUntrackedDirectoryEntries(repoRoot: string, entries: Parsed
     }
     const files = await listFilesRecursively(absolutePath);
     if (!files.length) {
-      expandedEntries.push({ ...entry, path: normalizedPath.replace(/\/$/, '') });
+      const collapsedPath = normalizedPath.replace(/\/$/, '');
+      expandedEntries.push({ ...entry, path: collapsedPath });
       continue;
     }
     for (const filePath of files) {
@@ -888,7 +946,11 @@ async function expandUntrackedDirectoryEntries(repoRoot: string, entries: Parsed
       });
     }
   }
-  return expandedEntries;
+  const ignoredPaths = await getGitIgnoredPathSet(repoRoot, expandedEntries.map((entry) => entry.path));
+  return expandedEntries.filter((entry) => {
+    const normalizedPath = normalizeRelativePath(entry.path);
+    return !ignoredPaths.has(normalizedPath) && !isIgnorableLocalStatusPath(normalizedPath);
+  });
 }
 
 export async function findSuggestedCollabRepoPath(candidates: string[]) {
@@ -926,6 +988,28 @@ function createStatusText(
   return '当前已与 origin/main 对齐。';
 }
 
+async function resolvePullTargetRevision(context: RepoWorkContext, targetCommit?: string | null) {
+  const trimmed = targetCommit?.trim();
+  if (!trimmed) return 'origin/main';
+  if (!/^[0-9a-f]{7,40}$/i.test(trimmed)) {
+    throw new Error(`同步目标不是有效提交号：${trimmed}`);
+  }
+  const verifyResult = await runGit(context.gitRepoPath, ['rev-parse', '--verify', `${trimmed}^{commit}`], { allowNonZero: true });
+  if (verifyResult.exitCode !== 0) {
+    throw new Error(`找不到要同步的提交：${trimmed}`);
+  }
+  const resolvedHash = verifyResult.stdout.trim();
+  const headAncestorResult = await runGit(context.gitRepoPath, ['merge-base', '--is-ancestor', 'HEAD', resolvedHash], { allowNonZero: true });
+  if (headAncestorResult.exitCode !== 0) {
+    throw new Error(`提交 ${trimmed} 不在当前本地版本之后，不能作为同步截止点。`);
+  }
+  const remoteAncestorResult = await runGit(context.gitRepoPath, ['merge-base', '--is-ancestor', resolvedHash, 'origin/main'], { allowNonZero: true });
+  if (remoteAncestorResult.exitCode !== 0) {
+    throw new Error(`提交 ${trimmed} 不属于当前 origin/main，不能从协作同步入口拉取。`);
+  }
+  return resolvedHash;
+}
+
 async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> {
   const repoPath = options.repoPath ? normalizeRepoPath(options.repoPath) : null;
   const suggestedRepoPath = await findSuggestedCollabRepoPath(options.suggestedCandidates);
@@ -948,6 +1032,7 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       localBranchEntries: [],
       localChangeCount: 0,
       remoteChangeCount: 0,
+      remoteTargetRevision: 'origin/main',
       statusText: '先绑定源码目录，按钮才会生效。',
     };
   }
@@ -971,6 +1056,7 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
       localBranchEntries: [],
       localChangeCount: 0,
       remoteChangeCount: 0,
+      remoteTargetRevision: 'origin/main',
       statusText: '当前目录不是有效 Git 仓库。',
     };
   }
@@ -982,6 +1068,7 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
   if (options.fetchRemote) {
     await runGit(gitContext.gitRepoPath, ['fetch', 'origin'], { allowNonZero: true });
   }
+  const remoteTargetRevision = await resolvePullTargetRevision(gitContext, options.targetCommit);
 
   const scopedGitArgs = scopeRelativePath ? ['--', scopeRelativePath] : [];
   const statusResult = await runGit(gitContext.gitRepoPath, ['status', '--porcelain=v1', '--branch', ...scopedGitArgs]);
@@ -992,7 +1079,7 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
     .filter((entry): entry is ParsedStatusEntry => Boolean(entry));
   const collabVisibleLocalEntries = scopedLocalEntries.filter((entry) => !isIgnorableLocalStatusPath(entry.path));
   const { branch, aheadCount, behindCount } = parseBranchHeader(branchHeader);
-  const remoteDiffResult = await runGit(gitContext.gitRepoPath, ['diff', '--name-status', '--find-renames=50%', 'HEAD..origin/main', ...scopedGitArgs], {
+  const remoteDiffResult = await runGit(gitContext.gitRepoPath, ['diff', '--name-status', '--find-renames=50%', `HEAD..${remoteTargetRevision}`, ...scopedGitArgs], {
     allowNonZero: true,
   });
   const localBranchDiffResult = await runGit(gitContext.gitRepoPath, ['diff', '--name-status', '--find-renames=50%', 'origin/main...HEAD', ...scopedGitArgs], {
@@ -1026,6 +1113,7 @@ async function collectRepoSnapshot(options: RepoOptions): Promise<RepoSnapshot> 
     remoteEntries,
     localBranchEntries,
     remoteChangeCount: remoteEntries.length,
+    remoteTargetRevision,
     statusText: createStatusText(snapshotBase, suggestedRepoPath && suggestedRepoPath !== repoRoot ? suggestedRepoPath : null),
   };
 }
@@ -1123,19 +1211,94 @@ function createRemoteFileChanges(snapshot: RepoSnapshot) {
   });
 }
 
-async function getCommitSummaries(context: RepoWorkContext) {
+function createCommitIdentityLabel(name: string, email: string) {
+  const cleanName = name.trim() || '未知提交人';
+  const cleanEmail = email.trim();
+  return cleanEmail ? `${cleanName} <${cleanEmail}>` : cleanName;
+}
+
+function createCommitSourceLabel(authorName: string, authorEmail: string, committerName: string, committerEmail: string) {
+  const committer = createCommitIdentityLabel(committerName || authorName, committerEmail || authorEmail);
+  if (/noreply\.github\.com$/i.test(committerEmail.trim())) {
+    return `GitHub · ${committer}`;
+  }
+  return `Git 账号/设备线索 · ${committer}`;
+}
+
+function mapRepoPathToScope(repoPath: string, scopeRelativePath: string | null) {
+  return stripScopePrefix(repoPath, scopeRelativePath);
+}
+
+async function getRemoteCommits(context: RepoWorkContext): Promise<CollabRemoteCommit[]> {
   const scopedGitArgs = context.scopeRelativePath ? ['--', context.scopeRelativePath] : [];
-  const logResult = await runGit(context.gitRepoPath, ['log', '--format=%h %s', 'HEAD..origin/main', ...scopedGitArgs], { allowNonZero: true });
-  return logResult.stdout
+  const logResult = await runGit(
+    context.gitRepoPath,
+    ['log', '--reverse', '--format=%H%x1f%h%x1f%aI%x1f%an%x1f%ae%x1f%cI%x1f%cn%x1f%ce%x1f%s', 'HEAD..origin/main', ...scopedGitArgs],
+    { allowNonZero: true },
+  );
+  const commits = logResult.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((line) => {
+      const fields = line.split('\x1f');
+      const [
+        hash = '',
+        shortHash = '',
+        authoredAt = '',
+        authorName = '',
+        authorEmail = '',
+        committedAt = '',
+        committerName = '',
+        committerEmail = '',
+        ...subjectParts
+      ] = fields;
+      const subject = subjectParts.join('\x1f').trim();
+      return {
+        hash,
+        shortHash,
+        authoredAt,
+        committedAt,
+        authorName,
+        authorEmail,
+        committerName,
+        committerEmail,
+        subject,
+      };
+    })
+    .filter((commit) => commit.hash && commit.shortHash);
+
+  const result: CollabRemoteCommit[] = [];
+  for (const commit of commits) {
+    const diffArgs = ['diff-tree', '--no-commit-id', '--name-only', '-r', commit.hash];
+    if (context.scopeRelativePath) {
+      diffArgs.push('--', context.scopeRelativePath);
+    }
+    const diffResult = await runGit(context.gitRepoPath, diffArgs, { allowNonZero: true });
+    const changedPaths = diffResult.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((repoPath) => mapRepoPathToScope(repoPath, context.scopeRelativePath))
+      .filter((repoPath): repoPath is string => repoPath !== null && repoPath.length > 0);
+    result.push({
+      ...commit,
+      identityLabel: createCommitIdentityLabel(commit.authorName, commit.authorEmail),
+      sourceLabel: createCommitSourceLabel(commit.authorName, commit.authorEmail, commit.committerName, commit.committerEmail),
+      changedPaths,
+      fileCount: changedPaths.length,
+    });
+  }
+  return result;
 }
 
 function normalizeSelectedPaths(selectedPaths: string[], allFiles: CollabFileChange[]) {
   const allowedPaths = new Set(allFiles.map((file) => file.path));
   const normalizedSelectedPaths = Array.from(new Set(selectedPaths.map((item) => item.trim()).filter(Boolean)));
   for (const targetPath of normalizedSelectedPaths) {
+    if (isIgnorableLocalStatusPath(targetPath)) {
+      throw new Error(`已勾选的文件属于生成物或忽略路径，不能从协作同步提交：${targetPath}`);
+    }
     if (!allowedPaths.has(targetPath)) {
       throw new Error(`已勾选的文件不在当前预览列表中：${targetPath}`);
     }
@@ -1199,7 +1362,16 @@ async function popLatestStash(context: RepoWorkContext) {
 }
 
 async function addPathsToIndex(context: RepoWorkContext, targetPaths: string[]) {
+  const blockedLocalPaths = targetPaths.filter((targetPath) => isIgnorableLocalStatusPath(targetPath));
+  if (blockedLocalPaths.length > 0) {
+    throw new Error(`协作同步不允许提交生成物或忽略路径：${blockedLocalPaths.join('、')}`);
+  }
   const gitTargetPaths = targetPaths.map((targetPath) => toScopedGitPath(context.scopeRelativePath, targetPath));
+  const ignoredGitPaths = await getGitIgnoredPathSet(context.gitRepoPath, gitTargetPaths);
+  const ignoredLocalPaths = targetPaths.filter((targetPath) => ignoredGitPaths.has(toScopedGitPath(context.scopeRelativePath, targetPath)));
+  if (ignoredLocalPaths.length > 0) {
+    throw new Error(`协作同步不允许提交 .gitignore 已忽略的路径：${ignoredLocalPaths.join('、')}`);
+  }
   await runGit(context.gitRepoPath, ['add', '--sparse', '-A', '--', ...gitTargetPaths]);
 }
 
@@ -1328,31 +1500,49 @@ export async function commitAndPushToMain(
   if (unselectedPaths.length > 0) {
     hasStashedUnselected = await pushPartialStash(context, unselectedPaths, 'codex-collab-unselected-before-push');
   }
+  let executionPhase: 'prepare' | 'stage' | 'commit' | 'merge' | 'import' | 'push' = 'prepare';
   try {
     if (selectedPaths.length === 0) {
       if (preview.status.behindCount > 0) {
+        executionPhase = 'merge';
         await mergeOriginMainForPush(context, [], preview);
       }
       if (droppedConflictPaths.length > 0) {
+        executionPhase = 'import';
         await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
       }
       if (preview.status.aheadCount > 0) {
+        executionPhase = 'push';
         await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
       }
     } else {
+      executionPhase = 'stage';
       await addPathsToIndex(context, selectedPaths);
+      executionPhase = 'commit';
       await runGit(context.gitRepoPath, ['commit', '-m', message]);
       if (preview.status.behindCount > 0) {
+        executionPhase = 'merge';
         await mergeOriginMainForPush(context, selectedPaths, preview);
       }
       if (droppedConflictPaths.length > 0) {
+        executionPhase = 'import';
         await importSelectedSharedSettingsFromRepo(context.repoPath, appDbPath, droppedConflictPaths);
       }
+      executionPhase = 'push';
       await runGit(context.gitRepoPath, ['push', 'origin', 'main']);
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(selectedPaths.length > 0 ? `提交已生成，但 push 到 main 失败：${detail}` : `同步 main 状态失败：${detail}`);
+    if (selectedPaths.length === 0) {
+      throw new Error(`同步 main 状态失败：${detail}`);
+    }
+    if (executionPhase === 'stage') {
+      throw new Error(`提交前加入文件失败：${detail}`);
+    }
+    if (executionPhase === 'commit') {
+      throw new Error(`生成提交失败：${detail}`);
+    }
+    throw new Error(`提交已生成，但同步到 main 失败：${detail}`);
   } finally {
     if (hasStashedUnselected) {
       await popLatestStash(context).catch(() => {
@@ -1389,18 +1579,31 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
   else if (!files.length) executionBlockReason = 'main 当前已经是最新。';
+  const context = snapshot.repoPath && snapshot.gitRepoPath
+    ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
+    : null;
+  const remoteCommits = context ? await getRemoteCommits(context) : [];
+  const selectedCommit = remoteCommits.find((commit) => commit.hash === snapshot.remoteTargetRevision);
+  const syncTargetLabel = selectedCommit
+    ? `${selectedCommit.shortHash} · ${selectedCommit.authoredAt.slice(0, 10)} ${selectedCommit.authoredAt.slice(11, 16)} · ${selectedCommit.subject}`
+    : snapshot.remoteTargetRevision === 'origin/main'
+      ? 'origin/main 最新提交'
+      : snapshot.remoteTargetRevision;
   if (!executionBlockReason && snapshot.remoteChangeCount > 0) {
     notice = snapshot.localChangeCount > 0
-      ? `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，可能覆盖这些改动的文件默认不会勾选。`
-      : `main 最新版本里有 ${snapshot.remoteChangeCount} 项可同步变化。你可以先看下面的软件效果，再决定要不要带到本地。`;
+      ? `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，可能覆盖这些改动的文件默认不会勾选。`
+      : `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你可以先按提交日期确认，再决定要不要带到本地。`;
   }
-  const commitSummaries = snapshot.repoPath && snapshot.gitRepoPath
-    ? await getCommitSummaries(createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath))
-    : [];
+  const commitSummaries = remoteCommits.map((commit) => (
+    `${commit.shortHash} ${commit.authoredAt.slice(0, 10)} ${commit.authoredAt.slice(11, 16)} ${commit.subject}`
+  ));
   return {
     status,
     suggestedMessage: buildSuggestedMessage('pull', groups),
     commitSummaries,
+    remoteCommits,
+    syncTargetCommit: snapshot.remoteTargetRevision === 'origin/main' ? null : snapshot.remoteTargetRevision,
+    syncTargetLabel,
     effects,
     groups,
     files,
@@ -1445,6 +1648,7 @@ export async function pullSelectedFromMain(
     repoPath: payload.repoPath,
     suggestedCandidates,
     appDbPath,
+    targetCommit: payload.targetCommit,
   });
   if (!preview.status.repoPath) {
     throw new Error('请先绑定源码目录。');
@@ -1478,6 +1682,7 @@ export async function pullSelectedFromMain(
     suggestedCandidates,
     appDbPath,
     fetchRemote: true,
+    targetCommit: payload.targetCommit,
   });
   const selectedSet = new Set(selectedPaths);
   const overwriteLocalEntryPaths = new Set<string>();
@@ -1513,7 +1718,8 @@ export async function pullSelectedFromMain(
       'codex-collab-preserved-local-before-pull',
     );
   }
-  await runGit(context.gitRepoPath, ['merge', '--no-commit', '--no-ff', 'origin/main'], { allowNonZero: true });
+  const targetRevision = preview.syncTargetCommit || 'origin/main';
+  await runGit(context.gitRepoPath, ['merge', '--no-commit', '--no-ff', targetRevision], { allowNonZero: true });
   try {
     for (const file of preview.files) {
       await resolvePullChoice(context, file, selectedPaths.includes(file.path));

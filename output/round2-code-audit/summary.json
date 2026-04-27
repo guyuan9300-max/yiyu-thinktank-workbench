@@ -1,0 +1,18 @@
+{
+  "main": {
+    "uiSurfaceCount": 20,
+    "orphanComponents": 6,
+    "blockedByRuntimeIssue": 4,
+    "unusedApiWrappers": 92,
+    "unusedIpcBridges": 6,
+    "backendOnlyEndpoints": 73,
+    "apiWrapperOrphanEndpoints": 71,
+    "scriptOrOpsOnly": 5
+  },
+  "mobile": {
+    "routes": 8,
+    "orphanCandidates": 0,
+    "migrationActive": 33,
+    "testGuarded": 25
+  }
+}

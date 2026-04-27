@@ -447,6 +447,7 @@ def test_event_line_report_snapshot_includes_document_parse_fields_locally(tmp_p
     attachment = snapshot.json()["attachments"][0]
     assert attachment["documentId"] == document_id
     assert attachment["sourceKind"] == "task_attachment"
+    assert attachment["openUrl"] == attachment["downloadUrl"]
     assert attachment["parseStatus"] == "ready"
     assert "完善教师项目设计" in attachment["parsedPreview"]
     assert attachment["chunkCount"] == 3
@@ -454,8 +455,8 @@ def test_event_line_report_snapshot_includes_document_parse_fields_locally(tmp_p
     payload = snapshot.json()
     timeline_titles = [item["title"] for item in payload.get("timelineNodes", [])]
     assert "项目启动" in timeline_titles
-    assert "教师赋能项目进入设计校准" in timeline_titles
-    assert all("主线形成" not in title and "未归属" not in title for title in timeline_titles)
+    assert "教师赋能进入方案校准" in timeline_titles
+    assert all("主线形成" not in title and "未归属" not in title and "待归属素材" not in title for title in timeline_titles)
 
 
 def test_event_line_transfer_syncs_linked_task_client_ids(tmp_path: Path):

@@ -1,0 +1,44 @@
+file,reachable,importers,reachableImporters,classification
+src/renderer/components/client_workspace/ClientProjectSetupPage.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/collab/CollabDialogs.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/collab/CollabSyncCard.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/growth/GrowthContext.tsx,true,src/renderer/App.tsx | src/renderer/components/handbook/GrowthBadgeWall.tsx | src/renderer/components/handbook/GrowthCenterView.tsx | src/renderer/components/handbook/GrowthHandbookView.tsx,src/renderer/App.tsx | src/renderer/components/handbook/GrowthCenterView.tsx,reachable
+src/renderer/components/handbook/GrowthAssetLibraryDrawer.tsx,false,src/renderer/components/handbook/GrowthHandbookView.tsx,,blocked_by_runtime_issue
+src/renderer/components/handbook/GrowthBadgeWall.tsx,false,src/renderer/components/handbook/GrowthHandbookView.tsx,,blocked_by_runtime_issue
+src/renderer/components/handbook/GrowthCenterView.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/handbook/GrowthHandbookView.tsx,false,,,orphan_component
+src/renderer/components/handbook/GrowthLearningWorkbench.tsx,false,src/renderer/components/handbook/GrowthHandbookView.tsx,,blocked_by_runtime_issue
+src/renderer/components/handbook/GrowthLedgerDrawer.tsx,false,src/renderer/components/handbook/GrowthHandbookView.tsx,,blocked_by_runtime_issue
+src/renderer/components/settings/BrandLogoSettingsCard.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/settings/FeishuAccountBindingPanel.tsx,false,,,orphan_component
+src/renderer/components/settings/FeishuBotSettingsPanel.tsx,false,,,orphan_component
+src/renderer/components/settings/FeishuOrgIntegrationPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/settings/OrganizationModelSettingsPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/settings/OrganizationSetupCenter.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/settings/OrganizationTreeCanvas.tsx,false,,,orphan_component
+src/renderer/components/settings/ReviewGovernanceSettingsPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/settings/SystemLogPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/settings/UpdateSettingsPanel.tsx,false,,,orphan_component
+src/renderer/components/strategic_accompaniment/StrategicBrainView.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/AgentExecutionPanel.tsx,true,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,reachable
+src/renderer/components/tasks/AgentSimulationCalendarView.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/AgentWeeklyDigestPanel.tsx,true,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,reachable
+src/renderer/components/tasks/AgentWeeklyPlanEditor.tsx,true,src/renderer/App.tsx | src/renderer/components/tasks/AgentSimulationCalendarView.tsx,src/renderer/App.tsx | src/renderer/components/tasks/AgentSimulationCalendarView.tsx,reachable
+src/renderer/components/tasks/AgentWeeklyPlanPanel.tsx,true,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,reachable
+src/renderer/components/tasks/EventLineClarificationComposer.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/EventLineReportPanel.tsx,true,src/renderer/App.tsx | src/renderer/App.tsx,src/renderer/App.tsx | src/renderer/App.tsx,reachable
+src/renderer/components/tasks/HierarchyReportCard.tsx,true,src/renderer/components/tasks/WeeklyReviewSimulationPanel.tsx,src/renderer/components/tasks/WeeklyReviewSimulationPanel.tsx,reachable
+src/renderer/components/tasks/ReviewHistoryPicker.tsx,false,,,orphan_component
+src/renderer/components/tasks/ReviewMetricGrid.tsx,true,src/renderer/components/tasks/HierarchyReportCard.tsx,src/renderer/components/tasks/HierarchyReportCard.tsx,reachable
+src/renderer/components/tasks/TaskCalendarView.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/TaskOrgContextPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/TaskTemplateEditorModal.tsx,true,src/renderer/App.tsx | src/renderer/App.tsx,src/renderer/App.tsx | src/renderer/App.tsx,reachable
+src/renderer/components/tasks/UnderstandingPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/WeeklyReviewSimulationPanel.tsx,true,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,reachable
+src/renderer/components/tasks/WeeklyReviewStructuredFields.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/tasks/reviewDraft.ts,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable
+src/renderer/components/topics/TopicIntelChatPanel.tsx,true,src/renderer/components/topics/TopicIntelDetailPanel.tsx,src/renderer/components/topics/TopicIntelDetailPanel.tsx,reachable
+src/renderer/components/topics/TopicIntelDetailPanel.tsx,true,src/renderer/components/topics/TopicsManagementView.tsx,src/renderer/components/topics/TopicsManagementView.tsx,reachable
+src/renderer/components/topics/TopicIntelInboxCard.tsx,true,src/renderer/components/topics/TopicsManagementView.tsx,src/renderer/components/topics/TopicsManagementView.tsx,reachable
+src/renderer/components/topics/TopicsManagementView.tsx,true,src/renderer/App.tsx,src/renderer/App.tsx,reachable

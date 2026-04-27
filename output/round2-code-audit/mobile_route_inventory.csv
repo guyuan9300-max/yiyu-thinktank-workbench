@@ -1,0 +1,9 @@
+file,classification
+app/(tabs)/_layout.tsx,route_shell
+app/(tabs)/calendar.tsx,route_bound
+app/(tabs)/consult.tsx,route_bound
+app/(tabs)/profile.tsx,route_bound
+app/(tabs)/tasks.tsx,route_bound
+app/_layout.tsx,route_shell
+app/index.tsx,route_bound
+app/login.tsx,route_bound

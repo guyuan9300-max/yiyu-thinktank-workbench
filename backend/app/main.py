@@ -31,6 +31,7 @@ from app.db import BACKEND_SCHEMA_VERSION, Database, from_json, to_json
 from app.local_request_guard import ALLOWED_LOCAL_ORIGINS, ALLOWED_LOCAL_ORIGIN_REGEX, validate_local_browser_request
 from app.models import (
     ActivityLogRecord,
+    AgentWeeklyDigestRecord,
     AgentWeeklyPlanPayload,
     AgentWeeklyPlanRecord,
     AgentWorklogResponse,
@@ -238,6 +239,7 @@ from app.models import (
     ReviewGovernanceSettingsRecord,
     ReviewHistoryEntryRecord,
     ReviewHistoryResponse,
+    ReviewPerspectiveOptionRecord,
     ReviewResponse,
     ReviewSimulationBundleRecord,
     WeeklyEventReviewCardsRecord,
@@ -1415,6 +1417,8 @@ def _event_line_snapshot_context(
                 "evidenceCount": max(int(row["evidence_count"] or 0), activity_count),
                 "primaryClientId": str(row["primary_client_id"]) if row["primary_client_id"] else None,
                 "primaryClientName": str(row["primary_client_name"]) if row["primary_client_name"] else None,
+                "primaryDepartmentId": str(row["primary_department_id"]) if row["primary_department_id"] else None,
+                "primaryDepartmentName": str(row["primary_department_name"]) if row["primary_department_name"] else None,
             }
         elif cloud_resolver is not None:
             context = cloud_resolver(normalized_id, fallback_name)
@@ -2412,10 +2416,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 
-    def cloud_httpx_request(method: str, target: str, **kwargs) -> httpx.Response:
-        url = target if target.startswith("http://") or target.startswith("https://") else f"{state.cloud_api_url}{target}"
-        return httpx.request(method, url, trust_env=False, **kwargs)
-
     def _safe_data_center_ingest(label: str, callback) -> None:
         try:
             callback()
@@ -2645,7 +2645,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             def _probe_cloud():
                 import time as _time
                 try:
-                    cloud_httpx_request("GET", "/health", timeout=3.0)
+                    httpx.get(f"{state.cloud_api_url}/health", timeout=3.0)
                     _cloud_circuit_breaker["last_failure"] = 0.0  # cloud OK — clear breaker
                 except Exception:
                     _cloud_circuit_breaker["last_failure"] = _time.time()  # cloud down — keep breaker
@@ -4199,6 +4199,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         email=leader.email.strip() if leader.email else None,
                     )
                 )
+            seen_member_keys: set[str] = set()
+            members: list[ReviewDepartmentMemberRecord] = []
+            for member in department.members:
+                full_name = member.fullName.strip()
+                if not full_name:
+                    continue
+                key = member.id.strip() or full_name.lower()
+                if key in seen_member_keys:
+                    continue
+                seen_member_keys.add(key)
+                members.append(
+                    ReviewDepartmentMemberRecord(
+                        id=member.id.strip(),
+                        fullName=full_name,
+                        email=member.email.strip() if member.email else None,
+                    )
+                )
             sanitized_departments.append(
                 ReviewDepartmentConfigRecord(
                     id=fixed_department.id,
@@ -4207,7 +4224,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     monthlyDna=department.monthlyDna.strip(),
                     weeklyFocus=department.weeklyFocus.strip(),
                     leaders=leaders,
-                    members=[],
+                    members=members,
                 )
             )
         return ReviewGovernanceSettingsRecord(
@@ -4267,16 +4284,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             employees.append(EmployeeRecord(**item))
         return employees
 
+    _review_governance_members_cache: dict[str, object] = {"token": "", "record": None, "ts": 0.0}
+
     def _review_governance_with_members() -> ReviewGovernanceSettingsRecord:
         governance = get_review_governance_settings()
         token = get_cloud_token()
         if not token:
             return governance
+        now = time.monotonic()
+        cached_record = _review_governance_members_cache.get("record")
+        if (
+            _review_governance_members_cache.get("token") == token
+            and isinstance(cached_record, ReviewGovernanceSettingsRecord)
+            and now - float(_review_governance_members_cache.get("ts") or 0.0) < 60
+        ):
+            return cached_record
         try:
             employees = _load_employee_directory_from_cloud()
         except HTTPException:
+            if isinstance(cached_record, ReviewGovernanceSettingsRecord):
+                return cached_record
             return governance
-        return _sync_review_governance_members(governance, employees)
+        synced = _sync_review_governance_members(governance, employees)
+        _review_governance_members_cache.update({"token": token, "record": synced, "ts": now})
+        return synced
 
     def _user_matches_department_member(member: ReviewDepartmentMemberRecord, *, user_id: str, full_name: str) -> bool:
         member_id = member.id.strip()
@@ -4296,6 +4327,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         full_name = session_user.fullName.strip()
         if not full_name and not user_id:
             return None
+        if session_user.departmentId and session_user.isDepartmentLead:
+            for department in governance.departments:
+                if department.id == session_user.departmentId:
+                    return department
         for department in governance.departments:
             if any(_user_matches_department_member(leader, user_id=user_id, full_name=full_name) for leader in department.leaders):
                 return department
@@ -4312,6 +4347,162 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if governance is not None and _review_department_for_session_user(session_user, governance) is not None:
             return "department_lead"
         return "employee"
+
+    def _review_department_by_id(
+        governance: ReviewGovernanceSettingsRecord | None,
+        department_id: str | None,
+    ) -> ReviewDepartmentConfigRecord | None:
+        normalized = (department_id or "").strip()
+        if not governance or not normalized:
+            return None
+        return next((department for department in governance.departments if department.id == normalized), None)
+
+    def _review_department_member_keys(department: ReviewDepartmentConfigRecord | None) -> tuple[set[str], set[str]]:
+        ids: set[str] = set()
+        names: set[str] = set()
+        if department is None:
+            return ids, names
+        for member in [*department.leaders, *department.members]:
+            member_id = member.id.strip()
+            member_name = member.fullName.strip().lower()
+            if member_id:
+                ids.add(member_id)
+            if member_name:
+                names.add(member_name)
+        return ids, names
+
+    def _review_perspective_options(
+        session_user: SessionUserRecord | None,
+        governance: ReviewGovernanceSettingsRecord | None,
+        viewer_role: Literal["employee", "department_lead", "admin"],
+    ) -> list[ReviewPerspectiveOptionRecord]:
+        if session_user is None:
+            return [ReviewPerspectiveOptionRecord(key="mine", label="我的视角")]
+        if viewer_role == "admin":
+            return [
+                ReviewPerspectiveOptionRecord(key="organization", label="组织视角"),
+                ReviewPerspectiveOptionRecord(key="department", label="部门视角"),
+                ReviewPerspectiveOptionRecord(key="mine", label="我的视角"),
+            ]
+        lead_department = _review_department_for_session_user(session_user, governance) if governance is not None else None
+        if viewer_role == "department_lead" and lead_department is not None:
+            return [
+                ReviewPerspectiveOptionRecord(
+                    key="department",
+                    label="部门视角",
+                    departmentId=lead_department.id,
+                    departmentName=lead_department.name,
+                ),
+                ReviewPerspectiveOptionRecord(key="mine", label="我的视角"),
+            ]
+        return [ReviewPerspectiveOptionRecord(key="mine", label="我的视角")]
+
+    def _resolve_review_perspective(
+        session_user: SessionUserRecord | None,
+        governance: ReviewGovernanceSettingsRecord | None,
+        requested_perspective: str | None,
+        requested_department_id: str | None,
+    ) -> tuple[
+        Literal["organization", "department", "mine"],
+        ReviewDepartmentConfigRecord | None,
+        list[ReviewPerspectiveOptionRecord],
+        Literal["employee", "department_lead", "admin"],
+    ]:
+        viewer_role = _resolve_review_viewer_role(session_user, governance)
+        options = _review_perspective_options(session_user, governance, viewer_role)
+        allowed = {option.key for option in options}
+        default_perspective: Literal["organization", "department", "mine"] = (
+            "organization" if "organization" in allowed else "department" if "department" in allowed else "mine"
+        )
+        candidate = (requested_perspective or default_perspective).strip()
+        active_perspective: Literal["organization", "department", "mine"] = (
+            candidate if candidate in allowed else default_perspective  # type: ignore[assignment]
+        )
+
+        active_department: ReviewDepartmentConfigRecord | None = None
+        if active_perspective == "department":
+            if viewer_role == "admin":
+                active_department = _review_department_by_id(governance, requested_department_id)
+                if active_department is None and governance is not None and governance.departments:
+                    active_department = governance.departments[0]
+            else:
+                active_department = _review_department_for_session_user(session_user, governance) if governance is not None else None
+                if active_department is None:
+                    active_perspective = "mine"
+
+        return active_perspective, active_department, options, viewer_role
+
+    def _review_item_department_id(item: WeeklyReviewTaskEntryRecord) -> str:
+        context = item.taskSnapshot.eventLineContext
+        if context is not None and context.primaryDepartmentId:
+            return context.primaryDepartmentId.strip()
+        event_line_id = (item.taskSnapshot.eventLineId or (context.id if context else "") or "").strip()
+        if not event_line_id:
+            return ""
+        row = state.db.fetchone(
+            "SELECT primary_department_id FROM event_lines WHERE id = ?",
+            (event_line_id,),
+        )
+        return str(row["primary_department_id"] or "").strip() if row else ""
+
+    def _review_item_matches_department(
+        item: WeeklyReviewTaskEntryRecord,
+        department: ReviewDepartmentConfigRecord | None,
+    ) -> bool:
+        if department is None:
+            return False
+        item_department_id = _review_item_department_id(item)
+        if item_department_id and item_department_id == department.id:
+            return True
+        member_ids, member_names = _review_department_member_keys(department)
+        owner_id = (item.taskSnapshot.ownerId or "").strip()
+        owner_name = (item.taskSnapshot.ownerName or "").strip().lower()
+        return bool((owner_id and owner_id in member_ids) or (owner_name and owner_name in member_names))
+
+    def _review_item_matches_user(
+        item: WeeklyReviewTaskEntryRecord,
+        session_user: SessionUserRecord | None,
+    ) -> bool:
+        if session_user is None:
+            return True
+        user_id = session_user.id.strip()
+        full_name = session_user.fullName.strip().lower()
+        owner_id = (item.taskSnapshot.ownerId or "").strip()
+        owner_name = (item.taskSnapshot.ownerName or "").strip().lower()
+        if (user_id and owner_id == user_id) or (full_name and owner_name == full_name):
+            return True
+        if user_id:
+            row = state.db.fetchone(
+                """
+                SELECT 1
+                FROM tasks t
+                LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+                WHERE t.id = ?
+                  AND (t.owner_id = ? OR t.creator_id = ? OR tc.user_id = ?)
+                LIMIT 1
+                """,
+                (item.taskId, user_id, user_id, user_id),
+            )
+            if row:
+                return True
+        return False
+
+    def _filter_review_items_for_perspective(
+        *,
+        work_items: list[WeeklyReviewTaskEntryRecord],
+        personal_items: list[WeeklyReviewTaskEntryRecord],
+        active_perspective: Literal["organization", "department", "mine"],
+        active_department: ReviewDepartmentConfigRecord | None,
+        session_user: SessionUserRecord | None,
+    ) -> tuple[list[WeeklyReviewTaskEntryRecord], list[WeeklyReviewTaskEntryRecord]]:
+        if active_perspective == "organization":
+            return work_items, []
+        if active_perspective == "department":
+            return [item for item in work_items if _review_item_matches_department(item, active_department)], []
+        return (
+            [item for item in work_items if _review_item_matches_user(item, session_user)],
+            [item for item in personal_items if _review_item_matches_user(item, session_user)],
+        )
 
     def _normalize_department_name(value: str | None) -> str:
         return (value or "").strip().lower()
@@ -6486,9 +6677,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
         persist_session = state.cloud_session_persistent or _has_persisted_cloud_session()
         try:
-            response = cloud_httpx_request(
+            response = httpx.request(
                 "POST",
-                "/api/v1/auth/refresh",
+                f"{state.cloud_api_url}/api/v1/auth/refresh",
                 json={"refreshToken": refresh_token},
                 timeout=20.0,
             )
@@ -6534,9 +6725,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             headers = {}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            return cloud_httpx_request(
+            return httpx.request(
                 method,
-                path,
+                f"{state.cloud_api_url}{path}",
                 json=json_body,
                 headers=headers,
                 timeout=timeout,
@@ -7696,6 +7887,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             projectModuleName=project_module.name if project_module else None,
             projectFlowId=project_flow.id if project_flow else project_flow_id,
             projectFlowName=project_flow.name if project_flow else None,
+            ownerId=str(row["owner_id"]) if row["owner_id"] else None,
             ownerName=str(row["owner_name"]),
             sourceType=str(row["source_type"]),
             sourceId=str(row["source_id"]) if row["source_id"] else None,
@@ -19079,11 +19271,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, title, description, status, priority, list_id, owner_name, ddl, due_date, duration_minutes, event_line_id, source_type, source_id,
+                id, title, description, status, priority, list_id, owner_id, owner_name, ddl, due_date, duration_minutes, event_line_id, source_type, source_id,
                 client_id, project_module_id, project_flow_id, scope_mode, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 tags_json, tag_ids_json, sync_status, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -19092,6 +19284,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 status,
                 payload.priority,
                 list_id,
+                payload.ownerId,
                 payload.ownerName,
                 payload.ddl,
                 payload.dueDate or normalize_due_date_input(payload.ddl),
@@ -21334,26 +21527,58 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         week_label: str | None = None,
         *,
         generate_weekly_overview: bool = True,
+        perspective: str | None = None,
+        department_id: str | None = None,
     ) -> ReviewResponse:
         target_week = week_label or (response.currentReview.weekLabel if response.currentReview else current_review_week_label())
-        work_analysis = response.workAnalysis
-        personal_analysis = response.personalAnalysis
         session_user = get_cached_session_user()
         governance = _review_governance_with_members() if session_user else None
-        viewer_role = _resolve_review_viewer_role(session_user, governance)
+        active_perspective, active_department, available_perspectives, actual_viewer_role = _resolve_review_perspective(
+            session_user,
+            governance,
+            perspective,
+            department_id,
+        )
+        viewer_role: Literal["employee", "department_lead", "admin"] = (
+            "admin" if active_perspective == "organization"
+            else "department_lead" if active_perspective == "department"
+            else "employee"
+        )
+        filtered_work_items, filtered_personal_items = _filter_review_items_for_perspective(
+            work_items=response.workItems,
+            personal_items=response.personalItems,
+            active_perspective=active_perspective,
+            active_department=active_department,
+            session_user=session_user,
+        )
+        response = response.model_copy(
+            update={
+                "workItems": filtered_work_items,
+                "personalItems": filtered_personal_items,
+                "workAnalysis": None,
+                "personalAnalysis": None,
+                "availablePerspectives": available_perspectives,
+                "activePerspective": active_perspective,
+                "activeDepartmentId": active_department.id if active_department else None,
+                "activeDepartmentName": active_department.name if active_department else None,
+            }
+        )
+        work_analysis = response.workAnalysis
+        personal_analysis = response.personalAnalysis
+        perspective_meta = {
+            "perspective": active_perspective,
+            "departmentId": active_department.id if active_department else "",
+            "viewerUserId": session_user.id if session_user and active_perspective == "mine" else "",
+        }
         material_access_context = DataCenterAccessContext()
         if session_user is not None:
-            department_ids: tuple[str, ...] = ()
-            if governance is not None and viewer_role == "department_lead":
-                lead_department = _review_department_for_session_user(session_user, governance)
-                if lead_department is not None and lead_department.id:
-                    department_ids = (lead_department.id,)
+            department_ids: tuple[str, ...] = (active_department.id,) if active_perspective == "department" and active_department else ()
             material_access_context = DataCenterAccessContext(
                 organization_id=session_user.organizationId,
                 viewer_user_id=session_user.id,
-                role="ceo" if viewer_role == "admin" else viewer_role,
+                role="ceo" if active_perspective == "organization" else "department_lead" if active_perspective == "department" else "employee",
                 department_ids=department_ids,
-                include_personal=False,
+                include_personal=active_perspective == "mine",
             )
         org_model_profile: OrgModelProfileRecord | None = None
         if generate_weekly_overview:
@@ -21389,23 +21614,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if work_analysis is not None and response.workItems:
             narrative_modules = build_review_context_modules(response.workItems, list_organization_dna_modules())
             narrative_analyses = _narratives_from_event_line_judgments(work_analysis)
-            try:
-                weekly_mainline_evidence_pack = build_weekly_mainline_evidence_pack(
-                    db=state.db,
-                    data_dir=state.data_dir,
-                    week_label=target_week,
-                    items=response.workItems,
-                    include_data_center=generate_weekly_overview,
-                    access_context=material_access_context,
-                )
-            except Exception as exc:
-                logger.warning("Weekly mainline evidence pack build failed: %s", exc)
-                weekly_mainline_evidence_pack = None
-            if weekly_mainline_evidence_pack:
+            if generate_weekly_overview:
+                try:
+                    weekly_mainline_evidence_pack = build_weekly_mainline_evidence_pack(
+                        db=state.db,
+                        data_dir=state.data_dir,
+                        week_label=target_week,
+                        items=response.workItems,
+                        include_data_center=True,
+                        access_context=material_access_context,
+                    )
+                except Exception as exc:
+                    logger.warning("Weekly mainline evidence pack build failed: %s", exc)
+                    weekly_mainline_evidence_pack = None
+            if generate_weekly_overview and weekly_mainline_evidence_pack:
                 try:
                     event_review_fingerprint = weekly_mainline_evidence_fingerprint(
                         {
                             "version": "v2-open-reflection-prompt",
+                            "perspective": perspective_meta,
                             "evidence": weekly_mainline_evidence_pack,
                         }
                     )
@@ -21437,7 +21664,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     logger.warning("Weekly event review cards generation failed: %s", exc)
             if generate_weekly_overview and weekly_mainline_evidence_pack:
                 try:
-                    mainline_fingerprint = weekly_mainline_evidence_fingerprint(weekly_mainline_evidence_pack)
+                    mainline_fingerprint = weekly_mainline_evidence_fingerprint(
+                        {
+                            "version": "v1-task-bound-evidence",
+                            "perspective": perspective_meta,
+                            "evidence": weekly_mainline_evidence_pack,
+                        }
+                    )
                     cached_mainlines = _load_cached_weekly_mainline_cards(
                         week_label=target_week,
                         fingerprint=mainline_fingerprint,
@@ -21469,7 +21702,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     narratives=narrative_analyses,
                     org_modules=narrative_modules,
                 )
-                fingerprint = str(cache_payload["fingerprint"])
+                fingerprint = weekly_mainline_evidence_fingerprint(
+                    {
+                        "version": "v3-live-task-state",
+                        "perspective": perspective_meta,
+                        "overview": cache_payload,
+                    }
+                )
                 cached_overview = _load_cached_weekly_overview(
                     week_label=target_week,
                     fingerprint=fingerprint,
@@ -21559,6 +21798,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             executive_org_report, department_reports, simulation_bundle = build_executive_review_overlay(target_week)
         else:
             executive_org_report, department_reports, simulation_bundle = None, [], None
+        if active_perspective == "department":
+            executive_org_report = None
+            simulation_bundle = None
+            if active_department is not None:
+                department_reports = [
+                    report for report in department_reports
+                    if report.scopeRefId in {active_department.id, active_department.name}
+                ]
+        elif active_perspective == "mine":
+            executive_org_report = None
+            department_reports = []
+            simulation_bundle = None
         # Override executiveOrgReport with AI overview too
         if executive_org_report is not None and work_analysis is not None and weekly_overview and "【" in weekly_overview:
             overview_lines = weekly_overview.strip().split("\n")
@@ -21669,41 +21920,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     pass
             _mem_thr.Thread(target=_bg_write_review_memory, daemon=True).start()
 
-        if session_user is None:
-            return response.model_copy(
-                update={
-                    "workAnalysis": work_analysis,
-                    "personalAnalysis": personal_analysis,
-                    "weeklyMainlineCards": weekly_mainline_cards,
-                    "weeklyEventReviewCards": weekly_event_review_cards,
-                    "selfReport": self_report,
-                }
+        agent_department_digests: list[AgentWeeklyDigestRecord] = []
+        agent_department_plans: list[AgentWeeklyPlanRecord] = []
+        if active_perspective == "organization" and session_user is not None and session_user.primaryRole == "admin":
+            agent_department_digests = build_agent_weekly_digests(
+                db=state.db,
+                week_label=target_week,
+                thread_sync_path=THREAD_SYNC_DOC_PATH,
             )
-        if session_user.primaryRole != "admin":
-            return response.model_copy(
-                update={
-                    "workAnalysis": work_analysis,
-                    "personalAnalysis": personal_analysis,
-                    "weeklyMainlineCards": weekly_mainline_cards,
-                    "weeklyEventReviewCards": weekly_event_review_cards,
-                    "selfReport": self_report,
-                    "executiveOrgReport": None,
-                    "departmentReports": department_reports,
-                    "agentDepartmentDigests": [],
-                    "agentDepartmentPlans": [],
-                    "simulationBundle": None,
-                }
+            agent_department_plans = build_agent_weekly_plans(
+                db=state.db,
+                week_label=target_week,
+                thread_sync_path=THREAD_SYNC_DOC_PATH,
             )
-        agent_department_digests = build_agent_weekly_digests(
-            db=state.db,
-            week_label=target_week,
-            thread_sync_path=THREAD_SYNC_DOC_PATH,
-        )
-        agent_department_plans = build_agent_weekly_plans(
-            db=state.db,
-            week_label=target_week,
-            thread_sync_path=THREAD_SYNC_DOC_PATH,
-        )
         return response.model_copy(
             update={
                 "workAnalysis": work_analysis,
@@ -21716,10 +21945,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "agentDepartmentDigests": agent_department_digests,
                 "agentDepartmentPlans": agent_department_plans,
                 "simulationBundle": simulation_bundle,
+                "availablePerspectives": available_perspectives,
+                "activePerspective": active_perspective,
+                "activeDepartmentId": active_department.id if active_department else None,
+                "activeDepartmentName": active_department.name if active_department else None,
             }
         )
 
-    def local_review_dashboard_base(week_label: str | None = None) -> ReviewResponse:
+    def local_review_dashboard_base(week_label: str | None = None, *, include_analysis: bool = True) -> ReviewResponse:
         target_week = week_label or current_review_week_label()
         review_row = local_review_row_for_week(target_week)
         review_entries = local_review_entries_by_task(str(review_row["id"])) if review_row else {}
@@ -21731,10 +21964,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task_rows = fetch_tasks("t.id = ?", (task_id,))
             if task_rows:
                 tasks_by_id[task_id] = task_rows[0]
-        org_modules = list_organization_dna_modules()
-        session_user = get_cached_session_user()
-        governance = _review_governance_with_members() if session_user else None
-        viewer_role = _resolve_review_viewer_role(session_user, governance)
         work_items: list[WeeklyReviewTaskEntryRecord] = []
         personal_items: list[WeeklyReviewTaskEntryRecord] = []
         for task in tasks_by_id.values():
@@ -21792,13 +22021,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             else:
                 work_items.append(item)
         current_review = build_local_review_record(review_row) if review_row else build_preview_review_record(target_week)
-        work_analysis, personal_analysis = build_review_analyses(
-            target_week,
-            work_items,
-            personal_items,
-            org_modules,
-            viewer_role=viewer_role,
-        )
+        work_analysis = None
+        personal_analysis = None
+        if include_analysis:
+            org_modules = list_organization_dna_modules()
+            session_user = get_cached_session_user()
+            governance = _review_governance_with_members() if session_user else None
+            viewer_role = _resolve_review_viewer_role(session_user, governance)
+            work_analysis, personal_analysis = build_review_analyses(
+                target_week,
+                work_items,
+                personal_items,
+                org_modules,
+                viewer_role=viewer_role,
+            )
         self_report = None
         base_response = ReviewResponse(
             currentReview=current_review,
@@ -21813,7 +22049,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def local_review_dashboard(week_label: str | None = None) -> ReviewResponse:
         target_week = week_label or current_review_week_label()
-        base_response = local_review_dashboard_base(target_week)
+        base_response = local_review_dashboard_base(target_week, include_analysis=False)
         return augment_review_response(base_response, target_week)
 
     def _review_item_identity_key(item: WeeklyReviewTaskEntryRecord) -> str:
@@ -21848,7 +22084,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> ReviewResponse:
         """Keep review notes from cloud, but derive the weekly task set/status from local tasks."""
         target_week = week_label or (response.currentReview.weekLabel if response.currentReview else current_review_week_label())
-        local_base = local_review_dashboard_base(target_week)
+        local_base = local_review_dashboard_base(target_week, include_analysis=False)
         if not local_base.workItems and not local_base.personalItems:
             return response
 
@@ -21921,6 +22157,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/public/task-attachments/{attachment_id}")
     def proxy_cloud_task_attachment(attachment_id: str) -> Response:
+        def _local_attachment_file() -> tuple[Path, str, str] | None:
+            lookups = [
+                ("task_attachments", "title", "path", "kind", "mime_type"),
+                ("task_attachments_cloud", "title", "path", "kind", "mime_type"),
+                ("event_line_attachments", "file_name", "local_path", "file_type", ""),
+            ]
+            for table, title_col, path_col, kind_col, mime_col in lookups:
+                try:
+                    row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ?", (attachment_id,))
+                except Exception:
+                    row = None
+                if not row:
+                    continue
+                raw_path = str(row[path_col] or "").strip()
+                if not raw_path:
+                    continue
+                candidate = Path(raw_path)
+                if not candidate.is_absolute():
+                    candidate = Path(state.data_dir) / raw_path
+                if not candidate.exists() or not candidate.is_file():
+                    continue
+                title = str(row[title_col] or candidate.name)
+                mime = str(row[mime_col] or "") if mime_col and mime_col in row.keys() else ""
+                if not mime:
+                    import mimetypes as _mimetypes
+                    mime = _mimetypes.guess_type(title or str(candidate))[0] or "application/octet-stream"
+                kind = str(row[kind_col] or "")
+                return candidate, mime, title or kind or candidate.name
+            return None
+
         # Check local cache first
         cached = _att_cache_read(attachment_id)
         if cached:
@@ -21939,6 +22205,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if cd:
                 headers["Content-Disposition"] = cd
             return Response(content=cached, media_type=ct, headers=headers)
+
+        local_file = _local_attachment_file()
+        if local_file:
+            path, content_type, title = local_file
+            return Response(
+                content=path.read_bytes(),
+                media_type=content_type,
+                headers={"Content-Disposition": f'attachment; filename="{quote(title)}"'},
+            )
 
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Attachment not found")
@@ -21987,6 +22262,65 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/public/task-attachments/{attachment_id}/text-content")
     def proxy_cloud_attachment_text(attachment_id: str) -> dict:
+        def _local_text_content() -> dict | None:
+            for table, title_col, path_col, kind_col in (
+                ("task_attachments", "title", "path", "kind"),
+                ("task_attachments_cloud", "title", "path", "kind"),
+                ("event_line_attachments", "file_name", "local_path", "file_type"),
+            ):
+                try:
+                    row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ?", (attachment_id,))
+                except Exception:
+                    row = None
+                if not row:
+                    continue
+                title = str(row[title_col] or "附件")
+                document_id = str(row["document_id"] or "").strip() if "document_id" in row.keys() else ""
+                if document_id:
+                    v2_row = state.db.fetchone(
+                        """
+                        SELECT preview_text, markdown_content, markdown_path
+                        FROM v2_documents
+                        WHERE document_id = ?
+                        LIMIT 1
+                        """,
+                        (document_id,),
+                    )
+                    if v2_row:
+                        text = str(v2_row["preview_text"] or v2_row["markdown_content"] or "").strip()
+                        if not text and v2_row["markdown_path"]:
+                            try:
+                                markdown_path = Path(str(v2_row["markdown_path"]))
+                                if markdown_path.exists() and markdown_path.is_file():
+                                    text = markdown_path.read_text(encoding="utf-8", errors="ignore")
+                            except Exception:
+                                text = ""
+                        if text:
+                            return {"title": title, "kind": str(row[kind_col] or ""), "text": text[:5000], "paragraphCount": text.count("\n") + 1}
+                    doc_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (document_id,))
+                    if doc_row and doc_row["excerpt"]:
+                        text = str(doc_row["excerpt"])
+                        return {"title": title, "kind": str(row[kind_col] or ""), "text": text[:5000], "paragraphCount": text.count("\n") + 1}
+                raw_path = str(row[path_col] or "").strip()
+                candidate = Path(raw_path)
+                if raw_path and not candidate.is_absolute():
+                    candidate = Path(state.data_dir) / raw_path
+                if raw_path and candidate.exists() and candidate.is_file():
+                    kind = str(row[kind_col] or "").lower()
+                    try:
+                        if kind == "docx" or title.lower().endswith(".docx"):
+                            from docx import Document as _WordDoc
+                            doc = _WordDoc(str(candidate))
+                            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()][:100]
+                            return {"title": title, "kind": kind or "docx", "text": "\n".join(paragraphs), "paragraphCount": len(paragraphs)}
+                        if kind in {"md", "txt", "csv", "json"} or title.lower().endswith((".md", ".txt", ".csv", ".json")):
+                            text = candidate.read_text(encoding="utf-8", errors="ignore")[:5000]
+                            return {"title": title, "kind": kind, "text": text, "paragraphCount": text.count("\n") + 1}
+                    except Exception as exc:
+                        return {"title": title, "kind": kind, "text": f"内容提取失败: {exc}", "paragraphCount": 0}
+                return {"title": title, "kind": str(row[kind_col] or ""), "text": "", "paragraphCount": 0, "unsupported": True}
+            return None
+
         cached = _att_cache_read(attachment_id, ".text.json")
         if cached:
             try:
@@ -21998,10 +22332,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
 
+        local_text = _local_text_content()
+        if local_text is not None:
+            return local_text
+
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Not found")
         try:
-            resp = cloud_httpx_request("GET", f"/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
+            resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Not found")
             result = resp.json()
@@ -22028,10 +22366,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
 
+        for table, title_col in (
+            ("task_attachments", "title"),
+            ("task_attachments_cloud", "title"),
+            ("event_line_attachments", "file_name"),
+        ):
+            try:
+                row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ?", (attachment_id,))
+            except Exception:
+                row = None
+            if not row:
+                continue
+            title = str(row[title_col] or "")
+            document_id = str(row["document_id"] or "").strip() if "document_id" in row.keys() else ""
+            if document_id:
+                v2_row = state.db.fetchone("SELECT preview_text, markdown_content FROM v2_documents WHERE document_id = ? LIMIT 1", (document_id,))
+                preview = str(v2_row["preview_text"] or v2_row["markdown_content"] or "").strip() if v2_row else ""
+                if preview:
+                    return {"title": title, "summary": preview[:1200], "source": "data_center"}
+            break
+
         if not get_cloud_token():
             return {"title": "", "summary": "未登录", "unsupported": True}
         try:
-            resp = cloud_httpx_request("GET", f"/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
+            resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
             if resp.status_code >= 400:
                 return {"title": "", "summary": "OCR 不可用"}
             result = resp.json()
@@ -24861,7 +25219,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not normalized_doc_id:
                 return {
                     "documentId": None,
-                    "parseStatus": None,
+                    "parseStatus": "missing_document",
                     "parsedPreview": "",
                     "chunkCount": 0,
                     "sectionCount": 0,
@@ -24986,10 +25344,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "documentId": parse_info["documentId"],
                     "sourceKind": "task_attachment",
                     "title": title,
+                    "fileName": title,
                     "kind": str(att["kind"] or "attachment"),
                     "mimeType": _guess_mime(title, path),
                     "sizeBytes": size_bytes,
                     "downloadUrl": f"/api/public/task-attachments/{att['id']}",
+                    "openUrl": f"/api/public/task-attachments/{att['id']}",
                     "actorName": None,
                     "createdAt": str(att["created_at"]),
                     "parseStatus": parse_info["parseStatus"],
@@ -25003,6 +25363,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             title = str(att["file_name"] or (Path(path).name if path else "事件线附件"))
             document_id = _resolve_event_attachment_document_id(att)
             parse_info = _document_parse_info(document_id)
+            if not parse_info["documentId"]:
+                raw_path = Path(path) if path else None
+                if raw_path and not raw_path.is_absolute():
+                    raw_path = Path(state.data_dir) / path
+                if not raw_path or not raw_path.exists() or not raw_path.is_file():
+                    parse_info["parseStatus"] = "missing_source"
             attachments.append(
                 {
                     "id": str(att["id"]),
@@ -25010,10 +25376,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "documentId": parse_info["documentId"],
                     "sourceKind": "event_line_attachment",
                     "title": title,
+                    "fileName": title,
                     "kind": str(att["file_type"] or "event_line_attachment"),
                     "mimeType": _guess_mime(title, path),
                     "sizeBytes": _size_from_path(path),
-                    "downloadUrl": str(att["preview_url"] or ""),
+                    "downloadUrl": str(att["preview_url"] or f"/api/public/task-attachments/{att['id']}"),
+                    "openUrl": str(att["preview_url"] or f"/api/public/task-attachments/{att['id']}"),
                     "actorName": str(att["uploaded_by"]) if att["uploaded_by"] else None,
                     "createdAt": str(att["uploaded_at"] or now_iso()),
                     "parseStatus": parse_info["parseStatus"],
@@ -25069,7 +25437,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not normalized_doc_id:
             return {
                 "documentId": None,
-                "parseStatus": None,
+                "parseStatus": "missing_document",
                 "parsedPreview": "",
                 "chunkCount": 0,
                 "sectionCount": 0,
@@ -25294,6 +25662,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     existing_mirror["chunkCount"] = parse_info["chunkCount"]
                     existing_mirror["sectionCount"] = parse_info["sectionCount"]
                 existing_mirror.setdefault("sourceKind", "task_attachment")
+                existing_mirror.setdefault("fileName", title)
+                existing_mirror.setdefault("downloadUrl", f"/api/public/task-attachments/{attachment_id}")
+                existing_mirror.setdefault("openUrl", existing_mirror.get("downloadUrl") or f"/api/public/task-attachments/{attachment_id}")
                 if not str(existing_mirror.get("mimeType") or "").strip():
                     existing_mirror["mimeType"] = guessed_mime
                 continue
@@ -25304,10 +25675,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "documentId": parse_info["documentId"],
                     "sourceKind": "task_attachment",
                     "title": title,
+                    "fileName": title,
                     "kind": str(row["kind"] or "attachment"),
                     "mimeType": guessed_mime,
                     "sizeBytes": int(row["size_bytes"] or 0),
                     "downloadUrl": f"/api/public/task-attachments/{attachment_id}",
+                    "openUrl": f"/api/public/task-attachments/{attachment_id}",
                     "actorName": None,
                     "createdAt": str(row["created_at"] or now_iso()),
                     "parseStatus": parse_info["parseStatus"],
@@ -25363,10 +25736,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     attachment["parsedPreview"] = parsed_preview
             else:
                 attachment.setdefault("documentId", None)
-                attachment.setdefault("parseStatus", None)
+                attachment.setdefault("parseStatus", "missing_document")
                 attachment.setdefault("parsedPreview", "")
                 attachment.setdefault("chunkCount", 0)
                 attachment.setdefault("sectionCount", 0)
+            attachment.setdefault("fileName", str(attachment.get("title") or "附件"))
+            attachment.setdefault("downloadUrl", f"/api/public/task-attachments/{str(attachment.get('id') or '').strip()}")
+            attachment.setdefault("openUrl", attachment.get("downloadUrl"))
         event_line_payload = payload.get("eventLine")
         activities_payload = payload.get("activities")
         tasks_payload = payload.get("tasks")
@@ -25566,7 +25942,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     timeline_nodes = [
                         item
                         for item in snapshot_payload.get("timelineNodes", [])
-                        if isinstance(item, dict) and str(item.get("kind") or "") not in {"needs_review", "system_trace"}
+                        if isinstance(item, dict)
                     ]
             except Exception as exc:
                 logger.warning("event line export timeline fallback failed: %s", exc)
@@ -26013,7 +26389,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "admin_material": "行政材料",
             "system": "系统痕迹",
         }
-        sorted_timeline_nodes = sorted(timeline_nodes, key=lambda item: str(item.get("time") or ""))
+        sorted_timeline_nodes = sorted(
+            [item for item in timeline_nodes if show_system or str(item.get("kind") or "") != "system_trace"],
+            key=lambda item: str(item.get("time") or ""),
+        )
         if sorted_timeline_nodes:
             _styled_para("关键时间线", size=14, bold=True, space_before=4, space_after=8)
             for index, node in enumerate(sorted_timeline_nodes, start=1):
@@ -26150,7 +26529,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         # Show image inline (like preview expanded)
                         try:
                             if download_url:
-                                img_resp = cloud_httpx_request("GET", download_url, timeout=15.0)
+                                img_resp = httpx.get(f"{state.cloud_api_url}{download_url}", timeout=15.0)
                                 if img_resp.status_code == 200:
                                     img_stream = _BytesIO(img_resp.content)
                                     doc.add_picture(img_stream, width=Inches(4.5))
@@ -26175,9 +26554,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                         # Fetch document summary
                         try:
-                            text_resp = cloud_httpx_request(
-                                "GET",
-                                f"/api/public/task-attachments/{att_id}/text-content",
+                            text_resp = httpx.get(
+                                f"{state.cloud_api_url}/api/public/task-attachments/{att_id}/text-content",
                                 timeout=15.0,
                             )
                             doc_text = ""
@@ -27013,6 +27391,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ensure_admin_for_sensitive_settings()
         record = _sanitize_review_governance_settings(payload.departments)
         state.db.set_setting("settings.review_governance", to_json(record.model_dump()))
+        _review_governance_members_cache.update({"token": "", "record": None, "ts": 0.0})
         log_activity(
             "settings.review_governance.update",
             "settings",
@@ -34900,20 +35279,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def list_reviews(
         weekLabel: str | None = Query(default=None),
         skipAi: bool = Query(default=False),
+        perspective: Literal["organization", "department", "mine"] | None = Query(default=None),
+        departmentId: str | None = Query(default=None),
     ) -> ReviewResponse:
-        if get_cloud_token():
-            suffix = f"?weekLabel={quote(weekLabel)}" if weekLabel else ""
+        if get_cloud_token() and not skipAi:
+            cloud_search = []
+            if weekLabel:
+                cloud_search.append(f"weekLabel={quote(weekLabel)}")
+            suffix = f"?{'&'.join(cloud_search)}" if cloud_search else ""
             payload = _safe_cloud_request("GET", f"/api/v1/reviews/dashboard{suffix}")
             if isinstance(payload, dict):
                 try:
                     cloud_response = ReviewResponse(**payload)
                     reconciled_response = reconcile_cloud_review_response_with_local_tasks(cloud_response, weekLabel)
-                    return augment_review_response(reconciled_response, weekLabel, generate_weekly_overview=not skipAi)
+                    return augment_review_response(
+                        reconciled_response,
+                        weekLabel,
+                        generate_weekly_overview=not skipAi,
+                        perspective=perspective,
+                        department_id=departmentId,
+                    )
                 except Exception:
                     pass
         target_week = weekLabel or current_review_week_label()
-        base_response = local_review_dashboard_base(target_week)
-        return augment_review_response(base_response, target_week, generate_weekly_overview=not skipAi)
+        base_response = local_review_dashboard_base(target_week, include_analysis=False)
+        return augment_review_response(
+            base_response,
+            target_week,
+            generate_weekly_overview=not skipAi,
+            perspective=perspective,
+            department_id=departmentId,
+        )
 
     @app.get("/api/v1/reviews/history", response_model=ReviewHistoryResponse)
     def list_review_history() -> ReviewHistoryResponse:

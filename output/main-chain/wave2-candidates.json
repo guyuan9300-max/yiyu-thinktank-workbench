@@ -1,0 +1,24 @@
+{
+  "recordedAt": "2026-04-15T22:42:55",
+  "baseUrl": "http://127.0.0.1:47829",
+  "lookbackDays": 14,
+  "recommended": [
+    {
+      "clientId": "client_cb720fc373",
+      "name": "明新集团（基金会）",
+      "lastActivityAt": "2026-04-15T22:01:14",
+      "documentCount": 0,
+      "taskCount": 0,
+      "knowledgeReady": false,
+      "hasContext": false,
+      "score": 1400
+    }
+  ],
+  "skippedClients": [
+    {
+      "clientId": "client_cffc",
+      "name": "为爱黔行",
+      "reason": "Internal Server Error"
+    }
+  ]
+}

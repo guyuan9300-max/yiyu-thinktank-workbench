@@ -380,8 +380,12 @@ def test_event_line_report_snapshot_returns_attachment_document_fields_in_cloud(
     assert attachment["sourceKind"] == "task_attachment"
     assert attachment["parsedPreview"] == "云端会议纪要摘要：确认下一轮推进节奏。"
     assert "parseStatus" in attachment
+    assert attachment["openUrl"] == attachment["downloadUrl"]
     assert "chunkCount" in attachment
     assert "sectionCount" in attachment
+    payload = snapshot.json()
+    assert payload["timelineNodes"]
+    assert all("主线形成" not in item["title"] and "未归属" not in item["title"] for item in payload["timelineNodes"])
 
 
 def test_event_line_transfer_syncs_linked_task_client_ids_in_cloud():

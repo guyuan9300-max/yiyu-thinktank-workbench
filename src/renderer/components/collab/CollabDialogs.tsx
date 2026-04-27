@@ -25,6 +25,7 @@ type CollabPreviewDialogProps = {
   onClose: () => void;
   onTogglePath: (targetPath: string) => void;
   onToggleEffectPaths: (targetPaths: string[]) => void;
+  onSelectPullCommit?: (targetCommit: string | null) => void;
   onMessageChange: (nextValue: string) => void;
   onConfirm: () => void;
 };
@@ -70,6 +71,19 @@ function visibilityText(mode: 'visible' | 'mixed' | 'background') {
   return '主要影响后台/配置';
 }
 
+function formatCommitDate(value: string) {
+  if (!value) return '未知时间';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
 export function CollabPreviewDialog({
   open,
   mode,
@@ -81,12 +95,13 @@ export function CollabPreviewDialog({
   onClose,
   onTogglePath,
   onToggleEffectPaths,
+  onSelectPullCommit,
   onMessageChange,
   onConfirm,
 }: CollabPreviewDialogProps) {
   if (!open || !preview) return null;
   const selectedSet = new Set(selectedPaths);
-  const actionLabel = mode === 'push' ? '提交并推送我的修改' : '预览并同步最新版本';
+  const actionLabel = mode === 'push' ? '提交并推送我的修改' : '按日期预览 main 修改';
   const noPushChanges = mode === 'push' && preview.executionBlockReason === '当前没有可提交的本地文件改动。';
   const alreadySynced = mode === 'pull' && preview.executionBlockReason === 'main 当前已经是最新。';
   const confirmLabel = noPushChanges
@@ -252,15 +267,68 @@ export function CollabPreviewDialog({
               </div>
             </div>
 
-            {'commitSummaries' in preview && preview.commitSummaries.length > 0 && (
+            {mode === 'pull' && 'remoteCommits' in preview && preview.remoteCommits.length > 0 && (
               <div className="rounded-3xl border border-gray-100 bg-white px-4 py-4">
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">main 最新动态</p>
-                <div className="mt-3 space-y-2">
-                  {preview.commitSummaries.map((summary) => (
-                    <div key={summary} className="rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2 text-[12px] text-gray-700">
-                      {summary}
-                    </div>
-                  ))}
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">按提交时间选择同步范围</p>
+                    <p className="mt-2 text-[13px] leading-6 text-gray-600">
+                      每一张卡是一条 main 上尚未进入本地的提交。选择某条提交后，本次同步只截止到这条提交；后面的提交会留到下次再判断。
+                    </p>
+                    {preview.syncTargetLabel && (
+                      <p className="mt-2 text-[12px] font-bold text-[#5B7BFE]">当前截止点：{preview.syncTargetLabel}</p>
+                    )}
+                  </div>
+                  <ActionButton disabled={busy || !preview.syncTargetCommit} onClick={() => onSelectPullCommit?.(null)}>
+                    同步到最新 main
+                  </ActionButton>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {preview.remoteCommits.map((commit, index) => {
+                    const isLatest = index === preview.remoteCommits.length - 1;
+                    const isActive = preview.syncTargetCommit ? preview.syncTargetCommit === commit.hash : isLatest;
+                    return (
+                      <button
+                        key={commit.hash}
+                        type="button"
+                        disabled={busy || isActive}
+                        onClick={() => onSelectPullCommit?.(commit.hash)}
+                        className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                          isActive
+                            ? 'border-[#5B7BFE]/30 bg-[#5B7BFE]/[0.06] shadow-[0_10px_24px_rgba(91,123,254,0.10)]'
+                            : 'border-gray-100 bg-gray-50 hover:border-[#5B7BFE]/30 hover:bg-white'
+                        } disabled:cursor-default`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-gray-700 ring-1 ring-gray-200">
+                            {formatCommitDate(commit.authoredAt)}
+                          </span>
+                          <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-[#5B7BFE] ring-1 ring-[#5B7BFE]/20">
+                            {commit.shortHash}
+                          </span>
+                          {isLatest && (
+                            <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-100">
+                              最新
+                            </span>
+                          )}
+                          {isActive && (
+                            <span className="rounded-full bg-[#5B7BFE] px-2.5 py-1 text-[11px] font-bold text-white">
+                              当前选择
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-2 text-[13px] font-bold leading-6 text-gray-900">{commit.subject || '未填写提交说明'}</p>
+                        <p className="mt-1 text-[12px] leading-5 text-gray-500">
+                          {commit.identityLabel} · {commit.sourceLabel} · {commit.fileCount} 个文件
+                        </p>
+                        {commit.changedPaths.length > 0 && (
+                          <p className="mt-2 line-clamp-2 text-[11px] leading-5 text-gray-400">
+                            {commit.changedPaths.slice(0, 6).join('、')}{commit.changedPaths.length > 6 ? ` 等 ${commit.changedPaths.length} 个文件` : ''}
+                          </p>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}

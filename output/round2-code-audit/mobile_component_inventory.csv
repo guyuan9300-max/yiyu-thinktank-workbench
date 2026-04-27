@@ -1,0 +1,31 @@
+file,reachable,importers,classification
+components/CreateTask.tsx,true,components/calendar-screen/CalendarModalCoordinator.tsx | components/tasks-screen/TaskModalCoordinator.tsx,route_bound
+components/DateTimePickerSheet.tsx,true,components/CreateTask.tsx | components/TaskDetail.tsx | components/TaskDetail.tsx,route_bound
+components/EventLineDrawer.tsx,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx,route_bound
+components/FocusBar.tsx,true,app/(tabs)/calendar.tsx | app/(tabs)/tasks.tsx,route_bound
+components/RecordNote.tsx,true,components/calendar-screen/CalendarModalCoordinator.tsx | components/tasks-screen/TaskModalCoordinator.tsx,route_bound
+components/SettingsAI.tsx,true,app/(tabs)/profile.tsx,route_bound
+components/SettingsAccount.tsx,true,app/(tabs)/profile.tsx,route_bound
+components/SettingsCalendar.tsx,true,app/(tabs)/profile.tsx,route_bound
+components/SettingsTasks.tsx,true,app/(tabs)/profile.tsx,route_bound
+components/SmartInputSheet.tsx,true,components/calendar-screen/CalendarModalCoordinator.tsx | components/tasks-screen/TaskModalCoordinator.tsx,route_bound
+components/SuperFAB.tsx,true,app/(tabs)/_layout.tsx,route_bound
+components/TaskDetail.tsx,true,components/calendar-screen/CalendarModalCoordinator.tsx | components/tasks-screen/TaskModalCoordinator.tsx,route_bound
+components/TaskReviewComposer.tsx,true,components/calendar-screen/CalendarModalCoordinator.tsx | components/tasks-screen/TaskModalCoordinator.tsx,route_bound
+components/TaskSyncBadge.tsx,true,app/(tabs)/tasks.tsx | components/calendar-screen/DayView.tsx | components/calendar-screen/MonthView.tsx | components/calendar-screen/WeekView.tsx,route_bound
+components/UnderstandingCard.tsx,true,components/TaskDetail.tsx,route_bound
+components/WeekSignalCard.tsx,true,app/(tabs)/calendar.tsx,route_bound
+components/WorkspaceLiteSheet.tsx,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx,route_bound
+components/calendar-screen/CalendarDragLayer.tsx,true,app/(tabs)/calendar.tsx,migration_active
+components/calendar-screen/CalendarHeader.tsx,true,app/(tabs)/calendar.tsx,migration_active
+components/calendar-screen/CalendarModalCoordinator.tsx,true,app/(tabs)/calendar.tsx,migration_active
+components/calendar-screen/DayView.tsx,true,app/(tabs)/calendar.tsx,migration_active
+components/calendar-screen/MonthView.tsx,true,app/(tabs)/calendar.tsx,migration_active
+components/calendar-screen/WeekView.tsx,true,app/(tabs)/calendar.tsx,migration_active
+components/tasks-screen/DragCalendarOverlay.tsx,true,app/(tabs)/tasks.tsx,migration_active
+components/tasks-screen/InboxTaskList.tsx,true,app/(tabs)/tasks.tsx,migration_active
+components/tasks-screen/ScheduledTaskList.tsx,true,app/(tabs)/tasks.tsx,migration_active
+components/tasks-screen/SmartInputRecoveryController.tsx,true,app/(tabs)/tasks.tsx,migration_active
+components/tasks-screen/TaskModalCoordinator.tsx,true,app/(tabs)/tasks.tsx,migration_active
+components/tasks-screen/TasksFilterBar.tsx,true,app/(tabs)/tasks.tsx,migration_active
+components/tasks-screen/TasksHeader.tsx,true,app/(tabs)/tasks.tsx,migration_active

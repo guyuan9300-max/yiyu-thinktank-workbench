@@ -1,0 +1,29 @@
+{
+  "recordedAt": "2026-04-15T14:46:04",
+  "baseUrl": "http://127.0.0.1:47929",
+  "metrics": {
+    "windowDays": 7,
+    "newObjectHitRate": 0.0,
+    "fallbackRate": 0.0,
+    "approvalBacklog": 0,
+    "approvalLagHoursMedian": 0.0,
+    "candidateReviewWarningCount": 0,
+    "candidateReviewOverdueCount": 0,
+    "newCandidateUnreviewed24h": 0,
+    "candidateToApprovedConversionRate": 0.0,
+    "staleApprovedJudgmentCount": 0,
+    "resolverMismatchRate": 0.0,
+    "pageBreakdown": {}
+  },
+  "settings": {
+    "latestJudgmentsShadowOff": false,
+    "backfillPaused": false,
+    "workerCounters": {
+      "claimCounts": {},
+      "lockContention": {},
+      "backfillThrottle": {}
+    },
+    "lastCanaryObservation": null,
+    "updatedAt": "2026-04-15T14:46:04"
+  }
+}

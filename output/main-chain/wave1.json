@@ -1,0 +1,193 @@
+{
+  "recordedAt": "2026-04-15T15:13:31",
+  "baseUrl": "http://127.0.0.1:47929",
+  "dryRun": {
+    "dryRun": true,
+    "pauseRequested": false,
+    "paused": false,
+    "scannedClients": 2,
+    "queuedJobs": 0,
+    "skippedJobs": 0,
+    "candidates": [
+      {
+        "clientId": "client_cffc",
+        "scopeType": "client",
+        "scopeId": "client_cffc",
+        "jobType": "strategy_pack",
+        "triggerType": "backfill",
+        "intentProfile": "client_overview"
+      }
+    ]
+  },
+  "before": {
+    "recordedAt": "2026-04-15T15:12:27",
+    "baseUrl": "http://127.0.0.1:47929",
+    "metrics": {
+      "windowDays": 7,
+      "newObjectHitRate": 0.5,
+      "fallbackRate": 0.0,
+      "approvalBacklog": 4,
+      "approvalLagHoursMedian": 0.0,
+      "candidateReviewWarningCount": 0,
+      "candidateReviewOverdueCount": 0,
+      "newCandidateUnreviewed24h": 4,
+      "candidateToApprovedConversionRate": 0.0,
+      "staleApprovedJudgmentCount": 0,
+      "resolverMismatchRate": 0.0,
+      "pageBreakdown": {
+        "client_overview": {
+          "newObjectHitRate": 0.5,
+          "fallbackRate": 0.0,
+          "resolverMismatchRate": 0.0,
+          "totalRuns": 6
+        }
+      }
+    },
+    "settings": {
+      "latestJudgmentsShadowOff": true,
+      "backfillPaused": false,
+      "workerCounters": {
+        "claimCounts": {
+          "interactive": 6,
+          "updatedAt": 0
+        },
+        "lockContention": {},
+        "backfillThrottle": {}
+      },
+      "lastCanaryObservation": null,
+      "updatedAt": "2026-04-15T15:10:54"
+    }
+  },
+  "after": {
+    "recordedAt": "2026-04-15T15:13:31",
+    "baseUrl": "http://127.0.0.1:47929",
+    "metrics": {
+      "windowDays": 7,
+      "newObjectHitRate": 0.6364,
+      "fallbackRate": 0.0,
+      "approvalBacklog": 6,
+      "approvalLagHoursMedian": 0.0,
+      "candidateReviewWarningCount": 0,
+      "candidateReviewOverdueCount": 0,
+      "newCandidateUnreviewed24h": 6,
+      "candidateToApprovedConversionRate": 0.0,
+      "staleApprovedJudgmentCount": 0,
+      "resolverMismatchRate": 0.0,
+      "pageBreakdown": {
+        "client_overview": {
+          "newObjectHitRate": 0.6364,
+          "fallbackRate": 0.0,
+          "resolverMismatchRate": 0.0,
+          "totalRuns": 11
+        }
+      }
+    },
+    "settings": {
+      "latestJudgmentsShadowOff": true,
+      "backfillPaused": false,
+      "workerCounters": {
+        "claimCounts": {
+          "interactive": 10,
+          "updatedAt": 0
+        },
+        "lockContention": {},
+        "backfillThrottle": {}
+      },
+      "lastCanaryObservation": null,
+      "updatedAt": "2026-04-15T15:13:15"
+    }
+  },
+  "runs": [
+    {
+      "label": "wave1-client-a-shadow-on",
+      "clientId": "client_cffc",
+      "shadowOff": true,
+      "jobId": "analysisjob_0a0c0ac61c39",
+      "jobStatus": "completed",
+      "baselineJudgmentId": "judgment_6b8b14d08361",
+      "selectedCandidateId": "judgment_6b8b14d08361",
+      "analysisCenterCounts": {
+        "evidenceCardCount": 38,
+        "themeClusterCount": 9,
+        "conflictGroupCount": 1,
+        "openQuestionCount": 6
+      },
+      "hiddenDependencyIssues": []
+    },
+    {
+      "label": "wave1-client-b-shadow-off",
+      "clientId": "client_a4d1db29a7",
+      "shadowOff": false,
+      "jobId": "analysisjob_9d5e6b30e4f8",
+      "jobStatus": "completed",
+      "baselineJudgmentId": "judgment_57e21645e3d8",
+      "selectedCandidateId": "judgment_57e21645e3d8",
+      "analysisCenterCounts": {
+        "evidenceCardCount": 35,
+        "themeClusterCount": 4,
+        "conflictGroupCount": 0,
+        "openQuestionCount": 4
+      },
+      "hiddenDependencyIssues": []
+    },
+    {
+      "label": "wave1-client-b-shadow-on",
+      "clientId": "client_a4d1db29a7",
+      "shadowOff": true,
+      "jobId": "analysisjob_4848e20d6b63",
+      "jobStatus": "completed",
+      "baselineJudgmentId": "judgment_57e21645e3d8",
+      "selectedCandidateId": "judgment_57e21645e3d8",
+      "analysisCenterCounts": {
+        "evidenceCardCount": 35,
+        "themeClusterCount": 4,
+        "conflictGroupCount": 0,
+        "openQuestionCount": 4
+      },
+      "hiddenDependencyIssues": []
+    },
+    {
+      "label": "wave1-idempotency-rerun",
+      "clientId": "client_cffc",
+      "shadowOff": true,
+      "jobId": "analysisjob_259e31ac4da7",
+      "jobStatus": "completed",
+      "baselineJudgmentId": "judgment_6b8b14d08361",
+      "selectedCandidateId": "judgment_6b8b14d08361",
+      "analysisCenterCounts": {
+        "evidenceCardCount": 38,
+        "themeClusterCount": 9,
+        "conflictGroupCount": 1,
+        "openQuestionCount": 6
+      },
+      "hiddenDependencyIssues": []
+    }
+  ],
+  "idempotencyOk": true,
+  "idempotencyIssues": [],
+  "observation": {
+    "timeRange": "Wave 1 @ 2026-04-15T15:13:31",
+    "clientCount": 2,
+    "enqueuedJobs": 4,
+    "completedJobs": 4,
+    "failedJobs": 0,
+    "newObjectHitRateBefore": 0.5,
+    "newObjectHitRateAfter": 0.6364,
+    "fallbackRateBefore": 0.0,
+    "fallbackRateAfter": 0.0,
+    "resolverMismatchRateBefore": 0.0,
+    "resolverMismatchRateAfter": 0.0,
+    "approvalBacklog": 6,
+    "approvalLagHoursMedian": 0.0,
+    "claimCounts": {
+      "interactive": 10,
+      "updatedAt": 0
+    },
+    "lockContention": {},
+    "backfillThrottle": {},
+    "impactedRealtimeTasks": false,
+    "latestJudgmentsShadowOff": true,
+    "verdict": "pass",
+    "conclusion": "Wave 1 通过：shadowOff、manual rerun 与 idempotency gate 均未暴露主链回潮。"
+  }
+}

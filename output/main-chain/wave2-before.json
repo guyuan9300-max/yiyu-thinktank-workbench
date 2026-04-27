@@ -1,0 +1,140 @@
+{
+  "recordedAt": "2026-04-15T22:42:55",
+  "baseUrl": "http://127.0.0.1:47829",
+  "metrics": {
+    "windowDays": 7,
+    "newObjectHitRate": 0.6364,
+    "fallbackRate": 0.0,
+    "approvalBacklog": 6,
+    "approvalLagHoursMedian": 0.0,
+    "candidateReviewWarningCount": 0,
+    "candidateReviewOverdueCount": 0,
+    "newCandidateUnreviewed24h": 6,
+    "candidateToApprovedConversionRate": 0.0,
+    "staleApprovedJudgmentCount": 0,
+    "resolverMismatchRate": 0.0,
+    "pageBreakdown": {
+      "client_overview": {
+        "newObjectHitRate": 0.6364,
+        "fallbackRate": 0.0,
+        "resolverMismatchRate": 0.0,
+        "totalRuns": 11
+      }
+    }
+  },
+  "settings": {
+    "latestJudgmentsShadowOff": true,
+    "backfillPaused": false,
+    "workerCounters": {
+      "claimCounts": {
+        "interactive": 10,
+        "updatedAt": 0
+      },
+      "lockContention": {},
+      "backfillThrottle": {}
+    },
+    "lastCanaryObservation": {
+      "recordedAt": "2026-04-15T15:13:31",
+      "timeRange": "Wave 1 @ 2026-04-15T15:13:31",
+      "clientCount": 2,
+      "enqueuedJobs": 4,
+      "completedJobs": 4,
+      "failedJobs": 0,
+      "newObjectHitRateBefore": 0.5,
+      "newObjectHitRateAfter": 0.6364,
+      "fallbackRateBefore": 0.0,
+      "fallbackRateAfter": 0.0,
+      "resolverMismatchRateBefore": 0.0,
+      "resolverMismatchRateAfter": 0.0,
+      "approvalBacklog": 6,
+      "approvalLagHoursMedian": 0.0,
+      "claimCounts": {
+        "interactive": 10,
+        "updatedAt": 0
+      },
+      "lockContention": {},
+      "backfillThrottle": {},
+      "impactedRealtimeTasks": false,
+      "latestJudgmentsShadowOff": true,
+      "verdict": "pass",
+      "conclusion": "Wave 1 通过：shadowOff、manual rerun 与 idempotency gate 均未暴露主链回潮。"
+    },
+    "updatedAt": "2026-04-15T15:13:31"
+  },
+  "appSettings": {
+    "settings": {
+      "currentOperatorId": "op_qh",
+      "aiProvider": "doubao",
+      "aiModel": "doubao-seed-2-0-pro-260215",
+      "dataDir": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench",
+      "backupDir": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench/backups",
+      "cloudApiUrl": "http://101.126.34.232",
+      "lastBackupAt": "2026-03-12T22:23:38",
+      "foldersRootLabel": "桌面客户资料",
+      "aiConfigured": true,
+      "aiCredentialSource": "keychain",
+      "aiFingerprint": "9f26dd7be374",
+      "demoDataLoaded": true
+    },
+    "operators": [
+      {
+        "id": "op_qh",
+        "name": "庆华",
+        "role": "首席咨询助理",
+        "team": "咨询策略",
+        "color": "#5B7BFE",
+        "isCurrent": true
+      },
+      {
+        "id": "op_ys",
+        "name": "一朔",
+        "role": "研究分析师",
+        "team": "洞察研究",
+        "color": "#10B981",
+        "isCurrent": false
+      },
+      {
+        "id": "op_jn",
+        "name": "嘉宁",
+        "role": "项目推进",
+        "team": "交付协同",
+        "color": "#F59E0B",
+        "isCurrent": false
+      }
+    ],
+    "health": {
+      "backend": "online",
+      "appName": "益语智库自用平台",
+      "appVersion": "0.1.0",
+      "buildVersion": "2026.03.15-v2-migration-1",
+      "startedAt": "2026-04-15T22:38:20",
+      "featureFlags": [
+        "knowledge.vectorize-answer",
+        "knowledge.reclass-events",
+        "knowledge.surrogate-index",
+        "knowledge.search",
+        "knowledge.rebuild",
+        "chat.general-answer",
+        "chat.instant-send",
+        "chat.async-status",
+        "chat.analysis-runs"
+      ],
+      "dataDir": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench",
+      "stats": {
+        "clients": 8,
+        "tasks": 25,
+        "topics": 47,
+        "handbookEntries": 16,
+        "analysisRuns": 5
+      },
+      "ai": {
+        "provider": "doubao",
+        "model": "doubao-seed-2-0-pro-260215",
+        "ready": true,
+        "detail": "豆包 Seed 2.0 Pro 凭证已配置，可用于结构化问答与分析。",
+        "credentialSource": "keychain",
+        "fingerprint": "9f26dd7be374"
+      }
+    }
+  }
+}

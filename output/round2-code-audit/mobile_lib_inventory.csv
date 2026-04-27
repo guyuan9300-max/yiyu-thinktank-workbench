@@ -1,0 +1,85 @@
+file,reachable,importers,classification
+lib/__tests__/account-scope.test.mjs,false,,test_guarded
+lib/__tests__/base-url.test.mjs,false,,test_guarded
+lib/__tests__/boundary-cards.test.mjs,false,,test_guarded
+lib/__tests__/calendar-repository-core.test.mjs,false,,test_guarded
+lib/__tests__/consult-context-adapter.test.mjs,false,,test_guarded
+lib/__tests__/consult-context.test.mjs,false,,test_guarded
+lib/__tests__/consult-thread-context.test.mjs,false,,test_guarded
+lib/__tests__/create-task-association.test.mjs,false,,test_guarded
+lib/__tests__/current-focus-core.test.mjs,false,,test_guarded
+lib/__tests__/date.test.mjs,false,,test_guarded
+lib/__tests__/focus-selectors.test.mjs,false,,test_guarded
+lib/__tests__/legacy-upload-pseudo-op-core.test.mjs,false,,test_guarded
+lib/__tests__/legacy-upload-runner-core.test.mjs,false,,test_guarded
+lib/__tests__/pending-op-policy.test.mjs,false,,test_guarded
+lib/__tests__/record-note-flow-core.test.mjs,false,,test_guarded
+lib/__tests__/runtime-controller.test.mjs,false,,test_guarded
+lib/__tests__/scope-storage-core.test.mjs,false,,test_guarded
+lib/__tests__/smart-input-queue-core.test.mjs,false,,test_guarded
+lib/__tests__/smart-input-recovery.test.mjs,false,,test_guarded
+lib/__tests__/sync-freeze-core.test.mjs,false,,test_guarded
+lib/__tests__/task-board-store.test.mjs,false,,test_guarded
+lib/__tests__/task-sync-policy.test.mjs,false,,test_guarded
+lib/__tests__/task-sync-presentation.test.mjs,false,,test_guarded
+lib/__tests__/task-understanding.test.mjs,false,,test_guarded
+lib/__tests__/week-signal.test.mjs,false,,test_guarded
+lib/account-scope.ts,true,lib/local-db.ts | lib/runtime.ts | lib/scope-storage-core.ts,store_bound
+lib/android-back.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/profile.tsx | app/(tabs)/tasks.tsx | app/login.tsx,store_bound
+lib/api.ts,true,app/(tabs)/consult.tsx | app/(tabs)/consult.tsx | app/(tabs)/profile.tsx | app/login.tsx | components/SettingsAccount.tsx | components/SettingsTasks.tsx | components/SmartInputSheet.tsx | lib/auth-context.tsx | lib/calendar-repository.ts | lib/client-intel-store.ts | lib/create-task-resources.ts | lib/create-task-service.ts | lib/event-line-client-transfer.ts | lib/record-note-service.ts | lib/runtime.ts | lib/smart-input-queue.ts | lib/sync-engine.ts | lib/sync-errors.ts | lib/system-health.ts | lib/task-detail-service.ts | lib/task-repository.ts,store_bound
+lib/app-chrome.ts,true,app/(tabs)/_layout.tsx | app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/profile.tsx | app/(tabs)/tasks.tsx | app/login.tsx | components/CreateTask.tsx | components/RecordNote.tsx | components/SettingsAI.tsx | components/SettingsAccount.tsx | components/SettingsCalendar.tsx | components/SettingsTasks.tsx | components/SmartInputSheet.tsx | components/TaskDetail.tsx | components/TaskReviewComposer.tsx,store_bound
+lib/auth-context.tsx,true,app/(tabs)/profile.tsx | app/_layout.tsx | app/login.tsx,store_bound
+lib/base-url.ts,true,components/SettingsAccount.tsx | lib/api.ts,store_bound
+lib/boundary-cards.ts,true,lib/client-intel-store.ts,store_bound
+lib/cache.ts,true,app/(tabs)/consult.tsx | components/SettingsTasks.tsx | lib/api.ts | lib/create-task-resources.ts | lib/event-line-client-transfer.ts | lib/runtime.ts,store_bound
+lib/calendar-repository-core.ts,true,components/TaskDetail.tsx | lib/calendar-repository.ts,migration_active
+lib/calendar-repository.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/tasks.tsx,store_bound
+lib/calendar-selectors.ts,true,app/(tabs)/calendar.tsx,store_bound
+lib/client-intel-store.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx | components/WorkspaceLiteSheet.tsx | lib/runtime.ts,store_bound
+lib/consult-context-adapter.ts,true,app/(tabs)/consult.tsx,store_bound
+lib/consult-context.ts,true,app/(tabs)/consult.tsx | lib/consult-context-adapter.ts | lib/consult-context-adapter.ts,store_bound
+lib/consult-thread-context.ts,true,app/(tabs)/consult.tsx,store_bound
+lib/create-task-association.ts,true,components/CreateTask.tsx,store_bound
+lib/create-task-resources.ts,true,components/CreateTask.tsx | lib/event-line-client-transfer.ts,store_bound
+lib/create-task-service.ts,true,components/CreateTask.tsx,store_bound
+lib/current-focus-core.ts,true,lib/client-intel-store.ts | lib/current-focus-store.ts,migration_active
+lib/current-focus-store.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx | components/FocusBar.tsx | lib/runtime.ts,store_bound
+lib/date.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/tasks.tsx | components/FocusBar.tsx | lib/current-focus-core.ts | lib/local-db.ts | lib/week-signal.ts,store_bound
+lib/dev-log.ts,true,app/(tabs)/tasks.tsx | lib/api.ts | lib/calendar-repository.ts | lib/current-focus-store.ts | lib/local-db.ts | lib/runtime.ts | lib/sync-engine.ts | lib/task-board-store.ts | lib/use-render-count.ts,store_bound
+lib/event-line-client-transfer.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx,store_bound
+lib/focus-selectors.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/tasks.tsx,store_bound
+lib/legacy-upload-ops.ts,true,components/TaskDetail.tsx | lib/legacy-upload-runner.ts | lib/record-note-service.ts | lib/system-health.ts | lib/task-detail-service.ts,migration_active
+lib/legacy-upload-pseudo-op-core.ts,true,lib/legacy-upload-ops.ts | lib/system-health.ts,migration_active
+lib/legacy-upload-runner-core.ts,true,lib/legacy-upload-runner.ts | lib/record-note-service.ts,migration_active
+lib/legacy-upload-runner.ts,true,lib/sync-engine.ts,migration_active
+lib/local-db.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/tasks.tsx | lib/cache.ts | lib/calendar-repository.ts | lib/client-intel-store.ts | lib/current-focus-store.ts | lib/event-line-client-transfer.ts | lib/legacy-upload-ops.ts | lib/record-note-service.ts | lib/runtime.ts | lib/smart-input-queue.ts | lib/sync-engine.ts | lib/system-health.ts | lib/task-board-store.ts | lib/task-detail-service.ts | lib/task-query-service.ts | lib/task-repository.ts | lib/task-review-service.ts,store_bound
+lib/local-ids.ts,true,lib/task-repository.ts,store_bound
+lib/pending-op-policy.ts,true,lib/local-db.ts,store_bound
+lib/record-note-flow-core.ts,false,,migration_active
+lib/record-note-service.ts,true,components/RecordNote.tsx | lib/legacy-upload-runner.ts | lib/system-health.ts | lib/task-detail-service.ts,store_bound
+lib/runtime-controller.ts,true,lib/runtime.ts,migration_active
+lib/runtime-flags.ts,true,lib/calendar-repository.ts | lib/runtime.ts | lib/system-health.ts | lib/task-query-service.ts,migration_active
+lib/runtime.ts,true,app/login.tsx | lib/auth-context.tsx,migration_active
+lib/scope-storage-core.ts,true,lib/cache.ts | lib/client-intel-store.ts | lib/smart-input-queue.ts,migration_active
+lib/simple-markdown.tsx,true,app/(tabs)/consult.tsx,store_bound
+lib/smart-input-queue-core.ts,true,lib/smart-input-queue.ts,migration_active
+lib/smart-input-queue.ts,true,app/(tabs)/tasks.tsx | components/SmartInputSheet.tsx | lib/runtime.ts,store_bound
+lib/smart-input-recovery.ts,true,app/(tabs)/tasks.tsx | components/tasks-screen/SmartInputRecoveryController.tsx,migration_active
+lib/storage.ts,true,lib/api.ts | lib/auth-context.tsx | lib/current-focus-store.ts | lib/runtime-flags.ts,store_bound
+lib/sync-engine.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/profile.tsx | app/(tabs)/tasks.tsx | lib/calendar-repository.ts | lib/current-focus-store.ts | lib/event-line-client-transfer.ts | lib/record-note-service.ts | lib/runtime.ts | lib/system-health.ts | lib/task-board-store.ts | lib/task-review-service.ts,migration_active
+lib/sync-errors.ts,true,lib/sync-engine.ts,store_bound
+lib/sync-freeze-core.ts,true,lib/sync-engine.ts | lib/system-health.ts,migration_active
+lib/system-health.ts,true,app/(tabs)/profile.tsx,store_bound
+lib/task-board-store-core.ts,true,lib/task-board-store.ts,migration_active
+lib/task-board-store.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx | lib/runtime.ts,store_bound
+lib/task-detail-service.ts,true,components/TaskDetail.tsx,store_bound
+lib/task-query-service.ts,true,lib/task-board-store.ts,store_bound
+lib/task-repository.ts,true,components/CreateTask.tsx | lib/record-note-service.ts | lib/sync-engine.ts,store_bound
+lib/task-review-service.ts,true,components/TaskReviewComposer.tsx,store_bound
+lib/task-sync-policy.ts,true,lib/local-db.ts,store_bound
+lib/task-sync-presentation.ts,true,components/TaskSyncBadge.tsx | lib/__tests__/task-sync-presentation.test.mjs,store_bound
+lib/task-understanding.ts,true,components/TaskDetail.tsx | components/UnderstandingCard.tsx,store_bound
+lib/theme.ts,true,app/(tabs)/_layout.tsx | app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/profile.tsx | app/(tabs)/tasks.tsx | app/_layout.tsx | app/login.tsx | components/CreateTask.tsx | components/DateTimePickerSheet.tsx | components/EventLineDrawer.tsx | components/FocusBar.tsx | components/RecordNote.tsx | components/SettingsAI.tsx | components/SettingsAccount.tsx | components/SettingsCalendar.tsx | components/SettingsTasks.tsx | components/SuperFAB.tsx | components/TaskDetail.tsx | components/TaskReviewComposer.tsx | components/TaskSyncBadge.tsx | components/UnderstandingCard.tsx | components/WeekSignalCard.tsx | components/WorkspaceLiteSheet.tsx | components/calendar-screen/CalendarDragLayer.tsx | components/calendar-screen/CalendarHeader.tsx | components/calendar-screen/DayView.tsx | components/calendar-screen/MonthView.tsx | components/calendar-screen/WeekView.tsx | components/tasks-screen/InboxTaskList.tsx | components/tasks-screen/SmartInputRecoveryController.tsx | components/tasks-screen/TasksHeader.tsx | lib/app-chrome.ts | lib/simple-markdown.tsx,store_bound
+lib/types.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx | components/CreateTask.tsx | components/EventLineDrawer.tsx | components/RecordNote.tsx | components/SettingsAccount.tsx | components/SmartInputSheet.tsx | components/TaskDetail.tsx | components/TaskReviewComposer.tsx | components/TaskSyncBadge.tsx | components/WeekSignalCard.tsx | components/WorkspaceLiteSheet.tsx | components/calendar-screen/CalendarDragLayer.tsx | components/calendar-screen/CalendarModalCoordinator.tsx | components/calendar-screen/DayView.tsx | components/calendar-screen/MonthView.tsx | components/calendar-screen/WeekView.tsx | components/tasks-screen/DragCalendarOverlay.tsx | components/tasks-screen/InboxTaskList.tsx | components/tasks-screen/ScheduledTaskList.tsx | components/tasks-screen/TaskModalCoordinator.tsx | lib/account-scope.ts | lib/api.ts | lib/auth-context.tsx | lib/boundary-cards.ts | lib/calendar-repository.ts | lib/calendar-selectors.ts | lib/client-intel-store.ts | lib/consult-context-adapter.ts | lib/consult-context.ts | lib/consult-thread-context.ts | lib/create-task-association.ts | lib/create-task-resources.ts | lib/current-focus-core.ts | lib/current-focus-store.ts | lib/event-line-client-transfer.ts | lib/focus-selectors.ts | lib/legacy-upload-ops.ts | lib/legacy-upload-pseudo-op-core.ts | lib/legacy-upload-runner-core.ts | lib/local-db.ts | lib/pending-op-policy.ts | lib/record-note-service.ts | lib/runtime.ts | lib/smart-input-queue.ts | lib/smart-input-recovery.ts | lib/sync-engine.ts | lib/sync-errors.ts | lib/sync-freeze-core.ts | lib/system-health.ts | lib/task-board-store-core.ts | lib/task-detail-service.ts | lib/task-query-service.ts | lib/task-repository.ts | lib/task-review-service.ts | lib/task-sync-policy.ts | lib/task-sync-presentation.ts | lib/task-understanding.ts | lib/week-signal.ts,store_bound
+lib/use-render-count.ts,true,app/(tabs)/calendar.tsx | app/(tabs)/consult.tsx | app/(tabs)/tasks.tsx,store_bound
+lib/week-signal.ts,true,app/(tabs)/calendar.tsx,store_bound

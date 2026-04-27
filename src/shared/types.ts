@@ -114,6 +114,9 @@ export interface SessionUser {
   fullName: string;
   primaryRole: EmployeeRole;
   accountStatus: AccountStatus;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  isDepartmentLead?: boolean;
 }
 
 export interface AuthState {
@@ -2563,15 +2566,17 @@ export interface EventLineReportAttachment {
   id: string;
   taskId: string;
   documentId?: string | null;
-  sourceKind?: 'task_attachment' | 'event_line_attachment' | null;
+  sourceKind?: 'task_attachment' | 'event_line_attachment' | 'meeting_attachment' | 'calendar_attachment' | null;
   title: string;
+  fileName?: string | null;
   kind: string;
   mimeType?: string | null;
   sizeBytes: number;
   downloadUrl: string;
+  openUrl?: string | null;
   actorName?: string | null;
   createdAt: string;
-  parseStatus?: string | null;
+  parseStatus?: 'ready' | 'pending' | 'missing_document' | 'missing_source' | 'unsupported' | string | null;
   parsedPreview?: string;
   chunkCount?: number;
   sectionCount?: number;
@@ -2593,11 +2598,14 @@ export interface EventLineTimelineNode {
   kind: EventLineTimelineNodeKind;
   title: string;
   time: string;
+  timeRange?: { start?: string; end?: string };
   summary: string;
   sourceTaskIds?: string[];
   sourceTaskId?: string;
   sourceActivityIds: string[];
   attachments: EventLineReportAttachment[];
+  materialCount?: number;
+  includeInReport?: boolean;
   evidenceSummary: string;
   warnings: EventLineTimelineNodeWarning[];
   tags: string[];
@@ -2876,6 +2884,8 @@ export interface WeeklyReviewEventLineContext {
   evidenceCount: number;
   primaryClientId?: string | null;
   primaryClientName?: string | null;
+  primaryDepartmentId?: string | null;
+  primaryDepartmentName?: string | null;
 }
 
 export interface WeeklyReviewTaskStructuredNote {
@@ -3379,10 +3389,23 @@ export interface ReviewSimulationBundle {
   departmentReports: HierarchyReport[];
 }
 
+export type ReviewPerspectiveKey = 'organization' | 'department' | 'mine';
+
+export interface ReviewPerspectiveOption {
+  key: ReviewPerspectiveKey;
+  label: string;
+  departmentId?: string | null;
+  departmentName?: string | null;
+}
+
 export interface ReviewDashboard {
   currentReview?: WeeklyReview | null;
   workItems: WeeklyReviewTaskEntry[];
   personalItems: WeeklyReviewTaskEntry[];
+  availablePerspectives: ReviewPerspectiveOption[];
+  activePerspective: ReviewPerspectiveKey;
+  activeDepartmentId?: string | null;
+  activeDepartmentName?: string | null;
   workAnalysis?: WeeklyReviewAnalysis | null;
   personalAnalysis?: WeeklyReviewAnalysis | null;
   weeklyMainlineCards?: WeeklyMainlineCards | null;
@@ -6049,11 +6072,30 @@ export interface PullPreview {
   status: CollabRepoStatus;
   suggestedMessage: string;
   commitSummaries: string[];
+  remoteCommits: CollabRemoteCommit[];
+  syncTargetCommit?: string | null;
+  syncTargetLabel?: string | null;
   effects: CollabEffectPreview[];
   groups: CollabChangeGroup[];
   files: CollabFileChange[];
   notice?: string | null;
   executionBlockReason?: string | null;
+}
+
+export interface CollabRemoteCommit {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  authoredAt: string;
+  committedAt: string;
+  authorName: string;
+  authorEmail: string;
+  committerName: string;
+  committerEmail: string;
+  identityLabel: string;
+  sourceLabel: string;
+  changedPaths: string[];
+  fileCount: number;
 }
 
 export interface CommitAndPushToMainPayload {
@@ -6068,6 +6110,7 @@ export interface PullSelectedFromMainPayload {
   selectedPaths: string[];
   confirmedRiskPaths: string[];
   message: string;
+  targetCommit?: string | null;
 }
 
 export interface CollabActionResult {
@@ -6097,7 +6140,7 @@ declare global {
       getCollabRepoStatus(repoPath?: string | null): Promise<CollabRepoStatus>;
       previewPushToMain(repoPath: string): Promise<PushPreview>;
       commitAndPushToMain(payload: CommitAndPushToMainPayload): Promise<CollabActionResult>;
-      previewPullFromMain(repoPath: string): Promise<PullPreview>;
+      previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
       pullSelectedFromMain(payload: PullSelectedFromMainPayload): Promise<CollabActionResult>;
       rebuildAndInstallFromRepo(repoPath: string): Promise<boolean>;
       getDroppedFilePath(file: File): string | null;

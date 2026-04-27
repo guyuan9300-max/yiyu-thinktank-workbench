@@ -1,0 +1,427 @@
+file,method,path,normalizedPath,line,matchingWrappers,classification
+backend/app/main.py,GET,/api/public/task-attachments/{attachment_id},/api/public/task-attachments/{param},22113,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/public/task-attachments/{attachment_id}/thumbnail,/api/public/task-attachments/{param}/thumbnail,22198,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/public/task-attachments/{attachment_id}/text-content,/api/public/task-attachments/{param}/text-content,22218,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/public/task-attachments/{attachment_id}/ocr-summary,/api/public/task-attachments/{param}/ocr-summary,22309,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/attachments/download-zip,/api/v1/event-lines/{param}/attachments/download-zip,22357,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/brain/dashboard,/api/v1/brain/dashboard,22380,getBrainDashboard,active_bound
+backend/app/main.py,GET,/api/v1/digital-assets/dashboard,/api/v1/digital-assets/dashboard,22445,getDigitalAssetDashboard,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/digital-assets,/api/v1/clients/{param}/digital-assets,22450,getClientDigitalAssets,active_bound
+backend/app/main.py,GET,/api/v1/system/health,/api/v1/system/health,22457,getHealth,active_bound
+backend/app/main.py,GET,/api/v1/system/health-check,/api/v1/system/health-check,22475,,hidden_but_reachable
+backend/app/main.py,POST,/api/v1/system/self-heal,/api/v1/system/self-heal,22489,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/system/diagnose,/api/v1/system/diagnose,22504,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/system/heal-log,/api/v1/system/heal-log,22517,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/auth/me,/api/v1/auth/me,22537,getAuthState | updateProfile,active_bound
+backend/app/main.py,GET,/api/v1/account/overview,/api/v1/account/overview,22580,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/local-input-memory,/api/v1/local-input-memory,22609,getLocalInputMemory,active_bound
+backend/app/main.py,POST,/api/v1/local-input-memory/cloud-auth,/api/v1/local-input-memory/cloud-auth,22613,saveCloudAuthInputMemory,active_bound
+backend/app/main.py,POST,/api/v1/local-input-memory/ai,/api/v1/local-input-memory/ai,22676,saveAiInputMemory,active_bound
+backend/app/main.py,POST,/api/v1/local-input-memory/feishu,/api/v1/local-input-memory/feishu,22694,saveFeishuInputMemory,active_bound
+backend/app/main.py,GET,/api/v1/me/org-membership,/api/v1/me/org-membership,22718,getOrgMembershipSummary,active_bound
+backend/app/main.py,GET,/api/v1/org-integrations/feishu,/api/v1/org-integrations/feishu,22730,getOrgFeishuIntegration,active_bound
+backend/app/main.py,POST,/api/v1/org-integrations/feishu/validate-and-save,/api/v1/org-integrations/feishu/validate-and-save,22746,saveOrgFeishuIntegration,active_bound
+backend/app/main.py,GET,/api/v1/me/feishu-authorization,/api/v1/me/feishu-authorization,22759,getFeishuMemberAuthorization | clearFeishuMemberAuthorization,active_bound
+backend/app/main.py,POST,/api/v1/me/feishu-authorization/start,/api/v1/me/feishu-authorization/start,22782,startFeishuMemberAuthorization,active_bound
+backend/app/main.py,DELETE,/api/v1/me/feishu-authorization,/api/v1/me/feishu-authorization,22791,getFeishuMemberAuthorization | clearFeishuMemberAuthorization,active_bound
+backend/app/main.py,GET,/api/v1/auth/department-options,/api/v1/auth/department-options,22808,getDepartmentOptions,active_bound
+backend/app/main.py,POST,/api/v1/auth/register,/api/v1/auth/register,22815,register,active_bound
+backend/app/main.py,POST,/api/v1/auth/login,/api/v1/auth/login,22837,login,active_bound
+backend/app/main.py,POST,/api/v1/auth/change-password,/api/v1/auth/change-password,22858,changePassword,active_bound
+backend/app/main.py,PATCH,/api/v1/auth/me,/api/v1/auth/me,22863,getAuthState | updateProfile,active_bound
+backend/app/main.py,POST,/api/v1/auth/logout,/api/v1/auth/logout,22874,logout,active_bound
+backend/app/main.py,GET,/api/v1/consultation/knowledge-requests,/api/v1/consultation/knowledge-requests,22956,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/admin/employees,/api/v1/admin/employees,22981,getEmployees,active_bound
+backend/app/main.py,GET,/api/v1/settings/org-model/profile,/api/v1/settings/org-model/profile,22991,getOrgModelProfile | updateOrgModelProfile,active_bound
+backend/app/main.py,POST,/api/v1/settings/org-model/profile,/api/v1/settings/org-model/profile,23008,getOrgModelProfile | updateOrgModelProfile,active_bound
+backend/app/main.py,POST,/api/v1/settings/org-model/backfill-task-links,/api/v1/settings/org-model/backfill-task-links,23015,backfillOrgTaskLinks,active_bound
+backend/app/main.py,GET,/api/v1/event-lines,/api/v1/event-lines,23022,getEventLines | createEventLine,active_bound
+backend/app/main.py,POST,/api/v1/event-lines,/api/v1/event-lines,23041,getEventLines | createEventLine,active_bound
+backend/app/main.py,GET,/api/v1/event-lines/{event_line_id},/api/v1/event-lines/{param},23107,getEventLine | updateEventLine | deleteEventLine,active_bound
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/clarification-draft,/api/v1/event-lines/{param}/clarification-draft,23122,generateEventLineClarificationDraft,active_bound
+backend/app/main.py,GET,/api/v1/event-lines/{event_line_id}/memory,/api/v1/event-lines/{param}/memory,23154,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/event-lines/{event_line_id}/context-bundle,/api/v1/event-lines/{param}/context-bundle,23161,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/understanding,/api/v1/tasks/{param}/understanding,23217,getTaskUnderstanding,active_bound
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/page-context,/api/v1/tasks/{param}/page-context,23232,getTaskPageContext,active_bound
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/context-preview,/api/v1/tasks/{param}/context-preview,23253,getTaskContextPreview,active_bound
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/smart-brief,/api/v1/tasks/{param}/smart-brief,24037,getTaskSmartBrief,active_bound
+backend/app/main.py,POST,/api/v1/tasks/smart-briefs,/api/v1/tasks/smart-briefs,24054,getTaskSmartBriefsBatch,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/smart-brief-actions/{action_key}/adopt,/api/v1/tasks/{param}/smart-brief-actions/{param}/adopt,24090,adoptTaskSmartBriefAction,active_bound
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/prep-pack,/api/v1/tasks/{param}/prep-pack,24589,getTaskPrepPack,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/prep-pack/proposals,/api/v1/tasks/{param}/prep-pack/proposals,24594,createTaskPrepProposal,active_bound
+backend/app/main.py,GET,/api/v1/proposals,/api/v1/proposals,24734,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/proposals/batch-approve,/api/v1/proposals/batch-approve,24749,batchApproveProposals,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/proposals/batch-reject,/api/v1/proposals/batch-reject,24783,batchRejectProposals,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/proposals/{proposal_id},/api/v1/proposals/{param},24817,getProposal,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/proposals/{proposal_id}/execution-preview,/api/v1/proposals/{param}/execution-preview,24824,getProposalExecutionPreview,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/proposals/{proposal_id}/approve,/api/v1/proposals/{param}/approve,24832,approveProposal,active_bound
+backend/app/main.py,POST,/api/v1/proposals/{proposal_id}/reject,/api/v1/proposals/{param}/reject,24860,rejectProposal,active_bound
+backend/app/main.py,POST,/api/v1/proposals/{proposal_id}/execution-ticket,/api/v1/proposals/{param}/execution-ticket,24888,createProposalExecutionTicket,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/execution-tickets,/api/v1/execution-tickets,24919,getExecutionTickets,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/execution-tickets/{ticket_id}/execute,/api/v1/execution-tickets/{param}/execute,24932,executeExecutionTicket,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/execution-tickets/{ticket_id}/logs,/api/v1/execution-tickets/{param}/logs,24958,getExecutionTicketLogs,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/execution-tickets/{ticket_id}/retry,/api/v1/execution-tickets/{param}/retry,24969,retryExecutionTicket,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/proposals/{proposal_id}/execute,/api/v1/proposals/{param}/execute,24997,executeProposal,active_bound
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/attachments,/api/v1/event-lines/{param}/attachments,25032,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/event-lines/{event_line_id}/report-snapshot,/api/v1/event-lines/{param}/report-snapshot,25714,getEventLineReportSnapshot,active_bound
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/export-word,/api/v1/event-lines/{param}/export-word,25733,,backend_only_no_ui_binding
+backend/app/main.py,PATCH,/api/v1/event-lines/{event_line_id},/api/v1/event-lines/{param},26554,getEventLine | updateEventLine | deleteEventLine,active_bound
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/close,/api/v1/event-lines/{param}/close,26708,closeEventLine,active_bound
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/reopen,/api/v1/event-lines/{param}/reopen,26750,reopenEventLine,active_bound
+backend/app/main.py,DELETE,/api/v1/event-lines/{event_line_id},/api/v1/event-lines/{param},26791,getEventLine | updateEventLine | deleteEventLine,active_bound
+backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/notes,/api/v1/event-lines/{param}/notes,26838,addEventLineNote,active_bound
+backend/app/main.py,GET,/api/v1/task-views,/api/v1/task-views,26884,getTaskViews,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/task-views,/api/v1/task-views,26903,getTaskViews,api_wrapper_orphan
+backend/app/main.py,PATCH,/api/v1/task-views/{view_id},/api/v1/task-views/{param},26940,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/reviews/dashboard/drill-target,/api/v1/reviews/dashboard/drill-target,26979,getReviewDashboardDrillTarget,active_bound
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/plan-link,/api/v1/tasks/{param}/plan-link,27013,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/plan-link/recompute,/api/v1/tasks/{param}/plan-link/recompute,27022,,backend_only_no_ui_binding
+backend/app/main.py,PATCH,/api/v1/tasks/{task_id}/plan-link,/api/v1/tasks/{param}/plan-link,27031,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/support-requests,/api/v1/support-requests,27040,createSupportRequest,active_bound
+backend/app/main.py,POST,/api/v1/support-requests,/api/v1/support-requests,27053,createSupportRequest,active_bound
+backend/app/main.py,POST,/api/v1/support-requests/{request_id}/resolve,/api/v1/support-requests/{param}/resolve,27060,resolveSupportRequest,active_bound
+backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/approve,/api/v1/admin/employees/{param}/approve,27091,approveEmployee,active_bound
+backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/reject,/api/v1/admin/employees/{param}/reject,27098,rejectEmployeeReview,active_bound
+backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/disable,/api/v1/admin/employees/{param}/disable,27105,disableEmployee,active_bound
+backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/reset-password,/api/v1/admin/employees/{param}/reset-password,27112,adminResetPassword,active_bound
+backend/app/main.py,PATCH,/api/v1/admin/employees/{employee_id}/role,/api/v1/admin/employees/{param}/role,27117,updateEmployeeRole,active_bound
+backend/app/main.py,PATCH,/api/v1/admin/employees/{employee_id}/department,/api/v1/admin/employees/{param}/department,27124,updateEmployeeDepartment,active_bound
+backend/app/main.py,GET,/api/v1/employees/mention-candidates,/api/v1/employees/mention-candidates,27131,getMentionCandidates,active_bound
+backend/app/main.py,GET,/api/v1/settings,/api/v1/settings,27138,getSettings | updateSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/logs,/api/v1/settings/logs,27142,getActivityLogs,active_bound
+backend/app/main.py,GET,/api/v1/logs,/api/v1/logs,27158,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/logs/export,/api/v1/logs/export,27176,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/logs/dates,/api/v1/logs/dates,27195,getLogDates,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/tasks/agent-worklogs,/api/v1/tasks/agent-worklogs,27201,,backend_only_no_ui_binding
+backend/app/main.py,PUT,/api/v1/tasks/agent-weekly-plans/{week_label}/{agent_key},/api/v1/tasks/agent-weekly-plans/{param}/{param},27215,updateAgentWeeklyPlan,active_bound
+backend/app/main.py,POST,/api/v1/settings,/api/v1/settings,27252,getSettings | updateSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/tasks,/api/v1/settings/tasks,27272,getTaskSettings | updateTaskSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/tasks,/api/v1/settings/tasks,27283,getTaskSettings | updateTaskSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/review-governance,/api/v1/settings/review-governance,27339,getReviewGovernanceSettings | updateReviewGovernanceSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/review-governance,/api/v1/settings/review-governance,27344,getReviewGovernanceSettings | updateReviewGovernanceSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/org-dna,/api/v1/settings/org-dna,27357,getOrganizationDna,active_bound
+backend/app/main.py,GET,/api/v1/settings/org-dna/{module_key},/api/v1/settings/org-dna/{param},27361,updateOrganizationDnaModule,active_bound
+backend/app/main.py,POST,/api/v1/settings/org-dna/{module_key},/api/v1/settings/org-dna/{param},27369,updateOrganizationDnaModule,active_bound
+backend/app/main.py,GET,/api/v1/settings/client-workspace,/api/v1/settings/client-workspace,27376,getClientWorkspaceSettings | updateClientWorkspaceSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/client-workspace,/api/v1/settings/client-workspace,27380,getClientWorkspaceSettings | updateClientWorkspaceSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/topics,/api/v1/settings/topics,27396,getTopicsSettings | updateTopicsSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/topics,/api/v1/settings/topics,27400,getTopicsSettings | updateTopicsSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/analysis-workbench,/api/v1/settings/analysis-workbench,27412,getAnalysisWorkbenchSettings | updateAnalysisWorkbenchSettings,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/settings/analysis-workbench,/api/v1/settings/analysis-workbench,27416,getAnalysisWorkbenchSettings | updateAnalysisWorkbenchSettings,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/settings/handbook,/api/v1/settings/handbook,27437,getHandbookSettings | updateHandbookSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/handbook,/api/v1/settings/handbook,27441,getHandbookSettings | updateHandbookSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/system-admin,/api/v1/settings/system-admin,27453,getSystemAdminSettings | updateSystemAdminSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/system-admin,/api/v1/settings/system-admin,27457,getSystemAdminSettings | updateSystemAdminSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/main-chain-stability,/api/v1/settings/main-chain-stability,27475,getMainChainStabilitySettings | updateMainChainStabilitySettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/main-chain-stability,/api/v1/settings/main-chain-stability,27479,getMainChainStabilitySettings | updateMainChainStabilitySettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/feishu-bot,/api/v1/settings/feishu-bot,27486,getFeishuBotSettings | updateFeishuBotSettings,active_bound
+backend/app/main.py,POST,/api/v1/settings/feishu-bot,/api/v1/settings/feishu-bot,27490,getFeishuBotSettings | updateFeishuBotSettings,active_bound
+backend/app/main.py,GET,/api/v1/settings/feishu-user-binding,/api/v1/settings/feishu-user-binding,27495,getFeishuUserBinding | clearFeishuUserBinding,active_bound
+backend/app/main.py,POST,/api/v1/settings/feishu-user-binding/start,/api/v1/settings/feishu-user-binding/start,27501,startFeishuUserBinding,active_bound
+backend/app/main.py,DELETE,/api/v1/settings/feishu-user-binding,/api/v1/settings/feishu-user-binding,27552,getFeishuUserBinding | clearFeishuUserBinding,active_bound
+backend/app/main.py,GET,/api/v1/auth/feishu/callback,/api/v1/auth/feishu/callback,27560,,hidden_but_reachable
+backend/app/main.py,POST,/api/v1/channels/feishu/events,/api/v1/channels/feishu/events,27596,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/settings/backup,/api/v1/settings/backup,27603,createBackup,active_bound
+backend/app/main.py,POST,/api/v1/settings/demo-data/load,/api/v1/settings/demo-data/load,27612,loadDemoData,active_bound
+backend/app/main.py,POST,/api/v1/settings/demo-data/clear,/api/v1/settings/demo-data/clear,27618,clearDemoData,active_bound
+backend/app/main.py,POST,/api/v1/settings/legacy-scan,/api/v1/settings/legacy-scan,27624,scanLegacy,active_bound
+backend/app/main.py,GET,/api/v1/clients,/api/v1/clients,27647,getClients | createClient,active_bound
+backend/app/main.py,POST,/api/v1/clients,/api/v1/clients,27651,getClients | createClient,active_bound
+backend/app/main.py,PUT,/api/v1/clients/{client_id},/api/v1/clients/{param},27683,updateClient | deleteClient,active_bound
+backend/app/main.py,DELETE,/api/v1/clients/{client_id}/folders/{folder_id},/api/v1/clients/{param}/folders/{param},27711,deleteClientFolder | renameClientFolder,active_bound
+backend/app/main.py,DELETE,/api/v1/clients/{client_id},/api/v1/clients/{param},27726,updateClient | deleteClient,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/workspace,/api/v1/clients/{param}/workspace,27741,getClientWorkspace,active_bound
+backend/app/main.py,POST,/api/v1/analysis/jobs,/api/v1/analysis/jobs,27745,createAnalysisJob,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/analysis/backfill-main-chain,/api/v1/analysis/backfill-main-chain,27768,backfillAnalysisMainChain,active_bound
+backend/app/main.py,GET,/api/v1/analysis/jobs/{jobId},/api/v1/analysis/jobs/{param},27774,getAnalysisJob,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/analysis/jobs/{jobId}/stages,/api/v1/analysis/jobs/{param}/stages,27781,getAnalysisJobStages,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/runtime/run-log/{runId},/api/v1/runtime/run-log/{param},27788,getRuntimeRunLog,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/memory/dna/delta,/api/v1/memory/dna/delta,27795,createDnaDelta,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/memory/judgments/confirm,/api/v1/memory/judgments/confirm,27800,confirmJudgment,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/approvals/decide,/api/v1/approvals/decide,27824,decideApproval,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/judgments,/api/v1/clients/{param}/judgments,27848,getClientJudgments,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/topics,/api/v1/clients/{param}/topics,27853,getClientTopics,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/conflicts,/api/v1/clients/{param}/conflicts,27858,getClientConflicts,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/open-questions,/api/v1/clients/{param}/open-questions,27863,getClientOpenQuestions,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/runtime-run-logs,/api/v1/clients/{param}/runtime-run-logs,27868,getClientRuntimeRunLogs,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/runtime/analysis-migration-metrics,/api/v1/runtime/analysis-migration-metrics,27873,getAnalysisMigrationMetrics,active_bound
+backend/app/main.py,GET,/api/v1/strategic/thoughts,/api/v1/strategic/thoughts,27877,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/strategic/thoughts/refresh,/api/v1/strategic/thoughts/refresh,27907,refreshStrategicThoughts,active_bound
+backend/app/main.py,POST,/api/v1/strategic/thoughts/{thought_id}/state,/api/v1/strategic/thoughts/{param}/state,27929,updateStrategicThoughtState,active_bound
+backend/app/main.py,POST,/api/v1/strategic/thoughts/{thought_id}/review,/api/v1/strategic/thoughts/{param}/review,27950,reviewStrategicThought,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/strategic-cockpit,/api/v1/clients/{param}/strategic-cockpit,28008,getStrategicCockpit,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/strategic-cockpit/lines/{line_id},/api/v1/clients/{param}/strategic-cockpit/lines/{param},28013,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/strategic-cockpit/confirm,/api/v1/clients/{param}/strategic-cockpit/confirm,28046,confirmStrategicCockpit,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack,/api/v1/clients/{param}/strategic-cockpit/meeting-pack,28064,createStrategicMeetingPack,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/clients/{client_id}/strategic-cockpit/meeting-pack/{meeting_id}/apply,/api/v1/clients/{param}/strategic-cockpit/meeting-pack/{param}/apply,28071,applyStrategicMeetingPack,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/notebook,/api/v1/clients/{param}/notebook,28115,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/clients/{client_id}/memory-status,/api/v1/clients/{param}/memory-status,28120,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/memory/backfill,/api/v1/memory/backfill,28125,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/memory/backfill-documents,/api/v1/memory/backfill-documents,28136,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clarifications,/api/v1/clarifications,28155,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clarifications/{clarification_id}/answer,/api/v1/clarifications/{param}/answer,28163,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/clients/{client_id}/knowledge/reclass-events,/api/v1/clients/{param}/knowledge/reclass-events,28172,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/clients/{client_id}/knowledge/status,/api/v1/clients/{param}/knowledge/status,28177,getClientKnowledgeStatus,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/knowledge/progress,/api/v1/clients/{param}/knowledge/progress,28183,getClientKnowledgeProgress,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/knowledge/parse-failures,/api/v1/clients/{param}/knowledge/parse-failures,28192,getKnowledgeParseFailures,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/data-center/mobile-snapshot,/api/v1/clients/{param}/data-center/mobile-snapshot,29559,getMobileDataCenterSnapshot,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/reindex-vector,/api/v1/clients/{param}/knowledge/reindex-vector,29633,reindexClientVector,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/clients/{client_id}/knowledge/vector-index/status,/api/v1/clients/{param}/knowledge/vector-index/status,29650,getClientVectorIndexStatus,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/retrieval/settings,/api/v1/retrieval/settings,29660,getRetrievalSettings | updateRetrievalSettings,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/retrieval/settings,/api/v1/retrieval/settings,29664,getRetrievalSettings | updateRetrievalSettings,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/retrieval/health,/api/v1/retrieval/health,29674,getRetrievalHealth,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/retrieval/shadow-runs,/api/v1/retrieval/shadow-runs,29724,getRetrievalShadowRuns,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/retrieval/shadow-summary,/api/v1/retrieval/shadow-summary,29731,getRetrievalShadowSummary,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/runtime/generation-state,/api/v1/runtime/generation-state,29737,getGenerationRuntimeState,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/runtime/generation-state/reset,/api/v1/runtime/generation-state/reset,29753,resetGenerationRuntimeState | resetGenerationRuntimeStateV2,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/runtime/llm-healthcheck,/api/v1/runtime/llm-healthcheck,29767,runLlmHealthcheck,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/runtime/llm-provider-probe,/api/v1/runtime/llm-provider-probe,29778,runLlmProviderProbe,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/runtime/workspace-chat-diagnostics,/api/v1/runtime/workspace-chat-diagnostics,29791,getWorkspaceChatDiagnostics,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/runtime/workspace-answer-value-diagnostics,/api/v1/runtime/workspace-answer-value-diagnostics,29806,getWorkspaceAnswerValueDiagnostics,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/workspace-answer-value-reviews,/api/v1/workspace-answer-value-reviews,29820,createWorkspaceAnswerValueReview | listWorkspaceAnswerValueReviews,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/workspace-answer-value-reviews,/api/v1/workspace-answer-value-reviews,29830,createWorkspaceAnswerValueReview | listWorkspaceAnswerValueReviews,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/workspace-answer-value-summary,/api/v1/workspace-answer-value-summary,29843,getWorkspaceAnswerValueSummary,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/workspace-value-validation-sessions,/api/v1/workspace-value-validation-sessions,29853,createWorkspaceValueValidationSession | listWorkspaceValueValidationSessions,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/workspace-value-validation-sessions,/api/v1/workspace-value-validation-sessions,29860,createWorkspaceValueValidationSession | listWorkspaceValueValidationSessions,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/workspace-value-validation-sessions/{session_id},/api/v1/workspace-value-validation-sessions/{param},29873,getWorkspaceValueValidationSession,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/workspace-value-validation-sessions/{session_id}/finish,/api/v1/workspace-value-validation-sessions/{param}/finish,29899,finishWorkspaceValueValidationSession,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/workspace-answer-quality-failures,/api/v1/workspace-answer-quality-failures,29903,listWorkspaceAnswerQualityFailures,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/data-center/execution-retry-metrics,/api/v1/data-center/execution-retry-metrics,30099,getExecutionRetryMetrics,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/data-center/rollback-drill,/api/v1/data-center/rollback-drill,30134,runDataCenterRollbackDrill,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/data-center/operational-status,/api/v1/data-center/operational-status,30143,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/data-center/artifact-status,/api/v1/data-center/artifact-status,30152,getDataCenterArtifactStatus,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/data-center/schema/status,/api/v1/data-center/schema/status,30156,getDataCenterSchemaStatus,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/data-center/schema/ensure,/api/v1/data-center/schema/ensure,30160,ensureDataCenterSchema,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/data-center/sync/preview,/api/v1/data-center/sync/preview,30164,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/data-center/proposal-drafts,/api/v1/data-center/proposal-drafts,30244,getDataCenterProposalDrafts,active_bound
+backend/app/main.py,GET,/api/v1/external-evidence-cards,/api/v1/external-evidence-cards,30554,getExternalEvidenceCards,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/topic-candidates/{topic_id}/external-evidence-card,/api/v1/topic-candidates/{param}/external-evidence-card,30569,createExternalEvidenceCardFromTopicCandidate,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/external-evidence-cards/{card_id}/accept,/api/v1/external-evidence-cards/{param}/accept,30589,acceptExternalEvidenceCard,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/external-evidence-cards/{card_id}/reject,/api/v1/external-evidence-cards/{param}/reject,30610,rejectExternalEvidenceCard,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/data-center/evidence-quality,/api/v1/data-center/evidence-quality,30657,getDataCenterEvidenceQuality,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/data-center/evidence-quality/{annotation_id}/label,/api/v1/data-center/evidence-quality/{param}/label,30672,labelDataCenterEvidenceQuality,active_bound
+backend/app/main.py,GET,/api/v1/system/source-integrity,/api/v1/system/source-integrity,30698,getSourceIntegrity,active_bound
+backend/app/main.py,GET,/api/v1/data-center/shadow-runs,/api/v1/data-center/shadow-runs,30722,getDataCenterShadowRuns,api_wrapper_orphan
+backend/app/main.py,GET,/api/v1/data-center/shadow-summary,/api/v1/data-center/shadow-summary,30735,getDataCenterShadowSummary,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/rebuild,/api/v1/clients/{param}/knowledge/rebuild,30746,rebuildClientKnowledge,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/search,/api/v1/clients/{param}/knowledge/search,30785,searchClientKnowledge,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/goals,/api/v1/clients/{param}/goals,30855,createGoal,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/goals,/api/v1/clients/{param}/goals,30859,createGoal,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/dna-documents,/api/v1/clients/{param}/dna-documents,30874,getClientDnaDocuments,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/dna-documents/generate,/api/v1/clients/{param}/dna-documents/generate,30879,generateClientDnaCandidates,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/dna-documents/{module_key},/api/v1/clients/{param}/dna-documents/{param},30921,getClientDnaDocument | updateClientDnaDocument,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/dna-documents/{module_key},/api/v1/clients/{param}/dna-documents/{param},30930,getClientDnaDocument | updateClientDnaDocument,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/project-structure,/api/v1/clients/{param}/project-structure,30951,getClientProjectStructure,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/project-modules/{module_id},/api/v1/clients/{param}/project-modules/{param},30955,getProjectModuleDetail | updateProjectModule | deleteProjectModule,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/project-modules,/api/v1/clients/{param}/project-modules,30960,createProjectModule,active_bound
+backend/app/main.py,PATCH,/api/v1/clients/{client_id}/project-modules/{module_id},/api/v1/clients/{param}/project-modules/{param},31005,getProjectModuleDetail | updateProjectModule | deleteProjectModule,active_bound
+backend/app/main.py,DELETE,/api/v1/clients/{client_id}/project-modules/{module_id},/api/v1/clients/{param}/project-modules/{param},31056,getProjectModuleDetail | updateProjectModule | deleteProjectModule,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/project-flows/{flow_id},/api/v1/clients/{param}/project-flows/{param},31075,getProjectFlowDetail | updateProjectFlow | deleteProjectFlow,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/project-flows,/api/v1/clients/{param}/project-flows,31080,createProjectFlow,active_bound
+backend/app/main.py,PATCH,/api/v1/clients/{client_id}/project-flows/{flow_id},/api/v1/clients/{param}/project-flows/{param},31134,getProjectFlowDetail | updateProjectFlow | deleteProjectFlow,active_bound
+backend/app/main.py,DELETE,/api/v1/clients/{client_id}/project-flows/{flow_id},/api/v1/clients/{param}/project-flows/{param},31187,getProjectFlowDetail | updateProjectFlow | deleteProjectFlow,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/dna,/api/v1/clients/{param}/dna,31210,upsertDna,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/dna,/api/v1/clients/{param}/dna,31214,upsertDna,active_bound
+backend/app/main.py,POST,/api/v1/imports,/api/v1/imports,31261,importPaths,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/page-context,/api/v1/clients/{param}/page-context,32770,getClientPageContext,active_bound
+backend/app/main.py,POST,/api/v1/data-center/resolve,/api/v1/data-center/resolve,32874,resolveDataCenterKernel,active_bound
+backend/app/main.py,GET,/api/v1/data-center/diagnose,/api/v1/data-center/diagnose,32883,diagnoseDataCenter,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/clients/{client_id}/workspace/chat/start,/api/v1/clients/{param}/workspace/chat/start,32936,startClientMessage,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/analysis-runs/{run_id},/api/v1/clients/{param}/analysis-runs/{param},32975,getClientAnalysisRun,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel,/api/v1/clients/{param}/analysis-runs/{param}/cancel,32981,cancelClientAnalysisRun,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/workspace/chat/messages/{message_id},/api/v1/clients/{param}/workspace/chat/messages/{param},32986,getClientMessage,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/workspace/chat/threads/{thread_id},/api/v1/clients/{param}/workspace/chat/threads/{param},32991,getClientChatThread,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/workspace/chat,/api/v1/clients/{param}/workspace/chat,32999,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/vectorize-answer,/api/v1/clients/{param}/knowledge/vectorize-answer,33008,vectorizeAnswer,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/enrich-surrogates,/api/v1/clients/{param}/knowledge/enrich-surrogates,33047,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/build-profile,/api/v1/clients/{param}/knowledge/build-profile,33064,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/sync-to-cloud,/api/v1/clients/{param}/knowledge/sync-to-cloud,33087,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/knowledge/backfill-all-clients,/api/v1/knowledge/backfill-all-clients,33096,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/knowledge/export-answer,/api/v1/clients/{param}/knowledge/export-answer,33112,exportAnswer,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/documents/from-text,/api/v1/clients/{param}/documents/from-text,33125,createClientTextDocument,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/documents/fill-template,/api/v1/clients/{param}/documents/fill-template,33129,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/documents/fill-template/start,/api/v1/clients/{param}/documents/fill-template/start,33134,startClientTemplateFill,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/template-fill-runs/{run_id},/api/v1/clients/{param}/template-fill-runs/{param},33153,getClientTemplateFillRun,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/workspace/backfill-imports,/api/v1/clients/{param}/workspace/backfill-imports,33159,backfillClientWorkspaceImports,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/meetings,/api/v1/clients/{param}/meetings,33179,createMeeting,active_bound
+backend/app/main.py,GET,/api/v1/meetings/{meeting_id}/page-context,/api/v1/meetings/{param}/page-context,33187,getMeetingPageContext,active_bound
+backend/app/main.py,GET,/api/v1/clients/{client_id}/meetings/{meeting_id}/page-context,/api/v1/clients/{param}/meetings/{param}/page-context,33204,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/event-lines/{event_line_id}/page-context,/api/v1/event-lines/{param}/page-context,33226,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings,/api/v1/clients/{param}/meetings,33296,createMeeting,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/launch-feishu,/api/v1/clients/{param}/meetings/launch-feishu,33326,launchFeishuMeeting,active_bound
+backend/app/main.py,GET,/api/v1/feishu/status,/api/v1/feishu/status,33393,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/feishu/minutes,/api/v1/feishu/minutes,33406,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/feishu/minutes/{minute_token}/import,/api/v1/feishu/minutes/{param}/import,33424,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/feishu/tasks/push,/api/v1/feishu/tasks/push,33451,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/feishu/notify/weekly-review,/api/v1/feishu/notify/weekly-review,33477,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/feishu/notify/badge-unlock,/api/v1/feishu/notify/badge-unlock,33494,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/clients/{client_id}/meetings/{meeting_id},/api/v1/clients/{param}/meetings/{param},33508,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/{meeting_id}/proposals/prepare,/api/v1/clients/{param}/meetings/{param}/proposals/prepare,33515,createMeetingPrepareProposal,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/{meeting_id}/proposals/follow-up,/api/v1/clients/{param}/meetings/{param}/proposals/follow-up,33565,createMeetingFollowupProposal,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/{meeting_id}/ingest,/api/v1/clients/{param}/meetings/{param}/ingest,33630,ingestMeeting,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/{meeting_id}/extract,/api/v1/clients/{param}/meetings/{param}/extract,33662,extractMeeting,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/{meeting_id}/resolve,/api/v1/clients/{param}/meetings/{param}/resolve,33707,resolveMeeting,active_bound
+backend/app/main.py,POST,/api/v1/clients/{client_id}/meetings/{meeting_id}/publish,/api/v1/clients/{param}/meetings/{param}/publish,33726,publishMeeting,active_bound
+backend/app/main.py,GET,/api/v1/tasks,/api/v1/tasks,33811,getTaskBoard | createTask,active_bound
+backend/app/main.py,GET,/api/v1/task-lists,/api/v1/task-lists,33827,createTaskList,active_bound
+backend/app/main.py,POST,/api/v1/task-lists,/api/v1/task-lists,33838,createTaskList,active_bound
+backend/app/main.py,PATCH,/api/v1/task-lists/{list_id},/api/v1/task-lists/{param},33872,updateTaskList | deleteTaskList,active_bound
+backend/app/main.py,DELETE,/api/v1/task-lists/{list_id},/api/v1/task-lists/{param},33950,updateTaskList | deleteTaskList,active_bound
+backend/app/main.py,GET,/api/v1/task-tags,/api/v1/task-tags,33985,createTaskTag,active_bound
+backend/app/main.py,POST,/api/v1/task-tags,/api/v1/task-tags,33996,createTaskTag,active_bound
+backend/app/main.py,PATCH,/api/v1/task-tags/{tag_id},/api/v1/task-tags/{param},34005,updateTaskTag | deleteTaskTag,active_bound
+backend/app/main.py,DELETE,/api/v1/task-tags/{tag_id},/api/v1/task-tags/{param},34023,updateTaskTag | deleteTaskTag,active_bound
+backend/app/main.py,POST,/api/v1/tasks/refresh-contexts,/api/v1/tasks/refresh-contexts,34037,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/tasks/bootstrap-event-lines,/api/v1/tasks/bootstrap-event-lines,34084,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/tasks,/api/v1/tasks,34131,getTaskBoard | createTask,active_bound
+backend/app/main.py,PATCH,/api/v1/tasks/{task_id},/api/v1/tasks/{param},34135,updateTask | deleteTask,active_bound
+backend/app/main.py,DELETE,/api/v1/tasks/{task_id},/api/v1/tasks/{param},34651,updateTask | deleteTask,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/attachments,/api/v1/tasks/{param}/attachments,34764,uploadTaskAttachment,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/confirm,/api/v1/tasks/{param}/confirm,35051,confirmTask,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/reject,/api/v1/tasks/{param}/reject,35067,rejectTask,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/complete-with-review,/api/v1/tasks/{param}/complete-with-review,35089,completeTaskWithReview,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/review/approve,/api/v1/tasks/{param}/review/approve,35100,approveTaskReview,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/review/return,/api/v1/tasks/{param}/review/return,35111,returnTaskReview,active_bound
+backend/app/main.py,POST,/api/v1/tasks/{task_id}/note,/api/v1/tasks/{param}/note,35126,saveTaskNote,active_bound
+backend/app/main.py,GET,/api/v1/tasks/{task_id}/activity,/api/v1/tasks/{param}/activity,35143,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/tasks/agent-execution,/api/v1/tasks/agent-execution,35182,getAgentExecutionTasks,active_bound
+backend/app/main.py,POST,/api/v1/local/tasks/tag-suggestions,/api/v1/local/tasks/tag-suggestions,35213,getTaskTagSuggestions,active_bound
+backend/app/main.py,GET,/api/v1/reviews,/api/v1/reviews,35232,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/reviews/history,/api/v1/reviews/history,35251,getReviewHistory,active_bound
+backend/app/main.py,POST,/api/v1/reviews/weekly/draft,/api/v1/reviews/weekly/draft,35453,createWeeklyReviewDraft,active_bound
+backend/app/main.py,POST,/api/v1/reviews/weekly,/api/v1/reviews/weekly,35496,createWeeklyReview,active_bound
+backend/app/main.py,GET,/api/v1/topics,/api/v1/topics,36105,getTopics,active_bound
+backend/app/main.py,POST,/api/v1/topics/radars,/api/v1/topics/radars,36110,createRadar,active_bound
+backend/app/main.py,PUT,/api/v1/topics/radars/{radar_id},/api/v1/topics/radars/{param},36129,updateRadar,active_bound
+backend/app/main.py,POST,/api/v1/topics/radars/generate-title,/api/v1/topics/radars/generate-title,36149,suggestRadarTitle,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/topics/radars/source-label,/api/v1/topics/radars/source-label,36153,suggestRadarSourceLabel,active_bound
+backend/app/main.py,POST,/api/v1/topics/radars/assist,/api/v1/topics/radars/assist,36176,assistRadarDraft,active_bound
+backend/app/main.py,POST,/api/v1/topics/candidates,/api/v1/topics/candidates,36186,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/topics/candidates/{candidate_id}/insights,/api/v1/topics/candidates/{param}/insights,36200,getCandidateInsights,active_bound
+backend/app/main.py,POST,/api/v1/topics/candidates/{candidate_id}/chat,/api/v1/topics/candidates/{param}/chat,36210,askCandidateQuestion,active_bound
+backend/app/main.py,POST,/api/v1/topics/candidates/{candidate_id}/task-plan,/api/v1/topics/candidates/{param}/task-plan,36274,getCandidateTaskPlan,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/topics/candidates/{candidate_id}/promote-tasks,/api/v1/topics/candidates/{param}/promote-tasks,36320,promoteCandidateTasks,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/topics/capture,/api/v1/topics/capture,36368,captureTopicRadars,active_bound
+backend/app/main.py,POST,/api/v1/topics/candidates/{candidate_id}/promote-task,/api/v1/topics/candidates/{param}/promote-task,36379,,backend_only_no_ui_binding
+backend/app/main.py,DELETE,/api/v1/topics/candidates/{candidate_id},/api/v1/topics/candidates/{param},36404,deleteCandidate,active_bound
+backend/app/main.py,GET,/api/v1/analysis-tools,/api/v1/analysis-tools,36448,getAnalysisTools,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/runs,/api/v1/analysis-tools/runs,36465,runAnalysis,active_bound
+backend/app/main.py,GET,/api/v1/analysis-tools/fundraising/dna,/api/v1/analysis-tools/fundraising/dna,36539,getFundraisingDeepDnaLibrary | upsertFundraisingDeepDna,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/dna,/api/v1/analysis-tools/fundraising/dna,36544,getFundraisingDeepDnaLibrary | upsertFundraisingDeepDna,api_wrapper_orphan
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/dna/manual,/api/v1/analysis-tools/fundraising/dna/manual,36555,createFundraisingManualDna,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/dna/import,/api/v1/analysis-tools/fundraising/dna/import,36583,importFundraisingDna,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/dna/web-drafts,/api/v1/analysis-tools/fundraising/dna/web-drafts,36605,createFundraisingWebDnaDraft,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/dna/{dna_id}/publish,/api/v1/analysis-tools/fundraising/dna/{param}/publish,36671,publishFundraisingDna,active_bound
+backend/app/main.py,GET,/api/v1/analysis-tools/fundraising/cases,/api/v1/analysis-tools/fundraising/cases,36686,getFundraisingCases | upsertFundraisingCase,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/cases,/api/v1/analysis-tools/fundraising/cases,36691,getFundraisingCases | upsertFundraisingCase,active_bound
+backend/app/main.py,GET,/api/v1/analysis-tools/fundraising/reminders,/api/v1/analysis-tools/fundraising/reminders,36702,getFundraisingReminderRules | upsertFundraisingReminderRule,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/reminders,/api/v1/analysis-tools/fundraising/reminders,36706,getFundraisingReminderRules | upsertFundraisingReminderRule,active_bound
+backend/app/main.py,GET,/api/v1/analysis-tools/fundraising/norms,/api/v1/analysis-tools/fundraising/norms,36717,getFundraisingWritingNorms | upsertFundraisingWritingNorm,active_bound
+backend/app/main.py,POST,/api/v1/analysis-tools/fundraising/norms,/api/v1/analysis-tools/fundraising/norms,36721,getFundraisingWritingNorms | upsertFundraisingWritingNorm,active_bound
+backend/app/main.py,GET,/api/v1/analysis-tools/fundraising/runs/{run_id}/comparison,/api/v1/analysis-tools/fundraising/runs/{param}/comparison,36732,getFundraisingRunComparison,active_bound
+backend/app/main.py,GET,/api/v1/handbook,/api/v1/handbook,37040,getHandbook | createHandbook,active_bound
+backend/app/main.py,GET,/api/v1/handbook/{entry_id},/api/v1/handbook/{param},37045,getHandbookEntry,active_bound
+backend/app/main.py,POST,/api/v1/handbook,/api/v1/handbook,37050,getHandbook | createHandbook,active_bound
+backend/app/main.py,POST,/api/v1/growth/enrich-insights,/api/v1/growth/enrich-insights,37058,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/growth/handbook/{entry_id}/mark-reused,/api/v1/growth/handbook/{param}/mark-reused,37133,markHandbookEntryReused,active_bound
+backend/app/main.py,GET,/api/v1/growth/overview,/api/v1/growth/overview,37155,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/growth/workbench,/api/v1/growth/workbench,37169,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/growth/ledger,/api/v1/growth/ledger,37186,,backend_only_no_ui_binding
+backend/app/main.py,GET,/api/v1/growth/badges,/api/v1/growth/badges,37198,getGrowthBadges,active_bound
+backend/app/main.py,GET,/api/v1/growth/recommendations,/api/v1/growth/recommendations,37206,,backend_only_no_ui_binding
+backend/app/main.py,POST,/api/v1/growth/pending-captures/{capture_id}/state,/api/v1/growth/pending-captures/{param}/state,37214,updateGrowthPendingCapture,active_bound
+backend/app/main.py,POST,/api/v1/growth/recommendations/{recommendation_id}/accept,/api/v1/growth/recommendations/{param}/accept,37230,acceptGrowthRecommendation,active_bound
+backend/app/main.py,POST,/api/v1/growth/recommendations/{recommendation_id}/dismiss,/api/v1/growth/recommendations/{param}/dismiss,37262,dismissGrowthRecommendation,active_bound
+cloud_backend/app/main.py,GET,/health,/health,7959,,hidden_but_reachable
+cloud_backend/app/main.py,GET,/api/v1/auth/department-options,/api/v1/auth/department-options,8010,getDepartmentOptions,active_bound
+cloud_backend/app/main.py,POST,/api/v1/auth/register,/api/v1/auth/register,8036,register,active_bound
+cloud_backend/app/main.py,POST,/api/v1/auth/login,/api/v1/auth/login,8102,login,active_bound
+cloud_backend/app/main.py,POST,/api/v1/auth/refresh,/api/v1/auth/refresh,8123,,hidden_but_reachable
+cloud_backend/app/main.py,GET,/api/v1/auth/me,/api/v1/auth/me,8165,getAuthState | updateProfile,active_bound
+cloud_backend/app/main.py,PATCH,/api/v1/auth/me,/api/v1/auth/me,8169,getAuthState | updateProfile,active_bound
+cloud_backend/app/main.py,POST,/api/v1/auth/change-password,/api/v1/auth/change-password,8210,changePassword,active_bound
+cloud_backend/app/main.py,POST,/api/v1/auth/logout,/api/v1/auth/logout,8227,logout,active_bound
+cloud_backend/app/main.py,GET,/api/v1/me/org-membership,/api/v1/me/org-membership,8240,getOrgMembershipSummary,active_bound
+cloud_backend/app/main.py,GET,/api/v1/org-integrations/feishu,/api/v1/org-integrations/feishu,8246,getOrgFeishuIntegration,active_bound
+cloud_backend/app/main.py,POST,/api/v1/org-integrations/feishu/validate-and-save,/api/v1/org-integrations/feishu/validate-and-save,8253,saveOrgFeishuIntegration,active_bound
+cloud_backend/app/main.py,GET,/api/v1/me/feishu-delivery-profile,/api/v1/me/feishu-delivery-profile,8360,getFeishuDeliveryProfile | saveFeishuDeliveryProfile,active_bound
+cloud_backend/app/main.py,POST,/api/v1/me/feishu-delivery-profile,/api/v1/me/feishu-delivery-profile,8366,getFeishuDeliveryProfile | saveFeishuDeliveryProfile,active_bound
+cloud_backend/app/main.py,POST,/api/v1/me/feishu-notifications/badge-unlock,/api/v1/me/feishu-notifications/badge-unlock,8449,,backend_only_no_ui_binding
+cloud_backend/app/main.py,POST,/api/v1/integrations/feishu/user-binding/sessions,/api/v1/integrations/feishu/user-binding/sessions,8458,,hidden_but_reachable
+cloud_backend/app/main.py,GET,/api/v1/integrations/feishu/user-binding/sessions/{state_token},/api/v1/integrations/feishu/user-binding/sessions/{param},8496,,hidden_but_reachable
+cloud_backend/app/main.py,DELETE,/api/v1/integrations/feishu/user-binding/sessions/{state_token},/api/v1/integrations/feishu/user-binding/sessions/{param},8511,,hidden_but_reachable
+cloud_backend/app/main.py,GET,/api/v1/integrations/feishu/member-authorization/callback,/api/v1/integrations/feishu/member-authorization/callback,8527,,hidden_but_reachable
+cloud_backend/app/main.py,GET,/api/v1/integrations/feishu/user-binding/callback,/api/v1/integrations/feishu/user-binding/callback,8528,,hidden_but_reachable
+cloud_backend/app/main.py,GET,/api/v1/admin/employees,/api/v1/admin/employees,8675,getEmployees,active_bound
+cloud_backend/app/main.py,GET,/api/v1/settings/org-ai-config,/api/v1/settings/org-ai-config,8709,,backend_only_no_ui_binding
+cloud_backend/app/main.py,POST,/api/v1/settings/org-ai-config,/api/v1/settings/org-ai-config,8731,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/v1/settings/org-ai-config/secret,/api/v1/settings/org-ai-config/secret,8762,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/v1/settings/org-model/profile,/api/v1/settings/org-model/profile,8792,getOrgModelProfile | updateOrgModelProfile,active_bound
+cloud_backend/app/main.py,POST,/api/v1/settings/org-model/profile,/api/v1/settings/org-model/profile,8798,getOrgModelProfile | updateOrgModelProfile,active_bound
+cloud_backend/app/main.py,POST,/api/v1/settings/org-model/backfill-task-links,/api/v1/settings/org-model/backfill-task-links,8805,backfillOrgTaskLinks,active_bound
+cloud_backend/app/main.py,GET,/api/v1/event-lines,/api/v1/event-lines,8819,getEventLines | createEventLine,active_bound
+cloud_backend/app/main.py,GET,/api/v1/clients,/api/v1/clients,8835,getClients | createClient,active_bound
+cloud_backend/app/main.py,GET,/api/v1/mobile/capabilities,/api/v1/mobile/capabilities,8850,,compatibility_only
+cloud_backend/app/main.py,GET,/api/v1/clients/{client_id}/workspace,/api/v1/clients/{param}/workspace,8856,getClientWorkspace,active_bound
+cloud_backend/app/main.py,GET,/api/v1/clients/{client_id}/strategic-cockpit,/api/v1/clients/{param}/strategic-cockpit,8864,getStrategicCockpit,active_bound
+cloud_backend/app/main.py,POST,/api/v1/mobile/knowledge-mirror/publish,/api/v1/mobile/knowledge-mirror/publish,8872,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/event-lines,/api/v1/event-lines,8922,getEventLines | createEventLine,active_bound
+cloud_backend/app/main.py,POST,/api/v1/event-lines/import-desktop,/api/v1/event-lines/import-desktop,8985,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/v1/event-lines/{event_line_id},/api/v1/event-lines/{param},9150,getEventLine | updateEventLine | deleteEventLine,active_bound
+cloud_backend/app/main.py,GET,/api/v1/event-lines/{event_line_id}/report-snapshot,/api/v1/event-lines/{param}/report-snapshot,9164,getEventLineReportSnapshot,active_bound
+cloud_backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/attachments,/api/v1/event-lines/{param}/attachments,9303,,backend_only_no_ui_binding
+cloud_backend/app/main.py,PATCH,/api/v1/event-lines/{event_line_id},/api/v1/event-lines/{param},9348,getEventLine | updateEventLine | deleteEventLine,active_bound
+cloud_backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/close,/api/v1/event-lines/{param}/close,9468,closeEventLine,active_bound
+cloud_backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/reopen,/api/v1/event-lines/{param}/reopen,9515,reopenEventLine,active_bound
+cloud_backend/app/main.py,DELETE,/api/v1/event-lines/{event_line_id},/api/v1/event-lines/{param},9531,getEventLine | updateEventLine | deleteEventLine,active_bound
+cloud_backend/app/main.py,GET,/api/v1/tasks/{task_id}/plan-link,/api/v1/tasks/{param}/plan-link,9558,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/plan-link/recompute,/api/v1/tasks/{param}/plan-link/recompute,9569,,compatibility_only
+cloud_backend/app/main.py,PATCH,/api/v1/tasks/{task_id}/plan-link,/api/v1/tasks/{param}/plan-link,9581,,compatibility_only
+cloud_backend/app/main.py,GET,/api/v1/support-requests,/api/v1/support-requests,9644,createSupportRequest,active_bound
+cloud_backend/app/main.py,POST,/api/v1/support-requests,/api/v1/support-requests,9669,createSupportRequest,active_bound
+cloud_backend/app/main.py,POST,/api/v1/support-requests/{request_id}/resolve,/api/v1/support-requests/{param}/resolve,9719,resolveSupportRequest,active_bound
+cloud_backend/app/main.py,GET,/api/v1/consultation/knowledge-requests,/api/v1/consultation/knowledge-requests,9763,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/consultation/knowledge-requests,/api/v1/consultation/knowledge-requests,9796,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/consultation/knowledge-requests/{request_id}/status,/api/v1/consultation/knowledge-requests/{param}/status,9820,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/consultation/chat,/api/v1/consultation/chat,9869,,compatibility_only
+cloud_backend/app/main.py,GET,/api/public/smart-input-audio/{file_key},/api/public/smart-input-audio/{param},10639,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/public/task-attachments/{attachment_id},/api/public/task-attachments/{param},10649,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/public/task-attachments/{attachment_id}/thumbnail,/api/public/task-attachments/{param}/thumbnail,10662,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/public/task-attachments/{attachment_id}/text-content,/api/public/task-attachments/{param}/text-content,10693,,backend_only_no_ui_binding
+cloud_backend/app/main.py,GET,/api/public/task-attachments/{attachment_id}/ocr-summary,/api/public/task-attachments/{param}/ocr-summary,10720,,backend_only_no_ui_binding
+cloud_backend/app/main.py,POST,/api/v1/event-lines/{event_line_id}/attachments/download-zip,/api/v1/event-lines/{param}/attachments/download-zip,10767,,backend_only_no_ui_binding
+cloud_backend/app/main.py,POST,/api/v1/mobile/smart-input/task-draft,/api/v1/mobile/smart-input/task-draft,10827,,compatibility_only
+cloud_backend/app/main.py,GET,/api/v1/employees/directory,/api/v1/employees/directory,10903,,backend_only_no_ui_binding
+cloud_backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/approve,/api/v1/admin/employees/{param}/approve,10918,approveEmployee,active_bound
+cloud_backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/reject,/api/v1/admin/employees/{param}/reject,10945,rejectEmployeeReview,active_bound
+cloud_backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/disable,/api/v1/admin/employees/{param}/disable,10966,disableEmployee,active_bound
+cloud_backend/app/main.py,POST,/api/v1/admin/employees/{employee_id}/reset-password,/api/v1/admin/employees/{param}/reset-password,10978,adminResetPassword,active_bound
+cloud_backend/app/main.py,PATCH,/api/v1/admin/employees/{employee_id}/role,/api/v1/admin/employees/{param}/role,10992,updateEmployeeRole,active_bound
+cloud_backend/app/main.py,PATCH,/api/v1/admin/employees/{employee_id}/department,/api/v1/admin/employees/{param}/department,11010,updateEmployeeDepartment,active_bound
+cloud_backend/app/main.py,GET,/api/v1/employees/mention-candidates,/api/v1/employees/mention-candidates,11037,getMentionCandidates,active_bound
+cloud_backend/app/main.py,GET,/api/v1/settings/tasks,/api/v1/settings/tasks,11091,getTaskSettings | updateTaskSettings,active_bound
+cloud_backend/app/main.py,POST,/api/v1/settings/tasks,/api/v1/settings/tasks,11095,getTaskSettings | updateTaskSettings,active_bound
+cloud_backend/app/main.py,GET,/api/v1/task-lists,/api/v1/task-lists,11150,createTaskList,active_bound
+cloud_backend/app/main.py,POST,/api/v1/task-lists,/api/v1/task-lists,11193,createTaskList,active_bound
+cloud_backend/app/main.py,PATCH,/api/v1/task-lists/{list_id},/api/v1/task-lists/{param},11230,updateTaskList | deleteTaskList,active_bound
+cloud_backend/app/main.py,DELETE,/api/v1/task-lists/{list_id},/api/v1/task-lists/{param},11300,updateTaskList | deleteTaskList,active_bound
+cloud_backend/app/main.py,GET,/api/v1/task-tags,/api/v1/task-tags,11337,createTaskTag,active_bound
+cloud_backend/app/main.py,POST,/api/v1/task-tags,/api/v1/task-tags,11341,createTaskTag,active_bound
+cloud_backend/app/main.py,PATCH,/api/v1/task-tags/{tag_id},/api/v1/task-tags/{param},11348,updateTaskTag | deleteTaskTag,active_bound
+cloud_backend/app/main.py,DELETE,/api/v1/task-tags/{tag_id},/api/v1/task-tags/{param},11367,updateTaskTag | deleteTaskTag,active_bound
+cloud_backend/app/main.py,GET,/api/v1/tasks,/api/v1/tasks,11378,getTaskBoard | createTask,active_bound
+cloud_backend/app/main.py,POST,/api/v1/tasks,/api/v1/tasks,11410,getTaskBoard | createTask,active_bound
+cloud_backend/app/main.py,PATCH,/api/v1/tasks/{task_id},/api/v1/tasks/{param},11550,updateTask | deleteTask,active_bound
+cloud_backend/app/main.py,DELETE,/api/v1/tasks/{task_id},/api/v1/tasks/{param},11759,updateTask | deleteTask,active_bound
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/attachments,/api/v1/tasks/{param}/attachments,11773,uploadTaskAttachment,active_bound
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/attachments/{attachment_id}/transcribe-to-document,/api/v1/tasks/{param}/attachments/{param}/transcribe-to-document,11876,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/collaborators/{user_id}/accept,/api/v1/tasks/{param}/collaborators/{param}/accept,11983,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/collaborators/{user_id}/return,/api/v1/tasks/{param}/collaborators/{param}/return,12008,,compatibility_only
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/complete-with-review,/api/v1/tasks/{param}/complete-with-review,12028,completeTaskWithReview,active_bound
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/review/approve,/api/v1/tasks/{param}/review/approve,12067,approveTaskReview,active_bound
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/review/return,/api/v1/tasks/{param}/review/return,12093,returnTaskReview,active_bound
+cloud_backend/app/main.py,POST,/api/v1/tasks/{task_id}/note,/api/v1/tasks/{param}/note,12120,saveTaskNote,active_bound
+cloud_backend/app/main.py,GET,/api/v1/tasks/{task_id}/activity,/api/v1/tasks/{param}/activity,12142,,compatibility_only
+cloud_backend/app/main.py,GET,/api/v1/reviews/dashboard,/api/v1/reviews/dashboard,12168,,compatibility_only
+cloud_backend/app/main.py,GET,/api/v1/reviews/history,/api/v1/reviews/history,12175,getReviewHistory,active_bound
+cloud_backend/app/main.py,POST,/api/v1/reviews/weekly,/api/v1/reviews/weekly,12179,createWeeklyReview,active_bound

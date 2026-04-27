@@ -52,7 +52,7 @@ export function evaluateDesktopStartupGate(input: DesktopStartupGateInput): Desk
 
   let reason: string | null = null;
   if (input.installPathStatus !== 'recommended') {
-    reason = '当前运行包不在唯一建议安装位置，请改从 ~/Applications/益语智库自用平台 2.0.app 打开。';
+    reason = '当前运行包不在唯一建议安装位置，请改从 ~/Applications/益语智库自用平台 V2.0.app 打开。';
   } else if (input.manifestStatus === 'missing') {
     reason = '当前安装包缺少 version-manifest.json，无法确认前后端是否同一版。';
   } else if (input.manifestStatus === 'invalid') {

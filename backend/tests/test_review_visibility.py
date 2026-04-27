@@ -105,7 +105,7 @@ def test_department_lead_only_receives_own_department_summary(tmp_path: Path):
     task_two_id = task_two.json()["id"]
 
     review_response = client.post(
-        "/api/v1/reviews/weekly",
+        "/api/v1/reviews/weekly/draft",
         json={
             "weekLabel": "2026-W11",
             "taskEntries": [
@@ -138,7 +138,7 @@ def test_department_lead_only_receives_own_department_summary(tmp_path: Path):
     )
     assert review_response.status_code == 200
 
-    dashboard = client.get("/api/v1/reviews")
+    dashboard = client.get("/api/v1/reviews?weekLabel=2026-W11&skipAi=true")
     assert dashboard.status_code == 200
     payload = dashboard.json()
 
@@ -146,8 +146,11 @@ def test_department_lead_only_receives_own_department_summary(tmp_path: Path):
     assert payload["simulationBundle"] is None
     assert payload["agentDepartmentDigests"] == []
     assert payload["agentDepartmentPlans"] == []
-    assert len(payload["departmentReports"]) == 1
-    assert payload["departmentReports"][0]["scopeRefId"] == "咨询策略部"
+    assert payload["activePerspective"] == "department"
+    assert [item["key"] for item in payload["availablePerspectives"]] == ["department", "mine"]
+    assert payload["activeDepartmentId"] == "dept_consult_strategy"
+    assert [item["taskId"] for item in payload["workItems"]] == [task_one_id]
+    assert payload["departmentReports"] == []
 
 
 def test_department_lead_can_view_own_agent_execution_tasks_only(tmp_path: Path):

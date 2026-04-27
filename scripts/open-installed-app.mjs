@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import {
   APP_DISPLAY_NAME,
   APP_NAME,
@@ -14,7 +13,7 @@ import {
   inspectAppBundle,
 } from './app-manifest.mjs';
 
-const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const installedApp = path.join(os.homedir(), 'Applications', APP_NAME);
 const binaryPath = path.join(installedApp, 'Contents', 'MacOS', APP_DISPLAY_NAME);
 const rawElectronPattern = `${projectRoot}/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \\.`;

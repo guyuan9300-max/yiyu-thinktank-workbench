@@ -10,6 +10,7 @@ WorkspaceGenerationMode = Literal[
     "short_synthesis",
     "long_synthesis",
     "consultant_synthesis",
+    "action_advisory",
     "prep_pack",
 ]
 
@@ -115,6 +116,23 @@ _CONSULTANT_SYNTHESIS_TOKENS = (
     "应该怎么讲",
 )
 
+_ACTION_ADVISORY_TOKENS = (
+    "下一步",
+    "接下来",
+    "最重要的事情",
+    "最重要的事",
+    "最核心的事情",
+    "最核心的事",
+    "应该先做什么",
+    "先做什么",
+    "怎么推进",
+    "如何推进",
+    "优先推进",
+    "推进什么",
+    "行动建议",
+    "下一阶段",
+)
+
 # P2.13 FREEZE(restrictive-workspace-raw-evidence): 这组词当前会打开 `includeRawEvidence`，
 # 并和 `work_status` 组合成偏谨慎的短回答路径。先冻结，后续统一做问题翻译层时再整体处理。
 _RAW_EVIDENCE_TOKENS = ("根据原文", "根据资料", "出处", "原文", "引用", "哪份资料", "哪份文件")
@@ -192,6 +210,14 @@ def _looks_consultant_synthesis_prompt(normalized: str) -> bool:
     return False
 
 
+def _looks_action_advisory_prompt(normalized: str) -> bool:
+    if not _contains_any(normalized, _ACTION_ADVISORY_TOKENS):
+        return False
+    if _is_explicit_file_search_prompt(normalized):
+        return False
+    return True
+
+
 def route_workspace_query(
     *,
     prompt: str,
@@ -237,6 +263,36 @@ def route_workspace_query(
             shouldGenerateAnswer=True,
             routeReason="workspace_rule_official_registry",
             confidence=0.96,
+        )
+
+    if _looks_action_advisory_prompt(normalized):
+        return WorkspaceQueryRouteRecord(
+            workflow="synthesis",
+            generationMode="action_advisory",
+            page=current_page,
+            scopeType=selected_scope_type,
+            scopeId=scope_id,
+            clientId=client_id,
+            intent="action_advisory",
+            dataSources=[
+                "meetings",
+                "tasks",
+                "event_lines",
+                "state_pool",
+                "open_questions",
+                "conflicts",
+                "client_dna",
+                "judgments",
+                "project_structure",
+                "raw_docs",
+                "document_cards",
+            ],
+            includeRawEvidence=True,
+            includeActionSuggestions=True,
+            shouldReturnSearchResults=False,
+            shouldGenerateAnswer=True,
+            routeReason="workspace_rule_action_advisory",
+            confidence=0.9,
         )
 
     if _looks_consultant_synthesis_prompt(normalized):

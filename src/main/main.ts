@@ -34,7 +34,7 @@ const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
 const REQUIRED_BACKEND_SCHEMA_VERSION = 20260420;
-const APP_DISPLAY_NAME = '益语智库自用平台 2.0';
+const APP_DISPLAY_NAME = '益语智库自用平台 V2.0';
 const APP_BUNDLE_ID = 'com.yiyu.selfworkbench2';
 const releasePlanPath = path.join(projectRoot, 'docs', 'mac-release-update-plan.md');
 const releaseArtifactsPath = path.join(projectRoot, 'dist');
@@ -2358,9 +2358,10 @@ ipcMain.handle('yiyu-workbench:commitAndPushToMain', async (_event, payload: Com
   return commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
 });
 
-ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string) => {
+ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string, targetCommit?: string | null) => {
   return previewPullFromMain({
     repoPath,
+    targetCommit,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
   });

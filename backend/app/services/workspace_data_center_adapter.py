@@ -348,6 +348,15 @@ class ConsultantSynthesisMaterialPack:
     context_chars: int = 0
 
 
+@dataclass(frozen=True)
+class ActionAdvisoryMaterialPack:
+    content: str
+    profile: str = "action_advisory_v1"
+    source_counts: dict[str, int] = field(default_factory=dict)
+    boundary_notes: list[str] = field(default_factory=list)
+    context_chars: int = 0
+
+
 _CONSULTANT_NOISE_TOKENS = (
     "prog_test",
     "test_attachment",
@@ -641,6 +650,160 @@ def build_consultant_synthesis_material_pack(
     )
 
 
+def build_action_advisory_material_pack(
+    *,
+    prompt: str,
+    kernel_result: DataCenterKernelResultRecord,
+    workspace_snapshot: ClientWorkspaceResponse | None,
+    answer_perspective: str,
+    perspective_source: str,
+    max_chars: int = 26000,
+) -> ActionAdvisoryMaterialPack:
+    page_context = kernel_result.pageContext
+    answer_material = kernel_result.answerMaterial
+    source_counts: dict[str, int] = {}
+    sections: list[str] = []
+
+    def add_section(title: str, lines: list[str], source_key: str) -> None:
+        cleaned = [line for line in lines if str(line).strip()]
+        if not cleaned:
+            return
+        source_counts[source_key] = source_counts.get(source_key, 0) + len(cleaned)
+        sections.append(f"【{title}】\n" + "\n".join(cleaned))
+
+    def collect_items(
+        items: list[object],
+        *,
+        source_key: str,
+        title_fields: tuple[str, ...] = ("title", "name", "label", "fileName"),
+        body_fields: tuple[str, ...] = ("summary", "excerpt", "content", "text", "description", "rationale", "statement", "nextAction", "status"),
+        limit: int = 8,
+        body_limit: int = 800,
+    ) -> list[str]:
+        lines: list[str] = []
+        for item in items:
+            line, is_noise = _format_consultant_item(
+                item,
+                title_fields=title_fields,
+                body_fields=body_fields,
+                body_limit=body_limit,
+            )
+            if is_noise:
+                continue
+            if line and line not in lines:
+                lines.append(line)
+            if len(lines) >= limit:
+                break
+        return lines
+
+    perspective_guidance = {
+        "individual": "默认按用户本人下一步如何推进来组织回答，聚焦用户可以推动的沟通、资料补齐、判断确认和下一步动作。",
+        "team": "默认按团队或部门负责人视角组织回答，聚焦团队分工、协作节奏、责任节点、能力补齐和推进优先级。",
+        "organization": "默认按机构负责人视角组织回答，聚焦组织级取舍、战略落地、业务结构、资源配置、风险和关键决策。",
+        "project": "默认按项目负责人视角组织回答，聚焦项目路径、交付闭环、试点、资料补齐、关键责任和风险。",
+        "meeting_followup": "默认按会后跟进视角组织回答，聚焦会议共识、责任人、时间节点、待澄清问题和下一轮沟通。",
+    }.get(str(answer_perspective or ""), "默认按用户本人下一步如何推进来组织回答。")
+
+    sections.append(
+        "\n".join(
+            [
+                "【用户问题】",
+                _clean_text(prompt, limit=1000),
+                "",
+                "【行动回答视角】",
+                f"- answerPerspective：{answer_perspective or 'individual'}",
+                f"- perspectiveSource：{perspective_source or 'fallback_default'}",
+                f"- 生成要求：{perspective_guidance}",
+                "- 正文不要解释回答视角，不要列出个人/部门/机构分类，直接给出自然的下一步判断。",
+            ]
+        ).strip()
+    )
+
+    client_lines: list[str] = []
+    if workspace_snapshot is not None and workspace_snapshot.client is not None:
+        client = workspace_snapshot.client
+        client_lines.append(f"- 客户名称：{_clean_text(getattr(client, 'name', ''), limit=120) or '当前客户'}")
+        client_stage = _clean_text(getattr(client, "stage", ""), limit=120)
+        client_summary = _clean_text(getattr(client, "summary", ""), limit=700)
+        if client_stage:
+            client_lines.append(f"- 当前阶段：{client_stage}")
+        if client_summary:
+            client_lines.append(f"- 客户摘要：{client_summary}")
+    add_section("客户基础信息", client_lines, "clientBasics")
+
+    boundary_notes: list[str] = []
+    if page_context is not None:
+        boundary_notes = [
+            _clean_text(item, limit=260)
+            for item in list(page_context.boundaryNotes or [])[:8]
+            if _clean_text(item, limit=260)
+        ]
+        missing_context = [
+            _clean_text(item, limit=260)
+            for item in list(page_context.missingContext or [])[:8]
+            if _clean_text(item, limit=260)
+        ]
+        add_section("最近会议与共识", collect_items(list(page_context.relatedMeetings or []), source_key="relatedMeetings", limit=8), "relatedMeetings")
+        add_section("当前任务与责任线索", collect_items(list(page_context.relatedTasks or []), source_key="relatedTasks", limit=10), "relatedTasks")
+        add_section("开放问题", [f"- {item}" for item in missing_context[:6]], "missingContext")
+        add_section("风险与边界", [f"- {item}" for item in boundary_notes[:6]], "boundaryNotes")
+        add_section("候选判断与待确认洞察", collect_items(list(page_context.candidateJudgments or []), source_key="candidateJudgments", limit=8), "candidateJudgments")
+        add_section("正式判断", collect_items(list(page_context.officialJudgments or []), source_key="officialJudgments", limit=8), "officialJudgments")
+        add_section("统一记忆", [f"- {_clean_text(item, limit=500)}" for item in list(page_context.memoryFacts or [])[:10] if _clean_text(item, limit=500)], "memoryFacts")
+        add_section("战略与原文支撑", collect_items(list(page_context.rawEvidence or []), source_key="rawEvidence", limit=12, body_limit=1100), "rawEvidence")
+
+    if answer_material is not None:
+        add_section("下一步线索", [f"- {_clean_text(item, limit=500)}" for item in list(answer_material.nextActions or [])[:10] if _clean_text(item, limit=500)], "nextActions")
+        add_section("关键事实", [f"- {_clean_text(item, limit=650)}" for item in list(answer_material.keyFacts or [])[:10] if _clean_text(item, limit=650)], "keyFacts")
+        add_section("结构化线索", [f"- {_clean_text(item, limit=650)}" for item in list(answer_material.structuredPoints or [])[:10] if _clean_text(item, limit=650)], "structuredPoints")
+        add_section("精选证据片段", collect_items(list(answer_material.evidenceHighlights or []), source_key="evidenceHighlights", limit=14, body_limit=1200), "evidenceHighlights")
+
+    if workspace_snapshot is not None:
+        add_section(
+            "项目结构与业务线",
+            collect_items(
+                list(workspace_snapshot.projectModules or []) + list(workspace_snapshot.projectFlows or []),
+                source_key="projectStructure",
+                title_fields=("title", "name", "label"),
+                body_fields=("summary", "description", "content", "status", "nextAction"),
+                limit=10,
+            ),
+            "projectStructure",
+        )
+        add_section(
+            "客户 DNA 与组织画像",
+            collect_items(
+                list(workspace_snapshot.dnaModules or []),
+                source_key="clientDna",
+                title_fields=("title", "label", "moduleName", "name"),
+                body_fields=("summary", "content", "value", "description", "evidence"),
+                limit=8,
+            ),
+            "clientDna",
+        )
+        add_section(
+            "工作台近期任务",
+            collect_items(
+                list(workspace_snapshot.relatedTasks or []),
+                source_key="workspaceTasks",
+                title_fields=("title", "name"),
+                body_fields=("summary", "description", "status", "notes", "nextAction"),
+                limit=10,
+            ),
+            "workspaceTasks",
+        )
+
+    content = "\n\n".join(section for section in sections if section.strip()).strip()
+    if len(content) > max_chars:
+        content = content[: max_chars - 1].rstrip() + "…"
+    return ActionAdvisoryMaterialPack(
+        content=content,
+        source_counts=source_counts,
+        boundary_notes=boundary_notes,
+        context_chars=len(content),
+    )
+
+
 def build_workspace_context_quality_summary(
     page_context: PageContextPackRecord | None,
     quality: Any | None,
@@ -873,6 +1036,9 @@ def build_workspace_dc_response_meta(
     excluded_noise_count: int = 0,
     consultant_context_chars: int = 0,
     consultant_boundary_notes: list[str] | None = None,
+    answer_perspective: str | None = None,
+    perspective_source: str | None = None,
+    action_advisory_source_counts: dict[str, int] | None = None,
 ) -> dict[str, object]:
     normalized_material_access_mode = str(material_access_mode or "").strip()
     if normalized_material_access_mode == "raw_document_pack":
@@ -987,6 +1153,9 @@ def build_workspace_dc_response_meta(
         "followupRejectedCount": int(followup_rejected_count or 0),
         "materialPackProfile": str(material_pack_profile or "").strip() or None,
         "materialPackSourceCounts": dict(material_pack_source_counts or {}),
+        "actionAdvisorySourceCounts": dict(action_advisory_source_counts or {}),
+        "answerPerspective": str(answer_perspective or "").strip() or None,
+        "perspectiveSource": str(perspective_source or "").strip() or None,
         "excludedNoiseCount": int(excluded_noise_count or 0),
         "consultantContextChars": int(consultant_context_chars or 0),
         "consultantBoundaryNotes": [str(item) for item in (consultant_boundary_notes or [])[:8] if str(item).strip()],

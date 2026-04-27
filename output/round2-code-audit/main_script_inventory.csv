@@ -1,0 +1,12 @@
+file,referencedByPackage,classification
+scripts/cleanup_audit_data.py,false,script_or_ops_only
+scripts/deploy-cloud-backend-volcengine.sh,false,script_or_ops_only
+scripts/ensure-mac-release-prereqs.mjs,true,active_bound
+scripts/generate-mac-icon.py,true,active_bound
+scripts/install-mac-app.mjs,true,active_bound
+scripts/open-installed-app.mjs,true,active_bound
+scripts/run-local-electron.mjs,true,active_bound
+scripts/smoke-cloud-backend-volcengine.sh,false,script_or_ops_only
+scripts/stabilize-mac-app.mjs,true,active_bound
+scripts/sync-local-event-lines-to-cloud.py,false,script_or_ops_only
+scripts/test-template-save.sh,false,script_or_ops_only

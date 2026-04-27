@@ -35,6 +35,9 @@ class SessionUser(BaseModel):
     fullName: str
     primaryRole: PrimaryRole
     accountStatus: AccountStatus
+    departmentId: str | None = None
+    departmentName: str | None = None
+    isDepartmentLead: bool = False
 
 
 class AuthTokenResponse(BaseModel):
@@ -972,12 +975,14 @@ class EventLineReportAttachmentRecord(BaseModel):
     id: str
     taskId: str
     documentId: str | None = None
-    sourceKind: Literal["task_attachment", "event_line_attachment"] | None = None
+    sourceKind: Literal["task_attachment", "event_line_attachment", "meeting_attachment", "calendar_attachment"] | None = None
     title: str
+    fileName: str | None = None
     kind: str
     mimeType: str | None = None
     sizeBytes: int = 0
     downloadUrl: str
+    openUrl: str | None = None
     actorName: str | None = None
     createdAt: str
     parseStatus: str | None = None
@@ -999,11 +1004,14 @@ class EventLineTimelineNodeRecord(BaseModel):
     ]
     title: str
     time: str
+    timeRange: dict[str, str] = Field(default_factory=dict)
     summary: str
     sourceTaskIds: list[str] = Field(default_factory=list)
     sourceTaskId: str = ""
     sourceActivityIds: list[str] = Field(default_factory=list)
     attachments: list[EventLineReportAttachmentRecord] = Field(default_factory=list)
+    materialCount: int = 0
+    includeInReport: bool = True
     evidenceSummary: str = ""
     warnings: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)

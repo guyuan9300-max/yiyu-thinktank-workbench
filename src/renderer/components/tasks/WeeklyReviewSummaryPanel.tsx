@@ -16,7 +16,7 @@ import { AgentExecutionPanel } from './AgentExecutionPanel';
 import { AgentWeeklyPlanPanel } from './AgentWeeklyPlanPanel';
 import { WeeklyReviewSimulationPanel } from './WeeklyReviewSimulationPanel';
 
-type ViewLens = 'all' | 'personal' | 'department' | 'org';
+type ViewLens = 'organization' | 'department' | 'mine';
 
 type WeeklyReviewSummaryPanelProps = {
   selfReport?: HierarchyReport | null;
@@ -174,26 +174,25 @@ export function WeeklyReviewSummaryPanel({
 
   const lensOptions = useMemo(() => {
     const options: Array<{ key: ViewLens; label: string }> = [];
-    // 员工：只有个人视角
-    if (selfReport || selfAnalysis) options.push({ key: 'personal', label: '个人视角' });
-    // 部门负责人：个人 + 部门
-    if (role !== 'employee' && departmentEntries.length > 0) {
-      options.push({ key: 'department', label: '部门视角' });
-    }
-    // CEO：个人 + 部门 + 机构 + 全局
     if (role === 'admin') {
-      if (executiveOrgReport || simulationBundle) options.push({ key: 'org', label: 'CEO 视角' });
-      options.push({ key: 'all', label: '全局视角' });
+      if (executiveOrgReport || simulationBundle || departmentEntries.length > 0) {
+        options.push({ key: 'organization', label: '组织视角' });
+      }
+      if (departmentEntries.length > 0) options.push({ key: 'department', label: '部门视角' });
+      if (selfReport || selfAnalysis) options.push({ key: 'mine', label: '我的视角' });
+      return options;
     }
+    if (role === 'department_lead' && departmentEntries.length > 0) options.push({ key: 'department', label: '部门视角' });
+    if (selfReport || selfAnalysis) options.push({ key: 'mine', label: '我的视角' });
     return options;
   }, [departmentEntries.length, executiveOrgReport, role, selfAnalysis, selfReport, simulationBundle]);
 
-  const [activeLens, setActiveLens] = useState<ViewLens>('all');
+  const [activeLens, setActiveLens] = useState<ViewLens>('mine');
   const [activeDepartmentId, setActiveDepartmentId] = useState<string>(departmentEntries[0]?.id || '');
 
   useEffect(() => {
     if (!lensOptions.some((opt) => opt.key === activeLens)) {
-      setActiveLens('all');
+      setActiveLens(lensOptions[0]?.key || 'mine');
     }
   }, [activeLens, lensOptions]);
 
@@ -353,10 +352,9 @@ export function WeeklyReviewSummaryPanel({
         </div>
       </div>
 
-      {/* ── 全局视角：概览所有层级的核心信号 ── */}
-      {activeLens === 'all' && (
+      {/* ── 组织视角：概览组织内核心信号 ── */}
+      {activeLens === 'organization' && (
         <div className="space-y-4">
-          {selfReport && <ReportSignals report={selfReport} label="个人本周信号" />}
           {departmentEntries.map((entry) => entry.report ? (
             <ReportSignals key={entry.id} report={entry.report} label={`${entry.label}信号`} />
           ) : null)}
@@ -372,8 +370,8 @@ export function WeeklyReviewSummaryPanel({
         </div>
       )}
 
-      {/* ── 个人视角：我在哪些线上出了力 ── */}
-      {activeLens === 'personal' && (
+      {/* ── 我的视角：我在哪些线上出了力 ── */}
+      {activeLens === 'mine' && (
         <div className="space-y-4">
           {selfReport ? (
             <ReportSignals report={selfReport} label="我的本周判断" />
@@ -440,8 +438,8 @@ export function WeeklyReviewSummaryPanel({
         </div>
       )}
 
-      {/* ── CEO 视角：跨线看哪些线对机构最关键 ── */}
-      {activeLens === 'org' && (
+      {/* ── 组织视角：跨部门看哪些线对机构最关键 ── */}
+      {activeLens === 'organization' && (
         <div className="space-y-4">
           {executiveOrgReport && (
             <ReportSignals report={executiveOrgReport} label="机构本周判断" />

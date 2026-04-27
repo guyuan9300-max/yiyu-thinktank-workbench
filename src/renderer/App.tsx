@@ -125,6 +125,7 @@ import type {
   ProposalRecord,
   ReviewDepartmentMember,
   ReviewDashboard,
+  ReviewPerspectiveKey,
   ReviewHistoryEntry,
   ReviewActionCard,
   ReviewActionExecutionResult,
@@ -4920,6 +4921,9 @@ export default function App() {
   const [isLoadingReviewHistory, setIsLoadingReviewHistory] = useState(false);
   const reviewDirtyTaskIdsRef = useRef<Set<string>>(new Set());
   const reviewDraftRevisionRef = useRef<Record<string, number>>({});
+  const reviewLoadSequenceRef = useRef(0);
+  const reviewLoadAbortControllerRef = useRef<AbortController | null>(null);
+  const pendingReviewPerspectiveRef = useRef<{ perspective: ReviewPerspectiveKey; departmentId: string | null } | null>(null);
   const [reviewDirtyTaskIds, setReviewDirtyTaskIds] = useState<string[]>([]);
   const [radars, setRadars] = useState<TopicRadar[]>([]);
   const [candidates, setCandidates] = useState<TopicCandidate[]>([]);
@@ -5365,6 +5369,26 @@ export default function App() {
     }
   }
 
+  async function handleSelectPullCommit(targetCommit: string | null) {
+    const repoPath = collabRepoPath || collabStatus?.repoPath;
+    if (!repoPath || collabBusyAction === 'pull') return;
+    setCollabBusyAction('pull');
+    setCollabDialogError(null);
+    try {
+      const preview = await previewPullFromMain(repoPath, targetCommit);
+      openCollabDialog({ mode: 'pull', preview });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '按提交日期切换同步范围失败';
+      if (collabDialogState?.mode === 'pull') {
+        setCollabDialogError(message);
+      } else {
+        flash('error', message);
+      }
+    } finally {
+      setCollabBusyAction(null);
+    }
+  }
+
   function toggleCollabPath(targetPath: string) {
     setCollabDialogError(null);
     setCollabSelectedPaths((prev) => (
@@ -5413,6 +5437,7 @@ export default function App() {
           selectedPaths: collabSelectedPaths,
           confirmedRiskPaths: [],
           message: collabCommitMessage.trim() || collabDialogState.preview.suggestedMessage,
+          targetCommit: collabDialogState.preview.syncTargetCommit || null,
         });
         flash('success', '已把勾选的 main 修改同步到本地源码。');
       }
@@ -5765,10 +5790,65 @@ export default function App() {
     return response;
   }
 
-  async function loadReviewBlock(weekLabel?: string, options?: { skipAi?: boolean }) {
-    const response = await getReviews(weekLabel, options);
-    setReviewDashboard(response);
-    return response;
+  async function loadReviewBlock(weekLabel?: string, options?: { skipAi?: boolean; perspective?: ReviewPerspectiveKey; departmentId?: string | null }) {
+    const hasPerspectiveOption = Object.prototype.hasOwnProperty.call(options ?? {}, 'perspective');
+    const resolvedPerspective = hasPerspectiveOption
+      ? options?.perspective
+      : reviewDashboard?.activePerspective;
+    const hasDepartmentOption = Object.prototype.hasOwnProperty.call(options ?? {}, 'departmentId');
+    let resolvedDepartmentId = hasDepartmentOption
+      ? options?.departmentId ?? null
+      : reviewDashboard?.activeDepartmentId ?? null;
+    if (resolvedPerspective !== 'department') {
+      resolvedDepartmentId = null;
+    }
+    if (resolvedPerspective) {
+      pendingReviewPerspectiveRef.current = {
+        perspective: resolvedPerspective,
+        departmentId: resolvedPerspective === 'department' ? resolvedDepartmentId : null,
+      };
+    }
+    const sequence = reviewLoadSequenceRef.current + 1;
+    reviewLoadSequenceRef.current = sequence;
+    reviewLoadAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    reviewLoadAbortControllerRef.current = controller;
+    const resolvedOptions = {
+      ...options,
+      skipAi: options?.skipAi ?? true,
+      perspective: resolvedPerspective,
+      departmentId: resolvedDepartmentId,
+      signal: controller.signal,
+    };
+    try {
+      const response = await getReviews(weekLabel, resolvedOptions);
+      if (sequence === reviewLoadSequenceRef.current) {
+        setReviewDashboard(response);
+        const pending = pendingReviewPerspectiveRef.current;
+        const responseDepartmentId = response.activeDepartmentId || '';
+        const pendingDepartmentId = pending?.departmentId || '';
+        if (
+          pending
+          && response.activePerspective === pending.perspective
+          && (pending.perspective !== 'department' || !pendingDepartmentId || responseDepartmentId === pendingDepartmentId)
+        ) {
+          pendingReviewPerspectiveRef.current = null;
+        }
+      }
+      return response;
+    } catch (error) {
+      if (controller.signal.aborted && sequence !== reviewLoadSequenceRef.current && reviewDashboard) {
+        return reviewDashboard;
+      }
+      if (sequence === reviewLoadSequenceRef.current) {
+        pendingReviewPerspectiveRef.current = null;
+      }
+      throw error;
+    } finally {
+      if (reviewLoadAbortControllerRef.current === controller) {
+        reviewLoadAbortControllerRef.current = null;
+      }
+    }
   }
 
   async function loadReviewHistoryBlock() {
@@ -6525,7 +6605,7 @@ export default function App() {
             <div className="w-12 h-12 rounded-2xl bg-[#5B7BFE]/10 text-[#5B7BFE] flex items-center justify-center mb-6">
               <ShieldAlert size={24} />
             </div>
-            <h1 className="text-[30px] font-bold text-gray-900 leading-tight">益语智库自用平台 2.0</h1>
+            <h1 className="text-[30px] font-bold text-gray-900 leading-tight">益语智库自用平台</h1>
             <p className="text-[14px] text-gray-500 mt-3 leading-relaxed">先把个人账号建起来，再决定是否连接云端、加入组织或接受邀请。组织审批只发生在组织层动作里，不再挡住个人注册和登录。</p>
             <div className="mt-8 space-y-3 text-[13px] text-gray-600">
               <div className="bg-white border border-gray-100 rounded-2xl px-4 py-3">个人注册成功后即可直接登录，不再等待审批</div>
@@ -7177,7 +7257,8 @@ export default function App() {
     const [hidePersonalTasks, setHidePersonalTasks] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
     const [activeReviewTab, setActiveReviewTab] = useState<'overview' | 'events' | 'signals' | 'ai'>('events');
-    const [reviewPerspective, setReviewPerspective] = useState<'global' | 'ceo' | 'department' | 'personal'>('global');
+    const [reviewPerspective, setReviewPerspective] = useState<ReviewPerspectiveKey>('mine');
+    const [reviewDepartmentId, setReviewDepartmentId] = useState<string>('');
     const [reviewForm, setReviewForm] = useState<ReviewFormState>(createEmptyReviewForm());
     const [isReviewWeekSwitching, setIsReviewWeekSwitching] = useState(false);
     useEffect(() => {
@@ -7189,6 +7270,59 @@ export default function App() {
       const raf = window.requestAnimationFrame(reset);
       return () => window.cancelAnimationFrame(raf);
     }, [activeTab, taskViewMode, activeReviewTab, reviewScope]);
+    useEffect(() => {
+      const activePerspective = reviewDashboard?.activePerspective;
+      if (!activePerspective) return;
+      const activeDepartmentId = reviewDashboard?.activeDepartmentId || '';
+      const pending = pendingReviewPerspectiveRef.current;
+      if (pending) {
+        const pendingDepartmentId = pending.departmentId || '';
+        const pendingMatchesDashboard = activePerspective === pending.perspective
+          && (pending.perspective !== 'department' || !pendingDepartmentId || activeDepartmentId === pendingDepartmentId);
+        if (!pendingMatchesDashboard) {
+          return;
+        }
+        pendingReviewPerspectiveRef.current = null;
+      }
+      if (activePerspective !== reviewPerspective) {
+        setReviewPerspective(activePerspective);
+      }
+      if (activeDepartmentId !== reviewDepartmentId) {
+        setReviewDepartmentId(activeDepartmentId);
+      }
+    }, [reviewDashboard?.activeDepartmentId, reviewDashboard?.activePerspective, reviewDepartmentId, reviewPerspective]);
+    useEffect(() => {
+      if (activeTab !== 'tasks' || taskViewMode !== 'review') return;
+      const dashboardPerspective = reviewDashboard?.activePerspective;
+      const dashboardDepartmentId = reviewDashboard?.activeDepartmentId || '';
+      const targetDepartmentId = reviewPerspective === 'department' ? reviewDepartmentId || null : null;
+      if (
+        reviewPerspective === 'department'
+        && dashboardPerspective === 'department'
+        && dashboardDepartmentId
+        && !reviewDepartmentId
+      ) {
+        return;
+      }
+      if (
+        dashboardPerspective === reviewPerspective
+        && (reviewPerspective !== 'department' || dashboardDepartmentId === (targetDepartmentId || ''))
+      ) {
+        return;
+      }
+      if (reviewPerspective === 'organization' || reviewPerspective === 'department') {
+        setReviewScope('work');
+      }
+      pendingReviewPerspectiveRef.current = {
+        perspective: reviewPerspective,
+        departmentId: targetDepartmentId,
+      };
+      void loadReviewBlock(reviewDashboard?.currentReview?.weekLabel, {
+        skipAi: true,
+        perspective: reviewPerspective,
+        departmentId: targetDepartmentId,
+      });
+    }, [activeTab, taskViewMode, reviewPerspective, reviewDepartmentId, reviewDashboard?.activeDepartmentId, reviewDashboard?.activePerspective, reviewDashboard?.currentReview?.weekLabel]);
     const syncReviewDirtyTaskIds = (next: Set<string>) => {
       reviewDirtyTaskIdsRef.current = next;
       setReviewDirtyTaskIds(Array.from(next));
@@ -7436,6 +7570,44 @@ export default function App() {
     const agentDepartmentPlans = reviewDashboard?.agentDepartmentPlans || [];
     const simulationBundle = reviewDashboard?.simulationBundle || null;
     const selfReviewReport = reviewDashboard?.selfReport || null;
+    const fallbackReviewPerspectives = currentSessionUser?.primaryRole === 'admin'
+      ? [
+        { key: 'organization' as const, label: '组织视角' },
+        { key: 'department' as const, label: '部门视角' },
+        { key: 'mine' as const, label: '我的视角' },
+      ]
+      : currentSessionUser?.isDepartmentLead
+        ? [
+          {
+            key: 'department' as const,
+            label: '部门视角',
+            departmentId: currentSessionUser.departmentId || null,
+            departmentName: currentSessionUser.departmentName || null,
+          },
+          { key: 'mine' as const, label: '我的视角' },
+        ]
+      : [{ key: 'mine' as const, label: '我的视角' }];
+    const availableReviewPerspectives = reviewDashboard?.availablePerspectives?.length
+      ? reviewDashboard.availablePerspectives
+      : fallbackReviewPerspectives;
+    const shouldShowReviewPerspectiveSwitch = availableReviewPerspectives.length > 1;
+    const reviewDepartmentOptions = (() => {
+      const byId = new Map<string, { id: string; name: string }>();
+      reviewGovernanceState.departments.forEach((department) => {
+        if (department.id) byId.set(department.id, { id: department.id, name: department.name });
+      });
+      if (reviewDashboard?.activeDepartmentId && !byId.has(reviewDashboard.activeDepartmentId)) {
+        byId.set(reviewDashboard.activeDepartmentId, {
+          id: reviewDashboard.activeDepartmentId,
+          name: reviewDashboard.activeDepartmentName || '当前部门',
+        });
+      }
+      return Array.from(byId.values());
+    })();
+    const shouldShowReviewDepartmentPicker = reviewPerspective === 'department'
+      && currentSessionUser?.primaryRole === 'admin'
+      && reviewDepartmentOptions.length > 0;
+    const reviewPerspectiveRequiresWorkScope = reviewPerspective === 'organization' || reviewPerspective === 'department';
     const workReviewItems = reviewDashboard?.workItems || [];
     const personalReviewItems = reviewDashboard?.personalItems || [];
     const collectStageAnalysis = reviewScope === 'work' ? reviewDashboard?.workAnalysis || null : reviewDashboard?.personalAnalysis || null;
@@ -11627,8 +11799,10 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setReviewScope('personal'); }}
-                      className={`px-3 py-1 rounded-[10px] text-[12px] font-bold transition ${reviewScope === 'personal' ? 'bg-white text-[#5B7BFE] shadow-sm border border-gray-200/40' : 'text-gray-500 hover:text-gray-700'}`}
+                      onClick={() => { if (!reviewPerspectiveRequiresWorkScope) setReviewScope('personal'); }}
+                      disabled={reviewPerspectiveRequiresWorkScope}
+                      className={`px-3 py-1 rounded-[10px] text-[12px] font-bold transition ${reviewScope === 'personal' && !reviewPerspectiveRequiresWorkScope ? 'bg-white text-[#5B7BFE] shadow-sm border border-gray-200/40' : reviewPerspectiveRequiresWorkScope ? 'cursor-not-allowed text-gray-300' : 'text-gray-500 hover:text-gray-700'}`}
+                      title={reviewPerspectiveRequiresWorkScope ? '组织视角和部门视角只展示工作复盘' : undefined}
                     >
                       成长复盘
                     </button>
@@ -11694,22 +11868,59 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <div className="flex items-center bg-gray-100/50 p-1 rounded-full mb-3 shrink-0 ml-4">
-                  {([
-                    { key: 'global' as const, label: '全局视角' },
-                    ...(currentSessionUser?.primaryRole === 'admin' ? [{ key: 'ceo' as const, label: 'CEO视角' }] : []),
-                    { key: 'department' as const, label: '部门视角' },
-                    { key: 'personal' as const, label: '个人视角' },
-                  ]).map((item) => (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => setReviewPerspective(item.key)}
-                      className={`px-4 py-1.5 rounded-full text-[12px] font-bold transition ${reviewPerspective === item.key ? 'bg-white text-[#5B7BFE] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                <div className="mb-3 ml-4 flex shrink-0 items-center gap-2">
+                  {shouldShowReviewPerspectiveSwitch && (
+                    <div className="flex items-center bg-gray-100/50 p-1 rounded-full">
+                      {availableReviewPerspectives.map((item) => (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => {
+                            const nextDepartmentId = item.key === 'department'
+                              ? item.departmentId || reviewDepartmentId || reviewDepartmentOptions[0]?.id || null
+                              : null;
+                            pendingReviewPerspectiveRef.current = {
+                              perspective: item.key,
+                              departmentId: nextDepartmentId,
+                            };
+                            setReviewPerspective(item.key);
+                            if (item.key === 'organization' || item.key === 'department') {
+                              setReviewScope('work');
+                            }
+                            if (item.key === 'department') {
+                              if (nextDepartmentId) setReviewDepartmentId(nextDepartmentId);
+                            } else {
+                              setReviewDepartmentId('');
+                            }
+                          }}
+                          className={`px-4 py-1.5 rounded-full text-[12px] font-bold transition ${reviewPerspective === item.key ? 'bg-white text-[#5B7BFE] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {shouldShowReviewDepartmentPicker && (
+                    <select
+                      value={reviewDepartmentId || reviewDepartmentOptions[0]?.id || ''}
+                      onChange={(event) => {
+                        const nextDepartmentId = event.target.value;
+                        pendingReviewPerspectiveRef.current = {
+                          perspective: 'department',
+                          departmentId: nextDepartmentId,
+                        };
+                        setReviewPerspective('department');
+                        setReviewDepartmentId(nextDepartmentId);
+                        setReviewScope('work');
+                      }}
+                      className="h-8 rounded-full border border-gray-200 bg-white px-3 text-[12px] font-bold text-gray-600 shadow-sm outline-none transition focus:border-[#5B7BFE]"
+                      aria-label="选择部门视角"
                     >
-                      {item.label}
-                    </button>
-                  ))}
+                      {reviewDepartmentOptions.map((department) => (
+                        <option key={department.id} value={department.id}>{department.name}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -12075,7 +12286,7 @@ export default function App() {
                   onTriggerAction={handleTriggerReviewAction}
                   onOpenActionResult={handleOpenReviewActionResult}
                   onDrillTarget={handleReviewDashboardDrillTarget}
-                  viewerRole={currentSessionUser?.primaryRole === 'admin' ? 'admin' : currentSessionUser?.isDepartmentLead ? 'department_lead' : 'employee'}
+                  viewerRole={reviewDashboard?.activePerspective === 'organization' ? 'admin' : reviewDashboard?.activePerspective === 'department' ? 'department_lead' : 'employee'}
                 />
               )}
 
@@ -20544,7 +20755,6 @@ export default function App() {
         </div>
       </div>
     );
-    };
 
     const renderOrgDnaSection = () => (
       <div className="space-y-6">
@@ -20719,6 +20929,7 @@ export default function App() {
         </div>
       </div>
     );
+    };
 
     const renderClientWorkspaceSection = () => (
       <div className="space-y-6">
@@ -21385,7 +21596,7 @@ export default function App() {
             <BrandLogoMark logoDataUrl={systemAdminSettingsState?.brandLogoDataUrl || null} className="w-14 h-14" />
           </div>
           <div className="text-center">
-            <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库 2.0</h1>
+            <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>
             <p className="mt-1 text-[13px] text-white/50 tracking-widest">YIYU THINKTANK WORKBENCH</p>
           </div>
         </div>
@@ -21435,7 +21646,7 @@ export default function App() {
         <div className={`px-4 py-6 md:py-7 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-6'}`}>
           <div className={`flex items-center gap-3 md:gap-4 justify-center ${isSidebarCollapsed ? 'md:justify-center' : 'md:justify-start'}`}>
             <BrandLogoMark logoDataUrl={systemAdminSettingsState.brandLogoDataUrl || null} className={`w-8 h-8 ${isSidebarCollapsed ? 'md:w-10 md:h-10' : 'md:w-11 md:h-11'}`} />
-            <span className={`font-bold text-[18px] md:text-[20px] text-gray-900 tracking-tight ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>益语智库 2.0</span>
+            <span className={`font-bold text-[18px] md:text-[20px] text-gray-900 tracking-tight ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>益语智库</span>
           </div>
           <div className={`mt-3 hidden md:flex ${isSidebarCollapsed ? 'justify-center' : 'justify-start pl-[2px]'}`}>
             <button
@@ -21562,6 +21773,9 @@ export default function App() {
         }}
         onTogglePath={toggleCollabPath}
         onToggleEffectPaths={toggleCollabEffectPaths}
+        onSelectPullCommit={(targetCommit) => {
+          void handleSelectPullCommit(targetCommit);
+        }}
         onMessageChange={handleCollabMessageChange}
         onConfirm={() => {
           void handleConfirmCollabAction();

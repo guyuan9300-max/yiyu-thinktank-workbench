@@ -145,6 +145,9 @@ class SessionUserRecord(BaseModel):
     fullName: str
     primaryRole: EmployeeRole
     accountStatus: AccountStatus
+    departmentId: str | None = None
+    departmentName: str | None = None
+    isDepartmentLead: bool = False
 
 
 class AuthStateResponse(BaseModel):
@@ -2161,6 +2164,8 @@ class WeeklyReviewEventLineContextRecord(BaseModel):
     evidenceCount: int = 0
     primaryClientId: str | None = None
     primaryClientName: str | None = None
+    primaryDepartmentId: str | None = None
+    primaryDepartmentName: str | None = None
 
 
 class EventLineProjectFilterOptionRecord(BaseModel):
@@ -5429,10 +5434,24 @@ class AgentWorklogResponse(BaseModel):
     weeklyPlans: list[AgentWeeklyPlanRecord] = Field(default_factory=list)
 
 
+ReviewPerspectiveKey = Literal["organization", "department", "mine"]
+
+
+class ReviewPerspectiveOptionRecord(BaseModel):
+    key: ReviewPerspectiveKey
+    label: str
+    departmentId: str | None = None
+    departmentName: str | None = None
+
+
 class ReviewResponse(BaseModel):
     currentReview: WeeklyReviewRecord | None = None
     workItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)
     personalItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)
+    availablePerspectives: list[ReviewPerspectiveOptionRecord] = Field(default_factory=list)
+    activePerspective: ReviewPerspectiveKey = "mine"
+    activeDepartmentId: str | None = None
+    activeDepartmentName: str | None = None
     workAnalysis: WeeklyReviewAnalysisRecord | None = None
     personalAnalysis: WeeklyReviewAnalysisRecord | None = None
     weeklyMainlineCards: WeeklyMainlineCardsRecord | None = None

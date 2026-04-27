@@ -1,0 +1,5 @@
+file,referencedByPackage,classification
+scripts/check-no-direct-task-api-writes.mjs,true,migration_active
+scripts/list-direct-api-usage.mjs,true,migration_active
+scripts/run-mobile-core-tests.mjs,true,migration_active
+scripts/write-checkpoint-snapshot.mjs,true,migration_active

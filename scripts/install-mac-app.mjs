@@ -4,27 +4,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import {
-  APP_NAME,
   APP_DISPLAY_NAME,
+  APP_NAME,
   DEFAULT_INSTALL_RECEIPT_PATH,
-  DEFAULT_INSTALL_SMOKE_PATH,
   inspectAppBundle as inspectBundle,
 } from './app-manifest.mjs';
 
 const APP_BASENAME = APP_NAME.replace(/\.app$/, '');
-const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
 const userApplicationsDir = path.join(os.homedir(), 'Applications');
 const targetApp = path.join(userApplicationsDir, APP_NAME);
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
 const stagingApp = path.join(userApplicationsDir, `.${APP_BASENAME}.installing-${timestamp}.app`);
-const backupRoot = path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench-2', 'runtime', 'install-backups');
+const backupRoot = path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'install-backups');
 const backupApp = path.join(backupRoot, `${APP_BASENAME}.old-${timestamp}.app`);
 const defaultReceiptPath = DEFAULT_INSTALL_RECEIPT_PATH;
-const defaultSmokePath = DEFAULT_INSTALL_SMOKE_PATH;
 const legacyCandidates = [
   '/Applications/益语智库.app',
+  '/Applications/益语智库自用平台.app',
+  path.join(os.homedir(), 'Applications', '益语智库自用平台.app'),
+  path.join(os.homedir(), 'Applications', '益语智库自用平台 2.0.app'),
   path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron', '益语智库工作台.app'),
   path.join(os.homedir(), 'Library', 'Application Support', 'yiyu-thinktank-workbench', 'runtime', 'local-electron-dist', '益语智库工作台.app'),
 ];
@@ -93,11 +93,15 @@ function stabilizeInstalledApp(targetPath) {
 function stopRunningApp() {
   info('stopping running app instances before install');
   runQuiet('osascript', ['-e', `tell application "${APP_DISPLAY_NAME}" to quit`]);
+  runQuiet('osascript', ['-e', 'tell application "益语智库自用平台" to quit']);
+  runQuiet('osascript', ['-e', 'tell application "益语智库自用平台 2.0" to quit']);
   runQuiet('pkill', ['-x', APP_DISPLAY_NAME]);
+  runQuiet('pkill', ['-x', '益语智库自用平台']);
+  runQuiet('pkill', ['-x', '益语智库自用平台 2.0']);
   runQuiet('pkill', ['-f', `${targetApp}/Contents/MacOS/${APP_BASENAME}`]);
   const waitResult = spawnSync(
     'bash',
-    ['-lc', `for _ in {1..30}; do pgrep -x "${APP_DISPLAY_NAME}" >/dev/null || exit 0; sleep 0.2; done; exit 0`],
+    ['-lc', `for _ in {1..30}; do pgrep -x "${APP_DISPLAY_NAME}" >/dev/null || pgrep -x "益语智库自用平台" >/dev/null || pgrep -x "益语智库自用平台 2.0" >/dev/null || exit 0; sleep 0.2; done; exit 0`],
     { stdio: 'ignore' },
   );
   if (waitResult.status !== 0) {
@@ -157,29 +161,6 @@ function writeReceipt(receiptPath, payload) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   info(`wrote install receipt: ${target}`);
-}
-
-function writeInstallSeedSmoke(smokePath, receiptPayload) {
-  const target = path.resolve(smokePath);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, `${JSON.stringify({
-    recordedAt: new Date().toISOString(),
-    seededByInstall: true,
-    targetAppExists: true,
-    sourceRendererEntry: receiptPayload.sourceRendererEntry,
-    sourceRendererHash: receiptPayload.sourceRendererHash,
-    sourceBundleManifestId: receiptPayload.sourceBundleManifestId,
-    targetRendererEntry: receiptPayload.targetRendererEntry,
-    targetRendererHash: receiptPayload.targetRendererHash,
-    targetBundleManifestId: receiptPayload.targetBundleManifestId,
-    rendererEntryMatch: receiptPayload.rendererEntryMatch,
-    bundleManifestMatch: receiptPayload.bundleManifestMatch,
-    readyToResumeA0: receiptPayload.bundleManifestMatch === true,
-    readyToOpenWorkbench: receiptPayload.bundleManifestMatch === true,
-    blockerClass: receiptPayload.bundleManifestMatch === true ? 'none' : 'packaging',
-    reason: '安装流程已验证包身份；启动脚本会在首次打开后覆盖为真实冒烟结果。',
-  }, null, 2)}\n`, 'utf8');
-  info(`seeded install smoke: ${target}`);
 }
 
 function verifyInstalledBundle(targetPath, sourceSnapshot) {
@@ -317,9 +298,7 @@ try {
     info(`cleaned ${removedStagingBundles.length} stale staging bundle(s)`);
   }
 
-  const receiptPayload = buildReceipt();
-  writeReceipt(receiptPath, receiptPayload);
-  writeInstallSeedSmoke(defaultSmokePath, receiptPayload);
+  writeReceipt(receiptPath, buildReceipt());
 
   const legacyHits = legacyCandidates.filter((targetPath) => fs.existsSync(targetPath));
   if (legacyHits.length > 0) {

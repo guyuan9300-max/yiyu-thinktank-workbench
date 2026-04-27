@@ -1,0 +1,77 @@
+{
+  "recordedAt": "2026-04-15T14:46:22",
+  "baseUrl": "http://127.0.0.1:47929",
+  "lookbackDays": 365,
+  "recommended": [
+    {
+      "clientId": "client_cffc",
+      "name": "为爱黔行",
+      "lastActivityAt": "2026-03-12T22:24:10",
+      "documentCount": 861,
+      "taskCount": 1,
+      "knowledgeReady": true,
+      "hasContext": true,
+      "score": 37583
+    },
+    {
+      "clientId": "client_a4d1db29a7",
+      "name": "CFFC",
+      "lastActivityAt": "2026-03-14T17:48:42",
+      "documentCount": 170,
+      "taskCount": 0,
+      "knowledgeReady": true,
+      "hasContext": true,
+      "score": 34325
+    },
+    {
+      "clientId": "client_53d82aa249",
+      "name": "益语智库",
+      "lastActivityAt": "2026-03-21T14:43:08",
+      "documentCount": 14,
+      "taskCount": 0,
+      "knowledgeReady": true,
+      "hasContext": true,
+      "score": 34145
+    },
+    {
+      "clientId": "client_284afd836e",
+      "name": "日慈基金会",
+      "lastActivityAt": "2026-03-17T09:12:35",
+      "documentCount": 65,
+      "taskCount": 0,
+      "knowledgeReady": true,
+      "hasContext": true,
+      "score": 34000
+    },
+    {
+      "clientId": "client_bda0f1d379",
+      "name": "云南儿童资助研究",
+      "lastActivityAt": "2026-03-22T16:47:19",
+      "documentCount": 253,
+      "taskCount": 0,
+      "knowledgeReady": false,
+      "hasContext": true,
+      "score": 35490
+    },
+    {
+      "clientId": "client_30a392788c",
+      "name": "顾源源文章",
+      "lastActivityAt": "2026-03-27T14:23:22",
+      "documentCount": 20,
+      "taskCount": 0,
+      "knowledgeReady": false,
+      "hasContext": true,
+      "score": 34725
+    },
+    {
+      "clientId": "client_952be522fb",
+      "name": "顾源源",
+      "lastActivityAt": "2026-03-25T11:13:53",
+      "documentCount": 1,
+      "taskCount": 0,
+      "knowledgeReady": false,
+      "hasContext": true,
+      "score": 34430
+    }
+  ]
+}

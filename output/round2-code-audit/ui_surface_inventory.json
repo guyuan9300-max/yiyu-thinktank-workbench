@@ -1,0 +1,202 @@
+[
+  {
+    "surfaceId": "tab:tasks",
+    "entryType": "tab",
+    "reachableFrom": "main_nav",
+    "roleConstraint": "authenticated",
+    "queryParamGate": null,
+    "rootComponent": "TasksView",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "tab:client_workspace",
+    "entryType": "tab",
+    "reachableFrom": "main_nav",
+    "roleConstraint": "authenticated",
+    "queryParamGate": null,
+    "rootComponent": "ClientWorkspaceView",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "tab:strategic_accompaniment",
+    "entryType": "tab",
+    "reachableFrom": "main_nav",
+    "roleConstraint": "authenticated",
+    "queryParamGate": null,
+    "rootComponent": "CockpitEvidenceView | StrategicBrainView",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "tab:topics_management",
+    "entryType": "tab",
+    "reachableFrom": "main_nav",
+    "roleConstraint": "authenticated",
+    "queryParamGate": null,
+    "rootComponent": "unknown",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "tab:growth_handbook",
+    "entryType": "tab",
+    "reachableFrom": "main_nav",
+    "roleConstraint": "authenticated",
+    "queryParamGate": null,
+    "rootComponent": "unknown",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "tab:settings",
+    "entryType": "tab",
+    "reachableFrom": "main_nav",
+    "roleConstraint": "authenticated",
+    "queryParamGate": null,
+    "rootComponent": "SettingsView",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:overview",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=overview",
+    "rootComponent": "renderOverviewSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:org_dna",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=org_dna",
+    "rootComponent": "renderOrgDnaSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:tasks",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=tasks",
+    "rootComponent": "renderTasksSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:client_workspace",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=client_workspace",
+    "rootComponent": "renderClientWorkspaceSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:topics",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=topics",
+    "rootComponent": "renderTopicsSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:handbook",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=handbook",
+    "rootComponent": "renderHandbookSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:system_admin",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "admin",
+    "queryParamGate": "settingsSection=system_admin",
+    "rootComponent": "renderSystemAdminSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:org_overview",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "admin",
+    "queryParamGate": "settingsSection=org_overview",
+    "rootComponent": "renderSystemAdminSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:org_departments",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "admin",
+    "queryParamGate": "settingsSection=org_departments",
+    "rootComponent": "renderSystemAdminSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:org_people",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "admin",
+    "queryParamGate": "settingsSection=org_people",
+    "rootComponent": "renderSystemAdminSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:org_rules",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "admin",
+    "queryParamGate": "settingsSection=org_rules",
+    "rootComponent": "renderSystemAdminSection",
+    "loaderFunction": "loadSettingsSectionBlock",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "settings:system_logs",
+    "entryType": "settings_section",
+    "reachableFrom": "tab:settings",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "settingsSection=system_logs",
+    "rootComponent": "SystemLogPanel + DataCenterProposalInboxPanel + DataCenterOpsPanel",
+    "loaderFunction": "eager",
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "evidence:task-ai",
+    "entryType": "query_param",
+    "reachableFrom": "tab:tasks|tab:client_workspace",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "evidenceMode=task-ai",
+    "rootComponent": "Task AI Evidence View",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  },
+  {
+    "surfaceId": "evidence:cockpit",
+    "entryType": "query_param",
+    "reachableFrom": "tab:strategic_accompaniment",
+    "roleConstraint": "authenticated",
+    "queryParamGate": "evidenceMode=cockpit",
+    "rootComponent": "CockpitEvidenceView",
+    "loaderFunction": null,
+    "expectedApiCalls": []
+  }
+]
