@@ -6730,7 +6730,7 @@ export default function App() {
       );
     };
 
-  const CloudAuthModal = () => {
+  const renderCloudAuthModal = () => {
     if (!cloudAuthModalOpen) return null;
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cloudAuthForm.email);
@@ -21781,7 +21781,7 @@ export default function App() {
           void handleConfirmCollabAction();
         }}
       />
-      <CloudAuthModal />
+      {renderCloudAuthModal()}
       </div>
     </GrowthProvider>
   );

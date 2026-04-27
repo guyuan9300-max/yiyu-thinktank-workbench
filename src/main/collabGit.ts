@@ -179,6 +179,13 @@ const IGNORABLE_LOCAL_STATUS_PATHS = new Set([
 
 const IGNORABLE_LOCAL_STATUS_PREFIXES = [
   'mobile/',
+  '.playwright-cli/',
+  'dist/',
+  'build/',
+  'coverage/',
+  'test-results/',
+  'temp-renderer/',
+  'tmp/',
 ];
 
 const GENERATED_LOCAL_STATUS_SEGMENTS = new Set([
@@ -192,6 +199,13 @@ const GENERATED_LOCAL_STATUS_SUFFIXES = [
   '.pyd',
   '.DS_Store',
   '.tsbuildinfo',
+  '.db',
+  '.db-shm',
+  '.db-wal',
+  '.sqlite',
+  '.sqlite3',
+  '.sqlite-shm',
+  '.sqlite-wal',
 ];
 
 const COLLAB_PRIMARY_REPO_NAME = 'yiyu-thinktank-workbench';
@@ -578,10 +592,13 @@ function hasBinaryExtension(targetPath: string) {
 function isIgnorableLocalStatusPath(targetPath: string) {
   const normalizedPath = normalizeRelativePath(targetPath).replace(/\/+$/, '');
   const pathSegments = normalizedPath.split('/').filter(Boolean);
+  const basename = pathSegments[pathSegments.length - 1] || normalizedPath;
   return IGNORABLE_LOCAL_STATUS_PATHS.has(normalizedPath)
     || IGNORABLE_LOCAL_STATUS_PREFIXES.some((prefix) => normalizedPath === prefix.slice(0, -1) || normalizedPath.startsWith(prefix))
     || pathSegments.some((segment) => GENERATED_LOCAL_STATUS_SEGMENTS.has(segment))
-    || GENERATED_LOCAL_STATUS_SUFFIXES.some((suffix) => normalizedPath.endsWith(suffix));
+    || GENERATED_LOCAL_STATUS_SUFFIXES.some((suffix) => normalizedPath.endsWith(suffix))
+    || basename === '.env'
+    || basename.startsWith('.env.');
 }
 
 function addPathsToSet(targetSet: Set<string>, targetPath: string, previousPath?: string | null) {
