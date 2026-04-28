@@ -31735,6 +31735,108 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for index, item in enumerate(related_documents[:12], start=1)
         ]
 
+    _CONTRACT_SOURCE_TOKENS = ("合同", "协议", "报价", "申请书", "标书", "0907")
+    _CONTRACT_FACT_TOKENS = ("甲方", "乙方", "服务期限", "40万", "付款", "发票", "知识产权", "保密", "不可抗力", "服务费", "合同")
+
+    def _citation_normalized_text(value: str | None) -> str:
+        return re.sub(r"\s+", "", str(value or "").lower())
+
+    def _evidence_source_text(item: EvidenceItem) -> str:
+        return " ".join(
+            str(value or "")
+            for value in (
+                item.title,
+                item.path,
+                item.originalPath,
+                item.managedPath,
+                item.markdownPath,
+                item.sectionLabel,
+            )
+        )
+
+    def _is_contract_source_evidence(item: EvidenceItem) -> bool:
+        return any(token in _evidence_source_text(item) for token in _CONTRACT_SOURCE_TOKENS)
+
+    def _answer_contains_contract_facts(prompt: str, content: str) -> bool:
+        combined = f"{prompt}\n{content}"
+        return any(token in combined for token in _CONTRACT_FACT_TOKENS)
+
+    def _evidence_excerpt_overlaps_answer(item: EvidenceItem, content: str) -> bool:
+        normalized_content = _citation_normalized_text(content)
+        if not normalized_content:
+            return False
+        excerpt = re.sub(r"\s+", " ", str(item.excerpt or "")).strip()
+        if not excerpt:
+            return False
+        segments = [
+            segment.strip()
+            for segment in re.split(r"[。！？!?；;\n\r]+", excerpt)
+            if len(segment.strip()) >= 12
+        ]
+        for segment in segments[:8]:
+            normalized_segment = _citation_normalized_text(segment)
+            if len(normalized_segment) >= 12 and normalized_segment in normalized_content:
+                return True
+        return False
+
+    def prioritize_answer_citations(
+        *,
+        prompt: str,
+        answer_content: str,
+        evidence: list[EvidenceItem],
+    ) -> tuple[list[EvidenceItem], dict[str, object]]:
+        if not evidence:
+            return evidence, {
+                "answerUsedEvidenceIds": [],
+                "pinnedCitationCount": 0,
+                "citationPrioritizationReason": None,
+            }
+        should_prioritize_contract = _answer_contains_contract_facts(prompt, answer_content)
+        if not should_prioritize_contract:
+            return evidence, {
+                "answerUsedEvidenceIds": [],
+                "pinnedCitationCount": 0,
+                "citationPrioritizationReason": None,
+            }
+
+        prioritized: list[tuple[int, int, EvidenceItem]] = []
+        answer_used_ids: list[str] = []
+        pinned_count = 0
+        for index, item in enumerate(evidence):
+            if _is_contract_source_evidence(item):
+                is_direct_quote = _evidence_excerpt_overlaps_answer(item, answer_content)
+                priority = 120 if is_direct_quote else 100
+                role = "direct_quote" if is_direct_quote else "direct_support"
+                reason = "contract_fact_overlap" if is_direct_quote else "contract_facts_answered_from_contract_source"
+                next_item = item.model_copy(
+                    update={
+                        "citationRole": role,
+                        "citationPriority": priority,
+                        "citationReason": reason,
+                    }
+                )
+                answer_used_ids.append(str(item.id))
+                pinned_count += 1
+                prioritized.append((priority, index, next_item))
+                continue
+            next_item = item
+            if item.citationRole is None:
+                next_item = item.model_copy(
+                    update={
+                        "citationRole": "background",
+                        "citationPriority": int(item.citationPriority or 0),
+                        "citationReason": item.citationReason or "related_background",
+                    }
+                )
+            prioritized.append((int(next_item.citationPriority or 0), index, next_item))
+
+        prioritized.sort(key=lambda item: (-item[0], item[1]))
+        return [item for _priority, _index, item in prioritized], {
+            "answerUsedEvidenceIds": answer_used_ids,
+            "pinnedCitationCount": pinned_count,
+            "citationPrioritizationReason": "contract_facts_answered_from_contract_source" if pinned_count else None,
+        }
+
     def _extract_workspace_followup_candidates(text: str) -> list[str]:
         candidates: list[str] = []
         for raw_line in str(text or "").splitlines():
@@ -32317,6 +32419,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             missing_context=list(page_context_pack.missingContext[:6]) if page_context_pack is not None else [],
             search_result=kernel_result.searchResult,
         )
+        evidence, citation_meta = prioritize_answer_citations(
+            prompt=prompt,
+            answer_content=structured.content,
+            evidence=evidence,
+        )
 
         llm_elapsed_ms = round((perf_counter() - llm_started) * 1000, 2) if llm_attempt_count > 0 else 0.0
         total_elapsed_ms = round((perf_counter() - request_started) * 1000, 2)
@@ -32425,6 +32532,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "excludedNoiseCount": consultant_material_pack.excluded_noise_count if consultant_material_pack is not None else response_meta.get("excludedNoiseCount", 0),
                 "consultantContextChars": consultant_material_pack.context_chars if consultant_material_pack is not None else response_meta.get("consultantContextChars", 0),
                 "consultantBoundaryNotes": consultant_material_pack.boundary_notes if consultant_material_pack is not None else response_meta.get("consultantBoundaryNotes", []),
+                "answerUsedEvidenceIds": citation_meta.get("answerUsedEvidenceIds", []),
+                "pinnedCitationCount": citation_meta.get("pinnedCitationCount", 0),
+                "citationPrioritizationReason": citation_meta.get("citationPrioritizationReason"),
                 "phase": "completed" if answer_mode != "system_failure" else "failed",
                 "progress": 100.0,
                 "progressFloor": 100.0,

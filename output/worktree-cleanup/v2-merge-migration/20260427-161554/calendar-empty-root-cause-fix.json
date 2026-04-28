@@ -1,0 +1,13 @@
+{
+  "checkedAt": "2026-04-27T16:33:52",
+  "cause": "/api/v1/tasks returned 500 because migrated placeholder tasks used invalid status 'archived'; TaskRecord only allows inbox/todo/doing/done/rejected.",
+  "fix": "Updated migration placeholder tasks to status/progress_status done and source_type agent_auto/source_id migration_orphan so the task board endpoint filters them out while preserving orphan task_notes parents.",
+  "badStatusCountAfter": 0,
+  "agentAutoMigrationOrphanTasks": 9,
+  "foreignKeyCheckCountAfter": 0,
+  "apiCheck": {
+    "tasks": 97,
+    "aprilTasks": 80,
+    "placeholdersReturned": 0
+  }
+}

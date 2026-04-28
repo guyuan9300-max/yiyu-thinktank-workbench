@@ -764,6 +764,9 @@ export interface EvidenceItem {
   retrievalStage?: 'master_index' | 'surrogate' | 'raw_chunk' | 'state_pool' | null;
   isFallback?: boolean;
   matchedTerms: string[];
+  citationRole?: 'direct_quote' | 'direct_support' | 'background' | string | null;
+  citationPriority?: number | null;
+  citationReason?: string | null;
 }
 
 export interface AiStructuredResponse {

@@ -816,6 +816,9 @@ class EvidenceItem(BaseModel):
     retrievalStage: Literal["master_index", "surrogate", "raw_chunk", "state_pool"] | None = None
     isFallback: bool = False
     matchedTerms: list[str] = Field(default_factory=list)
+    citationRole: Literal["direct_quote", "direct_support", "background"] | None = None
+    citationPriority: int | None = None
+    citationReason: str | None = None
 
 
 class AiStructuredResponse(BaseModel):

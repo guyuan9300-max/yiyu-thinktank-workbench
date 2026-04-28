@@ -1,0 +1,210 @@
+{
+  "insertedGrowthSignals": 412,
+  "dedupeKeyAdjusted": 10,
+  "foreignKeyIssuesAfter": [
+    {
+      "table": "growth_evidence_records",
+      "rowid": 30,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 31,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 32,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 33,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 34,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 35,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 36,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 37,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 38,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 39,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 40,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 41,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 42,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 43,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 44,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 45,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 46,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 47,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 48,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 49,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 50,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 51,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 52,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "growth_evidence_records",
+      "rowid": 53,
+      "parent": "growth_signal_events",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 1,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 2,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 3,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 4,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 5,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 6,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 7,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 8,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 9,
+      "parent": "tasks",
+      "fkid": 0
+    },
+    {
+      "table": "task_notes",
+      "rowid": 10,
+      "parent": "tasks",
+      "fkid": 0
+    }
+  ]
+}

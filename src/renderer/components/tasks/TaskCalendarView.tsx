@@ -71,6 +71,11 @@ const DAY_TIMELINE_DEFAULT_START_MINUTE = 8 * 60;
 const DAY_MINUTES = 24 * 60;
 const WEEK_MAX_VISIBLE_COLUMNS = 2;
 const DEFAULT_UNLINKED_TASK_COLOR = '#5B7BFE';
+const LOCAL_DRAFT_NOTICE = '任务正在保存，稍后再调整时间。';
+
+function isLocalDraftTaskId(taskId?: string | null) {
+  return Boolean(taskId && taskId.startsWith('local-draft:'));
+}
 
 type WeekCreateSelection = {
   dayKey: number;
@@ -572,6 +577,10 @@ export function TaskCalendarView({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       if (task && nextDuration && draft && nextDuration !== draft.baseDuration) {
+        if (isLocalDraftTaskId(task.id)) {
+          onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+          return;
+        }
         void onUpdateTaskDuration(task, nextDuration);
       }
     };
@@ -584,7 +593,7 @@ export function TaskCalendarView({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
-  }, [onUpdateTaskDuration, resizingTaskId, weekTimedTasks]);
+  }, [onCalendarNotice, onUpdateTaskDuration, resizingTaskId, weekTimedTasks]);
 
   const cleanupWeekCreateInteraction = useCallback(() => {
     weekCreateCleanupRef.current?.();
@@ -670,6 +679,13 @@ export function TaskCalendarView({
   };
 
   const handleTaskDrop = async (task: Task, cellDate: Date) => {
+    if (isLocalDraftTaskId(task.id)) {
+      setDragTargetDay(null);
+      setDragTargetMinute(null);
+      setDraggingTaskId(null);
+      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+      return;
+    }
     const nextDueDate = formatDateInputValue(cellDate);
     const currentTaskDate = taskDateForCalendar(task);
     if (
@@ -684,6 +700,12 @@ export function TaskCalendarView({
   };
 
   const handleTimelineTaskDrop = async (task: Task, minuteOfDay: number) => {
+    if (isLocalDraftTaskId(task.id)) {
+      setDragTargetMinute(null);
+      setDraggingTaskId(null);
+      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+      return;
+    }
     const nextDueDate = combineDateAndTime(selectedDate, minuteOfDay);
     setDragTargetMinute(null);
     setDraggingTaskId(null);
@@ -691,6 +713,13 @@ export function TaskCalendarView({
   };
 
   const handleWeekTimelineTaskDrop = async (task: Task, dayDate: Date, minuteOfDay: number) => {
+    if (isLocalDraftTaskId(task.id)) {
+      setDragTargetMinute(null);
+      setDragTargetDay(null);
+      setDraggingTaskId(null);
+      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+      return;
+    }
     const nextDueDate = combineDateAndTime(dayDate, minuteOfDay);
     setDragTargetMinute(null);
     setDragTargetDay(null);
@@ -712,6 +741,10 @@ export function TaskCalendarView({
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    if (isLocalDraftTaskId(taskId)) {
+      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+      return;
+    }
     resizeDraftRef.current = {
       taskId,
       startY: event.clientY,
@@ -1144,16 +1177,22 @@ export function TaskCalendarView({
                               const timePrefix = timedSegment && hasTaskExplicitTime(task)
                                 ? `${formatMinuteOfDay(timedSegment.startMinute)} `
                                 : '';
+                              const isTaskLocalDraft = isLocalDraftTaskId(task.id);
                               return (
                                 <div
                                   key={task.id}
                                   data-no-month-range-drag="true"
-                                  draggable
+                                  draggable={!isTaskLocalDraft}
                                   onMouseDown={(event) => {
                                     event.stopPropagation();
                                   }}
                                   onDragStart={(event) => {
                                     event.stopPropagation();
+                                    if (isTaskLocalDraft) {
+                                      event.preventDefault();
+                                      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                      return;
+                                    }
                                     event.dataTransfer.effectAllowed = 'move';
                                     event.dataTransfer.setData('text/plain', task.id);
                                     dragDropHandledRef.current = false;
@@ -1166,7 +1205,7 @@ export function TaskCalendarView({
                                     }
                                     dragDropHandledRef.current = false;
                                   }}
-                                  className={`group relative block max-w-full rounded-lg border px-2 py-1 text-[11px] font-semibold text-left leading-4 cursor-grab active:cursor-grabbing ${
+                                  className={`group relative block max-w-full rounded-lg border px-2 py-1 text-[11px] font-semibold text-left leading-4 ${isTaskLocalDraft ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${
                                     task.status === 'done' ? '' : 'shadow-[0_1px_2px_rgba(15,23,42,0.04)]'
                                   } ${draggingTaskId === task.id ? 'opacity-50' : ''}`}
                                   style={calendarChipStyle(task, clientColorById)}

@@ -55,6 +55,40 @@ def _contains_any(text: str, tokens: Iterable[str]) -> bool:
     return any(token in text for token in tokens)
 
 
+_TARGET_DOCUMENT_GROUPS: dict[str, tuple[str, ...]] = {
+    "contract": ("合同", "协议", "报价", "申请书", "标书", "0907"),
+}
+
+
+def _target_document_groups_for_prompt(prompt: str) -> list[str]:
+    normalized = _normalize(prompt)
+    groups: list[str] = []
+    for group, tokens in _TARGET_DOCUMENT_GROUPS.items():
+        if _contains_any(normalized, tokens):
+            groups.append(group)
+    return groups
+
+
+def _target_document_bonus(item: EvidenceItem, groups: list[str]) -> tuple[float, list[str]]:
+    if not groups:
+        return 0.0, []
+    haystack = _normalize(" ".join([
+        str(item.title or ""),
+        str(item.path or ""),
+        str(item.originalPath or ""),
+        str(item.managedPath or ""),
+        str(item.sectionLabel or ""),
+    ]))
+    bonus = 0.0
+    reasons: list[str] = []
+    for group in groups:
+        tokens = _TARGET_DOCUMENT_GROUPS.get(group, ())
+        if tokens and _contains_any(haystack, tokens):
+            bonus += 1.25
+            reasons.append(f"target_document_bonus:{group}")
+    return bonus, reasons
+
+
 def _source_reachability_for_item(item: EvidenceItem) -> str:
     path = str(item.path or "")
     if "/_imports/" in path:
@@ -224,6 +258,7 @@ def _score_item(
     intent: PageIntentType,
     item: EvidenceItem,
     *,
+    prompt: str,
     focus_frame: QuestionFocusFrameRecord,
     human_adjustment: float = 0.0,
 ) -> _CandidateScore:
@@ -248,6 +283,10 @@ def _score_item(
     if human_adjustment:
         score += float(human_adjustment)
         priority_reasons.append(f"human_adjustment:{round(float(human_adjustment), 4)}")
+    target_bonus, target_reasons = _target_document_bonus(item, _target_document_groups_for_prompt(prompt))
+    if target_bonus:
+        score += target_bonus
+        priority_reasons.extend(target_reasons)
 
     if quality.sourceKind in {"generated_answer", "memory_answer", "ppt_master", "template_page", "short_excerpt"}:
         score -= 0.6
@@ -352,7 +391,7 @@ def select_answer_evidence_with_trace(
                 document_id=item.documentId,
                 excerpt_hash=excerpt_hash,
             )
-        scored.append(_score_item(intent, item, focus_frame=focus_frame, human_adjustment=adjustment))
+        scored.append(_score_item(intent, item, prompt=prompt, focus_frame=focus_frame, human_adjustment=adjustment))
 
     scored.sort(key=lambda candidate: candidate.score, reverse=True)
 
