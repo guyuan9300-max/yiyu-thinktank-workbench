@@ -4411,6 +4411,56 @@ export interface HandbookEntryDetail extends HandbookEntry {
   reuseHistory: HandbookReuseRecord[];
 }
 
+export type ExperienceStoryDraftStatus = 'candidate' | 'needs_review' | 'approved' | 'rejected';
+
+export interface ExperienceStoryDraft {
+  id: string;
+  title: string;
+  story: string;
+  status: ExperienceStoryDraftStatus;
+  sourceType: string;
+  sourceId: string;
+  sourceTitle: string;
+  clientId?: string | null;
+  clientName?: string | null;
+  eventLineId?: string | null;
+  eventLineName?: string | null;
+  taskId?: string | null;
+  meetingId?: string | null;
+  handbookEntryId?: string | null;
+  evidenceRefs: string[];
+  materialPack: Record<string, unknown>;
+  growthValue: string;
+  organizationValue: string;
+  qualityScore: Record<string, unknown>;
+  factRiskNote: string;
+  generationModel: string;
+  generationPromptVersion: string;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
+}
+
+export interface ExperienceStoryDraftsResponse {
+  drafts: ExperienceStoryDraft[];
+}
+
+export interface ExperienceStoryGeneratePayload {
+  limit?: number;
+}
+
+export interface ExperienceStoryGenerateResponse {
+  drafts: ExperienceStoryDraft[];
+  generatedCount: number;
+  skippedCount: number;
+}
+
+export interface ExperienceStoryActionResponse {
+  draft: ExperienceStoryDraft;
+  handbookEntry?: HandbookEntry | null;
+}
+
 export interface HandbookReuseRecord {
   id: string;
   sourceType: string;

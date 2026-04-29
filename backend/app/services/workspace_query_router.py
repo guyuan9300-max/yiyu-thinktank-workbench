@@ -30,6 +30,7 @@ _EXPLICIT_FILE_SEARCH_PHRASES = (
 )
 
 _FILE_SEARCH_ACTION_TOKENS = (
+    "找",
     "帮我找",
     "给我找",
     "找一下",

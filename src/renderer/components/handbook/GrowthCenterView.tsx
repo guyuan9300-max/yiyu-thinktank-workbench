@@ -42,9 +42,12 @@ import {
   getGrowthBadges,
   getGrowthLedger,
   getGrowthWorkbench,
-  updateGrowthPendingCapture,
-  createHandbook,
   markHandbookEntryReused,
+  getExperienceStoryDrafts,
+  generateExperienceStoryDrafts,
+  approveExperienceStoryDraft,
+  rejectExperienceStoryDraft,
+  regenerateExperienceStoryDraft,
 } from '../../lib/api';
 import { useGrowthOverviewState } from '../growth/GrowthContext';
 import type {
@@ -59,9 +62,9 @@ import type {
   BadgeState,
   BadgeCategory,
   BadgeBoardOverview,
-  GrowthPendingCapture,
   GrowthSourceCoverage,
   GrowthProjectHighlight,
+  ExperienceStoryDraft,
 } from '../../../shared/types';
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -339,8 +342,15 @@ function weekLabelFromDate(value: string): string {
 }
 
 const SOURCE_TYPE_CN: Record<string, string> = {
+  experience_story: '经验故事',
+  weekly_review_task_entry: '任务复盘',
+  task_note: '任务备注',
   review_insight: '复盘提炼',
   meeting: '会议沉淀',
+  meeting_source: '会议资料',
+  event_line_activity: '事件线活动',
+  v2_document: '数据中心资料',
+  document: '资料文档',
   task_context_candidate: '任务经验',
   task_attachment_candidate: '附件提炼',
   review_insight_pending: '复盘提炼',
@@ -588,12 +598,22 @@ function AbilityRadar({ abilities, gaps }: { abilities: GrowthAbilityScore[]; ga
 /* ══════════════════════════════════════════════════════════════════════
    Tab 1: Experience Wall
    ══════════════════════════════════════════════════════════════════ */
+type ExperienceWallSection = 'approved' | 'drafts' | 'materials';
+
+function draftIssues(draft: ExperienceStoryDraft): string[] {
+  const raw = draft.qualityScore?.issues;
+  return Array.isArray(raw) ? raw.map((item) => String(item)).filter(Boolean) : [];
+}
+
 function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
   const [entries, setEntries] = useState<HandbookEntry[]>([]);
+  const [drafts, setDrafts] = useState<ExperienceStoryDraft[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'month' | 'quarter'>('all');
-  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
-  const [pushingIds, setPushingIds] = useState<Set<string>>(new Set());
+  const [activeSection, setActiveSection] = useState<ExperienceWallSection>('approved');
+  const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null);
+  const [busyDraftIds, setBusyDraftIds] = useState<Set<string>>(new Set());
+  const [isGenerating, setIsGenerating] = useState(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = useCallback((text: string, type: 'success' | 'error') => {
@@ -601,61 +621,28 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
     setTimeout(() => setToastMsg(null), 2500);
   }, []);
 
-  const reloadEntries = useCallback(() => {
-    getHandbook()
-      .then((res) => setEntries(res.entries || []))
-      .catch(() => setEntries([]));
+  const reloadExperienceWall = useCallback(async () => {
+    const [handbookResult, draftsResult] = await Promise.allSettled([
+      getHandbook(),
+      getExperienceStoryDrafts({ limit: 100 }),
+    ]);
+    if (handbookResult.status === 'fulfilled') {
+      setEntries(handbookResult.value.entries || []);
+    } else {
+      setEntries([]);
+    }
+    if (draftsResult.status === 'fulfilled') {
+      setDrafts(draftsResult.value.drafts || []);
+    } else {
+      setDrafts([]);
+    }
   }, []);
 
   useEffect(() => {
     setIsLoading(true);
-    getHandbook()
-      .then((res) => setEntries(res.entries || []))
-      .catch(() => setEntries([]))
+    reloadExperienceWall()
       .finally(() => setIsLoading(false));
-  }, []);
-
-  const pendingCaptures = useMemo(
-    () => (overview?.pendingCaptures || []).filter((c) => c.status === 'open' && !dismissedIds.has(c.id)),
-    [overview, dismissedIds],
-  );
-
-  const handlePushToWall = useCallback(async (capture: GrowthPendingCapture) => {
-    if (pushingIds.has(capture.id)) return;
-    setPushingIds((prev) => new Set([...prev, capture.id]));
-    try {
-      // Create handbook entry from the quote
-      await createHandbook({
-        title: capture.title,
-        summary: capture.title,
-        tags: ['经验金句', 'AI提炼'],
-        sourceType: 'review_insight',
-      });
-      // Mark capture as promoted
-      await updateGrowthPendingCapture(capture.id, { status: 'promoted' });
-      setDismissedIds((prev) => new Set([...prev, capture.id]));
-      reloadEntries();
-      showToast('已成功推上经验墙', 'success');
-    } catch (err) {
-      console.error('[GrowthCenter] 推上经验墙失败:', err);
-      showToast(err instanceof Error ? err.message : '推送失败，请重试', 'error');
-    } finally {
-      setPushingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(capture.id);
-        return next;
-      });
-    }
-  }, [reloadEntries, pushingIds, showToast]);
-
-  const handleSkip = useCallback(async (capture: GrowthPendingCapture) => {
-    try {
-      await updateGrowthPendingCapture(capture.id, { status: 'dismissed', reason: '用户跳过' });
-      setDismissedIds((prev) => new Set([...prev, capture.id]));
-    } catch (err) {
-      console.error('[GrowthCenter] 跳过失败:', err);
-    }
-  }, []);
+  }, [reloadExperienceWall]);
 
   const sortedEntries = useMemo(() => {
     let filtered = [...entries];
@@ -670,19 +657,67 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
     return filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [entries, filter]);
 
-  const col1 = sortedEntries.filter((_, i) => i % 2 === 0);
-  const col2 = sortedEntries.filter((_, i) => i % 2 === 1);
+  const pendingDrafts = useMemo(
+    () => drafts.filter((draft) => draft.status === 'candidate' || draft.status === 'needs_review'),
+    [drafts],
+  );
+  const legacyPendingCount = overview?.pendingCaptures?.filter((item) => item.status === 'open').length || 0;
+
+  const handleGenerateDrafts = useCallback(async () => {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    try {
+      const result = await generateExperienceStoryDrafts({ limit: 5 });
+      await reloadExperienceWall();
+      setActiveSection('drafts');
+      showToast(result.generatedCount > 0 ? `已生成 ${result.generatedCount} 条待确认故事` : '暂未发现新的高价值素材', 'success');
+    } catch (err) {
+      console.error('[GrowthCenter] 生成经验故事失败:', err);
+      showToast(err instanceof Error ? err.message : '生成失败，请重试', 'error');
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [isGenerating, reloadExperienceWall, showToast]);
+
+  const runDraftAction = useCallback(async (
+    draftId: string,
+    action: () => Promise<unknown>,
+    successText: string,
+  ) => {
+    if (busyDraftIds.has(draftId)) return;
+    setBusyDraftIds((prev) => new Set([...prev, draftId]));
+    try {
+      await action();
+      await reloadExperienceWall();
+      showToast(successText, 'success');
+    } catch (err) {
+      console.error('[GrowthCenter] 处理经验故事失败:', err);
+      showToast(err instanceof Error ? err.message : '操作失败，请重试', 'error');
+    } finally {
+      setBusyDraftIds((prev) => {
+        const next = new Set(prev);
+        next.delete(draftId);
+        return next;
+      });
+    }
+  }, [busyDraftIds, reloadExperienceWall, showToast]);
 
   if (isLoading) {
     return (
       <div className="gc-loading">
         <div style={{ textAlign: 'center' }}>
           <div className="gc-loading-icon"><BookOpen size={20} color="#335CFE" /></div>
-          <div className="gc-loading-text">加载经验墙...</div>
+          <div className="gc-loading-text">加载经验故事...</div>
         </div>
       </div>
     );
   }
+
+  const sectionTabs: { key: ExperienceWallSection; label: string; count: number }[] = [
+    { key: 'approved', label: '已入墙故事', count: sortedEntries.length },
+    { key: 'drafts', label: '待确认故事', count: pendingDrafts.length },
+    { key: 'materials', label: '素材池', count: legacyPendingCount },
+  ];
 
   return (
     <div style={{ position: 'relative' }}>
@@ -696,10 +731,28 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
           {toastMsg.text}
         </div>
       )}
-      {sortedEntries.length > 0 && (
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
+        <div className="gc-tab-bar">
+          {sectionTabs.map((tab) => (
+            <button
+              key={tab.key}
+              className={`gc-tab-btn${activeSection === tab.key ? ' active' : ''}`}
+              onClick={() => setActiveSection(tab.key)}
+            >
+              {tab.label}{tab.count > 0 ? ` ${tab.count}` : ''}
+            </button>
+          ))}
+        </div>
+        <button className="gc-btn-brand" disabled={isGenerating} onClick={() => void handleGenerateDrafts()}>
+          <Sparkles size={12} color="#fff" /> {isGenerating ? '生成中…' : '生成故事'}
+        </button>
+      </div>
+
+      {activeSection === 'approved' && sortedEntries.length > 0 && (
         <div>
           <div className="gc-section-header">
-            <div className="gc-section-title">组织经验墙</div>
+            <div className="gc-section-title">组织经验故事</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               {(['all', 'month', 'quarter'] as const).map((f) => (
                 <button
@@ -721,11 +774,12 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
               const isAI = entry.authorUserName?.includes('大周') || entry.authorUserName?.includes('庆华') || entry.authorUserName?.includes('花花') || entry.authorUserName?.includes('罗茜茜') || entry.sourceType?.includes('ai');
               const hasLikes = entry.reuseCount > 0;
               const quoteText = pickQuoteText(entry);
+              const isStory = entry.sourceType === 'experience_story';
               const authorName = entry.authorUserName || '团队';
               const projectName = entry.clientName || '';
               return (
                 <div key={entry.id} className="gc-card gc-insight-card">
-                  <div className="gc-insight-quote">&ldquo;{quoteText}&rdquo;</div>
+                  <div className="gc-insight-quote">{isStory ? quoteText : `“${quoteText}”`}</div>
                   <div className="gc-insight-meta">
                     <div className="gc-insight-author">
                       <div className={`gc-icon-token sm ${isAI ? 'brand' : 'gray'}`}>
@@ -739,7 +793,7 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
                       className={`gc-like-btn${hasLikes ? ' liked' : ''}`}
                       onClick={() => {
                         markHandbookEntryReused(entry.id)
-                          .then(() => reloadEntries())
+                          .then(() => reloadExperienceWall())
                           .catch(() => {});
                       }}
                     >
@@ -754,46 +808,141 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
         </div>
       )}
 
-      {pendingCaptures.length > 0 && (
-        <div className="gc-ai-section">
-          <div className="gc-ai-chip">
-            <Lightbulb size={14} color="#335CFE" />
-            AI 为你提炼了 {pendingCaptures.length} 条经验
+      {activeSection === 'drafts' && (
+        <div>
+          <div className="gc-section-header">
+            <div className="gc-section-title">待确认故事</div>
+            <span className="gc-section-hint">人工确认后进入经验墙</span>
           </div>
-          {pendingCaptures.map((capture) => {
-            const quoteText = capture.title || capture.summary || '';
-            const sourceLabel = capture.summary && capture.summary.startsWith('来源')
-              ? capture.summary
-              : capture.clientName
-                ? `来源：${capture.clientName}${capture.eventLineName ? ' · ' + capture.eventLineName : ''}`
-                : capture.eventLineName
-                  ? `来源：${capture.eventLineName}`
-                  : `来源：${(capture.sourceType || '').replace(/_/g, ' ').replace('review insight pending', '复盘提炼')}`;
-            return (
-              <div key={capture.id} className="gc-card-inner" style={{ padding: 20, marginBottom: 12 }}>
-                <div className="gc-insight-quote">&ldquo;{quoteText}&rdquo;</div>
-                <div style={{ marginTop: 8, fontSize: 11, fontWeight: 500, color: '#94a3b8' }}>
-                  {sourceLabel}
-                </div>
-                <div className="gc-pending-actions">
-                  <button className="gc-btn-brand" disabled={pushingIds.has(capture.id)} onClick={() => void handlePushToWall(capture)}>
-                    <ArrowRight size={12} color="#fff" /> {pushingIds.has(capture.id) ? '推送中…' : '推上经验墙'}
-                  </button>
-                  <button className="gc-btn-ghost" onClick={() => void handleSkip(capture)}>跳过</button>
-                </div>
+          {pendingDrafts.length > 0 ? (
+            <div className="gc-insight-grid">
+              {pendingDrafts.map((draft) => {
+                const issues = draftIssues(draft);
+                const isBusy = busyDraftIds.has(draft.id);
+                const isExpanded = expandedDraftId === draft.id;
+                const sourceLabel = [draft.clientName, draft.eventLineName, draft.sourceTitle].filter(Boolean).join(' · ');
+                return (
+                  <div key={draft.id} className="gc-card gc-insight-card">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                      <div className="gc-icon-token md brand">
+                        <BookOpen size={14} color="#335CFE" />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', lineHeight: 1.4 }}>{draft.title || draft.sourceTitle}</div>
+                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{formatRelativeMoment(draft.updatedAt)} · {sourceTypeCN(draft.sourceType)}</div>
+                      </div>
+                    </div>
+                    <div className="gc-insight-quote">{draft.story}</div>
+                    <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {sourceLabel && <span className="gc-source-tag">{sourceLabel}</span>}
+                      <span className="gc-source-tag">{draft.evidenceRefs.length} 条证据</span>
+                      {draft.status === 'needs_review' && <span className="gc-source-tag" style={{ color: '#f97316' }}>需复核</span>}
+                    </div>
+                    {draft.factRiskNote && (
+                      <div style={{ marginTop: 10, fontSize: 11, color: '#64748b', lineHeight: 1.6 }}>
+                        {draft.factRiskNote}
+                      </div>
+                    )}
+                    {issues.length > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 10, color: '#94a3b8', lineHeight: 1.6 }}>
+                        {issues.slice(0, 2).join('；')}
+                      </div>
+                    )}
+                    {isExpanded && (
+                      <div style={{ marginTop: 12, padding: 12, borderRadius: 12, background: '#f8fafc', border: '1px solid #eef2f7' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6 }}>证据引用</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {draft.evidenceRefs.map((ref) => <span key={ref} className="gc-source-tag">{ref}</span>)}
+                        </div>
+                        {typeof draft.materialPack?.primaryText === 'string' && (
+                          <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.7, marginTop: 8 }}>
+                            {String(draft.materialPack.primaryText).slice(0, 220)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="gc-pending-actions">
+                      <button
+                        className="gc-btn-brand"
+                        disabled={isBusy}
+                        onClick={() => void runDraftAction(draft.id, () => approveExperienceStoryDraft(draft.id), '已确认入墙')}
+                      >
+                        <ArrowRight size={12} color="#fff" /> 入墙
+                      </button>
+                      <button
+                        className="gc-btn-ghost"
+                        disabled={isBusy}
+                        onClick={() => void runDraftAction(draft.id, () => regenerateExperienceStoryDraft(draft.id), '已重新生成')}
+                      >
+                        <Sparkles size={12} /> 重写
+                      </button>
+                      <button
+                        className="gc-btn-ghost"
+                        disabled={isBusy}
+                        onClick={() => setExpandedDraftId(isExpanded ? null : draft.id)}
+                      >
+                        <FileStack size={12} /> 证据
+                      </button>
+                      <button
+                        className="gc-btn-ghost"
+                        disabled={isBusy}
+                        onClick={() => void runDraftAction(draft.id, () => rejectExperienceStoryDraft(draft.id), '已驳回')}
+                      >
+                        <X size={12} /> 驳回
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="gc-empty">
+              <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
+                <BookOpen size={20} color="#335CFE" />
               </div>
-            );
-          })}
+              <div className="gc-empty-title">没有待确认故事</div>
+              <div className="gc-empty-desc">从真实复盘和业务材料中生成新的组织经验故事。</div>
+              <button className="gc-btn-brand" style={{ marginTop: 14 }} disabled={isGenerating} onClick={() => void handleGenerateDrafts()}>
+                <Sparkles size={12} color="#fff" /> {isGenerating ? '生成中…' : '生成故事'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {sortedEntries.length === 0 && pendingCaptures.length === 0 && (
+      {activeSection === 'materials' && (
+        <div className="gc-ai-section" style={{ marginTop: 0 }}>
+          <div className="gc-ai-chip">
+            <Lightbulb size={14} color="#335CFE" />
+            真实素材优先
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#1e293b', marginBottom: 8 }}>
+            从复盘、会议、任务和真实文档里筛选故事
+          </div>
+          <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.8, maxWidth: 640 }}>
+            系统会排除战略思考洞察、AI 金句、系统生成文档和测试数据，只把有场景、有行动、有判断的真实材料生成草稿。
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
+            <span className="gc-source-tag">任务复盘</span>
+            <span className="gc-source-tag">会议纪要</span>
+            <span className="gc-source-tag">任务备注</span>
+            <span className="gc-source-tag">真实文档</span>
+            <span className="gc-source-tag">事件线活动</span>
+            {legacyPendingCount > 0 && <span className="gc-source-tag">{legacyPendingCount} 条旧版金句候选</span>}
+          </div>
+          <button className="gc-btn-brand" style={{ marginTop: 18 }} disabled={isGenerating} onClick={() => void handleGenerateDrafts()}>
+            <Sparkles size={12} color="#fff" /> {isGenerating ? '生成中…' : '生成故事草稿'}
+          </button>
+        </div>
+      )}
+
+      {activeSection === 'approved' && sortedEntries.length === 0 && (
         <div className="gc-empty">
           <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
             <BookOpen size={20} color="#335CFE" />
           </div>
-          <div className="gc-empty-title">经验墙暂无内容</div>
-          <div className="gc-empty-desc">完成任务复盘后，AI 会自动提取经验金句并沉淀到这里。</div>
+          <div className="gc-empty-title">经验墙暂无故事</div>
+          <div className="gc-empty-desc">从真实复盘和业务材料中沉淀经验故事。</div>
         </div>
       )}
     </div>

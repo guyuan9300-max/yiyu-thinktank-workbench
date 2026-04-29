@@ -243,7 +243,13 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
             (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owner_name) != '') AS owner_count,
             (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.due_date) != '') AS due_count,
             (SELECT COUNT(DISTINCT a.owner_name) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owner_name) != '') AS owner_distinct_count,
-            (SELECT COUNT(*) FROM tasks t WHERE t.source_type = 'meeting' AND t.source_id = m.id) AS linked_task_count,
+            (
+                SELECT COUNT(*)
+                FROM tasks t
+                WHERE t.source_type = 'meeting'
+                  AND t.source_id = m.id
+                  AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            ) AS linked_task_count,
             (SELECT COUNT(*) FROM risks r WHERE r.meeting_id = m.id) AS risk_count,
             (SELECT COUNT(*) FROM ambiguities am WHERE am.meeting_id = m.id AND COALESCE(am.status, '') != 'ignored') AS ambiguity_count
         FROM meetings m
@@ -477,7 +483,14 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
             )
         )
 
-    task_rows = db.fetchall("SELECT * FROM tasks ORDER BY updated_at DESC")
+    task_rows = db.fetchall(
+        """
+        SELECT *
+        FROM tasks
+        WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+        ORDER BY updated_at DESC
+        """
+    )
     for row in task_rows:
         title = str(row["title"] or "任务")
         created_at_str = str(row["created_at"] or "")

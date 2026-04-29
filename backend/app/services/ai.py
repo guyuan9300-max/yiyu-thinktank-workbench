@@ -1349,6 +1349,77 @@ class AiService:
         # Fallback: use task_title as-is
         return {"quote": "", "sourceLabel": ""}
 
+    def generate_experience_story(
+        self,
+        *,
+        material_pack: dict[str, object],
+        context: dict[str, object] | None = None,
+    ) -> dict[str, str]:
+        """Generate a short experience story from a verified primary material pack.
+
+        This is intentionally separate from `distill_growth_insight_quote`: the output
+        should preserve a concrete scene and action, not compress the material into a
+        quotable slogan.
+        """
+        health = self.get_health()
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "title": {"type": "STRING"},
+                "story": {"type": "STRING"},
+                "growthValue": {"type": "STRING"},
+                "organizationValue": {"type": "STRING"},
+                "factRiskNote": {"type": "STRING"},
+            },
+        }
+        raw_material = json.dumps(
+            {
+                "materialPack": material_pack,
+                "context": context or {},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if len(raw_material) > 11000:
+            raw_material = raw_material[:11000]
+
+        prompt = (
+            "你是一位很会讲真实工作故事的组织成长教练。请只根据下面的真实材料，写一条可以进入组织经验墙的经验故事。\n\n"
+            "写作要求：\n"
+            "1. story 用 120 到 220 个中文字符，像一个有经验的人在复盘后讲给同事听的小故事。\n"
+            "2. 必须包含具体处境、关键行动或选择，以及能被个人成长或组织发展复用的判断。\n"
+            "3. 不要写成流水账、标签清单、咨询报告、管理口号或制度说明。\n"
+            "4. 不要出现「启示：」「经验：」「故事：」「结论：」这类显式标签，直接讲内容。\n"
+            "5. 不要编造材料里没有的人名、时间、数字、承诺和因果。\n"
+            "6. 如果材料只是系统总结、AI 摘要或证据不足，factRiskNote 要明确提醒，story 也要克制。\n"
+            "7. title 用 12 到 26 个中文字符，像一条可收藏的小故事标题。\n"
+            "8. growthValue 写这条故事对个人成长的价值；organizationValue 写对组织沉淀的价值。\n\n"
+            f"真实材料包：\n{raw_material}"
+        )
+
+        try:
+            if health.provider in ("qwen", "doubao") and health.ready:
+                result = self._qwen_generate(
+                    prompt,
+                    "你是组织经验故事生成助手。只返回 JSON。",
+                    schema,
+                    timeout_seconds=25.0,
+                    max_tokens=700,
+                    temperature=0.65,
+                )
+                if isinstance(result, dict):
+                    return {
+                        "title": str(result.get("title") or "").strip(),
+                        "story": str(result.get("story") or "").strip(),
+                        "growthValue": str(result.get("growthValue") or "").strip(),
+                        "organizationValue": str(result.get("organizationValue") or "").strip(),
+                        "factRiskNote": str(result.get("factRiskNote") or "").strip(),
+                    }
+        except Exception:
+            pass
+        return {}
+
     def build_topic_task_plan(
         self,
         *,

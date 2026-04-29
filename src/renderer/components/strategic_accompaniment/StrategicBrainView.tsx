@@ -9,11 +9,11 @@ import {
   RefreshCw, Star, Trash2
 } from 'lucide-react';
 import {
-  getClientProjectStructure,
   getBrainDashboard,
   getClientDigitalAssets,
   getDigitalAssetDashboard,
   getStrategicThoughts,
+  refreshClientDigitalAssetNarrative,
   refreshStrategicThoughts,
   reviewStrategicThought,
   updateStrategicThoughtState,
@@ -24,7 +24,7 @@ import {
   type DigitalAssetDashboard,
   type DigitalAssetMapNode,
   type DigitalAssetMetric,
-  type ProjectModule,
+  type DigitalAssetNarrative,
   type StrategicThought,
 } from '../../lib/api';
 import type { GrowthContextLink, Task } from '../../../shared/types';
@@ -269,15 +269,148 @@ function DigitalAssetMetricStrip({ metrics }: { metrics: DigitalAssetMetric[] })
   );
 }
 
+function formatNarrativeTime(value?: string | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function narrativeAuditCounts(narrative?: DigitalAssetNarrative | null) {
+  const counts = narrative?.materialAudit?.counts;
+  if (!counts || typeof counts !== 'object') return [];
+  const source = counts as Record<string, unknown>;
+  const items = [
+    ['documents', '原始资料'],
+    ['v2Documents', '结构化资料'],
+    ['v2Ready', '已解析'],
+    ['eventLines', '事件线'],
+    ['tasks', '任务'],
+    ['meetings', '会议'],
+    ['judgmentVersions', '判断版本'],
+  ] as const;
+  return items
+    .map(([key, label]) => ({ key, label, value: Number(source[key] || 0) }))
+    .filter((item) => item.value > 0);
+}
+
+function DigitalAssetNarrativeMarkdown({ content }: { content: string }) {
+  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  return (
+    <div className="space-y-3 text-[14px] leading-[1.9] text-slate-700">
+      {lines.map((line, index) => {
+        const heading = line.replace(/^#{1,3}\s*/, '');
+        if (/^#{1,3}\s+/.test(line)) {
+          return <h4 key={`${line}-${index}`} className="pt-2 text-[13px] font-bold text-slate-900">{heading}</h4>;
+        }
+        const bullet = line.replace(/^[-*]\s+/, '').replace(/^\d+[.、]\s*/, '');
+        if (bullet !== line) {
+          return (
+            <p key={`${line}-${index}`} className="pl-3 border-l-2 border-blue-100 text-slate-700">
+              {bullet}
+            </p>
+          );
+        }
+        return <p key={`${line}-${index}`}>{line}</p>;
+      })}
+    </div>
+  );
+}
+
+function DigitalAssetNarrativePanel({
+  narrative,
+  loading,
+  error,
+  onRefresh,
+}: {
+  narrative?: DigitalAssetNarrative | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const counts = narrativeAuditCounts(narrative);
+  const hasContent = Boolean(narrative?.contentMarkdown?.trim());
+  return (
+    <section className="rounded-[24px] border border-blue-100 bg-white px-5 py-5 sm:px-6 shadow-[0_8px_28px_rgba(15,23,42,0.04)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Sparkles size={16} className="text-blue-600" />
+            <h3 className="text-[15px] font-bold text-slate-900">系统读完资料后的判断</h3>
+          </div>
+          <p className="mt-1 text-[12px] text-slate-400">
+            {hasContent ? `生成时间 ${formatNarrativeTime(narrative?.generatedAt)}` : '还没有生成资料体检内容'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 text-[12px] font-bold text-blue-600 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          {hasContent ? '重新生成' : '生成内容'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mt-4 rounded-[16px] border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] font-medium leading-relaxed text-amber-700">
+          {error}
+        </div>
+      )}
+
+      {hasContent ? (
+        <div className="mt-5 space-y-5">
+          {counts.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {counts.map((item) => (
+                <span key={item.key} className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-500">
+                  {item.label} {item.value.toLocaleString()}
+                </span>
+              ))}
+            </div>
+          )}
+          <DigitalAssetNarrativeMarkdown content={narrative?.contentMarkdown || ''} />
+          {(narrative?.qualityWarnings || []).length > 0 && (
+            <div className="border-t border-slate-100 pt-4">
+              <div className="mb-2 text-[12px] font-bold text-slate-500">资料质量提示</div>
+              <div className="space-y-1.5">
+                {(narrative?.qualityWarnings || []).slice(0, 4).map((warning, index) => (
+                  <p key={`${warning}-${index}`} className="text-[12px] leading-relaxed text-slate-500">
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mt-5 rounded-[18px] bg-slate-50 px-4 py-4 text-[13px] leading-relaxed text-slate-500">
+          点击生成内容后，系统会读取当前客户的数据中心资料，给出一段更直白的资料体检说明。
+        </div>
+      )}
+    </section>
+  );
+}
+
 function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack: () => void }) {
   const [detail, setDetail] = useState<DigitalAssetClientDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [narrativeLoading, setNarrativeLoading] = useState(false);
+  const [narrativeError, setNarrativeError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError(null);
+    setNarrativeError(null);
     getClientDigitalAssets(clientId)
       .then((result) => {
         if (!mounted) return;
@@ -295,6 +428,19 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
     return () => {
       mounted = false;
     };
+  }, [clientId]);
+
+  const handleRefreshNarrative = useCallback(async () => {
+    setNarrativeLoading(true);
+    setNarrativeError(null);
+    try {
+      const narrative = await refreshClientDigitalAssetNarrative(clientId);
+      setDetail((current) => current ? { ...current, aiNarrative: narrative } : current);
+    } catch (err) {
+      setNarrativeError(err instanceof Error ? err.message : '生成失败，已保留旧内容。');
+    } finally {
+      setNarrativeLoading(false);
+    }
   }, [clientId]);
 
   if (loading) {
@@ -374,6 +520,15 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
               ))}
             </div>
           </div>
+        </section>
+
+        <section className="mt-6">
+          <DigitalAssetNarrativePanel
+            narrative={detail.aiNarrative}
+            loading={narrativeLoading}
+            error={narrativeError}
+            onRefresh={handleRefreshNarrative}
+          />
         </section>
 
         <section className="mt-6">
@@ -791,19 +946,13 @@ function ThoughtsTab({
 
 function ThoughtScopeSelect({
   clients,
-  projectModules,
   selectedClientId,
-  selectedProjectModuleId,
   onChange,
-  onProjectChange,
   disabled,
 }: {
   clients: Array<{ id: string; name: string }>;
-  projectModules: ProjectModule[];
   selectedClientId: string;
-  selectedProjectModuleId: string;
   onChange: (clientId: string) => void;
-  onProjectChange: (projectModuleId: string) => void;
   disabled?: boolean;
 }) {
   return (
@@ -823,21 +972,6 @@ function ThoughtScopeSelect({
           </option>
         ))}
       </select>
-      {selectedClientId && (
-        <select
-          value={selectedProjectModuleId}
-          onChange={(event) => onProjectChange(event.target.value)}
-          disabled={disabled || !projectModules.length}
-          className="min-w-[130px] max-w-[220px] bg-transparent text-[13px] font-semibold text-slate-700 outline-none disabled:opacity-50"
-        >
-          <option value="">全部项目</option>
-          {projectModules.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-      )}
     </div>
   );
 }
@@ -998,8 +1132,6 @@ export function StrategicBrainView({
   const [thoughtsLoading, setThoughtsLoading] = useState(false);
   const [thoughtsError, setThoughtsError] = useState<string | null>(null);
   const [thoughtClientId, setThoughtClientId] = useState(currentClientId || '');
-  const [thoughtProjectModuleId, setThoughtProjectModuleId] = useState('');
-  const [thoughtProjectModules, setThoughtProjectModules] = useState<ProjectModule[]>([]);
   const [thoughtsRefreshing, setThoughtsRefreshing] = useState(false);
 
   const thoughtClientOptions = useMemo(() => {
@@ -1017,10 +1149,6 @@ export function StrategicBrainView({
     () => thoughtClientOptions.find((client) => client.id === thoughtClientId) || null,
     [thoughtClientId, thoughtClientOptions],
   );
-  const selectedThoughtProjectModule = useMemo(
-    () => thoughtProjectModules.find((project) => project.id === thoughtProjectModuleId) || null,
-    [thoughtProjectModuleId, thoughtProjectModules],
-  );
 
   useEffect(() => {
     getBrainDashboard()
@@ -1037,37 +1165,12 @@ export function StrategicBrainView({
     }
   }, [currentClientId, thoughtClientId]);
 
-  useEffect(() => {
-    if (!thoughtClientId) {
-      setThoughtProjectModules([]);
-      setThoughtProjectModuleId('');
-      return;
-    }
-    let cancelled = false;
-    getClientProjectStructure(thoughtClientId)
-      .then((structure) => {
-        if (cancelled) return;
-        const modules = structure.modules || [];
-        setThoughtProjectModules(modules);
-        setThoughtProjectModuleId((current) => (current && modules.some((project) => project.id === current) ? current : ''));
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setThoughtProjectModules([]);
-        setThoughtProjectModuleId('');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [thoughtClientId]);
-
   const loadThoughts = useCallback(async () => {
     setThoughtsLoading(true);
     setThoughtsError(null);
     try {
       const response = await getStrategicThoughts({
         clientId: thoughtClientId || null,
-        projectModuleId: thoughtProjectModuleId || null,
         limit: thoughtClientId ? 12 : 24,
       });
       setThoughts(response.items || []);
@@ -1077,7 +1180,7 @@ export function StrategicBrainView({
     } finally {
       setThoughtsLoading(false);
     }
-  }, [thoughtClientId, thoughtProjectModuleId]);
+  }, [thoughtClientId]);
 
   useEffect(() => {
     void loadThoughts();
@@ -1098,7 +1201,6 @@ export function StrategicBrainView({
     try {
       const response = await refreshStrategicThoughts({
         clientId: thoughtClientId,
-        projectModuleId: thoughtProjectModuleId || null,
         limit: 8,
       });
       setThoughts(response.items || []);
@@ -1108,7 +1210,7 @@ export function StrategicBrainView({
     } finally {
       setThoughtsRefreshing(false);
     }
-  }, [flash, thoughtClientId, thoughtProjectModuleId]);
+  }, [flash, thoughtClientId]);
 
   const handleToggleFavoriteThought = useCallback(
     async (thought: StrategicThought) => {
@@ -1148,16 +1250,12 @@ export function StrategicBrainView({
           {activeTab === 'thoughts' && (
             <ThoughtScopeSelect
               clients={thoughtClientOptions}
-              projectModules={thoughtProjectModules}
               selectedClientId={thoughtClientId}
-              selectedProjectModuleId={thoughtProjectModuleId}
               disabled={thoughtsLoading && !thoughtClientOptions.length}
               onChange={(clientId) => {
                 setThoughtClientId(clientId);
-                setThoughtProjectModuleId('');
                 if (clientId) onClientChange?.(clientId);
               }}
-              onProjectChange={(projectModuleId) => setThoughtProjectModuleId(projectModuleId)}
             />
           )}
         </div>
@@ -1190,8 +1288,8 @@ export function StrategicBrainView({
               error={thoughtsError}
               selectedClientId={thoughtClientId || null}
               selectedClientName={selectedThoughtClient?.name || null}
-              selectedProjectModuleId={thoughtProjectModuleId || null}
-              selectedProjectModuleName={selectedThoughtProjectModule?.name || null}
+              selectedProjectModuleId={null}
+              selectedProjectModuleName={null}
               onReview={handleThoughtReview}
               onCreateTask={onCreateTaskFromThought}
               onRetry={() => void loadThoughts()}

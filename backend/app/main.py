@@ -114,9 +114,15 @@ from app.models import (
     DiagnosisProfileRecord,
     DigitalAssetClientDetailRecord,
     DigitalAssetDashboardRecord,
+    DigitalAssetNarrativeRecord,
     DnaDeltaCreatePayload,
     DnaDeltaRecord,
     EvidenceItem,
+    ExperienceStoryActionResponse,
+    ExperienceStoryDraftRecord,
+    ExperienceStoryDraftsResponse,
+    ExperienceStoryGeneratePayload,
+    ExperienceStoryGenerateResponse,
     ExportAnswerPayload,
     JudgmentConfirmPayload,
     JudgmentVersionRecord,
@@ -689,6 +695,11 @@ from app.services.knowledge_v2 import (
 )
 from app.services.client_profile import backfill_all_clients, build_client_profile
 from app.services.digital_asset_center import build_client_digital_assets, build_digital_asset_dashboard
+from app.services.digital_asset_narrative import (
+    DigitalAssetNarrativeQualityError,
+    get_latest_digital_asset_narrative,
+    refresh_digital_asset_narrative,
+)
 from app.services.data_center_ingest import (
     ingest_event_line_by_id,
     ingest_meeting_by_id,
@@ -697,6 +708,7 @@ from app.services.data_center_ingest import (
     ingest_task_note_by_id,
     ingest_weekly_review_by_id,
     mark_ingested_source_inactive,
+    purge_private_task_ingest_events,
 )
 from app.services.data_center_access import DataCenterAccessContext
 from app.services.memory_foundation import (
@@ -771,6 +783,13 @@ from app.services.growth_engine import (
     mark_recommendation_accepted,
     mark_recommendation_dismissed,
     update_pending_capture_state,
+)
+from app.services.experience_story_engine import (
+    build_experience_story_draft_record,
+    generate_experience_story_drafts,
+    list_experience_story_drafts,
+    regenerate_experience_story_draft,
+    reject_experience_story_draft,
 )
 from app.services.learning_presets import (
     build_actions_from_presets,
@@ -2412,6 +2431,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     if state.db.get_setting("demo_data_loaded", "0") != "1":
         clear_demo_dataset(state)
     ensure_data_center_schema(state.db)
+    purge_private_task_ingest_events(state.db)
 
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
@@ -2518,7 +2538,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if normalized_scope_type in {"", "client"}:
             return normalized_scope_id
         if normalized_scope_type == "task":
-            row = state.db.fetchone("SELECT client_id FROM tasks WHERE id = ?", (normalized_scope_id,))
+            row = state.db.fetchone(
+                """
+                SELECT client_id
+                FROM tasks
+                WHERE id = ?
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                """,
+                (normalized_scope_id,),
+            )
             return str(row["client_id"]) if row and row["client_id"] else None
         if normalized_scope_type == "meeting":
             row = state.db.fetchone("SELECT client_id FROM meetings WHERE id = ?", (normalized_scope_id,))
@@ -2554,7 +2582,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if source_type in {"client", "client_workspace"}:
             return source_id
         if source_type in {"task", "task_attachment", "task_activity", "task_cloud_attachment"}:
-            task_row = state.db.fetchone("SELECT client_id FROM tasks WHERE id = ?", (source_id,))
+            task_row = state.db.fetchone(
+                """
+                SELECT client_id
+                FROM tasks
+                WHERE id = ?
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                """,
+                (source_id,),
+            )
             if task_row and task_row["client_id"]:
                 return str(task_row["client_id"])
             task_attachment_row = state.db.fetchone(
@@ -4473,11 +4509,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return True
         if user_id:
             row = state.db.fetchone(
-                """
+                f"""
                 SELECT 1
                 FROM tasks t
                 LEFT JOIN task_collaborators tc ON tc.task_id = t.id
                 WHERE t.id = ?
+                  AND {shared_task_sql('t')}
                   AND (t.owner_id = ? OR t.creator_id = ? OR tc.user_id = ?)
                 LIMIT 1
                 """,
@@ -5942,6 +5979,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT id, title
             FROM tasks
             WHERE client_id = ? AND project_module_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 8
             """,
@@ -5977,6 +6015,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT id, title
             FROM tasks
             WHERE client_id = ? AND project_flow_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 8
             """,
@@ -6250,26 +6289,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             (normalized_event_line_id,),
         )
         if not event_line_row and get_cloud_token():
-            # Event line exists on cloud but not locally — sync it
             try:
                 cloud_el = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
-                if isinstance(cloud_el, dict) and cloud_el.get("id"):
-                    state.db.execute(
-                        """INSERT OR IGNORE INTO event_lines(id, name, kind, status, primary_client_id, primary_client_name, owner_id, owner_name, created_at, updated_at)
-                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            str(cloud_el["id"]),
-                            str(cloud_el.get("name", "")),
-                            str(cloud_el.get("kind", "custom")),
-                            str(cloud_el.get("status", "active")),
-                            str(cloud_el.get("primaryClientId") or ""),
-                            str(cloud_el.get("primaryClientName") or ""),
-                            str(cloud_el.get("ownerId") or ""),
-                            str(cloud_el.get("ownerName") or ""),
-                            str(cloud_el.get("createdAt", "")),
-                            str(cloud_el.get("updatedAt", "")),
-                        ),
-                    )
+                if _upsert_cloud_event_line_shadow_local(cloud_el):
                     event_line_row = state.db.fetchone(
                         "SELECT id, primary_client_id FROM event_lines WHERE id = ?",
                         (normalized_event_line_id,),
@@ -6297,6 +6319,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         event_line_by_id = {item.id: item for item in event_lines}
         existing_event_line = event_line_by_id.get(task.eventLineId or "")
         resolved_client_id = (task.clientId or "").strip() or ((existing_event_line.primaryClientId or "").strip() if existing_event_line else "")
+        if not resolved_client_id:
+            inferred_client_id, _ = _infer_task_client(task.title, task.desc, clients)
+            if inferred_client_id:
+                resolved_client_id = inferred_client_id
+                payload["clientId"] = inferred_client_id
         if existing_event_line and existing_event_line.primaryClientId:
             event_line_client_id = existing_event_line.primaryClientId.strip()
             if event_line_client_id and resolved_client_id != event_line_client_id:
@@ -6383,6 +6410,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
 
     def _task_eligible_for_event_line_bootstrap(task: TaskRecord) -> bool:
+        if is_private_task(task):
+            return False
         if not (task.clientId or "").strip():
             return False
         if (task.eventLineId or "").strip():
@@ -7046,103 +7075,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return candidate
 
     def build_cloud_task(payload: dict[str, object], lists_by_id: dict[str, TaskListRecord]) -> TaskRecord:
-        def ensure_local_cloud_event_line_shadow(
-            event_line_id: str | None,
-            *,
-            fallback_name: str | None = None,
-            client_id: str | None = None,
-        ) -> None:
-            normalized_id = (event_line_id or "").strip()
-            if not normalized_id or not get_cloud_token():
-                return
-            try:
-                response_payload = cloud_request("GET", f"/api/v1/event-lines/{normalized_id}")
-            except HTTPException:
-                return
-            if not isinstance(response_payload, dict):
-                return
-            record = (
-                response_payload.get("eventLine")
-                if isinstance(response_payload.get("eventLine"), dict)
-                else response_payload
-            )
-            if not isinstance(record, dict):
-                return
-            existing_row = state.db.fetchone("SELECT created_at FROM event_lines WHERE id = ?", (normalized_id,))
-            timestamp = now_iso()
-            resolved_client_id = str(record.get("primaryClientId") or client_id or "").strip() or None
-            client_row = (
-                state.db.fetchone("SELECT name FROM clients WHERE id = ?", (resolved_client_id,))
-                if resolved_client_id
-                else None
-            )
-            participant_ids = [
-                str(item).strip()
-                for item in (record.get("participantIds") or [])
-                if str(item).strip()
-            ]
-            state.db.execute(
-                """
-                INSERT INTO event_lines(
-                    id, name, kind, status, business_category, stage, summary, intent, current_blocker, recent_decision, next_step,
-                    evidence_count, owner_id, owner_name, primary_client_id, primary_client_name, primary_department_id,
-                    primary_department_name, participant_ids_json, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    name = excluded.name,
-                    kind = excluded.kind,
-                    status = excluded.status,
-                    business_category = excluded.business_category,
-                    stage = excluded.stage,
-                    summary = excluded.summary,
-                    intent = excluded.intent,
-                    current_blocker = excluded.current_blocker,
-                    recent_decision = excluded.recent_decision,
-                    next_step = excluded.next_step,
-                    evidence_count = excluded.evidence_count,
-                    owner_id = excluded.owner_id,
-                    owner_name = excluded.owner_name,
-                    primary_client_id = excluded.primary_client_id,
-                    primary_client_name = excluded.primary_client_name,
-                    primary_department_id = excluded.primary_department_id,
-                    primary_department_name = excluded.primary_department_name,
-                    participant_ids_json = excluded.participant_ids_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    normalized_id,
-                    str(record.get("name") or fallback_name or "").strip() or normalized_id,
-                    str(record.get("kind") or "custom"),
-                    str(record.get("status") or "active"),
-                    str(record.get("businessCategory")) if record.get("businessCategory") else None,
-                    str(record.get("stage")) if record.get("stage") else None,
-                    str(record.get("summary")) if record.get("summary") else None,
-                    str(record.get("intent")) if record.get("intent") else None,
-                    str(record.get("currentBlocker")) if record.get("currentBlocker") else None,
-                    str(record.get("recentDecision")) if record.get("recentDecision") else None,
-                    str(record.get("nextStep")) if record.get("nextStep") else None,
-                    int(record.get("evidenceCount") or 0),
-                    str(record.get("ownerId")) if record.get("ownerId") else None,
-                    str(record.get("ownerName")) if record.get("ownerName") else None,
-                    resolved_client_id,
-                    str(client_row["name"]) if client_row and client_row["name"] else (str(record.get("primaryClientName")) if record.get("primaryClientName") else None),
-                    str(record.get("primaryDepartmentId")) if record.get("primaryDepartmentId") else None,
-                    str(record.get("primaryDepartmentName")) if record.get("primaryDepartmentName") else None,
-                    to_json(participant_ids),
-                    str(existing_row["created_at"]) if existing_row and existing_row["created_at"] else timestamp,
-                    timestamp,
-                ),
-            )
-            refresh_event_line_memory_snapshot(state.db, normalized_id)
-            _invalidate_event_line_snapshot_cache(normalized_id)
-
         cloud_note = str(payload.get("note")) if payload.get("note") else None
         note_row = state.db.fetchone("SELECT note FROM task_notes_cloud WHERE task_id = ?", (str(payload.get("id")),))
         resolved_note = cloud_note or (str(note_row["note"]) if note_row and note_row["note"] else None)
         client_id = str(payload.get("clientId")) if payload.get("clientId") else None
         event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
         event_line_name = str(payload.get("eventLineName")) if payload.get("eventLineName") else None
-        ensure_local_cloud_event_line_shadow(event_line_id, fallback_name=event_line_name, client_id=client_id)
+        if event_line_id and get_cloud_token():
+            try:
+                response_payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+                _upsert_cloud_event_line_shadow_local(
+                    response_payload,
+                    fallback_client_id=client_id,
+                    fallback_name=event_line_name,
+                )
+            except Exception:
+                pass
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
         project_module_id = str(payload.get("projectModuleId")) if payload.get("projectModuleId") else None
         project_flow_id = str(payload.get("projectFlowId")) if payload.get("projectFlowId") else None
@@ -7371,6 +7319,156 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return local_list_id
 
+    def _normalize_cloud_event_line_payload(payload: object) -> dict[str, object] | None:
+        if not isinstance(payload, dict):
+            return None
+        wrapped = payload.get("eventLine")
+        if isinstance(wrapped, dict):
+            return wrapped
+        if payload.get("id"):
+            return payload
+        return None
+
+    def _upsert_cloud_event_line_shadow_local(
+        payload: object,
+        *,
+        fallback_client_id: str | None = None,
+        fallback_name: str | None = None,
+    ) -> str | None:
+        record = _normalize_cloud_event_line_payload(payload)
+        if not record:
+            return None
+        cloud_id = str(record.get("id") or "").strip()
+        if not cloud_id:
+            return None
+
+        existing = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (cloud_id, cloud_id))
+        timestamp = now_iso()
+
+        def value(key: str, column: str, default: object | None = None) -> object | None:
+            if key in record:
+                return record.get(key)
+            if existing and column in existing.keys():
+                return existing[column]
+            return default
+
+        def text_value(key: str, column: str, default: str | None = None) -> str | None:
+            raw = value(key, column, default)
+            if raw is None:
+                return None
+            text = str(raw).strip()
+            return text or None
+
+        resolved_client_id = text_value("primaryClientId", "primary_client_id", fallback_client_id)
+        if not resolved_client_id and fallback_client_id:
+            resolved_client_id = fallback_client_id.strip() or None
+        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (resolved_client_id,)) if resolved_client_id else None
+        resolved_client_name = (
+            str(client_row["name"])
+            if client_row and client_row["name"]
+            else text_value("primaryClientName", "primary_client_name")
+        )
+
+        participant_source = record.get("participantIds") if "participantIds" in record else None
+        if isinstance(participant_source, list):
+            participant_ids = [str(item).strip() for item in participant_source if str(item).strip()]
+        elif existing and existing["participant_ids_json"]:
+            participant_ids = [str(item) for item in from_json(existing["participant_ids_json"], []) if str(item)]
+        else:
+            participant_ids = []
+
+        existing_created_at = str(existing["created_at"]) if existing and existing["created_at"] else ""
+        resolved_created_at = text_value("createdAt", "created_at", existing_created_at or timestamp) or timestamp
+        resolved_updated_at = text_value("updatedAt", "updated_at", timestamp) or timestamp
+        resolved_status = text_value("status", "status", "active") or "active"
+        resolved_name = text_value("name", "name", fallback_name) or fallback_name or cloud_id
+        evidence_raw = value("evidenceCount", "evidence_count", 0)
+        try:
+            evidence_count = int(evidence_raw or 0)
+        except (TypeError, ValueError):
+            evidence_count = 0
+
+        state.db.execute(
+            """
+            INSERT INTO event_lines(
+                id, organization_id, name, kind, status, visibility_scope, business_category, stage,
+                summary, intent, current_blocker, recent_decision, next_step, evidence_count,
+                owner_id, owner_name, primary_client_id, primary_client_name, primary_department_id,
+                primary_department_name, participant_ids_json, closed_at, closed_by_user_id,
+                created_at, updated_at, sync_status, cloud_id, cloud_payload_json, last_synced_at,
+                last_cloud_version, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                name = excluded.name,
+                kind = excluded.kind,
+                status = excluded.status,
+                visibility_scope = excluded.visibility_scope,
+                business_category = excluded.business_category,
+                stage = excluded.stage,
+                summary = excluded.summary,
+                intent = excluded.intent,
+                current_blocker = excluded.current_blocker,
+                recent_decision = excluded.recent_decision,
+                next_step = excluded.next_step,
+                evidence_count = excluded.evidence_count,
+                owner_id = excluded.owner_id,
+                owner_name = excluded.owner_name,
+                primary_client_id = excluded.primary_client_id,
+                primary_client_name = excluded.primary_client_name,
+                primary_department_id = excluded.primary_department_id,
+                primary_department_name = excluded.primary_department_name,
+                participant_ids_json = excluded.participant_ids_json,
+                closed_at = excluded.closed_at,
+                closed_by_user_id = excluded.closed_by_user_id,
+                updated_at = excluded.updated_at,
+                sync_status = excluded.sync_status,
+                cloud_id = excluded.cloud_id,
+                cloud_payload_json = excluded.cloud_payload_json,
+                last_synced_at = excluded.last_synced_at,
+                last_cloud_version = excluded.last_cloud_version,
+                pending_sync_action = excluded.pending_sync_action,
+                last_sync_error = excluded.last_sync_error
+            """,
+            (
+                cloud_id,
+                text_value("organizationId", "organization_id", "") or "",
+                resolved_name,
+                text_value("kind", "kind", "custom") or "custom",
+                resolved_status,
+                text_value("visibilityScope", "visibility_scope", "project_public") or "project_public",
+                text_value("businessCategory", "business_category"),
+                text_value("stage", "stage"),
+                text_value("summary", "summary"),
+                text_value("intent", "intent"),
+                text_value("currentBlocker", "current_blocker"),
+                text_value("recentDecision", "recent_decision"),
+                text_value("nextStep", "next_step"),
+                evidence_count,
+                text_value("ownerId", "owner_id"),
+                text_value("ownerName", "owner_name"),
+                resolved_client_id,
+                resolved_client_name,
+                text_value("primaryDepartmentId", "primary_department_id"),
+                text_value("primaryDepartmentName", "primary_department_name"),
+                to_json(participant_ids),
+                text_value("closedAt", "closed_at"),
+                text_value("closedByUserId", "closed_by_user_id"),
+                resolved_created_at,
+                resolved_updated_at,
+                "synced",
+                cloud_id,
+                to_json(record),
+                timestamp,
+                resolved_updated_at,
+                "",
+                "",
+            ),
+        )
+        refresh_event_line_memory_snapshot(state.db, cloud_id)
+        _invalidate_event_line_snapshot_cache(cloud_id)
+        return cloud_id
+
     def _upsert_cloud_task_shadow_local(payload: dict[str, object]) -> str | None:
         cloud_id = str(payload.get("id") or "").strip()
         if not cloud_id:
@@ -7399,6 +7497,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         progress_status = str(payload.get("progressStatus") or "todo")
         viewer_status = str(payload.get("viewerInboxStatus")) if payload.get("viewerInboxStatus") else None
         local_status = "inbox" if viewer_status == "pending" else progress_status
+        payload_event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
+        if payload_event_line_id and get_cloud_token():
+            try:
+                event_line_payload = cloud_request("GET", f"/api/v1/event-lines/{payload_event_line_id}")
+                _upsert_cloud_event_line_shadow_local(
+                    event_line_payload,
+                    fallback_client_id=str(payload.get("clientId")) if payload.get("clientId") else None,
+                    fallback_name=str(payload.get("eventLineName")) if payload.get("eventLineName") else None,
+                )
+            except Exception:
+                _upsert_cloud_event_line_shadow_local(
+                    {
+                        "id": payload_event_line_id,
+                        "name": payload.get("eventLineName") or payload_event_line_id,
+                        "primaryClientId": payload.get("clientId"),
+                    }
+                )
         tags = [item for item in payload.get("tags", []) if isinstance(item, dict)]
         timestamp = now_iso()
         resolved_updated_at = str(payload.get("updatedAt") or timestamp)
@@ -7495,7 +7610,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 int(payload.get("durationMinutes") or 60),
                 str(payload.get("scopeMode") or "COLLAB_SHARED"),
                 str(payload.get("clientId")) if payload.get("clientId") else None,
-                str(payload.get("eventLineId")) if payload.get("eventLineId") else None,
+                payload_event_line_id,
                 str(payload.get("projectModuleId")) if payload.get("projectModuleId") else None,
                 str(payload.get("projectFlowId")) if payload.get("projectFlowId") else None,
                 str(payload.get("businessCategory")) if payload.get("businessCategory") else None,
@@ -7822,6 +7937,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         operator_row = current_operator_row()
         return _visible_local_task_tags(state.db, str(operator_row["id"]))
 
+    def _task_collaboration_state(task_id: str) -> tuple[list[TaskCollaboratorRecord], dict[str, int], str | None]:
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM task_collaborators
+            WHERE task_id = ?
+            ORDER BY is_owner DESC, order_index ASC, full_name COLLATE NOCASE ASC, user_id ASC
+            """,
+            (task_id,),
+        )
+        summary = {"pending": 0, "accepted": 0, "returned": 0}
+        collaborators: list[TaskCollaboratorRecord] = []
+        session_user = get_cached_session_user()
+        viewer_user_id = session_user.id if session_user else ""
+        viewer_status: str | None = None
+        for row in rows:
+            inbox_status = str(row["inbox_status"] or "pending")
+            if inbox_status not in summary:
+                inbox_status = "pending"
+            summary[inbox_status] += 1
+            user_id = str(row["user_id"] or "")
+            if viewer_user_id and user_id == viewer_user_id:
+                viewer_status = inbox_status
+            collaborators.append(
+                TaskCollaboratorRecord(
+                    userId=user_id,
+                    fullName=str(row["full_name"] or ""),
+                    email=str(row["email"] or ""),
+                    orderIndex=int(row["order_index"] or 0),
+                    isOwner=bool(row["is_owner"]),
+                    inboxStatus=inbox_status,  # type: ignore[arg-type]
+                    returnReason=str(row["return_reason"]) if row["return_reason"] else None,
+                    handledAt=str(row["handled_at"]) if row["handled_at"] else None,
+                )
+            )
+        return collaborators, summary, viewer_status
+
     def build_task(row) -> TaskRecord:
         note_row = state.db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (str(row["id"]),))
         client_id = str(row["client_id"]) if row["client_id"] else None
@@ -7866,6 +8018,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id=client_id,
             event_line_id=event_line_id,
         )
+        collaborators, collaboration_summary, viewer_inbox_status = _task_collaboration_state(str(row["id"]))
         return TaskRecord(
             id=str(row["id"]),
             title=str(row["title"]),
@@ -7899,6 +8052,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             tags=[],
             note=str(note_row["note"]) if note_row else None,
             attachments=attachments,
+            collaborators=collaborators,
+            collaborationSummary=collaboration_summary,
+            viewerInboxStatus=viewer_inbox_status,  # type: ignore[arg-type]
             projectContext=project_context,
             memoryHints=memory_hints,
             backgroundReadiness=background_readiness,
@@ -8061,7 +8217,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def build_event_line_detail(row) -> EventLineDetailRecord:
-        tasks = fetch_tasks("t.event_line_id = ?", (str(row["id"]),))
+        tasks = fetch_tasks(shared_task_where("t.event_line_id = ?"), (str(row["id"]),))
         activity_rows = state.db.fetchall(
             """
             SELECT *
@@ -8235,6 +8391,80 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             query += f" WHERE {where_clause}"
         query += " ORDER BY CASE t.status WHEN 'inbox' THEN 0 WHEN 'doing' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, t.updated_at DESC"
         return [build_task(row) for row in state.db.fetchall(query, params)]
+
+    def _mark_task_collaborator_handled(
+        task_id: str,
+        user_id: str | None,
+        inbox_status: Literal["accepted", "returned"],
+        *,
+        reason: str | None = None,
+    ) -> bool:
+        normalized_user_id = (user_id or "").strip()
+        if not normalized_user_id:
+            return False
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE task_collaborators
+            SET inbox_status = ?,
+                return_reason = CASE WHEN ? THEN ? ELSE return_reason END,
+                handled_at = ?,
+                updated_at = ?
+            WHERE task_id = ? AND user_id = ?
+            """,
+            (
+                inbox_status,
+                1 if reason is not None else 0,
+                reason,
+                timestamp,
+                timestamp,
+                task_id,
+                normalized_user_id,
+            ),
+        )
+        updated = int(
+            state.db.scalar(
+                "SELECT COUNT(1) FROM task_collaborators WHERE task_id = ? AND user_id = ? AND inbox_status = ?",
+                (task_id, normalized_user_id, inbox_status),
+            )
+            or 0
+        )
+        return updated > 0
+
+    def _repair_completed_task_collaboration_state() -> int:
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE task_collaborators
+            SET inbox_status = 'accepted',
+                handled_at = COALESCE(NULLIF(handled_at, ''), (
+                    SELECT COALESCE(NULLIF(tasks.updated_at, ''), ?) FROM tasks WHERE tasks.id = task_collaborators.task_id
+                )),
+                updated_at = ?
+            WHERE inbox_status = 'pending'
+              AND EXISTS (
+                  SELECT 1
+                  FROM tasks
+                  WHERE tasks.id = task_collaborators.task_id
+                    AND (tasks.status = 'done' OR tasks.progress_status = 'done')
+              )
+            """,
+            (timestamp, timestamp),
+        )
+        return int(state.db.scalar("SELECT changes()") or 0)
+
+    def shared_task_sql(alias: str = "t") -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias):
+            raise ValueError("invalid SQL alias")
+        return f"COALESCE({alias}.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'"
+
+    def shared_task_where(where_clause: str = "", *, alias: str = "t") -> str:
+        base = shared_task_sql(alias)
+        where_clause = where_clause.strip()
+        return f"{base} AND ({where_clause})" if where_clause else base
+
+    def is_shared_task(task: TaskRecord) -> bool:
+        return not is_private_task(task)
 
     def build_growth_workbench_snapshot(
         week_label: str | None = None,
@@ -9906,7 +10136,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         overview = build_growth_overview(state.db, user_id=user_id, user_name=user_name, week_label=resolved_week)
 
         real_tasks = (
-            fetch_tasks("t.source_type != ? AND t.status NOT IN ('done', 'rejected')", (AGENT_AUTO_SOURCE_TYPE,))
+            fetch_tasks(
+                shared_task_where("t.source_type != ? AND t.status NOT IN ('done', 'rejected')"),
+                (AGENT_AUTO_SOURCE_TYPE,),
+            )
         )
         real_tasks = sorted(
             real_tasks,
@@ -10711,7 +10944,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # Local-first: always read from local DB
         if get_cloud_token():
             _pull_cloud_tasks_to_local()
-        return fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,))
+        return fetch_tasks(shared_task_where("t.source_type != ?"), (AGENT_AUTO_SOURCE_TYPE,))
 
     def _load_task_view_definition(view_id: str) -> TaskViewDefinitionRecord | None:
         rows = _ensure_builtin_task_views()
@@ -10935,8 +11168,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """
                 SELECT COUNT(1) AS count
                 FROM tasks
-                WHERE source_id = ?
-                   OR source_id IN (SELECT id FROM meetings WHERE client_id = ?)
+                WHERE (source_id = ?
+                   OR source_id IN (SELECT id FROM meetings WHERE client_id = ?))
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
                 (client_id, client_id),
             ),
@@ -10987,6 +11221,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             FROM tasks
             WHERE status != 'done'
               AND (source_id = ? OR source_id IN (SELECT id FROM meetings WHERE client_id = ?))
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             """,
             (client_id, client_id),
         ) or 0)
@@ -13238,12 +13473,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         notebook_summary = get_client_notebook_response(state.db, client_id).organizationNotebookSnapshot
         memory_status = get_client_memory_status(state.db, client_id)
         related_tasks = fetch_tasks(
-            """
+            shared_task_where(
+                """
             t.client_id = ?
             OR t.event_line_id IN (SELECT id FROM event_lines WHERE primary_client_id = ?)
             OR t.source_id = ?
             OR t.source_id IN (SELECT id FROM meetings WHERE client_id = ?)
-            """,
+            """
+            ),
             (client_id, client_id, client_id, client_id),
         )
         workspace_seed = ClientWorkspaceResponse(
@@ -14616,7 +14853,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             """
                             SELECT DISTINCT event_line_id
                             FROM tasks
-                            WHERE source_type = 'meeting' AND source_id = ? AND event_line_id IS NOT NULL AND TRIM(event_line_id) <> ''
+                            WHERE source_type = 'meeting'
+                              AND source_id = ?
+                              AND event_line_id IS NOT NULL
+                              AND TRIM(event_line_id) <> ''
+                              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                             """,
                             (meeting_id,),
                         )
@@ -14634,10 +14875,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return line_ids[:12]
 
     def _strategic_task_pool(client_id: str, workspace: ClientWorkspaceResponse) -> list[TaskRecord]:
-        task_map: dict[str, TaskRecord] = {task.id: task for task in workspace.relatedTasks}
+        task_map: dict[str, TaskRecord] = {task.id: task for task in workspace.relatedTasks if is_shared_task(task)}
         if get_cloud_token():
             _pull_cloud_tasks_to_local()
-        task_candidates = fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,))
+        task_candidates = fetch_tasks(shared_task_where("t.source_type != ?"), (AGENT_AUTO_SOURCE_TYPE,))
         for task in task_candidates:
             if task.clientId == client_id or (task.projectContext and task.projectContext.clientId == client_id):
                 task_map[task.id] = task
@@ -15151,6 +15392,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 FROM tasks
                 WHERE client_id = ? AND project_module_id = ?
                   AND event_line_id IS NOT NULL AND TRIM(event_line_id) != ''
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
                 (client_id, project_module_id or ""),
             )
@@ -15299,7 +15541,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             f"""
             SELECT t.id, t.title, t.description, t.current_blocker, t.next_action, t.recent_decision, t.updated_at
             FROM tasks t
-            WHERE {task_where}
+            WHERE ({task_where})
+              AND {shared_task_sql('t')}
             ORDER BY t.updated_at DESC
             LIMIT 18
             """,
@@ -19538,6 +19781,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not task_rows:
                 continue
             task = task_rows[0]
+            if not is_shared_task(task):
+                continue
             source_id = (task.sourceId or "").strip()
             source_type = (task.sourceType or "").strip()
             client_id: str | None = (task.clientId or "").strip() or None
@@ -20826,6 +21071,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT e.*
             FROM weekly_review_task_entries e
             INNER JOIN weekly_reviews r ON r.id = e.review_id
+            INNER JOIN tasks t ON t.id = e.task_id AND {shared_task_sql('t')}
             WHERE r.operator_id = ?
               AND e.content_domain = 'work'
               AND e.week_label IN ({placeholders})
@@ -21429,10 +21675,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def local_rollup_work_items(week_label: str) -> list[WeeklyReviewTaskEntryRecord]:
         rows = state.db.fetchall(
-            """
+            f"""
             SELECT e.*
             FROM weekly_review_task_entries e
             INNER JOIN weekly_reviews r ON r.id = e.review_id
+            INNER JOIN tasks t ON t.id = e.task_id AND {shared_task_sql('t')}
             WHERE e.week_label = ? AND e.content_domain = 'work'
             ORDER BY e.reviewed_at DESC, e.created_at DESC
             """,
@@ -21442,6 +21689,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         for row in rows:
             task_id = str(row["task_id"])
             task_rows = fetch_tasks("t.id = ?", (task_id,))
+            if task_rows and not is_shared_task(task_rows[0]):
+                continue
             note = str(row["note"] or "")
             structured_note = coerce_review_structured_note(row["structured_note_json"])
             snapshot = from_json(str(row["task_snapshot_json"] or "{}"), {})
@@ -21551,6 +21800,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             active_department=active_department,
             session_user=session_user,
         )
+        filtered_personal_items = []
         response = response.model_copy(
             update={
                 "workItems": filtered_work_items,
@@ -21597,7 +21847,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 viewer_role=viewer_role,
             )
             work_analysis = work_analysis or computed_work_analysis
-            personal_analysis = personal_analysis or computed_personal_analysis
+            personal_analysis = None
         if generate_weekly_overview:
             work_analysis = _enrich_weekly_review_analysis_with_memory(work_analysis, viewer_role=viewer_role)
             work_analysis = _enrich_weekly_review_analysis_with_operational_trends(
@@ -21956,13 +22206,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         target_week = week_label or current_review_week_label()
         review_row = local_review_row_for_week(target_week)
         review_entries = local_review_entries_by_task(str(review_row["id"])) if review_row else {}
-        tasks_in_week = [task for task in fetch_tasks() if _task_in_week(task, target_week)]
+        tasks_in_week = [task for task in fetch_tasks(shared_task_where()) if _task_in_week(task, target_week)]
         tasks_by_id = {task.id: task for task in tasks_in_week}
         for task_id in review_entries:
             if task_id in tasks_by_id:
                 continue
             task_rows = fetch_tasks("t.id = ?", (task_id,))
-            if task_rows:
+            if task_rows and is_shared_task(task_rows[0]):
                 tasks_by_id[task_id] = task_rows[0]
         work_items: list[WeeklyReviewTaskEntryRecord] = []
         personal_items: list[WeeklyReviewTaskEntryRecord] = []
@@ -21978,11 +22228,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 **(snapshot if isinstance(snapshot, dict) else {}),
                 **_task_snapshot_from_task(task, state.db),
             } if stored else None
-            content_domain = "personal" if is_private_task(task) else "work"
             item = _review_entry_from_task(
                 task=task,
                 week_label=target_week,
-                content_domain=content_domain,
+                content_domain="work",
                 review_id=str(review_row["id"]) if review_row else None,
                 note=note,
                 structured_note=structured_note,
@@ -21990,10 +22239,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 snapshot=merged_snapshot,
                 db=state.db,
             )
-            if content_domain == "personal":
-                personal_items.append(item)
-            else:
-                work_items.append(item)
+            work_items.append(item)
         for task_id, stored in review_entries.items():
             if task_id in tasks_by_id:
                 continue
@@ -22005,6 +22251,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not isinstance(snapshot, dict) or not snapshot:
                 continue
             content_domain = str(stored.get("content_domain") or "work")
+            if content_domain != "work":
+                continue
             item = WeeklyReviewTaskEntryRecord(
                 id=str(stored["id"]),
                 reviewId=str(stored["review_id"]),
@@ -22016,10 +22264,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 reviewedAt=str(stored["reviewed_at"]) if stored["reviewed_at"] else None,
                 taskSnapshot=snapshot,  # type: ignore[arg-type]
             )
-            if content_domain == "personal":
-                personal_items.append(item)
-            else:
-                work_items.append(item)
+            work_items.append(item)
         current_review = build_local_review_record(review_row) if review_row else build_preview_review_record(target_week)
         work_analysis = None
         personal_analysis = None
@@ -22495,9 +22740,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/clients/{client_id}/digital-assets", response_model=DigitalAssetClientDetailRecord)
     def get_client_digital_assets(client_id: str) -> DigitalAssetClientDetailRecord:
         try:
-            return build_client_digital_assets(state.db, client_id)
+            detail = build_client_digital_assets(state.db, client_id)
+            detail.aiNarrative = get_latest_digital_asset_narrative(state.db, client_id)
+            return detail
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="Client not found") from exc
+
+    @app.post("/api/v1/clients/{client_id}/digital-assets/narrative/refresh", response_model=DigitalAssetNarrativeRecord)
+    def refresh_client_digital_asset_narrative(client_id: str) -> DigitalAssetNarrativeRecord:
+        try:
+            return refresh_digital_asset_narrative(state.db, state.ai, client_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Client not found") from exc
+        except DigitalAssetNarrativeQualityError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except AiInvocationError as exc:
+            raise HTTPException(status_code=502, detail=getattr(exc, "detail", str(exc))) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/api/v1/system/health", response_model=HealthResponse)
     def get_health() -> HealthResponse:
@@ -23071,6 +23331,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 response = cloud_request("GET", "/api/v1/event-lines")
                 if not isinstance(response, list):
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
+                for item in response:
+                    _upsert_cloud_event_line_shadow_local(item)
                 return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
             except HTTPException:
                 pass
@@ -23090,6 +23352,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 response = cloud_request("POST", "/api/v1/event-lines", json_body=payload.model_dump())
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
+                _upsert_cloud_event_line_shadow_local(response)
                 return build_cloud_event_line(response)
             except HTTPException:
                 pass
@@ -23156,6 +23419,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line detail payload")
+                _upsert_cloud_event_line_shadow_local(response)
                 return build_cloud_event_line_detail(response)
             except HTTPException:
                 pass
@@ -23240,6 +23504,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
             if not task:
+                return
+            if is_private_task(task):
                 return
             content_hash = _task_content_hash(task)
             cached = state.db.fetchone("SELECT task_hash FROM task_understanding_cache WHERE task_id = ?", (task_id,))
@@ -24301,7 +24567,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
 
         line_tasks = fetch_tasks(
-            "t.event_line_id = ? AND t.status NOT IN ('inbox', 'rejected')",
+            shared_task_where("t.event_line_id = ? AND t.status NOT IN ('inbox', 'rejected')"),
             (event_line_id,),
         )
         now = datetime.now()
@@ -25406,7 +25672,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task_params.extend(normalized_task_ids)
         event_line_payload = build_event_line(row).model_dump(mode="json")
         activities_payload = [build_event_line_activity(item).model_dump(mode="json") for item in activity_rows]
-        tasks_payload = [task.model_dump(mode="json") for task in fetch_tasks(task_where, tuple(task_params))]
+        tasks_payload = [task.model_dump(mode="json") for task in fetch_tasks(shared_task_where(f"({task_where})"), tuple(task_params))]
         snapshot_at = now_iso()
         timeline_nodes = build_event_line_timeline_nodes(
             event_line=event_line_payload,
@@ -25712,7 +25978,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 tasks_payload.extend(
                     task.model_dump(mode="json")
-                    for task in fetch_tasks(f"t.id IN ({placeholders})", tuple(missing_task_ids))
+                    for task in fetch_tasks(shared_task_where(f"t.id IN ({placeholders})"), tuple(missing_task_ids))
                     if task.id not in existing_task_ids
                 )
             except Exception as exc:
@@ -26605,6 +26871,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
                 cloud_response_payload = response
+                _upsert_cloud_event_line_shadow_local(response)
             except HTTPException:
                 pass
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
@@ -26662,11 +26929,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if should_sync_linked_task_client_ids:
             state.db.execute(
-                "UPDATE tasks SET client_id = ?, updated_at = ? WHERE event_line_id = ?",
+                """
+                UPDATE tasks
+                SET client_id = ?, updated_at = ?
+                WHERE event_line_id = ?
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                """,
                 (next_client_id, updated_at, event_line_id),
             )
             task_rows = state.db.fetchall(
-                "SELECT id FROM tasks WHERE event_line_id = ?",
+                """
+                SELECT id
+                FROM tasks
+                WHERE event_line_id = ?
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                """,
                 (event_line_id,),
             )
             for task_row in task_rows:
@@ -26735,7 +27012,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return build_event_line(updated_row)
 
     def _event_line_dependency_counts(event_line_id: str) -> dict[str, int]:
-        task_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM tasks WHERE event_line_id = ?", (event_line_id,))
+        task_count = state.db.fetchone(
+            """
+            SELECT COUNT(1) AS cnt
+            FROM tasks
+            WHERE event_line_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            """,
+            (event_line_id,),
+        )
         activity_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
         attachment_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
         memory_count = state.db.fetchone("SELECT COUNT(1) AS cnt FROM event_line_memory_snapshots WHERE event_line_id = ?", (event_line_id,))
@@ -26759,6 +27044,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/close")
                 if isinstance(resp, dict):
                     cloud_result = resp
+                    _upsert_cloud_event_line_shadow_local(resp)
             except HTTPException as exc:
                 if exc.status_code not in (404, 405):
                     raise
@@ -26766,7 +27052,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
                     if isinstance(resp, dict):
-                        cloud_result = {"status": "archived"}
+                        cloud_result = resp if resp.get("id") or resp.get("eventLine") else {"status": "archived"}
+                        _upsert_cloud_event_line_shadow_local(resp)
                 except HTTPException:
                     pass
         # Always sync local copy
@@ -26801,13 +27088,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/reopen")
                 if isinstance(resp, dict):
                     cloud_result = resp
+                    _upsert_cloud_event_line_shadow_local(resp)
             except HTTPException as exc:
                 if exc.status_code not in (404, 405):
                     raise
                 try:
                     resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "active"})
                     if isinstance(resp, dict):
-                        cloud_result = {"status": "active"}
+                        cloud_result = resp if resp.get("id") or resp.get("eventLine") else {"status": "active"}
+                        _upsert_cloud_event_line_shadow_local(resp)
                 except HTTPException:
                     pass
         # Always sync local copy
@@ -26844,6 +27133,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         resp = cloud_request("DELETE", f"/api/v1/event-lines/{event_line_id}")
                     else:
                         resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
+                    if isinstance(resp, dict):
+                        _upsert_cloud_event_line_shadow_local(resp)
                     cloud_deleted = True
                     break
                 except HTTPException as exc:
@@ -26858,7 +27149,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # Local-only fallback: only admin can delete
             if not current_session_is_admin():
                 raise HTTPException(status_code=403, detail="只有管理员可以删除事件线。")
-            task_count = int(state.db.scalar("SELECT COUNT(1) FROM tasks WHERE event_line_id = ?", (event_line_id,)) or 0)
+            task_count = int(
+                state.db.scalar(
+                    """
+                    SELECT COUNT(1)
+                    FROM tasks
+                    WHERE event_line_id = ?
+                      AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                    """,
+                    (event_line_id,),
+                )
+                or 0
+            )
             if task_count > 0:
                 raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
         if row:
@@ -27110,7 +27412,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         record = SupportRequestRecord(**response)
         # Write support_request activity to the related event line (if task has one)
         if record.taskId:
-            task_row = state.db.fetchone("SELECT event_line_id, title FROM tasks WHERE id = ?", (record.taskId,))
+            task_row = state.db.fetchone(
+                """
+                SELECT event_line_id, title
+                FROM tasks
+                WHERE id = ?
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                """,
+                (record.taskId,),
+            )
             if task_row and task_row["event_line_id"]:
                 sr_ts = now_iso()
                 state.db.execute(
@@ -28068,6 +28378,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT id, title
             FROM tasks
             WHERE client_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
               AND (
                 LOWER(COALESCE(title, '')) LIKE '%' || LOWER(?) || '%'
                 OR LOWER(COALESCE(description, '')) LIKE '%' || LOWER(?) || '%'
@@ -33969,10 +34280,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # Opportunistically sync pending tasks when user views task board
         Thread(target=sync_pending_tasks_if_due, daemon=True).start()
         _restore_local_completed_task_statuses()
+        _repair_completed_task_collaboration_state()
         # If cloud user but local DB is empty, pull cloud tasks into local first
         if get_cloud_token():
             _pull_cloud_tasks_to_local()
             _restore_local_completed_task_statuses()
+            _repair_completed_task_collaboration_state()
         # LOCAL IS PRIMARY — always read from local SQLite
         return TaskBoardResponse(
             tasks=fetch_tasks("t.source_type != ?", (AGENT_AUTO_SOURCE_TYPE,)),
@@ -34194,7 +34507,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def refresh_task_contexts() -> TaskContextRefreshResultRecord:
         if get_cloud_token():
             _pull_cloud_tasks_to_local()
-        task_records = fetch_tasks()
+        task_records = fetch_tasks(shared_task_where())
         clients = [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
         event_lines = list_event_lines()
         project_structures: dict[str, ProjectStructureResponse] = {}
@@ -34241,7 +34554,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def bootstrap_task_event_lines() -> TaskEventLineBootstrapResultRecord:
         if get_cloud_token():
             _pull_cloud_tasks_to_local()
-        task_records = fetch_tasks()
+        task_records = fetch_tasks(shared_task_where())
         existing_event_lines = list_event_lines()
         event_line_by_signature = {
             f"{(item.primaryClientId or '').strip()}::{item.name.strip()}": item
@@ -35206,9 +35519,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
     def confirm_task(task_id: str) -> TaskRecord:
+        session_user = get_cached_session_user()
         if get_cloud_token():
             try:
                 user = require_session_user()
+                session_user = user
                 response = cloud_request("POST", f"/api/v1/tasks/{task_id}/collaborators/{user.id}/accept")
                 if isinstance(response, dict):
                     log_activity("task.confirm", "task", task_id, {"userId": user.id})
@@ -35216,15 +35531,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     return build_cloud_task(response, {})
             except Exception:
                 pass  # cloud down — confirm locally
-        state.db.execute("UPDATE tasks SET status = 'doing', updated_at = ? WHERE id = ?", (now_iso(), task_id))
-        log_activity("task.confirm", "task", task_id, {})
+        timestamp = now_iso()
+        _mark_task_collaborator_handled(task_id, session_user.id if session_user else None, "accepted")
+        state.db.execute(
+            """
+            UPDATE tasks
+            SET status = CASE
+                    WHEN status = 'done' OR progress_status = 'done' THEN 'done'
+                    WHEN progress_status IN ('todo', 'doing') THEN progress_status
+                    ELSE 'doing'
+                END,
+                progress_status = CASE
+                    WHEN progress_status IN ('todo', 'doing', 'done') THEN progress_status
+                    ELSE 'doing'
+                END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (timestamp, task_id),
+        )
+        log_activity("task.confirm", "task", task_id, {"userId": session_user.id if session_user else None})
         return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.post("/api/v1/tasks/{task_id}/reject", response_model=TaskRecord)
     def reject_task(task_id: str, payload: TaskRejectPayload) -> TaskRecord:
+        session_user = get_cached_session_user()
         if get_cloud_token():
             try:
                 user = require_session_user()
+                session_user = user
                 response = cloud_request(
                     "POST",
                     f"/api/v1/tasks/{task_id}/collaborators/{user.id}/return",
@@ -35237,9 +35572,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     return build_cloud_task(response, {})
             except Exception:
                 pass  # cloud down — reject locally
-        state.db.execute("UPDATE tasks SET status = 'rejected', updated_at = ? WHERE id = ?", (now_iso(), task_id))
+        timestamp = now_iso()
+        _mark_task_collaborator_handled(task_id, session_user.id if session_user else None, "returned", reason=payload.reason)
+        state.db.execute("UPDATE tasks SET status = 'rejected', updated_at = ? WHERE id = ?", (timestamp, task_id))
         upsert_task_note(task_id, payload.reason)
-        log_activity("task.reject", "task", task_id, {"reason": payload.reason})
+        log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": session_user.id if session_user else None})
         return fetch_tasks("t.id = ?", (task_id,))[0]
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
@@ -35483,17 +35820,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not task_items:
                 continue
             task_row = task_items[0]
-            structured_note = coerce_review_structured_note(entry.get("structuredNote"))
-            note = compose_review_note(structured_note, str(entry.get("note", "")).strip())
             existing_entry = state.db.fetchone(
                 "SELECT id FROM weekly_review_task_entries WHERE review_id = ? AND task_id = ?",
                 (review_id, task_id),
             )
+            if not is_shared_task(task_row):
+                if existing_entry:
+                    state.db.execute("DELETE FROM weekly_review_task_entries WHERE id = ?", (str(existing_entry["id"]),))
+                continue
+            structured_note = coerce_review_structured_note(entry.get("structuredNote"))
+            note = compose_review_note(structured_note, str(entry.get("note", "")).strip())
             if not note:
                 if existing_entry:
                     state.db.execute("DELETE FROM weekly_review_task_entries WHERE id = ?", (str(existing_entry["id"]),))
                 continue
-            content_domain = str(entry.get("contentDomain") or ("personal" if is_private_task(task_row) else "work"))
+            content_domain = "work"
             snapshot = _task_snapshot_from_task(task_row, state.db)
             if existing_entry:
                 state.db.execute(
@@ -35636,6 +35977,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 {"weekLabel": payload.weekLabel},
             )
             response = ReviewResponse(**response_payload)
+            response = response.model_copy(update={"personalItems": [], "personalAnalysis": None})
             if response.currentReview:
                 user_id, user_name = resolve_growth_actor()
                 ingest_review_growth(
@@ -35643,7 +35985,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     user_id=user_id,
                     user_name=user_name,
                     review=response.currentReview,
-                    task_entries=[*response.workItems, *response.personalItems],
+                    task_entries=response.workItems,
                 )
             try:
                 save_local_weekly_review(payload)
@@ -35660,7 +36002,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 user_id=operator_id,
                 user_name=user_name,
                 review=response.currentReview,
-                task_entries=[*response.workItems, *response.personalItems],
+                task_entries=response.workItems,
                 created_at=created_at,
             )
         enqueue_review_memory_writeback(reviewed_work_items, week_label=payload.weekLabel)
@@ -35701,7 +36043,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     user_id=user_id,
                     user_name=user_name,
                     review=response.currentReview,
-                    task_entries=[*response.workItems, *response.personalItems],
+                    task_entries=response.workItems,
                 )
             try:
                 save_local_weekly_review(payload)
@@ -35717,7 +36059,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 user_id=operator_id,
                 user_name=user_name,
                 review=response.currentReview,
-                task_entries=[*response.workItems, *response.personalItems],
+                task_entries=response.workItems,
                 created_at=created_at,
             )
             response = local_review_dashboard(payload.weekLabel)
@@ -37227,6 +37569,135 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ingest_handbook_codification(state.db, user_id=user_id, user_name=user_name, entry=entry, created_at=entry.createdAt)
         log_activity("handbook.create", "handbook_entry", entry.id, payload.model_dump())
         return entry
+
+    @app.get("/api/v1/growth/experience-stories/drafts", response_model=ExperienceStoryDraftsResponse)
+    def list_growth_experience_story_drafts(
+        status: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=200),
+    ) -> ExperienceStoryDraftsResponse:
+        return ExperienceStoryDraftsResponse(
+            drafts=list_experience_story_drafts(state.db, status=status, limit=limit)
+        )
+
+    @app.post("/api/v1/growth/experience-stories/generate", response_model=ExperienceStoryGenerateResponse)
+    def generate_growth_experience_story_drafts(
+        payload: ExperienceStoryGeneratePayload | None = Body(default=None),
+    ) -> ExperienceStoryGenerateResponse:
+        request_payload = payload or ExperienceStoryGeneratePayload()
+        drafts, skipped_count = generate_experience_story_drafts(
+            state.db,
+            state.ai,
+            limit=request_payload.limit,
+        )
+        log_activity(
+            "growth.experience_story.generate",
+            "experience_story_draft",
+            "batch",
+            {"generatedCount": len(drafts), "skippedCount": skipped_count, "limit": request_payload.limit},
+        )
+        return ExperienceStoryGenerateResponse(
+            drafts=drafts,
+            generatedCount=len(drafts),
+            skippedCount=skipped_count,
+        )
+
+    def create_handbook_entry_from_experience_story(draft_id: str) -> tuple[ExperienceStoryDraftRecord, HandbookEntryRecord]:
+        row = state.db.fetchone("SELECT * FROM experience_story_drafts WHERE id = ?", (draft_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="经验故事草稿不存在")
+        draft = build_experience_story_draft_record(state.db, row)
+        if draft.status == "rejected":
+            raise HTTPException(status_code=400, detail="已驳回的经验故事不能入墙")
+        if not draft.story.strip():
+            raise HTTPException(status_code=400, detail="经验故事正文为空，不能入墙")
+        if not draft.evidenceRefs:
+            raise HTTPException(status_code=400, detail="经验故事缺少证据引用，不能入墙")
+        if draft.handbookEntryId:
+            existing_row = state.db.fetchone("SELECT * FROM handbook_entries WHERE id = ?", (draft.handbookEntryId,))
+            if existing_row:
+                return draft, build_handbook_entry_record(existing_row)
+
+        user_id, user_name = resolve_growth_actor()
+        entry_id = new_id("handbook")
+        created_at = now_iso()
+        context_summary = "\n".join(
+            part
+            for part in [
+                f"个人成长：{draft.growthValue}" if draft.growthValue else "",
+                f"组织沉淀：{draft.organizationValue}" if draft.organizationValue else "",
+                f"事实风险：{draft.factRiskNote}" if draft.factRiskNote else "",
+            ]
+            if part
+        )
+        state.db.execute(
+            """
+            INSERT INTO handbook_entries(
+                id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, source_title,
+                event_line_id, event_line_name, project_module_id, project_module_name, project_flow_id, project_flow_name,
+                project_stage, business_category, ability_keys_json, evidence_refs_json, context_summary, reuse_count, last_reused_at,
+                author_user_id, author_user_name, created_at
+            ) VALUES(?, ?, ?, ?, 'experience_story', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, '[]', ?, ?, 0, NULL, ?, ?, ?)
+            """,
+            (
+                entry_id,
+                draft.title.strip() or draft.sourceTitle or "经验故事",
+                draft.story.strip(),
+                to_json(["经验故事", "组织智慧"]),
+                draft.clientId,
+                draft.sourceType,
+                draft.sourceId,
+                draft.sourceTitle,
+                draft.eventLineId,
+                draft.eventLineName,
+                to_json(draft.evidenceRefs),
+                context_summary,
+                user_id,
+                user_name,
+                created_at,
+            ),
+        )
+        state.db.execute(
+            """
+            UPDATE experience_story_drafts
+            SET status = 'approved',
+                handbook_entry_id = ?,
+                approved_at = ?,
+                approved_by = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (entry_id, created_at, user_name, created_at, draft_id),
+        )
+        entry_row = state.db.fetchone("SELECT * FROM handbook_entries WHERE id = ?", (entry_id,))
+        if not entry_row:
+            raise HTTPException(status_code=500, detail="经验故事入墙失败")
+        entry = build_handbook_entry_record(entry_row)
+        ingest_handbook_codification(state.db, user_id=user_id, user_name=user_name, entry=entry, created_at=entry.createdAt)
+        updated_draft_row = state.db.fetchone("SELECT * FROM experience_story_drafts WHERE id = ?", (draft_id,))
+        updated_draft = build_experience_story_draft_record(state.db, updated_draft_row) if updated_draft_row else draft
+        return updated_draft, entry
+
+    @app.post("/api/v1/growth/experience-stories/drafts/{draft_id}/approve", response_model=ExperienceStoryActionResponse)
+    def approve_growth_experience_story_draft(draft_id: str) -> ExperienceStoryActionResponse:
+        draft, entry = create_handbook_entry_from_experience_story(draft_id)
+        log_activity("growth.experience_story.approve", "experience_story_draft", draft_id, {"handbookEntryId": entry.id})
+        return ExperienceStoryActionResponse(draft=draft, handbookEntry=entry)
+
+    @app.post("/api/v1/growth/experience-stories/drafts/{draft_id}/reject", response_model=ExperienceStoryActionResponse)
+    def reject_growth_experience_story_draft(draft_id: str) -> ExperienceStoryActionResponse:
+        draft = reject_experience_story_draft(state.db, draft_id=draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="经验故事草稿不存在")
+        log_activity("growth.experience_story.reject", "experience_story_draft", draft_id, {})
+        return ExperienceStoryActionResponse(draft=draft, handbookEntry=None)
+
+    @app.post("/api/v1/growth/experience-stories/drafts/{draft_id}/regenerate", response_model=ExperienceStoryActionResponse)
+    def regenerate_growth_experience_story_draft(draft_id: str) -> ExperienceStoryActionResponse:
+        draft = regenerate_experience_story_draft(state.db, state.ai, draft_id=draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="经验故事草稿不存在")
+        log_activity("growth.experience_story.regenerate", "experience_story_draft", draft_id, {"status": draft.status})
+        return ExperienceStoryActionResponse(draft=draft, handbookEntry=None)
 
     @app.post("/api/v1/growth/enrich-insights")
     def enrich_growth_insights() -> dict:

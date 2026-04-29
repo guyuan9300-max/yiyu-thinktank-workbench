@@ -192,8 +192,10 @@ import {
 import {
   buildEvidenceCitationCards,
   EVIDENCE_BUSINESS_TAG_LABELS,
+  EVIDENCE_CITATION_ROLE_LABELS,
   EVIDENCE_SUPPORT_LABELS,
   type EvidenceBusinessTag,
+  type EvidenceCitationRole,
   type EvidenceCitationCard,
   type EvidenceSupportLevel,
 } from '../shared/workspaceEvidencePresentation';
@@ -424,6 +426,7 @@ import { OrganizationSetupCenter } from './components/settings/OrganizationSetup
 import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
 import { CollabPreviewDialog } from './components/collab/CollabDialogs';
 import { CollabSyncCard } from './components/collab/CollabSyncCard';
+import { filterSharedTasks, isPersonalOnlyTask } from '../shared/taskVisibility';
 
 type TemplateFillStage = 'queued' | 'parsing' | 'retrieving' | 'writing' | 'completed' | 'failed';
 
@@ -594,6 +597,12 @@ function evidenceSupportClass(level: EvidenceSupportLevel): string {
   if (level === 'strong') return 'border-teal-100 bg-teal-50 text-teal-700';
   if (level === 'reference') return 'border-sky-100 bg-sky-50 text-sky-700';
   return 'border-gray-100 bg-gray-50 text-gray-600';
+}
+
+function evidenceCitationRoleClass(role?: EvidenceCitationRole | string | null): string {
+  if (role === 'direct_quote' || role === 'direct_support') return 'border-blue-100 bg-blue-50 text-blue-700';
+  if (role === 'background') return 'border-slate-100 bg-slate-50 text-slate-600';
+  return '';
 }
 
 function evidenceTagClass(tag: EvidenceBusinessTag): string {
@@ -4499,7 +4508,7 @@ function buildWeeklyOverviewModelFromBackendCards(cards: WeeklyMainlineCards | n
 }
 
 function isPrivateTask(task: Task) {
-  return task.scopeMode === 'PERSONAL_ONLY' || task.tags.some((tag) => tag.scope === 'self');
+  return isPersonalOnlyTask(task);
 }
 
 function isLocalDraftTaskId(taskId?: string | null) {
@@ -4904,6 +4913,7 @@ export default function App() {
   }, [currentClientId]);
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const sharedTasks = useMemo(() => filterSharedTasks(tasks), [tasks]);
   const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number; fromLocalDraft: boolean }>>(new Map());
   const [updatingTaskStatusIds, setUpdatingTaskStatusIds] = useState<string[]>([]);
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
@@ -7754,6 +7764,12 @@ export default function App() {
     const actionableInboxTasks = useMemo(
       () => [...inboundConfirmableTasks, ...inboundNotificationTasks],
       [inboundConfirmableTasks, inboundNotificationTasks],
+    );
+    const inboxFiltersHideTasks = (
+      (inboxTimeRangeFilter !== 'all' || Boolean(inboxCustomStartDate) || Boolean(inboxCustomEndDate))
+      && (inboundPendingTasks.length > 0 || outboundPendingTasks.length > 0)
+      && actionableInboxTasks.length === 0
+      && filteredOutboundPendingTasks.length === 0
     );
     const visibleProposals = useMemo(
       () => proposals.filter((proposal) => !currentClientId || proposal.clientId === currentClientId),
@@ -11603,8 +11619,10 @@ export default function App() {
                       <div className="mx-auto mb-3 w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
                         <Inbox className="w-5 h-5 text-emerald-500" />
                       </div>
-                      <p className="text-[14px] font-bold text-gray-600 mb-1">收件箱已清空</p>
-                      <p className="text-[13px] text-gray-400">待你确认或等待对方确认的协作任务会出现在这里。</p>
+                      <p className="text-[14px] font-bold text-gray-600 mb-1">{inboxFiltersHideTasks ? '当前筛选下没有待处理协作' : '收件箱已清空'}</p>
+                      <p className="text-[13px] text-gray-400">
+                        {inboxFiltersHideTasks ? '调整时间范围后，可以查看其它待确认或等待确认的协作任务。' : '待你确认或等待对方确认的协作任务会出现在这里。'}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -17793,6 +17811,15 @@ export default function App() {
                   ].filter(Boolean);
                   const snippetPreview = card.primarySnippet.excerpt;
                   const openPath = card.openPath || card.primarySnippet.path || card.sourcePath;
+                  const citationRole = (
+                    card.citationRole === 'direct_quote'
+                    || card.citationRole === 'direct_support'
+                    || card.citationRole === 'background'
+                  )
+                    ? card.citationRole
+                    : null;
+                  const citationBadgeLabel = citationRole ? EVIDENCE_CITATION_ROLE_LABELS[citationRole] : EVIDENCE_SUPPORT_LABELS[card.supportLevel];
+                  const citationBadgeClass = citationRole ? evidenceCitationRoleClass(citationRole) : evidenceSupportClass(card.supportLevel);
                   return (
                     <div key={card.id} className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-[0_2px_8px_rgba(0,0,0,0.02)] hover:shadow-md transition-shadow group relative">
                       <div className="absolute left-0 top-0 bottom-0 w-[4px] bg-amber-400" />
@@ -17800,10 +17827,10 @@ export default function App() {
                         <div className="mb-2 flex items-start gap-2">
                           <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold mt-0.5 shrink-0">{index + 1}</span>
                           <span
-                            className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${evidenceSupportClass(card.supportLevel)}`}
+                            className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${citationBadgeClass}`}
                             title={typeof card.maxScore === 'number' ? `原始分数 ${card.maxScore}` : undefined}
                           >
-                            {EVIDENCE_SUPPORT_LABELS[card.supportLevel]}
+                            {citationBadgeLabel}
                           </span>
                         </div>
                         <p className="text-[13px] xl:text-[14px] font-bold text-slate-900 leading-snug line-clamp-2" title={card.claimTitle}>
@@ -21474,7 +21501,7 @@ export default function App() {
     ) : (
       <StrategicBrainView
         clients={clients}
-        tasks={tasks}
+        tasks={sharedTasks}
         currentClientId={currentClientId}
         onClientChange={(clientId) => {
           setCurrentClientId(clientId);
@@ -21530,7 +21557,7 @@ export default function App() {
       <TopicsManagementView
         radars={radars}
         candidates={candidates}
-        tasks={tasks}
+        tasks={sharedTasks}
         activeTaskLists={activeTaskLists}
         effectiveTaskSettings={effectiveTaskSettings}
         topicsSettingsState={topicsSettingsState}
