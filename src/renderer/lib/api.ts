@@ -63,6 +63,10 @@ import type {
   FeishuUserBinding,
   FeishuUserBindingStartResult,
   EmployeeRolePayload,
+  ExperienceStoryActionResponse,
+  ExperienceStoryDraftsResponse,
+  ExperienceStoryGeneratePayload,
+  ExperienceStoryGenerateResponse,
   EventLine,
   EventLineClarificationDraftPayload,
   EventLineClarificationDraftResult,
@@ -616,6 +620,19 @@ export type DigitalAssetClientSummary = {
   updatedAt?: string | null;
 };
 
+export type DigitalAssetNarrative = {
+  id: string;
+  clientId: string;
+  sourceFingerprint: string;
+  contentMarkdown: string;
+  materialAudit: Record<string, unknown>;
+  qualityWarnings: string[];
+  provider: string;
+  model: string;
+  generatedAt: string;
+  failureReason?: string;
+};
+
 export type DigitalAssetDashboard = {
   generatedAt: string;
   clients: DigitalAssetClientSummary[];
@@ -626,6 +643,7 @@ export type DigitalAssetClientDetail = DigitalAssetClientSummary & {
   valueInsights: DigitalAssetInsight[];
   depositSuggestions: DigitalAssetDepositSuggestion[];
   sourceMetrics: DigitalAssetMetric[];
+  aiNarrative?: DigitalAssetNarrative | null;
 };
 
 export async function getDigitalAssetDashboard() {
@@ -634,6 +652,12 @@ export async function getDigitalAssetDashboard() {
 
 export async function getClientDigitalAssets(clientId: string) {
   return request<DigitalAssetClientDetail>(`/api/v1/clients/${encodeURIComponent(clientId)}/digital-assets`);
+}
+
+export async function refreshClientDigitalAssetNarrative(clientId: string) {
+  return request<DigitalAssetNarrative>(`/api/v1/clients/${encodeURIComponent(clientId)}/digital-assets/narrative/refresh`, {
+    method: 'POST',
+  });
 }
 
 export async function getTaskContextPreview(taskId: string) {
@@ -2854,6 +2878,39 @@ export async function createHandbook(payload: HandbookEntryPayload) {
   return request<HandbookEntry>('/api/v1/handbook', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getExperienceStoryDrafts(params?: { status?: string; limit?: number }) {
+  const search = new URLSearchParams();
+  if (params?.status) search.set('status', params.status);
+  if (params?.limit) search.set('limit', String(params.limit));
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<ExperienceStoryDraftsResponse>(`/api/v1/growth/experience-stories/drafts${suffix}`);
+}
+
+export async function generateExperienceStoryDrafts(payload: ExperienceStoryGeneratePayload = {}) {
+  return request<ExperienceStoryGenerateResponse>('/api/v1/growth/experience-stories/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function approveExperienceStoryDraft(id: string) {
+  return request<ExperienceStoryActionResponse>(`/api/v1/growth/experience-stories/drafts/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+  });
+}
+
+export async function rejectExperienceStoryDraft(id: string) {
+  return request<ExperienceStoryActionResponse>(`/api/v1/growth/experience-stories/drafts/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+  });
+}
+
+export async function regenerateExperienceStoryDraft(id: string) {
+  return request<ExperienceStoryActionResponse>(`/api/v1/growth/experience-stories/drafts/${encodeURIComponent(id)}/regenerate`, {
+    method: 'POST',
   });
 }
 

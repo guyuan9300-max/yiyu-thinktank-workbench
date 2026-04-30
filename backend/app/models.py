@@ -4411,6 +4411,19 @@ class DigitalAssetClientSummaryRecord(BaseModel):
     updatedAt: str | None = None
 
 
+class DigitalAssetNarrativeRecord(BaseModel):
+    id: str
+    clientId: str
+    sourceFingerprint: str = ""
+    contentMarkdown: str = ""
+    materialAudit: dict[str, object] = Field(default_factory=dict)
+    qualityWarnings: list[str] = Field(default_factory=list)
+    provider: str = ""
+    model: str = ""
+    generatedAt: str
+    failureReason: str = ""
+
+
 class DigitalAssetDashboardRecord(BaseModel):
     generatedAt: str
     clients: list[DigitalAssetClientSummaryRecord] = Field(default_factory=list)
@@ -4421,6 +4434,7 @@ class DigitalAssetClientDetailRecord(DigitalAssetClientSummaryRecord):
     valueInsights: list[DigitalAssetInsightRecord] = Field(default_factory=list)
     depositSuggestions: list[DigitalAssetDepositSuggestionRecord] = Field(default_factory=list)
     sourceMetrics: list[DigitalAssetMetricRecord] = Field(default_factory=list)
+    aiNarrative: DigitalAssetNarrativeRecord | None = None
 
 
 class StrategicPermissionRecord(BaseModel):
@@ -5754,6 +5768,57 @@ class HandbookEntryDetailRecord(HandbookEntryRecord):
     relatedLedgerEntries: list[XpLedgerEntryRecord] = Field(default_factory=list)
     originContexts: list[GrowthContextLinkRecord] = Field(default_factory=list)
     reuseHistory: list[HandbookReuseRecord] = Field(default_factory=list)
+
+
+ExperienceStoryDraftStatus = Literal["candidate", "needs_review", "approved", "rejected"]
+
+
+class ExperienceStoryDraftRecord(BaseModel):
+    id: str
+    title: str = ""
+    story: str = ""
+    status: ExperienceStoryDraftStatus = "candidate"
+    sourceType: str
+    sourceId: str
+    sourceTitle: str = ""
+    clientId: str | None = None
+    clientName: str | None = None
+    eventLineId: str | None = None
+    eventLineName: str | None = None
+    taskId: str | None = None
+    meetingId: str | None = None
+    handbookEntryId: str | None = None
+    evidenceRefs: list[str] = Field(default_factory=list)
+    materialPack: dict[str, object] = Field(default_factory=dict)
+    growthValue: str = ""
+    organizationValue: str = ""
+    qualityScore: dict[str, object] = Field(default_factory=dict)
+    factRiskNote: str = ""
+    generationModel: str = ""
+    generationPromptVersion: str = ""
+    createdAt: str
+    updatedAt: str
+    approvedAt: str | None = None
+    approvedBy: str | None = None
+
+
+class ExperienceStoryDraftsResponse(BaseModel):
+    drafts: list[ExperienceStoryDraftRecord] = Field(default_factory=list)
+
+
+class ExperienceStoryGeneratePayload(BaseModel):
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class ExperienceStoryGenerateResponse(BaseModel):
+    drafts: list[ExperienceStoryDraftRecord] = Field(default_factory=list)
+    generatedCount: int = 0
+    skippedCount: int = 0
+
+
+class ExperienceStoryActionResponse(BaseModel):
+    draft: ExperienceStoryDraftRecord
+    handbookEntry: HandbookEntryRecord | None = None
 
 
 class FileReclassEventRecord(BaseModel):

@@ -1324,6 +1324,27 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_strategic_thought_insights_favorite
                     ON strategic_thought_insights(is_favorite, is_deleted, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS digital_asset_narrative_snapshots (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    source_fingerprint TEXT NOT NULL DEFAULT '',
+                    content_markdown TEXT NOT NULL DEFAULT '',
+                    material_audit_json TEXT NOT NULL DEFAULT '{}',
+                    quality_warnings_json TEXT NOT NULL DEFAULT '[]',
+                    raw_output TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL DEFAULT '',
+                    generated_at TEXT NOT NULL,
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_digital_asset_narrative_client
+                    ON digital_asset_narrative_snapshots(client_id, failure_reason, generated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_digital_asset_narrative_fingerprint
+                    ON digital_asset_narrative_snapshots(client_id, source_fingerprint, generated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS project_modules (
                     id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
@@ -1625,6 +1646,44 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS experience_story_drafts (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    story TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'candidate',
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_title TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    event_line_id TEXT,
+                    task_id TEXT,
+                    meeting_id TEXT,
+                    handbook_entry_id TEXT,
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    material_pack_json TEXT NOT NULL DEFAULT '{}',
+                    growth_value TEXT NOT NULL DEFAULT '',
+                    organization_value TEXT NOT NULL DEFAULT '',
+                    quality_score_json TEXT NOT NULL DEFAULT '{}',
+                    fact_risk_note TEXT NOT NULL DEFAULT '',
+                    generation_model TEXT NOT NULL DEFAULT '',
+                    generation_prompt_version TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    approved_at TEXT,
+                    approved_by TEXT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL,
+                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE SET NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE SET NULL,
+                    FOREIGN KEY(handbook_entry_id) REFERENCES handbook_entries(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_experience_story_drafts_status
+                    ON experience_story_drafts(status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_experience_story_drafts_source
+                    ON experience_story_drafts(source_type, source_id);
+                CREATE INDEX IF NOT EXISTS idx_experience_story_drafts_client
+                    ON experience_story_drafts(client_id, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS growth_ability_profiles (
                     id TEXT PRIMARY KEY,
