@@ -32,7 +32,7 @@ function formatPublishedAt(value?: string | null) {
 function normalizeEditorialNote(value?: string | null) {
   return (value || '')
     .trim()
-    .replace(/^大周(?:的)?(?:前哨判断|判断)[：:]\s*/, '');
+    .replace(/^(?:大周|情报助手)(?:的)?(?:前哨判断|情报判断|判断)[：:]\s*/, '');
 }
 
 export function TopicIntelDetailPanel({
@@ -60,7 +60,7 @@ export function TopicIntelDetailPanel({
         </div>
         <h2 className="text-[18px] font-bold text-gray-900 mt-5">选择一篇情报</h2>
         <p className="text-[13px] text-gray-500 mt-2 max-w-[320px] leading-6">
-          左侧会显示大周夜间抓回的情报。点开任意一篇，就能看到它和哪个雷达相关、主要观点是什么，以及能不能收进资料夹或转成任务。
+          左侧会显示雷达抓回的情报。点开任意一篇，就能看到它和哪个雷达相关、主要观点是什么，以及能不能收进资料夹或转成任务。
         </p>
       </div>
     );
@@ -70,7 +70,7 @@ export function TopicIntelDetailPanel({
   const keyPoints = insight?.keyPoints?.length ? insight.keyPoints : ['当前还没有稳定的核心观点，建议先看原文。'];
   const writingAngles = insight?.practicalUses?.length ? insight.practicalUses : ['后续可围绕这篇内容继续追问：哪些判断值得转成文章、哪些事实值得交给同事跟进。'];
   const discussionPrompts = insight?.discussionPrompts?.length ? insight.discussionPrompts : ['如果继续深挖，这篇内容最值得追问的，是它背后到底反映了怎样的变化。'];
-  const editorialNote = normalizeEditorialNote(insight?.editorialNote) || '大周还在把这篇文章里的显性观点转成更值得继续思考的前哨判断。';
+  const editorialNote = normalizeEditorialNote(insight?.editorialNote) || '情报助手还在把这篇文章里的显性观点转成更值得继续思考的情报判断。';
 
   return (
     <div className="h-full bg-white border border-gray-100 rounded-[32px] shadow-sm p-6 overflow-y-auto">
@@ -152,10 +152,10 @@ export function TopicIntelDetailPanel({
         <section className="rounded-[24px] border border-gray-100 px-5 py-4">
           <div className="flex items-center gap-2">
             <Sparkles size={16} className="text-violet-600" />
-            <p className="text-[12px] font-bold text-gray-900">大周前哨判断</p>
+            <p className="text-[12px] font-bold text-gray-900">情报判断</p>
           </div>
           {isLoadingInsight ? (
-            <p className="text-[13px] text-gray-500 mt-3">大周正在补全这篇情报的前哨判断…</p>
+            <p className="text-[13px] text-gray-500 mt-3">情报助手正在补全这篇情报的判断…</p>
           ) : (
             <p className="text-[13px] text-gray-600 mt-3 leading-7 whitespace-pre-line">{editorialNote}</p>
           )}
@@ -177,7 +177,7 @@ export function TopicIntelDetailPanel({
 
         <section className="rounded-[24px] border border-gray-100 px-5 py-4">
           <p className="text-[12px] font-bold text-gray-900">值得继续追问的问题</p>
-          <p className="text-[12px] text-gray-500 mt-1">点任何一条问题，都可以直接让大周基于这篇情报继续回答。</p>
+          <p className="text-[12px] text-gray-500 mt-1">点任何一条问题，都可以直接让情报助手基于这篇情报继续回答。</p>
           <div className="mt-3 space-y-3">
             {discussionPrompts.map((item, index) => (
               <button
