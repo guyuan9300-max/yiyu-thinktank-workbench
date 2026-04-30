@@ -280,7 +280,15 @@ def _resolve_client_id_for_memory_scope(db: Database, scope_type: str, scope_id:
     if normalized_scope_type == "client":
         return normalized_scope_id
     if normalized_scope_type == "task":
-        row = db.fetchone("SELECT client_id FROM tasks WHERE id = ?", (normalized_scope_id,))
+        row = db.fetchone(
+            """
+            SELECT client_id
+            FROM tasks
+            WHERE id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            """,
+            (normalized_scope_id,),
+        )
         return _coerce_text(row["client_id"]) if row else None
     if normalized_scope_type == "event_line":
         row = db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (normalized_scope_id,))
@@ -789,7 +797,14 @@ def refresh_organization_notebook_snapshot(db: Database, client_id: str) -> Orga
             *[
                 _coerce_text(row["owner_name"])
                 for row in db.fetchall(
-                    "SELECT owner_name FROM tasks WHERE client_id = ? ORDER BY updated_at DESC LIMIT 8",
+                    """
+                    SELECT owner_name
+                    FROM tasks
+                    WHERE client_id = ?
+                      AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                    ORDER BY updated_at DESC
+                    LIMIT 8
+                    """,
                     (client_id,),
                 )
             ],
@@ -963,7 +978,10 @@ def list_linked_event_lines(db: Database, client_id: str, *, limit: int = 12) ->
            OR id IN (
                 SELECT DISTINCT event_line_id
                 FROM tasks
-                WHERE client_id = ? AND event_line_id IS NOT NULL AND TRIM(event_line_id) <> ''
+                WHERE client_id = ?
+                  AND event_line_id IS NOT NULL
+                  AND TRIM(event_line_id) <> ''
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
            )
         ORDER BY updated_at DESC
         LIMIT ?
@@ -983,6 +1001,7 @@ def refresh_event_line_memory_snapshot(db: Database, event_line_id: str) -> Even
         SELECT title, status, updated_at
         FROM tasks
         WHERE event_line_id = ?
+          AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY updated_at DESC
         LIMIT 12
         """,
@@ -990,10 +1009,12 @@ def refresh_event_line_memory_snapshot(db: Database, event_line_id: str) -> Even
     )
     attachment_rows = db.fetchall(
         """
-        SELECT title, created_at
-        FROM task_attachments
-        WHERE event_line_id = ?
-        ORDER BY created_at DESC
+        SELECT a.title, a.created_at
+        FROM task_attachments a
+        INNER JOIN tasks t ON t.id = a.task_id
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+        WHERE a.event_line_id = ?
+        ORDER BY a.created_at DESC
         LIMIT 6
         """,
         (event_line_id,),
@@ -1010,7 +1031,15 @@ def refresh_event_line_memory_snapshot(db: Database, event_line_id: str) -> Even
     )
     review_signals: list[str] = []
     review_rows = db.fetchall(
-        "SELECT task_snapshot_json, note FROM weekly_review_task_entries ORDER BY updated_at DESC LIMIT 100",
+        """
+        SELECT entry.task_snapshot_json, entry.note
+        FROM weekly_review_task_entries entry
+        LEFT JOIN tasks t ON t.id = entry.task_id
+        WHERE entry.content_domain = 'work'
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+        ORDER BY entry.updated_at DESC
+        LIMIT 100
+        """,
     )
     for review_row in review_rows:
         snapshot = from_json(review_row["task_snapshot_json"], {})
@@ -1411,6 +1440,8 @@ def get_task_memory_enrichment(
     linked_facts_preview = [linked_fact_map[fact_id] for fact_id in linked_facts if fact_id in linked_fact_map][:6]
     if event_line_snapshot:
         score = max(event_line_snapshot.confidence, event_line_snapshot.predictionReadiness)
+        if task_facts:
+            score = max(score, 0.45)
     elif notebook_snapshot:
         score = notebook_snapshot.confidence
     elif task_facts:
@@ -1876,10 +1907,13 @@ def record_task_attachment_writeback(
 def record_weekly_review_writeback(db: Database, *, review_id: str) -> None:
     rows = db.fetchall(
         """
-        SELECT task_snapshot_json, note
-        FROM weekly_review_task_entries
-        WHERE review_id = ?
-        ORDER BY updated_at DESC
+        SELECT entry.task_snapshot_json, entry.note
+        FROM weekly_review_task_entries entry
+        LEFT JOIN tasks t ON t.id = entry.task_id
+        WHERE entry.review_id = ?
+          AND entry.content_domain = 'work'
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+        ORDER BY entry.updated_at DESC
         """,
         (review_id,),
     )
@@ -1945,10 +1979,20 @@ def backfill_memory_foundation(
         task_rows = [
             row
             for task_id in normalized_task_ids
-            if (row := db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))) is not None
+            if (row := db.fetchone(
+                "SELECT * FROM tasks WHERE id = ? AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'",
+                (task_id,),
+            )) is not None
         ]
     else:
-        task_rows = db.fetchall("SELECT * FROM tasks ORDER BY updated_at DESC")
+        task_rows = db.fetchall(
+            """
+            SELECT *
+            FROM tasks
+            WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            ORDER BY updated_at DESC
+            """
+        )
 
     if normalized_review_ids:
         review_rows = [
@@ -1963,11 +2007,18 @@ def backfill_memory_foundation(
     if touched_task_ids:
         placeholders = ",".join("?" for _ in touched_task_ids)
         attachment_rows = db.fetchall(
-            f"SELECT * FROM task_attachments WHERE task_id IN ({placeholders}) ORDER BY created_at DESC",
+            f"""
+            SELECT a.*
+            FROM task_attachments a
+            INNER JOIN tasks t ON t.id = a.task_id
+              AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            WHERE a.task_id IN ({placeholders})
+            ORDER BY a.created_at DESC
+            """,
             tuple(touched_task_ids),
         )
     else:
-        attachment_rows = db.fetchall("SELECT * FROM task_attachments ORDER BY created_at DESC")
+        attachment_rows = []
 
     derived_client_ids = _unique(
         [
@@ -1978,7 +2029,15 @@ def backfill_memory_foundation(
                 str(client_id)
                 for review_row in review_rows
                 for entry_row in db.fetchall(
-                    "SELECT task_snapshot_json FROM weekly_review_task_entries WHERE review_id = ? ORDER BY updated_at DESC",
+                    """
+                    SELECT entry.task_snapshot_json
+                    FROM weekly_review_task_entries entry
+                    LEFT JOIN tasks t ON t.id = entry.task_id
+                    WHERE entry.review_id = ?
+                      AND entry.content_domain = 'work'
+                      AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                    ORDER BY entry.updated_at DESC
+                    """,
                     (str(review_row["id"]),),
                 )
                 if isinstance(snapshot := from_json(entry_row["task_snapshot_json"], {}), dict)
@@ -1996,7 +2055,15 @@ def backfill_memory_foundation(
                 str(event_line_id)
                 for review_row in review_rows
                 for entry_row in db.fetchall(
-                    "SELECT task_snapshot_json FROM weekly_review_task_entries WHERE review_id = ? ORDER BY updated_at DESC",
+                    """
+                    SELECT entry.task_snapshot_json
+                    FROM weekly_review_task_entries entry
+                    LEFT JOIN tasks t ON t.id = entry.task_id
+                    WHERE entry.review_id = ?
+                      AND entry.content_domain = 'work'
+                      AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                    ORDER BY entry.updated_at DESC
+                    """,
                     (str(review_row["id"]),),
                 )
                 if isinstance(snapshot := from_json(entry_row["task_snapshot_json"], {}), dict)

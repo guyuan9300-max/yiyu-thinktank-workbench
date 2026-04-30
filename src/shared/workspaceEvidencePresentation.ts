@@ -2,6 +2,7 @@ import type { EvidenceItem } from './types.js';
 
 export type EvidenceSupportLevel = 'strong' | 'reference' | 'background';
 export type EvidenceOpenableKind = 'original_file' | 'machine_markdown' | 'system_card' | 'unknown';
+export type EvidenceCitationRole = 'direct_quote' | 'direct_support' | 'background';
 
 export type EvidenceBusinessTag =
   | 'direct_support'
@@ -34,6 +35,9 @@ export interface EvidenceCitationSnippet {
   retrievalStage?: EvidenceItem['retrievalStage'];
   matchedTerms: string[];
   supportLevel: EvidenceSupportLevel;
+  citationRole?: EvidenceCitationRole | string | null;
+  citationPriority?: number | null;
+  citationReason?: string | null;
   businessTags: EvidenceBusinessTag[];
 }
 
@@ -48,6 +52,9 @@ export interface EvidenceCitationCard {
   openableKind: EvidenceOpenableKind;
   sectionLabel?: string | null;
   supportLevel: EvidenceSupportLevel;
+  citationRole?: EvidenceCitationRole | string | null;
+  citationPriority?: number | null;
+  citationReason?: string | null;
   businessTags: EvidenceBusinessTag[];
   primarySnippet: EvidenceCitationSnippet;
   snippets: EvidenceCitationSnippet[];
@@ -58,6 +65,12 @@ export const EVIDENCE_SUPPORT_LABELS: Record<EvidenceSupportLevel, string> = {
   strong: '强相关',
   reference: '可参考',
   background: '背景材料',
+};
+
+export const EVIDENCE_CITATION_ROLE_LABELS: Record<EvidenceCitationRole, string> = {
+  direct_quote: '直接依据',
+  direct_support: '直接依据',
+  background: '相关背景',
 };
 
 export const EVIDENCE_BUSINESS_TAG_LABELS: Record<EvidenceBusinessTag, string> = {
@@ -185,15 +198,19 @@ function snippetFromEvidence(item: EvidenceItem): EvidenceCitationSnippet {
     retrievalStage: item.retrievalStage,
     matchedTerms: Array.isArray(item.matchedTerms) ? item.matchedTerms : [],
     supportLevel,
+    citationRole: item.citationRole || null,
+    citationPriority: typeof item.citationPriority === 'number' ? item.citationPriority : null,
+    citationReason: item.citationReason || null,
     businessTags: deriveEvidenceBusinessTags(item),
   };
 }
 
-function rankSnippet(snippet: EvidenceCitationSnippet): [number, number, number] {
+function rankSnippet(snippet: EvidenceCitationSnippet): [number, number, number, number] {
+  const priorityRank = -(typeof snippet.citationPriority === 'number' ? snippet.citationPriority : 0);
   const stageRank = STAGE_RANK[String(snippet.retrievalStage || '')] ?? 9;
   const scoreRank = typeof snippet.score === 'number' ? -snippet.score : 0;
   const excerptRank = -cleanText(snippet.excerpt).length;
-  return [stageRank, scoreRank, excerptRank];
+  return [priorityRank, stageRank, scoreRank, excerptRank];
 }
 
 function compareSnippets(a: EvidenceCitationSnippet, b: EvidenceCitationSnippet): number {
@@ -281,6 +298,8 @@ export function buildEvidenceCitationCards(evidence: EvidenceItem[]): EvidenceCi
       }, null);
       const supportLevel = normalizeEvidenceSupportLevel(maxScore);
       const openable = resolveOpenablePath(sortedItems[0]);
+      const citationPriority = typeof primarySnippet.citationPriority === 'number' ? primarySnippet.citationPriority : null;
+      const citationRole = primarySnippet.citationRole || null;
       return {
         id,
         claimTitle: deriveEvidenceClaimTitle(sortedItems[0]),
@@ -292,6 +311,9 @@ export function buildEvidenceCitationCards(evidence: EvidenceItem[]): EvidenceCi
         openableKind: openable.kind,
         sectionLabel: primarySnippet?.sectionLabel,
         supportLevel,
+        citationRole,
+        citationPriority,
+        citationReason: primarySnippet.citationReason || null,
         businessTags: mergeTags(snippets, supportLevel),
         primarySnippet,
         snippets,

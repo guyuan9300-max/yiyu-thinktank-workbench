@@ -106,6 +106,7 @@ def build_meeting_page_context_pack(
             SELECT id, title, description, status, updated_at, client_id, event_line_id
             FROM tasks
             WHERE source_type = 'meeting' AND source_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC
             LIMIT 40
             """,

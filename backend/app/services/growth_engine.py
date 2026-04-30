@@ -1115,6 +1115,8 @@ def ingest_task_growth_candidate(
     ai_service: object | None = None,
 ) -> None:
     ensure_growth_catalog(db, created_at)
+    if _task_is_personal_only(task):
+        return
     timestamp = created_at or _now_iso()
     context = _build_task_signal_context(db, task, source_type=source_type)
     raw_text = _normalize_text(
@@ -1594,6 +1596,10 @@ def reset_review_growth(db: Database, review_id: str) -> None:
     db.execute("DELETE FROM growth_signal_events WHERE review_id = ?", (review_id,))
 
 
+def _task_is_personal_only(task: TaskRecord) -> bool:
+    return task.scopeMode == "PERSONAL_ONLY" or any(tag.scope == "self" for tag in task.tags)
+
+
 def ingest_review_growth(
     db: Database,
     *,
@@ -1608,6 +1614,8 @@ def ingest_review_growth(
     reset_review_growth(db, review.id)
 
     for entry in task_entries:
+        if entry.contentDomain != "work":
+            continue
         signal_text = _normalize_text(
             " ".join(
                 [

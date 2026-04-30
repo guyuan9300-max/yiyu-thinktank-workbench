@@ -40,6 +40,7 @@ import type {
   GrowthWorkbenchSnapshot,
   Task,
 } from '../../../shared/types';
+import { isPersonalOnlyTask } from '../../../shared/taskVisibility';
 
 type FlashLevel = 'success' | 'error';
 
@@ -1202,6 +1203,7 @@ export function GrowthLearningWorkbench({
     const statusRank: Record<Task['status'], number> = { doing: 0, todo: 1, inbox: 2, done: 3, rejected: 4 };
     const priorityRank: Record<Task['priority'], number> = { high: 0, normal: 1, low: 2 };
     return sourceTasks
+      .filter((task) => !isPersonalOnlyTask(task))
       .filter((task) => task.status !== 'done' && task.status !== 'rejected')
       .sort((left, right) => {
         const statusDiff = statusRank[left.status] - statusRank[right.status];

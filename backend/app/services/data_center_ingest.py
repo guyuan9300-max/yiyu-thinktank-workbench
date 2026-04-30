@@ -229,6 +229,19 @@ def _is_private(payload: DataCenterIngestPayload) -> bool:
     return False
 
 
+def _payload_private_task_id(payload: DataCenterIngestPayload) -> str:
+    if payload.sourceType not in {"task", "task_note", "task_attachment", "weekly_review_entry"}:
+        return ""
+    return _text(payload.taskId or payload.sourceId or payload.sourceEntityId)
+
+
+def _task_id_is_private(db: Database, task_id: str) -> bool:
+    if not task_id:
+        return False
+    row = db.fetchone("SELECT scope_mode FROM tasks WHERE id = ?", (task_id,))
+    return _text(_row_get(row, "scope_mode")).upper() == "PERSONAL_ONLY"
+
+
 def _fact_value(payload: DataCenterIngestPayload) -> str:
     title = _text(payload.title) or payload.sourceType
     body = _normalize_body(payload.bodyText)
@@ -791,6 +804,15 @@ def ingest_user_input(
         )
 
     ensure_data_center_ingest_schema(db)
+    if _task_id_is_private(db, _payload_private_task_id(loaded)):
+        return {
+            "ingestEventId": None,
+            "status": "skipped_private_task",
+            "documentId": loaded.documentId,
+            "memoryFactCount": 0,
+            "contentHash": "",
+            "errorMessage": "",
+        }
     content_hash = _payload_hash(loaded)
     private = _is_private(loaded)
     has_content = bool(_text(loaded.bodyText) or loaded.documentId)
@@ -886,6 +908,44 @@ def _task_visibility(row: Any | None) -> tuple[str, str]:
     return "work", "project_public"
 
 
+def _task_row_is_private(row: Any | None) -> bool:
+    return _text(_row_get(row, "scope_mode")).upper() == "PERSONAL_ONLY"
+
+
+def purge_private_task_ingest_events(db: Database) -> int:
+    ensure_data_center_ingest_schema(db)
+    task_rows = db.fetchall(
+        """
+        SELECT id
+        FROM tasks
+        WHERE COALESCE(scope_mode, 'COLLAB_SHARED') = 'PERSONAL_ONLY'
+        """
+    )
+    task_ids = [_text(row["id"]) for row in task_rows if _text(row["id"])]
+    if not task_ids:
+        return 0
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT id
+        FROM data_center_ingest_events
+        WHERE task_id IN ({placeholders})
+           OR source_id IN ({placeholders})
+           OR source_entity_id IN ({placeholders})
+        """,
+        (*task_ids, *task_ids, *task_ids),
+    )
+    event_ids = [_text(row["id"]) for row in rows if _text(row["id"])]
+    if not event_ids:
+        return 0
+    event_placeholders = ",".join("?" for _ in event_ids)
+    db.execute(
+        f"DELETE FROM data_center_ingest_events WHERE id IN ({event_placeholders})",
+        tuple(event_ids),
+    )
+    return len(event_ids)
+
+
 def _task_payload_base(row: Any) -> dict[str, Any]:
     content_domain, visibility_scope = _task_visibility(row)
     organization_id = _text(_row_get(row, "organization_id"))
@@ -954,6 +1014,8 @@ def ingest_task_by_id(db: Database, data_dir: Path | str, task_id: str) -> dict[
     row = _task_row(db, task_id)
     if not row:
         return None
+    if _task_row_is_private(row):
+        return None
     note_text = _task_note_text(db, task_id)
     payload = {
         "sourceType": "task",
@@ -988,6 +1050,8 @@ def ingest_task_note_by_id(
     note: str | None = None,
 ) -> dict[str, Any] | None:
     row = _task_row(db, task_id)
+    if _task_row_is_private(row):
+        return None
     if note is None:
         note_row = db.fetchone(
             """
@@ -1043,6 +1107,8 @@ def ingest_task_attachment_by_id(
     if not row:
         return None
     task = _task_row(db, _text(_row_get(row, "task_id")))
+    if _task_row_is_private(task):
+        return None
     content_domain, visibility_scope = _task_visibility(task)
     title = _text(_row_get(row, "title")) or "任务附件"
     body = f"任务附件：{title}\n文件类型：{_text(_row_get(row, 'kind'))}\n文件路径：{_text(_row_get(row, 'path'))}"
@@ -1209,6 +1275,8 @@ def _ingest_weekly_review_entry(db: Database, data_dir: Path | str, row: Any) ->
         snapshot = {}
     task_id = _text(_row_get(row, "task_id"))
     task = _task_row(db, task_id)
+    if _task_row_is_private(task):
+        return None
     content_domain = _text(_row_get(row, "content_domain")) or "work"
     visibility_scope = "self" if content_domain.lower() in PRIVATE_CONTENT_DOMAINS else "project_public"
     client_id = _text(snapshot.get("clientId")) or _text(_row_get(task, "resolved_client_id") if task else "")
@@ -1392,7 +1460,14 @@ def backfill_data_center_ingest(
     for source_type in selected:
         try:
             if source_type == "task":
-                for row in _rows("SELECT id FROM tasks ORDER BY updated_at DESC"):
+                for row in _rows(
+                    """
+                    SELECT id
+                    FROM tasks
+                    WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                    ORDER BY updated_at DESC
+                    """
+                ):
                     if ingest_task_by_id(db, data_dir, _text(row["id"])):
                         counts[source_type] += 1
             elif source_type == "task_note":

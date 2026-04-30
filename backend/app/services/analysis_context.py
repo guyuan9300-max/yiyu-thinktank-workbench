@@ -362,6 +362,7 @@ def build_client_page_context_pack(
             SELECT t.id, t.title, t.description, t.status, t.updated_at, t.client_id, t.event_line_id
             FROM tasks t
             WHERE t.client_id = ?
+              AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY t.updated_at DESC
             LIMIT 30
             """,
@@ -718,8 +719,9 @@ def build_task_page_context_pack(
     if not task_row:
         raise ValueError("Task not found")
 
-    client_id = str(task_row["client_id"] or "").strip() or None
-    event_line_id = str(task_row["event_line_id"] or "").strip() or None
+    is_personal_task = str(task_row["scope_mode"] or "").strip().upper() == "PERSONAL_ONLY"
+    client_id = None if is_personal_task else str(task_row["client_id"] or "").strip() or None
+    event_line_id = None if is_personal_task else str(task_row["event_line_id"] or "").strip() or None
 
     task_payload = {
         "id": str(task_row["id"]),
@@ -730,14 +732,14 @@ def build_task_page_context_pack(
         "due_date": str(task_row["due_date"] or ""),
         "owner_name": str(task_row["owner_name"] or ""),
         "client_id": client_id,
-        "client_name": str(task_row["client_name"] or "") if task_row["client_name"] else "",
+        "client_name": "" if is_personal_task else str(task_row["client_name"] or "") if task_row["client_name"] else "",
         "event_line_id": event_line_id,
-        "event_line_name": str(task_row["event_line_name"] or "") if task_row["event_line_name"] else "",
-        "event_line_stage": str(task_row["event_line_stage"] or "") if task_row["event_line_stage"] else "",
-        "event_line_summary": str(task_row["event_line_summary"] or "") if task_row["event_line_summary"] else "",
-        "event_line_blocker": str(task_row["event_line_blocker"] or "") if task_row["event_line_blocker"] else "",
-        "event_line_next_step": str(task_row["event_line_next_step"] or "") if task_row["event_line_next_step"] else "",
-        "event_line_recent_decision": str(task_row["event_line_recent_decision"] or "") if task_row["event_line_recent_decision"] else "",
+        "event_line_name": "" if is_personal_task else str(task_row["event_line_name"] or "") if task_row["event_line_name"] else "",
+        "event_line_stage": "" if is_personal_task else str(task_row["event_line_stage"] or "") if task_row["event_line_stage"] else "",
+        "event_line_summary": "" if is_personal_task else str(task_row["event_line_summary"] or "") if task_row["event_line_summary"] else "",
+        "event_line_blocker": "" if is_personal_task else str(task_row["event_line_blocker"] or "") if task_row["event_line_blocker"] else "",
+        "event_line_next_step": "" if is_personal_task else str(task_row["event_line_next_step"] or "") if task_row["event_line_next_step"] else "",
+        "event_line_recent_decision": "" if is_personal_task else str(task_row["event_line_recent_decision"] or "") if task_row["event_line_recent_decision"] else "",
         "updated_at": str(task_row["updated_at"] or ""),
     }
 
@@ -796,14 +798,15 @@ def build_task_page_context_pack(
     notebook_summary: dict[str, Any] | None = None
     memory_facts: list[str] = []
 
-    memory_hints, _background_readiness, linked_facts = get_task_memory_enrichment(
-        db,
-        task_id=task_id,
-        client_id=client_id,
-        event_line_id=event_line_id,
-    )
-    memory_facts.extend(memory_hints)
-    memory_facts.extend([fact.factValue for fact in linked_facts[:6] if fact.factValue])
+    if not is_personal_task:
+        memory_hints, _background_readiness, linked_facts = get_task_memory_enrichment(
+            db,
+            task_id=task_id,
+            client_id=client_id,
+            event_line_id=event_line_id,
+        )
+        memory_facts.extend(memory_hints)
+        memory_facts.extend([fact.factValue for fact in linked_facts[:6] if fact.factValue])
 
     event_line_memory = None
     if event_line_id:
@@ -879,6 +882,7 @@ def build_task_page_context_pack(
             SELECT id, title, description, status, updated_at, event_line_id
             FROM tasks
             WHERE id != ? AND (client_id = ? OR (? != '' AND event_line_id = ?))
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC
             LIMIT 16
             """,
@@ -1257,7 +1261,15 @@ def build_event_line_page_context_pack(
     client_id = str(row["primary_client_id"] or "").strip() or None
     if not client_id:
         task_client = db.fetchone(
-            "SELECT client_id FROM tasks WHERE event_line_id = ? AND COALESCE(client_id, '') != '' ORDER BY updated_at DESC LIMIT 1",
+            """
+            SELECT client_id
+            FROM tasks
+            WHERE event_line_id = ?
+              AND COALESCE(client_id, '') != ''
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
             (event_line_id,),
         )
         if task_client and task_client["client_id"]:
@@ -1269,6 +1281,7 @@ def build_event_line_page_context_pack(
             SELECT id, title, description, status, owner_name, due_date, updated_at, client_id
             FROM tasks
             WHERE event_line_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC
             LIMIT 30
             """,
@@ -1466,6 +1479,7 @@ def build_project_module_page_context_pack(
             SELECT id, title, description, status, owner_name, due_date, updated_at, event_line_id
             FROM tasks
             WHERE project_module_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC
             LIMIT 30
             """,
@@ -1478,6 +1492,7 @@ def build_project_module_page_context_pack(
         FROM tasks t
         JOIN meetings m ON m.id = t.source_id
         WHERE t.project_module_id = ? AND t.source_type = 'meeting'
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY m.updated_at DESC
         LIMIT 20
         """,
@@ -1633,6 +1648,7 @@ def build_project_flow_page_context_pack(
             SELECT id, title, description, status, owner_name, due_date, updated_at, event_line_id
             FROM tasks
             WHERE project_flow_id = ?
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             ORDER BY updated_at DESC
             LIMIT 30
             """,
@@ -1645,6 +1661,7 @@ def build_project_flow_page_context_pack(
         FROM tasks t
         JOIN meetings m ON m.id = t.source_id
         WHERE t.project_flow_id = ? AND t.source_type = 'meeting'
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY m.updated_at DESC
         LIMIT 20
         """,

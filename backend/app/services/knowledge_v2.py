@@ -2408,7 +2408,15 @@ def materialize_workspace_native_documents(db: Database, *, data_dir: Path, clie
         ):
             counts["meeting_doc"] += 1
 
-    task_rows = db.fetchall("SELECT * FROM tasks WHERE client_id = ?", (client_id,))
+    task_rows = db.fetchall(
+        """
+        SELECT *
+        FROM tasks
+        WHERE client_id = ?
+          AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+        """,
+        (client_id,),
+    )
     for row in task_rows:
         content = _render_task_doc_text(db, task_id=str(row["id"]), row=row)
         if upsert_canonical_text_document(

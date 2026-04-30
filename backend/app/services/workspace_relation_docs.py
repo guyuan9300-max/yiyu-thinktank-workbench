@@ -76,6 +76,7 @@ def _task_rows_for_client(db: Database, client_id: str) -> list[Any]:
         LEFT JOIN project_flows pf ON pf.id = t.project_flow_id
         LEFT JOIN event_lines el ON el.id = t.event_line_id
         WHERE t.client_id = ?
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY COALESCE(NULLIF(t.updated_at, ''), t.created_at) DESC
         """,
         (client_id,),
@@ -146,6 +147,7 @@ def _render_event_line_doc(db: Database, *, client_id: str, client_name: str, ro
         LEFT JOIN project_flows pf ON pf.id = t.project_flow_id
         LEFT JOIN event_lines el ON el.id = t.event_line_id
         WHERE t.client_id = ? AND t.event_line_id = ?
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY COALESCE(NULLIF(t.updated_at, ''), t.created_at) DESC
         LIMIT 20
         """,
@@ -211,7 +213,10 @@ def _materialize_event_line_docs(
         """
         SELECT DISTINCT el.*
         FROM event_lines el
-        LEFT JOIN tasks t ON t.event_line_id = el.id AND t.client_id = ?
+        LEFT JOIN tasks t
+          ON t.event_line_id = el.id
+         AND t.client_id = ?
+         AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         WHERE el.primary_client_id = ? OR t.id IS NOT NULL
         ORDER BY COALESCE(NULLIF(el.updated_at, ''), el.created_at) DESC
         """,
@@ -224,7 +229,13 @@ def _materialize_event_line_docs(
             sources.append(("strong", "事件线 primary_client_id 直接指向当前客户。"))
         task_count = int(
             db.scalar(
-                "SELECT COUNT(*) FROM tasks WHERE client_id = ? AND event_line_id = ?",
+                """
+                SELECT COUNT(*)
+                FROM tasks
+                WHERE client_id = ?
+                  AND event_line_id = ?
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                """,
                 (client_id, str(_row_value(row, "id"))),
             )
             or 0
@@ -295,6 +306,7 @@ def _render_project_module_doc(db: Database, *, client_id: str, client_name: str
         LEFT JOIN project_flows pf ON pf.id = t.project_flow_id
         LEFT JOIN event_lines el ON el.id = t.event_line_id
         WHERE t.client_id = ? AND t.project_module_id = ?
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY COALESCE(NULLIF(t.updated_at, ''), t.created_at) DESC
         LIMIT 20
         """,
@@ -354,6 +366,7 @@ def _render_project_flow_doc(db: Database, *, client_id: str, client_name: str, 
         LEFT JOIN project_flows pf ON pf.id = t.project_flow_id
         LEFT JOIN event_lines el ON el.id = t.event_line_id
         WHERE t.client_id = ? AND t.project_flow_id = ?
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY COALESCE(NULLIF(t.updated_at, ''), t.created_at) DESC
         LIMIT 20
         """,
@@ -450,7 +463,10 @@ def _review_relation_sources(db: Database, *, client_id: str, row: Any, client_t
             SELECT COUNT(*)
             FROM weekly_review_task_entries e
             JOIN tasks t ON t.id = e.task_id
-            WHERE e.review_id = ? AND t.client_id = ?
+            WHERE e.review_id = ?
+              AND t.client_id = ?
+              AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private')
+              AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             """,
             (review_id, client_id),
         )
@@ -469,6 +485,8 @@ def _review_relation_sources(db: Database, *, client_id: str, row: Any, client_t
             LEFT JOIN project_flows pf ON pf.id = t.project_flow_id
             LEFT JOIN event_lines el ON el.id = t.event_line_id
             WHERE e.review_id = ?
+              AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private')
+              AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
               AND (
                 pm.client_id = ?
                 OR pf.client_id = ?
@@ -527,6 +545,8 @@ def _render_review_doc(db: Database, *, client_id: str, client_name: str, row: A
         FROM weekly_review_task_entries e
         LEFT JOIN tasks t ON t.id = e.task_id
         WHERE e.review_id = ?
+          AND LOWER(COALESCE(e.content_domain, 'work')) NOT IN ('personal', 'private')
+          AND (t.id IS NULL OR COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY')
         ORDER BY e.updated_at DESC
         LIMIT 20
         """,
@@ -554,7 +574,21 @@ def _materialize_review_docs(
     client_terms = _common_client_terms(client_name, _clean_text(_row_value(client_row, "alias")) if client_row else "")
     project_rows = db.fetchall("SELECT name, alias FROM project_modules WHERE client_id = ?", (client_id,))
     flow_rows = db.fetchall("SELECT name FROM project_flows WHERE client_id = ?", (client_id,))
-    event_line_rows = db.fetchall("SELECT name FROM event_lines WHERE primary_client_id = ? OR id IN (SELECT event_line_id FROM tasks WHERE client_id = ? AND event_line_id IS NOT NULL)", (client_id, client_id))
+    event_line_rows = db.fetchall(
+        """
+        SELECT name
+        FROM event_lines
+        WHERE primary_client_id = ?
+           OR id IN (
+                SELECT event_line_id
+                FROM tasks
+                WHERE client_id = ?
+                  AND event_line_id IS NOT NULL
+                  AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+           )
+        """,
+        (client_id, client_id),
+    )
     project_terms = [_clean_text(_row_value(row, "name")) for row in project_rows] + [_clean_text(_row_value(row, "alias")) for row in project_rows] + [_clean_text(_row_value(row, "name")) for row in flow_rows]
     event_line_terms = [_clean_text(_row_value(row, "name")) for row in event_line_rows]
 
@@ -625,6 +659,7 @@ def _materialize_calendar_doc(
         LEFT JOIN project_flows pf ON pf.id = t.project_flow_id
         LEFT JOIN event_lines el ON el.id = t.event_line_id
         WHERE t.client_id = ?
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
           AND ({date_condition})
         ORDER BY {date_order} DESC
         LIMIT 80

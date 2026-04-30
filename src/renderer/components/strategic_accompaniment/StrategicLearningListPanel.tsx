@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type { GrowthContextLink, Task } from '../../../shared/types';
+import { filterSharedTasks } from '../../../shared/taskVisibility';
 
 export type StrategicLearningTaskPayload = {
   title: string;
@@ -29,7 +30,7 @@ export function StrategicLearningListPanel({
   onCreateTaskFromLearning,
   flash,
 }: StrategicLearningListPanelProps) {
-  const recentTasks = tasks.slice(0, 5);
+  const recentTasks = filterSharedTasks(tasks).slice(0, 5);
   return (
     <div className="rounded-3xl border border-slate-100 bg-white p-5">
       <div className="flex items-start justify-between gap-3">

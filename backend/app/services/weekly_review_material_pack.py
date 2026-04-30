@@ -118,6 +118,8 @@ def _task_visibility(row: Any) -> tuple[str, str]:
 
 def _task_row_visible(row: Any, context: DataCenterAccessContext) -> bool:
     visibility_scope, content_domain = _task_visibility(row)
+    if _is_private_visibility(visibility_scope, content_domain):
+        return False
     department_id = _text(_row_get(row, "event_department_id"))
     return _row_visible(
         context=context,
@@ -253,6 +255,13 @@ def build_weekly_review_material_pack(
         WHERE entry.week_label = ?
           AND vd.canonical_kind = 'review_entry_doc'
           AND vd.origin_type = 'weekly_review_entry'
+          AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private')
+          AND NOT EXISTS (
+                SELECT 1
+                FROM tasks t
+                WHERE t.id = entry.task_id
+                  AND COALESCE(t.scope_mode, 'COLLAB_SHARED') = 'PERSONAL_ONLY'
+          )
           AND {document_access.sql}
         ORDER BY entry.updated_at DESC
         """,
@@ -268,6 +277,13 @@ def build_weekly_review_material_pack(
           ON entry.id = COALESCE(NULLIF(e.source_entity_id, ''), e.source_id)
         WHERE e.source_type = 'weekly_review_entry'
           AND e.week_label = ?
+          AND LOWER(COALESCE(entry.content_domain, 'work')) NOT IN ('personal', 'private')
+          AND NOT EXISTS (
+                SELECT 1
+                FROM tasks t
+                WHERE t.id = entry.task_id
+                  AND COALESCE(t.scope_mode, 'COLLAB_SHARED') = 'PERSONAL_ONLY'
+          )
           AND {ingest_access.sql}
         ORDER BY entry.updated_at DESC
         """,
@@ -305,6 +321,7 @@ def build_weekly_review_material_pack(
                 LEFT JOIN clients c ON c.id = t.client_id
                 LEFT JOIN event_lines el ON el.id = t.event_line_id
                 WHERE t.id IN ({placeholders})
+                  AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
                 tuple(task_ids),
             )
@@ -328,6 +345,7 @@ def build_weekly_review_material_pack(
                 LEFT JOIN clients c ON c.id = t.client_id
                 LEFT JOIN event_lines el ON el.id = t.event_line_id
                 WHERE (date(t.due_date) BETWEEN ? AND ? OR date(t.created_at) BETWEEN ? AND ?)
+                  AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
                 (str(start), str(end), str(start), str(end)),
             )

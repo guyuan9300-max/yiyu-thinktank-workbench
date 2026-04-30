@@ -1115,6 +1115,7 @@ export function TaskCalendarView({
                         onDragOver={(event) => {
                           const draggedTaskId = resolveDraggedTaskId(event);
                           if (!draggedTaskId) return;
+                          if (isLocalDraftTaskId(draggedTaskId)) return;
                           event.preventDefault();
                           if (dragTargetDay !== cellDate.getTime()) {
                             setDragTargetDay(cellDate.getTime());
@@ -1411,6 +1412,7 @@ export function TaskCalendarView({
                                 onDragOver={(event) => {
                                   const draggedTaskId = resolveDraggedTaskId(event);
                                   if (!draggedTaskId) return;
+                                  if (isLocalDraftTaskId(draggedTaskId)) return;
                                   event.preventDefault();
                                   if (dragTargetDay !== day.getTime()) setDragTargetDay(day.getTime());
                                   if (dragTargetMinute !== minute) setDragTargetMinute(minute);
@@ -1507,14 +1509,20 @@ export function TaskCalendarView({
                               const height = Math.max(40, ((effectiveEndMinute - startMinute) / DAY_TIMELINE_SLOT_MINUTES) * DAY_TIMELINE_SLOT_HEIGHT - 4);
                               const chipStyle = calendarChipStyle(task, clientColorById);
                               const isResizing = resizingTaskId === task.id;
+                              const isTaskLocalDraft = isLocalDraftTaskId(task.id);
                               return (
                                 <div
                                   key={task.id}
                                   role="button"
                                   tabIndex={0}
-                                  draggable={!isResizing}
+                                  draggable={!isResizing && !isTaskLocalDraft}
                                   onDragStart={(event) => {
                                     event.stopPropagation();
+                                    if (isTaskLocalDraft) {
+                                      event.preventDefault();
+                                      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                      return;
+                                    }
                                     event.dataTransfer.effectAllowed = 'move';
                                     event.dataTransfer.setData('text/plain', task.id);
                                     dragDropHandledRef.current = false;
@@ -1528,7 +1536,7 @@ export function TaskCalendarView({
                                     }
                                     dragDropHandledRef.current = false;
                                   }}
-                                  className={`group absolute rounded-2xl border px-2.5 py-2 pb-5 text-left shadow-sm transition cursor-grab active:cursor-grabbing ${isResizing ? 'cursor-ns-resize ring-2 ring-[#5B7BFE]/40' : draggingTaskId === task.id ? 'opacity-50' : ''}`}
+                                  className={`group absolute rounded-2xl border px-2.5 py-2 pb-5 text-left shadow-sm transition ${isTaskLocalDraft ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${isResizing ? 'cursor-ns-resize ring-2 ring-[#5B7BFE]/40' : draggingTaskId === task.id ? 'opacity-50' : ''}`}
                                   style={{
                                     top: `${top + 2}px`,
                                     left,
@@ -1583,13 +1591,21 @@ export function TaskCalendarView({
                                     </button>
                                   </div>
                                   <div
-                                    className={`absolute inset-x-0 bottom-0 flex h-5 cursor-ns-resize items-end justify-center rounded-b-2xl transition-opacity ${isResizing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
-                                    onMouseDown={(event) => handleStartWeekTaskResize(task.id, startMinute, durationMinutes, event)}
+                                    className={`absolute inset-x-0 bottom-0 flex h-5 items-end justify-center rounded-b-2xl transition-opacity ${isTaskLocalDraft ? 'cursor-default' : 'cursor-ns-resize'} ${isResizing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                                    onMouseDown={(event) => {
+                                      if (isTaskLocalDraft) {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                        return;
+                                      }
+                                      handleStartWeekTaskResize(task.id, startMinute, durationMinutes, event);
+                                    }}
                                     onClick={(event) => {
                                       event.preventDefault();
                                       event.stopPropagation();
                                     }}
-                                    title="拖动底边调整时长"
+                                    title={isTaskLocalDraft ? LOCAL_DRAFT_NOTICE : '拖动底边调整时长'}
                                   >
                                     <div className="mb-1 flex items-center justify-center rounded-full bg-white/92 px-2 py-0.5 text-slate-400 shadow-sm ring-1 ring-slate-200">
                                       <MoveVertical size={12} />

@@ -1818,7 +1818,8 @@ def _build_metrics(db: Database, client_id: str) -> list[DigitalAssetMetricRecor
         SELECT COUNT(1) AS count
         FROM tasks t
         LEFT JOIN event_lines e ON t.event_line_id = e.id
-        WHERE e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)
+        WHERE (e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?))
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         """,
         (client_id, client_id),
     )
@@ -1977,7 +1978,8 @@ def _collect_sources(db: Database, client_id: str) -> list[AssetSource]:
                t.next_action, t.recent_decision, t.tags_json, t.updated_at
         FROM tasks t
         LEFT JOIN event_lines e ON t.event_line_id = e.id
-        WHERE e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?)
+        WHERE (e.primary_client_id = ? OR (t.source_type = 'client' AND t.source_id = ?))
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
         ORDER BY t.updated_at DESC
         LIMIT 120
         """,

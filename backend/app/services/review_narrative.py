@@ -377,7 +377,8 @@ def _weekly_mainline_task_lookup_ids(db: Database, task_ids: list[str]) -> dict[
             f"""
             SELECT id, cloud_id
             FROM tasks
-            WHERE id IN ({placeholders}) OR cloud_id IN ({placeholders})
+            WHERE (id IN ({placeholders}) OR cloud_id IN ({placeholders}))
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
             """,
             tuple([*task_ids, *task_ids]),
         )
@@ -400,7 +401,12 @@ def _weekly_mainline_task_descriptions(db: Database, task_ids: list[str]) -> dic
     placeholders = ",".join("?" for _ in task_ids)
     try:
         rows = db.fetchall(
-            f"SELECT id, description FROM tasks WHERE id IN ({placeholders})",
+            f"""
+            SELECT id, description
+            FROM tasks
+            WHERE id IN ({placeholders})
+              AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+            """,
             tuple(task_ids),
         )
     except Exception:
