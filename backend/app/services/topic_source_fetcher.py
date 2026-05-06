@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from html import unescape
-from urllib.parse import urljoin, urlparse
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -43,6 +45,208 @@ class PreferredSourceHit:
     source_url: str
     published_at: str | None
     provider: str
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class SourceConfigFetchResult:
+    hits: list[PreferredSourceHit]
+    status: str
+    error: str = ""
+
+
+def fetch_rsshub_source_hits(source_url: str, *, max_items: int = 8) -> SourceConfigFetchResult:
+    url = (source_url or "").strip()
+    if not url:
+        return SourceConfigFetchResult(hits=[], status="needs_manual_config", error="RSSHub route is empty")
+    try:
+        with httpx.Client(timeout=httpx.Timeout(12.0, connect=6.0), headers=FETCH_HEADERS, follow_redirects=True) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            try:
+                ET.fromstring(response.text)
+            except ET.ParseError as error:
+                return SourceConfigFetchResult(hits=[], status="parse_failed", error=str(error)[:240])
+            hits = _parse_feed_hits(response.text, source_url=url)[:max_items]
+    except Exception as error:
+        return SourceConfigFetchResult(hits=[], status="access_failed", error=str(error)[:240])
+
+    if not hits:
+        return SourceConfigFetchResult(hits=[], status="no_new_items")
+    return SourceConfigFetchResult(
+        hits=[
+            PreferredSourceHit(
+                title=hit.title,
+                summary=hit.summary,
+                source=hit.source,
+                source_url=hit.source_url,
+                published_at=hit.published_at,
+                provider="rsshub",
+            )
+            for hit in hits
+        ],
+        status="access_ok",
+    )
+
+
+def fetch_easyspider_source_hits(task_config: str, *, max_items: int = 8) -> SourceConfigFetchResult:
+    raw_config = (task_config or "").strip()
+    if not raw_config:
+        return SourceConfigFetchResult(hits=[], status="needs_manual_config", error="EasySpider output JSON is not configured")
+
+    try:
+        raw_payload = _read_easyspider_payload(raw_config)
+    except FileNotFoundError:
+        return SourceConfigFetchResult(hits=[], status="needs_manual_config", error="EasySpider output file not found")
+    except OSError as error:
+        return SourceConfigFetchResult(hits=[], status="access_failed", error=str(error)[:240])
+
+    try:
+        parsed = json.loads(raw_payload)
+    except json.JSONDecodeError as error:
+        return SourceConfigFetchResult(hits=[], status="parse_failed", error=str(error)[:240])
+
+    rows = _easyspider_rows(parsed)
+    if rows is None:
+        return SourceConfigFetchResult(hits=[], status="structure_changed", error="EasySpider output JSON structure is not recognized")
+    if not rows:
+        return SourceConfigFetchResult(hits=[], status="no_new_items")
+
+    hits: list[PreferredSourceHit] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = _first_text(row, ("title", "标题", "name", "名称"))
+        source_url = _first_text(row, ("sourceUrl", "source_url", "url", "link", "href", "链接", "网址"))
+        if not title or not source_url:
+            continue
+        summary = _first_text(row, ("summary", "description", "desc", "content", "正文", "摘要", "简介")) or title
+        source = _first_text(row, ("source", "sourceName", "site", "来源", "站点")) or _domain_label(source_url)
+        published_at = _first_text(row, ("publishedAt", "published_at", "pubDate", "date", "time", "发布时间"))
+        hits.append(
+            PreferredSourceHit(
+                title=title[:120],
+                summary=summary[:180],
+                source=source[:80],
+                source_url=source_url,
+                published_at=_normalize_datetime(published_at) or published_at or None,
+                provider="easyspider",
+            )
+        )
+        if len(hits) >= max_items:
+            break
+
+    if not hits:
+        return SourceConfigFetchResult(hits=[], status="structure_changed", error="EasySpider rows have no usable title/url fields")
+    return SourceConfigFetchResult(hits=hits, status="access_ok")
+
+
+def fetch_trendradar_source_hits(task_config: str, *, max_items: int = 8) -> SourceConfigFetchResult:
+    raw_config = (task_config or "").strip()
+    if not raw_config:
+        return SourceConfigFetchResult(hits=[], status="needs_manual_config", error="TrendRadar output JSON is not configured")
+
+    try:
+        raw_payload = _read_easyspider_payload(raw_config)
+    except FileNotFoundError:
+        return SourceConfigFetchResult(hits=[], status="needs_manual_config", error="TrendRadar output file not found")
+    except OSError as error:
+        return SourceConfigFetchResult(hits=[], status="access_failed", error=str(error)[:240])
+
+    try:
+        parsed = json.loads(raw_payload)
+    except json.JSONDecodeError as error:
+        return SourceConfigFetchResult(hits=[], status="parse_failed", error=str(error)[:240])
+
+    rows = _easyspider_rows(parsed)
+    if rows is None:
+        return SourceConfigFetchResult(hits=[], status="structure_changed", error="TrendRadar output JSON structure is not recognized")
+    if not rows:
+        return SourceConfigFetchResult(hits=[], status="no_new_items")
+
+    hits: list[PreferredSourceHit] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = _first_text(row, ("title", "topic", "keyword", "关键词", "议题", "标题", "name"))
+        if not title:
+            continue
+        summary = _first_text(row, ("summary", "description", "insight", "摘要", "说明", "观点")) or title
+        source_url = _first_text(row, ("sourceUrl", "source_url", "url", "link", "href", "链接", "网址"))
+        source_scope = _first_text(row, ("sourceScope", "source_scope", "scope", "样本范围", "来源范围")) or "公开来源样本"
+        time_range = _first_text(row, ("timeRange", "time_range", "period", "时间范围", "样本时间")) or ""
+        sample_count_raw = _first_text(row, ("sampleCount", "sample_count", "count", "样本数", "数量"))
+        sample_count = _parse_int(sample_count_raw)
+        trend_confidence = (_first_text(row, ("trendConfidence", "trend_confidence", "confidence", "趋势可信度")) or "").lower()
+        if trend_confidence not in {"high", "medium", "low"}:
+            trend_confidence = "low" if sample_count < 20 else "medium"
+        source = _first_text(row, ("source", "sourceName", "platform", "来源", "平台")) or "TrendRadar"
+        published_at = _first_text(row, ("publishedAt", "published_at", "date", "time", "采样时间"))
+        hits.append(
+            PreferredSourceHit(
+                title=title[:120],
+                summary=summary[:180],
+                source=source[:80],
+                source_url=source_url,
+                published_at=_normalize_datetime(published_at) or published_at or None,
+                provider="trendradar",
+                metadata={
+                    "sourceScope": source_scope,
+                    "timeRange": time_range,
+                    "sampleCount": sample_count,
+                    "trendConfidence": trend_confidence,
+                },
+            )
+        )
+        if len(hits) >= max_items:
+            break
+
+    if not hits:
+        return SourceConfigFetchResult(hits=[], status="structure_changed", error="TrendRadar rows have no usable topic/title fields")
+    return SourceConfigFetchResult(hits=hits, status="access_ok")
+
+
+def _read_easyspider_payload(raw_config: str) -> str:
+    stripped = raw_config.strip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        return stripped
+    parsed = urlparse(stripped)
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path)).expanduser().read_text(encoding="utf-8")
+    candidate_path = Path(stripped).expanduser()
+    if candidate_path.exists() and candidate_path.is_file():
+        return candidate_path.read_text(encoding="utf-8")
+    raise FileNotFoundError(stripped)
+
+
+def _easyspider_rows(parsed: object) -> list[object] | None:
+    if isinstance(parsed, list):
+        return parsed
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("items", "data", "results", "records", "rows"):
+        value = parsed.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def _first_text(row: dict[object, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = _clean_text(str(value))
+        if text:
+            return text
+    return ""
+
+
+def _parse_int(value: str) -> int:
+    try:
+        return max(0, int(float(str(value or "0").strip())))
+    except Exception:
+        return 0
 
 
 def fetch_preferred_source_hits(

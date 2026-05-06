@@ -33,7 +33,7 @@ export function TopicIntelChatPanel({ messages, draft, loading, onDraftChange, o
         <MessageCircle size={16} className="text-[#5B7BFE]" />
         <p className="text-[12px] font-bold text-gray-900">围绕这篇情报继续问</p>
       </div>
-      <p className="text-[12px] text-gray-500 mt-1">如果你对这篇新闻还有疑问，可以直接问大周。它会只围绕当前情报和已有解析继续回答。</p>
+      <p className="text-[12px] text-gray-500 mt-1">如果你对这篇新闻还有疑问，可以直接问情报助手。它会只围绕当前情报和已有解析继续回答。</p>
 
       <div
         ref={scrollRef}
@@ -61,7 +61,7 @@ export function TopicIntelChatPanel({ messages, draft, loading, onDraftChange, o
         {loading && (
           <div className="flex justify-start">
             <div className="max-w-[88%] rounded-[18px] px-4 py-3 bg-white text-gray-500 border border-gray-100">
-              <p className="text-[14px] leading-7">大周正在结合这篇情报继续思考…</p>
+              <p className="text-[14px] leading-7">情报助手正在结合这篇情报继续思考…</p>
             </div>
           </div>
         )}

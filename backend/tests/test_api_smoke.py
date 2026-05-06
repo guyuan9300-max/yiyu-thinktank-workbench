@@ -16,6 +16,7 @@ from app.models import AiStructuredResponse
 from app.services.ai import AiInvocationError
 from app.services.knowledge_base import CitationMatch, RetrievalBundle
 from app.services.topic_capture import TopicSearchHit
+from app.services.topic_source_fetcher import PreferredSourceHit, SourceConfigFetchResult
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -30,6 +31,7 @@ def make_app_only(tmp_path: Path):
 
 
 def wait_for_topic_insight_status(client: TestClient, candidate_id: str, *, expected: str = "ready", timeout: float = 8.0):
+    triggered = False
     deadline = time.time() + timeout
     while time.time() < deadline:
         row = client.app.state.app_state.db.fetchone(
@@ -38,6 +40,9 @@ def wait_for_topic_insight_status(client: TestClient, candidate_id: str, *, expe
         )
         if row is not None and row["insight_status"] == expected:
             return row
+        if expected == "ready" and row is not None and not triggered:
+            client.post(f"/api/v1/topics/candidates/{candidate_id}/insights")
+            triggered = True
         time.sleep(0.1)
     return client.app.state.app_state.db.fetchone(
         "SELECT insight_status FROM topic_candidates WHERE id = ?",
@@ -2315,7 +2320,7 @@ def test_topic_candidate_insight_extracts_points_reasons_and_practical_uses(tmp_
     assert len(payload["discussionPrompts"]) >= 1
 
 
-def test_topic_candidate_prefetches_insight_on_create(tmp_path: Path):
+def test_topic_candidate_generates_deep_analysis_on_demand(tmp_path: Path):
     client = make_client(tmp_path)
 
     radar = client.post(
@@ -2341,12 +2346,21 @@ def test_topic_candidate_prefetches_insight_on_create(tmp_path: Path):
     assert created.status_code == 200
     candidate_id = created.json()["id"]
 
-    wait_for_topic_insight_status(client, candidate_id)
     db = client.app.state.app_state.db
+    candidate_row = db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
+    assert candidate_row is not None
+    assert candidate_row["insight_status"] == "pending"
+    assert db.fetchone("SELECT * FROM topic_candidate_insights WHERE candidate_id = ?", (candidate_id,)) is None
+
+    insight = client.post(f"/api/v1/topics/candidates/{candidate_id}/insights")
+    assert insight.status_code == 200
     row = db.fetchone("SELECT * FROM topic_candidate_insights WHERE candidate_id = ?", (candidate_id,))
     assert row is not None
     assert row["overview"]
     assert row["editorial_note"]
+    refreshed = db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (candidate_id,))
+    assert refreshed["insight_status"] == "ready"
+    assert "coreInfo" in json.loads(refreshed["deep_analysis_json"])
 
 
 def test_topic_candidate_chat_uses_candidate_context(tmp_path: Path, monkeypatch):
@@ -2709,6 +2723,925 @@ def test_topic_radar_update_keeps_record_count_stable(tmp_path: Path):
     assert topics.json()["radars"][0]["preferredSources"] == [{"url": "https://news.example.org", "label": "资讯站"}]
 
 
+def test_topic_radar_update_persists_intelligence_config_fields(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    created = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "原始共享雷达",
+            "prompt": "先创建一个没有共享对象的雷达。",
+            "timeRange": "3_days",
+            "preferredSources": [],
+        },
+    )
+    assert created.status_code == 200
+    radar_id = created.json()["id"]
+
+    updated = client.put(
+        f"/api/v1/intelligence/radars/{radar_id}",
+        json={
+            "title": "儿童心理健康雷达",
+            "prompt": "持续追踪儿童心理健康政策、资源与公众讨论。",
+            "timeRange": "30_days",
+            "preferredSources": [{"url": "https://example.org/child", "label": "儿童"}],
+            "contextRefs": [
+                {"type": "organization_dna", "id": "local_org", "label": "本组织 DNA"},
+                {"type": "service_object", "id": "service_object:儿童", "label": "儿童"},
+                {"type": "issue_area", "id": "issue_area:心理健康", "label": "心理健康"},
+                {"type": "region", "id": "region:广东", "label": "广东"},
+            ],
+            "shareRecipients": [
+                {"userId": "user_member", "fullName": "项目成员", "email": "member@example.org"},
+                {"userId": "user_client", "fullName": "客户负责人", "email": "client@example.org"},
+            ],
+            "fetchEnabled": True,
+            "pushFrequency": "weekly",
+            "pushTime": "09:30",
+            "pushWeekday": 3,
+            "priorityUrls": ["https://example.org/child"],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["shareRecipients"] == [
+        {"userId": "user_member", "fullName": "项目成员", "email": "member@example.org"},
+        {"userId": "user_client", "fullName": "客户负责人", "email": "client@example.org"},
+    ]
+    assert payload["fetchEnabled"] is True
+    assert payload["pushFrequency"] == "weekly"
+    assert payload["pushTime"] == "09:30"
+    assert payload["pushWeekday"] == 3
+    assert [item["type"] for item in payload["contextRefs"]] == [
+        "organization_dna",
+        "service_object",
+        "issue_area",
+        "region",
+    ]
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    saved_radar = topics.json()["radars"][0]
+    assert saved_radar["id"] == radar_id
+    assert saved_radar["shareRecipients"][0]["fullName"] == "项目成员"
+    assert saved_radar["contextRefs"][1]["label"] == "儿童"
+    assert saved_radar["fetchEnabled"] is True
+    assert saved_radar["pushWeekday"] == 3
+
+
+def test_intelligence_baseline_schema_api_and_legacy_topics_compatibility(tmp_path: Path):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    # Re-running schema init must be safe because installed users already have local data.
+    db._init_schema()
+
+    packages = client.get("/api/v1/intelligence/source-packages")
+    assert packages.status_code == 200
+    assert [item["title"] for item in packages.json()] == ["政策官方源", "机会窗口", "公开样本舆情", "精选趋势案例"]
+    assert any(item["direction"] == "public_opinion" and "公开来源样本" in item["caveat"] for item in packages.json())
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "政策与合作雷达",
+            "prompt": "关注政策、资助和合作机会。",
+            "timeRange": "7_days",
+            "preferredSources": [{"url": "https://example.org/policy", "label": "政策站"}],
+            "fetchEnabled": True,
+            "pushFrequency": "daily",
+            "pushTime": "09:30",
+            "contextRefs": [{"type": "client", "id": "client_1", "label": "测试客户"}],
+            "audienceFilters": [{"type": "role", "value": "admin", "label": "管理员"}],
+            "targetObject": {"type": "org", "id": "org_1", "label": "益语智库"},
+            "shareRecipients": [{"userId": "user_admin", "fullName": "管理员"}],
+            "priorityUrls": ["https://example.org/policy"],
+            "createdBy": "user_admin",
+        },
+    )
+    assert radar.status_code == 200
+    radar_payload = radar.json()
+    assert radar_payload["fetchEnabled"] is True
+    assert radar_payload["pushFrequency"] == "daily"
+    assert radar_payload["contextRefs"][0]["label"] == "测试客户"
+    assert radar_payload["priorityUrls"] == ["https://example.org/policy"]
+    radar_id = radar_payload["id"]
+
+    item = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": radar_id,
+            "title": "地方出台公益支持政策",
+            "summary": "地方政府发布公益组织支持政策，适合评估客户是否需要跟进。",
+            "source": "政策站",
+            "sourceUrl": "https://example.org/policy/a",
+            "publishedAt": "2026-04-28T09:00:00",
+            "primaryDirection": "policy_environment",
+            "primaryBadge": "follow_up",
+            "badgeReason": "涉及客户近期项目申报",
+            "relevanceReason": "政策与当前客户的项目申报窗口相关。",
+            "suggestedAction": "安排同事核对申报条件。",
+        },
+    )
+    assert item.status_code == 200
+    item_payload = item.json()
+    assert item_payload["primaryDirection"] == "policy_environment"
+    assert item_payload["primaryBadge"] == "follow_up"
+    assert item_payload["relevanceReason"] == "政策与当前客户的项目申报窗口相关。"
+    assert item_payload["suggestedAction"] == "安排同事核对申报条件。"
+    item_id = item_payload["id"]
+
+    favorite = client.post(
+        f"/api/v1/intelligence/items/{item_id}/favorite",
+        json={"userId": "user_admin", "note": "放入政策跟进夹", "tags": ["政策", "申报"]},
+    )
+    assert favorite.status_code == 200
+    favorite_payload = favorite.json()
+    assert favorite_payload["itemId"] == item_id
+    assert favorite_payload["tags"] == ["政策", "申报"]
+
+    favorite_again = client.post(
+        f"/api/v1/intelligence/items/{item_id}/favorite",
+        json={"userId": "user_admin", "note": "更新备注", "tags": ["政策"]},
+    )
+    assert favorite_again.status_code == 200
+    assert favorite_again.json()["id"] == favorite_payload["id"]
+    assert favorite_again.json()["note"] == "更新备注"
+
+    share = client.post(
+        f"/api/v1/intelligence/items/{item_id}/share",
+        json={"sharedBy": "user_admin", "sharedTo": ["user_member"], "reason": "请判断是否需要申报"},
+    )
+    assert share.status_code == 200
+    assert share.json()["sharedBy"] == "user_admin"
+    assert share.json()["sharedTo"] == ["user_member"]
+    assert share.json()["reason"] == "请判断是否需要申报"
+
+    topics = client.get("/api/v1/topics?userId=user_admin")
+    assert topics.status_code == 200
+    assert topics.json()["radars"][0]["id"] == radar_id
+    assert topics.json()["candidates"][0]["id"] == item_id
+    assert topics.json()["candidates"][0]["primaryDirection"] == "policy_environment"
+    assert topics.json()["candidates"][0]["viewerFavorite"] is True
+    assert topics.json()["candidates"][0]["favoriteTags"] == ["政策"]
+    assert topics.json()["candidates"][0]["favoriteNote"] == "更新备注"
+    assert topics.json()["candidates"][0]["viewerSharedToMe"] is False
+    assert topics.json()["candidates"][0]["shareCount"] == 1
+
+    member_topics = client.get("/api/v1/topics?userId=user_member")
+    assert member_topics.status_code == 200
+    member_candidate = member_topics.json()["candidates"][0]
+    assert member_candidate["viewerFavorite"] is False
+    assert member_candidate["viewerSharedToMe"] is True
+    assert member_candidate["shareCount"] == 1
+
+    member_favorite = client.post(
+        f"/api/v1/intelligence/items/{item_id}/favorite",
+        json={"userId": "user_member", "note": "成员也要跟进", "tags": ["协作"]},
+    )
+    assert member_favorite.status_code == 200
+    assert member_favorite.json()["id"] != favorite_payload["id"]
+    member_topics_after_favorite = client.get("/api/v1/topics?userId=user_member")
+    assert member_topics_after_favorite.status_code == 200
+    assert member_topics_after_favorite.json()["candidates"][0]["viewerFavorite"] is True
+    assert member_topics_after_favorite.json()["candidates"][0]["favoriteTags"] == ["协作"]
+
+    unfavorite = client.delete(f"/api/v1/intelligence/items/{item_id}/favorite?userId=user_admin")
+    assert unfavorite.status_code == 200
+    admin_topics_after_unfavorite = client.get("/api/v1/topics?userId=user_admin")
+    assert admin_topics_after_unfavorite.status_code == 200
+    assert admin_topics_after_unfavorite.json()["candidates"][0]["viewerFavorite"] is False
+    member_topics_after_admin_unfavorite = client.get("/api/v1/topics?userId=user_member")
+    assert member_topics_after_admin_unfavorite.status_code == 200
+    assert member_topics_after_admin_unfavorite.json()["candidates"][0]["viewerFavorite"] is True
+
+    intelligence_items = client.get("/api/v1/intelligence/items?userId=user_member")
+    assert intelligence_items.status_code == 200
+    assert intelligence_items.json()[0]["viewerSharedToMe"] is True
+    assert db.fetchone("SELECT * FROM topic_favorites WHERE candidate_id = ?", (item_id,)) is not None
+    assert db.fetchone("SELECT * FROM topic_shares WHERE candidate_id = ?", (item_id,)) is not None
+
+    deleted = client.delete(f"/api/v1/intelligence/radars/{radar_id}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True}
+    assert client.get("/api/v1/topics?userId=user_member").json()["radars"] == []
+    assert client.get("/api/v1/topics?userId=user_member").json()["candidates"] == []
+    assert db.fetchone("SELECT * FROM topic_radars WHERE id = ?", (radar_id,)) is None
+    assert db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (item_id,)) is None
+    assert db.fetchone("SELECT * FROM topic_favorites WHERE candidate_id = ?", (item_id,)) is None
+    assert db.fetchone("SELECT * FROM topic_shares WHERE candidate_id = ?", (item_id,)) is None
+
+
+def test_intelligence_share_records_are_created_per_recipient_with_viewer_details(tmp_path: Path):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "共享机制雷达",
+            "prompt": "验证情报共享给多个成员后，每个接收人能看到共享说明。",
+            "timeRange": "7_days",
+            "shareRecipients": [
+                {"userId": "user_member", "fullName": "项目成员", "email": "member@example.org"},
+                {"userId": "user_client", "fullName": "客户负责人", "email": "client@example.org"},
+            ],
+        },
+    )
+    assert radar.status_code == 200
+    radar_id = radar.json()["id"]
+
+    item = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": radar_id,
+            "title": "某地发布社会组织协作新政策",
+            "summary": "政策明确鼓励公益组织参与基层服务，适合项目成员共同判断。",
+            "source": "政策站",
+            "primaryDirection": "policy_environment",
+        },
+    )
+    assert item.status_code == 200
+    item_id = item.json()["id"]
+
+    share = client.post(
+        f"/api/v1/intelligence/items/{item_id}/share",
+        json={
+            "sharedBy": "user_admin",
+            "sharedByName": "管理员",
+            "sharedTo": ["user_member", "user_client"],
+            "sharedToRecipients": [
+                {"userId": "user_member", "fullName": "项目成员", "email": "member@example.org"},
+                {"userId": "user_client", "fullName": "客户负责人", "email": "client@example.org"},
+            ],
+            "reason": "请分别判断项目侧和客户侧是否需要跟进。",
+        },
+    )
+    assert share.status_code == 200
+    share_payload = share.json()
+    assert share_payload["sharedBy"] == "user_admin"
+    assert share_payload["sharedByName"] == "管理员"
+    assert share_payload["sharedTo"] == ["user_member", "user_client"]
+    assert [item["fullName"] for item in share_payload["sharedToRecipients"]] == ["项目成员", "客户负责人"]
+
+    share_rows = db.fetchall("SELECT * FROM topic_shares WHERE candidate_id = ? ORDER BY created_at DESC", (item_id,))
+    assert len(share_rows) == 2
+    assert {row["shared_to_json"] for row in share_rows} == {'["user_member"]', '["user_client"]'}
+
+    member_topics = client.get("/api/v1/topics?userId=user_member")
+    assert member_topics.status_code == 200
+    member_candidate = member_topics.json()["candidates"][0]
+    assert member_candidate["viewerSharedToMe"] is True
+    assert member_candidate["shareCount"] == 2
+    assert len(member_candidate["viewerShareRecords"]) == 1
+    assert member_candidate["viewerShareRecords"][0]["sharedByName"] == "管理员"
+    assert member_candidate["viewerShareRecords"][0]["reason"] == "请分别判断项目侧和客户侧是否需要跟进。"
+    assert member_candidate["viewerShareRecords"][0]["sharedToRecipients"][0]["fullName"] == "项目成员"
+
+    member_topics_by_profile = client.get("/api/v1/topics?userId=cloud_account_9&userEmail=member@example.org&userName=项目成员")
+    assert member_topics_by_profile.status_code == 200
+    member_candidate_by_profile = member_topics_by_profile.json()["candidates"][0]
+    assert member_candidate_by_profile["viewerSharedToMe"] is True
+
+    admin_topics = client.get("/api/v1/topics?userId=user_admin")
+    assert admin_topics.status_code == 200
+    assert admin_topics.json()["candidates"][0]["viewerSharedToMe"] is False
+    assert admin_topics.json()["candidates"][0]["viewerSharedByMe"] is True
+    assert len(admin_topics.json()["candidates"][0]["viewerSentShareRecords"]) == 2
+
+
+def test_intelligence_capture_test_runs_single_radar(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    radar_one = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "政策雷达", "prompt": "政策支持", "timeRange": "3_days", "preferredSources": []},
+    )
+    radar_two = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "案例雷达", "prompt": "行业案例", "timeRange": "3_days", "preferredSources": []},
+    )
+    assert radar_one.status_code == 200
+    assert radar_two.status_code == 200
+
+    seen_titles: list[str] = []
+
+    def fake_fetch(*args, **kwargs):
+        seen_titles.append(kwargs["radar_title"])
+        return [
+            TopicSearchHit(
+                title=f"{kwargs['radar_title']} 单雷达试跑结果",
+                summary="只应写入当前被试跑的雷达。",
+                source="测试来源",
+                source_url="https://example.com/single-radar",
+                published_at="2026-04-28T10:00:00+08:00",
+                provider="google_news",
+                query=kwargs["radar_title"],
+            )
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_one.json()['id']}/capture-test")
+    assert capture.status_code == 200
+    payload = capture.json()
+    assert payload["radarId"] == radar_one.json()["id"]
+    assert payload["createdCount"] == 1
+    assert seen_titles == ["政策雷达"]
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    assert [item["radarId"] for item in topics.json()["candidates"]] == [radar_one.json()["id"]]
+    refreshed_radar_one = next(item for item in topics.json()["radars"] if item["id"] == radar_one.json()["id"])
+    refreshed_radar_two = next(item for item in topics.json()["radars"] if item["id"] == radar_two.json()["id"])
+    assert refreshed_radar_one["lastFetch"]["status"] == "done"
+    assert refreshed_radar_one["lastFetch"]["triggerType"] == "manual_test"
+    assert refreshed_radar_one["lastFetch"]["fetchedCount"] == 1
+    assert refreshed_radar_one["lastFetch"]["createdCount"] == 1
+    assert refreshed_radar_one["lastFetch"]["skippedCount"] == 0
+    assert refreshed_radar_one["lastFetch"]["candidateCount"] == 1
+    assert refreshed_radar_one["lastFetch"]["insertedCount"] == 1
+    assert refreshed_radar_one["lastFetch"]["duplicateCount"] == 0
+    assert [item["status"] for item in refreshed_radar_one["lastFetch"]["statusLog"]] == [
+        "queued",
+        "running",
+        "fetch_success",
+        "parsing",
+        "parse_success",
+        "done",
+    ]
+    assert refreshed_radar_two["lastFetch"] is None
+    candidate_item = client.app.state.app_state.db.fetchone(
+        "SELECT * FROM topic_candidate_items WHERE radar_id = ?",
+        (radar_one.json()["id"],),
+    )
+    assert candidate_item is not None
+    assert candidate_item["status"] == "promoted"
+    assert candidate_item["candidate_id"] == topics.json()["candidates"][0]["id"]
+
+
+def test_intelligence_capture_deduplicates_by_content_hash_and_similar_title(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    created = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "公益数字化雷达", "prompt": "关注公益数字化公开讨论。", "timeRange": "3_days", "preferredSources": []},
+    )
+    assert created.status_code == 200
+    radar_id = created.json()["id"]
+
+    duplicate_summary = "围绕公益组织数字化能力建设的公开讨论持续升温，关注数据治理和流程沉淀。"
+
+    def fake_fetch(*args, **kwargs):
+        return [
+            TopicSearchHit(
+                title="公益数字化公开讨论升温",
+                summary=duplicate_summary,
+                source="测试来源A",
+                source_url="https://example.com/digital-a?utm_source=newsletter",
+                published_at="2026-04-29T09:00:00+08:00",
+                provider="google_news",
+                query="公益数字化",
+            ),
+            TopicSearchHit(
+                title="组织数字化能力建设被再次讨论",
+                summary=duplicate_summary,
+                source="测试来源B",
+                source_url="https://example.org/digital-b",
+                published_at="2026-04-29T09:10:00+08:00",
+                provider="bing_news",
+                query="公益数字化",
+            ),
+            TopicSearchHit(
+                title="公益数字化公开讨论明显升温",
+                summary="多家机构讨论公益数字化人才、工具和流程协同。",
+                source="测试来源A",
+                source_url="https://example.com/digital-c",
+                published_at="2026-04-29T09:20:00+08:00",
+                provider="bing_news",
+                query="公益数字化",
+            ),
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_id}/capture-test")
+    assert capture.status_code == 200
+    payload = capture.json()
+    assert payload["createdCount"] == 1
+    assert payload["skippedCount"] == 2
+    assert payload["duplicateCount"] == 2
+
+    db = client.app.state.app_state.db
+    candidate_rows = db.fetchall("SELECT * FROM topic_candidates WHERE radar_id = ?", (radar_id,))
+    assert len(candidate_rows) == 1
+    assert len(str(candidate_rows[0]["content_hash"])) == 64
+
+    item_rows = db.fetchall("SELECT status FROM topic_candidate_items WHERE radar_id = ?", (radar_id,))
+    statuses = [row["status"] for row in item_rows]
+    assert statuses.count("promoted") == 1
+    assert statuses.count("duplicate") == 2
+
+    job_row = db.fetchone("SELECT * FROM topic_fetch_jobs WHERE radar_id = ?", (radar_id,))
+    assert job_row is not None
+    assert job_row["created_count"] == 1
+    assert job_row["skipped_count"] == 2
+
+
+def test_intelligence_item_light_analysis_classifies_direction_and_action_fields(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "儿童心理健康雷达",
+            "prompt": "持续关注儿童心理健康政策、资源和公开讨论。",
+            "timeRange": "7_days",
+            "contextRefs": [{"type": "custom_focus", "id": "issue:儿童心理健康", "label": "儿童心理健康"}],
+        },
+    )
+    assert radar.status_code == 200
+
+    created = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": radar.json()["id"],
+            "title": "某省发布中小学心理健康教育专项行动方案",
+            "summary": "行动方案要求学校完善心理健康教育、教师支持和家校社协同。",
+            "source": "某省教育厅",
+        },
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["primaryDirection"] == "policy_environment"
+    assert payload["primaryBadge"] in {"follow_up", "focus"}
+    assert payload["summary"]
+    assert "儿童心理健康" in payload["relevanceReason"]
+    assert payload["suggestedAction"]
+
+
+def test_intelligence_demo_seed_creates_end_to_end_sample_data(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    seeded = client.post("/api/v1/intelligence/demo/seed")
+    assert seeded.status_code == 200
+    payload = seeded.json()
+    assert len(payload["candidateIds"]) == 4
+
+    topics = client.get("/api/v1/topics?userId=local_user")
+    assert topics.status_code == 200
+    candidates = [item for item in topics.json()["candidates"] if item["id"] in payload["candidateIds"]]
+    assert len(candidates) == 4
+    assert {item["primaryDirection"] for item in candidates} == {
+        "policy_environment",
+        "resource_collaboration",
+        "public_opinion",
+        "industry_trend_case",
+    }
+    assert any(item["viewerFavorite"] for item in candidates)
+    assert any(item["viewerSharedToMe"] for item in candidates)
+    assert any(item["viewerSharedByMe"] for item in candidates)
+    assert any(item["convertedTaskId"] for item in candidates)
+
+
+def test_intelligence_source_packages_configs_and_fetch_jobs(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    packages = client.get("/api/v1/intelligence/source-packages")
+    assert packages.status_code == 200
+    titles = [item["title"] for item in packages.json()]
+    assert titles == ["政策官方源", "机会窗口", "公开样本舆情", "精选趋势案例"]
+    package_id = packages.json()[0]["id"]
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "来源配置雷达", "prompt": "测试来源配置", "timeRange": "3_days"},
+    )
+    assert radar.status_code == 200
+
+    created = client.post(
+        "/api/v1/intelligence/source-configs",
+        json={
+            "packageId": package_id,
+            "radarId": radar.json()["id"],
+            "sourceType": "normal_web",
+            "name": "官方公告",
+            "url": "https://example.org/news",
+            "query": "公益 政策",
+            "weight": 30,
+            "enabled": True,
+        },
+    )
+    assert created.status_code == 200, created.text
+    config_payload = created.json()
+    assert config_payload["status"] == "ready"
+    assert config_payload["errorMessage"] == ""
+    assert config_payload["lastItemCount"] == 0
+
+    configs = client.get(f"/api/v1/intelligence/source-configs?radarId={radar.json()['id']}")
+    assert configs.status_code == 200
+    assert [item["id"] for item in configs.json()] == [config_payload["id"]]
+
+    updated = client.put(
+        f"/api/v1/intelligence/source-configs/{config_payload['id']}",
+        json={
+            "packageId": package_id,
+            "radarId": radar.json()["id"],
+            "sourceType": "normal_web",
+            "name": "官方公告更新",
+            "url": "https://example.org/notice",
+            "query": "公益 政策 通知",
+            "weight": 60,
+            "enabled": False,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "官方公告更新"
+    assert updated.json()["weight"] == 60
+    assert updated.json()["enabled"] is False
+
+    jobs = client.get(f"/api/v1/intelligence/fetch-jobs?radarId={radar.json()['id']}")
+    assert jobs.status_code == 200
+    assert jobs.json() == []
+
+
+def test_intelligence_rsshub_source_config_feeds_candidate_items(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    packages = client.get("/api/v1/intelligence/source-packages").json()
+    package_id = next(item["id"] for item in packages if item["title"] == "精选趋势案例")
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "RSSHub 雷达", "prompt": "追踪 RSSHub 来源结果", "timeRange": "3_days"},
+    )
+    assert radar.status_code == 200
+    radar_id = radar.json()["id"]
+    config = client.post(
+        "/api/v1/intelligence/source-configs",
+        json={
+            "packageId": package_id,
+            "radarId": radar_id,
+            "sourceType": "rsshub",
+            "name": "RSSHub 测试源",
+            "url": "https://rsshub.example/routes/test",
+            "enabled": True,
+        },
+    )
+    assert config.status_code == 200
+
+    monkeypatch.setattr(
+        app_main,
+        "fetch_rsshub_source_hits",
+        lambda url, max_items=8: SourceConfigFetchResult(
+            hits=[
+                PreferredSourceHit(
+                    title="RSSHub 采集到的新情报",
+                    summary="RSSHub item 应进入候选原始项并提升为正式情报。",
+                    source="RSSHub 测试源",
+                    source_url="https://example.com/rsshub/1",
+                    published_at="2026-04-29T09:00:00+08:00",
+                    provider="rsshub",
+                )
+            ],
+            status="access_ok",
+        ),
+    )
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", lambda *args, **kwargs: [])
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_id}/capture-test")
+    assert capture.status_code == 200, capture.text
+    payload = capture.json()
+    assert payload["createdCount"] == 1
+    assert payload["fetchedCount"] == 1
+
+    source_config = client.get(f"/api/v1/intelligence/source-configs?radarId={radar_id}").json()[0]
+    assert source_config["status"] == "access_ok"
+    assert source_config["lastItemCount"] == 1
+    candidate_item = db.fetchone("SELECT * FROM topic_candidate_items WHERE radar_id = ?", (radar_id,))
+    assert candidate_item is not None
+    assert candidate_item["status"] == "promoted"
+    assert json.loads(candidate_item["raw_payload_json"])["provider"] == "rsshub"
+    jobs = client.get(f"/api/v1/intelligence/fetch-jobs?radarId={radar_id}")
+    assert jobs.status_code == 200
+    assert jobs.json()[0]["status"] == "done"
+
+
+def test_intelligence_normal_web_source_config_feeds_candidate_items(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    package_id = client.get("/api/v1/intelligence/source-packages").json()[0]["id"]
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "普通网页雷达", "prompt": "追踪普通网页来源", "timeRange": "3_days"},
+    )
+    assert radar.status_code == 200
+    radar_id = radar.json()["id"]
+    config = client.post(
+        "/api/v1/intelligence/source-configs",
+        json={
+            "packageId": package_id,
+            "radarId": radar_id,
+            "sourceType": "normal_web",
+            "name": "普通网页源",
+            "url": "https://example.org/news",
+            "enabled": True,
+        },
+    )
+    assert config.status_code == 200
+
+    monkeypatch.setattr(
+        app_main,
+        "fetch_preferred_source_hits",
+        lambda urls, max_items=8: [
+            PreferredSourceHit(
+                title="普通网页提取到的情报",
+                summary="普通网页配置应进入候选原始项并提升为正式情报。",
+                source="普通网页源",
+                source_url="https://example.org/news/1",
+                published_at="2026-04-29T10:00:00+08:00",
+                provider="preferred_source:list",
+            )
+        ],
+    )
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", lambda *args, **kwargs: [])
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_id}/capture-test")
+    assert capture.status_code == 200, capture.text
+    assert capture.json()["createdCount"] == 1
+    source_config = client.get(f"/api/v1/intelligence/source-configs?radarId={radar_id}").json()[0]
+    assert source_config["status"] == "access_ok"
+    assert source_config["lastItemCount"] == 1
+    candidate_item = db.fetchone("SELECT * FROM topic_candidate_items WHERE radar_id = ?", (radar_id,))
+    assert candidate_item is not None
+    assert candidate_item["status"] == "promoted"
+    assert json.loads(candidate_item["raw_payload_json"])["provider"] == "preferred_source:list"
+
+
+def test_intelligence_easyspider_source_config_feeds_candidate_items(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    package_id = client.get("/api/v1/intelligence/source-packages").json()[0]["id"]
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "EasySpider 雷达", "prompt": "追踪重点来源补抓结果", "timeRange": "3_days"},
+    )
+    assert radar.status_code == 200
+    radar_id = radar.json()["id"]
+    config = client.post(
+        "/api/v1/intelligence/source-configs",
+        json={
+            "packageId": package_id,
+            "radarId": radar_id,
+            "sourceType": "easyspider",
+            "name": "EasySpider 补抓",
+            "query": "easyspider-task-001",
+            "enabled": True,
+        },
+    )
+    assert config.status_code == 200
+
+    monkeypatch.setattr(
+        app_main,
+        "fetch_easyspider_source_hits",
+        lambda task_config, max_items=8: SourceConfigFetchResult(
+            hits=[
+                PreferredSourceHit(
+                    title="EasySpider 补抓到的新情报",
+                    summary="指定来源补抓结果应进入候选原始项并提升为正式情报。",
+                    source="EasySpider 补抓",
+                    source_url="https://example.org/easyspider/1",
+                    published_at="2026-04-29T11:00:00+08:00",
+                    provider="easyspider",
+                )
+            ],
+            status="access_ok",
+        ),
+    )
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", lambda *args, **kwargs: [])
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_id}/capture-test")
+    assert capture.status_code == 200, capture.text
+    assert capture.json()["createdCount"] == 1
+    source_config = client.get(f"/api/v1/intelligence/source-configs?radarId={radar_id}").json()[0]
+    assert source_config["status"] == "access_ok"
+    assert source_config["lastItemCount"] == 1
+    candidate_item = db.fetchone("SELECT * FROM topic_candidate_items WHERE radar_id = ?", (radar_id,))
+    assert candidate_item is not None
+    assert candidate_item["status"] == "promoted"
+    assert json.loads(candidate_item["raw_payload_json"])["provider"] == "easyspider"
+
+
+def test_intelligence_trendradar_source_config_feeds_public_opinion_candidate(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    package_id = next(item["id"] for item in client.get("/api/v1/intelligence/source-packages").json() if item["direction"] == "public_opinion")
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "舆情样本雷达", "prompt": "观察公益数字化公开讨论样本", "timeRange": "7_days"},
+    )
+    assert radar.status_code == 200
+    radar_id = radar.json()["id"]
+    config = client.post(
+        "/api/v1/intelligence/source-configs",
+        json={
+            "packageId": package_id,
+            "radarId": radar_id,
+            "sourceType": "trendradar",
+            "name": "公开样本趋势",
+            "query": "trendradar-export-001",
+            "enabled": True,
+        },
+    )
+    assert config.status_code == 200
+
+    monkeypatch.setattr(
+        app_main,
+        "fetch_trendradar_source_hits",
+        lambda task_config, max_items=8: SourceConfigFetchResult(
+            hits=[
+                PreferredSourceHit(
+                    title="公益数字化公开讨论升温",
+                    summary="公开样本显示，公益组织数字化能力成为近期讨论焦点。",
+                    source="TrendRadar",
+                    source_url="https://example.org/trend/public-opinion",
+                    published_at="2026-04-29T12:00:00+08:00",
+                    provider="trendradar",
+                    metadata={
+                        "sourceScope": "公开社媒与行业网站样本",
+                        "timeRange": "2026-04-22 至 2026-04-29",
+                        "sampleCount": 12,
+                        "trendConfidence": "low",
+                    },
+                )
+            ],
+            status="access_ok",
+        ),
+    )
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", lambda *args, **kwargs: [])
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_id}/capture-test")
+    assert capture.status_code == 200, capture.text
+    assert capture.json()["createdCount"] == 1
+    source_config = client.get(f"/api/v1/intelligence/source-configs?radarId={radar_id}").json()[0]
+    assert source_config["status"] == "access_ok"
+    assert source_config["lastItemCount"] == 1
+    candidate_row = db.fetchone("SELECT * FROM topic_candidates WHERE radar_id = ?", (radar_id,))
+    assert candidate_row is not None
+    assert candidate_row["primary_direction"] == "public_opinion"
+    deep_analysis = json.loads(candidate_row["deep_analysis_json"])
+    assert deep_analysis["publicOpinionSample"]["sourceScope"] == "公开社媒与行业网站样本"
+    assert deep_analysis["publicOpinionSample"]["sampleCount"] == 12
+    assert deep_analysis["publicOpinionSample"]["trendConfidence"] == "low"
+    candidate_item = db.fetchone("SELECT * FROM topic_candidate_items WHERE radar_id = ?", (radar_id,))
+    assert json.loads(candidate_item["raw_payload_json"])["provider"] == "trendradar"
+
+
+def test_intelligence_item_with_attachment_url_creates_document_artifact(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    monkeypatch.setattr(app_main, "fetch_topic_source_excerpt", lambda url: "")
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "附件雷达", "prompt": "追踪带附件的情报", "timeRange": "3_days"},
+    )
+    assert radar.status_code == 200
+
+    created = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": radar.json()["id"],
+            "title": "某机构发布年度报告 PDF",
+            "summary": "这条情报带有 PDF 附件，应该进入附件解析队列。",
+            "source": "机构官网",
+            "sourceUrl": "https://example.org/reports/annual-report.pdf",
+            "primaryDirection": "industry_trend_case",
+        },
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["hasAttachments"] is True
+    assert payload["attachmentParseStatus"] == "pending"
+
+    artifacts = client.get(f"/api/v1/intelligence/items/{payload['id']}/document-artifacts")
+    assert artifacts.status_code == 200
+    artifact_payload = artifacts.json()
+    assert len(artifact_payload) == 1
+    assert artifact_payload[0]["parseStatus"] == "pending"
+    assert artifact_payload[0]["mimeType"] == "application/pdf"
+    assert artifact_payload[0]["metadata"]["adapter"] == "mineru_placeholder"
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    topic_item = next(item for item in topics.json()["candidates"] if item["id"] == payload["id"])
+    assert topic_item["hasAttachments"] is True
+    assert topic_item["attachmentParseStatus"] == "pending"
+
+
+def test_intelligence_priority_urls_are_passed_to_capture_search(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seen_preferred_urls: list[str] = []
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "优先 URL 雷达",
+            "prompt": "追踪优先网址。",
+            "timeRange": "3_days",
+            "priorityUrls": ["https://example.org/priority"],
+        },
+    )
+    assert radar.status_code == 200
+
+    def fake_fetch(*args, **kwargs):
+        seen_preferred_urls.extend(kwargs["preferred_source_urls"])
+        return []
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar.json()['id']}/capture-test")
+    assert capture.status_code == 200
+    assert seen_preferred_urls == ["https://example.org/priority"]
+
+
+def test_intelligence_scheduler_runs_due_radars_only(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    due_radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "每日推送雷达",
+            "prompt": "每天推送政策情报。",
+            "timeRange": "3_days",
+            "preferredSources": [],
+            "fetchEnabled": True,
+            "pushFrequency": "daily",
+            "pushTime": "08:00",
+        },
+    )
+    manual_radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={
+            "title": "手动雷达",
+            "prompt": "只允许手动试跑。",
+            "timeRange": "3_days",
+            "preferredSources": [],
+            "fetchEnabled": True,
+            "pushFrequency": "manual",
+        },
+    )
+    assert due_radar.status_code == 200
+    assert manual_radar.status_code == 200
+    due_radar_id = due_radar.json()["id"]
+    manual_radar_id = manual_radar.json()["id"]
+    assert due_radar.json()["status"] == "trial"
+    assert due_radar.json()["nextPushAt"]
+
+    db.execute("UPDATE topic_radars SET next_push_at = ? WHERE id = ?", ("2026-04-29T08:00", due_radar_id))
+
+    seen_titles: list[str] = []
+
+    def fake_fetch(*args, **kwargs):
+        seen_titles.append(kwargs["radar_title"])
+        return [
+            TopicSearchHit(
+                title=f"{kwargs['radar_title']} 定时推送结果",
+                summary="定时调度只应处理到期且开启自动抓取的雷达。",
+                source="调度测试来源",
+                source_url="https://example.com/scheduled-radar",
+                published_at="2026-04-29T08:00:00+08:00",
+                provider="google_news",
+                query=kwargs["radar_title"],
+            )
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+
+    run = client.post("/api/v1/intelligence/scheduler/run-due", json={"now": "2026-04-29T08:01:00", "limit": 5})
+    assert run.status_code == 200, run.text
+    payload = run.json()
+    assert payload["runCount"] == 1
+    assert payload["totalCreated"] == 1
+    assert seen_titles == ["每日推送雷达"]
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    radar_payload = next(item for item in topics.json()["radars"] if item["id"] == due_radar_id)
+    manual_radar_payload = next(item for item in topics.json()["radars"] if item["id"] == manual_radar_id)
+    assert radar_payload["status"] == "running"
+    assert radar_payload["lastAutoFetchAt"] == "2026-04-29T08:01"
+    assert radar_payload["lastPushedAt"] == "2026-04-29T08:01"
+    assert radar_payload["nextPushAt"].startswith("2026-04-30T08:00")
+    assert manual_radar_payload["lastAutoFetchAt"] is None
+    assert len(topics.json()["candidates"]) == 1
+    assert db.fetchone("SELECT * FROM topic_fetch_jobs WHERE radar_id = ?", (due_radar_id,))["trigger_type"] == "scheduled_push"
+    assert db.fetchone("SELECT * FROM topic_candidates WHERE radar_id = ?", (due_radar_id,))["pushed_at"] == "2026-04-29T08:01"
+
+
 def test_topic_radar_source_label_normalizes_url_and_uses_ai(tmp_path: Path, monkeypatch):
     client = make_client(tmp_path)
 
@@ -2812,7 +3745,7 @@ def test_topic_capture_writes_real_search_results_into_candidate_pool(tmp_path: 
     candidates = topics.json()["candidates"]
     assert len(candidates) == 2
     assert candidates[0]["captureMethod"] == "web_search"
-    assert candidates[0]["capturedBy"] == "大周"
+    assert candidates[0]["capturedBy"] == "AI 情报站"
     assert candidates[0]["sourceUrl"].startswith("https://example.com/")
     assert all(any("\u4e00" <= char <= "\u9fff" for char in candidate["title"]) for candidate in candidates)
     assert all(any("\u4e00" <= char <= "\u9fff" for char in candidate["summary"]) for candidate in candidates)

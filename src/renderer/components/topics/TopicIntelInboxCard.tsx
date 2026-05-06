@@ -1,169 +1,256 @@
 import React from 'react';
-import { Newspaper, Trash2 } from 'lucide-react';
+import { Bookmark, BookmarkCheck, ChevronDown, ChevronUp, ExternalLink, FilePlus2, Newspaper, Share2 } from 'lucide-react';
 
-import type { TopicCandidate, TopicCandidateInsight } from '../../../shared/types';
+import type { TopicCandidate } from '../../../shared/types';
 
 type TopicIntelInboxCardProps = {
   candidate: TopicCandidate;
   radarTitle: string;
-  insight?: TopicCandidateInsight | null;
-  selected: boolean;
-  read: boolean;
   saved: boolean;
   tags: string[];
   relatedTaskCount: number;
-  onSelect: () => void;
-  onDelete: () => void;
+  mainBadge?: string | null;
+  sourceStatusText?: string;
+  relevanceReason: string;
+  suggestedAction: string;
+  isDeepAnalysisOpen: boolean;
+  isFavoritePending?: boolean;
+  onToggleSaved: () => void;
+  onShare: () => void;
+  onOpenTask: () => void;
+  onToggleDeepAnalysis: () => void;
+  onOpenSource: () => void;
+  children?: React.ReactNode;
 };
-
-function summarizeInsight(candidate: TopicCandidate, insight?: TopicCandidateInsight | null) {
-  const editorialNote = (insight?.editorialNote || '')
-    .trim()
-    .replace(/^大周(?:的)?(?:前哨判断|判断)[：:]\s*/, '');
-  if (editorialNote) return editorialNote;
-  if (insight?.overview?.trim()) return insight.overview.trim();
-  return candidate.summary.trim() || '大周还在整理这篇内容的核心信息。';
-}
-
-function relationReason(candidate: TopicCandidate, radarTitle: string, insight?: TopicCandidateInsight | null) {
-  if (insight?.recommendationReasons?.length) return insight.recommendationReasons[0];
-  if (candidate.summary.trim()) return candidate.summary.trim();
-  return `这篇内容与「${radarTitle}」相关，但当前还需要等待进一步解析。`;
-}
 
 function formatPublishedAt(value?: string | null) {
   if (!value) return '';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+  return parsed.toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
 }
 
-function insightBadge(candidate: TopicCandidate) {
-  if (candidate.insightStatus === 'ready') {
-    return { label: '已解析', className: 'bg-emerald-50 text-emerald-700 border border-emerald-100' };
-  }
-  if (candidate.insightStatus === 'failed') {
-    return { label: '解析失败', className: 'bg-rose-50 text-rose-700 border border-rose-100' };
-  }
-  return { label: '解析中', className: 'bg-gray-100 text-gray-500 border border-gray-200' };
+function formatShareTime(value?: string | null) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function insightStatusLabel(candidate: TopicCandidate) {
+  if (candidate.insightStatus !== 'failed') return null;
+  return { label: '深度分析生成失败，可重试', className: 'border-rose-100 bg-rose-50 text-rose-700' };
 }
 
 export function TopicIntelInboxCard({
   candidate,
   radarTitle,
-  insight,
-  selected,
-  read,
   saved,
   tags,
   relatedTaskCount,
-  onSelect,
-  onDelete,
+  mainBadge,
+  sourceStatusText,
+  relevanceReason,
+  suggestedAction,
+  isDeepAnalysisOpen,
+  isFavoritePending = false,
+  onToggleSaved,
+  onShare,
+  onOpenTask,
+  onToggleDeepAnalysis,
+  onOpenSource,
+  children,
 }: TopicIntelInboxCardProps) {
-  const badge = insightBadge(candidate);
-  const points = insight?.keyPoints?.slice(0, 2) || [];
+  const analysisBadge = insightStatusLabel(candidate);
+  const hasProcessingStatus = Boolean(analysisBadge || sourceStatusText);
+  const publishedAtText = formatPublishedAt(candidate.publishedAt) || '未标注';
+  const relatedTaskText = relatedTaskCount > 0 ? `已转任务 ${relatedTaskCount}` : '';
+  const latestShare = candidate.viewerShareRecords?.[0] || null;
+  const latestShareSender = latestShare?.sharedByName || latestShare?.sharedBy || '';
+  const latestShareTime = formatShareTime(latestShare?.createdAt);
+  const sentShares = candidate.viewerSentShareRecords || [];
+  const latestSentShare = sentShares[0] || null;
+  const latestSentTime = formatShareTime(latestSentShare?.createdAt);
+  const sentRecipientNames = sentShares
+    .flatMap((share) => (share.sharedToRecipients || []).map((recipient) => recipient.fullName || recipient.userId))
+    .filter(Boolean);
+  const uniqueSentRecipientNames = Array.from(new Set(sentRecipientNames));
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      className={`rounded-[28px] border p-5 transition-all cursor-pointer ${
-        selected ? 'border-[#b8c7ff] bg-[#f7f9ff] shadow-[0_12px_36px_rgba(91,123,254,0.12)]' : 'border-gray-100 bg-white hover:border-gray-200 hover:shadow-sm'
-      }`}
-    >
-      <div className="relative">
-        <button
-          type="button"
-          title="删除这条情报"
-          aria-label="删除这条情报"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-          className="absolute right-0 top-0 z-10 w-9 h-9 rounded-full border border-rose-200 bg-white text-rose-500 shadow-sm hover:bg-rose-50 hover:text-rose-600 transition-all flex items-center justify-center"
-        >
-          <Trash2 size={15} />
-        </button>
-
-        <div className="mx-auto w-full max-w-[720px] min-w-0 pt-1">
-          <div className="flex flex-wrap items-center justify-center gap-2 mb-2">
-            {!read && <span className="w-2.5 h-2.5 rounded-full bg-[#5B7BFE] shrink-0" />}
-            <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-50 text-[#4a67f5] border border-blue-100">
-              {radarTitle}
+    <article className="h-full rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-3">
+        {mainBadge && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center rounded-md bg-[#5B7BFE] px-2.5 py-1 text-[11px] font-bold text-white">
+              {mainBadge}
             </span>
-            <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${badge.className}`}>{badge.label}</span>
-            {saved && (
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
-                资料夹
+          </div>
+        )}
+
+        <h3 className="text-[17px] font-bold leading-7 text-gray-950">{candidate.title}</h3>
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-gray-500">
+          <span className="inline-flex items-center gap-1.5">
+            <Newspaper size={13} />
+            来源：{candidate.source || '未知来源'}
+          </span>
+          <span>发布时间：{publishedAtText}</span>
+          <span>所属雷达：{radarTitle}</span>
+        </div>
+
+        {hasProcessingStatus && (
+          <div className="flex flex-wrap items-center gap-2 text-[12px]">
+            <span className="font-semibold text-gray-500">处理状态</span>
+            {sourceStatusText && (
+              <span className="inline-flex items-center rounded-md border border-orange-100 bg-orange-50 px-2.5 py-1 font-semibold text-orange-700">
+                {sourceStatusText}
               </span>
             )}
-            {relatedTaskCount > 0 && (
-              <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-violet-50 text-violet-700 border border-violet-100">
-                已转任务 {relatedTaskCount}
+            {analysisBadge && (
+              <span className={`inline-flex items-center rounded-md border px-2.5 py-1 font-semibold ${analysisBadge.className}`}>
+                {analysisBadge.label}
               </span>
             )}
           </div>
+        )}
 
-          <h3 className="text-[18px] font-bold text-gray-900 leading-7 text-center">{candidate.title}</h3>
+        <div>
+          <p className="text-[11px] font-bold text-gray-500">一句话摘要</p>
+          <p className="mt-1 text-[13px] leading-6 text-gray-700">{candidate.summary || '当前暂无摘要。'}</p>
+        </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-3 mt-3 text-[12px] text-gray-500">
-            <span className="inline-flex items-center gap-1.5">
-              <Newspaper size={13} />
-              {candidate.source}
-            </span>
-            {candidate.publishedAt && <span>{formatPublishedAt(candidate.publishedAt)}</span>}
-            {candidate.capturedBy && <span>{candidate.capturedBy} 抓取</span>}
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <section className="rounded-lg border border-blue-100 bg-blue-50/70 px-4 py-3">
+            <p className="text-[11px] font-bold text-[#5B7BFE]">为什么可能相关</p>
+            <p className="mt-2 text-[13px] leading-6 text-slate-700">{relevanceReason}</p>
+          </section>
+          <section className="rounded-lg border border-emerald-100 bg-emerald-50/70 px-4 py-3">
+            <p className="text-[11px] font-bold text-emerald-700">建议动作</p>
+            <p className="mt-2 text-[13px] leading-6 text-slate-700">{suggestedAction}</p>
+          </section>
+        </div>
+
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {tags.slice(0, 5).map((tag) => (
+              <span key={`${candidate.id}-tag-${tag}`} className="rounded-md border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">
+                #{tag}
+              </span>
+            ))}
+            {tags.length > 5 && (
+              <span className="rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-semibold text-gray-500">
+                +{tags.length - 5}
+              </span>
+            )}
           </div>
+        )}
 
-          {tags.length > 0 && (
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {tags.slice(0, 4).map((tag) => (
-                <span
-                  key={`${candidate.id}-tag-${tag}`}
-                  className="inline-flex items-center rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-[11px] font-semibold text-indigo-700"
-                >
-                  #{tag}
+        {(candidate.viewerSharedToMe || candidate.viewerSharedByMe || relatedTaskText) && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {candidate.viewerSharedToMe && (
+                <span className="inline-flex items-center rounded-md border border-cyan-100 bg-cyan-50 px-2.5 py-1 text-[11px] font-bold text-cyan-700">
+                  共享给我
                 </span>
-              ))}
-              {tags.length > 4 && (
-                <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-500">
-                  +{tags.length - 4}
+              )}
+              {candidate.viewerSharedByMe && (
+                <span className="inline-flex items-center rounded-md border border-sky-100 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
+                  我已共享
+                </span>
+              )}
+              {relatedTaskText && (
+                <span className="inline-flex items-center rounded-md border border-violet-100 bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-700">
+                  {relatedTaskText}
                 </span>
               )}
             </div>
-          )}
-
-          {points.length > 0 && (
-            <div className="mt-4">
-              <p className="text-[12px] font-bold text-gray-900 text-center">核心观点</p>
-              <div className="mt-2 flex flex-wrap justify-center gap-2">
-                {points.map((item, index) => (
-                  <span key={`${candidate.id}-point-${index}`} className="inline-flex items-center rounded-2xl bg-gray-100 px-3 py-2 text-[12px] leading-5 text-gray-700">
-                    {item}
-                  </span>
-                ))}
+            {latestShare && (
+              <div className="rounded-lg border border-cyan-100 bg-cyan-50/60 px-3 py-2 text-[12px] leading-5 text-cyan-900">
+                <p className="font-semibold">
+                  {latestShareSender ? `${latestShareSender} 共享给你` : '有人共享给你'}
+                  {latestShareTime ? ` · ${latestShareTime}` : ''}
+                </p>
+                {latestShare.reason ? <p className="mt-1 text-cyan-800">{latestShare.reason}</p> : null}
               </div>
-            </div>
-          )}
-
-          <div className="mt-4">
-            <p className="text-[12px] font-bold text-gray-900 text-center">大周判断</p>
-            <p className="text-[13px] text-gray-600 leading-6 mt-2">{summarizeInsight(candidate, insight)}</p>
+            )}
+            {candidate.viewerSharedByMe && (
+              <div className="rounded-lg border border-sky-100 bg-sky-50/60 px-3 py-2 text-[12px] leading-5 text-sky-900">
+                <p className="font-semibold">
+                  已共享给 {uniqueSentRecipientNames.slice(0, 4).join('、') || '已配置接收人'}
+                  {uniqueSentRecipientNames.length > 4 ? ` 等 ${uniqueSentRecipientNames.length} 人` : ''}
+                  {latestSentTime ? ` · ${latestSentTime}` : ''}
+                </p>
+                {latestSentShare?.reason ? <p className="mt-1 text-sky-800">{latestSentShare.reason}</p> : null}
+              </div>
+            )}
           </div>
+        )}
 
-          <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3">
-            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#5B7BFE]">为什么相关</p>
-            <p className="text-[13px] text-slate-700 leading-6 mt-2">{relationReason(candidate, radarTitle, insight)}</p>
-          </div>
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onToggleSaved}
+            disabled={isFavoritePending}
+            aria-pressed={saved}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-[12px] font-semibold transition-colors ${
+              saved
+                ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+            } ${isFavoritePending ? 'cursor-wait opacity-70' : ''}`}
+          >
+            {saved ? <BookmarkCheck size={14} /> : <Bookmark size={14} />}
+            {saved ? '已收藏' : '收藏'}
+          </button>
+          <button
+            type="button"
+            onClick={onShare}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-2 text-[12px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
+          >
+            <Share2 size={14} />
+            共享
+          </button>
+          <button
+            type="button"
+            onClick={onOpenTask}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-2 text-[12px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
+          >
+            <FilePlus2 size={14} />
+            转任务
+          </button>
+          <button
+            type="button"
+            onClick={onToggleDeepAnalysis}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-2 text-[12px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
+          >
+            {isDeepAnalysisOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            {isDeepAnalysisOpen ? '收起分析' : '深度分析'}
+          </button>
+          <button
+            type="button"
+            onClick={onOpenSource}
+            disabled={!candidate.sourceUrl}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-[12px] font-semibold transition-colors ${
+              candidate.sourceUrl
+                ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                : 'cursor-not-allowed border-gray-100 bg-gray-50 text-gray-300'
+            }`}
+          >
+            <ExternalLink size={14} />
+            打开原文
+          </button>
         </div>
       </div>
-    </div>
+
+      {isDeepAnalysisOpen && children ? (
+        <div className="mt-5 border-t border-gray-100 pt-5">
+          {children}
+        </div>
+      ) : null}
+    </article>
   );
 }

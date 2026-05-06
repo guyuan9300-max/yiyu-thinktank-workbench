@@ -26,39 +26,39 @@ function phaseLabel(phase: DesktopAppInfo['updaterPhase']) {
 function startupGateLabel(status?: DesktopAppInfo['startupGateStatus']) {
   switch (status) {
     case 'blocked':
-      return '已阻断';
+      return '需要更新';
     case 'warning':
-      return '有警告';
+      return '建议更新';
     case 'ok':
-      return '通过';
+      return '正常';
     default:
-      return '未校验';
+      return '检查中';
   }
 }
 
 function receiptLabel(status?: DesktopAppInfo['installReceiptStatus']) {
   switch (status) {
     case 'ok':
-      return 'install-receipt 已通过';
+      return '安装记录正常';
     case 'mismatch':
-      return 'install-receipt 不一致';
+      return '安装记录待更新';
     case 'missing':
-      return 'install-receipt 缺失';
+      return '安装记录待更新';
     default:
-      return 'install-receipt 未知';
+      return '安装记录检查中';
   }
 }
 
 function smokeLabel(status?: DesktopAppInfo['installSmokeStatus']) {
   switch (status) {
     case 'ok':
-      return 'install-smoke 已通过';
+      return '启动校验正常';
     case 'failed':
-      return 'install-smoke 失败';
+      return '启动校验待更新';
     case 'missing':
-      return 'install-smoke 缺失';
+      return '启动校验待更新';
     default:
-      return 'install-smoke 未知';
+      return '启动校验检查中';
   }
 }
 
@@ -106,9 +106,9 @@ export function UpdateSettingsPanel({ appInfo, onOpenPlan, onOpenArtifacts, onRe
       <div className={`rounded-[28px] border px-5 py-4 text-[12px] leading-6 ${appInfo?.installStatus === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.16em]">安装入口自检</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.16em]">安装与更新提示</p>
             <p className="mt-2 font-semibold">
-              {appInfo?.installWarning || '当前只检测到单一入口，装错包风险较低。'}
+              {appInfo?.installWarning || '当前安装正常。'}
             </p>
             {appInfo?.appBundlePath && (
               <div className="mt-3 rounded-2xl bg-white/80 px-3 py-3 text-[11px] text-slate-600">
@@ -125,7 +125,7 @@ export function UpdateSettingsPanel({ appInfo, onOpenPlan, onOpenArtifacts, onRe
             )}
             <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
               <span className={`rounded-full px-2.5 py-1 font-bold ${appInfo?.startupGateStatus === 'blocked' ? 'bg-rose-100 text-rose-700' : appInfo?.startupGateStatus === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                启动门禁：{startupGateLabel(appInfo?.startupGateStatus)}
+                启动检查：{startupGateLabel(appInfo?.startupGateStatus)}
               </span>
               <span className="rounded-full bg-slate-100 px-2.5 py-1 font-bold text-slate-700">
                 {receiptLabel(appInfo?.installReceiptStatus)}

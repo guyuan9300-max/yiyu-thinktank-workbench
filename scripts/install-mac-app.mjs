@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   APP_DISPLAY_NAME,
   APP_NAME,
@@ -12,7 +13,7 @@ import {
 } from './app-manifest.mjs';
 
 const APP_BASENAME = APP_NAME.replace(/\.app$/, '');
-const projectRoot = path.resolve(new URL('..', import.meta.url).pathname);
+const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const userApplicationsDir = path.join(os.homedir(), 'Applications');
 const targetApp = path.join(userApplicationsDir, APP_NAME);
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');

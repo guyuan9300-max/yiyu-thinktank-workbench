@@ -601,6 +601,11 @@ function isIgnorableLocalStatusPath(targetPath: string) {
     || basename.startsWith('.env.');
 }
 
+function isSharedSettingsRepoPath(targetPath: string) {
+  const normalizedPath = normalizeRelativePath(targetPath).replace(/\/+$/, '');
+  return SHARED_SETTINGS_TARGETS.some((target) => target.repoRelativePath === normalizedPath);
+}
+
 function addPathsToSet(targetSet: Set<string>, targetPath: string, previousPath?: string | null) {
   targetSet.add(targetPath);
   if (previousPath) targetSet.add(previousPath);
@@ -1309,11 +1314,22 @@ async function getRemoteCommits(context: RepoWorkContext): Promise<CollabRemoteC
   return result;
 }
 
-function normalizeSelectedPaths(selectedPaths: string[], allFiles: CollabFileChange[]) {
+function normalizeSelectedPaths(
+  selectedPaths: string[],
+  allFiles: CollabFileChange[],
+  options: { allowSharedSettings?: boolean; allowRemoteGeneratedDeletion?: boolean } = {},
+) {
   const allowedPaths = new Set(allFiles.map((file) => file.path));
+  const fileByPath = new Map(allFiles.map((file) => [file.path, file]));
   const normalizedSelectedPaths = Array.from(new Set(selectedPaths.map((item) => item.trim()).filter(Boolean)));
   for (const targetPath of normalizedSelectedPaths) {
-    if (isIgnorableLocalStatusPath(targetPath)) {
+    const allowedSharedSettings = options.allowSharedSettings === true && isSharedSettingsRepoPath(targetPath);
+    const selectedFile = fileByPath.get(targetPath);
+    const allowedRemoteGeneratedDeletion =
+      options.allowRemoteGeneratedDeletion === true
+      && selectedFile?.type === 'deleted'
+      && isIgnorableLocalStatusPath(targetPath);
+    if (!allowedSharedSettings && !allowedRemoteGeneratedDeletion && isIgnorableLocalStatusPath(targetPath)) {
       throw new Error(`已勾选的文件属于生成物或忽略路径，不能从协作同步提交：${targetPath}`);
     }
     if (!allowedPaths.has(targetPath)) {
@@ -1596,6 +1612,7 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
   else if (!snapshot.isMainBranch) executionBlockReason = '当前不在 main 分支，先切回 main 再继续。';
   else if (snapshot.hasUnmergedPaths) executionBlockReason = '检测到 Git 冲突，先手工收口后再执行。';
   else if (!files.length) executionBlockReason = 'main 当前已经是最新。';
+  const generatedCleanupCount = files.filter((file) => file.type === 'deleted' && isIgnorableLocalStatusPath(file.path)).length;
   const context = snapshot.repoPath && snapshot.gitRepoPath
     ? createRepoWorkContext(snapshot.repoPath, snapshot.gitRepoPath, snapshot.scopeRelativePath)
     : null;
@@ -1610,6 +1627,9 @@ export async function previewPullFromMain(options: RepoOptions): Promise<PullPre
     notice = snapshot.localChangeCount > 0
       ? `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你本地还有 ${snapshot.localChangeCount} 项未提交改动，可能覆盖这些改动的文件默认不会勾选。`
       : `当前同步截止点是 ${syncTargetLabel}，包含 ${snapshot.remoteChangeCount} 项可同步变化。你可以先按提交日期确认，再决定要不要带到本地。`;
+    if (generatedCleanupCount > 0) {
+      notice += ` 其中 ${generatedCleanupCount} 项是 main 对历史生成物或数据库文件的清理，保留勾选即可让本地也清掉这些旧文件，不代表要把 4 月 27 日前的代码带回来。`;
+    }
   }
   const commitSummaries = remoteCommits.map((commit) => (
     `${commit.shortHash} ${commit.authoredAt.slice(0, 10)} ${commit.authoredAt.slice(11, 16)} ${commit.subject}`
@@ -1673,7 +1693,10 @@ export async function pullSelectedFromMain(
   if (preview.executionBlockReason) {
     throw new Error(preview.executionBlockReason);
   }
-  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files);
+  const selectedPaths = normalizeSelectedPaths(payload.selectedPaths, preview.files, {
+    allowSharedSettings: true,
+    allowRemoteGeneratedDeletion: true,
+  });
   const message = payload.message.trim();
   if (!message && selectedPaths.length > 0) {
     throw new Error('请填写本次同步说明。');
