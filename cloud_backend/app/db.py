@@ -40,10 +40,14 @@ class Database:
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,
                     email TEXT NOT NULL UNIQUE,
+                    phone_number TEXT,
                     full_name TEXT NOT NULL,
                     password_hash TEXT NOT NULL,
                     primary_role TEXT NOT NULL,
                     account_status TEXT NOT NULL,
+                    membership_status TEXT NOT NULL DEFAULT 'approved',
+                    membership_submitted_at TEXT,
+                    membership_rejected_reason TEXT,
                     approved_at TEXT,
                     approved_by TEXT,
                     rejected_reason TEXT,
@@ -85,6 +89,21 @@ class Database:
                     FOREIGN KEY(actor_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL,
                     FOREIGN KEY(target_user_id) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS organization_maintenance_permissions (
+                    organization_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    granted_by TEXT,
+                    granted_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    can_manage_permissions INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (organization_id, user_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(granted_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_maintenance_permissions_org
+                    ON organization_maintenance_permissions(organization_id, revoked_at);
 
                 CREATE TABLE IF NOT EXISTS feishu_binding_relay_sessions (
                     state_token TEXT PRIMARY KEY,
@@ -169,6 +188,7 @@ class Database:
                     organization_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     alias TEXT,
+                    type TEXT NOT NULL DEFAULT 'client',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
@@ -183,6 +203,11 @@ class Database:
                     description TEXT NOT NULL,
                     creator_id TEXT NOT NULL,
                     owner_id TEXT,
+                    deadline_at TEXT,
+                    scheduled_start_at TEXT,
+                    scheduled_end_at TEXT,
+                    completed_at TEXT,
+                    start_date TEXT,
                     due_date TEXT,
                     duration_minutes INTEGER NOT NULL DEFAULT 60,
                     scope_mode TEXT NOT NULL DEFAULT 'COLLAB_SHARED',
@@ -337,6 +362,8 @@ class Database:
                     quarter_plans_json TEXT NOT NULL DEFAULT '[]',
                     quarterly_focus_json TEXT NOT NULL DEFAULT '[]',
                     leader_user_id TEXT,
+                    leader_name TEXT NOT NULL DEFAULT '',
+                    intro_document_json TEXT NOT NULL DEFAULT '{}',
                     management_user_ids_json TEXT NOT NULL DEFAULT '[]',
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
@@ -349,7 +376,9 @@ class Database:
                     name TEXT NOT NULL,
                     color TEXT NOT NULL DEFAULT '#5B7BFE',
                     leader_user_id TEXT,
+                    leader_name TEXT NOT NULL DEFAULT '',
                     parent_department_id TEXT,
+                    intro_document_json TEXT NOT NULL DEFAULT '{}',
                     mission TEXT NOT NULL DEFAULT '',
                     business_context TEXT NOT NULL DEFAULT '',
                     team_context TEXT NOT NULL DEFAULT '',
@@ -831,7 +860,32 @@ class Database:
             self._ensure_column("employee_accounts", "manager_name", "TEXT")
             self._ensure_column("employee_accounts", "current_focus", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("employee_accounts", "is_department_lead", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("employee_accounts", "phone_number", "TEXT")
+            self._ensure_column("employee_accounts", "phone_verified_at", "TEXT")
+            self._ensure_column("employee_accounts", "membership_status", "TEXT NOT NULL DEFAULT 'approved'")
+            self._ensure_column("employee_accounts", "membership_submitted_at", "TEXT")
+            self._ensure_column("employee_accounts", "membership_rejected_reason", "TEXT")
             self._ensure_column("employee_accounts", "feishu_mobile", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("clients", "type", "TEXT NOT NULL DEFAULT 'client'")
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_accounts_phone_number ON employee_accounts(phone_number) WHERE phone_number IS NOT NULL AND phone_number != ''"
+            )
+            self.conn.execute(
+                """
+                UPDATE employee_accounts
+                   SET membership_status = CASE
+                     WHEN account_status IN ('pending', 'approved', 'rejected') THEN account_status
+                     ELSE COALESCE(NULLIF(membership_status, ''), 'approved')
+                   END,
+                       membership_rejected_reason = CASE
+                         WHEN account_status = 'rejected' THEN COALESCE(membership_rejected_reason, rejected_reason)
+                         ELSE membership_rejected_reason
+                       END
+                 WHERE membership_status IS NULL
+                    OR membership_status = ''
+                    OR (account_status IN ('pending', 'rejected') AND membership_status = 'approved')
+                """
+            )
             self._ensure_column("tasks", "tag_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
@@ -847,6 +901,11 @@ class Database:
             self._ensure_column("org_profiles", "annual_strategy_year", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "annual_strategy_text", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_profiles", "quarter_plans_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("org_profiles", "leader_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_profiles", "intro_document_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("org_profiles", "management_user_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("org_departments", "leader_name", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_departments", "intro_document_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("org_departments", "business_context", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_departments", "team_context", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("org_departments", "quarter_plan_json", "TEXT NOT NULL DEFAULT '{}'")
@@ -875,6 +934,10 @@ class Database:
                 "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
             )
             self._ensure_column("tasks", "client_id", "TEXT")
+            self._ensure_column("tasks", "deadline_at", "TEXT")
+            self._ensure_column("tasks", "scheduled_start_at", "TEXT")
+            self._ensure_column("tasks", "scheduled_end_at", "TEXT")
+            self._ensure_column("tasks", "completed_at", "TEXT")
             self._ensure_column("tasks", "start_date", "TEXT")
             self._ensure_column("tasks", "duration_minutes", "INTEGER NOT NULL DEFAULT 60")
             self._ensure_column("tasks", "scope_mode", "TEXT NOT NULL DEFAULT 'COLLAB_SHARED'")
@@ -885,6 +948,50 @@ class Database:
             self._ensure_column("tasks", "recent_decision", "TEXT")
             self._ensure_column("tasks", "completion_note", "TEXT")
             self._ensure_column("tasks", "evidence_count", "INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET deadline_at = due_date
+                WHERE deadline_at IS NULL
+                  AND due_date IS NOT NULL
+                  AND due_date != ''
+                  AND (start_date IS NULL OR start_date = '')
+                  AND due_date GLOB '????-??-??'
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET scheduled_start_at = COALESCE(NULLIF(start_date, ''), due_date)
+                WHERE scheduled_start_at IS NULL
+                  AND (
+                    (start_date IS NOT NULL AND start_date != '')
+                    OR due_date LIKE '%T%'
+                    OR due_date GLOB '????-??-?? ??:??*'
+                  )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET scheduled_end_at = due_date
+                WHERE scheduled_end_at IS NULL
+                  AND start_date IS NOT NULL
+                  AND start_date != ''
+                  AND due_date IS NOT NULL
+                  AND due_date != ''
+                  AND due_date != start_date
+                  AND (due_date LIKE '%T%' OR due_date GLOB '????-??-?? ??:??*')
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET completed_at = COALESCE(NULLIF(updated_at, ''), datetime('now'))
+                WHERE completed_at IS NULL
+                  AND progress_status = 'done'
+                """
+            )
             self._ensure_column("event_lines", "business_category", "TEXT")
             self._ensure_column("event_lines", "current_blocker", "TEXT")
             self._ensure_column("event_lines", "recent_decision", "TEXT")
@@ -924,6 +1031,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS org_ai_config (
                     org_id TEXT PRIMARY KEY,
                     ai_provider TEXT NOT NULL DEFAULT 'mock',
+                    ai_provider_label TEXT NOT NULL DEFAULT '',
+                    ai_base_url TEXT NOT NULL DEFAULT '',
                     ai_model TEXT NOT NULL DEFAULT '',
                     api_key_encrypted TEXT NOT NULL DEFAULT '',
                     encryption_nonce TEXT NOT NULL DEFAULT '',
@@ -1150,19 +1259,10 @@ class Database:
                     ON consultation_knowledge_requests(organization_id, status, updated_at DESC);
                 """
             )
+            self._ensure_column("org_ai_config", "ai_provider_label", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("org_ai_config", "ai_base_url", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("task_attachments", "document_id", "TEXT")
             self._ensure_column("event_line_attachments", "document_id", "TEXT")
-            self.conn.execute(
-                """
-                UPDATE employee_accounts
-                   SET account_status = 'approved',
-                       approved_at = COALESCE(approved_at, created_at),
-                       rejected_reason = NULL,
-                       disabled_at = NULL,
-                       updated_at = COALESCE(updated_at, created_at)
-                 WHERE account_status = 'pending'
-                """
-            )
             self.conn.commit()
 
     def _table_columns(self, table_name: str) -> set[str]:

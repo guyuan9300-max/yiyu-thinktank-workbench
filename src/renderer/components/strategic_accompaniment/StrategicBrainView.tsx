@@ -1,54 +1,40 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  BrainCircuit, Sparkles, FileText, CheckCircle, MessageCircle,
-  GitBranch, BookOpen, Award, Layers,
+  BrainCircuit, Sparkles, FileText, CheckCircle,
+  GitBranch, Award, Layers,
   AlertCircle, ClipboardList, Check, Folder, Target, FolderTree,
-  Activity, Bot, Clock, PenLine, Calendar,
+  Activity, Bot, PenLine, Calendar,
   ArrowLeft, AlertTriangle, ChevronRight, XCircle,
   Users, Flag, AlertOctagon, HelpCircle, CornerDownRight,
-  RefreshCw, Star, Trash2
+  RefreshCw, Star, Trash2, ChevronDown
 } from 'lucide-react';
 import {
-  getBrainDashboard,
   getClientDigitalAssets,
   getDigitalAssetDashboard,
+  getOrganizationDnaV2Snapshot,
   getStrategicThoughts,
   refreshClientDigitalAssetNarrative,
+  refreshOrganizationDnaV2,
   refreshStrategicThoughts,
   reviewStrategicThought,
   updateStrategicThoughtState,
-  type BrainDashboard,
-  type BrainPulse,
   type DigitalAssetClientDetail,
   type DigitalAssetClientSummary,
   type DigitalAssetDashboard,
+  type DigitalAssetMaterialMaturityRow,
   type DigitalAssetMapNode,
   type DigitalAssetMetric,
   type DigitalAssetNarrative,
+  type DigitalAssetPulse,
+  type OrganizationDnaV2Item,
+  type OrganizationDnaV2Kind,
+  type OrganizationDnaV2Snapshot,
   type StrategicThought,
 } from '../../lib/api';
-import type { GrowthContextLink, Task } from '../../../shared/types';
-import { StrategicLearningListPanel, type StrategicLearningTaskPayload } from './StrategicLearningListPanel';
 
 const TABS = [
-  { id: 'pulse', label: '大脑脉搏' },
-  { id: 'thoughts', label: '思考与研判' },
   { id: 'clients', label: '数字资产中心' },
-  { id: 'learning', label: '学习清单' }
-];
-
-const PULSE_METRICS_1 = [
-  { icon: BrainCircuit, label: '组织记忆', value: '1,847' },
-  { icon: FileText, label: '资料归档', value: '390' },
-  { icon: CheckCircle, label: '任务追踪', value: '19' },
-  { icon: MessageCircle, label: 'AI 对话', value: '549' },
-];
-
-const PULSE_METRICS_2 = [
-  { icon: GitBranch, label: '事件线', value: '8' },
-  { icon: BookOpen, label: '知识画像', value: '19' },
-  { icon: Award, label: '成长徽章', value: '4' },
-  { icon: Layers, label: '经验沉淀', value: '5' },
+  { id: 'thoughts', label: '思考与研判' },
 ];
 
 export type ThoughtTaskPayload = {
@@ -65,6 +51,10 @@ export type ThoughtTaskPayload = {
 };
 
 // --- Helpers ---
+
+function isInternalSmokeClient(client: { id?: string; name?: string; alias?: string }) {
+  return client.alias === 'workspace-smoke' || client.name === '安装态冒烟客户';
+}
 
 const getConfColor = (conf?: number) => {
   if (conf === undefined) return '#94a3b8';
@@ -155,10 +145,16 @@ const clampPercent = (value: number | null | undefined) => Math.max(0, Math.min(
 
 const metricValue = (metrics: DigitalAssetMetric[], key: string) => metrics.find((item) => item.key === key)?.value ?? 0;
 
-const STAGE_ORDER = ['资料整理期', '组织画像期', '结构计算期', '机制洞察期', '机会生成期'];
+const STAGE_ORDER = ['资料整理期', '项目画像期', '结构计算期', '机制洞察期', '机会生成期'];
 const NODE_STAGE_ORDER = ['整理', '画像', '计算', '洞察', '机会'];
 
-const stageRank = (stage: string | null | undefined) => Math.max(0, STAGE_ORDER.indexOf(stage || ''));
+const normalizedAssetStage = (stage: string | null | undefined) => String(stage || '').replace(/^L\d\s*/, '').trim();
+const stageRank = (stage: string | null | undefined) => Math.max(0, STAGE_ORDER.indexOf(normalizedAssetStage(stage)));
+const assetStageWithLevel = (stage: string | null | undefined) => {
+  const normalized = normalizedAssetStage(stage) || '资料整理期';
+  const rank = stageRank(normalized);
+  return `L${rank + 1} ${normalized}`;
+};
 
 function AbilityLadder({ currentStage }: { currentStage: string }) {
   const current = stageRank(currentStage);
@@ -181,6 +177,7 @@ function AbilityLadder({ currentStage }: { currentStage: string }) {
 }
 
 const nodeMaturityPercent = (node: DigitalAssetMapNode) => Math.max(0, Math.min(100, Math.round(node.maturityPercent ?? node.coverageScore ?? 0)));
+const materialRowPercent = (row: DigitalAssetMaterialMaturityRow) => Math.max(0, Math.min(100, Math.round(row.percent ?? 0)));
 
 const maturityBarClass = (value: number) => {
   if (value >= 75) return 'bg-emerald-500';
@@ -189,9 +186,9 @@ const maturityBarClass = (value: number) => {
   return 'bg-rose-500';
 };
 
-function AssetMaturityRows({ nodes }: { nodes: DigitalAssetMapNode[] }) {
+function AssetMaturityRows({ rows }: { rows: DigitalAssetMaterialMaturityRow[] }) {
   const [expanded, setExpanded] = useState(false);
-  const visibleNodes = expanded ? nodes : nodes.slice(0, 8);
+  const visibleRows = expanded ? rows : rows.slice(0, 8);
   return (
     <section className="mt-8">
       <div className="flex items-baseline justify-between mb-4 px-1">
@@ -199,21 +196,21 @@ function AssetMaturityRows({ nodes }: { nodes: DigitalAssetMapNode[] }) {
           <h2 className="text-[15px] font-bold text-slate-800">资料成熟度进度条</h2>
           <p className="mt-1 text-[12px] text-slate-400">百分比表示资料质量成熟度，不按文件数量直接打分。</p>
         </div>
-        <span className="text-[12px] font-bold text-blue-600">资料类型 {nodes.length}</span>
+        <span className="text-[12px] font-bold text-blue-600">资料类型 {rows.length}</span>
       </div>
       <div className="rounded-[24px] border border-slate-100 bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
         <div className="space-y-3">
-          {visibleNodes.map((node) => {
-            const maturity = nodeMaturityPercent(node);
+          {visibleRows.map((row) => {
+            const maturity = materialRowPercent(row);
             return (
-              <div key={node.key} className="rounded-[18px] border border-slate-100 bg-slate-50/50 px-4 py-4">
+              <div key={row.key} className="rounded-[18px] border border-slate-100 bg-slate-50/50 px-4 py-4">
                 <div className="grid grid-cols-1 xl:grid-cols-[200px_minmax(240px,1fr)] gap-4">
                   <div>
                     <div className="flex items-center gap-2">
                       {maturity >= 50 ? <CheckCircle size={14} className="text-emerald-500 shrink-0" /> : <AlertCircle size={14} className="text-amber-500 shrink-0" />}
-                      <span className="text-[14px] font-bold text-slate-800">{node.label}</span>
+                      <span className="text-[14px] font-bold text-slate-800">{row.label}</span>
                     </div>
-                    <p className="mt-1 text-[11px] leading-[1.6] text-slate-400">{node.description}</p>
+                    <p className="mt-1 text-[11px] leading-[1.6] text-slate-400">{row.level}</p>
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-3">
@@ -225,28 +222,102 @@ function AssetMaturityRows({ nodes }: { nodes: DigitalAssetMapNode[] }) {
                     <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
                       <div>
                         <div className="text-[10px] font-bold text-emerald-600">已看到</div>
-                        <p className="mt-1 text-[12px] leading-[1.75] text-slate-600">{node.seenSummary || '已看到部分资料线索。'}</p>
+                        <p className="mt-1 text-[12px] leading-[1.75] text-slate-600">{row.seenSummary || '已看到部分资料线索。'}</p>
                       </div>
                       <div>
                         <div className="text-[10px] font-bold text-amber-600">还缺</div>
-                        <p className="mt-1 text-[12px] leading-[1.75] text-slate-600">{node.missingSummary || '还缺一份能持续复盘这类资料的整理表。'}</p>
+                        <p className="mt-1 text-[12px] leading-[1.75] text-slate-600">{row.missingSummary || '还缺能持续复盘这类资料的记录。'}</p>
                       </div>
                     </div>
+                    {row.unlockedValue && (
+                      <div className="mt-3 rounded-[14px] bg-blue-50/70 px-3 py-2 text-[11px] leading-[1.65] text-blue-700">
+                        {row.unlockedValue}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             );
           })}
         </div>
-        {nodes.length > 8 && (
+        {rows.length > 8 && (
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
             className="mt-4 w-full rounded-[14px] border border-slate-100 bg-white px-4 py-2 text-[12px] font-bold text-blue-600 hover:bg-blue-50 transition-colors"
           >
-            {expanded ? '收起资料类型' : `查看更多资料类型（${nodes.length - 8}）`}
+            {expanded ? '收起资料类型' : `查看更多资料类型（${rows.length - 8}）`}
           </button>
         )}
+      </div>
+    </section>
+  );
+}
+
+function AssetScoreBreakdownPanel({ detail }: { detail: DigitalAssetClientDetail }) {
+  const items = [
+    { key: 'structuralCompleteness', label: '结构完整度', value: detail.scoreBreakdown?.structuralCompleteness ?? 0 },
+    { key: 'computability', label: '可计算度', value: detail.scoreBreakdown?.computable ?? 0 },
+    { key: 'evidenceChain', label: '证据链强度', value: detail.scoreBreakdown?.evidenceChain ?? 0 },
+    { key: 'timeContinuity', label: '时间连续性', value: detail.scoreBreakdown?.timeContinuity ?? 0 },
+    { key: 'resultFeedbackLoop', label: '反馈结果关系', value: detail.scoreBreakdown?.resultFeedbackLoop ?? 0 },
+  ];
+  return (
+    <section className="mt-6 rounded-[24px] border border-slate-100 bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-[15px] font-bold text-slate-800">成熟度怎么算</h2>
+          <p className="mt-1 text-[12px] leading-6 text-slate-400">总成熟度由下面五项加权得到，资料厚度只代表沉淀努力。</p>
+        </div>
+        <span className="rounded-full bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-500">{detail.scoreMethodVersion || 'typed-profile-v2'}</span>
+      </div>
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-5 gap-3">
+        {items.map((item) => (
+          <div key={item.key} className="rounded-[16px] bg-slate-50 px-3.5 py-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-slate-500">{item.label}</span>
+              <span className="text-[12px] font-bold text-slate-800">{item.value}%</span>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
+              <div className={`h-full rounded-full ${maturityBarClass(item.value)}`} style={{ width: `${clampPercent(item.value)}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      {(detail.scoreRationale || []).length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {(detail.scoreRationale || []).slice(0, 4).map((item, index) => (
+            <span key={`${item}-${index}`} className="rounded-full bg-blue-50 px-3 py-1 text-[11px] font-semibold text-blue-600">
+              {item}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function NextBestDepositPanel({ suggestions }: { suggestions: DigitalAssetClientDetail['nextBestDeposits'] }) {
+  const visible = (suggestions || []).slice(0, 4);
+  if (!visible.length) return null;
+  return (
+    <section className="mt-8 rounded-[24px] border border-slate-100 bg-white p-5 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-[15px] font-bold text-slate-800">下一步最值得沉淀</h2>
+        <span className="text-[12px] font-bold text-slate-400">{visible.length} 项</span>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {visible.map((item) => (
+          <div key={`${item.dimensionKey}-${item.title}`} className="rounded-[18px] border border-slate-100 bg-slate-50/50 px-4 py-4">
+            <div className="text-[13px] font-bold leading-6 text-slate-800">{item.title}</div>
+            <p className="mt-2 text-[12px] leading-[1.75] text-slate-600">{item.reason}</p>
+            {item.analysisValueUnlocked && (
+              <p className="mt-3 rounded-[14px] bg-blue-50 px-3 py-2 text-[11px] leading-[1.65] text-blue-700">
+                {item.analysisValueUnlocked}
+              </p>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -467,17 +538,19 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
   }
 
   const documentCount = metricValue(detail.sourceMetrics, 'documents');
-  const memoryCount = metricValue(detail.sourceMetrics, 'memoryFacts');
   const evidenceCount = metricValue(detail.sourceMetrics, 'evidenceCards');
+  const maturityScore = detail.maturityScore ?? detail.stageProgress ?? 0;
+  const depositThickness = detail.depositThickness ?? 0;
+  const profileType = detail.assetProfileType || detail.assetTrackTitle || '组织战略陪伴型';
 
   return (
     <div className="animate-in fade-in duration-300">
       <DetailHeader
         clientName={detail.name}
         stageLabel={detail.stage || '待判断'}
-        readinessScore={detail.stageProgress}
+        readinessScore={maturityScore}
         assetStage={detail.assetStage}
-        assetTrackTitle={detail.assetTrackTitle}
+        assetTrackTitle={profileType}
         onBack={onBack}
       />
       <div className="max-w-full mx-auto px-6 py-8 pb-24">
@@ -495,20 +568,25 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
                 <span className="text-[12px] font-bold text-blue-600 tracking-wide">组织资产阶段</span>
               </div>
               <h2 className="text-[24px] font-bold text-slate-900 tracking-tight mb-3">
-                {detail.assetStage} · {detail.assetTrackTitle}
+                {assetStageWithLevel(detail.assetStage)} · {profileType}
               </h2>
               <p className="text-[14px] leading-[1.9] text-slate-700 font-medium">
                 {detail.understandingStatement}
               </p>
+              {depositThickness >= 65 && maturityScore < 55 && (
+                <div className="mt-4 inline-flex rounded-full border border-amber-100 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-700">
+                  资料很多，但还缺可计算、可验证的连续资料
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-3 gap-2.5 min-w-[320px]">
               {[
-                { label: '沉淀经验', value: `${detail.depositXp} XP`, icon: Award },
+                { label: '资料厚度', value: `${depositThickness}%`, icon: Award },
+                { label: '成熟度', value: `${maturityScore}%`, icon: Activity },
                 { label: '下一阶段', value: detail.nextStage || '继续沉淀', icon: Target },
-                { label: '成长模式', value: detail.growthMode || '均衡成长', icon: Layers },
+                { label: '沉淀经验', value: `${detail.depositXp} XP`, icon: Layers },
                 { label: '证据卡', value: evidenceCount.toLocaleString(), icon: CheckCircle },
                 { label: '资料沉淀', value: documentCount.toLocaleString(), icon: FileText },
-                { label: '组织记忆', value: memoryCount.toLocaleString(), icon: BrainCircuit },
               ].map((item) => (
                 <div key={item.label} className="rounded-[18px] bg-white/80 border border-slate-100 px-4 py-3 shadow-sm">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400">
@@ -535,7 +613,9 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
           <DigitalAssetMetricStrip metrics={detail.sourceMetrics} />
         </section>
 
-        <AssetMaturityRows nodes={detail.assetMapNodes || []} />
+        <AssetScoreBreakdownPanel detail={detail} />
+        <AssetMaturityRows rows={detail.materialMaturityRows || []} />
+        <NextBestDepositPanel suggestions={detail.nextBestDeposits || []} />
       </div>
     </div>
   );
@@ -544,69 +624,276 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
 
 // ================= TAB CONTENT =================
 
-function PulseTab({ pulse }: { pulse: BrainPulse | null }) {
-  const p = pulse;
-  const metrics1 = [
-    { icon: BrainCircuit, label: '组织记忆', value: p ? p.memoryCount.toLocaleString() : '...' },
-    { icon: FileText, label: '资料归档', value: p ? p.docCount.toLocaleString() : '...' },
-    { icon: CheckCircle, label: '任务追踪', value: p ? p.taskCount.toLocaleString() : '...' },
-    { icon: MessageCircle, label: 'AI 对话', value: p ? p.chatCount.toLocaleString() : '...' },
+function DigitalAssetPulsePanel({
+  pulse,
+  onOpenDetail,
+}: {
+  pulse?: DigitalAssetPulse | null;
+  onOpenDetail: (clientId: string) => void;
+}) {
+  const weeklyStats = [
+    { label: '新记忆', value: pulse?.weeklyNewFacts ?? 0 },
+    { label: '新资料', value: pulse?.weeklyNewDocuments ?? 0 },
+    { label: '新证据卡', value: pulse?.weeklyNewEvidenceCards ?? 0 },
   ];
-  const metrics2 = [
-    { icon: GitBranch, label: '事件线', value: p ? p.eventLineCount.toLocaleString() : '...' },
-    { icon: BookOpen, label: '知识画像', value: p ? p.dnaCount.toLocaleString() : '...' },
-    { icon: Award, label: '成长徽章', value: p ? p.badgeCount.toLocaleString() : '...' },
-    { icon: Layers, label: '经验沉淀', value: p ? p.handbookCount.toLocaleString() : '...' },
-  ];
-
+  const funnel = pulse?.digestionFunnel || [];
+  const highlights = (pulse?.learningHighlights || []).slice(0, 3);
+  const alerts = (pulse?.assetAlerts || []).slice(0, 3);
+  const activeOrganizations = (pulse?.activeOrganizations || []).slice(0, 4);
+  const signalClass = (severity?: string) => {
+    if (severity === 'critical') return 'border-rose-100 bg-rose-50/70 text-rose-700';
+    if (severity === 'warning') return 'border-amber-100 bg-amber-50/70 text-amber-700';
+    return 'border-blue-100 bg-blue-50/70 text-blue-700';
+  };
   return (
-    <div className="space-y-6">
-      <div className="rounded-[32px] border border-blue-100 p-8 bg-white" style={{ backgroundImage: 'radial-gradient(circle at 10% 10%, rgba(59, 130, 246, 0.08), transparent 50%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)', boxShadow: '0 20px 40px -15px rgba(15,23,42,0.05)' }}>
-        <div className="flex items-start justify-between mb-8">
-          <div className="flex items-center gap-5">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100/50 flex items-center justify-center shadow-inner">
-              <BrainCircuit size={32} className="text-blue-600" strokeWidth={1.5} />
-            </div>
-            <div>
-              <div className="text-[22px] font-bold text-slate-800 tracking-tight flex items-baseline gap-2">
-                已陪伴 <span className="tabular-nums text-2xl text-blue-600">{p ? p.daysAccompanied : '...'}</span> 天
-              </div>
-              <div className="text-[12px] font-medium text-slate-400 mt-1 flex items-center gap-1.5">
-                <Clock size={12} /> {p ? `${p.reviewCount} 次复盘 · ${p.meetingCount} 场会议` : '加载中...'}
-              </div>
-            </div>
+    <section
+      className="mb-6 rounded-[28px] border border-blue-100 bg-white p-6 shadow-[0_12px_36px_rgba(15,23,42,0.05)]"
+      style={{
+        backgroundImage: 'linear-gradient(135deg, rgba(37,99,235,0.08), rgba(20,184,166,0.06) 42%, rgba(255,255,255,0) 78%), linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+      }}
+    >
+      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+        <div className="max-w-4xl">
+          <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[12px] font-bold text-blue-600">
+            <BrainCircuit size={14} />
+            组织大脑脉搏
           </div>
-          <div className="flex items-center gap-1.5 bg-emerald-50 text-emerald-600 px-4 py-2 rounded-full border border-emerald-100/50 shadow-sm">
-            <Sparkles size={14} />
-            <span className="text-[12px] font-semibold">本周 +{p ? p.weeklyNewFacts : '...'} 条新记忆</span>
+          <h2 className="mt-4 text-[22px] font-bold tracking-tight text-slate-900">
+            AI 最近学到了什么
+          </h2>
+          <p className="mt-2 text-[14px] font-medium leading-[1.85] text-slate-600">
+            {pulse?.headline || '正在读取组织数字资产脉搏。'}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <span className="rounded-full border border-slate-100 bg-white/80 px-3 py-1 text-[11px] font-bold text-slate-500">
+              已陪伴 {pulse?.daysAccompanied ?? 0} 天
+            </span>
+            {weeklyStats.map((item) => (
+              <span key={item.label} className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-600">
+                本周 +{item.value.toLocaleString()} {item.label}
+              </span>
+            ))}
           </div>
         </div>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {metrics1.map((m, i) => (
-              <div key={i} className="bg-white/80 border border-slate-100 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-shadow">
-                <div className="flex items-center gap-2">
-                  <m.icon size={16} className="text-blue-500" />
-                  <span className="text-[11px] font-semibold text-slate-400 tracking-wide uppercase">{m.label}</span>
+        {activeOrganizations.length > 0 && (
+          <div className="grid min-w-[320px] grid-cols-1 gap-2">
+            {activeOrganizations.slice(0, 3).map((item) => (
+              <button
+                key={item.clientId}
+                type="button"
+                onClick={() => onOpenDetail(item.clientId)}
+                className="rounded-[16px] border border-white/80 bg-white/80 px-4 py-3 text-left shadow-sm transition hover:border-blue-200 hover:bg-white"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-[13px] font-bold text-slate-800">{item.name}</span>
+                  <span className="text-[11px] font-bold text-blue-600">{item.maturityScore}%</span>
                 </div>
-                <div className="text-[24px] font-bold text-slate-800 tracking-tight mt-2 tabular-nums">{m.value}</div>
-              </div>
+                <div className="mt-1 truncate text-[11px] font-semibold text-slate-400">{item.assetProfileType}</div>
+              </button>
             ))}
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {metrics2.map((m, i) => (
-              <div key={i} className="bg-white/80 border border-slate-100 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-shadow">
-                <div className="flex items-center gap-2">
-                  <m.icon size={16} className="text-indigo-400" />
-                  <span className="text-[11px] font-semibold text-slate-400 tracking-wide uppercase">{m.label}</span>
-                </div>
-                <div className="text-[24px] font-bold text-slate-800 tracking-tight mt-2 tabular-nums">{m.value}</div>
-              </div>
-            ))}
+        )}
+      </div>
+
+      <div className="mt-6 rounded-[20px] border border-slate-100 bg-white/80 p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <GitBranch size={15} className="text-blue-500" />
+          <span className="text-[13px] font-bold text-slate-800">资料消化状态</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+          {funnel.map((item, index) => (
+            <div key={item.key} className="relative rounded-[16px] bg-slate-50 px-3 py-3">
+              <div className="text-[10px] font-bold text-slate-400">{item.label}</div>
+              <div className="mt-1 text-[20px] font-bold tabular-nums text-slate-800">{item.value.toLocaleString()}</div>
+              {index < funnel.length - 1 && (
+                <ChevronRight size={14} className="absolute right-2 top-1/2 hidden -translate-y-1/2 text-slate-300 md:block" />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-[20px] border border-slate-100 bg-white/80 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Sparkles size={15} className="text-blue-500" />
+            <span className="text-[13px] font-bold text-slate-800">本周变聪明的地方</span>
+          </div>
+          <div className="space-y-2">
+            {highlights.length ? highlights.map((item) => (
+              <button
+                key={`${item.clientId}-${item.title}`}
+                type="button"
+                onClick={() => item.clientId && onOpenDetail(item.clientId)}
+                className="w-full rounded-[16px] border border-blue-100 bg-blue-50/60 px-3 py-3 text-left transition hover:bg-blue-50"
+              >
+                <div className="text-[12px] font-bold text-blue-700">{item.title}</div>
+                <p className="mt-1 line-clamp-2 text-[12px] leading-[1.65] text-slate-600">{item.summary}</p>
+              </button>
+            )) : (
+              <div className="rounded-[16px] bg-slate-50 px-3 py-3 text-[12px] leading-6 text-slate-500">本周还没有明显的新理解，继续沉淀资料后这里会出现变化。</div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[20px] border border-slate-100 bg-white/80 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <AlertTriangle size={15} className="text-amber-500" />
+            <span className="text-[13px] font-bold text-slate-800">需要处理的信号</span>
+          </div>
+          <div className="space-y-2">
+            {alerts.length ? alerts.map((item) => (
+              <button
+                key={`${item.clientId}-${item.title}`}
+                type="button"
+                onClick={() => item.clientId && onOpenDetail(item.clientId)}
+                className={`w-full rounded-[16px] border px-3 py-3 text-left transition hover:bg-white ${signalClass(item.severity)}`}
+              >
+                <div className="text-[12px] font-bold">{item.title}</div>
+                <p className="mt-1 line-clamp-2 text-[12px] leading-[1.65] text-slate-600">{item.summary}</p>
+              </button>
+            )) : (
+              <div className="rounded-[16px] bg-slate-50 px-3 py-3 text-[12px] leading-6 text-slate-500">暂时没有明显异常，继续观察资料是否能转成证据和判断。</div>
+            )}
           </div>
         </div>
       </div>
+    </section>
+  );
+}
+
+const ORGANIZATION_DNA_KIND_META: Record<OrganizationDnaV2Kind, { title: string; description: string; icon: React.ReactNode; tone: string }> = {
+  stable_dna: {
+    title: '稳定画像',
+    description: '定位、服务对象、业务体系和表达口径',
+    icon: <Layers size={15} />,
+    tone: 'border-blue-100 bg-blue-50/70 text-blue-700',
+  },
+  evolving_dna: {
+    title: '近期变化',
+    description: '任务、事件线、复盘里的组织能力变化',
+    icon: <Activity size={15} />,
+    tone: 'border-emerald-100 bg-emerald-50/70 text-emerald-700',
+  },
+  gap_dna: {
+    title: '资料缺口',
+    description: '系统还能自动补什么、还缺哪些内部资料',
+    icon: <HelpCircle size={15} />,
+    tone: 'border-amber-100 bg-amber-50/70 text-amber-700',
+  },
+  risk_dna: {
+    title: '风险边界',
+    description: '公开/内部口径、弱证据和事实边界',
+    icon: <AlertOctagon size={15} />,
+    tone: 'border-rose-100 bg-rose-50/70 text-rose-700',
+  },
+};
+
+function OrganizationDnaMiniList({ kind, items }: { kind: OrganizationDnaV2Kind; items: OrganizationDnaV2Item[] }) {
+  const meta = ORGANIZATION_DNA_KIND_META[kind];
+  const visibleItems = items.slice(0, 2);
+  return (
+    <div className="rounded-[20px] border border-slate-100 bg-white/80 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-bold ${meta.tone}`}>
+            {meta.icon}
+            {meta.title}
+          </div>
+          <p className="mt-2 text-[12px] leading-5 text-slate-500">{meta.description}</p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500">
+          {items.length}
+        </span>
+      </div>
+      <div className="mt-4 space-y-2">
+        {visibleItems.length ? visibleItems.map((item) => (
+          <div key={item.id} className="rounded-[16px] border border-slate-100 bg-slate-50/70 px-3 py-3">
+            <div className="line-clamp-1 text-[12px] font-bold text-slate-800">{item.title}</div>
+            <p className="mt-1 line-clamp-2 text-[12px] leading-[1.65] text-slate-600">
+              {item.summary || '已进入组织 DNA 资料层，等待后续资料刷新。'}
+            </p>
+          </div>
+        )) : (
+          <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/70 px-3 py-3 text-[12px] leading-6 text-slate-400">
+            暂无内容，生成或刷新后这里会出现新的组织资产。
+          </div>
+        )}
+      </div>
     </div>
+  );
+}
+
+function OrganizationDnaPanel({
+  snapshot,
+  loading,
+  refreshing,
+  error,
+  onRefresh,
+}: {
+  snapshot: OrganizationDnaV2Snapshot | null;
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const itemCount =
+    (snapshot?.stableItems.length ?? 0)
+    + (snapshot?.evolvingItems.length ?? 0)
+    + (snapshot?.gapItems.length ?? 0)
+    + (snapshot?.riskItems.length ?? 0);
+  const latestRun = snapshot?.latestRun;
+  const actionText = itemCount > 0 ? '刷新组织 DNA' : '生成初版';
+  return (
+    <section className="mb-6 rounded-[28px] border border-slate-100 bg-white p-6 shadow-[0_12px_36px_rgba(15,23,42,0.05)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="max-w-3xl">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[12px] font-bold text-slate-600">
+            <Bot size={14} />
+            组织 DNA v2
+          </div>
+          <h2 className="mt-4 text-[22px] font-bold tracking-tight text-slate-900">组织级智能资产</h2>
+          <p className="mt-2 text-[14px] font-medium leading-[1.85] text-slate-600">
+            这里沉淀当前组织自己的定位、近期变化、资料缺口和风险边界。它由系统从组织模型、任务、事件线和复盘中持续刷新，不再作为设置页里的静态文本。
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[11px] font-bold text-blue-600">
+              已稳定 {snapshot?.confirmedCount ?? 0}
+            </span>
+            <span className="rounded-full border border-amber-100 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-600">
+              待积累 {snapshot?.candidateCount ?? 0}
+            </span>
+            <span className="rounded-full border border-slate-100 bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-500">
+              需刷新 {snapshot?.staleCount ?? 0}
+            </span>
+            <span className="rounded-full border border-slate-100 bg-white px-3 py-1 text-[11px] font-bold text-slate-400">
+              最近刷新 {snapshot?.updatedAt || latestRun?.updatedAt || '尚未生成'}
+            </span>
+          </div>
+          {error && (
+            <div className="mt-3 rounded-[14px] border border-rose-100 bg-rose-50 px-3 py-2 text-[12px] font-semibold text-rose-600">
+              {error}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading || refreshing}
+          className="inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-[13px] font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+          {loading ? '读取中' : refreshing ? '刷新中' : actionText}
+        </button>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-4">
+        <OrganizationDnaMiniList kind="stable_dna" items={snapshot?.stableItems ?? []} />
+        <OrganizationDnaMiniList kind="evolving_dna" items={snapshot?.evolvingItems ?? []} />
+        <OrganizationDnaMiniList kind="gap_dna" items={snapshot?.gapItems ?? []} />
+        <OrganizationDnaMiniList kind="risk_dna" items={snapshot?.riskItems ?? []} />
+      </div>
+    </section>
   );
 }
 
@@ -955,28 +1242,97 @@ function ThoughtScopeSelect({
   onChange: (clientId: string) => void;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const options = useMemo(() => [{ id: '', name: '全部客户' }, ...clients], [clients]);
+  const selectedClient = options.find((client) => client.id === selectedClientId) || options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  const handleSelect = (clientId: string) => {
+    onChange(clientId);
+    setOpen(false);
+  };
+
   return (
-    <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-sm">
+    <div ref={rootRef} className="relative flex items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 shadow-sm">
       <Users size={15} className="text-blue-500 shrink-0" />
       <span className="text-[12px] font-semibold text-slate-500 whitespace-nowrap">客户/项目</span>
-      <select
-        value={selectedClientId}
-        onChange={(event) => onChange(event.target.value)}
+      <button
+        type="button"
         disabled={disabled}
-        className="min-w-[130px] max-w-[220px] bg-transparent text-[13px] font-semibold text-slate-700 outline-none disabled:opacity-50"
+        onClick={() => setOpen((value) => !value)}
+        className="flex min-w-[130px] max-w-[220px] items-center justify-between gap-2 bg-transparent text-left text-[13px] font-semibold text-slate-700 outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        aria-haspopup="listbox"
+        aria-expanded={open}
       >
-        <option value="">全部客户</option>
-        {clients.map((client) => (
-          <option key={client.id} value={client.id}>
-            {client.name}
-          </option>
-        ))}
-      </select>
+        <span className="truncate">{selectedClient.name}</span>
+        <ChevronDown size={14} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && !disabled && (
+        <div
+          role="listbox"
+          className="absolute right-0 top-full z-50 mt-2 w-[240px] max-h-[360px] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-[0_18px_60px_rgba(15,23,42,0.18)]"
+        >
+          {options.map((client) => {
+            const selected = client.id === selectedClientId;
+            return (
+              <button
+                key={client.id || 'all_clients'}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => handleSelect(client.id)}
+                className={`flex h-9 w-full items-center justify-between gap-2 rounded-xl px-3 text-left text-[13px] font-semibold transition-colors ${
+                  selected ? 'bg-blue-500 text-white' : 'text-slate-700 hover:bg-blue-50 hover:text-blue-600'
+                }`}
+              >
+                <span className="truncate">{client.name}</span>
+                {selected && <Check size={14} className="shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-function DigitalAssetsTab({ onOpenDetail, clients }: { onOpenDetail: (clientId: string) => void; clients: DigitalAssetClientSummary[] }) {
+function DigitalAssetsTab({
+  onOpenDetail,
+  clients,
+  pulse,
+  organizationDnaSnapshot,
+  organizationDnaLoading,
+  organizationDnaRefreshing,
+  organizationDnaError,
+  onRefreshOrganizationDna,
+}: {
+  onOpenDetail: (clientId: string) => void;
+  clients: DigitalAssetClientSummary[];
+  pulse?: DigitalAssetPulse | null;
+  organizationDnaSnapshot: OrganizationDnaV2Snapshot | null;
+  organizationDnaLoading: boolean;
+  organizationDnaRefreshing: boolean;
+  organizationDnaError: string | null;
+  onRefreshOrganizationDna: () => void;
+}) {
   const sorted = [...clients].sort((a, b) => {
     const stageDiff = stageRank(b.assetStage) - stageRank(a.assetStage);
     if (stageDiff !== 0) return stageDiff;
@@ -984,37 +1340,44 @@ function DigitalAssetsTab({ onOpenDetail, clients }: { onOpenDetail: (clientId: 
   });
   if (!clients.length) {
     return (
-      <div className="bg-white border border-slate-100 rounded-[24px] px-6 py-8">
-        <p className="text-[14px] font-bold text-slate-700">还没有可形成数字资产的组织资料</p>
-        <p className="text-[13px] leading-7 text-slate-500 mt-2">建议先建立客户/组织空间，并上传项目介绍、流程资料、反馈表和评估材料。</p>
+      <div>
+        <OrganizationDnaPanel
+          snapshot={organizationDnaSnapshot}
+          loading={organizationDnaLoading}
+          refreshing={organizationDnaRefreshing}
+          error={organizationDnaError}
+          onRefresh={onRefreshOrganizationDna}
+        />
+        <DigitalAssetPulsePanel pulse={pulse} onOpenDetail={onOpenDetail} />
+        <div className="bg-white border border-slate-100 rounded-[24px] px-6 py-8">
+          <p className="text-[14px] font-bold text-slate-700">还没有可形成数字资产的组织资料</p>
+          <p className="text-[13px] leading-7 text-slate-500 mt-2">建议先建立客户/组织空间，并上传项目介绍、流程资料、反馈表和评估材料。</p>
+        </div>
       </div>
     );
   }
   return (
     <div>
-      <div className="rounded-[28px] border border-blue-100 bg-white p-6 mb-6 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
-        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
-          <div>
-            <h2 className="text-[18px] font-bold text-slate-900 flex items-center gap-2">
-              <FolderTree size={19} className="text-blue-500" /> 组织数字资产概览
-            </h2>
-            <p className="text-[13px] leading-7 text-slate-500 mt-2 max-w-3xl">
-              这里展示每个组织已经沉淀了哪些长期可复用资产，以及下一步该补什么，才能让 AI 更理解组织。
-            </p>
-          </div>
-          <div className="flex items-center gap-2 text-[12px] font-bold text-slate-400">
-            <Layers size={14} />
-            目前收录 {clients.length} 个组织空间
-          </div>
-        </div>
-      </div>
+      <OrganizationDnaPanel
+        snapshot={organizationDnaSnapshot}
+        loading={organizationDnaLoading}
+        refreshing={organizationDnaRefreshing}
+        error={organizationDnaError}
+        onRefresh={onRefreshOrganizationDna}
+      />
+      <DigitalAssetPulsePanel pulse={pulse} onOpenDetail={onOpenDetail} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         {sorted.map((client) => {
           const documentCount = metricValue(client.metrics, 'documents');
           const memoryCount = metricValue(client.metrics, 'memoryFacts');
           const evidenceCount = metricValue(client.metrics, 'evidenceCards');
-          const primaryGap = client.criticalGaps[0] || '继续提高资料的连续性和结构化程度。';
-          const primaryDeposit = client.nextBestDeposits?.[0]?.title || client.nextDeposits[0] || '持续沉淀项目介绍、流程、反馈和评估材料。';
+          const overviewRows = (client.materialMaturityRows || []).slice(0, 3);
+          const weakestRow = [...overviewRows]
+            .filter((row) => row.missingSummary)
+            .sort((a, b) => materialRowPercent(a) - materialRowPercent(b))[0] || overviewRows[0];
+          const missingText = weakestRow?.missingSummary || client.stageBlockers?.[0] || client.criticalGaps?.[0] || '继续沉淀能说明组织、项目、对象、过程和反馈的资料。';
+          const maturityScore = client.maturityScore ?? client.stageProgress ?? 0;
+          const profileType = client.assetProfileType || client.assetTrackTitle || '组织战略陪伴型';
           return (
           <div
             key={client.id}
@@ -1025,56 +1388,62 @@ function DigitalAssetsTab({ onOpenDetail, clients }: { onOpenDetail: (clientId: 
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-[16px] font-bold text-slate-800 group-hover:text-blue-600 transition-colors">{client.name}</h3>
                 <span className="bg-blue-50 border border-blue-100 text-blue-600 text-[11px] font-bold px-2.5 py-1 rounded-lg">
-                  {client.assetStage || '资料整理期'}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="min-w-[112px] rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-600">
-                  {client.assetTrackTitle || '组织资产型'}
-                </div>
-                <div className="h-1.5 bg-slate-100 rounded-full w-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-1000 ease-out"
-                    style={{ width: `${clampPercent(client.stageProgress)}%`, backgroundColor: getConfColor(client.stageProgress) }}
-                  />
-                </div>
-                <span className="text-[12px] font-bold tabular-nums w-10 text-right" style={{ color: getConfColor(client.stageProgress) }}>
-                  {client.stageProgress}%
+                  {assetStageWithLevel(client.assetStage)}
                 </span>
               </div>
             </div>
             <div className="mb-4 flex flex-wrap gap-2">
+              <span className="rounded-full bg-slate-50 border border-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+                {profileType}
+              </span>
               <span className="rounded-full bg-blue-50 border border-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-600">
-                沉淀经验 {client.depositXp || 0} XP
+                资料厚度 {client.depositThickness ?? 0}%
+              </span>
+              <span className="rounded-full bg-indigo-50 border border-indigo-100 px-2.5 py-1 text-[11px] font-bold text-indigo-600">
+                成熟度 {maturityScore}%
               </span>
               <span className="rounded-full bg-emerald-50 border border-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-600">
                 {client.growthMode || '均衡成长'}
               </span>
-              <span className="rounded-full bg-amber-50 border border-amber-100 px-2.5 py-1 text-[11px] font-bold text-amber-600">
-                下一阶段 {client.nextStage || '继续沉淀'}
-              </span>
-              {client.strongestDimensions.slice(0, 2).map((dimension) => (
-                <span key={dimension} className="rounded-full bg-slate-50 border border-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500">
-                  {dimension}
-                </span>
-              ))}
             </div>
-            <p className="text-[13px] leading-[1.8] text-slate-600 font-medium mb-5 line-clamp-3">
+            <p className="text-[13px] leading-[1.75] text-slate-600 font-medium mb-4 line-clamp-2">
               {client.understandingStatement || client.intro || 'AI 对这个组织还处在初步理解阶段。'}
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 mb-5">
-              <div className="rounded-[16px] bg-emerald-50/70 px-3 py-2.5">
-                <div className="text-[10px] font-bold text-emerald-600 mb-1">已形成价值</div>
-                <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-3">{client.highValueSignals[0] || '等待更多资料形成长期价值判断。'}</p>
+            <div className="mb-4 rounded-[18px] border border-slate-100 bg-slate-50/50 px-4 py-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-bold text-slate-500">核心资料成熟度</span>
+                <span className="text-[11px] font-bold text-slate-300">资料质量</span>
               </div>
-              <div className="rounded-[16px] bg-amber-50/80 px-3 py-2.5">
-                <div className="text-[10px] font-bold text-amber-600 mb-1">关键缺口</div>
-                <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-3">{client.stageBlockers?.[0] || primaryGap}</p>
+              {overviewRows.length ? (
+                <div className="space-y-2.5">
+                  {overviewRows.map((row) => {
+                    const maturity = materialRowPercent(row);
+                    return (
+                      <div key={row.key} className="grid grid-cols-[92px_1fr_38px] items-center gap-2">
+                        <span className="truncate text-[11px] font-bold text-slate-600">{row.label}</span>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-200/80">
+                          <div
+                            className={`h-full rounded-full ${maturityBarClass(maturity)}`}
+                            style={{ width: `${clampPercent(maturity)}%` }}
+                          />
+                        </div>
+                        <span className="text-right text-[11px] font-bold tabular-nums text-slate-500">{maturity}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[12px] leading-6 text-slate-400">资料类型待识别。先补充组织介绍、项目资料、流程记录和反馈材料。</p>
+              )}
+            </div>
+            {(client.depositThickness ?? 0) >= 65 && maturityScore < 55 && (
+              <div className="mb-3 rounded-[14px] bg-amber-50 px-3 py-2 text-[11px] leading-[1.6] font-semibold text-amber-700">
+                资料沉淀不少，但还缺可计算、可验证的连续资料。
               </div>
-              <div className="rounded-[16px] bg-blue-50/70 px-3 py-2.5">
-                <div className="text-[10px] font-bold text-blue-600 mb-1">下一步沉淀</div>
-                <p className="text-[11px] leading-[1.6] text-slate-600 line-clamp-3">{primaryDeposit}</p>
-              </div>
+            )}
+            <div className="mb-5 rounded-[16px] bg-amber-50/70 px-3 py-2.5">
+              <div className="text-[10px] font-bold text-amber-600 mb-1">还缺</div>
+              <p className="text-[11px] leading-[1.65] text-slate-600 line-clamp-2">{missingText}</p>
             </div>
             <div className="flex flex-wrap gap-x-4 gap-y-2 pt-4 border-t border-slate-50">
               {[
@@ -1101,33 +1470,26 @@ function DigitalAssetsTab({ onOpenDetail, clients }: { onOpenDetail: (clientId: 
 
 export type StrategicBrainViewProps = {
   clients?: Array<{ id: string; name: string }>;
-  tasks?: Task[];
   currentClientId?: string | null;
   onClientChange?: (clientId: string) => void;
   onCreateTaskFromThought?: (payload: ThoughtTaskPayload) => void;
-  onCreateTaskFromLearning?: (payload: StrategicLearningTaskPayload) => Promise<void> | void;
-  onTasksReload?: () => Promise<unknown> | void;
-  onNavigate?: (tab: string) => void;
-  onOpenContext?: (context: GrowthContextLink) => void;
   flash?: (level: 'success' | 'error' | 'info', message: string) => void;
 };
 
 export function StrategicBrainView({
   clients = [],
-  tasks,
   currentClientId,
   onClientChange,
   onCreateTaskFromThought,
-  onCreateTaskFromLearning,
-  onTasksReload,
-  onNavigate,
-  onOpenContext,
   flash,
 }: StrategicBrainViewProps) {
-  const [activeTab, setActiveTab] = useState('pulse');
+  const [activeTab, setActiveTab] = useState('clients');
   const [viewState, setViewState] = useState<{ type: 'tabs'; detailId: null } | { type: 'detail'; detailId: string }>({ type: 'tabs', detailId: null });
-  const [dashboard, setDashboard] = useState<BrainDashboard | null>(null);
   const [assetDashboard, setAssetDashboard] = useState<DigitalAssetDashboard | null>(null);
+  const [organizationDnaSnapshot, setOrganizationDnaSnapshot] = useState<OrganizationDnaV2Snapshot | null>(null);
+  const [organizationDnaLoading, setOrganizationDnaLoading] = useState(false);
+  const [organizationDnaRefreshing, setOrganizationDnaRefreshing] = useState(false);
+  const [organizationDnaError, setOrganizationDnaError] = useState<string | null>(null);
   const [thoughts, setThoughts] = useState<StrategicThought[]>([]);
   const [thoughtsLoading, setThoughtsLoading] = useState(false);
   const [thoughtsError, setThoughtsError] = useState<string | null>(null);
@@ -1136,34 +1498,44 @@ export function StrategicBrainView({
 
   const thoughtClientOptions = useMemo(() => {
     const map = new Map<string, { id: string; name: string }>();
-    for (const client of dashboard?.clients ?? []) {
-      if (client.id && client.name) map.set(client.id, { id: client.id, name: client.name });
+    for (const client of assetDashboard?.clients ?? []) {
+      if (client.id && client.name && !isInternalSmokeClient(client)) map.set(client.id, { id: client.id, name: client.name });
     }
     for (const client of clients) {
-      if (client.id && client.name && !map.has(client.id)) map.set(client.id, { id: client.id, name: client.name });
+      if (client.id && client.name && !isInternalSmokeClient(client) && !map.has(client.id)) map.set(client.id, { id: client.id, name: client.name });
     }
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
-  }, [clients, dashboard?.clients]);
+    return Array.from(map.values());
+  }, [clients, assetDashboard?.clients]);
 
   const selectedThoughtClient = useMemo(
     () => thoughtClientOptions.find((client) => client.id === thoughtClientId) || null,
     [thoughtClientId, thoughtClientOptions],
   );
 
-  useEffect(() => {
-    getBrainDashboard()
-      .then(setDashboard)
-      .catch(() => setDashboard(null));
-    getDigitalAssetDashboard()
-      .then(setAssetDashboard)
-      .catch(() => setAssetDashboard(null));
+  const loadOrganizationDnaSnapshot = useCallback(async () => {
+    setOrganizationDnaLoading(true);
+    setOrganizationDnaError(null);
+    try {
+      const snapshot = await getOrganizationDnaV2Snapshot();
+      setOrganizationDnaSnapshot(snapshot);
+    } catch (error) {
+      setOrganizationDnaError(error instanceof Error ? error.message : '组织 DNA 读取失败');
+      setOrganizationDnaSnapshot(null);
+    } finally {
+      setOrganizationDnaLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    if (currentClientId && !thoughtClientId) {
-      setThoughtClientId(currentClientId);
-    }
-  }, [currentClientId, thoughtClientId]);
+    getDigitalAssetDashboard()
+      .then(setAssetDashboard)
+      .catch(() => setAssetDashboard(null));
+    void loadOrganizationDnaSnapshot();
+  }, [loadOrganizationDnaSnapshot]);
+
+  useEffect(() => {
+    setThoughtClientId(currentClientId || '');
+  }, [currentClientId]);
 
   const loadThoughts = useCallback(async () => {
     setThoughtsLoading(true);
@@ -1211,6 +1583,25 @@ export function StrategicBrainView({
       setThoughtsRefreshing(false);
     }
   }, [flash, thoughtClientId]);
+
+  const handleRefreshOrganizationDna = useCallback(async () => {
+    setOrganizationDnaRefreshing(true);
+    setOrganizationDnaError(null);
+    try {
+      const run = await refreshOrganizationDnaV2('digital_asset_center');
+      if (run.status === 'failed') {
+        throw new Error(run.error || '组织 DNA 刷新失败');
+      }
+      await loadOrganizationDnaSnapshot();
+      flash?.('success', '组织 DNA 已刷新');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '组织 DNA 刷新失败';
+      setOrganizationDnaError(message);
+      flash?.('error', message);
+    } finally {
+      setOrganizationDnaRefreshing(false);
+    }
+  }, [flash, loadOrganizationDnaSnapshot]);
 
   const handleToggleFavoriteThought = useCallback(
     async (thought: StrategicThought) => {
@@ -1280,7 +1671,6 @@ export function StrategicBrainView({
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="max-w-full mx-auto">
-          {activeTab === 'pulse' && <PulseTab pulse={dashboard?.pulse ?? null} />}
           {activeTab === 'thoughts' && (
             <ThoughtsTab
               thoughts={thoughts}
@@ -1299,18 +1689,16 @@ export function StrategicBrainView({
               refreshing={thoughtsRefreshing}
             />
           )}
-          {activeTab === 'clients' && <DigitalAssetsTab clients={assetDashboard?.clients ?? []} onOpenDetail={(clientId) => setViewState({ type: 'detail', detailId: clientId })} />}
-          {activeTab === 'learning' && (
-            <StrategicLearningListPanel
-              currentClientId={null}
-              currentClientName={null}
-              clients={dashboard?.clients || []}
-              tasks={tasks}
-              onTasksReload={onTasksReload}
-              onNavigate={onNavigate}
-              onOpenContext={onOpenContext}
-              onCreateTaskFromLearning={onCreateTaskFromLearning}
-              flash={flash}
+          {activeTab === 'clients' && (
+            <DigitalAssetsTab
+              clients={assetDashboard?.clients ?? []}
+              pulse={assetDashboard?.pulse ?? null}
+              organizationDnaSnapshot={organizationDnaSnapshot}
+              organizationDnaLoading={organizationDnaLoading}
+              organizationDnaRefreshing={organizationDnaRefreshing}
+              organizationDnaError={organizationDnaError}
+              onRefreshOrganizationDna={handleRefreshOrganizationDna}
+              onOpenDetail={(clientId) => setViewState({ type: 'detail', detailId: clientId })}
             />
           )}
         </div>

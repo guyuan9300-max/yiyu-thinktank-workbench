@@ -7,7 +7,7 @@ from typing import Any
 
 from app.services.source_integrity import compute_backend_source_hash
 
-APP_DISPLAY_NAME = "益语智库自用平台"
+APP_DISPLAY_NAME = "益语智库自用平台 V2.0"
 VERSION_MANIFEST_RELATIVE_PATH = Path("dist") / "version-manifest.json"
 
 

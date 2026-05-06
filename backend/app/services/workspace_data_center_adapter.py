@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from app.models import (
@@ -64,6 +65,7 @@ def build_workspace_data_center_request_from_route(
     prompt: str,
     shadow: bool = True,
     persist_drafts: bool = False,
+    working_document_ids: list[str] | None = None,
 ) -> DataCenterRequestRecord:
     if route.workflow == "file_search":
         mode = "search"
@@ -84,6 +86,7 @@ def build_workspace_data_center_request_from_route(
         includeActionSuggestions=route.includeActionSuggestions,
         shadow=effective_shadow,
         persistDrafts=persist_drafts,
+        workingDocumentIds=[str(item).strip() for item in (working_document_ids or []) if str(item).strip()],
     )
 
 
@@ -357,6 +360,21 @@ class ActionAdvisoryMaterialPack:
     context_chars: int = 0
 
 
+@dataclass(frozen=True)
+class DnaToolContextRecord:
+    purpose: str
+    selected_modules: list[str] = field(default_factory=list)
+    selected_kinds: list[str] = field(default_factory=list)
+    context_text: str = ""
+    source_level_summary: str = ""
+    time_scope_summary: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def context_chars(self) -> int:
+        return len(self.context_text)
+
+
 _CONSULTANT_NOISE_TOKENS = (
     "prog_test",
     "test_attachment",
@@ -424,6 +442,219 @@ def _first_text_field(item: object, fields: tuple[str, ...], *, limit: int = 800
         if value:
             return value
     return ""
+
+
+def _full_text_field(item: object, fields: tuple[str, ...]) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    for field_name in fields:
+        value = str(_field_value(item, field_name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def infer_dna_tool_purpose(prompt: str, fallback: str = "intro") -> str:
+    normalized = re.sub(r"\s+", "", str(prompt or "").lower())
+    if any(token in normalized for token in ("缺什么", "缺哪些", "补哪些", "补充哪些", "资料缺口", "补全", "数字资产", "还缺")):
+        return "asset_gap"
+    if any(token in normalized for token in ("下一步", "未来两周", "任务", "日程", "推进", "怎么做", "行动", "会议", "跟进")):
+        return "task_next_action"
+    if any(token in normalized for token in ("战略", "核心", "定位", "第二曲线", "增长飞轮", "方向", "路径", "判断")):
+        return "strategy"
+    if any(token in normalized for token in ("对外", "公开", "合作方", "宣传", "材料", "介绍稿", "官网")):
+        return "public_material"
+    if any(token in normalized for token in ("风险", "合规", "边界", "不能说", "未成年人", "隐私", "公开口径")):
+        return "risk_check"
+    if any(token in normalized for token in ("介绍", "简介", "是谁", "画像", "项目特点")):
+        return "intro"
+    return fallback
+
+
+def _dna_module_kinds(module: object) -> list[str]:
+    module_key = _clean_text(_field_value(module, "moduleKey"), limit=80)
+    title = _clean_text(_field_value(module, "title"), limit=120)
+    text = " ".join(
+        part
+        for part in [
+            _full_text_field(module, ("summary",)),
+            _full_text_field(module, ("normalizedText",)),
+            _full_text_field(module, ("markdownContent",)),
+            _full_text_field(module, ("text", "content")),
+        ]
+        if part
+    )
+    normalized = f"{module_key} {title} {text[:6000]}".lower()
+    kinds: list[str] = []
+    if module_key in {"organization_intro", "business_intro", "team_intro", "market_intro"}:
+        kinds.append("stable_dna")
+    if any(token in normalized for token in ("官网", "公开", "对外", "民政", "慈善中国", "年报", "审计", "报告", "披露")):
+        kinds.append("public_dna")
+    if any(token in normalized for token in ("战略", "第二曲线", "任务", "事件线", "会议", "当前", "下一步", "待证据确认", "自动升级", "自动降级", "飞轮")):
+        kinds.append("evolving_dna")
+    if any(token in normalized for token in ("缺口", "补全", "待补", "资料", "互联网", "用户补", "自动补", "优先级")):
+        kinds.append("gap_dna")
+    if any(token in normalized for token in ("风险", "合规", "边界", "不能", "不得", "公开口径", "内部口径", "未成年人", "隐私", "治疗", "正式事实", "高置信")):
+        kinds.append("risk_dna")
+    return list(dict.fromkeys(kinds or ["stable_dna"]))
+
+
+def _preferred_dna_kinds_for_purpose(purpose: str) -> list[str]:
+    return {
+        "intro": ["stable_dna", "public_dna"],
+        "strategy": ["stable_dna", "evolving_dna", "risk_dna"],
+        "task_next_action": ["evolving_dna", "gap_dna", "risk_dna", "stable_dna"],
+        "asset_gap": ["gap_dna", "evolving_dna", "risk_dna", "stable_dna"],
+        "public_material": ["public_dna", "stable_dna", "risk_dna"],
+        "risk_check": ["risk_dna", "public_dna", "stable_dna"],
+    }.get(purpose, ["stable_dna", "evolving_dna", "gap_dna", "risk_dna"])
+
+
+def _mark_unverified_dna_numbers(text: str) -> str:
+    pieces = re.split(r"([。；;\n])", text)
+    rebuilt: list[str] = []
+    for idx in range(0, len(pieces), 2):
+        sentence = pieces[idx]
+        delimiter = pieces[idx + 1] if idx + 1 < len(pieces) else ""
+        has_strong_number = bool(
+            re.search(r"\d+(?:\.\d+)?%|\d+(?:\.\d+)?倍|(?:提升|降低|增长|减少|节省|替代)[^。；;\n]{0,18}\d", sentence)
+        )
+        has_source_marker = bool(re.search(r"S\d{3}|来源|L1|L2|官网|年报|审计|截至20\d{2}", sentence))
+        if has_strong_number and not has_source_marker and "数字/成效口径需来源核验" not in sentence:
+            sentence = sentence.rstrip() + "（数字/成效口径需来源核验，不能直接写成正式事实）"
+        rebuilt.append(sentence + delimiter)
+    return "".join(rebuilt)
+
+
+def _filter_dna_text_for_purpose(text: str, purpose: str) -> str:
+    if purpose not in {"intro", "public_material"}:
+        return text
+    noisy_tokens = (
+        "待证据确认",
+        "自动升级",
+        "自动降级",
+        "事件线",
+        "未来两周",
+        "下一阶段任务",
+        "任务1",
+        "任务2",
+        "资料缺口",
+        "补全优先级",
+        "系统自动补",
+        "用户补充",
+        "互联网补全",
+    )
+    paragraphs = re.split(r"\n{2,}|(?<=。)", text)
+    kept: list[str] = []
+    for paragraph in paragraphs:
+        cleaned = paragraph.strip()
+        if not cleaned:
+            continue
+        if any(token in cleaned for token in noisy_tokens):
+            continue
+        kept.append(cleaned)
+    return "\n".join(kept) or text
+
+
+def build_dna_tool_context_from_workspace(
+    workspace_snapshot: ClientWorkspaceResponse | None,
+    *,
+    prompt: str,
+    purpose: str | None = None,
+    max_chars: int = 18000,
+) -> DnaToolContextRecord:
+    modules = [
+        module
+        for module in list(getattr(workspace_snapshot, "dnaModules", []) or [])
+        if bool(_field_value(module, "hasDocument")) and _full_text_field(module, ("normalizedText", "markdownContent", "summary", "text", "content"))
+    ]
+    resolved_purpose = purpose or infer_dna_tool_purpose(prompt)
+    if not modules:
+        return DnaToolContextRecord(purpose=resolved_purpose)
+
+    preferred_kinds = _preferred_dna_kinds_for_purpose(resolved_purpose)
+    prompt_tokens = [token for token in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]+", str(prompt or "").lower()) if len(token) >= 2]
+
+    def module_rank(module: object) -> tuple[int, int, str, str]:
+        title = _clean_text(_field_value(module, "title"), limit=120)
+        module_key = _clean_text(_field_value(module, "moduleKey"), limit=80)
+        text = _full_text_field(module, ("summary", "normalizedText", "markdownContent", "text", "content"))
+        kinds = _dna_module_kinds(module)
+        kind_score = sum((len(preferred_kinds) - index) * 20 for index, kind in enumerate(preferred_kinds) if kind in kinds)
+        token_score = sum(1 for token in prompt_tokens if token and token in f"{title} {text[:6000]}".lower())
+        source_kind_score = 8 if str(_field_value(module, "sourceKind") or "manual") == "manual" else 2
+        return (kind_score + token_score * 6 + source_kind_score, len(text), str(_field_value(module, "updatedAt") or ""), module_key)
+
+    ordered_modules = sorted(modules, key=module_rank, reverse=True)
+    selected_modules: list[str] = []
+    selected_kinds: list[str] = []
+    blocks: list[str] = [
+        "【客户 DNA 工具调用】",
+        f"purpose={resolved_purpose}",
+        "使用规则：DNA 是客户理解、战略判断和行动建议工具；不能单独作为正式事实来源。",
+        "证据边界：没有 L1/L2 支撑的内容只能作为高置信判断或待证据确认；内部战略口径不能直接用于对外公开回答。",
+        "数字边界：比例、倍数、规模、成效、时间节点必须有来源；无来源数字只能作为待核验线索。",
+    ]
+    content_budget = max(1800, max_chars - sum(len(line) for line in blocks) - 80)
+    module_budget = max(1800, content_budget // max(1, min(len(ordered_modules), 4)))
+    used_chars = 0
+    for module in ordered_modules:
+        title = _clean_text(_field_value(module, "title"), limit=120) or "客户 DNA"
+        module_key = _clean_text(_field_value(module, "moduleKey"), limit=80)
+        source_kind = _clean_text(_field_value(module, "sourceKind"), limit=80) or "manual"
+        updated_at = _clean_text(_field_value(module, "updatedAt"), limit=80)
+        kinds = _dna_module_kinds(module)
+        raw_text = _full_text_field(module, ("normalizedText", "markdownContent", "summary", "text", "content"))
+        raw_text = _filter_dna_text_for_purpose(raw_text, resolved_purpose)
+        guarded_text = _mark_unverified_dna_numbers(re.sub(r"\s+", " ", raw_text).strip())
+        remaining = content_budget - used_chars
+        if remaining <= 600:
+            break
+        take = min(module_budget, remaining)
+        snippet = guarded_text[:take].rstrip()
+        if len(guarded_text) > take:
+            snippet += "…"
+        blocks.append(
+            "\n".join(
+                [
+                    f"[DNA 模块] {title}",
+                    f"moduleKey={module_key or '-'}；kinds={','.join(kinds)}；sourceKind={source_kind}；updatedAt={updated_at or '-'}",
+                    snippet,
+                ]
+            )
+        )
+        used_chars += len(snippet)
+        selected_modules.append(title)
+        selected_kinds.extend(kinds)
+        if len(selected_modules) >= 6:
+            break
+
+    selected_kinds = list(dict.fromkeys(selected_kinds))
+    context_text = "\n\n".join(blocks).strip()
+    if len(context_text) > max_chars:
+        context_text = context_text[: max_chars - 1].rstrip() + "…"
+    source_level_summary = "；".join(
+        f"{level}={context_text.count(level)}"
+        for level in ("L1", "L2", "L3", "L4")
+        if context_text.count(level)
+    ) or "未检测到明确 L1/L2/L3/L4 标注"
+    dates = sorted(set(re.findall(r"20\d{2}(?:[-/.年]\d{1,2})?(?:[-/.月]\d{1,2})?", context_text)))
+    time_scope_summary = "、".join(dates[-6:]) if dates else "未检测到明确时间戳"
+    warnings = [
+        "DNA 不能单独作为正式事实来源",
+        "内部战略口径不得直接用于对外公开回答",
+    ]
+    if "数字/成效口径需来源核验" in context_text:
+        warnings.append("存在已降级的无来源数字/成效表述")
+    return DnaToolContextRecord(
+        purpose=resolved_purpose,
+        selected_modules=selected_modules,
+        selected_kinds=selected_kinds,
+        context_text=context_text,
+        source_level_summary=source_level_summary,
+        time_scope_summary=time_scope_summary,
+        warnings=warnings,
+    )
 
 
 def _consultant_noise_text(title: str = "", body: str = "", path: str = "", source_type: str = "") -> bool:
@@ -557,6 +788,15 @@ def build_consultant_synthesis_material_pack(
         ).strip()
     )
     add_section("客户基础信息", client_lines, "clientBasics")
+    dna_tool_context = build_dna_tool_context_from_workspace(
+        workspace_snapshot,
+        prompt=prompt,
+        purpose="strategy" if "战略" in prompt or "核心" in prompt else None,
+        max_chars=14000,
+    )
+    if dna_tool_context.context_text:
+        source_counts["clientDnaTool"] = max(1, len(dna_tool_context.selected_modules))
+        sections.append(dna_tool_context.context_text)
 
     boundary_notes: list[str] = []
     if page_context is not None:
@@ -600,18 +840,6 @@ def build_consultant_synthesis_material_pack(
                 high_signal_only=True,
             ),
             "workspaceDocuments",
-        )
-        add_section(
-            "客户 DNA 与组织画像",
-            collect_items(
-                list(workspace_snapshot.dnaModules or []),
-                source_key="clientDna",
-                title_fields=("title", "label", "moduleName", "name"),
-                body_fields=("summary", "content", "value", "description", "evidence"),
-                limit=10,
-                body_limit=900,
-            ),
-            "clientDna",
         )
         add_section(
             "项目结构与业务线",
@@ -730,6 +958,15 @@ def build_action_advisory_material_pack(
         if client_summary:
             client_lines.append(f"- 客户摘要：{client_summary}")
     add_section("客户基础信息", client_lines, "clientBasics")
+    dna_tool_context = build_dna_tool_context_from_workspace(
+        workspace_snapshot,
+        prompt=prompt,
+        purpose="task_next_action",
+        max_chars=12000,
+    )
+    if dna_tool_context.context_text:
+        source_counts["clientDnaTool"] = max(1, len(dna_tool_context.selected_modules))
+        sections.append(dna_tool_context.context_text)
 
     boundary_notes: list[str] = []
     if page_context is not None:
@@ -769,17 +1006,6 @@ def build_action_advisory_material_pack(
                 limit=10,
             ),
             "projectStructure",
-        )
-        add_section(
-            "客户 DNA 与组织画像",
-            collect_items(
-                list(workspace_snapshot.dnaModules or []),
-                source_key="clientDna",
-                title_fields=("title", "label", "moduleName", "name"),
-                body_fields=("summary", "content", "value", "description", "evidence"),
-                limit=8,
-            ),
-            "clientDna",
         )
         add_section(
             "工作台近期任务",
@@ -839,6 +1065,7 @@ def build_open_workspace_answer_context(
     max_chars: int = 100000,
     question_focus_frame: dict[str, object] | None = None,
     profile_draft: str | None = None,
+    dna_tool_context: DnaToolContextRecord | None = None,
 ) -> str:
     page_context = kernel_result.pageContext
     answer_material = kernel_result.answerMaterial
@@ -942,6 +1169,11 @@ def build_open_workspace_answer_context(
             total_segments += len(segments_for_doc)
             document_sections.append("\n".join(lines).strip())
 
+    resolved_dna_tool_context = dna_tool_context or build_dna_tool_context_from_workspace(
+        workspace_snapshot,
+        prompt=prompt,
+        max_chars=22000,
+    )
     sections: list[str] = [
         "\n".join(
             [
@@ -955,8 +1187,10 @@ def build_open_workspace_answer_context(
             ]
         ).strip(),
         f"【客户】\n{client_label}",
-        "【原始阅读资料包 v2】\n" + "\n\n".join(document_sections or ["当前没有可用的文档原文片段。"]),
     ]
+    if resolved_dna_tool_context.context_text:
+        sections.append(resolved_dna_tool_context.context_text)
+    sections.append("【原始阅读资料包 v2】\n" + "\n\n".join(document_sections or ["当前没有可用的文档原文片段。"]))
 
     content = "\n\n".join(section for section in sections if section.strip()).strip()
     # P2.14 FREEZE(answer-shaping-context-max-chars): 单包上下文仍然受 max_chars 截断。

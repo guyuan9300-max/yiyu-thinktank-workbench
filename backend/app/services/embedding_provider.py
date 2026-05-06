@@ -434,16 +434,20 @@ class DoubaoEmbeddingProvider:
 def get_doubao_api_key(ai_service: Any | None) -> str:
     if ai_service is None:
         return ""
-    try:
-        store = ai_service._store_for("doubao")  # type: ignore[attr-defined]
-    except Exception:
-        store = None
-    if store is None:
-        return ""
-    try:
-        return str(store.get_api_key() or "").strip()
-    except Exception:
-        return ""
+    for provider in ("openai_compatible", "doubao"):
+        try:
+            store = ai_service._store_for(provider)  # type: ignore[attr-defined]
+        except Exception:
+            store = None
+        if store is None:
+            continue
+        try:
+            api_key = str(store.get_api_key() or "").strip()
+        except Exception:
+            api_key = ""
+        if api_key:
+            return api_key
+    return ""
 
 
 def build_embedding_provider(

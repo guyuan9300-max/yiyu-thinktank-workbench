@@ -389,6 +389,53 @@ def test_meeting_candidate_generates_contextual_growth_entries(tmp_path: Path):
     assert any(item.label == "日慈基金会" for item in overview.projectGrowthHighlights)
 
 
+def test_meeting_candidate_is_idempotent_for_duplicate_publish_signal(tmp_path: Path):
+    db = make_db(tmp_path)
+    seed_client_and_event_line(db)
+    meeting = MeetingDetail(
+        id="meeting_1",
+        clientId="client_1",
+        title="日慈基金会季度复盘会",
+        stage="published",
+        scheduledAt="2026-03-16T14:00:00",
+        updatedAt="2026-03-16T16:00:00",
+        transcriptText="这次会议先统一目标，再明确负责人、风险和时间点。",
+        notes="需要把关键结论转成行动项并挂回任务系统。",
+        agendaItems=[],
+        decisions=[DecisionItem(id="decision_1", summary="先围绕两个核心议题收口，再继续推进")],
+        actionItems=[],
+        risks=[],
+        ambiguities=[],
+    )
+
+    ingest_meeting_growth_candidate(
+        db,
+        user_id="op_1",
+        user_name="测试用户",
+        client_id="client_1",
+        meeting=meeting,
+        event_line_ids=["eline_1"],
+        created_at="2026-03-16T16:00:00",
+    )
+    first_rows = db.fetchall("SELECT dedupe_key, total_xp FROM xp_ledger ORDER BY dedupe_key")
+    assert first_rows
+
+    ingest_meeting_growth_candidate(
+        db,
+        user_id="op_1",
+        user_name="测试用户",
+        client_id="client_1",
+        meeting=meeting,
+        event_line_ids=["eline_1"],
+        created_at="2026-03-16T16:05:00",
+    )
+    second_rows = db.fetchall("SELECT dedupe_key, total_xp FROM xp_ledger ORDER BY dedupe_key")
+
+    assert len(second_rows) == len(first_rows)
+    assert [str(row["dedupe_key"]) for row in second_rows] == [str(row["dedupe_key"]) for row in first_rows]
+    assert len({str(row["dedupe_key"]) for row in second_rows}) == len(second_rows)
+
+
 def test_strategic_candidate_records_alignment_context(tmp_path: Path):
     db = make_db(tmp_path)
     snapshot = StrategicCockpitSnapshotRecord(
@@ -450,6 +497,75 @@ def test_strategic_candidate_records_alignment_context(tmp_path: Path):
         for entry in overview.recentEntries
         for link in entry.linkedContexts
     )
+
+
+def test_strategic_candidate_is_idempotent_for_duplicate_source(tmp_path: Path):
+    db = make_db(tmp_path)
+    snapshot = StrategicCockpitSnapshotRecord(
+        clientId="client_1",
+        clientName="日慈基金会",
+        clientTagline="公益战略陪伴",
+        stageLabel="战略判断",
+        permission=StrategicPermissionRecord(canEdit=True, isCeo=False, leaderUserId="op_1"),
+        readiness=StrategicReadinessRecord(status="ready", score=82, summary="核心材料已齐"),
+        headline=StrategicHeadlineRecord(
+            weekSummary=StrategicJudgmentRecord(value="本周先统一季度重点"),
+            mainContradiction=StrategicJudgmentRecord(value="当前最大矛盾是跨部门信息没有对齐"),
+            coreBreakthrough=StrategicJudgmentRecord(value="先锁定季度战略陪伴闭环"),
+            focusItems=["季度重点", "跨部门协作"],
+            focusStatus="confirmed",
+            freshness="high",
+        ),
+        health=[],
+        strategicLines=[
+            StrategicLineRecord(
+                id="sl_quarter_focus",
+                title="季度战略陪伴闭环",
+                summary="本季度先把战略陪伴闭环跑通，再决定是否扩展范围。",
+                module="战略陪伴",
+                flow="周判断",
+                stage="战略判断",
+                blocker="跨部门口径还没有统一",
+                decision="先锁定季度战略陪伴闭环",
+                nextStep="确认季度重点并分负责人",
+                momentum="稳住",
+                evidence=["季度重点草稿"],
+            )
+        ],
+        twoWeekChanges=[],
+        pendingDecisions=[StrategicChecklistItemRecord(title="确认季度重点", detail="先和核心负责人对齐", source="ceo", priority="high")],
+        pendingMaterials=[],
+        meetingPackDraft=StrategicMeetingPackDraftRecord(title="战略周会包", agenda=["确认季度重点", "收口协作边界"], groups=[]),
+        evidencePreview=StrategicEvidencePreviewRecord(summary="已有季度重点草稿"),
+        assetCandidates=[],
+    )
+
+    ingest_strategic_growth_candidate(
+        db,
+        user_id="op_1",
+        user_name="测试用户",
+        snapshot=snapshot,
+        source_type="strategic_confirm",
+        source_id="client_1",
+        created_at="2026-03-16T18:00:00",
+    )
+    first_rows = db.fetchall("SELECT dedupe_key, total_xp FROM xp_ledger ORDER BY dedupe_key")
+    assert first_rows
+
+    ingest_strategic_growth_candidate(
+        db,
+        user_id="op_1",
+        user_name="测试用户",
+        snapshot=snapshot,
+        source_type="strategic_confirm",
+        source_id="client_1",
+        created_at="2026-03-16T18:05:00",
+    )
+    second_rows = db.fetchall("SELECT dedupe_key, total_xp FROM xp_ledger ORDER BY dedupe_key")
+
+    assert len(second_rows) == len(first_rows)
+    assert [str(row["dedupe_key"]) for row in second_rows] == [str(row["dedupe_key"]) for row in first_rows]
+    assert len({str(row["dedupe_key"]) for row in second_rows}) == len(second_rows)
 
 
 def test_handbook_reuse_creates_weekly_reuse_xp_and_dedupes_by_week(tmp_path: Path):

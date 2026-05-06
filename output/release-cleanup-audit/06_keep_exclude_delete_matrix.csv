@@ -1,0 +1,268 @@
+path,area,evidence,currentReachability,packageStatus,recommendation,nextAction
+.DS_Store,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+.playwright-cli,packaging,generated/local directory,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+.pytest_cache,packaging,generated/local directory,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+app.db,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/.DS_Store,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/.pytest_cache,packaging,generated/local directory,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app.db,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__,packaging,generated/local directory,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/__init__.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/__init__.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/__init__.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/db.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/db.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/db.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/local_request_guard.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/local_request_guard.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/local_request_guard.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/main.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/main.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/main.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/models.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/models.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/__pycache__/models.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__,packaging,generated/local directory,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/__init__.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/__init__.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/__init__.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/action_suggestion_service.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/action_suggestion_service.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/agent_worklogs.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/agent_worklogs.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/agent_worklogs.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/ai.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/ai.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/ai.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/analysis_center.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/analysis_center.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/analysis_context.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/analysis_context.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/answer_layer.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/answer_layer.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/badge_engine.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/badge_engine.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/badge_engine.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/client_profile.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/client_profile.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/client_profile.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_access.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_access.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_artifacts.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_artifacts.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_ingest.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_ingest.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_kernel.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_kernel.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_operational_status.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_operational_status.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_prep.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_prep.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_profiler.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_profiler.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_proposal.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_proposal.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_quality.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_quality.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_rollback_drill.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_rollback_drill.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_schema.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_schema.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_search.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_search.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_shadow.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_shadow.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_sync.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/data_center_sync.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/department_catalog.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/department_catalog.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/department_catalog.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/diagnosis_engines.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/diagnosis_engines.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/diagnosis_engines.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/digital_asset_center.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/digital_asset_center.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/digital_asset_narrative.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/digital_asset_narrative.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/embedding_provider.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/embedding_provider.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/event_line_timeline.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/event_line_timeline.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality_feedback_snapshot.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality_feedback_snapshot.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality_feedback.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality_feedback.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality_store.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality_store.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_quality.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_selector.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/evidence_selector.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/execution_retry_metrics.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/execution_retry_metrics.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/experience_story_engine.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/experience_story_engine.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/external_evidence.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/external_evidence.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/feishu_sync.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/feishu_sync.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/feishu.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/feishu.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/feishu.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/generation_runtime_policy.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/generation_runtime_policy.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/growth_engine.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/growth_engine.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/growth_engine.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/internet_crawler.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/internet_crawler.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/kernel_primary_rollout.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/kernel_primary_rollout.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/knowledge_base.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/knowledge_base.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/knowledge_base.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/knowledge_v2.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/knowledge_v2.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/knowledge_v2.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/learning_presets.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/learning_presets.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/link_material_import.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/link_material_import.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/local_memory.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/local_memory.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/local_semantic_router.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/local_semantic_router.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/meeting_context.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/meeting_context.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/meeting_followup.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/meeting_followup.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/memory_foundation.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/memory_foundation.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/memory_foundation.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/organization_dna_v2.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/organization_dna_v2.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/platform_dna.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/platform_dna.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/platform_dna.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/proposal_approval.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/proposal_approval.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/proposal_execution.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/proposal_execution.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/query_router.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/query_router.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/question_focus.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/question_focus.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/rerank_provider.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/rerank_provider.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/retrieval_model_settings.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/retrieval_model_settings.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/retrieval_shadow.cpython-311.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/retrieval_shadow.cpython-312.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+backend/app/services/__pycache__/review_analysis.cpython-310.pyc,packaging,local/generated file pattern,local/generated artifact,should be excluded,exclude_from_package,keep locally; verify package guard
+src/renderer/components/handbook/GrowthHandbookView.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/settings/DataCenterProposalInboxPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/settings/FeishuAccountBindingPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/settings/FeishuBotSettingsPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/settings/OrganizationTreeCanvas.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/settings/UpdateSettingsPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/tasks/AgentExecutionPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/tasks/AgentSimulationCalendarView.tsx,frontend,deprecated/simulation/legacy naming,refs=6,source code,needs_product_review,manual product + import review before any deletion
+src/renderer/components/tasks/AgentWeeklyDigestPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/tasks/AgentWeeklyPlanPanel.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/tasks/ReviewHistoryPicker.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+src/renderer/components/tasks/ReviewMetricGrid.tsx,frontend,no direct basename references in renderer/shared scan,no direct refs found,source code,delete_candidate,manual product + import review before any deletion
+backend/app/services/review_simulation.py,backend,deprecated/simulation/legacy naming,refs=9,source code,needs_product_review,manual API/import/test review before any deletion
+backend/app/services/workspace_action_perspective.py,backend,no direct basename references in backend/src scan,no direct refs found,source code,delete_candidate,manual API/import/test review before any deletion
+backend/scripts/bettafish_bridge.py,backend,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+backend/scripts/install_bettafish_source.py,backend,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+backend/scripts/probe_diagnosis_engines.py,backend,no direct basename references in backend/src scan,no direct refs found,source code,needs_product_review,manual API/import/test review before any deletion
+cloud_backend/app/simulation_seed.py,cloud_backend,deprecated/simulation/legacy naming,refs=4,source code,needs_product_review,manual API/import/test review before any deletion
+cloud_backend/app/task_pressure_seed.py,cloud_backend,deprecated/simulation/legacy naming,refs=1,source code,needs_product_review,manual API/import/test review before any deletion
+scripts/audit_growth_badge_scope.py,script,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+scripts/cleanup_audit_data.py,script,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+scripts/generate-mac-icon.py,script,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+scripts/rebucket_workspace_folders.py,script,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+scripts/repair_orphan_data_center_ingest.py,script,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+scripts/smoke_workspace_chat_async.py,script,no direct basename references in backend/src scan,no direct refs found,source code,needs_product_review,manual API/import/test review before any deletion
+scripts/smoke_workspace_chat_generation.py,script,deprecated/simulation/legacy naming,refs=1,source code,needs_product_review,manual API/import/test review before any deletion
+scripts/sync-local-event-lines-to-cloud.py,script,script entrypoint requires explicit owner review,no direct refs found,source code,needs_product_review,confirm owner and invocation path before any deletion
+backend/app/db.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/local_request_guard.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/main.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/models.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/department_catalog.cpython-310.pyc,product,department catalog hardcoded era,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/department_catalog.cpython-311.pyc,product,department catalog hardcoded era,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/department_catalog.cpython-312.pyc,product,department catalog hardcoded era,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/experience_story_engine.cpython-311.pyc,product,experience story old engine,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/experience_story_engine.cpython-312.pyc,product,experience story old engine,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/review_simulation.cpython-310.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/review_simulation.cpython-311.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/__pycache__/review_simulation.cpython-312.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/agent_worklogs.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/ai.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/analysis_center.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/analysis_context.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/badge_engine.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/client_profile.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/data_center_access.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/data_center_artifacts.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/data_center_ingest.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/data_center_kernel.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/data_center_operational_status.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/diagnosis_engines.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/digital_asset_center.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/embedding_provider.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/event_line_timeline.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/evidence_quality_feedback.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/execution_retry_metrics.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/feishu_sync.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/feishu.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/generation_runtime_policy.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/growth_engine.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/kernel_primary_rollout.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/knowledge_base.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/knowledge_v2.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/local_memory.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/local_semantic_router.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/meeting_context.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/memory_foundation.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/organization_dna_v2.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/retrieval_model_settings.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/review_analysis.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/review_narrative.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/review_rollup.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/review_simulation.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/self_heal.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/system_logger.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/task_context_brief_engine.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/template_fill.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/topic_data_center.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/understanding_builder.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/weekly_review_material_pack.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/workspace_answer_value_diagnostics.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/workspace_chat_diagnostics.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/workspace_context_refresh.py,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/workspace_data_center_adapter.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/app/services/workspace_thread_memory.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/03_methodology_draft.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/03_methodology_refined.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/04_client_scenes_draft.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/04_client_scenes_refined.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/07_merged_candidate.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/candidate-heavy-doubao.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/org-dna-heavy-chain-test/candidate-modules-unmerged.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/rici-dna-evidence-confirm-test/02_evidence_driven_dna_candidate.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/rici-dna-evidence-confirm-test/baseline-current-client-dna.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/rici-dna-evidence-confirm-v2-test/baseline-current-client-dna.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/output/rici-dna-tool-ab-test/current_app_injection_2200__task_next_actions__A_current_backend_dna.md,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/scripts/__pycache__/probe_diagnosis_engines.cpython-312.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/scripts/bettafish_bridge.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/scripts/probe_diagnosis_engines.py,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_api_smoke.cpython-311-pytest-9.0.2.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_api_smoke.cpython-311-pytest-9.0.3.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_api_smoke.cpython-311.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_api_smoke.cpython-312.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_experience_story_engine.cpython-311-pytest-9.0.2.pyc,product,experience story old engine,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_frontend_no_legacy_retry_banner_p28.cpython-311-pytest-9.0.2.pyc,product,legacy/deprecated/old,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_generation_runtime_policy_cooldown_expired_probe_p21.cpython-311-pytest-9.0.2.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove
+backend/tests/__pycache__/test_review_simulation.cpython-311-pytest-9.0.2.pyc,product,simulation/mock/probe/debug,not determined,source/docs,needs_product_review,ask product owner to confirm keep/remove

@@ -31,6 +31,8 @@ def test_auth_me_refreshes_expired_cloud_session(tmp_path: Path, monkeypatch):
       "primaryRole": "admin",
       "accountStatus": "approved",
     }
+    client.app.state.app_state.cloud_api_url = "http://127.0.0.1:47830"
+    db.set_setting("cloud_api_url", "http://127.0.0.1:47830")
     db.set_setting("cloud_access_token", "expired-access")
     db.set_setting("cloud_refresh_token", "refresh-1")
     db.set_setting("cloud_session_user", json.dumps(user_payload, ensure_ascii=False))

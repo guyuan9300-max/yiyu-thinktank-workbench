@@ -1,0 +1,316 @@
+# 00 Scope Snapshot
+
+Generated: 2026-05-06T12:09:27.425Z
+Repository: /Users/guyuanyuan/openclaw/workspace/yiyu-thinktank-workbench
+Branch: codex/release-cleanup-audit
+HEAD: 2fdf594df15d
+Upstream: none
+Divergence upstream...HEAD: unavailable
+
+## Safety Constraints Applied
+- No reset, clean, pull, merge, install, or delete command was run.
+- Reports are limited to output/release-cleanup-audit/.
+- User data directory is out of scope and was not scanned.
+- mobile/ is treated as separate audit surface.
+
+## Git Status Summary
+- Modified/tracked changes: 83
+- Deleted tracked paths: 9
+- Untracked paths: 45
+
+## Full Status
+```text
+## codex/release-cleanup-audit
+ M backend/app/db.py
+ M backend/app/main.py
+ M backend/app/models.py
+ M backend/app/services/agent_worklogs.py
+ M backend/app/services/ai.py
+ M backend/app/services/badge_engine.py
+ M backend/app/services/data_center_ingest.py
+ M backend/app/services/data_center_kernel.py
+ M backend/app/services/data_center_search.py
+ D backend/app/services/department_catalog.py
+ M backend/app/services/digital_asset_center.py
+ M backend/app/services/digital_asset_narrative.py
+ M backend/app/services/embedding_provider.py
+ D backend/app/services/experience_story_engine.py
+ M backend/app/services/growth_engine.py
+ M backend/app/services/knowledge_base.py
+ M backend/app/services/knowledge_v2.py
+ M backend/app/services/query_router.py
+ M backend/app/services/review_narrative.py
+ M backend/app/services/review_rollup.py
+ M backend/app/services/system_logger.py
+ M backend/app/services/version_manifest.py
+ M backend/app/services/weekly_review_material_pack.py
+ M backend/app/services/workspace_chat_diagnostics.py
+ M backend/app/services/workspace_data_center_adapter.py
+ M backend/app/services/workspace_followups.py
+ M backend/pyproject.toml
+ M backend/tests/test_api_smoke.py
+ M backend/tests/test_auth_session.py
+ M backend/tests/test_badge_engine.py
+ D backend/tests/test_experience_story_engine.py
+ M backend/tests/test_growth_engine.py
+ M backend/tests/test_task_cloud_shadow_sync.py
+ M backend/uv.lock
+ M cloud_backend/app/bootstrap_security.py
+ M cloud_backend/app/db.py
+ D cloud_backend/app/department_catalog.py
+ M cloud_backend/app/main.py
+ M cloud_backend/app/models.py
+ M cloud_backend/app/simulation_seed.py
+ M cloud_backend/app/task_pressure_seed.py
+ M cloud_backend/tests/test_auth_refresh.py
+ M cloud_backend/tests/test_auth_register.py
+ M cloud_backend/tests/test_auth_tasks.py
+ M cloud_backend/tests/test_feishu_notification_service.py
+ M cloud_backend/tests/test_feishu_org_integration.py
+ M cloud_backend/tests/test_feishu_query_service.py
+ M cloud_backend/tests/test_local_first_auth.py
+ M cloud_backend/tests/test_simulation_seed.py
+ M cloud_backend/tests/test_task_feishu_notifications.py
+ M deploy/volcengine/cloud-backend/README.md
+ M docs/org-permission-redesign-shell.md
+ M docs/team-work/qa-report-full.md
+ M docs/thread-sync.md
+ m mobile
+ M output/main-chain/wave2-before.json
+ M output/round2-code-audit/verification_results.json
+ M package.json
+ M scripts/app-manifest.mjs
+ M scripts/check-installed-runtime.mjs
+ M scripts/deploy-cloud-backend-volcengine.sh
+ M scripts/install-mac-app.mjs
+ M scripts/open-installed-app.mjs
+ M scripts/smoke-cloud-backend-volcengine.sh
+ M scripts/smoke_workspace_chat_generation.py
+ M scripts/sync-local-event-lines-to-cloud.py
+ M scripts/verify-packaged-app.mjs
+ M src/main/collabGit.ts
+ M src/main/main.ts
+ M src/main/preload.ts
+ M src/renderer/App.tsx
+ M src/renderer/components/data_center/DataCenterOpsPanel.tsx
+ M src/renderer/components/data_center/FileSearchResultPanel.tsx
+ M src/renderer/components/handbook/GrowthCenterView.tsx
+ M src/renderer/components/handbook/GrowthLearningWorkbench.tsx
+ M src/renderer/components/settings/BrandLogoSettingsCard.tsx
+ M src/renderer/components/settings/FeishuOrgIntegrationPanel.tsx
+ M src/renderer/components/settings/OrganizationSetupCenter.tsx
+ M src/renderer/components/settings/OrganizationTreeCanvas.tsx
+ D src/renderer/components/settings/ReviewGovernanceSettingsPanel.tsx
+ M src/renderer/components/settings/SystemLogPanel.tsx
+ M src/renderer/components/strategic_accompaniment/StrategicBrainView.tsx
+ D src/renderer/components/strategic_accompaniment/StrategicLearningListPanel.tsx
+ D src/renderer/components/tasks/HierarchyReportCard.tsx
+ M src/renderer/components/tasks/TaskCalendarView.tsx
+ M src/renderer/components/tasks/TaskOrgContextPanel.tsx
+ D src/renderer/components/tasks/WeeklyReviewSimulationPanel.tsx
+ D src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx
+ M src/renderer/lib/api.ts
+ M src/renderer/lib/taskTimeline.ts
+ M src/shared/departmentInvite.ts
+ M src/shared/types.ts
+?? backend/app/services/internet_crawler.py
+?? backend/app/services/link_material_import.py
+?? backend/app/services/organization_dna_v2.py
+?? backend/app/services/task_context_brief_engine.py
+?? backend/app/services/workspace_thread_memory.py
+?? backend/output/
+?? backend/tests/test_ai_model_routing.py
+?? backend/tests/test_data_center_ingest_orphan_client.py
+?? backend/tests/test_digital_asset_center.py
+?? backend/tests/test_dna_tool_context.py
+?? backend/tests/test_internet_crawler.py
+?? backend/tests/test_link_material_import.py
+?? backend/tests/test_organization_dna_v2.py
+?? backend/tests/test_review_task_time.py
+?? backend/tests/test_strategic_accompaniment_hardening.py
+?? backend/tests/test_system_logger.py
+?? backend/tests/test_task_context_brief_engine.py
+?? backend/tests/test_task_list_repair.py
+?? backend/tests/test_weekly_review_material_pack.py
+?? backend/tests/test_workspace_chat_diagnostics.py
+?? backend/tests/test_workspace_chat_primary_fallback_guard.py
+?? backend/tests/test_workspace_chat_stale_recovery.py
+?? backend/tests/test_workspace_chat_start_dedupe.py
+?? backend/tests/test_workspace_query_router_file_search_guard.py
+?? backend/tests/test_workspace_thread_memory.py
+?? cloud_backend/tests/test_mobile_consult_contract.py
+?? cloud_backend/tests/test_review_task_time.py
+?? cloud_backend/tests/test_task_list_repair.py
+?? output/digital-asset-scoring/
+?? output/internet-enrichment-effect-test/
+?? output/multiturn-sim/
+?? output/task-list-repair/
+?? scripts/audit_growth_badge_scope.py
+?? scripts/rebucket_workspace_folders.py
+?? scripts/repair_orphan_data_center_ingest.py
+?? src/renderer/components/client_workspace/ClientWorkspaceView.tsx
+?? src/renderer/lib/organizationEmployeeFilters.ts
+?? src/renderer/lib/workspaceClientUiStore.test.ts
+?? src/renderer/lib/workspaceClientUiStore.ts
+?? src/shared/rendererLaunchQuery.test.ts
+?? src/shared/rendererLaunchQuery.ts
+?? src/shared/taskTime.test.ts
+?? src/shared/taskTime.ts
+?? src/shared/workspaceFileSearchPresentation.test.ts
+?? src/shared/workspaceFileSearchPresentation.ts
+```
+
+## Deleted Tracked Paths
+- backend/app/services/department_catalog.py
+- backend/app/services/experience_story_engine.py
+- backend/tests/test_experience_story_engine.py
+- cloud_backend/app/department_catalog.py
+- src/renderer/components/settings/ReviewGovernanceSettingsPanel.tsx
+- src/renderer/components/strategic_accompaniment/StrategicLearningListPanel.tsx
+- src/renderer/components/tasks/HierarchyReportCard.tsx
+- src/renderer/components/tasks/WeeklyReviewSimulationPanel.tsx
+- src/renderer/components/tasks/WeeklyReviewSummaryPanel.tsx
+
+## Top-Level Untracked Paths
+- backend/app/services/internet_crawler.py
+- backend/app/services/link_material_import.py
+- backend/app/services/organization_dna_v2.py
+- backend/app/services/task_context_brief_engine.py
+- backend/app/services/workspace_thread_memory.py
+- backend/output/
+- backend/tests/test_ai_model_routing.py
+- backend/tests/test_data_center_ingest_orphan_client.py
+- backend/tests/test_digital_asset_center.py
+- backend/tests/test_dna_tool_context.py
+- backend/tests/test_internet_crawler.py
+- backend/tests/test_link_material_import.py
+- backend/tests/test_organization_dna_v2.py
+- backend/tests/test_review_task_time.py
+- backend/tests/test_strategic_accompaniment_hardening.py
+- backend/tests/test_system_logger.py
+- backend/tests/test_task_context_brief_engine.py
+- backend/tests/test_task_list_repair.py
+- backend/tests/test_weekly_review_material_pack.py
+- backend/tests/test_workspace_chat_diagnostics.py
+- backend/tests/test_workspace_chat_primary_fallback_guard.py
+- backend/tests/test_workspace_chat_stale_recovery.py
+- backend/tests/test_workspace_chat_start_dedupe.py
+- backend/tests/test_workspace_query_router_file_search_guard.py
+- backend/tests/test_workspace_thread_memory.py
+- cloud_backend/tests/test_mobile_consult_contract.py
+- cloud_backend/tests/test_review_task_time.py
+- cloud_backend/tests/test_task_list_repair.py
+- output/digital-asset-scoring/
+- output/internet-enrichment-effect-test/
+- output/multiturn-sim/
+- output/task-list-repair/
+- scripts/audit_growth_badge_scope.py
+- scripts/rebucket_workspace_folders.py
+- scripts/repair_orphan_data_center_ingest.py
+- src/renderer/components/client_workspace/ClientWorkspaceView.tsx
+- src/renderer/lib/organizationEmployeeFilters.ts
+- src/renderer/lib/workspaceClientUiStore.test.ts
+- src/renderer/lib/workspaceClientUiStore.ts
+- src/shared/rendererLaunchQuery.test.ts
+- src/shared/rendererLaunchQuery.ts
+- src/shared/taskTime.test.ts
+- src/shared/taskTime.ts
+- src/shared/workspaceFileSearchPresentation.test.ts
+- src/shared/workspaceFileSearchPresentation.ts
+
+
+## mobile/ Status
+```text
+## main...origin/main
+ M .gitignore
+ M android/app/src/main/AndroidManifest.xml
+ M app/(tabs)/_layout.tsx
+ M app/(tabs)/calendar.tsx
+ M app/(tabs)/consult.tsx
+ M app/(tabs)/profile.tsx
+ M app/(tabs)/tasks.tsx
+ M app/_layout.tsx
+ M app/login.tsx
+ M components/CreateTask.tsx
+ D components/DateTimePicker.tsx
+ M components/DateTimePickerSheet.tsx
+ M components/RecordNote.tsx
+ M components/SettingsAccount.tsx
+ M components/SettingsTasks.tsx
+ M components/SmartInputSheet.tsx
+ M components/SuperFAB.tsx
+ M components/TaskDetail.tsx
+ M components/TaskReviewComposer.tsx
+ M lib/api.ts
+ M lib/auth-context.tsx
+ M lib/cache.ts
+ M lib/smart-input-queue.ts
+ M lib/storage.ts
+ M lib/types.ts
+ M package-lock.json
+ M package.json
+?? components/EventLineDrawer.tsx
+?? components/FocusBar.tsx
+?? components/TaskSyncBadge.tsx
+?? components/UnderstandingCard.tsx
+?? components/WeekSignalCard.tsx
+?? components/WorkspaceLiteSheet.tsx
+?? components/calendar-screen/
+?? components/tasks-screen/
+?? lib/__tests__/
+?? lib/account-scope.ts
+?? lib/base-url.ts
+?? lib/boundary-cards.ts
+?? lib/calendar-repository-core.ts
+?? lib/calendar-repository.ts
+?? lib/calendar-selectors.ts
+?? lib/client-intel-core.ts
+?? lib/client-intel-store.ts
+?? lib/consult-context-adapter.ts
+?? lib/consult-context.ts
+?? lib/consult-response-core.ts
+?? lib/consult-thread-context.ts
+?? lib/create-task-association.ts
+?? lib/create-task-due-date-core.ts
+?? lib/create-task-resources.ts
+?? lib/create-task-service.ts
+?? lib/current-focus-core.ts
+?? lib/current-focus-store.ts
+?? lib/date.ts
+?? lib/dev-log.ts
+?? lib/event-line-client-transfer.ts
+?? lib/focus-selectors.ts
+?? lib/legacy-upload-ops.ts
+?? lib/legacy-upload-pseudo-op-core.ts
+?? lib/legacy-upload-runner-core.ts
+?? lib/legacy-upload-runner.ts
+?? lib/local-db.ts
+?? lib/local-ids.ts
+?? lib/pending-op-policy.ts
+?? lib/record-note-flow-core.ts
+?? lib/record-note-service.ts
+?? lib/runtime-controller.ts
+?? lib/runtime-flags.ts
+?? lib/runtime.ts
+?? lib/scope-storage-core.ts
+?? lib/smart-input-queue-core.ts
+?? lib/smart-input-recovery.ts
+?? lib/sync-engine.ts
+?? lib/sync-errors.ts
+?? lib/sync-freeze-core.ts
+?? lib/system-health.ts
+?? lib/task-board-store-core.ts
+?? lib/task-board-store.ts
+?? lib/task-detail-service.ts
+?? lib/task-query-service.ts
+?? lib/task-repository.ts
+?? lib/task-review-service.ts
+?? lib/task-sync-policy.ts
+?? lib/task-sync-presentation.ts
+?? lib/task-time.ts
+?? lib/task-understanding.ts
+?? lib/use-render-count.ts
+?? lib/week-signal.ts
+?? scripts/
+?? tsconfig.tests.json
+```

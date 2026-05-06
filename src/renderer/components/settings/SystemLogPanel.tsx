@@ -14,9 +14,10 @@ import {
   X,
 } from 'lucide-react';
 import { getSystemLogs, exportSystemLogs, type SystemLogEntry, type SystemLogsResponse } from '../../lib/api';
+import { formatDateInputValue } from '../../../shared/taskTime';
 
 const LEVEL_OPTIONS = ['', 'ERROR', 'WARN', 'INFO', 'DEBUG'] as const;
-const SOURCE_OPTIONS = ['', 'api', 'activity', 'system'] as const;
+const SOURCE_OPTIONS = ['', 'api', 'activity', 'system', 'desktop'] as const;
 
 function levelIcon(level: string) {
   if (level === 'ERROR') return <AlertCircle size={12} className="text-red-500" />;
@@ -44,7 +45,7 @@ export function SystemLogPanel() {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   // Filters
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatDateInputValue(new Date());
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
   const [level, setLevel] = useState('');
@@ -84,8 +85,8 @@ export function SystemLogPanel() {
     setIsExporting(true);
     try {
       const params = mode === 'today'
-        ? { startDate: today, endDate: today }
-        : { startDate, endDate, level: level || undefined, keyword: keyword || undefined };
+        ? { startDate: today, endDate: today, source: source || undefined }
+        : { startDate, endDate, level: level || undefined, source: source || undefined, keyword: keyword || undefined };
       const md = await exportSystemLogs(params);
       const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -105,7 +106,7 @@ export function SystemLogPanel() {
     setCopied(false);
     setCopyMessage('');
     try {
-      const md = await exportSystemLogs({ startDate: today, endDate: today, level: 'ERROR' });
+      const md = await exportSystemLogs({ startDate: today, endDate: today, level: 'ERROR', source: source || undefined });
       if (!md || !md.trim()) {
         setCopyMessage('今天没有错误日志，无需复制。');
         setTimeout(() => setCopyMessage(''), 4000);
@@ -126,6 +127,10 @@ export function SystemLogPanel() {
 
   return (
     <div className="space-y-5">
+      <div>
+        <h2 className="text-[16px] font-bold text-slate-900">系统运行日志</h2>
+        <p className="mt-1 text-[12px] text-slate-500">运行日志用于排查 API、后台任务和桌面界面错误；操作记录在设置首页单独展示。</p>
+      </div>
       {/* Stats bar */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-50 border border-slate-100 text-[12px] font-semibold text-slate-500">
@@ -189,6 +194,7 @@ export function SystemLogPanel() {
           <option value="api">API 请求</option>
           <option value="activity">业务操作</option>
           <option value="system">系统事件</option>
+          <option value="desktop">桌面运行日志</option>
         </select>
         <div className="relative flex-1 min-w-[160px]">
           <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />

@@ -68,7 +68,7 @@
       "aiModel": "doubao-seed-2-0-pro-260215",
       "dataDir": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench",
       "backupDir": "/Users/guyuanyuan/Library/Application Support/YiyuThinkTankWorkbench/backups",
-      "cloudApiUrl": "http://101.126.34.232",
+      "cloudApiUrl": "http://203.0.113.10",
       "lastBackupAt": "2026-03-12T22:23:38",
       "foldersRootLabel": "桌面客户资料",
       "aiConfigured": true,

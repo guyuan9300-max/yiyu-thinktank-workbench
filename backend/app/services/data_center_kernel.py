@@ -217,6 +217,38 @@ def _to_search_hit(
     )
 
 
+def _is_markdown_path(value: str | None) -> bool:
+    return str(value or "").strip().lower().endswith((".md", ".markdown"))
+
+
+def _existing_non_markdown_source_path(record: DataCenterSearchHitRecord) -> str | None:
+    for raw_path in (record.originalPath, record.managedPath, record.path):
+        path_value = str(raw_path or "").strip()
+        if not path_value or _is_markdown_path(path_value):
+            continue
+        try:
+            path = Path(path_value)
+            if path.is_file():
+                return path_value
+        except OSError:
+            continue
+    return None
+
+
+def _is_file_search_source_hit(record: DataCenterSearchHitRecord) -> bool:
+    if record.openableKind != "original_file":
+        return False
+    if record.sourceAvailability != "original_available":
+        return False
+    if record.originalAvailable is not True:
+        return False
+    return bool(_existing_non_markdown_source_path(record))
+
+
+def _filter_file_search_source_hits(records: list[DataCenterSearchHitRecord]) -> list[DataCenterSearchHitRecord]:
+    return [record for record in records if _is_file_search_source_hit(record)]
+
+
 def _doc_keys(items: list[DataCenterSearchHitRecord]) -> set[str]:
     keys: set[str] = set()
     for item in items:
@@ -402,6 +434,7 @@ def resolve_data_center_kernel(
         page_context=page_context,
         route_decision=baseline_route,
         settings=baseline_settings,
+        working_document_ids=request.workingDocumentIds,
     )
     candidate_evidence_items, candidate_trace = build_data_center_retrieval_items(
         db,
@@ -411,6 +444,7 @@ def resolve_data_center_kernel(
         page_context=page_context,
         route_decision=candidate_route,
         settings=retrieval_settings,
+        working_document_ids=request.workingDocumentIds,
     )
     profiler.mark("retrievalMs")
     include_action_suggestions = bool(request.includeActionSuggestions or request.mode in {"proposal", "prep"})
@@ -468,7 +502,7 @@ def resolve_data_center_kernel(
     annotation_map = _build_annotation_map(annotations)
 
     if request.mode == "search":
-        hit_records = [
+        raw_hit_records = [
             _to_search_hit(
                 item,
                 selected=item in selected_evidence,
@@ -477,6 +511,7 @@ def resolve_data_center_kernel(
             )
             for item in effective_evidence_items[:30]
         ]
+        hit_records = _filter_file_search_source_hits(raw_hit_records)
         selected_records = [record for record in hit_records if record.selectedForAnswer]
         followups: list[str] = []
         if page_context.missingContext:

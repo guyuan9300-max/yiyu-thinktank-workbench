@@ -14,9 +14,9 @@ def make_client(tmp_path, monkeypatch) -> TestClient:
     data_dir = tmp_path / "cloud-data"
     monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
     monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
-    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Qinghua123!")
-    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Jianing123!")
-    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Yishuo123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
     return TestClient(create_app())
 
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import {
   CheckSquare,
@@ -13,7 +13,6 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
-  PlayCircle,
   Sparkles,
   UploadCloud,
   Briefcase,
@@ -35,6 +34,7 @@ import {
   Activity,
   Calendar as CalendarIcon,
   Flag,
+  Phone,
   Eye,
   FolderDot,
   ArrowUp,
@@ -55,11 +55,15 @@ import {
   Trash2,
   Pencil,
   Square,
+  Link2,
   X,
 } from 'lucide-react';
 
 import type {
   ActionSuggestion,
+  AiModelMode,
+  AiModelProfileKey,
+  AiModelProfileRecord,
   AiProvider,
   AgentWorklog,
   AgentWeeklyDigest,
@@ -79,6 +83,9 @@ import type {
   CoachCaseRecord,
   CoachReminderRule,
   ContextQuality,
+  ClientFolderRecommendationPlan,
+  DocumentAutoRepairPreview,
+  DocumentReadingPreview,
   PullPreview,
   PushPreview,
   DataCenterSearchHit,
@@ -106,13 +113,13 @@ import type {
   HandbookSettings,
   HealthResponse,
   HierarchyReport,
+  ImportRecord,
   KnowledgeSearchResult,
-  LegacyScanReport,
+  LinkMaterialCookieBrowser,
+  LinkMaterialImportRun,
   LocalInputMemory,
   MentionCandidate,
-  OrganizationDnaModule,
   Operator,
-  OrgInvitationRecord,
   OrgMembershipSummary,
   OrgWritingNorm,
   PageContextPack,
@@ -121,23 +128,22 @@ import type {
   ProjectModule,
   ProjectModulePayload,
   ProjectStructureResponse,
-  PrepPackCard,
   ProposalRecord,
-  ReviewDepartmentMember,
   ReviewDashboard,
+  ReviewPerspectiveOption,
   ReviewPerspectiveKey,
   ReviewHistoryEntry,
   ReviewActionCard,
   ReviewActionExecutionResult,
   ReviewDashboardCardTarget,
   ReviewDashboardDrillTargetResponse,
-  ReviewGovernanceSettings,
   OrgModelSettings,
   SupportRequestRecord,
   StrategicCockpitSnapshot,
   SystemAdminSettings,
   Task,
   TaskAttachmentRecord,
+  TaskContextBrief,
   TaskContextPreview,
   TaskSmartBrief,
   TaskList,
@@ -156,11 +162,9 @@ import type {
   WeeklyEventReviewCardKind,
   WeeklyEventReviewCards,
   WeeklyMainlineCards,
+  WeeklyOverviewRefreshStatus,
   WeeklyReviewTaskEntry,
   WeeklyReviewTaskStructuredNote,
-  AnalysisMigrationMetrics,
-  AnalysisBackfillMainChainResult,
-  MainChainStabilitySettings,
   StateAnswerSections,
   WorkspaceAnswerActionCard,
   WorkspaceAnswerExperience,
@@ -168,6 +172,23 @@ import type {
   WorkspaceAnswerPresentation,
   SourceIntegrityReport,
 } from '../shared/types';
+import {
+  CLIENT_CHAT_DRAFT_THREAD_ID,
+  WORKSPACE_COMPOSER_NO_CLIENT_KEY,
+  WorkspaceClientStoreProvider,
+  getWorkspaceFileSearchState,
+  getWorkspaceLinkMaterialState,
+  getWorkspaceRightTab,
+  initialWorkspaceClientUiState,
+  workspaceClientUiReducer,
+} from './lib/workspaceClientUiStore';
+import { ClientWorkspaceView } from './components/client_workspace/ClientWorkspaceView';
+import type {
+  WorkspaceDisplayChatMessage as DisplayChatMessage,
+  WorkspacePendingQuestionState,
+  WorkspaceRightPanelEvidenceSnapshot,
+  WorkspaceRightTabKey,
+} from './lib/workspaceClientUiStore';
 import {
   getTodayCalendarState,
   buildCalendarCells,
@@ -204,19 +225,21 @@ import {
   pickWorkspaceCurrentThreadId,
   type WorkspaceThreadPreference,
 } from '../shared/workspaceThreadSelection';
-
-const SHOW_WORKSPACE_CHAT_DIAGNOSTICS = false;
+import { parseDepartmentInviteCode } from '../shared/departmentInvite';
 import {
   adminResetPassword,
+  applyOrgMembership,
   approveTaskReview,
   changePassword,
   completeTaskWithReview,
   confirmTask,
-  clearDemoData,
   approveEmployee,
   createBackup,
   createClient,
   createClientTextDocument,
+  startClientLinkMaterialImport,
+  getLatestClientLinkMaterialImportRun,
+  getClientLinkMaterialImportRun,
   createEventLine,
   createProjectFlow,
   createProjectModule,
@@ -228,8 +251,6 @@ import {
   createMeeting,
   createSupportRequest,
   createTask,
-  createTaskList,
-  createTaskPrepProposal,
   createTaskTag,
   createWorkspaceAnswerActionEvidenceRequest,
   createWorkspaceAnswerActionProposal,
@@ -237,7 +258,6 @@ import {
   createWeeklyReview,
   createWeeklyReviewDraft,
   deleteTask,
-  deleteTaskList,
   deleteTaskTag,
   deleteEventLine,
   closeEventLine,
@@ -248,12 +268,12 @@ import {
   getAuthState,
   getActivityLogs,
   getAnalysisTools,
-  getAnalysisMigrationMetrics,
   getFundraisingCases,
   getFundraisingRunComparison,
   cancelClientAnalysisRun,
   getDepartmentOptions,
   getClientKnowledgeProgress,
+  getDocumentReadingPreview,
   getClientDnaDocuments,
   getEventLine,
   getEventLines,
@@ -279,22 +299,21 @@ import {
   getHandbookSettings,
   getLocalInputMemory,
   getMentionCandidates,
-  getOrganizationDna,
   getOrgModelProfile,
   getReviewHistory,
-  getReviewGovernanceSettings,
   getReviewDashboardDrillTarget,
   getReviews,
+  getWeeklyOverviewRefreshStatus,
   getSettings,
   getStrategicCockpit,
   getSupportRequests,
   getSystemAdminSettings,
-  getMainChainStabilitySettings,
   getTaskTagSuggestions,
   getTaskBoard,
   getTaskContextPreview,
+  getTaskContextBrief,
+  getTaskContextBriefsBatch,
   getTaskPageContext,
-  getTaskPrepPack,
   getTaskUnderstanding,
   getTaskSmartBrief,
   getTaskSmartBriefsBatch,
@@ -319,6 +338,7 @@ import {
   previewPushToMain,
   publishFundraisingDna,
   publishMeeting,
+  refreshWeeklyOverview,
   approveProposal,
   rejectTask,
   rebuildAndInstallFromRepo,
@@ -326,16 +346,17 @@ import {
   resolveSupportRequest,
   returnTaskReview,
   rebuildClientKnowledge,
+  setWorkspaceInteractionState,
   register,
   commitAndPushToMain,
   rejectEmployeeReview,
   resolveMeeting,
+  resolveInviteCode,
   runAnalysis,
   saveAiInputMemory,
   saveCloudAuthInputMemory,
   saveFeishuDeliveryProfile,
   saveFeishuInputMemory,
-  scanLegacy,
   searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
@@ -352,22 +373,18 @@ import {
   startFeishuMemberAuthorization,
   startFeishuUserBinding,
   updateClient,
-  updateClientWorkspaceSettings,
   updateProjectFlow,
   updateProjectModule,
   updateSettings,
   updateClientDnaDocument,
   updateHandbookSettings,
   updateOrgModelProfile,
-  updateOrganizationDnaModule,
+  parseOrgIntroDocument,
   updateProfile,
-  updateReviewGovernanceSettings,
   updateSystemAdminSettings,
-  updateMainChainStabilitySettings,
   upsertFundraisingReminderRule,
   upsertFundraisingWritingNorm,
   updateAgentWeeklyPlan,
-  updateTaskList,
   updateTaskSettings,
   updateTaskTag,
   updateTask,
@@ -379,11 +396,15 @@ import {
   executeProposal,
   startClientTemplateFill,
   getClientTemplateFillRun,
-  backfillAnalysisMainChain,
   backfillClientWorkspaceImports,
   pullSelectedFromMain,
   selectCollabRepo,
   createClientFolder,
+  updateClientFolder,
+  recommendClientFolderPlan,
+  applyClientFolderRecommendation,
+  previewClientDocumentAutoRepair,
+  applyClientDocumentAutoRepair,
   createMeetingPrepareProposal,
   createMeetingFollowupProposal,
   getMeetingPageContext,
@@ -409,7 +430,6 @@ import { TaskCalendarView } from './components/tasks/TaskCalendarView';
 import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationCalendarView';
 import { AgentWeeklyPlanEditor } from './components/tasks/AgentWeeklyPlanEditor';
 import { TaskOrgContextPanel } from './components/tasks/TaskOrgContextPanel';
-import { WeeklyReviewSummaryPanel } from './components/tasks/WeeklyReviewSummaryPanel';
 import { UnderstandingPanel } from './components/tasks/UnderstandingPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, getSimpleReviewText, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
@@ -419,14 +439,30 @@ import { BrandLogoMark, BrandLogoSettingsCard } from './components/settings/Bran
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
-import { DataCenterProposalInboxPanel } from './components/settings/DataCenterProposalInboxPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
-import { ReviewGovernanceSettingsPanel } from './components/settings/ReviewGovernanceSettingsPanel';
-import { CollabPreviewDialog } from './components/collab/CollabDialogs';
-import { CollabSyncCard } from './components/collab/CollabSyncCard';
+import type { OrganizationSetupInputDraftState } from './components/settings/OrganizationSetupCenter';
+import { isLegacyOrganizationEmployee } from './lib/organizationEmployeeFilters';
 import { filterSharedTasks, isPersonalOnlyTask } from '../shared/taskVisibility';
+import {
+  getTaskCalendarPlacement,
+  getTaskDeadline,
+  getTaskDisplayTime,
+  getTaskExecutionDate,
+  getTaskScheduleRange,
+  formatDateInputValue,
+  isTaskInCurrentReviewWeek,
+  isTaskOverdue as isCanonicalTaskOverdue,
+  isTaskToday as isCanonicalTaskToday,
+} from '../shared/taskTime';
+
+const InternalCollabPreviewDialog = React.lazy(() => import('./components/collab/CollabDialogs').then((module) => ({ default: module.CollabPreviewDialog })));
+
+const InternalCollabSyncCard = React.lazy(() => import('./components/collab/CollabSyncCard').then((module) => ({ default: module.CollabSyncCard })));
+
+const SHOW_WORKSPACE_CHAT_DIAGNOSTICS = false;
+const normalizeDepartmentInviteInput = (value: string | null | undefined) => parseDepartmentInviteCode(value || '').trim();
 
 type TemplateFillStage = 'queued' | 'parsing' | 'retrieving' | 'writing' | 'completed' | 'failed';
 
@@ -473,10 +509,107 @@ type ImportFeedback = {
   timestamp: number;
 };
 
+type ActiveWorkingDocument = {
+  documentId: string;
+  title: string;
+  fileName: string;
+  path: string;
+  importId?: string | null;
+  jobId?: string | null;
+  status: 'queued' | 'processing' | 'ready' | 'partial_ready' | 'failed';
+  preview?: DocumentReadingPreview | null;
+  lastError?: string | null;
+  updatedAt: number;
+};
+
+const ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY = 'yiyu.workspace.activeWorkingDocuments.v1';
+const ACTIVE_WORKING_DOCUMENTS_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const ACTIVE_WORKING_DOCUMENTS_LIMIT = 6;
+
+function normalizeWorkingDocumentStatus(value?: string | null): ActiveWorkingDocument['status'] {
+  if (value === 'ready' || value === 'partial_ready' || value === 'failed') return value;
+  if (value === 'queued') return 'queued';
+  return 'processing';
+}
+
+function mergeActiveWorkingDocuments(
+  incoming: ActiveWorkingDocument[],
+  existing: ActiveWorkingDocument[],
+) {
+  const seen = new Set<string>();
+  const merged: ActiveWorkingDocument[] = [];
+  for (const item of [...incoming, ...existing]) {
+    const documentId = String(item.documentId || '').trim();
+    if (!documentId || seen.has(documentId)) continue;
+    seen.add(documentId);
+    merged.push({ ...item, documentId });
+    if (merged.length >= ACTIVE_WORKING_DOCUMENTS_LIMIT) break;
+  }
+  return merged;
+}
+
+function buildActiveWorkingDocumentsFromImports(importResults: ImportRecord[]) {
+  const timestamp = Date.now();
+  const docs: ActiveWorkingDocument[] = [];
+  for (const result of importResults) {
+    for (const document of result.documents || []) {
+      const documentId = String(document.documentId || '').trim();
+      if (!documentId) continue;
+      docs.push({
+        documentId,
+        title: document.title || document.fileName || '资料',
+        fileName: document.fileName || document.title || '资料',
+        path: document.path || '',
+        importId: result.id,
+        jobId: result.jobId || null,
+        status: normalizeWorkingDocumentStatus(result.status === 'failed' ? 'failed' : result.status),
+        preview: null,
+        lastError: null,
+        updatedAt: timestamp,
+      });
+    }
+  }
+  return docs;
+}
+
+function readStoredActiveWorkingDocuments(clientId: string) {
+  if (typeof window === 'undefined' || !clientId) return [];
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const stored = Array.isArray(parsed?.[clientId]) ? parsed[clientId] : [];
+    const now = Date.now();
+    return stored
+      .filter((item: Partial<ActiveWorkingDocument>) =>
+        item?.documentId
+        && typeof item.updatedAt === 'number'
+        && now - item.updatedAt <= ACTIVE_WORKING_DOCUMENTS_MAX_AGE_MS,
+      )
+      .slice(0, ACTIVE_WORKING_DOCUMENTS_LIMIT) as ActiveWorkingDocument[];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredActiveWorkingDocuments(clientId: string, docs: ActiveWorkingDocument[]) {
+  if (typeof window === 'undefined' || !clientId) return;
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const next = {
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+      [clientId]: docs.slice(0, ACTIVE_WORKING_DOCUMENTS_LIMIT),
+    };
+    window.sessionStorage.setItem(ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Session recovery is best-effort; chat still works without it.
+  }
+}
+
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
-type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | null;
-type SettingsSectionKey = 'overview' | 'org_dna' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
+type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | 'link_material' | null;
+type SettingsSectionKey = 'overview' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
 type ReviewFormState = {
   weekLabel: string;
   entriesByTaskId: Record<string, WeeklyReviewTaskStructuredNote>;
@@ -486,6 +619,12 @@ type ClientTextDocumentDraft = {
   title: string;
   content: string;
   titleEdited: boolean;
+};
+
+type ClientLinkMaterialDraft = {
+  url: string;
+  detectedPlatform: 'bilibili' | 'xiaohongshu' | 'unsupported' | '';
+  detectedLabel: string;
 };
 
 type ReviewTaskGroup = {
@@ -558,9 +697,7 @@ const NAV_QUERY_CLIENT_ID_PARAM = 'clientId';
 const NAV_KEYS: NavKey[] = ['tasks', 'client_workspace', 'strategic_accompaniment', 'topics_management', 'growth_handbook', 'settings'];
 const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   'overview',
-  'org_dna',
   'tasks',
-  'client_workspace',
   'topics',
   'handbook',
   'system_admin',
@@ -647,6 +784,17 @@ function readInitialNavigationState() {
     evidenceTaskId: normalizeEvidenceQueryValue(params.get(NAV_QUERY_TASK_ID_PARAM)),
     evidenceClientId: normalizeEvidenceQueryValue(params.get(NAV_QUERY_CLIENT_ID_PARAM)),
     workspaceThreadPreference: parseWorkspaceThreadPreference(params.get('workspaceThread')),
+  };
+}
+
+function normalizeStartupNavigationState(state: InitialNavigationState): InitialNavigationState {
+  if (state.activeTab !== 'settings') {
+    return state;
+  }
+  return {
+    ...state,
+    activeTab: 'tasks',
+    settingsSection: 'overview',
   };
 }
 
@@ -796,6 +944,14 @@ type TaskEditorState = {
   collaborators: MentionCandidate[];
 };
 
+type StrategicTaskDraftRequest = {
+  dueDate?: string | null;
+  clientId?: string | null;
+  thoughtLine: string;
+  suggestion: string;
+  ceoComment?: string | null;
+};
+
 const TASK_TIME_PRESET_OPTIONS = ['09:00', '10:30', '14:00', '18:00', '20:00'] as const;
 const TASK_TIME_HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0'));
 const TASK_TIME_MINUTE_OPTIONS = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, '0'));
@@ -815,17 +971,237 @@ function inferPersonalTaskKeywordLabels(title: string, desc: string) {
 }
 
 const colorPalette = ['#888681', '#5B7BFE', '#10B981', '#F59E0B', '#F43F5E', '#8B5CF6', '#06B6D4'];
+const AI_CONFIG_PRESETS = {
+  doubao: {
+    label: '豆包火山方舟',
+    provider: 'openai_compatible' as AiProvider,
+    providerLabel: '豆包火山方舟',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    model: 'doubao-seed-2-0-pro-260215',
+  },
+  qwen: {
+    label: '通义千问 DashScope',
+    provider: 'openai_compatible' as AiProvider,
+    providerLabel: '通义千问 DashScope',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    provider: 'openai_compatible' as AiProvider,
+    providerLabel: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-v4-flash',
+  },
+  tencent: {
+    label: '腾讯混元',
+    provider: 'openai_compatible' as AiProvider,
+    providerLabel: '腾讯混元',
+    baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
+    model: 'hunyuan-turbos-latest',
+  },
+  local: {
+    label: '本地大模型',
+    provider: 'openai_compatible' as AiProvider,
+    providerLabel: '本地大模型',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    model: 'qwen3:8b',
+  },
+  custom: {
+    label: '自定义兼容接口',
+    provider: 'openai_compatible' as AiProvider,
+    providerLabel: '自定义兼容接口',
+    baseUrl: '',
+    model: '',
+  },
+  mock: {
+    label: '本地 Mock',
+    provider: 'mock' as AiProvider,
+    providerLabel: '本地 Mock',
+    baseUrl: '',
+    model: 'mock-summarizer',
+  },
+} as const;
+
+type AiConfigPresetKey = keyof typeof AI_CONFIG_PRESETS;
+const AI_CONFIG_PRESET_ORDER: AiConfigPresetKey[] = ['doubao', 'qwen', 'deepseek', 'tencent', 'local', 'custom'];
+
 const providerDefaultModels = {
   mock: 'mock-summarizer',
+  openai_compatible: AI_CONFIG_PRESETS.doubao.model,
   qwen: 'qwen3.5-plus',
   doubao: 'doubao-seed-2-0-pro-260215',
 } as const;
 
 const providerDisplayNames = {
   mock: '本地 Mock',
+  openai_compatible: '自定义兼容接口',
   qwen: 'Qwen 3.5',
   doubao: '豆包 Seed 2.0 Pro（火山方舟）',
 } as const;
+
+function normalizeAiBaseUrl(value?: string | null) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function isLocalAiBaseUrl(value?: string | null) {
+  const raw = normalizeAiBaseUrl(value);
+  if (!raw) return false;
+  try {
+    const url = new URL(raw.includes('://') ? raw : `http://${raw}`);
+    const hostname = url.hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+  } catch {
+    const host = raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  }
+}
+
+const AI_MODEL_MODE_OPTIONS: Array<{ value: AiModelMode; label: string; description: string }> = [
+  { value: 'auto', label: '自动', description: '默认线上优先，失败时按可用配置回退。' },
+  { value: 'online_first', label: '线上优先', description: '优先用线上主模型，网络失败后回退本地。' },
+  { value: 'local_first', label: '本地优先', description: '优先用本地模型，缺失能力时回退线上。' },
+  { value: 'local_only', label: '仅本地', description: '禁止调用非本地 Base URL，适合离线工作。' },
+];
+
+const AI_MODEL_PROFILE_ORDER: AiModelProfileKey[] = ['online_primary', 'local_text_deep', 'local_vision_ocr', 'local_fast'];
+const AI_LOCAL_MODEL_PROFILE_ORDER: AiModelProfileKey[] = ['local_text_deep', 'local_vision_ocr', 'local_fast'];
+
+const AI_MODEL_PROFILE_DEFAULTS: Record<AiModelProfileKey, AiModelProfileRecord> = {
+  online_primary: {
+    enabled: false,
+    provider: 'openai_compatible',
+    providerLabel: '线上主模型',
+    baseUrl: AI_CONFIG_PRESETS.doubao.baseUrl,
+    model: AI_CONFIG_PRESETS.doubao.model,
+    capability: 'online_primary',
+    isLocal: false,
+  },
+  local_text_deep: {
+    enabled: false,
+    provider: 'openai_compatible',
+    providerLabel: '本地深度文本',
+    baseUrl: AI_CONFIG_PRESETS.local.baseUrl,
+    model: 'qwen2.5:72b',
+    capability: 'deep_analysis',
+    isLocal: true,
+  },
+  local_vision_ocr: {
+    enabled: false,
+    provider: 'openai_compatible',
+    providerLabel: '本地视觉/OCR',
+    baseUrl: AI_CONFIG_PRESETS.local.baseUrl,
+    model: 'qwen3-vl:30b',
+    capability: 'vision_ocr',
+    isLocal: true,
+  },
+  local_fast: {
+    enabled: false,
+    provider: 'openai_compatible',
+    providerLabel: '本地快速结构化',
+    baseUrl: AI_CONFIG_PRESETS.local.baseUrl,
+    model: 'qwen3:8b',
+    capability: 'fast_structured',
+    isLocal: true,
+  },
+};
+
+const AI_MODEL_PROFILE_META: Record<AiModelProfileKey, { title: string; purpose: string }> = {
+  online_primary: { title: '线上主模型', purpose: '云端主力模型，用于在线高质量回答和后台任务。' },
+  local_text_deep: { title: '本地深度文本', purpose: '长文、客户工作台、DNA、战略分析等深度文本任务。' },
+  local_vision_ocr: { title: '本地视觉/OCR', purpose: 'PDF、PPT、图片页转 clean markdown。' },
+  local_fast: { title: '本地快速结构化', purpose: '路由、分类、JSON 抽取和事实卡初筛。' },
+};
+
+function normalizeAiModelProfiles(
+  profiles?: Partial<Record<AiModelProfileKey, AiModelProfileRecord>> | null,
+): Record<AiModelProfileKey, AiModelProfileRecord> {
+  return AI_MODEL_PROFILE_ORDER.reduce((acc, key) => {
+    const incoming = profiles?.[key];
+    const base = AI_MODEL_PROFILE_DEFAULTS[key];
+    const next = {
+      ...base,
+      ...(incoming || {}),
+      provider: 'openai_compatible' as AiProvider,
+      capability: incoming?.capability || base.capability,
+    };
+    next.isLocal = isLocalAiBaseUrl(next.baseUrl);
+    acc[key] = next;
+    return acc;
+  }, {} as Record<AiModelProfileKey, AiModelProfileRecord>);
+}
+
+function resolveAiConfigPresetKey(draft: {
+  aiProvider?: AiProvider | string | null;
+  aiBaseUrl?: string | null;
+  aiModel?: string | null;
+}): AiConfigPresetKey {
+  const provider = String(draft.aiProvider || '').trim();
+  if (provider === AI_CONFIG_PRESETS.mock.provider) return 'custom';
+  const baseUrl = normalizeAiBaseUrl(draft.aiBaseUrl);
+  const model = String(draft.aiModel || '').trim();
+  const matchedPreset = AI_CONFIG_PRESET_ORDER.find((presetKey) => {
+    if (presetKey === 'custom' || presetKey === 'mock') return false;
+    const preset = AI_CONFIG_PRESETS[presetKey];
+    return provider === preset.provider
+      && baseUrl === normalizeAiBaseUrl(preset.baseUrl)
+      && model === preset.model;
+  });
+  return matchedPreset || 'custom';
+}
+
+function aiModelDisplayLabel(provider?: AiProvider | string | null, model?: string | null, providerLabel?: string | null) {
+  const providerValue = String(provider || '').trim() as AiProvider | '';
+  const modelValue = String(model || '').trim();
+  const labelValue = String(providerLabel || '').trim();
+  if (providerValue === 'mock') return providerDisplayNames.mock;
+  if (labelValue) return labelValue;
+  if (providerValue === 'openai_compatible') return modelValue || providerDisplayNames.openai_compatible;
+  if (providerValue === 'doubao' && (!modelValue || modelValue === providerDefaultModels.doubao)) return providerDisplayNames.doubao;
+  if (providerValue === 'qwen' && (!modelValue || modelValue === providerDefaultModels.qwen)) return providerDisplayNames.qwen;
+  if (modelValue) return modelValue;
+  return providerValue && providerValue in providerDisplayNames
+    ? providerDisplayNames[providerValue as keyof typeof providerDisplayNames]
+    : 'AI';
+}
+
+function aiRouteLabel(provider?: AiProvider | string | null, model?: string | null, providerLabel?: string | null) {
+  const label = aiModelDisplayLabel(provider, model, providerLabel);
+  return label === 'AI' ? 'AI' : `AI · ${label}`;
+}
+
+const CLOUD_API_URL_PREFIX = 'http://';
+
+function cloudApiHostValue(rawUrl?: string | null) {
+  return String(rawUrl || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '');
+}
+
+function cloudApiUrlFromHost(rawHost?: string | null) {
+  const host = cloudApiHostValue(rawHost);
+  return host ? `${CLOUD_API_URL_PREFIX}${host}` : '';
+}
+
+type HealthAiSnapshot = HealthResponse['ai'] | null | undefined;
+
+function isRealAiConfigured(ai: HealthAiSnapshot) {
+  return Boolean(
+    ai
+    && ai.provider
+    && ai.provider !== 'mock'
+    && ai.ready,
+  );
+}
+
+function getWorkspaceAiUnavailableReason(ai: HealthAiSnapshot) {
+  if (!ai?.provider) return '正在读取大模型配置，请稍后再试。';
+  if (ai.provider === 'mock') return '还没有配置真实大模型。请先到系统设置的 AI 与云端填写 Base URL、模型名和 API Key。';
+  const label = aiModelDisplayLabel(ai.provider, ai.model, ai.providerLabel);
+  if (!ai.ready) return ai.detail || `${label} 还没有配置完成，暂时不能生成正式回答。`;
+  return '';
+}
 
 const COLLAB_REPO_PATH_STORAGE_KEY = 'yiyu-collab-repo-path';
 const EVENT_LINE_PROJECT_FILTER_STORAGE_KEY = 'yiyu-event-line-project-filter';
@@ -875,11 +1251,6 @@ const DEFAULT_TASK_SETTINGS: TaskSettings = {
   updatedAt: '',
 };
 
-const EMPTY_REVIEW_GOVERNANCE_SETTINGS: ReviewGovernanceSettings = {
-  departments: [],
-  updatedAt: '',
-};
-
 const EMPTY_ORG_MODEL_SETTINGS: OrgModelSettings = {
   organization: {
     organizationId: '',
@@ -890,6 +1261,8 @@ const EMPTY_ORG_MODEL_SETTINGS: OrgModelSettings = {
     quarterPlans: [],
     quarterlyFocus: [],
     leaderUserId: null,
+    leaderName: '',
+    introDocument: null,
     managementUserIds: [],
     updatedAt: '',
   },
@@ -904,13 +1277,6 @@ const EMPTY_ORG_MODEL_SETTINGS: OrgModelSettings = {
   updatedAt: '',
 };
 
-const ORGANIZATION_DNA_MODULES: Array<{ moduleKey: OrganizationDnaModule['moduleKey']; title: string; helper: string }> = [
-  { moduleKey: 'organization_intro', title: '组织介绍', helper: '上传机构整体介绍、历史、使命、核心问题。' },
-  { moduleKey: 'business_intro', title: '业务介绍', helper: '上传业务模型、服务方式、关键产品或项目机制。' },
-  { moduleKey: 'team_intro', title: '团队介绍', helper: '上传团队结构、关键角色、负责人和协作分工。' },
-  { moduleKey: 'market_intro', title: '市场介绍', helper: '上传行业定位、竞品、需求和市场调研结论。' },
-];
-
 const CLIENT_DNA_MODULES: Array<{ moduleKey: ClientDnaModule['moduleKey']; title: string; helper: string }> = [
   { moduleKey: 'organization_intro', title: '组织介绍', helper: '上传该客户的组织介绍、历史、使命与核心定位。' },
   { moduleKey: 'business_intro', title: '项目介绍', helper: '上传该客户的项目介绍、核心服务、业务机制与代表项目。' },
@@ -919,8 +1285,6 @@ const CLIENT_DNA_MODULES: Array<{ moduleKey: ClientDnaModule['moduleKey']; title
 ];
 
 const DEFAULT_CLIENT_WORKSPACE_SETTINGS: ClientWorkspaceSettings = {
-  useOrgDnaInChat: false,
-  useOrgDnaInKnowledgeQa: false,
   meetingPublishDefaultListId: null,
   meetingPublishDefaultPriority: 'normal',
   defaultGoalQuarter: '',
@@ -935,8 +1299,6 @@ const DEFAULT_TOPICS_SETTINGS: TopicsSettings = {
   defaultTaskOwnerMode: 'self',
   defaultTimeRange: '3_days',
   defaultSourceStrategy: 'google_bing_news',
-  useOrgDnaForInsight: true,
-  useOrgDnaForTaskPlan: true,
   updatedAt: '',
 };
 
@@ -951,23 +1313,10 @@ const DEFAULT_HANDBOOK_SETTINGS: HandbookSettings = {
 
 const DEFAULT_SYSTEM_ADMIN_SETTINGS: SystemAdminSettings = {
   allowBusinessSettingsForEmployees: true,
-  allowOrgDnaForEmployees: true,
   protectEmployeeAdmin: true,
   protectAiAndCloud: true,
   protectCloudSecurity: true,
   brandLogoDataUrl: null,
-  updatedAt: '',
-};
-
-const DEFAULT_MAIN_CHAIN_STABILITY_SETTINGS: MainChainStabilitySettings = {
-  latestJudgmentsShadowOff: false,
-  backfillPaused: false,
-  workerCounters: {
-    claimCounts: {},
-    lockContention: {},
-    backfillThrottle: {},
-  },
-  lastCanaryObservation: null,
   updatedAt: '',
 };
 
@@ -1010,6 +1359,12 @@ const DEFAULT_ORG_MEMBERSHIP_SUMMARY: OrgMembershipSummary = {
   hasOrganization: false,
   organizationId: null,
   organizationName: null,
+  departmentId: null,
+  departmentName: null,
+  membershipStatus: 'none',
+  membershipSubmittedAt: null,
+  membershipRejectedReason: null,
+  organizationWorkspaceClientId: null,
 };
 
 const DEFAULT_ORG_FEISHU_INTEGRATION: OrgFeishuIntegration = {
@@ -1089,15 +1444,43 @@ const DEFAULT_LOCAL_INPUT_MEMORY: LocalInputMemory = {
 const DEFAULT_LOCAL_AUTH_STATE: AuthState = {
   authenticated: true,
   sessionMode: 'local',
-  user: {
-    id: 'local-device-user',
-    organizationId: 'local-device',
-    email: 'local@device.yiyu',
-    fullName: '本机用户',
-    primaryRole: 'employee',
-    accountStatus: 'approved',
+    user: {
+      id: 'local-device-user',
+      organizationId: 'local-device',
+      email: 'local@device.yiyu',
+      phone: null,
+      fullName: '本机用户',
+      primaryRole: 'employee',
+      accountStatus: 'approved',
+      membershipStatus: 'approved',
+    },
+  };
+
+const EMPTY_PROJECT_STRUCTURE_RESPONSE: ProjectStructureResponse = { modules: [], flows: [] };
+const PROJECT_STRUCTURE_FAILURE_CACHE_MS = 5 * 60 * 1000;
+
+const proposalEffectMeta = {
+  recorded_only: {
+    label: '仅记录执行',
+    className: 'bg-slate-100 text-slate-600',
+    detail: 'proposal 先审批，后执行；本次还没有真实副作用。',
   },
-};
+  prep_artifact_ready: {
+    label: '已生成准备包',
+    className: 'bg-blue-50 text-blue-700',
+    detail: '本次 execute 的真实作用是生成可消费准备包，不直写 official judgment。',
+  },
+  followup_task_created: {
+    label: '已创建任务',
+    className: 'bg-emerald-50 text-emerald-700',
+    detail: '本次 execute 的真实作用是生成真实 follow-up 任务，不直写 official judgment。',
+  },
+  failed: {
+    label: '执行失败',
+    className: 'bg-rose-50 text-rose-700',
+    detail: '执行失败，未写 official judgment。',
+  },
+} as const;
 
 function normalizeAuthStateForDesktop(state: AuthState | null | undefined): AuthState {
   if (state?.authenticated && state.user) {
@@ -1112,20 +1495,27 @@ function normalizeAuthStateForDesktop(state: AuthState | null | undefined): Auth
   };
 }
 
+function getEffectiveMembershipStatus(state: AuthState | null | undefined) {
+  if (state?.sessionMode !== 'cloud') return 'approved';
+  return state.user?.membershipStatus || (state.user?.accountStatus === 'approved' ? 'approved' : state.user?.accountStatus) || 'none';
+}
+
+function membershipStatusLabel(status: string | null | undefined) {
+  switch (status) {
+    case 'approved':
+      return '已确认';
+    case 'pending':
+      return '待确认';
+    case 'rejected':
+      return '未通过';
+    case 'none':
+      return '尚未加入组织';
+    default:
+      return '未确认';
+  }
+}
+
 const TASK_COLOR_OPTIONS = ['#5B7BFE', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4', '#64748B', '#EC4899'];
-
-type DisplayChatMessage = ChatMessage & {
-  requestPrompt?: string;
-  elapsedMs?: number;
-};
-
-type WorkspacePendingQuestionState = {
-  question: string;
-  startedAt: string;
-};
-
-const CLIENT_CHAT_DRAFT_THREAD_ID = '__client_chat_draft__';
-const WORKSPACE_COMPOSER_NO_CLIENT_KEY = '__workspace_no_client__';
 
 function isWorkspaceAnalysisRunPending(run: ClientAnalysisRun | null | undefined): run is ClientAnalysisRun {
   return Boolean(run && (run.status === 'queued' || run.status === 'running'));
@@ -1205,7 +1595,7 @@ function loadingProgressValue(summary: Record<string, unknown> | null | undefine
   return Math.max(baseline, Math.min(dynamic, ceiling));
 }
 
-function loadingStageText(summary?: Record<string, unknown> | null) {
+function loadingStageText(summary?: Record<string, unknown> | null, modelLabel = '当前模型') {
   const explicitLabel = typeof summary?.stageLabel === 'string' ? summary.stageLabel.trim() : '';
   if (explicitLabel) return explicitLabel;
   if (!summary) return '庆华正在整理背景材料，并组织分析答案';
@@ -1213,7 +1603,7 @@ function loadingStageText(summary?: Record<string, unknown> | null) {
   const surrogate = Number(summary.surrogateHitCount || 0);
   const rawChunk = Number(summary.rawChunkHitCount || 0);
   if (master > 0 || surrogate > 0 || rawChunk > 0) {
-    return '庆华已经整理好当前问题所需的背景材料，正在调用千问组织完整分析';
+    return `庆华已经整理好当前问题所需的背景材料，正在调用${modelLabel}组织完整分析`;
   }
   if (summary.failureReason) {
     return `背景整理阶段提示：${String(summary.failureReason)}`;
@@ -1221,16 +1611,16 @@ function loadingStageText(summary?: Record<string, unknown> | null) {
   return '庆华正在整理背景材料，并组织分析答案';
 }
 
-function loadingSubText(summary?: Record<string, unknown> | null) {
-  if (!summary) return '消息已发送。系统会先整理最相关的背景材料，再调用千问生成更完整、更专业的顾问式回答。';
+function loadingSubText(summary?: Record<string, unknown> | null, modelLabel = '当前模型') {
+  if (!summary) return `消息已发送。系统会先整理最相关的背景材料，再调用${modelLabel}生成更完整、更专业的顾问式回答。`;
   const phase = resolveLoadingPhase(summary);
   const master = Number(summary.masterHitCount || 0);
   const surrogate = Number(summary.surrogateHitCount || 0);
   const rawChunk = Number(summary.rawChunkHitCount || 0);
   if (phase === 'generating' || master > 0 || surrogate > 0 || rawChunk > 0) {
-    return '背景材料已经整理完成。当前阶段主要耗时在千问组织最终答案，而不是本地资料定位。';
+    return `背景材料已经整理完成。当前阶段主要耗时在${modelLabel}组织最终答案，而不是本地资料定位。`;
   }
-  return '消息已发送。系统会先整理最相关的背景材料，再调用千问生成更完整、更专业的顾问式回答。';
+  return `消息已发送。系统会先整理最相关的背景材料，再调用${modelLabel}生成更完整、更专业的顾问式回答。`;
 }
 
 function loadingPreviewText(summary?: Record<string, unknown> | null) {
@@ -1435,38 +1825,39 @@ function WorkTracePanel({
     const payload = retrievalSummary?.workTrace;
     const normalized = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
     const retrievalSummaryRaw = retrievalSummary || {};
-    const answerPlanRaw = retrievalSummaryRaw.answerPlan && typeof retrievalSummaryRaw.answerPlan === 'object'
-      ? retrievalSummaryRaw.answerPlan as Record<string, unknown>
+    const retrievalSummaryRecord = retrievalSummaryRaw as Record<string, unknown>;
+    const answerPlanRaw = retrievalSummaryRecord.answerPlan && typeof retrievalSummaryRecord.answerPlan === 'object'
+      ? retrievalSummaryRecord.answerPlan as Record<string, unknown>
       : null;
-    const answerQualityRaw = retrievalSummaryRaw.answerQuality && typeof retrievalSummaryRaw.answerQuality === 'object'
-      ? retrievalSummaryRaw.answerQuality as Record<string, unknown>
+    const answerQualityRaw = retrievalSummaryRecord.answerQuality && typeof retrievalSummaryRecord.answerQuality === 'object'
+      ? retrievalSummaryRecord.answerQuality as Record<string, unknown>
       : null;
-    const generationPolicyRaw = retrievalSummaryRaw.generationPolicy && typeof retrievalSummaryRaw.generationPolicy === 'object'
-      ? retrievalSummaryRaw.generationPolicy as Record<string, unknown>
+    const generationPolicyRaw = retrievalSummaryRecord.generationPolicy && typeof retrievalSummaryRecord.generationPolicy === 'object'
+      ? retrievalSummaryRecord.generationPolicy as Record<string, unknown>
       : null;
-    const routeDecisionRaw = retrievalSummaryRaw.routeDecision && typeof retrievalSummaryRaw.routeDecision === 'object'
-      ? retrievalSummaryRaw.routeDecision as Record<string, unknown>
+    const routeDecisionRaw = retrievalSummaryRecord.routeDecision && typeof retrievalSummaryRecord.routeDecision === 'object'
+      ? retrievalSummaryRecord.routeDecision as Record<string, unknown>
       : null;
-    const retrievalTraceRaw = retrievalSummaryRaw.retrievalTrace && typeof retrievalSummaryRaw.retrievalTrace === 'object'
-      ? retrievalSummaryRaw.retrievalTrace as Record<string, unknown>
+    const retrievalTraceRaw = retrievalSummaryRecord.retrievalTrace && typeof retrievalSummaryRecord.retrievalTrace === 'object'
+      ? retrievalSummaryRecord.retrievalTrace as Record<string, unknown>
       : null;
-    const selectedHitsRaw = Array.isArray((retrievalSummaryRaw as Record<string, unknown>).selectedHits)
-      ? (retrievalSummaryRaw.selectedHits as Array<Record<string, unknown>>)
+    const selectedHitsRaw = Array.isArray(retrievalSummaryRecord.selectedHits)
+      ? (retrievalSummaryRecord.selectedHits as Array<Record<string, unknown>>)
       : [];
-    const missingContextRaw = Array.isArray((retrievalSummaryRaw as Record<string, unknown>).missingContext)
-      ? retrievalSummaryRaw.missingContext.map((item) => String(item)).filter(Boolean)
+    const missingContextRaw = Array.isArray(retrievalSummaryRecord.missingContext)
+      ? retrievalSummaryRecord.missingContext.map((item) => String(item)).filter(Boolean)
       : [];
-    const boundaryNotesRaw = Array.isArray((retrievalSummaryRaw as Record<string, unknown>).boundaryNotes)
-      ? retrievalSummaryRaw.boundaryNotes.map((item) => String(item)).filter(Boolean)
+    const boundaryNotesRaw = Array.isArray(retrievalSummaryRecord.boundaryNotes)
+      ? retrievalSummaryRecord.boundaryNotes.map((item) => String(item)).filter(Boolean)
       : [];
-    const recommendedFixesRaw = Array.isArray((retrievalSummaryRaw as Record<string, unknown>).recommendedFixes)
-      ? retrievalSummaryRaw.recommendedFixes.map((item) => String(item)).filter(Boolean)
+    const recommendedFixesRaw = Array.isArray(retrievalSummaryRecord.recommendedFixes)
+      ? retrievalSummaryRecord.recommendedFixes.map((item) => String(item)).filter(Boolean)
       : [];
-    const workspaceRouteRaw = retrievalSummaryRaw.workspaceRoute && typeof retrievalSummaryRaw.workspaceRoute === 'object'
-      ? retrievalSummaryRaw.workspaceRoute as Record<string, unknown>
+    const workspaceRouteRaw = retrievalSummaryRecord.workspaceRoute && typeof retrievalSummaryRecord.workspaceRoute === 'object'
+      ? retrievalSummaryRecord.workspaceRoute as Record<string, unknown>
       : null;
-    const materialPackSourceCountsRaw = retrievalSummaryRaw.materialPackSourceCounts && typeof retrievalSummaryRaw.materialPackSourceCounts === 'object'
-      ? retrievalSummaryRaw.materialPackSourceCounts as Record<string, unknown>
+    const materialPackSourceCountsRaw = retrievalSummaryRecord.materialPackSourceCounts && typeof retrievalSummaryRecord.materialPackSourceCounts === 'object'
+      ? retrievalSummaryRecord.materialPackSourceCounts as Record<string, unknown>
       : null;
     const workspaceWorkflow = typeof retrievalSummaryRaw.workspaceWorkflow === 'string' ? retrievalSummaryRaw.workspaceWorkflow : '';
     const generationMode = typeof retrievalSummaryRaw.generationMode === 'string' ? retrievalSummaryRaw.generationMode : '';
@@ -1820,14 +2211,15 @@ function WorkTracePanel({
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">状态关联证据</p>
               <div className="mt-2 space-y-2">
                 {trace.linkedEvidenceTrail.map((item, index) => {
-                  const title = typeof item.title === 'string' ? item.title : '';
-                  const stage = typeof item.stage === 'string' ? item.stage : (typeof item.sourceType === 'string' ? item.sourceType : '');
-                  const sectionLabel = typeof item.sectionLabel === 'string'
-                    ? item.sectionLabel
-                    : (typeof item.sourceRef === 'string' ? item.sourceRef : '');
-                  const excerpt = typeof item.excerpt === 'string'
-                    ? item.excerpt
-                    : (typeof item.summary === 'string' ? item.summary : '');
+                  const record = item as Record<string, unknown>;
+                  const title = typeof record.title === 'string' ? record.title : '';
+                  const stage = typeof record.stage === 'string' ? record.stage : (typeof record.sourceType === 'string' ? record.sourceType : '');
+                  const sectionLabel = typeof record.sectionLabel === 'string'
+                    ? record.sectionLabel
+                    : (typeof record.sourceRef === 'string' ? record.sourceRef : '');
+                  const excerpt = typeof record.excerpt === 'string'
+                    ? record.excerpt
+                    : (typeof record.summary === 'string' ? record.summary : '');
                   return (
                     <div key={`${title}-${index}`} className="rounded-2xl border border-cyan-100 bg-cyan-50/60 px-3 py-3">
                       <div className="min-w-0">
@@ -2617,6 +3009,8 @@ const Button = ({
   onClick,
   disabled,
   type = 'button',
+  title,
+  'aria-label': ariaLabel,
 }: {
   children: React.ReactNode;
   primary?: boolean;
@@ -2624,11 +3018,15 @@ const Button = ({
   onClick?: () => void;
   disabled?: boolean;
   type?: 'button' | 'submit';
+  title?: string;
+  'aria-label'?: string;
 }) => (
   <button
     type={type}
     onClick={onClick}
     disabled={disabled}
+    title={title}
+    aria-label={ariaLabel}
     className={`px-4 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 flex items-center justify-center gap-2 active:scale-[0.98]
       ${
         primary
@@ -2644,18 +3042,100 @@ function getTint(hexColor: string) {
   return `${hexColor}1A`;
 }
 
+const STABLE_TASK_LIST_IDS: Record<string, string> = {
+  'org|收集箱': 'list-0',
+  'personal|健身': 'plist-1',
+  'personal|约会': 'plist-2',
+  'personal|吃饭': 'plist-3',
+  'personal|学习': 'plist-4',
+};
+
+function normalizeTaskListName(name: string | null | undefined) {
+  return (name || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function taskListDedupeKey(list: TaskList) {
+  return `${list.scope || 'org'}|${normalizeTaskListName(list.name)}`;
+}
+
+function chooseTaskListDisplayCandidate(current: TaskList, candidate: TaskList) {
+  const stableId = STABLE_TASK_LIST_IDS[`${candidate.scope || 'org'}|${candidate.name.trim()}`]
+    || STABLE_TASK_LIST_IDS[`${current.scope || 'org'}|${current.name.trim()}`];
+  if (stableId) {
+    if (candidate.id === stableId && current.id !== stableId) return candidate;
+    if (current.id === stableId && candidate.id !== stableId) return current;
+  }
+  if (candidate.isDefault !== current.isDefault) return candidate.isDefault ? candidate : current;
+  if (Boolean(candidate.archivedAt) !== Boolean(current.archivedAt)) return candidate.archivedAt ? current : candidate;
+  if ((candidate.sortOrder || 0) !== (current.sortOrder || 0)) {
+    return (candidate.sortOrder || 0) < (current.sortOrder || 0) ? candidate : current;
+  }
+  return candidate.id.localeCompare(current.id) < 0 ? candidate : current;
+}
+
+function dedupeTaskListsForDisplay(lists: TaskList[]) {
+  const byKey = new Map<string, TaskList>();
+  lists.forEach((list) => {
+    const key = taskListDedupeKey(list);
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? chooseTaskListDisplayCandidate(existing, list) : list);
+  });
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (Boolean(a.archivedAt) !== Boolean(b.archivedAt)) return a.archivedAt ? 1 : -1;
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    if ((a.sortOrder || 0) !== (b.sortOrder || 0)) return (a.sortOrder || 0) - (b.sortOrder || 0);
+    return a.name.localeCompare(b.name, 'zh-Hans-CN');
+  });
+}
+
+function taskListDisplayName(list: TaskList) {
+  return normalizeTaskListName(list.name);
+}
+
+function taskDefaultDestinationRank(list: TaskList) {
+  if ((list.scope || 'org') !== 'org' || list.archivedAt) return Number.POSITIVE_INFINITY;
+  const name = taskListDisplayName(list);
+  if (list.id === 'list-0' || name === '收集箱' || name === '收件箱') return 0;
+  if (name === '组织任务') return 1;
+  return Number.POSITIVE_INFINITY;
+}
+
+function getTaskDefaultDestinationLists(lists: TaskList[]) {
+  return lists
+    .filter((list) => Number.isFinite(taskDefaultDestinationRank(list)))
+    .sort((left, right) => {
+      const rankDelta = taskDefaultDestinationRank(left) - taskDefaultDestinationRank(right);
+      if (rankDelta !== 0) return rankDelta;
+      if ((left.sortOrder || 0) !== (right.sortOrder || 0)) return (left.sortOrder || 0) - (right.sortOrder || 0);
+      return left.id.localeCompare(right.id);
+    });
+}
+
+function taskDefaultDestinationOptionLabel(list: TaskList) {
+  const name = taskListDisplayName(list);
+  if (list.id === 'list-0' || name === '收集箱' || name === '收件箱') return '收集箱（不指定）';
+  if (name === '组织任务') return '组织任务';
+  return list.name;
+}
+
 function resolveTaskSettings(taskSettings: TaskSettings | null, lists: TaskList[]): TaskSettings {
-  const activeLists = lists.filter((item) => !item.archivedAt);
-  const defaultListId = activeLists.find((item) => item.isDefault)?.id || activeLists[0]?.id || null;
+  const defaultDestinationLists = getTaskDefaultDestinationLists(lists);
+  const fallbackLists = defaultDestinationLists.length > 0
+    ? defaultDestinationLists
+    : lists.filter((item) => !item.archivedAt && (item.scope || 'org') === 'org');
+  const defaultListId = fallbackLists[0]?.id || null;
+  const configuredDefaultListId = taskSettings?.defaultListId && fallbackLists.some((item) => item.id === taskSettings.defaultListId)
+    ? taskSettings.defaultListId
+    : defaultListId;
   return {
     ...DEFAULT_TASK_SETTINGS,
     ...taskSettings,
-    defaultListId: taskSettings?.defaultListId || defaultListId,
+    defaultListId: configuredDefaultListId,
   };
 }
 
 function defaultDueDateFromPreset(preset: TaskSettings['defaultDueDatePreset']) {
-  return preset === 'today' ? new Date().toISOString().slice(0, 10) : '';
+  return preset === 'today' ? formatDateInputValue(new Date()) : '';
 }
 
 function defaultDdlFromPreset(preset: TaskSettings['defaultDueDatePreset']) {
@@ -2741,7 +3221,7 @@ function taskTagPillStyle(tag: TaskTag, emphasized = false): React.CSSProperties
   };
 }
 
-function sortTasksForListView(tasks: Task[], sortMode: TaskSettings['listSortMode']) {
+function sortTasksForListView(tasks: Task[]) {
   const statusRank: Record<Task['status'], number> = {
     inbox: 0,
     doing: 1,
@@ -2749,17 +3229,11 @@ function sortTasksForListView(tasks: Task[], sortMode: TaskSettings['listSortMod
     done: 3,
     rejected: 4,
   };
-  const explicitDueTimestamp = (task: Task) => resolveTaskTimelineDateTime(task)?.getTime() || Number.MAX_SAFE_INTEGER;
   const timelineTimestamp = (task: Task) => resolveTaskTimelineDateTime(task)?.getTime() || Number.MAX_SAFE_INTEGER;
   return [...tasks].sort((left, right) => {
-    const leftTime = sortMode === 'dueDate' ? explicitDueTimestamp(left) : timelineTimestamp(left);
-    const rightTime = sortMode === 'dueDate' ? explicitDueTimestamp(right) : timelineTimestamp(right);
+    const leftTime = timelineTimestamp(left);
+    const rightTime = timelineTimestamp(right);
     if (leftTime !== rightTime) return leftTime - rightTime;
-    if (sortMode === 'priority') {
-      const priorityRank = { high: 0, normal: 1, low: 2 } as const;
-      const priorityDelta = priorityRank[left.priority] - priorityRank[right.priority];
-      if (priorityDelta !== 0) return priorityDelta;
-    }
     const statusDelta = statusRank[left.status] - statusRank[right.status];
     if (statusDelta !== 0) return statusDelta;
     return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
@@ -2840,7 +3314,7 @@ type TaskExecutionGroup = {
 const TASK_EXECUTION_GROUP_META: Record<TaskExecutionGroupKey, Omit<TaskExecutionGroup, 'tasks'>> = {
   today: { key: 'today', label: '今天', hint: '今天需要实际推进的任务' },
   overdue: { key: 'overdue', label: '已逾期', hint: '已过截止日，优先处理或重新排期' },
-  week: { key: 'week', label: '本周', hint: '本周内的任务' },
+  week: { key: 'week', label: '本周', hint: '本周计划或本周完成的任务' },
   waiting: { key: 'waiting', label: '等别人', hint: '你负责，但还在等待协作者确认' },
   undated: { key: 'undated', label: '无日期', hint: '还没有明确截止日期' },
   later: { key: 'later', label: '之后', hint: '未来任务，先保留在低优先级区' },
@@ -2878,7 +3352,7 @@ const TASK_TIME_RANGE_OPTIONS: Array<{ value: TaskTimeRangeFilter; label: string
 
 function resolveOrganizationTaskName(organizationName?: string | null) {
   const normalized = (organizationName || '').trim();
-  return normalized || '益语智库';
+  return normalized || '当前组织';
 }
 
 function buildOrganizationTaskAutoReason(organizationName?: string | null) {
@@ -3437,7 +3911,7 @@ function buildTaskProjectPreview(params: {
     projectFlow?.riskPoints?.length
       ? `当前流程风险：${projectFlow.riskPoints.slice(0, 2).join('；')}`.slice(0, 120)
       : !isGenericPreviewLine(params.eventLine?.currentBlocker)
-        ? params.eventLine?.currentBlocker?.slice(0, 120)
+        ? (params.eventLine?.currentBlocker || '').slice(0, 120)
         : concreteConversationRisk
           ? truncatePreviewText(concreteConversationRisk, 120)
           : relationshipTask && workspaceDocumentCount >= 8
@@ -3579,12 +4053,7 @@ function parseTaskDateValue(value?: string | null) {
 }
 
 function resolveTaskDueDate(task: Task) {
-  const explicitDate = parseTaskDateValue(task.dueDate);
-  if (explicitDate) return explicitDate;
-  if (!task.ddl || task.ddl === '待确认') return null;
-  const inferredDate = normalizeDdlToDate(task.ddl);
-  if (Number.isNaN(inferredDate.getTime())) return null;
-  return new Date(inferredDate.getFullYear(), inferredDate.getMonth(), inferredDate.getDate());
+  return getTaskDeadline(task);
 }
 
 function startOfCalendarDay(date: Date) {
@@ -3596,83 +4065,22 @@ function isPastCalendarDueDay(dueDate: Date, today = new Date()) {
 }
 
 function isTaskOverdue(task: Task, today = new Date()) {
-  if (task.status === 'done') return false;
-  const dueDate = resolveTaskDueDate(task);
-  if (!dueDate) return false;
-  return isPastCalendarDueDay(dueDate, today);
-}
-
-function normalizeDdlToDate(label: string) {
-  const now = new Date();
-  if (label === '今天') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (label === '本周') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3);
-  const dayMap: Record<string, number> = { 周一: 1, 周二: 2, 周三: 3, 周四: 4, 周五: 5, 周六: 6, 周日: 0 };
-  if (label in dayMap) {
-    const delta = (dayMap[label] - now.getDay() + 7) % 7;
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + delta);
-  }
-  const match = label.match(/^(\d{2})-(\d{2})$/);
-  if (match) {
-    return new Date(now.getFullYear(), Number(match[1]) - 1, Number(match[2]));
-  }
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-}
-
-function normalizeDdlToDateTime(label?: string | null) {
-  if (!label) return null;
-  const text = label.trim();
-  if (!text || text === '待确认') return null;
-
-  const now = new Date();
-  const applyTime = (date: Date, hours = 0, minutes = 0) =>
-    new Date(date.getFullYear(), date.getMonth(), date.getDate(), hours, minutes);
-
-  const todayMatch = text.match(/^今天(?:\s+(\d{1,2}):(\d{2}))?$/);
-  if (todayMatch) {
-    return applyTime(
-      new Date(now.getFullYear(), now.getMonth(), now.getDate()),
-      Number(todayMatch[1] || 0),
-      Number(todayMatch[2] || 0),
-    );
-  }
-
-  const weekMatch = text.match(/^本周(?:\s+(\d{1,2}):(\d{2}))?$/);
-  if (weekMatch) {
-    const base = normalizeDdlToDate('本周');
-    return applyTime(base, Number(weekMatch[1] || 0), Number(weekMatch[2] || 0));
-  }
-
-  const weekdayMatch = text.match(/^(周[一二三四五六日])(?:\s+(\d{1,2}):(\d{2}))?$/);
-  if (weekdayMatch) {
-    const base = normalizeDdlToDate(weekdayMatch[1]);
-    return applyTime(base, Number(weekdayMatch[2] || 0), Number(weekdayMatch[3] || 0));
-  }
-
-  const monthDayMatch = text.match(/^(\d{2})-(\d{2})(?:\s+(\d{1,2}):(\d{2}))?$/);
-  if (monthDayMatch) {
-    const base = normalizeDdlToDate(`${monthDayMatch[1]}-${monthDayMatch[2]}`);
-    return applyTime(base, Number(monthDayMatch[3] || 0), Number(monthDayMatch[4] || 0));
-  }
-
-  const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  return isCanonicalTaskOverdue(task, today);
 }
 
 function resolveTaskTimelineDateTime(task: Task) {
+  const canonicalDate = getTaskExecutionDate(task);
+  if (canonicalDate) return canonicalDate;
   if (task.dueDate) {
     const parsedDue = new Date(task.dueDate);
     if (!Number.isNaN(parsedDue.getTime())) return parsedDue;
   }
-  const ddlDate = normalizeDdlToDateTime(task.ddl);
-  if (ddlDate) return ddlDate;
   const createdAt = new Date(task.createdAt);
   return Number.isNaN(createdAt.getTime()) ? null : createdAt;
 }
 
 function taskDateForCalendar(task: Task) {
-  const explicitDate = parseTaskDateValue(task.dueDate);
-  if (explicitDate) return explicitDate;
-  return normalizeDdlToDate(task.ddl);
+  return getTaskCalendarPlacement(task).date || null;
 }
 
 function taskInvolvesUser(task: Task, userId: string | null | undefined) {
@@ -3722,25 +4130,16 @@ function isSameCalendarDay(left: Date, right: Date) {
 }
 
 function isTaskDueToday(task: Task, today = new Date()) {
-  const dueDate = resolveTaskDueDate(task);
-  return Boolean(dueDate && isSameCalendarDay(dueDate, today));
+  return isCanonicalTaskToday(task, today);
 }
 
 function isTaskDueInCurrentWeekBucket(task: Task, today = new Date(), includeCompletedPastDays = false) {
-  const dueDate = resolveTaskDueDate(task);
-  if (!dueDate) return false;
-  const dueDay = startOfCalendarDay(dueDate).getTime();
-  const todayDay = startOfCalendarDay(today).getTime();
-  if (isSameCalendarDay(dueDate, today)) return false;
-  if (weekLabelForDate(dueDate) !== weekLabelForDate(today)) return false;
-  if (dueDay < todayDay && !(includeCompletedPastDays && task.status === 'done')) return false;
-  return true;
+  void includeCompletedPastDays;
+  return isTaskInCurrentReviewWeek(task, today);
 }
 
 function taskHasNoEffectiveDueDate(task: Task) {
-  if (resolveTaskDueDate(task)) return false;
-  const label = (task.ddl || '').trim();
-  return !label || label === '待确认';
+  return getTaskCalendarPlacement(task).kind === 'none';
 }
 
 function getTaskExecutionGroupKey(
@@ -3749,11 +4148,12 @@ function getTaskExecutionGroupKey(
   options?: { includeCompletedInDateGroups?: boolean },
 ): TaskExecutionGroupKey {
   const includeCompletedInDateGroups = Boolean(options?.includeCompletedInDateGroups);
-  if (task.status === 'done' && !includeCompletedInDateGroups) return 'done';
+  if (isTaskDueInCurrentWeekBucket(task, new Date())) {
+    if (task.status !== 'done' || includeCompletedInDateGroups) return 'week';
+  }
+  if (task.status === 'done') return 'done';
   if (isTaskOverdue(task)) return 'overdue';
   if (isTaskDueToday(task)) return 'today';
-  if (isTaskDueInCurrentWeekBucket(task, new Date(), includeCompletedInDateGroups)) return 'week';
-  if (task.status === 'done') return 'done';
   if (taskWaitsForOthers(task, userId)) return 'waiting';
   if (taskHasNoEffectiveDueDate(task)) return 'undated';
   return 'later';
@@ -3783,14 +4183,6 @@ function getTaskPrimaryActionLine(task: Task) {
   return (task.desc || '').split(/\n/).map((line) => line.trim()).find(Boolean) || '还没有写下一步动作';
 }
 
-function getPrepPackTimelineMaterials(prepPack: PrepPackCard | undefined, direction: 'past' | 'future') {
-  if (!prepPack) return [];
-  const sourceToken = direction === 'past' ? 'past' : 'future';
-  return prepPack.materials.filter((item) =>
-    item.authorityLevel === direction || item.sourceType.includes(sourceToken),
-  );
-}
-
 function getTaskStatusLabel(task: Task) {
   if (task.status === 'done') return '已完成';
   if (task.status === 'todo') return '待办';
@@ -3800,11 +4192,13 @@ function getTaskStatusLabel(task: Task) {
 }
 
 function getTaskDueState(task: Task) {
+  const executionDate = getTaskExecutionDate(task);
+  const executionLabel = task.ddl || (executionDate ? formatTaskDueLabel(formatDateOnlyValue(executionDate)) : '待确认');
   if (task.status === 'done') return { label: '已完成', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' };
-  if (isTaskOverdue(task)) return { label: task.ddl ? `逾期 · ${task.ddl}` : '已逾期', className: 'bg-rose-50 text-rose-700 border-rose-100' };
+  if (isTaskOverdue(task)) return { label: `逾期 · ${executionLabel}`, className: 'bg-rose-50 text-rose-700 border-rose-100' };
   if (isTaskDueToday(task)) return { label: task.ddl ? `今天 · ${task.ddl.replace(/^今天\s*/u, '') || '截止'}` : '今天', className: 'bg-orange-50 text-orange-700 border-orange-100' };
   if (taskHasNoEffectiveDueDate(task)) return { label: '无日期', className: 'bg-gray-50 text-gray-500 border-gray-100' };
-  return { label: task.ddl || formatTaskDueLabel(task.dueDate), className: 'bg-slate-50 text-slate-600 border-slate-100' };
+  return { label: executionLabel, className: 'bg-slate-50 text-slate-600 border-slate-100' };
 }
 
 function taskCanToggleCompletion(task: Task, userId: string | null | undefined) {
@@ -3872,6 +4266,25 @@ function currentWeekLabel() {
   return weekLabelForDate(new Date());
 }
 
+type ReviewPerspectiveUserLike = {
+  primaryRole?: string | null;
+  isDepartmentLead?: boolean | null;
+  departmentId?: string | null;
+};
+
+function resolveDefaultReviewPerspectiveForUser(user?: ReviewPerspectiveUserLike | null): ReviewPerspectiveKey {
+  if (user?.primaryRole === 'admin') return 'organization';
+  if (user?.isDepartmentLead && user.departmentId) return 'department';
+  return 'mine';
+}
+
+function resolveDefaultReviewDepartmentIdForUser(
+  user?: ReviewPerspectiveUserLike | null,
+  perspective?: ReviewPerspectiveKey | null,
+) {
+  return perspective === 'department' ? user?.departmentId || null : null;
+}
+
 /** Convert "2026-W14" to "第14周" for display */
 function weekLabelCN(label: string): string {
   const m = label.match(/^\d{4}-W(\d{2})$/);
@@ -3914,7 +4327,10 @@ function reviewWeekMondayLabel(weekLabel: string) {
 }
 
 function taskDateForReview(task: Task) {
-  return resolveTaskTimelineDateTime(task);
+  if (task.status === 'done') {
+    return parseTaskDateValue(task.completedAt) || parseTaskDateValue(task.updatedAt) || getTaskExecutionDate(task);
+  }
+  return getTaskExecutionDate(task);
 }
 
 function isTaskInReviewWeek(task: Task, weekLabel: string) {
@@ -3932,7 +4348,12 @@ function materializeTaskFromReviewItem(item: WeeklyReviewTaskEntry, existingTask
       ...existingTask,
       title: snapshot.title || existingTask.title,
       status: snapshot.status || existingTask.status,
+      startDate: snapshot.startDate ?? existingTask.startDate ?? null,
       dueDate: snapshot.dueDate ?? existingTask.dueDate ?? null,
+      deadlineAt: snapshot.deadlineAt ?? existingTask.deadlineAt ?? null,
+      scheduledStartAt: snapshot.scheduledStartAt ?? existingTask.scheduledStartAt ?? null,
+      scheduledEndAt: snapshot.scheduledEndAt ?? existingTask.scheduledEndAt ?? null,
+      completedAt: snapshot.completedAt ?? existingTask.completedAt ?? null,
       clientId: snapshot.clientId ?? existingTask.clientId ?? null,
       clientName: snapshot.clientName ?? existingTask.clientName ?? null,
       eventLineId: snapshot.eventLineId ?? eventLineContext?.id ?? existingTask.eventLineId ?? null,
@@ -3965,9 +4386,14 @@ function materializeTaskFromReviewItem(item: WeeklyReviewTaskEntry, existingTask
     listName: snapshot.listName || '周复盘',
     listColor: snapshot.listColor || '#5B7BFE',
     ddl: snapshot.dueDate || '',
+    startDate: snapshot.startDate ?? null,
     dueDate: snapshot.dueDate ?? null,
+    deadlineAt: snapshot.deadlineAt ?? null,
+    scheduledStartAt: snapshot.scheduledStartAt ?? null,
+    scheduledEndAt: snapshot.scheduledEndAt ?? null,
+    completedAt: snapshot.completedAt ?? null,
     durationMinutes: undefined,
-    scopeMode: item.contentDomain === 'personal' ? 'PERSONAL_ONLY' : 'ALL',
+    scopeMode: item.contentDomain === 'personal' ? 'PERSONAL_ONLY' : 'COLLAB_SHARED',
     clientId: snapshot.clientId ?? null,
     clientName: snapshot.clientName ?? null,
     eventLineId: snapshot.eventLineId ?? eventLineContext?.id ?? null,
@@ -4106,6 +4532,10 @@ function reviewEventCardKindLabel(kind: WeeklyEventReviewCardKind) {
     default:
       return '单项复盘';
   }
+}
+
+function reviewFoldedTaskCountLabel(taskCount: number, completedCount: number, pendingCount: number) {
+  return `${taskCount} 项纳入 · ${completedCount} 完成${pendingCount > 0 ? ` · ${pendingCount} 待推进` : ''}`;
 }
 
 function buildReviewEventCardFallbackPrompt(card: WeeklyEventReviewCard, rows: ReviewTaskRow[]) {
@@ -4596,6 +5026,20 @@ function inferClientTextDocumentTitle(content: string) {
   return normalized.replace(/\s+/g, ' ').slice(0, 28);
 }
 
+function detectClientLinkMaterialPlatform(value: string): ClientLinkMaterialDraft {
+  const raw = value.trim();
+  if (!raw) {
+    return { url: raw, detectedPlatform: '', detectedLabel: '等待粘贴链接' };
+  }
+  if (/^BV[0-9A-Za-z]{8,}$/i.test(raw) || /(bilibili\.com|b23\.tv)/i.test(raw)) {
+    return { url: raw, detectedPlatform: 'bilibili', detectedLabel: 'B站' };
+  }
+  if (/(xiaohongshu\.com|xhslink\.com|xhs\.cn)/i.test(raw)) {
+    return { url: raw, detectedPlatform: 'xiaohongshu', detectedLabel: '小红书' };
+  }
+  return { url: raw, detectedPlatform: 'unsupported', detectedLabel: '暂不支持' };
+}
+
 function inferTaskArchiveDocumentTitle(params: {
   taskTitle?: string | null;
   clientName?: string | null;
@@ -4726,6 +5170,259 @@ function createUiId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+type ClientEditorDraft = {
+  name: string;
+  alias: string;
+  domain: string;
+  type: string;
+  intro: string;
+  stage: string;
+  color: string;
+};
+
+type ClientEditorModalCloseReason = 'user_close' | 'cancel' | 'save_success' | 'delete_success';
+
+type ClientEditorModalState = {
+  open: boolean;
+  editingClientId: string | null;
+  requestId: string;
+  initialDraft: ClientEditorDraft;
+};
+
+function createEmptyClientEditorDraft(): ClientEditorDraft {
+  return {
+    name: '',
+    alias: '',
+    domain: '项目',
+    type: '项目',
+    intro: '',
+    stage: '待导入资料',
+    color: '#5B7BFE',
+  };
+}
+
+function buildClientEditorDraft(client: ClientSummary): ClientEditorDraft {
+  return {
+    name: client.name,
+    alias: client.alias,
+    domain: client.domain,
+    type: client.type,
+    intro: client.intro,
+    stage: client.stage,
+    color: (client.color || '').trim() || '#5B7BFE',
+  };
+}
+
+type ClientEditorModalProps = {
+  state: ClientEditorModalState;
+  clients: ClientSummary[];
+  onClose: (reason: ClientEditorModalCloseReason) => void;
+  onSubmit: (draft: ClientEditorDraft) => void | Promise<void>;
+  onDelete: (draft: ClientEditorDraft, confirmInput: string) => void | Promise<void>;
+  onInteractionState: (active: boolean, source: string, detail?: string | null) => void;
+};
+
+function ClientEditorModal({
+  state,
+  clients,
+  onClose,
+  onSubmit,
+  onDelete,
+  onInteractionState,
+}: ClientEditorModalProps) {
+  const [draft, setDraft] = useState<ClientEditorDraft>(state.initialDraft);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
+
+  useEffect(() => {
+    if (!state.open) return;
+    setDraft(state.initialDraft);
+    setDeleteConfirmOpen(false);
+    setDeleteConfirmInput('');
+  }, [state.initialDraft, state.open, state.requestId]);
+
+  if (!state.open) return null;
+
+  const editingClientId = state.editingClientId;
+  const modalDetail = editingClientId ? `editing:${editingClientId}` : 'creating';
+  const updateDraft = (patch: Partial<ClientEditorDraft>) => {
+    setDraft((previous) => ({
+      ...previous,
+      ...patch,
+    }));
+  };
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter') return;
+    if (event.currentTarget.tagName === 'TEXTAREA' && !event.metaKey && !event.ctrlKey) return;
+    if (event.shiftKey) return;
+    event.preventDefault();
+    void onSubmit(draft);
+  };
+  const targetName = clients.find((client) => client.id === editingClientId)?.name || draft.name.trim() || '该客户';
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/38 animate-in fade-in"
+      >
+        <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[580px] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
+          <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
+            <button
+              type="button"
+              className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
+              onClick={() => onClose('user_close')}
+              aria-label="关闭项目弹窗"
+            >
+              <X size={16} />
+            </button>
+            <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
+                <Briefcase size={16} strokeWidth={2.5} />
+              </div>
+              {editingClientId ? '编辑项目' : '创建项目'}
+            </h3>
+          </div>
+          <div className="p-8 space-y-5">
+            <div className="grid grid-cols-1 gap-4">
+              <input
+                value={draft.name}
+                onKeyDown={handleKeyDown}
+                onFocus={() => onInteractionState(true, 'client_name_input', modalDetail)}
+                onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
+                onChange={(event) => updateDraft({ name: event.target.value })}
+                placeholder="项目名称"
+                className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
+              />
+              <input
+                value={draft.alias}
+                onKeyDown={handleKeyDown}
+                onFocus={() => onInteractionState(true, 'client_alias_input', modalDetail)}
+                onBlur={() => onInteractionState(state.open, 'client_modal', modalDetail)}
+                onChange={(event) => updateDraft({ alias: event.target.value })}
+                placeholder="项目别名（选填）"
+                className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
+              />
+              <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
+                <p className="text-[12px] font-bold text-gray-700">项目颜色（会同步到任务日历）</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {TASK_COLOR_OPTIONS.map((color) => {
+                    const selected = draft.color === color;
+                    return (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => updateDraft({ color })}
+                        className={`h-7 w-7 rounded-full border-2 transition ${selected ? 'scale-105 border-slate-700' : 'border-white hover:border-slate-300'}`}
+                        style={{ backgroundColor: color }}
+                        title={color}
+                        aria-label={`选择项目颜色 ${color}`}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="rounded-[22px] border border-blue-100 bg-blue-50/70 px-4 py-4">
+              <p className="text-[13px] font-bold text-gray-900">创建后会立刻发生什么</p>
+              <div className="mt-2 space-y-1.5 text-[12px] leading-6 text-gray-600">
+                <p>1. 这个项目会立刻出现在客户工作台搜索里。</p>
+                <p>2. 创建成功后会直接进入资料导入引导页。</p>
+                <p>3. 下一步先导入已有资料，系统会自动分析归档并建立项目上下文。</p>
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-400">按 Enter 可直接创建；创建后先导入已有资料即可开始正式建库。</p>
+          </div>
+          <div className="px-8 py-5 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between gap-3">
+            <div>
+              {editingClientId && (
+                <button
+                  onClick={() => setDeleteConfirmOpen(true)}
+                  className="text-[13px] font-bold text-rose-500 hover:text-rose-600 px-3 py-2 transition-colors"
+                >
+                  删除项目
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => onClose('cancel')}
+                className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors"
+              >
+                取消
+              </button>
+              <Button primary onClick={() => void onSubmit(draft)} className="px-6 shadow-md">
+                {editingClientId ? '保存项目' : '创建项目'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+      {deleteConfirmOpen && (
+        <div className="fixed inset-0 bg-black/35 z-[60] flex items-center justify-center animate-in fade-in">
+          <div className="w-[440px] rounded-[24px] bg-white border border-rose-100 shadow-[0_24px_80px_rgba(0,0,0,0.18)] overflow-hidden" onClick={(event) => event.stopPropagation()}>
+            <div className="px-7 py-5 border-b border-rose-100 bg-rose-50/70">
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  className="rounded-2xl border border-rose-200 bg-white p-2 text-rose-400 transition hover:text-rose-700"
+                  onClick={() => {
+                    setDeleteConfirmOpen(false);
+                    setDeleteConfirmInput('');
+                  }}
+                  aria-label="关闭删除确认"
+                >
+                  <X size={16} />
+                </button>
+                <div className="text-[16px] font-bold text-rose-700">确认删除客户</div>
+              </div>
+              <p className="mt-2 text-[12px] leading-6 text-rose-600">
+                这会删除当前客户的资料、工作区、问答记录和知识索引，且无法恢复。
+              </p>
+            </div>
+            <div className="px-7 py-6 space-y-4">
+              <p className="text-[13px] font-medium text-gray-600">
+                请输入客户名称
+                <span className="mx-1 font-bold text-gray-900">"{targetName}"</span>
+                以确认删除。
+              </p>
+              <input
+                autoFocus
+                value={deleteConfirmInput}
+                onChange={(event) => setDeleteConfirmInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void onDelete(draft, deleteConfirmInput);
+                  }
+                }}
+                placeholder="输入客户名称"
+                className="w-full rounded-2xl border border-rose-200 bg-rose-50/40 px-4 py-3 text-[13px] font-bold outline-none focus:border-rose-300"
+              />
+            </div>
+            <div className="px-7 py-5 border-t border-gray-100 bg-gray-50/50 flex items-center justify-end gap-3">
+              <button
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setDeleteConfirmInput('');
+                }}
+                className="rounded-2xl border border-gray-200 bg-white px-5 py-2 text-[13px] font-bold text-gray-600 hover:text-gray-900"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void onDelete(draft, deleteConfirmInput)}
+                className="rounded-2xl bg-rose-500 px-5 py-2 text-[13px] font-bold text-white shadow-md hover:bg-rose-600"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 type TaskPropertyRowProps = {
   icon: React.ReactNode;
   label: string;
@@ -4760,7 +5457,7 @@ export default function App() {
   const initialTodayState = getTodayCalendarState();
   const initialNavigationStateRef = useRef<InitialNavigationState | null>(null);
   if (!initialNavigationStateRef.current) {
-    initialNavigationStateRef.current = readInitialNavigationState();
+    initialNavigationStateRef.current = normalizeStartupNavigationState(readInitialNavigationState());
   }
   const [activeTab, setActiveTab] = useState<NavKey>(initialNavigationStateRef.current.activeTab);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
@@ -4790,7 +5487,18 @@ export default function App() {
   const [expandedTaskIds, setExpandedTaskIds] = useState<string[]>([]);
   const taskCalendarMonthLabel = `${taskCalendarDate.getFullYear()}-${String(taskCalendarDate.getMonth() + 1).padStart(2, '0')}`;
   const [clientOverlayMode, setClientOverlayMode] = useState<ClientOverlayMode>(null);
-  const [workspaceRightTab, setWorkspaceRightTab] = useState<'overview' | 'evidence' | 'memory' | 'proposals' | 'tools'>('evidence');
+  const [clientEditorModalState, setClientEditorModalState] = useState<ClientEditorModalState>(() => ({
+    open: false,
+    editingClientId: null,
+    requestId: 'client-editor-initial',
+    initialDraft: createEmptyClientEditorDraft(),
+  }));
+  const clientEditorModalStateRef = useRef(clientEditorModalState);
+  const [clientWorkspaceSurfaceModeRequest, setClientWorkspaceSurfaceModeRequest] = useState<{
+    clientId: string;
+    mode: 'setup' | 'workspace';
+    requestId: string;
+  } | null>(null);
   const [workspaceSelectedMeetingId, setWorkspaceSelectedMeetingId] = useState('');
   const [workspaceMeetingTranscript, setWorkspaceMeetingTranscript] = useState('');
   const [workspaceMeetingNotes, setWorkspaceMeetingNotes] = useState('');
@@ -4800,7 +5508,6 @@ export default function App() {
   const [employeeReviews, setEmployeeReviews] = useState<EmployeeRecord[]>([]);
   const [settingsState, setSettingsState] = useState<AppSettings | null>(null);
   const [taskSettingsState, setTaskSettingsState] = useState<TaskSettings | null>(null);
-  const [reviewGovernanceState, setReviewGovernanceState] = useState<ReviewGovernanceSettings>(EMPTY_REVIEW_GOVERNANCE_SETTINGS);
   const [orgModelState, setOrgModelState] = useState<OrgModelSettings>(EMPTY_ORG_MODEL_SETTINGS);
   const [agentWorklogs, setAgentWorklogs] = useState<AgentWorklog[]>([]);
   const [agentWeeklyDigests, setAgentWeeklyDigests] = useState<AgentWeeklyDigest[]>([]);
@@ -4808,6 +5515,7 @@ export default function App() {
   const [operators, setOperators] = useState<Operator[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [desktopAppInfo, setDesktopAppInfo] = useState<DesktopAppInfo | null>(null);
+  const canUseCollabSync = Boolean(desktopAppInfo && desktopAppInfo.platform !== 'browser');
   const [workspaceThreadPreference, setWorkspaceThreadPreference] = useState<WorkspaceThreadPreference>(
     initialNavigationStateRef.current.workspaceThreadPreference,
   );
@@ -4815,14 +5523,15 @@ export default function App() {
   const [backendCompatibilityError, setBackendCompatibilityError] = useState<string | null>(null);
   const [isImportSubmitting, setIsImportSubmitting] = useState(false);
   const [latestImportFeedback, setLatestImportFeedback] = useState<ImportFeedback | null>(null);
+  const [activeWorkingDocuments, setActiveWorkingDocuments] = useState<ActiveWorkingDocument[]>([]);
+  const activeWorkingDocumentsClientRef = useRef('');
   const importProgressHoldUntilRef = useRef<number>(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>(initialNavigationStateRef.current.settingsSection);
   const [evidenceMode, setEvidenceMode] = useState<EvidenceMode | null>(initialNavigationStateRef.current.evidenceMode);
   const [evidenceTaskId, setEvidenceTaskId] = useState<string | null>(initialNavigationStateRef.current.evidenceTaskId);
   const [evidenceClientId, setEvidenceClientId] = useState<string | null>(initialNavigationStateRef.current.evidenceClientId);
   const [settingsSectionLoaded, setSettingsSectionLoaded] = useState<Record<SettingsSectionKey, boolean>>({
-    overview: false,
-    org_dna: false,
+    overview: true,
     tasks: true,
     client_workspace: false,
     topics: false,
@@ -4830,9 +5539,10 @@ export default function App() {
     system_admin: false,
     org_overview: false,
     org_departments: false,
-    org_people: false,
-    org_rules: false,
-  });
+      org_people: false,
+      org_rules: false,
+      system_logs: false,
+    });
   const [logs, setLogs] = useState<
     Array<{
       id: string;
@@ -4844,21 +5554,10 @@ export default function App() {
       createdAt: string;
     }>
   >([]);
-  const [organizationDnaModules, setOrganizationDnaModules] = useState<OrganizationDnaModule[]>([]);
-  const [orgDnaSavingKey, setOrgDnaSavingKey] = useState<OrganizationDnaModule['moduleKey'] | null>(null);
   const [clientWorkspaceSettingsState, setClientWorkspaceSettingsState] = useState<ClientWorkspaceSettings>(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
   const [topicsSettingsState, setTopicsSettingsState] = useState<TopicsSettings>(DEFAULT_TOPICS_SETTINGS);
   const [handbookSettingsState, setHandbookSettingsState] = useState<HandbookSettings>(DEFAULT_HANDBOOK_SETTINGS);
   const [systemAdminSettingsState, setSystemAdminSettingsState] = useState<SystemAdminSettings>(DEFAULT_SYSTEM_ADMIN_SETTINGS);
-  const [analysisMigrationMetricsState, setAnalysisMigrationMetricsState] = useState<AnalysisMigrationMetrics | null>(null);
-  const [mainChainStabilitySettingsState, setMainChainStabilitySettingsState] = useState<MainChainStabilitySettings>(DEFAULT_MAIN_CHAIN_STABILITY_SETTINGS);
-  const [mainChainBackfillDraft, setMainChainBackfillDraft] = useState({
-    clientIdsText: '',
-    batchSize: 5,
-    maxJobs: 5,
-  });
-  const [mainChainBackfillResult, setMainChainBackfillResult] = useState<AnalysisBackfillMainChainResult | null>(null);
-  const [mainChainBusyAction, setMainChainBusyAction] = useState<'idle' | 'refresh' | 'pause' | 'shadow' | 'dry_run' | 'queue'>('idle');
   const [orgMembershipState, setOrgMembershipState] = useState<OrgMembershipSummary>(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
   const [orgFeishuIntegrationState, setOrgFeishuIntegrationState] = useState<OrgFeishuIntegration>(DEFAULT_ORG_FEISHU_INTEGRATION);
   const [feishuDeliveryProfileState, setFeishuDeliveryProfileState] = useState<FeishuDeliveryProfile>(DEFAULT_FEISHU_DELIVERY_PROFILE);
@@ -4870,10 +5569,14 @@ export default function App() {
 
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [currentClientId, setCurrentClientId] = useState<string>('');
-  const [workspaceComposerDraftByClient, setWorkspaceComposerDraftByClient] = useState<Record<string, string>>({});
-  const [workspaceActiveRunByClient, setWorkspaceActiveRunByClient] = useState<Record<string, ClientAnalysisRun>>({});
-  const [workspacePendingQuestionByClient, setWorkspacePendingQuestionByClient] = useState<Record<string, WorkspacePendingQuestionState>>({});
-  const [workspaceOptimisticMessagesByThread, setWorkspaceOptimisticMessagesByThread] = useState<Record<string, DisplayChatMessage[]>>({});
+  const [workspaceClientUiState, dispatchWorkspaceClientUi] = useReducer(
+    workspaceClientUiReducer,
+    initialWorkspaceClientUiState,
+  );
+  const workspaceComposerDraftByClient = workspaceClientUiState.composerDraftByClient;
+  const workspaceActiveRunByClient = workspaceClientUiState.activeRunByClient;
+  const workspacePendingQuestionByClient = workspaceClientUiState.pendingQuestionByClient;
+  const workspaceOptimisticMessagesByThread = workspaceClientUiState.optimisticMessagesByThread;
   const workspaceComposerDraftRef = useRef<Record<string, string>>({});
   const workspaceStartMessageAbortControllerRef = useRef<AbortController | null>(null);
   const workspaceLastClientResetRef = useRef<string | null>(null);
@@ -4891,12 +5594,17 @@ export default function App() {
     updatedAt: 0,
   });
   const workspaceComposerCompositionRef = useRef(false);
-  const [workspaceSelectedThreadId, setWorkspaceSelectedThreadId] = useState<string | null>(null);
+  const workspaceSelectedThreadId = currentClientId
+    ? workspaceClientUiState.selectedThreadIdByClient[currentClientId] || null
+    : null;
+  const setWorkspaceSelectedThreadId = useCallback((threadId: string | null) => {
+    if (!currentClientId) return;
+    dispatchWorkspaceClientUi({ type: 'setSelectedThreadId', clientId: currentClientId, threadId });
+  }, [currentClientId]);
   const [workspace, setWorkspace] = useState<ClientWorkspace | null>(null);
   const [workspacePageContext, setWorkspacePageContext] = useState<PageContextPack | null>(null);
   const [workspacePageContextError, setWorkspacePageContextError] = useState<string | null>(null);
   const [growthContextJump, setGrowthContextJump] = useState<GrowthContextJumpRequest | null>(null);
-  const hasAppliedInitialTaskViewModeRef = useRef(false);
   const [taskEvidencePreview, setTaskEvidencePreview] = useState<TaskContextPreview | null>(null);
   const [isTaskEvidenceLoading, setIsTaskEvidenceLoading] = useState(false);
   const [taskEvidenceError, setTaskEvidenceError] = useState<string | null>(null);
@@ -4909,12 +5617,50 @@ export default function App() {
   }, [currentClientId]);
 
   useEffect(() => {
-    setWorkspaceSelectedThreadId(null);
+    activeWorkingDocumentsClientRef.current = currentClientId;
+    setActiveWorkingDocuments(readStoredActiveWorkingDocuments(currentClientId));
   }, [currentClientId]);
+
+  useEffect(() => {
+    if (activeWorkingDocumentsClientRef.current !== currentClientId) return;
+    writeStoredActiveWorkingDocuments(currentClientId, activeWorkingDocuments);
+  }, [currentClientId, activeWorkingDocuments]);
+
+  const refreshActiveWorkingDocumentPreviews = useCallback(async (clientId: string, docs: ActiveWorkingDocument[]) => {
+    if (!clientId || docs.length === 0) return;
+    const refreshed = await Promise.all(
+      docs.map(async (doc) => {
+        try {
+          const preview = await getDocumentReadingPreview(clientId, doc.documentId);
+          return {
+            ...doc,
+            title: preview.title || doc.title,
+            status: normalizeWorkingDocumentStatus(preview.parseStatus),
+            preview,
+            lastError: preview.failureReason || null,
+            updatedAt: Date.now(),
+          } satisfies ActiveWorkingDocument;
+        } catch (error) {
+          return {
+            ...doc,
+            status: 'failed',
+            lastError: error instanceof Error ? error.message : '读取文件状态失败',
+            updatedAt: Date.now(),
+          } satisfies ActiveWorkingDocument;
+        }
+      }),
+    );
+    setActiveWorkingDocuments((previous) => {
+      const byId = new Map(refreshed.map((item) => [item.documentId, item]));
+      return previous.map((item) => byId.get(item.documentId) || item);
+    });
+  }, []);
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const sharedTasks = useMemo(() => filterSharedTasks(tasks), [tasks]);
   const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number; fromLocalDraft: boolean }>>(new Map());
+  const taskContextBriefPreloadRef = useRef<(taskItems: Task[], options?: { silent?: boolean }) => Promise<void>>(async () => undefined);
+  const openStrategicTaskDraftRef = useRef<(payload: StrategicTaskDraftRequest) => void>(() => undefined);
   const [updatingTaskStatusIds, setUpdatingTaskStatusIds] = useState<string[]>([]);
   const [taskLists, setTaskLists] = useState<TaskList[]>([]);
   const [taskTags, setTaskTags] = useState<TaskTag[]>([]);
@@ -4927,13 +5673,17 @@ export default function App() {
   const [supportRequestActionBusy, setSupportRequestActionBusy] = useState(false);
   const [supportRequestResolutionNote, setSupportRequestResolutionNote] = useState('');
   const [reviewDashboard, setReviewDashboard] = useState<ReviewDashboard | null>(null);
+  const [weeklyOverviewRefreshStatus, setWeeklyOverviewRefreshStatus] = useState<WeeklyOverviewRefreshStatus | null>(null);
   const [reviewHistory, setReviewHistory] = useState<ReviewHistoryEntry[]>([]);
+  const [selectedReviewWeekLabel, setSelectedReviewWeekLabel] = useState(() => currentWeekLabel());
   const [isLoadingReviewHistory, setIsLoadingReviewHistory] = useState(false);
   const reviewDirtyTaskIdsRef = useRef<Set<string>>(new Set());
   const reviewDraftRevisionRef = useRef<Record<string, number>>({});
   const reviewLoadSequenceRef = useRef(0);
   const reviewLoadAbortControllerRef = useRef<AbortController | null>(null);
-  const pendingReviewPerspectiveRef = useRef<{ perspective: ReviewPerspectiveKey; departmentId: string | null } | null>(null);
+  const reviewPerspectiveFallbackNoticeRef = useRef<string>('');
+  const weeklyOverviewRefreshPollRef = useRef<number | null>(null);
+  const weeklyOverviewRefreshRequestRef = useRef<string>('');
   const [reviewDirtyTaskIds, setReviewDirtyTaskIds] = useState<string[]>([]);
   const [radars, setRadars] = useState<TopicRadar[]>([]);
   const [candidates, setCandidates] = useState<TopicCandidate[]>([]);
@@ -5016,63 +5766,94 @@ export default function App() {
   const currentSessionUser = authState.user || null;
   const isCloudSession = authState.sessionMode === 'cloud';
   const isLocalSession = !isCloudSession;
-  const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : 'main');
+  const currentMembershipStatus = getEffectiveMembershipStatus(authState);
+  const shouldShowIdentityGate = isCloudSession && currentMembershipStatus !== 'approved';
+  const renderBranch = loading ? 'loading' : (!authState.authenticated || !currentSessionUser ? 'auth' : shouldShowIdentityGate ? 'identity' : 'main');
   const currentOperatorName = currentSessionUser?.fullName || operators.find((item) => item.isCurrent)?.name || '庆华';
   const canManagePublicTaskTaxonomy = currentSessionUser?.primaryRole === 'admin';
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
   const [cloudAuthMode, setCloudAuthMode] = useState<'login' | 'register'>('login');
   const [cloudAuthForm, setCloudAuthForm] = useState({
     email: '',
+    identifier: '',
+    phone: '',
     fullName: '',
     password: '',
     confirmPassword: '',
+    inviteCode: '',
+    departmentId: '',
+    jobTitle: '',
+    managerName: '',
+    currentFocus: '',
     rememberMe: true,
     rememberInputs: true,
   });
   const [cloudAuthSubmitting, setCloudAuthSubmitting] = useState(false);
   const [cloudAuthMessage, setCloudAuthMessage] = useState('');
   const [cloudAuthShowPassword, setCloudAuthShowPassword] = useState(false);
+  const [cloudAuthRegisterStep, setCloudAuthRegisterStep] = useState<1 | 2>(1);
+  const [cloudAuthInviteStatus, setCloudAuthInviteStatus] = useState<{ code: string; loading: boolean; valid: boolean | null; message: string }>({
+    code: '',
+    loading: false,
+    valid: null,
+    message: '',
+  });
   const [localInputMemoryState, setLocalInputMemoryState] = useState<LocalInputMemory>(DEFAULT_LOCAL_INPUT_MEMORY);
-  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
-  const [draft, setDraft] = useState({
+  const [draft, setDraft] = useState<{
+    currentOperatorId: string;
+    cloudApiUrl: string;
+    aiProvider: AiProvider;
+    aiProviderLabel: string;
+    aiBaseUrl: string;
+    aiModel: string;
+    apiKey: string;
+    advancedAiRoutingEnabled: boolean;
+    aiModelMode: AiModelMode;
+    aiModelProfiles: Record<AiModelProfileKey, AiModelProfileRecord>;
+    aiModelProfileApiKeys: Partial<Record<AiModelProfileKey, string>>;
+  }>({
     currentOperatorId: settingsState?.currentOperatorId || '',
-    aiProvider: settingsState?.aiProvider || 'mock',
-    aiModel: settingsState?.aiModel || providerDefaultModels.doubao,
+    cloudApiUrl: settingsState?.cloudApiUrl || '',
+    aiProvider: settingsState?.aiProvider === 'mock' ? 'openai_compatible' : (settingsState?.aiProvider || AI_CONFIG_PRESETS.doubao.provider),
+    aiProviderLabel: settingsState?.aiProvider === 'mock' ? AI_CONFIG_PRESETS.custom.providerLabel : (settingsState?.aiProviderLabel || AI_CONFIG_PRESETS.doubao.providerLabel),
+    aiBaseUrl: settingsState?.aiProvider === 'mock' ? '' : (settingsState?.aiBaseUrl || AI_CONFIG_PRESETS.doubao.baseUrl),
+    aiModel: settingsState?.aiProvider === 'mock' ? '' : (settingsState?.aiModel || providerDefaultModels.doubao),
     apiKey: '',
+    advancedAiRoutingEnabled: Boolean(settingsState?.advancedAiRoutingEnabled),
+    aiModelMode: settingsState?.aiModelMode || 'auto',
+    aiModelProfiles: normalizeAiModelProfiles(settingsState?.aiModelProfiles),
+    aiModelProfileApiKeys: {},
   });
   const [rememberAiInputKey, setRememberAiInputKey] = useState(false);
   const [taskSettingsDraft, setTaskSettingsDraft] = useState<TaskSettings>(taskSettingsState || DEFAULT_TASK_SETTINGS);
   const [tagManageDraft, setTagManageDraft] = useState({ name: '', scope: canManagePublicTaskTaxonomy ? 'org' as const : 'self' as const, color: TASK_COLOR_OPTIONS[0] });
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
-  const [listManageDraft, setListManageDraft] = useState({
-    name: '',
-    color: TASK_COLOR_OPTIONS[0],
-    isDefault: false,
-    archived: false,
-    scope: 'org' as 'org' | 'personal',
-  });
-  const [editingListId, setEditingListId] = useState<string | null>(null);
-  const [legacyScanResult, setLegacyScanResult] = useState<LegacyScanReport | null>(null);
-  const [legacyImportClientId, setLegacyImportClientId] = useState('');
-  const [isImportingLegacy, setIsImportingLegacy] = useState(false);
-  const [clientWorkspaceDraft, setClientWorkspaceDraft] = useState(clientWorkspaceSettingsState);
   const [topicsDraft, setTopicsDraft] = useState(topicsSettingsState);
   const [handbookDraft, setHandbookDraft] = useState({
     ...handbookSettingsState,
     defaultTagsText: handbookSettingsState.defaultTags.join(', '),
   });
   const [systemAdminDraft, setSystemAdminDraft] = useState(systemAdminSettingsState);
-  const [reviewGovernanceDraft, setReviewGovernanceDraft] = useState(reviewGovernanceState);
   const [orgModelDraft, setOrgModelDraft] = useState(orgModelState);
-  const [isSavingReviewGovernance, setIsSavingReviewGovernance] = useState(false);
   const [isSavingOrgModel, setIsSavingOrgModel] = useState(false);
+  const [isOrgModelDraftDirty, setIsOrgModelDraftDirty] = useState(false);
+  const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
   const [isSavingBrandLogo, setIsSavingBrandLogo] = useState(false);
   const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
     fullName: currentSessionUser?.fullName || '',
     email: currentSessionUser?.email || '',
+    phone: currentSessionUser?.phone || '',
   });
   const [profileSubmitting, setProfileSubmitting] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
+  const [membershipApplyDraft, setMembershipApplyDraft] = useState({
+    inviteCode: '',
+    departmentId: '',
+    jobTitle: '',
+    managerName: '',
+    currentFocus: '',
+  });
+  const [membershipApplySubmitting, setMembershipApplySubmitting] = useState(false);
   const [changePwForm, setChangePwForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [changePwSubmitting, setChangePwSubmitting] = useState(false);
   const [changePwError, setChangePwError] = useState('');
@@ -5089,35 +5870,26 @@ export default function App() {
     );
   }, [renderBranch, loadingPhase]);
   const defaultTagScope: 'org' | 'self' = canManagePublicTaskTaxonomy ? 'org' : 'self';
-  const organizationTaskName = resolveOrganizationTaskName(orgModelState.organization.name);
+  const organizationTaskName = resolveOrganizationTaskName(orgMembershipState.organizationName || orgModelState.organization.name);
   const organizationClientId = useMemo(() => {
-    const match = clients.find((c: ClientSummary) => c.name === organizationTaskName);
+    const membershipWorkspaceClientId = (orgMembershipState.organizationWorkspaceClientId || '').trim();
+    if (membershipWorkspaceClientId) return membershipWorkspaceClientId;
+    const typedWorkspace = clients.find((client: ClientSummary) => client.type === 'organization_workspace');
+    if (typedWorkspace?.id) return typedWorkspace.id;
+    const normalizedOrgName = organizationTaskName.trim();
+    const match = clients.find((c: ClientSummary) => c.name.trim() === normalizedOrgName || (c.alias || '').trim() === normalizedOrgName);
     return match?.id || '';
-  }, [organizationTaskName, clients]);
+  }, [orgMembershipState.organizationWorkspaceClientId, organizationTaskName, clients]);
+  const organizationWorkspaceClient = useMemo(
+    () => clients.find((client: ClientSummary) => client.id === organizationClientId) || null,
+    [clients, organizationClientId],
+  );
   const organizationTaskAutoReason = buildOrganizationTaskAutoReason(organizationTaskName);
   const organizationTaskManualReason = buildOrganizationTaskManualReason(organizationTaskName);
   const effectiveTaskSettings = useMemo(
     () => resolveTaskSettings(taskSettingsState, taskLists),
     [taskSettingsState, taskLists],
   );
-  const availableReviewGovernanceMembers = useMemo<ReviewDepartmentMember[]>(() => {
-    const deduped = new Map<string, ReviewDepartmentMember>();
-    const append = (member: ReviewDepartmentMember) => {
-      const fullName = member.fullName.trim();
-      if (!fullName) return;
-      const key = fullName.toLowerCase();
-      if (deduped.has(key)) return;
-      deduped.set(key, { id: member.id, fullName, email: member.email || null });
-    };
-    employeeReviews.forEach((employee) => append({ id: employee.id, fullName: employee.fullName, email: employee.email }));
-    operators.forEach((operator) => append({ id: operator.id, fullName: operator.name }));
-    tasks.forEach((task) => append({ id: task.ownerId || '', fullName: task.ownerName }));
-    if (currentSessionUser) {
-      append({ id: currentSessionUser.id, fullName: currentSessionUser.fullName, email: currentSessionUser.email });
-    }
-    return [...deduped.values()];
-  }, [currentSessionUser, employeeReviews, operators, tasks]);
-
   const startupRetryRef = useRef(0);
   const backendReadyRef = useRef(false);
   const startupLocalServiceErrorGraceUntilRef = useRef(Date.now() + 45000);
@@ -5154,6 +5926,33 @@ export default function App() {
     showBanner(type, text);
   };
 
+  useEffect(() => {
+    clientEditorModalStateRef.current = clientEditorModalState;
+  }, [clientEditorModalState]);
+
+  const logClientEditorModalLifecycle = useCallback((event: string, metadata: Record<string, unknown> = {}) => {
+    console.info(`[clientEditorModalLifecycle] ${JSON.stringify({
+      event,
+      ...metadata,
+      at: new Date().toISOString(),
+    })}`);
+  }, []);
+
+  const reportWorkspaceInteractionState = useCallback((active: boolean, source: string, detail?: string | null) => {
+    void setWorkspaceInteractionState({ active, source, detail: detail ?? null }).catch((error) => {
+      console.warn('[workspace-interaction] failed to report state', error);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!clientEditorModalState.open) return undefined;
+    const detail = clientEditorModalState.editingClientId ? `editing:${clientEditorModalState.editingClientId}` : 'creating';
+    reportWorkspaceInteractionState(true, 'client_modal', detail);
+    return () => {
+      reportWorkspaceInteractionState(false, 'client_modal', detail);
+    };
+  }, [clientEditorModalState.editingClientId, clientEditorModalState.open, reportWorkspaceInteractionState]);
+
   const openCloudAuthModal = (mode: 'login' | 'register' = 'login') => {
     const rememberedCloudAccount =
       (localInputMemoryState.cloudAuth.lastEmail
@@ -5164,11 +5963,20 @@ export default function App() {
     setCloudAuthMode(mode);
     setCloudAuthMessage('');
     setCloudAuthShowPassword(false);
+    setCloudAuthRegisterStep(1);
+    setCloudAuthInviteStatus({ code: '', loading: false, valid: null, message: '' });
     setCloudAuthForm({
       email: rememberedCloudAccount?.email || '',
+      identifier: rememberedCloudAccount?.identifier || rememberedCloudAccount?.email || '',
+      phone: '',
       fullName: mode === 'register' ? (rememberedCloudAccount?.fullName || '') : '',
       password: rememberedCloudAccount?.password || '',
       confirmPassword: mode === 'register' ? (rememberedCloudAccount?.password || '') : '',
+      inviteCode: '',
+      departmentId: '',
+      jobTitle: '',
+      managerName: '',
+      currentFocus: '',
       rememberMe: true,
       rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
     });
@@ -5176,12 +5984,60 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (cloudAuthMode !== 'register') return undefined;
+    const code = normalizeDepartmentInviteInput(cloudAuthForm.inviteCode);
+    if (!code) {
+      setCloudAuthInviteStatus({ code: '', loading: false, valid: null, message: '' });
+      return undefined;
+    }
+    let cancelled = false;
+    setCloudAuthInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
+    const timer = window.setTimeout(() => {
+      void resolveInviteCode(code)
+        .then((result) => {
+          if (cancelled) return;
+          setCloudAuthInviteStatus({
+            code,
+            loading: false,
+            valid: result.valid,
+            message: result.message || (result.valid ? '邀请码已识别' : '邀请码无效'),
+          });
+          if (result.valid && result.departmentId) {
+            setCloudAuthForm((prev) => normalizeDepartmentInviteInput(prev.inviteCode) === code ? { ...prev, departmentId: result.departmentId || prev.departmentId } : prev);
+          }
+          if (result.valid && result.organizationId) {
+            void loadDepartmentOptionsBlock(result.organizationId).catch(() => undefined);
+          }
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setCloudAuthInviteStatus({
+            code,
+            loading: false,
+            valid: false,
+            message: error instanceof Error ? error.message : '邀请码识别失败',
+          });
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [cloudAuthForm.inviteCode, cloudAuthMode]);
+
+  useEffect(() => {
     if (settingsState) {
       setDraft((prev) => ({
         ...prev,
         currentOperatorId: settingsState.currentOperatorId,
-        aiProvider: settingsState.aiProvider,
-        aiModel: settingsState.aiModel,
+        cloudApiUrl: settingsState.cloudApiUrl || '',
+        aiProvider: settingsState.aiProvider === 'mock' ? 'openai_compatible' : settingsState.aiProvider,
+        aiProviderLabel: settingsState.aiProvider === 'mock' ? AI_CONFIG_PRESETS.custom.providerLabel : (settingsState.aiProviderLabel || ''),
+        aiBaseUrl: settingsState.aiProvider === 'mock' ? '' : (settingsState.aiBaseUrl || ''),
+        aiModel: settingsState.aiProvider === 'mock' ? '' : settingsState.aiModel,
+        advancedAiRoutingEnabled: Boolean(settingsState.advancedAiRoutingEnabled),
+        aiModelMode: settingsState.aiModelMode || 'auto',
+        aiModelProfiles: normalizeAiModelProfiles(settingsState.aiModelProfiles),
       }));
     }
   }, [settingsState]);
@@ -5199,10 +6055,6 @@ export default function App() {
   }, [effectiveTaskSettings]);
 
   useEffect(() => {
-    setClientWorkspaceDraft(clientWorkspaceSettingsState);
-  }, [clientWorkspaceSettingsState]);
-
-  useEffect(() => {
     setTopicsDraft(topicsSettingsState);
   }, [topicsSettingsState]);
 
@@ -5218,28 +6070,28 @@ export default function App() {
   }, [systemAdminSettingsState]);
 
   useEffect(() => {
-    setReviewGovernanceDraft(reviewGovernanceState);
-  }, [reviewGovernanceState]);
-
-  useEffect(() => {
+    if (isOrgModelDraftDirty || isSavingOrgModel) return;
     setOrgModelDraft(orgModelState);
-  }, [orgModelState]);
+  }, [isOrgModelDraftDirty, isSavingOrgModel, orgModelState]);
 
-  useEffect(() => {
-    const preferredClientId =
-      (currentClientId && clients.some((client) => client.id === currentClientId) && currentClientId) ||
-      clients[0]?.id ||
-      '';
-    setLegacyImportClientId((prev) => (prev && clients.some((client) => client.id === prev) ? prev : preferredClientId));
-  }, [clients, currentClientId]);
+  const getOrgSetupInputDrafts = useCallback(() => orgSetupInputDraftsRef.current, []);
+
+  const setOrgSetupInputDrafts = useCallback((next: OrganizationSetupInputDraftState) => {
+    orgSetupInputDraftsRef.current = next;
+  }, []);
+
+  const clearOrgSetupInputDrafts = useCallback(() => {
+    orgSetupInputDraftsRef.current = {};
+  }, []);
 
   useEffect(() => {
     setProfileDraft({
       fullName: currentSessionUser?.fullName || '',
       email: currentSessionUser?.email || '',
+      phone: currentSessionUser?.phone || '',
     });
     setProfileMessage('');
-  }, [currentSessionUser?.email, currentSessionUser?.fullName]);
+  }, [currentSessionUser?.email, currentSessionUser?.fullName, currentSessionUser?.phone]);
 
   const markLoadingPhase = (phase: string) => {
     setLoadingPhase(phase);
@@ -5270,7 +6122,7 @@ export default function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      const nextState = readInitialNavigationState();
+      const nextState = normalizeStartupNavigationState(readInitialNavigationState());
       setActiveTab(nextState.activeTab);
       setSettingsSection(nextState.settingsSection);
       setEvidenceMode(nextState.evidenceMode);
@@ -5285,6 +6137,9 @@ export default function App() {
   }, []);
 
   async function refreshCollabStatus(nextRepoPath = collabRepoPath) {
+    if (!canUseCollabSync) {
+      return null;
+    }
     setIsCollabStatusLoading(true);
     try {
       const requestedRepoPath = normalizeInitialCollabRepoPath(nextRepoPath);
@@ -5322,6 +6177,10 @@ export default function App() {
   }
 
   async function ensureCollabRepoForAction() {
+    if (!canUseCollabSync) {
+      flash('error', '协作同步仅在桌面版可用，请在 Electron 应用中打开。');
+      return null;
+    }
     if (collabStatus?.isConfigured && collabStatus.isValid && !collabStatus.isMainBranch && collabStatus.suggestedRepoPath) {
       setCollabRepoPath(collabStatus.suggestedRepoPath);
       return collabStatus.suggestedRepoPath;
@@ -5380,6 +6239,7 @@ export default function App() {
   }
 
   async function handleSelectPullCommit(targetCommit: string | null) {
+    if (!canUseCollabSync) return;
     const repoPath = collabRepoPath || collabStatus?.repoPath;
     if (!repoPath || collabBusyAction === 'pull') return;
     setCollabBusyAction('pull');
@@ -5423,6 +6283,7 @@ export default function App() {
   }
 
   async function handleConfirmCollabAction() {
+    if (!canUseCollabSync) return;
     if (!collabDialogState) return;
     const repoPath = collabRepoPath || collabStatus?.repoPath;
     if (!repoPath) {
@@ -5525,22 +6386,10 @@ export default function App() {
     return response;
   }
 
-  async function loadReviewGovernanceSettingsBlock() {
-    const response = await getReviewGovernanceSettings();
-    setReviewGovernanceState(response);
-    return response;
-  }
-
   async function loadOrgModelBlock() {
     const response = await getOrgModelProfile();
     setOrgModelState(response);
     return response;
-  }
-
-  async function loadOrganizationDnaBlock() {
-    const response = await getOrganizationDna();
-    setOrganizationDnaModules(response.modules);
-    return response.modules;
   }
 
   async function loadClientWorkspaceSettingsBlock() {
@@ -5571,30 +6420,11 @@ export default function App() {
     return response;
   }
 
-  async function loadMainChainOverviewBlock() {
-    const [metrics, stability] = await Promise.all([
-      getAnalysisMigrationMetrics(),
-      getMainChainStabilitySettings(),
-    ]);
-    setAnalysisMigrationMetricsState(metrics);
-    setMainChainStabilitySettingsState(stability);
-    return { metrics, stability };
-  }
-
   async function loadSettingsSectionBlock(section: SettingsSectionKey, force = false) {
     if (!force && settingsSectionLoaded[section]) return;
     switch (section) {
-      case 'overview':
-        await loadMainChainOverviewBlock();
-        break;
-      case 'org_dna':
-        await loadOrganizationDnaBlock();
-        break;
       case 'tasks':
         await loadTaskSettingsBlock();
-        if (currentSessionUser?.primaryRole === 'admin') {
-          await loadReviewGovernanceSettingsBlock();
-        }
         break;
       case 'client_workspace':
         await loadClientWorkspaceSettingsBlock();
@@ -5665,16 +6495,53 @@ export default function App() {
     );
   }
 
-  async function loadDepartmentOptionsBlock() {
-    const response = await getDepartmentOptions();
+  useEffect(() => {
+    if (!authState.authenticated) return undefined;
+    let cancelled = false;
+    let inFlight = false;
+    const refreshHealth = async () => {
+      if (inFlight || document.visibilityState !== 'visible') return;
+      inFlight = true;
+      try {
+        const response = await probeLocalBackendHealth(1200);
+        if (cancelled) return;
+        setHealth(response);
+        backendReadyRef.current = response.backend === 'online';
+        clearLocalServiceStartupBanner();
+      } catch {
+        // Health refresh is only a status sync; startup/error flows handle user-facing failures.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const handleFocus = () => { void refreshHealth(); };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void refreshHealth();
+    };
+    const timer = window.setInterval(() => {
+      void refreshHealth();
+    }, 15000);
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [authState.authenticated]);
+
+  async function loadDepartmentOptionsBlock(organizationId?: string | null) {
+    const response = await getDepartmentOptions({ organizationId });
     setDepartmentOptions(response);
     return response;
   }
 
   async function loadEmployeeReviewBlock() {
     const response = await getEmployees();
-    setEmployeeReviews(response);
-    return response;
+    const visibleEmployees = response.filter((employee) => !isLegacyOrganizationEmployee(employee));
+    setEmployeeReviews(visibleEmployees);
+    return visibleEmployees;
   }
 
   async function loadLogsBlock() {
@@ -5715,6 +6582,122 @@ export default function App() {
     clearLocalServiceStartupBanner();
   }
 
+  const openCreateClientModal = () => {
+    setClientEditorModalState({
+      open: true,
+      editingClientId: null,
+      requestId: createUiId('client-editor'),
+      initialDraft: createEmptyClientEditorDraft(),
+    });
+    logClientEditorModalLifecycle('open', { mode: 'create' });
+  };
+
+  const openEditClientModal = (client: ClientSummary) => {
+    setClientEditorModalState({
+      open: true,
+      editingClientId: client.id,
+      requestId: createUiId('client-editor'),
+      initialDraft: buildClientEditorDraft(client),
+    });
+    logClientEditorModalLifecycle('open', { mode: 'edit', clientId: client.id });
+  };
+
+  const closeClientEditorModal = (reason: ClientEditorModalCloseReason) => {
+    const currentState = clientEditorModalStateRef.current;
+    logClientEditorModalLifecycle('close', {
+      reason,
+      clientId: currentState.editingClientId,
+      mode: currentState.editingClientId ? 'edit' : 'create',
+    });
+    setClientEditorModalState((prev) => ({
+      ...prev,
+      open: false,
+    }));
+  };
+
+  const submitClientEditorModal = async (draft: ClientEditorDraft) => {
+    const modalState = clientEditorModalStateRef.current;
+    if (!draft.name.trim()) {
+      flash('error', '请先填写项目名称');
+      return;
+    }
+    const isEditingProject = Boolean(modalState.editingClientId);
+    const payload = {
+      name: draft.name.trim(),
+      alias: draft.alias.trim() || draft.name.trim(),
+      domain: draft.domain.trim() || '项目',
+      type: draft.type.trim() || '项目',
+      intro: draft.intro.trim() || '等待导入已有资料，系统将自动分析归档并建立项目上下文。',
+      stage: draft.stage.trim() || '待导入资料',
+      color: (draft.color || '').trim() || '#5B7BFE',
+    };
+    try {
+      const savedClient = modalState.editingClientId
+        ? await updateClient(modalState.editingClientId, payload)
+        : await createClient(payload);
+      closeClientEditorModal('save_success');
+      setActiveTab('client_workspace');
+      if (!isEditingProject) {
+        setClientWorkspaceSurfaceModeRequest({
+          clientId: savedClient.id,
+          mode: 'setup',
+          requestId: createUiId('workspace-surface-mode'),
+        });
+      }
+      try {
+        await loadClientBlock(savedClient.id);
+      } catch {
+        const clientItems = await getClients();
+        setClients(clientItems);
+        setCurrentClientId(savedClient.id);
+        setWorkspace(null);
+        flash('success', isEditingProject ? '项目信息已更新' : '项目已创建，先导入已有资料，系统会自动分析归档并建立项目上下文。');
+        return;
+      }
+      flash('success', isEditingProject ? '项目信息已更新' : '项目已创建，先导入已有资料，系统会自动分析归档并建立项目上下文。');
+    } catch (error) {
+      logClientEditorModalLifecycle('save_failed', {
+        clientId: modalState.editingClientId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      flash('error', error instanceof Error ? error.message : '保存项目失败');
+    }
+  };
+
+  const confirmClientEditorDelete = async (draft: ClientEditorDraft, confirmInput: string) => {
+    const modalState = clientEditorModalStateRef.current;
+    const editingClientId = modalState.editingClientId;
+    if (!editingClientId) return;
+    const targetClient = clients.find((client) => client.id === editingClientId);
+    const targetName = targetClient?.name || draft.name.trim() || '该客户';
+    if (confirmInput.trim() !== targetName) {
+      flash('error', '项目名称不匹配，已取消删除');
+      return;
+    }
+    try {
+      await deleteClient(editingClientId);
+      const nextClients = await getClients();
+      setClients(nextClients);
+      closeClientEditorModal('delete_success');
+      if (currentClientId === editingClientId) {
+        const fallbackClientId = nextClients[0]?.id ?? null;
+        setCurrentClientId(fallbackClientId);
+        if (fallbackClientId) {
+          await loadClientBlock(fallbackClientId);
+        } else {
+          setWorkspace(null);
+        }
+      }
+      flash('success', '客户及其全部档案已删除');
+    } catch (error) {
+      logClientEditorModalLifecycle('delete_failed', {
+        clientId: editingClientId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      flash('error', error instanceof Error ? error.message : '删除项目失败');
+    }
+  };
+
   async function loadTaskBlock() {
     const response = await getTaskBoard();
     const now = Date.now();
@@ -5750,6 +6733,12 @@ export default function App() {
     setTasks([...pendingOptimistic, ...response.tasks]);
     setTaskLists(response.lists);
     setTaskTags([]);
+    void taskContextBriefPreloadRef.current(
+      response.tasks.filter((task: Task) => task.scopeMode !== 'PERSONAL_ONLY' && (task.eventLineId || task.clientId)).slice(0, 10),
+      { silent: true },
+    ).catch((error) => {
+      console.warn('[task-context-brief] preload failed', error);
+    });
     void loadProposalBlock(currentClientId || undefined);
     return response;
   }
@@ -5800,24 +6789,17 @@ export default function App() {
     return response;
   }
 
+  function resolveSelectedReviewWeekLabel(weekLabel?: string | null) {
+    return weekLabel || selectedReviewWeekLabel || reviewDashboard?.weekLabel || reviewDashboard?.currentReview?.weekLabel || currentWeekLabel();
+  }
+
   async function loadReviewBlock(weekLabel?: string, options?: { skipAi?: boolean; perspective?: ReviewPerspectiveKey; departmentId?: string | null }) {
-    const hasPerspectiveOption = Object.prototype.hasOwnProperty.call(options ?? {}, 'perspective');
-    const resolvedPerspective = hasPerspectiveOption
-      ? options?.perspective
-      : reviewDashboard?.activePerspective;
-    const hasDepartmentOption = Object.prototype.hasOwnProperty.call(options ?? {}, 'departmentId');
-    let resolvedDepartmentId = hasDepartmentOption
-      ? options?.departmentId ?? null
-      : reviewDashboard?.activeDepartmentId ?? null;
-    if (resolvedPerspective !== 'department') {
-      resolvedDepartmentId = null;
-    }
-    if (resolvedPerspective) {
-      pendingReviewPerspectiveRef.current = {
-        perspective: resolvedPerspective,
-        departmentId: resolvedPerspective === 'department' ? resolvedDepartmentId : null,
-      };
-    }
+    const requestedWeekLabel = resolveSelectedReviewWeekLabel(weekLabel);
+    setSelectedReviewWeekLabel(requestedWeekLabel);
+    const requestedPerspective = options?.perspective ?? resolveDefaultReviewPerspectiveForUser(currentSessionUser);
+    const requestedDepartmentId = requestedPerspective === 'department'
+      ? options?.departmentId ?? resolveDefaultReviewDepartmentIdForUser(currentSessionUser, requestedPerspective)
+      : null;
     const sequence = reviewLoadSequenceRef.current + 1;
     reviewLoadSequenceRef.current = sequence;
     reviewLoadAbortControllerRef.current?.abort();
@@ -5826,32 +6808,28 @@ export default function App() {
     const resolvedOptions = {
       ...options,
       skipAi: options?.skipAi ?? true,
-      perspective: resolvedPerspective,
-      departmentId: resolvedDepartmentId,
+      perspective: requestedPerspective,
+      departmentId: requestedDepartmentId,
       signal: controller.signal,
     };
     try {
-      const response = await getReviews(weekLabel, resolvedOptions);
+      const response = await getReviews(requestedWeekLabel, resolvedOptions);
       if (sequence === reviewLoadSequenceRef.current) {
         setReviewDashboard(response);
-        const pending = pendingReviewPerspectiveRef.current;
-        const responseDepartmentId = response.activeDepartmentId || '';
-        const pendingDepartmentId = pending?.departmentId || '';
-        if (
-          pending
-          && response.activePerspective === pending.perspective
-          && (pending.perspective !== 'department' || !pendingDepartmentId || responseDepartmentId === pendingDepartmentId)
-        ) {
-          pendingReviewPerspectiveRef.current = null;
+        setWeeklyOverviewRefreshStatus(response.weeklyOverviewGenerationStatus ?? null);
+        setSelectedReviewWeekLabel(response.currentReview?.weekLabel || response.weekLabel || requestedWeekLabel);
+        if (response.activePerspective && response.activePerspective !== requestedPerspective) {
+          const noticeKey = `${requestedWeekLabel}:${requestedPerspective}:${response.activePerspective}`;
+          if (reviewPerspectiveFallbackNoticeRef.current !== noticeKey) {
+            reviewPerspectiveFallbackNoticeRef.current = noticeKey;
+            flash('info', '当前账号无权限查看该视角，已返回可用视角。');
+          }
         }
       }
       return response;
     } catch (error) {
       if (controller.signal.aborted && sequence !== reviewLoadSequenceRef.current && reviewDashboard) {
         return reviewDashboard;
-      }
-      if (sequence === reviewLoadSequenceRef.current) {
-        pendingReviewPerspectiveRef.current = null;
       }
       throw error;
     } finally {
@@ -5905,7 +6883,22 @@ export default function App() {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
         }
       }
-      if (nextAuth.authenticated) {
+      if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud' && getEffectiveMembershipStatus(nextAuth) !== 'approved') {
+        markLoadingPhase('正在读取组织身份状态…');
+        await loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+        setClients([]);
+        setWorkspace(null);
+        setTasks([]);
+        setTaskLists([]);
+        setTaskTags([]);
+        setReviewDashboard(null);
+        setRadars([]);
+        setCandidates([]);
+        setHandbookEntries([]);
+        setEmployeeReviews([]);
+        setWorkspacePageContext(null);
+        setWorkspacePersistedProposalDrafts([]);
+      } else if (nextAuth.authenticated) {
         markLoadingPhase('正在载入核心模块数据…');
         const backgroundLoaders: Array<{ name: string; run: () => Promise<unknown> }> = [
           { name: 'task-settings', run: () => loadTaskSettingsBlock() },
@@ -5915,7 +6908,17 @@ export default function App() {
             name: 'agent-worklogs',
             run: () => (nextAuth.user?.primaryRole === 'admin' ? loadAgentWorklogBlock(taskCalendarMonthLabel) : Promise.resolve()),
           },
-          { name: 'reviews', run: () => loadReviewBlock() },
+          {
+            name: 'reviews',
+            run: () => {
+              const defaultPerspective = resolveDefaultReviewPerspectiveForUser(nextAuth.user || null);
+              return loadReviewBlock(resolveSelectedReviewWeekLabel(), {
+                skipAi: true,
+                perspective: defaultPerspective,
+                departmentId: resolveDefaultReviewDepartmentIdForUser(nextAuth.user || null, defaultPerspective),
+              });
+            },
+          },
           { name: 'topics', run: () => loadTopicsBlock() },
           { name: 'handbook', run: () => loadHandbookBlock() },
           {
@@ -5954,10 +6957,6 @@ export default function App() {
             name: 'system-admin-settings',
             run: () => loadSystemAdminSettingsBlock(nextAuth.sessionMode === 'cloud'),
           },
-          {
-            name: 'review-governance',
-            run: () => (nextAuth.user?.primaryRole === 'admin' ? loadReviewGovernanceSettingsBlock() : Promise.resolve()),
-          },
         ];
         let completedCount = 0;
         const totalCount = backgroundLoaders.length;
@@ -5990,8 +6989,7 @@ export default function App() {
           flash('error', `部分模块加载失败：${failedBackgroundBlocks.join('、')}`);
         }
         setSettingsSectionLoaded({
-          overview: false,
-          org_dna: false,
+          overview: true,
           tasks: true,
           client_workspace: false,
           topics: false,
@@ -6001,13 +6999,13 @@ export default function App() {
           org_departments: false,
           org_people: false,
           org_rules: false,
+          system_logs: false,
         });
         if (nextAuth.user?.primaryRole === 'admin') {
           markLoadingPhase('正在读取员工与组织数据…');
           await loadEmployeeReviewBlock();
         } else {
           setEmployeeReviews([]);
-          setReviewGovernanceState(EMPTY_REVIEW_GOVERNANCE_SETTINGS);
         }
       } else {
         markLoadingPhase('正在切换到登录态…');
@@ -6017,7 +7015,6 @@ export default function App() {
         setTaskLists([]);
         setTaskTags([]);
         setTaskSettingsState(null);
-        setReviewGovernanceState(EMPTY_REVIEW_GOVERNANCE_SETTINGS);
         setOrgModelState(EMPTY_ORG_MODEL_SETTINGS);
         setAgentWorklogs([]);
         setAgentWeeklyDigests([]);
@@ -6028,16 +7025,10 @@ export default function App() {
         setHandbookEntries([]);
         setLogs([]);
         setEmployeeReviews([]);
-        setOrganizationDnaModules([]);
         setClientWorkspaceSettingsState(DEFAULT_CLIENT_WORKSPACE_SETTINGS);
         setTopicsSettingsState(DEFAULT_TOPICS_SETTINGS);
         setHandbookSettingsState(DEFAULT_HANDBOOK_SETTINGS);
         setSystemAdminSettingsState(DEFAULT_SYSTEM_ADMIN_SETTINGS);
-        setAnalysisMigrationMetricsState(null);
-        setMainChainStabilitySettingsState(DEFAULT_MAIN_CHAIN_STABILITY_SETTINGS);
-        setMainChainBackfillDraft({ clientIdsText: '', batchSize: 5, maxJobs: 5 });
-        setMainChainBackfillResult(null);
-        setMainChainBusyAction('idle');
         setOrgMembershipState(DEFAULT_ORG_MEMBERSHIP_SUMMARY);
         setOrgFeishuIntegrationState(DEFAULT_ORG_FEISHU_INTEGRATION);
         setFeishuDeliveryProfileState(DEFAULT_FEISHU_DELIVERY_PROFILE);
@@ -6045,8 +7036,7 @@ export default function App() {
         setFeishuAuthorizationBusyAction('idle');
         setFeishuAuthorizationFlowState(null);
         setSettingsSectionLoaded({
-          overview: false,
-          org_dna: false,
+          overview: true,
           tasks: true,
           client_workspace: false,
           topics: false,
@@ -6056,6 +7046,7 @@ export default function App() {
           org_departments: false,
           org_people: false,
           org_rules: false,
+          system_logs: false,
         });
       }
       startupRetryRef.current = 0;
@@ -6088,13 +7079,19 @@ export default function App() {
       if (cloudAuthMode === 'register') {
         const response = await register({
           email: cloudAuthForm.email,
+          phone: cloudAuthForm.phone || null,
           fullName: cloudAuthForm.fullName,
           password: cloudAuthForm.password,
+          inviteCode: normalizeDepartmentInviteInput(cloudAuthForm.inviteCode) || null,
+          departmentId: cloudAuthForm.departmentId || null,
+          jobTitle: cloudAuthForm.jobTitle || null,
+          managerName: cloudAuthForm.managerName || null,
+          currentFocus: cloudAuthForm.currentFocus || null,
         });
         setAuthState(response);
       } else {
         const response = await login({
-          email: cloudAuthForm.email,
+          identifier: cloudAuthForm.identifier || cloudAuthForm.email,
           password: cloudAuthForm.password,
           rememberMe: cloudAuthForm.rememberMe,
         });
@@ -6104,6 +7101,7 @@ export default function App() {
         const nextLocalInputMemory = await saveCloudAuthInputMemory({
           rememberInputs: cloudAuthForm.rememberInputs,
           email: cloudAuthForm.email,
+          identifier: cloudAuthMode === 'login' ? (cloudAuthForm.identifier || cloudAuthForm.email) : cloudAuthForm.email,
           fullName: cloudAuthForm.fullName,
           password: cloudAuthForm.password,
         });
@@ -6114,9 +7112,16 @@ export default function App() {
       await loadAll();
       setCloudAuthForm({
         email: '',
+        identifier: '',
+        phone: '',
         fullName: '',
         password: '',
         confirmPassword: '',
+        inviteCode: '',
+        departmentId: '',
+        jobTitle: '',
+        managerName: '',
+        currentFocus: '',
         rememberMe: true,
         rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
       });
@@ -6130,8 +7135,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    void loadDepartmentOptionsBlock().catch(() => undefined);
-  }, []);
+    void loadDepartmentOptionsBlock(currentSessionUser?.organizationId ?? null).catch(() => undefined);
+  }, [currentSessionUser?.organizationId]);
 
   useEffect(() => {
     if (!isCloudSession) return;
@@ -6139,9 +7144,16 @@ export default function App() {
     setCloudAuthMessage('');
     setCloudAuthForm({
       email: '',
+      identifier: '',
+      phone: '',
       fullName: '',
       password: '',
       confirmPassword: '',
+      inviteCode: '',
+      departmentId: '',
+      jobTitle: '',
+      managerName: '',
+      currentFocus: '',
       rememberMe: true,
       rememberInputs: localInputMemoryState.cloudAuth.rememberInputs,
     });
@@ -6299,14 +7311,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (hasAppliedInitialTaskViewModeRef.current) return;
-    if (taskSettingsState?.defaultViewMode) {
-      setTaskViewMode(taskSettingsState.defaultViewMode === 'list' ? 'calendar' : taskSettingsState.defaultViewMode);
-      hasAppliedInitialTaskViewModeRef.current = true;
-    }
-  }, [taskSettingsState?.defaultViewMode]);
-
-  useEffect(() => {
     if (taskViewMode === 'agent_schedule') {
       setTaskViewMode('calendar');
     }
@@ -6378,11 +7382,15 @@ export default function App() {
   }, [authState.authenticated, currentClientId, currentSessionUser?.id, isCloudSession]);
 
     const activeTaskLists = useMemo(
-      () => taskLists.filter((item) => !item.archivedAt),
+      () => dedupeTaskListsForDisplay(taskLists.filter((item) => !item.archivedAt)),
       [taskLists],
     );
     const orgTaskLists = useMemo(
       () => activeTaskLists.filter((item) => (item.scope || 'org') === 'org'),
+      [activeTaskLists],
+    );
+    const taskDefaultDestinationLists = useMemo(
+      () => getTaskDefaultDestinationLists(activeTaskLists),
       [activeTaskLists],
     );
     const personalTaskLists = useMemo(
@@ -6393,65 +7401,6 @@ export default function App() {
       const listPool = scope === 'personal' ? personalTaskLists : orgTaskLists;
       return listPool.find((item) => item.isDefault)?.id || listPool[0]?.id || '';
     };
-    const seededPersonalListsRef = useRef(false);
-    const seededOrgListsRef = useRef(false);
-    const orgListBootstrapRef = useRef<Promise<TaskList | null> | null>(null);
-
-    const ensureOrgTaskList = async () => {
-      if (orgTaskLists.length > 0) {
-        return orgTaskLists.find((item) => item.isDefault) || orgTaskLists[0] || null;
-      }
-      if (!orgListBootstrapRef.current) {
-        orgListBootstrapRef.current = (async () => {
-          const created = await createTaskList({
-            name: '收集箱',
-            color: '#5B7BFE',
-            isDefault: true,
-            scope: 'org',
-          });
-          await loadTaskBlock();
-          return created;
-        })()
-          .finally(() => {
-            orgListBootstrapRef.current = null;
-          });
-      }
-      return orgListBootstrapRef.current;
-    };
-
-    useEffect(() => {
-      if (seededOrgListsRef.current) return;
-      if (!currentSessionUser?.id) return;
-      if (orgTaskLists.length > 0) {
-        seededOrgListsRef.current = true;
-        return;
-      }
-      seededOrgListsRef.current = true;
-      void ensureOrgTaskList().catch(() => {
-        seededOrgListsRef.current = false;
-      });
-    }, [currentSessionUser?.id, orgTaskLists.length]);
-
-    useEffect(() => {
-      if (seededPersonalListsRef.current) return;
-      if (!currentSessionUser?.id) return;
-      if (personalTaskLists.length > 0) {
-        seededPersonalListsRef.current = true;
-        return;
-      }
-      seededPersonalListsRef.current = true;
-      const defaults = [
-        { name: '健身', color: '#5B7BFE', isDefault: true },
-        { name: '约会', color: '#EC4899', isDefault: false },
-        { name: '吃饭', color: '#F59E0B', isDefault: false },
-        { name: '学习', color: '#10B981', isDefault: false },
-      ];
-      Promise.all(defaults.map((item) => createTaskList({ ...item, scope: 'personal' })))
-        .then(() => loadTaskBlock())
-        .catch(() => {
-          // ignore seed failures; user can create manually in settings
-        });
-    }, [currentSessionUser?.id, personalTaskLists.length]);
   const activeTaskTags = useMemo(
     () => taskTags.filter((item) => !item.archivedAt),
     [taskTags],
@@ -6462,25 +7411,40 @@ export default function App() {
   }, [isSidebarCollapsed]);
 
   useEffect(() => {
+    if (canUseCollabSync) return;
+    setCollabStatus(null);
+    setIsCollabStatusLoading(false);
+    setCollabBusyAction(null);
+    setCollabDialogState(null);
+    setCollabSelectedPaths([]);
+    setCollabCommitMessage('');
+    setCollabDialogError(null);
+  }, [canUseCollabSync]);
+
+  useEffect(() => {
+    if (!canUseCollabSync) return;
     const normalizedRepoPath = normalizeInitialCollabRepoPath(collabRepoPath);
     if (normalizedRepoPath !== collabRepoPath) {
       setCollabRepoPath(normalizedRepoPath);
     }
-  }, [collabRepoPath]);
+  }, [canUseCollabSync, collabRepoPath]);
 
   useEffect(() => {
+    if (!canUseCollabSync) return;
     if (collabRepoPath) {
       window.localStorage.setItem(COLLAB_REPO_PATH_STORAGE_KEY, collabRepoPath);
       return;
     }
     window.localStorage.removeItem(COLLAB_REPO_PATH_STORAGE_KEY);
-  }, [collabRepoPath]);
+  }, [canUseCollabSync, collabRepoPath]);
 
   useEffect(() => {
+    if (!canUseCollabSync) return;
     void refreshCollabStatus(collabRepoPath);
-  }, [collabRepoPath]);
+  }, [canUseCollabSync, collabRepoPath]);
 
   useEffect(() => {
+    if (!canUseCollabSync) return;
     const suggestedRepoPath = normalizeInitialCollabRepoPath(collabStatus?.suggestedRepoPath || null);
     if (!suggestedRepoPath) return;
     const normalizedCurrentRepoPath = normalizeInitialCollabRepoPath(collabRepoPath);
@@ -6496,7 +7460,7 @@ export default function App() {
     if (switchingFrom && switchingFrom !== suggestedRepoPath) {
       flash('info', '协作源码目录已切换到 main 基线仓库。');
     }
-  }, [collabRepoPath, collabStatus]);
+  }, [canUseCollabSync, collabRepoPath, collabStatus]);
 
   useEffect(() => {
     if (activeTab !== 'topics_management') return undefined;
@@ -6520,27 +7484,49 @@ export default function App() {
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
     const defaultRememberedAccount =
       (localInputMemoryState.cloudAuth.lastEmail
-        ? rememberedAccounts.find((account) => account.email === localInputMemoryState.cloudAuth.lastEmail)
+        ? rememberedAccounts.find((account) => (account.identifier || account.email) === localInputMemoryState.cloudAuth.lastEmail)
         : null)
       || rememberedAccounts[0]
       || null;
     const createEmptyForm = (email = '', fullName = '', password = '') => ({
       email,
+      identifier: email,
+      phone: '',
       fullName,
       password,
       confirmPassword: password,
+      inviteCode: '',
+      departmentId: '',
+      jobTitle: '',
+      managerName: '',
+      currentFocus: '',
     });
     const [mode, setMode] = useState<'login' | 'register'>('login');
-    const [form, setForm] = useState(() => createEmptyForm(defaultRememberedAccount?.email || '', defaultRememberedAccount?.fullName || '', defaultRememberedAccount?.password || ''));
+    const [registerStep, setRegisterStep] = useState<1 | 2>(1);
+    const [form, setForm] = useState(() => createEmptyForm(defaultRememberedAccount?.identifier || defaultRememberedAccount?.email || '', defaultRememberedAccount?.fullName || '', defaultRememberedAccount?.password || ''));
+    const [inviteStatus, setInviteStatus] = useState<{ code: string; loading: boolean; valid: boolean | null; message: string }>({
+      code: '',
+      loading: false,
+      valid: null,
+      message: '',
+    });
     const [rememberMe, setRememberMe] = useState(true);
     const [rememberInputs, setRememberInputs] = useState(localInputMemoryState.cloudAuth.rememberInputs);
     const [showPassword, setShowPassword] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [message, setMessage] = useState(authState.message || '');
+    const registerAccountValid =
+      Boolean(form.fullName.trim())
+      && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)
+      && form.password.length >= 8
+      && form.password === form.confirmPassword;
+    const registerValid = registerAccountValid && (!form.inviteCode.trim() || inviteStatus.valid !== false);
 
     const switchMode = (nextMode: 'login' | 'register') => {
       setMode(nextMode);
       setMessage('');
+      setRegisterStep(1);
+      setInviteStatus({ code: '', loading: false, valid: null, message: '' });
       if (nextMode === 'register') {
         setForm(createEmptyForm(form.email, form.fullName, form.password));
         return;
@@ -6555,18 +7541,25 @@ export default function App() {
         if (mode === 'register') {
           const response = await register({
             email: form.email,
+            phone: form.phone || null,
             fullName: form.fullName,
             password: form.password,
+            inviteCode: normalizeDepartmentInviteInput(form.inviteCode) || null,
+            departmentId: form.departmentId || null,
+            jobTitle: form.jobTitle || null,
+            managerName: form.managerName || null,
+            currentFocus: form.currentFocus || null,
           });
           setAuthState(response);
         } else {
-          const response = await login({ email: form.email, password: form.password, rememberMe });
+          const response = await login({ identifier: form.identifier || form.email, password: form.password, rememberMe });
           setAuthState(response);
         }
         try {
           const nextLocalInputMemory = await saveCloudAuthInputMemory({
             rememberInputs,
             email: form.email,
+            identifier: mode === 'login' ? (form.identifier || form.email) : form.email,
             fullName: form.fullName,
             password: form.password,
           });
@@ -6581,6 +7574,48 @@ export default function App() {
         setSubmitting(false);
       }
     };
+
+    useEffect(() => {
+      if (mode !== 'register') return undefined;
+      const code = normalizeDepartmentInviteInput(form.inviteCode);
+      if (!code) {
+        setInviteStatus({ code: '', loading: false, valid: null, message: '' });
+        return undefined;
+      }
+      let cancelled = false;
+      setInviteStatus({ code, loading: true, valid: null, message: '正在识别邀请码...' });
+      const timer = window.setTimeout(() => {
+        void resolveInviteCode(code)
+          .then((result) => {
+            if (cancelled) return;
+            setInviteStatus({
+              code,
+              loading: false,
+              valid: result.valid,
+              message: result.message || (result.valid ? '邀请码已识别' : '邀请码无效'),
+            });
+            if (result.valid && result.departmentId) {
+              setForm((prev) => normalizeDepartmentInviteInput(prev.inviteCode) === code ? { ...prev, departmentId: result.departmentId || prev.departmentId } : prev);
+            }
+            if (result.valid && result.organizationId) {
+              void loadDepartmentOptionsBlock(result.organizationId).catch(() => undefined);
+            }
+          })
+          .catch((error) => {
+            if (cancelled) return;
+            setInviteStatus({
+              code,
+              loading: false,
+              valid: false,
+              message: error instanceof Error ? error.message : '邀请码识别失败',
+            });
+          });
+      }, 400);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }, [form.inviteCode, mode]);
 
     useEffect(() => {
       if (!message.includes('无法连接本地服务')) return;
@@ -6633,22 +7668,24 @@ export default function App() {
                 <>
                   {rememberedAccounts.length > 0 && (
                     <select
-                      value={form.email}
+                      value={form.identifier || form.email}
                       onChange={(event) => {
-                        const selected = rememberedAccounts.find((account) => account.email === event.target.value);
-                        setForm(createEmptyForm(selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
+                        const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
+                        setForm(createEmptyForm(selected?.identifier || selected?.email || event.target.value, selected?.fullName || '', selected?.password || ''));
                       }}
                       className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
                     >
                       <option value="">选择已记住的账号（可选）</option>
-                      {rememberedAccounts.map((account) => (
-                        <option key={account.email} value={account.email}>
-                          {account.fullName ? `${account.fullName} · ${account.email}` : account.email}
+                      {rememberedAccounts.map((account) => {
+                        const accountIdentifier = account.identifier || account.email;
+                        return (
+                        <option key={accountIdentifier} value={accountIdentifier}>
+                          {account.fullName ? `${account.fullName} · ${accountIdentifier}` : accountIdentifier}
                         </option>
-                      ))}
+                      );})}
                     </select>
                   )}
-                  <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                  <input value={form.identifier} onChange={(event) => setForm((prev) => ({ ...prev, identifier: event.target.value }))} placeholder="邮箱或登录手机号" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                   <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
                   <div className="flex gap-3">
                     <label className="flex-1 flex items-center justify-between rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
@@ -6673,19 +7710,46 @@ export default function App() {
                     <p className="mt-1 text-[12px] text-gray-500">注册账号依赖云端服务；开源版默认不提供云。本机模式可直接使用，后续接好云端后再注册、同步和加入组织。</p>
                   </div>
                   <div className="space-y-4">
-                    <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                    <div>
-                      <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
+                    <div className="flex items-center gap-2 rounded-2xl bg-gray-50 p-1 text-[12px] font-bold text-gray-500">
+                      <button type="button" onClick={() => setRegisterStep(1)} className={`flex-1 rounded-xl px-3 py-2 ${registerStep === 1 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''}`}>1 个人账号</button>
+                      <button type="button" onClick={() => registerAccountValid && setRegisterStep(2)} className={`flex-1 rounded-xl px-3 py-2 ${registerStep === 2 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''} ${!registerAccountValid ? 'opacity-50' : ''}`}>2 组织身份</button>
                     </div>
-                    <div>
-                      <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
-                    </div>
-                    <div>
-                      <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
-                      {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
-                    </div>
+                    {registerStep === 1 ? (
+                      <>
+                        <input value={form.fullName} onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))} placeholder="姓名 / 显示名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        <div>
+                          <input value={form.email} onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="邮箱" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                          {form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) && <p className="text-[12px] text-red-500 mt-1 px-1">请输入有效的邮箱地址</p>}
+                        </div>
+                        <input value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="登录手机号（可选，不是飞书通知手机号）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        <div>
+                          <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))} placeholder="密码（至少 8 位）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                          {form.password && form.password.length < 8 && <p className="text-[12px] text-red-500 mt-1 px-1">密码至少需要 8 位</p>}
+                        </div>
+                        <div>
+                          <input type={showPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={(event) => setForm((prev) => ({ ...prev, confirmPassword: event.target.value }))} placeholder="确认密码" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                          {form.confirmPassword && form.password !== form.confirmPassword && <p className="text-[12px] text-red-500 mt-1 px-1">两次输入的密码不一致</p>}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <input value={form.inviteCode} onChange={(event) => setForm((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码（自动识别组织，可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        {inviteStatus.message && (
+                          <div className={`rounded-2xl border px-4 py-3 text-[12px] ${inviteStatus.valid === false ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
+                            {inviteStatus.loading ? '正在识别邀请码...' : inviteStatus.message}
+                          </div>
+                        )}
+                        <select value={form.departmentId} onChange={(event) => setForm((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none">
+                          <option value="">选择部门（可选）</option>
+                          {departmentOptions.map((department) => (
+                            <option key={department.id} value={department.id}>{department.name}</option>
+                          ))}
+                        </select>
+                        <input value={form.jobTitle} onChange={(event) => setForm((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        <input value={form.managerName} onChange={(event) => setForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none" />
+                        <textarea value={form.currentFocus} onChange={(event) => setForm((prev) => ({ ...prev, currentFocus: event.target.value }))} placeholder="当前工作重点（可选）" rows={2} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none" />
+                      </>
+                    )}
                     <label className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium text-gray-700">
                       显示密码
                       <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
@@ -6715,17 +7779,26 @@ export default function App() {
                   primary
                   className="w-full py-3 text-[14px]"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !form.password.trim()}
+                  disabled={submitting || !(form.identifier || form.email).trim() || !form.password.trim()}
                 >
                   {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
                   进入系统
+                </Button>
+              ) : registerStep === 1 ? (
+                <Button
+                  primary
+                  className="w-full py-3 text-[14px]"
+                  onClick={() => setRegisterStep(2)}
+                  disabled={!registerAccountValid}
+                >
+                  下一步：组织身份
                 </Button>
               ) : (
                 <Button
                   primary
                   className="w-full py-3 text-[14px]"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting || !form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) || form.password.length < 8 || form.password !== form.confirmPassword || !form.fullName.trim()}
+                  disabled={submitting || !registerValid}
                 >
                   {submitting ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
                   提交注册
@@ -6744,15 +7817,19 @@ export default function App() {
     if (!cloudAuthModalOpen) return null;
     const rememberedAccounts = localInputMemoryState.cloudAuth.accounts;
     const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cloudAuthForm.email);
-    const registerValid =
+    const registerAccountValid =
       Boolean(cloudAuthForm.fullName.trim())
       && emailValid
       && cloudAuthForm.password.length >= 8
       && cloudAuthForm.password === cloudAuthForm.confirmPassword;
-    const loginValid = Boolean(cloudAuthForm.email.trim()) && Boolean(cloudAuthForm.password.trim());
+    const registerValid =
+      registerAccountValid
+      && (!cloudAuthForm.inviteCode.trim() || cloudAuthInviteStatus.valid !== false);
+    const loginValid = Boolean((cloudAuthForm.identifier || cloudAuthForm.email).trim()) && Boolean(cloudAuthForm.password.trim());
+    const cloudApiConfigured = Boolean(settingsState?.cloudApiUrl?.trim());
     return (
       <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/35 px-4">
-        <div className="w-full max-w-[720px] rounded-[32px] border border-gray-100 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.18)]">
+        <div className="w-full max-w-[720px] max-h-[88vh] overflow-y-auto rounded-[32px] border border-gray-100 bg-white shadow-[0_24px_90px_rgba(15,23,42,0.18)]">
           <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-8 py-6">
             <div>
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">连接云端</p>
@@ -6772,13 +7849,19 @@ export default function App() {
               <X size={18} />
             </button>
           </div>
-          <div className="px-8 py-6 space-y-5">
+            <div className="px-8 py-6 space-y-5">
+            {!cloudApiConfigured && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+                当前还没有配置云端服务地址。请先到「系统设置 / AI 与云端」填写你自己的云端地址并保存。
+              </div>
+            )}
             <div className="flex bg-gray-100/80 p-1.5 rounded-2xl border border-gray-100 w-fit">
               <button
                 type="button"
                 onClick={() => {
                   setCloudAuthMode('login');
                   setCloudAuthMessage('');
+                  setCloudAuthRegisterStep(1);
                 }}
                 className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthMode === 'login' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
               >
@@ -6789,6 +7872,7 @@ export default function App() {
                 onClick={() => {
                   setCloudAuthMode('register');
                   setCloudAuthMessage('');
+                  setCloudAuthRegisterStep(1);
                 }}
                 className={`px-5 py-2 rounded-xl text-[13px] font-bold ${cloudAuthMode === 'register' ? 'bg-white shadow-sm text-[#5B7BFE]' : 'text-gray-500'}`}
               >
@@ -6796,15 +7880,35 @@ export default function App() {
               </button>
             </div>
 
+            {cloudAuthMode === 'register' && (
+              <div className="flex items-center gap-2 rounded-2xl bg-gray-50 p-1 text-[12px] font-bold text-gray-500">
+                <button
+                  type="button"
+                  onClick={() => setCloudAuthRegisterStep(1)}
+                  className={`flex-1 rounded-xl px-3 py-2 ${cloudAuthRegisterStep === 1 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''}`}
+                >
+                  1 个人账号
+                </button>
+                <button
+                  type="button"
+                  onClick={() => registerAccountValid && setCloudAuthRegisterStep(2)}
+                  className={`flex-1 rounded-xl px-3 py-2 ${cloudAuthRegisterStep === 2 ? 'bg-white text-[#5B7BFE] shadow-sm' : ''} ${!registerAccountValid ? 'opacity-50' : ''}`}
+                >
+                  2 组织身份
+                </button>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {rememberedAccounts.length > 0 && (
                 <select
-                  value={cloudAuthForm.email}
+                  value={cloudAuthForm.identifier || cloudAuthForm.email}
                   onChange={(event) => {
-                    const selected = rememberedAccounts.find((account) => account.email === event.target.value);
+                    const selected = rememberedAccounts.find((account) => (account.identifier || account.email) === event.target.value);
                     setCloudAuthForm((prev) => ({
                       ...prev,
                       email: selected?.email || event.target.value,
+                      identifier: selected?.identifier || selected?.email || event.target.value,
                       fullName: cloudAuthMode === 'register' ? (selected?.fullName || '') : prev.fullName,
                       password: selected?.password || '',
                       confirmPassword: cloudAuthMode === 'register' ? (selected?.password || '') : '',
@@ -6813,42 +7917,111 @@ export default function App() {
                   className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
                 >
                   <option value="">选择已记住的账号（可选）</option>
-                  {rememberedAccounts.map((account) => (
-                    <option key={account.email} value={account.email}>
-                      {account.fullName ? `${account.fullName} · ${account.email}` : account.email}
+                  {rememberedAccounts.map((account) => {
+                    const accountIdentifier = account.identifier || account.email;
+                    return (
+                    <option key={accountIdentifier} value={accountIdentifier}>
+                      {account.fullName ? `${account.fullName} · ${accountIdentifier}` : accountIdentifier}
                     </option>
-                  ))}
+                  );})}
                 </select>
               )}
-              {cloudAuthMode === 'register' && (
-                <input
-                  value={cloudAuthForm.fullName}
-                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, fullName: event.target.value }))}
-                  placeholder="姓名 / 昵称"
-                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                />
+              {cloudAuthMode === 'login' && (
+                <>
+                  <input
+                    value={cloudAuthForm.identifier}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, identifier: event.target.value }))}
+                    placeholder="邮箱或登录手机号"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    type={cloudAuthShowPassword ? 'text' : 'password'}
+                    value={cloudAuthForm.password}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
+                    placeholder="密码"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                </>
               )}
-              <input
-                value={cloudAuthForm.email}
-                onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
-                placeholder="邮箱"
-                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-              />
-              <input
-                type={cloudAuthShowPassword ? 'text' : 'password'}
-                value={cloudAuthForm.password}
-                onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
-                placeholder={cloudAuthMode === 'register' ? '密码（至少 8 位）' : '密码'}
-                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-              />
-              {cloudAuthMode === 'register' && (
-                <input
-                  type={cloudAuthShowPassword ? 'text' : 'password'}
-                  value={cloudAuthForm.confirmPassword}
-                  onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
-                  placeholder="确认密码"
-                  className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
-                />
+              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 1 && (
+                <>
+                  <input
+                    value={cloudAuthForm.fullName}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, fullName: event.target.value }))}
+                    placeholder="姓名 / 昵称"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    value={cloudAuthForm.email}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, email: event.target.value }))}
+                    placeholder="邮箱"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    value={cloudAuthForm.phone}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, phone: event.target.value }))}
+                    placeholder="登录手机号（可选，不是飞书通知手机号）"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    type={cloudAuthShowPassword ? 'text' : 'password'}
+                    value={cloudAuthForm.password}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, password: event.target.value }))}
+                    placeholder="密码（至少 8 位）"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    type={cloudAuthShowPassword ? 'text' : 'password'}
+                    value={cloudAuthForm.confirmPassword}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
+                    placeholder="确认密码"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                </>
+              )}
+              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 2 && (
+                <>
+                  <input
+                    value={cloudAuthForm.inviteCode}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, inviteCode: event.target.value }))}
+                    placeholder="部门邀请码（自动识别组织，可选）"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none md:col-span-2"
+                  />
+                  {cloudAuthInviteStatus.message && (
+                    <div className={`md:col-span-2 rounded-2xl border px-4 py-3 text-[12px] ${cloudAuthInviteStatus.valid === false ? 'border-red-200 bg-red-50 text-red-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>
+                      {cloudAuthInviteStatus.loading ? '正在识别邀请码...' : cloudAuthInviteStatus.message}
+                    </div>
+                  )}
+                  <select
+                    value={cloudAuthForm.departmentId}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, departmentId: event.target.value }))}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  >
+                    <option value="">选择部门（可选）</option>
+                    {departmentOptions.map((department) => (
+                      <option key={department.id} value={department.id}>{department.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={cloudAuthForm.jobTitle}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, jobTitle: event.target.value }))}
+                    placeholder="职位（可选）"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <input
+                    value={cloudAuthForm.managerName}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, managerName: event.target.value }))}
+                    placeholder="直属负责人（可选）"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none"
+                  />
+                  <textarea
+                    value={cloudAuthForm.currentFocus}
+                    onChange={(event) => setCloudAuthForm((prev) => ({ ...prev, currentFocus: event.target.value }))}
+                    placeholder="当前工作重点（可选）"
+                    rows={2}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[14px] outline-none resize-none md:col-span-2"
+                  />
+                </>
               )}
             </div>
 
@@ -6883,23 +8056,36 @@ export default function App() {
 
             <div className="flex justify-end gap-3">
               <Button onClick={() => setCloudAuthModalOpen(false)}>取消</Button>
-              <Button
-                primary
-                onClick={() => void handleCloudAuthSubmit()}
-                disabled={cloudAuthSubmitting || (cloudAuthMode === 'register' ? !registerValid : !loginValid)}
-              >
-                {cloudAuthSubmitting ? <RefreshCw size={16} className="animate-spin" /> : cloudAuthMode === 'register' ? <UserPlus size={16} /> : <ShieldAlert size={16} />}
-                {cloudAuthMode === 'register' ? '注册并连接云端' : '登录并连接云端'}
-              </Button>
+              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 2 && (
+                <Button onClick={() => setCloudAuthRegisterStep(1)}>上一步</Button>
+              )}
+              {cloudAuthMode === 'register' && cloudAuthRegisterStep === 1 ? (
+                <Button
+                  primary
+                  onClick={() => setCloudAuthRegisterStep(2)}
+                  disabled={!registerAccountValid}
+                >
+                  下一步：组织身份
+                </Button>
+              ) : (
+                <Button
+                  primary
+                  onClick={() => void handleCloudAuthSubmit()}
+                  disabled={!cloudApiConfigured || cloudAuthSubmitting || (cloudAuthMode === 'register' ? !registerValid : !loginValid)}
+                >
+                  {cloudAuthSubmitting ? <RefreshCw size={16} className="animate-spin" /> : cloudAuthMode === 'register' ? <UserPlus size={16} /> : <ShieldAlert size={16} />}
+                  {cloudAuthMode === 'register' ? '注册并连接云端' : '登录并连接云端'}
+                </Button>
+              )}
             </div>
           </div>
         </div>
       </div>
     );
-  };
+    };
 
-  const tasksViewBridgeRef = useRef<Record<string, unknown>>({});
-  tasksViewBridgeRef.current = {
+	  const tasksViewBridgeRef = useRef<Record<string, unknown>>({});
+	  tasksViewBridgeRef.current = {
     activeTab,
     activeTaskLists,
     activeTaskTags,
@@ -6931,6 +8117,10 @@ export default function App() {
     loadTaskBlock,
     notifyGrowthRefresh,
     operators,
+    organizationClientId,
+    organizationTaskAutoReason,
+    organizationTaskManualReason,
+    organizationTaskName,
     reviewDashboard,
     reviewHistory,
     setActiveTab,
@@ -6956,9 +8146,74 @@ export default function App() {
     taskViewMode,
     tasks,
     workspace,
+    workspaceSelectedMeetingId,
+		  };
+
+  type TasksViewBridgeState = {
+    activeTab: typeof activeTab;
+    activeTaskLists: typeof activeTaskLists;
+    activeTaskTags: typeof activeTaskTags;
+    agentWeeklyDigests: typeof agentWeeklyDigests;
+    agentWeeklyPlans: typeof agentWeeklyPlans;
+    authState: typeof authState;
+    canManagePublicTaskTaxonomy: typeof canManagePublicTaskTaxonomy;
+    clients: typeof clients;
+    currentClientId: typeof currentClientId;
+    currentOperatorName: typeof currentOperatorName;
+    currentSessionUser: typeof currentSessionUser;
+    currentWeekLabel: typeof currentWeekLabel;
+    defaultTagScope: typeof defaultTagScope;
+    departmentOptions: typeof departmentOptions;
+    effectiveTaskSettings: typeof effectiveTaskSettings;
+    evidenceClientId: typeof evidenceClientId;
+    evidenceMode: typeof evidenceMode;
+    evidenceTaskId: typeof evidenceTaskId;
+    expandedTaskIds: typeof expandedTaskIds;
+    flash: typeof flash;
+    growthContextJump: typeof growthContextJump;
+    handbookEntries: typeof handbookEntries;
+    isPrivateTask: typeof isPrivateTask;
+    isTaskInReviewWeek: typeof isTaskInReviewWeek;
+    loadAgentWorklogBlock: typeof loadAgentWorklogBlock;
+    loadHandbookBlock: typeof loadHandbookBlock;
+    loadReviewBlock: typeof loadReviewBlock;
+    loadReviewHistoryBlock: typeof loadReviewHistoryBlock;
+    loadTaskBlock: typeof loadTaskBlock;
+    notifyGrowthRefresh: typeof notifyGrowthRefresh;
+    operators: typeof operators;
+    organizationClientId: typeof organizationClientId;
+    organizationTaskAutoReason: typeof organizationTaskAutoReason;
+    organizationTaskManualReason: typeof organizationTaskManualReason;
+    organizationTaskName: typeof organizationTaskName;
+    reviewDashboard: typeof reviewDashboard;
+    reviewHistory: typeof reviewHistory;
+    setActiveTab: typeof setActiveTab;
+    setCurrentClientId: typeof setCurrentClientId;
+    setGrowthContextJump: typeof setGrowthContextJump;
+    setReviewHistory: typeof setReviewHistory;
+    setTaskCalendarDate: typeof setTaskCalendarDate;
+    setTaskCalendarDetailOpen: typeof setTaskCalendarDetailOpen;
+    setTaskSelectedDate: typeof setTaskSelectedDate;
+    setTaskSelectedDay: typeof setTaskSelectedDay;
+    setTaskViewMode: typeof setTaskViewMode;
+    settingsState: typeof settingsState;
+    taskEvidenceError: typeof taskEvidenceError;
+    taskEvidencePreview: typeof taskEvidencePreview;
+    taskEvidenceTask: typeof taskEvidenceTask;
+    taskCalendarDate: typeof taskCalendarDate;
+    taskCalendarDisplayMode: typeof taskCalendarDisplayMode;
+    isTaskEvidenceLoading: typeof isTaskEvidenceLoading;
+    taskLists: typeof taskLists;
+    taskSelectedDate: typeof taskSelectedDate;
+    taskSelectedDay: typeof taskSelectedDay;
+    taskTags: typeof taskTags;
+    taskViewMode: typeof taskViewMode;
+    tasks: typeof tasks;
+    workspace: typeof workspace;
+    workspaceSelectedMeetingId: typeof workspaceSelectedMeetingId;
   };
 
-  const TasksView = useMemo(() => function TasksView() {
+	  const TasksView = useMemo(() => function TasksView() {
     const {
       activeTab,
       activeTaskLists,
@@ -6991,6 +8246,10 @@ export default function App() {
       loadTaskBlock,
       notifyGrowthRefresh,
       operators,
+      organizationClientId,
+      organizationTaskAutoReason,
+      organizationTaskManualReason,
+      organizationTaskName,
       reviewDashboard,
       reviewHistory,
       setActiveTab,
@@ -7016,64 +8275,8 @@ export default function App() {
       taskViewMode,
       tasks,
       workspace,
-    } = tasksViewBridgeRef.current as {
-      activeTab: typeof activeTab;
-      activeTaskLists: typeof activeTaskLists;
-      activeTaskTags: typeof activeTaskTags;
-      agentWeeklyDigests: typeof agentWeeklyDigests;
-      agentWeeklyPlans: typeof agentWeeklyPlans;
-      authState: typeof authState;
-      canManagePublicTaskTaxonomy: typeof canManagePublicTaskTaxonomy;
-      clients: typeof clients;
-      currentClientId: typeof currentClientId;
-      currentOperatorName: typeof currentOperatorName;
-      currentSessionUser: typeof currentSessionUser;
-      currentWeekLabel: typeof currentWeekLabel;
-      defaultTagScope: typeof defaultTagScope;
-      departmentOptions: typeof departmentOptions;
-      effectiveTaskSettings: typeof effectiveTaskSettings;
-      evidenceClientId: typeof evidenceClientId;
-      evidenceMode: typeof evidenceMode;
-      evidenceTaskId: typeof evidenceTaskId;
-      expandedTaskIds: typeof expandedTaskIds;
-      flash: typeof flash;
-      growthContextJump: typeof growthContextJump;
-      handbookEntries: typeof handbookEntries;
-      isPrivateTask: typeof isPrivateTask;
-      isTaskInReviewWeek: typeof isTaskInReviewWeek;
-      loadAgentWorklogBlock: typeof loadAgentWorklogBlock;
-      loadHandbookBlock: typeof loadHandbookBlock;
-      loadReviewBlock: typeof loadReviewBlock;
-      loadReviewHistoryBlock: typeof loadReviewHistoryBlock;
-      loadTaskBlock: typeof loadTaskBlock;
-      notifyGrowthRefresh: typeof notifyGrowthRefresh;
-      operators: typeof operators;
-      reviewDashboard: typeof reviewDashboard;
-      reviewHistory: typeof reviewHistory;
-      setActiveTab: typeof setActiveTab;
-      setCurrentClientId: typeof setCurrentClientId;
-      setGrowthContextJump: typeof setGrowthContextJump;
-      setReviewHistory: typeof setReviewHistory;
-      setTaskCalendarDate: typeof setTaskCalendarDate;
-      setTaskCalendarDetailOpen: typeof setTaskCalendarDetailOpen;
-      setTaskSelectedDate: typeof setTaskSelectedDate;
-      setTaskSelectedDay: typeof setTaskSelectedDay;
-      setTaskViewMode: typeof setTaskViewMode;
-      settingsState: typeof settingsState;
-      taskEvidenceError: typeof taskEvidenceError;
-      taskEvidencePreview: typeof taskEvidencePreview;
-      taskEvidenceTask: typeof taskEvidenceTask;
-      taskCalendarDate: typeof taskCalendarDate;
-      taskCalendarDisplayMode: typeof taskCalendarDisplayMode;
-      isTaskEvidenceLoading: typeof isTaskEvidenceLoading;
-      taskLists: typeof taskLists;
-      taskSelectedDate: typeof taskSelectedDate;
-      taskSelectedDay: typeof taskSelectedDay;
-      taskTags: typeof taskTags;
-      taskViewMode: typeof taskViewMode;
-      tasks: typeof tasks;
-      workspace: typeof workspace;
-    };
+      workspaceSelectedMeetingId,
+		    } = tasksViewBridgeRef.current as TasksViewBridgeState;
     const buildDefaultCollaborators = (): MentionCandidate[] => {
       if (!effectiveTaskSettings.autoAssignSelf || !currentSessionUser) return [];
       return [{
@@ -7118,10 +8321,10 @@ export default function App() {
       dueDate: defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset),
       dueTime: '',
       durationMinutes: 60,
-      clientId: '',
+      clientId: organizationClientId,
       clientTouched: false,
       clientConfidence: 'none',
-      clientReason: '请选择项目。',
+      clientReason: organizationTaskAutoReason,
       eventLineId: '',
       eventLineTouched: false,
       eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
@@ -7174,6 +8377,8 @@ export default function App() {
     const [suggestedTaskTags, setSuggestedTaskTags] = useState<string[]>([]);
     const [eventLines, setEventLines] = useState<EventLine[]>([]);
     const [eventLinesLoadError, setEventLinesLoadError] = useState<string | null>(null);
+    const projectStructureRequestsRef = useRef<Record<string, Promise<ProjectStructureResponse>>>({});
+    const projectStructureFailedAtRef = useRef<Record<string, number>>({});
     const [eventLineProjectFilterId, setEventLineProjectFilterId] = useState<string>(() => {
       if (typeof window === 'undefined') return '__all__';
       return window.localStorage.getItem(EVENT_LINE_PROJECT_FILTER_STORAGE_KEY) || '__all__';
@@ -7210,7 +8415,8 @@ export default function App() {
     const [taskContextPreview, setTaskContextPreview] = useState<TaskContextPreview | null>(null);
     const [isTaskContextPreviewLoading, setIsTaskContextPreviewLoading] = useState(false);
     const [taskSmartBriefs, setTaskSmartBriefs] = useState<Record<string, TaskSmartBrief>>({});
-    const [taskPrepPacks, setTaskPrepPacks] = useState<Record<string, PrepPackCard>>({});
+    const [taskContextBriefs, setTaskContextBriefs] = useState<Record<string, TaskContextBrief>>({});
+    const [loadingTaskContextBriefIds, setLoadingTaskContextBriefIds] = useState<string[]>([]);
     const [proposalBusyState, setProposalBusyState] = useState<Record<string, string>>({});
     const [selectedInboxIds, setSelectedInboxIds] = useState<string[]>([]);
     const [transitioningInboxTaskIds, setTransitioningInboxTaskIds] = useState<string[]>([]);
@@ -7266,11 +8472,109 @@ export default function App() {
     };
     const [hidePersonalTasks, setHidePersonalTasks] = useState(false);
     const [reviewScope, setReviewScope] = useState<'work' | 'personal'>(effectiveTaskSettings.defaultReviewScope);
-    const [activeReviewTab, setActiveReviewTab] = useState<'overview' | 'events' | 'signals' | 'ai'>('events');
-    const [reviewPerspective, setReviewPerspective] = useState<ReviewPerspectiveKey>('mine');
-    const [reviewDepartmentId, setReviewDepartmentId] = useState<string>('');
+    const [activeReviewTab, setActiveReviewTab] = useState<'overview' | 'events' | 'signals'>('events');
+    const defaultReviewPerspective = useMemo(
+      () => resolveDefaultReviewPerspectiveForUser(currentSessionUser),
+      [currentSessionUser?.departmentId, currentSessionUser?.id, currentSessionUser?.isDepartmentLead, currentSessionUser?.primaryRole],
+    );
+    const defaultReviewDepartmentId = useMemo(
+      () => resolveDefaultReviewDepartmentIdForUser(currentSessionUser, defaultReviewPerspective),
+      [currentSessionUser?.departmentId, defaultReviewPerspective],
+    );
+    const [reviewPerspective, setReviewPerspective] = useState<ReviewPerspectiveKey>(() => defaultReviewPerspective);
+    const [reviewDepartmentId, setReviewDepartmentId] = useState<string>(() => defaultReviewDepartmentId || '');
     const [reviewForm, setReviewForm] = useState<ReviewFormState>(createEmptyReviewForm());
     const [isReviewWeekSwitching, setIsReviewWeekSwitching] = useState(false);
+    const reviewRequestDepartmentId = reviewPerspective === 'department' ? reviewDepartmentId || null : null;
+    const loadSelectedReviewBlock = (weekLabel?: string | null, options?: { skipAi?: boolean }) => loadReviewBlock(
+      resolveSelectedReviewWeekLabel(weekLabel),
+      {
+        skipAi: options?.skipAi ?? true,
+        perspective: reviewPerspective,
+        departmentId: reviewRequestDepartmentId,
+      },
+    );
+    const clearWeeklyOverviewRefreshPoll = () => {
+      if (weeklyOverviewRefreshPollRef.current !== null) {
+        window.clearInterval(weeklyOverviewRefreshPollRef.current);
+        weeklyOverviewRefreshPollRef.current = null;
+      }
+    };
+    const pollWeeklyOverviewRefreshStatus = (weekLabel: string) => {
+      clearWeeklyOverviewRefreshPoll();
+      let pollCount = 0;
+      weeklyOverviewRefreshPollRef.current = window.setInterval(() => {
+        pollCount += 1;
+        void getWeeklyOverviewRefreshStatus({
+          weekLabel,
+          perspective: reviewPerspective,
+          departmentId: reviewRequestDepartmentId,
+        })
+          .then((status) => {
+            setWeeklyOverviewRefreshStatus(status);
+            if (status.status === 'succeeded' || status.status === 'failed' || pollCount > 90) {
+              clearWeeklyOverviewRefreshPoll();
+              if (status.status === 'succeeded') {
+                void loadSelectedReviewBlock(weekLabel, { skipAi: true });
+              }
+            }
+          })
+          .catch(() => {
+            if (pollCount > 3) clearWeeklyOverviewRefreshPoll();
+          });
+      }, 3500);
+    };
+    const triggerWeeklyOverviewRefresh = async (
+      weekLabel?: string | null,
+      options?: { force?: boolean; reloadOnDone?: boolean; dedupe?: boolean },
+    ) => {
+      const targetWeek = resolveSelectedReviewWeekLabel(weekLabel);
+      const requestKey = `${targetWeek}:${reviewPerspective}:${reviewRequestDepartmentId || ''}:${options?.force ? 'force' : 'cache'}`;
+      if (options?.dedupe !== false && !options?.force && weeklyOverviewRefreshRequestRef.current === requestKey) {
+        return;
+      }
+      weeklyOverviewRefreshRequestRef.current = requestKey;
+      try {
+        const status = await refreshWeeklyOverview({
+          weekLabel: targetWeek,
+          perspective: reviewPerspective,
+          departmentId: reviewRequestDepartmentId,
+          force: Boolean(options?.force),
+        });
+        setWeeklyOverviewRefreshStatus(status);
+        if (status.status === 'running') {
+          pollWeeklyOverviewRefreshStatus(targetWeek);
+        } else if (status.status === 'succeeded' && options?.reloadOnDone !== false) {
+          await loadSelectedReviewBlock(targetWeek, { skipAi: true });
+        }
+      } catch (error) {
+        console.warn('[weekly-overview] refresh request failed', error);
+      }
+    };
+    useEffect(() => {
+      setReviewPerspective(defaultReviewPerspective);
+      setReviewDepartmentId(defaultReviewDepartmentId || '');
+    }, [currentSessionUser?.id, defaultReviewDepartmentId, defaultReviewPerspective]);
+    useEffect(() => () => clearWeeklyOverviewRefreshPoll(), []);
+    useEffect(() => {
+      const scheduleDailyRefresh = () => {
+        const now = new Date();
+        const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const storageKey = `weekly-overview-refresh:${todayKey}:${reviewPerspective}:${reviewRequestDepartmentId || 'all'}`;
+        if (now.getHours() >= 9 && window.localStorage.getItem(storageKey) !== 'done') {
+          window.localStorage.setItem(storageKey, 'done');
+          const thisWeek = currentWeekLabel();
+          void triggerWeeklyOverviewRefresh(thisWeek, { reloadOnDone: false, dedupe: false });
+          void triggerWeeklyOverviewRefresh(shiftWeekLabel(thisWeek, -1), { reloadOnDone: false, dedupe: false });
+        }
+        const next = new Date(now);
+        next.setHours(9, 0, 0, 0);
+        if (next <= now) next.setDate(next.getDate() + 1);
+        return window.setTimeout(scheduleDailyRefresh, Math.max(1000, next.getTime() - now.getTime()));
+      };
+      const timer = scheduleDailyRefresh();
+      return () => window.clearTimeout(timer);
+    }, [reviewPerspective, reviewRequestDepartmentId]);
     useEffect(() => {
       if (activeTab !== 'tasks' || taskViewMode !== 'review') return;
       const viewport = reviewViewportRef.current;
@@ -7281,58 +8585,13 @@ export default function App() {
       return () => window.cancelAnimationFrame(raf);
     }, [activeTab, taskViewMode, activeReviewTab, reviewScope]);
     useEffect(() => {
-      const activePerspective = reviewDashboard?.activePerspective;
-      if (!activePerspective) return;
-      const activeDepartmentId = reviewDashboard?.activeDepartmentId || '';
-      const pending = pendingReviewPerspectiveRef.current;
-      if (pending) {
-        const pendingDepartmentId = pending.departmentId || '';
-        const pendingMatchesDashboard = activePerspective === pending.perspective
-          && (pending.perspective !== 'department' || !pendingDepartmentId || activeDepartmentId === pendingDepartmentId);
-        if (!pendingMatchesDashboard) {
-          return;
-        }
-        pendingReviewPerspectiveRef.current = null;
-      }
-      if (activePerspective !== reviewPerspective) {
-        setReviewPerspective(activePerspective);
-      }
-      if (activeDepartmentId !== reviewDepartmentId) {
-        setReviewDepartmentId(activeDepartmentId);
-      }
-    }, [reviewDashboard?.activeDepartmentId, reviewDashboard?.activePerspective, reviewDepartmentId, reviewPerspective]);
-    useEffect(() => {
       if (activeTab !== 'tasks' || taskViewMode !== 'review') return;
-      const dashboardPerspective = reviewDashboard?.activePerspective;
-      const dashboardDepartmentId = reviewDashboard?.activeDepartmentId || '';
-      const targetDepartmentId = reviewPerspective === 'department' ? reviewDepartmentId || null : null;
-      if (
-        reviewPerspective === 'department'
-        && dashboardPerspective === 'department'
-        && dashboardDepartmentId
-        && !reviewDepartmentId
-      ) {
-        return;
-      }
-      if (
-        dashboardPerspective === reviewPerspective
-        && (reviewPerspective !== 'department' || dashboardDepartmentId === (targetDepartmentId || ''))
-      ) {
-        return;
-      }
       if (reviewPerspective === 'organization' || reviewPerspective === 'department') {
         setReviewScope('work');
       }
-      pendingReviewPerspectiveRef.current = {
-        perspective: reviewPerspective,
-        departmentId: targetDepartmentId,
-      };
-      void loadReviewBlock(reviewDashboard?.currentReview?.weekLabel, {
-        skipAi: true,
-        perspective: reviewPerspective,
-        departmentId: targetDepartmentId,
-      });
-    }, [activeTab, taskViewMode, reviewPerspective, reviewDepartmentId, reviewDashboard?.activeDepartmentId, reviewDashboard?.activePerspective, reviewDashboard?.currentReview?.weekLabel]);
+      void loadSelectedReviewBlock(selectedReviewWeekLabel, { skipAi: true });
+      void triggerWeeklyOverviewRefresh(selectedReviewWeekLabel, { reloadOnDone: true });
+    }, [activeTab, taskViewMode, reviewPerspective, reviewDepartmentId]);
     const syncReviewDirtyTaskIds = (next: Set<string>) => {
       reviewDirtyTaskIdsRef.current = next;
       setReviewDirtyTaskIds(Array.from(next));
@@ -7373,6 +8632,44 @@ export default function App() {
       }));
     }, [workspace]);
 
+    const rememberProjectStructure = useCallback((clientId: string, structure: ProjectStructureResponse) => {
+      setProjectStructureCache((prev) => (
+        prev[clientId] ? prev : {
+          ...prev,
+          [clientId]: structure,
+        }
+      ));
+    }, []);
+
+    const loadProjectStructureForClient = useCallback(async (clientId: string): Promise<ProjectStructureResponse> => {
+      if (!clientId || clientId === workspace?.client.id) return EMPTY_PROJECT_STRUCTURE_RESPONSE;
+      const cached = projectStructureCache[clientId];
+      if (cached) return cached;
+      const failedAt = projectStructureFailedAtRef.current[clientId] || 0;
+      if (failedAt && Date.now() - failedAt < PROJECT_STRUCTURE_FAILURE_CACHE_MS) {
+        return EMPTY_PROJECT_STRUCTURE_RESPONSE;
+      }
+      const inflight = projectStructureRequestsRef.current[clientId];
+      if (inflight) return inflight;
+      const request = getClientProjectStructure(clientId)
+        .then((structure) => {
+          delete projectStructureFailedAtRef.current[clientId];
+          rememberProjectStructure(clientId, structure);
+          return structure;
+        })
+        .catch((error) => {
+          projectStructureFailedAtRef.current[clientId] = Date.now();
+          console.warn('[project-structure] preload failed', { clientId, error });
+          rememberProjectStructure(clientId, EMPTY_PROJECT_STRUCTURE_RESPONSE);
+          return EMPTY_PROJECT_STRUCTURE_RESPONSE;
+        })
+        .finally(() => {
+          delete projectStructureRequestsRef.current[clientId];
+        });
+      projectStructureRequestsRef.current[clientId] = request;
+      return request;
+    }, [projectStructureCache, rememberProjectStructure, workspace?.client.id]);
+
     useEffect(() => {
       if (!activeEventLine) {
         setEventLineClarificationDraft(buildEventLineClarificationDraft(null));
@@ -7397,7 +8694,7 @@ export default function App() {
         : getClientDnaDocuments(clientId).then((response) => response.modules);
       const structurePromise = cachedProjectStructure
         ? Promise.resolve(cachedProjectStructure)
-        : getClientProjectStructure(clientId);
+        : loadProjectStructureForClient(clientId);
       void Promise.all([dnaPromise, structurePromise])
         .then(([modules, structureResponse]) => {
           if (cancelled) return;
@@ -7422,7 +8719,7 @@ export default function App() {
       return () => {
         cancelled = true;
       };
-    }, [currentClientId, editingTask.clientId, organizationClientId, isTaskModalOpen, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
+    }, [currentClientId, editingTask.clientId, organizationClientId, isTaskModalOpen, loadProjectStructureForClient, projectStructureCache, taskClientDnaCache, workspace?.client.id]);
 
     const loadEventLines = useCallback(async () => {
       try {
@@ -7447,7 +8744,6 @@ export default function App() {
 
     useEffect(() => {
       if (authState.authenticated) return;
-      setEventLineSourceStatus(null);
       setEventLines([]);
       setEventLinesLoadError(null);
       setEventLineProjectFilterId('__all__');
@@ -7570,7 +8866,7 @@ export default function App() {
       resolveDefaultListId,
     ]);
     const latestReview = reviewDashboard?.currentReview || null;
-    const activeReviewWeekLabel = reviewForm.weekLabel || latestReview?.weekLabel || currentWeekLabel();
+    const activeReviewWeekLabel = reviewForm.weekLabel || selectedReviewWeekLabel || latestReview?.weekLabel || currentWeekLabel();
     const activeReviewWeekMondayLabel = reviewWeekMondayLabel(activeReviewWeekLabel);
     const teamReport = reviewDashboard?.teamReport || null;
     const orgReport = reviewDashboard?.orgReport || null;
@@ -7580,7 +8876,7 @@ export default function App() {
     const agentDepartmentPlans = reviewDashboard?.agentDepartmentPlans || [];
     const simulationBundle = reviewDashboard?.simulationBundle || null;
     const selfReviewReport = reviewDashboard?.selfReport || null;
-    const fallbackReviewPerspectives = currentSessionUser?.primaryRole === 'admin'
+    const fallbackReviewPerspectives: ReviewPerspectiveOption[] = currentSessionUser?.primaryRole === 'admin'
       ? [
         { key: 'organization' as const, label: '组织视角' },
         { key: 'department' as const, label: '部门视角' },
@@ -7603,8 +8899,10 @@ export default function App() {
     const shouldShowReviewPerspectiveSwitch = availableReviewPerspectives.length > 1;
     const reviewDepartmentOptions = (() => {
       const byId = new Map<string, { id: string; name: string }>();
-      reviewGovernanceState.departments.forEach((department) => {
-        if (department.id) byId.set(department.id, { id: department.id, name: department.name });
+      availableReviewPerspectives.forEach((option) => {
+        if (option.key === 'department' && option.departmentId) {
+          byId.set(option.departmentId, { id: option.departmentId, name: option.departmentName || '部门视角' });
+        }
       });
       if (reviewDashboard?.activeDepartmentId && !byId.has(reviewDashboard.activeDepartmentId)) {
         byId.set(reviewDashboard.activeDepartmentId, {
@@ -7627,7 +8925,7 @@ export default function App() {
     const selectedWeekAgentPlans = agentWeeklyPlans.filter((item) => item.weekLabel === selectedCalendarWeekLabel);
 
     useEffect(() => {
-      const weekLabel = latestReview?.weekLabel || currentWeekLabel();
+      const weekLabel = latestReview?.weekLabel || selectedReviewWeekLabel || currentWeekLabel();
       const shouldPreserveDirty = reviewDirtyTaskIdsRef.current.size > 0 && reviewForm.weekLabel === weekLabel;
       const nextEntries = Object.fromEntries(
         [...workReviewItems, ...personalReviewItems].map((item) => {
@@ -7644,6 +8942,7 @@ export default function App() {
       if (!shouldPreserveDirty && reviewDirtyTaskIdsRef.current.size > 0) {
         clearReviewTasksDirty();
       }
+      setSelectedReviewWeekLabel(weekLabel);
       setReviewForm((prev) => {
         if (shouldPreserveDirty && prev.weekLabel === weekLabel) {
           const mergedEntries = { ...nextEntries };
@@ -7656,7 +8955,7 @@ export default function App() {
         }
         return { weekLabel, entriesByTaskId: nextEntries };
       });
-    }, [latestReview, reviewForm.weekLabel, workReviewItems, personalReviewItems]);
+    }, [latestReview, selectedReviewWeekLabel, reviewForm.weekLabel, workReviewItems, personalReviewItems]);
 
     useEffect(() => {
       setReviewScope(effectiveTaskSettings.defaultReviewScope);
@@ -7827,7 +9126,6 @@ export default function App() {
         if (taskListFilter === 'all') return true;
         return task.status !== 'done';
       }).filter((task) => taskMatchesTimeRange(task, taskListTimeRangeFilter, taskListCustomStartDate, taskListCustomEndDate)),
-      effectiveTaskSettings.listSortMode,
     );
     const listTasks = useMemo(() => {
       let filtered = rawListTasks;
@@ -7883,31 +9181,13 @@ export default function App() {
       );
       if (pendingClientIds.length === 0) return;
       let cancelled = false;
-      void Promise.all(
-        pendingClientIds.map(async (clientId) => {
-          try {
-            const structure = await getClientProjectStructure(clientId);
-            return { clientId, structure };
-          } catch {
-            return null;
-          }
-        }),
-      ).then((records) => {
+      void Promise.all(pendingClientIds.map((clientId) => loadProjectStructureForClient(clientId))).then(() => {
         if (cancelled) return;
-        const nextEntries = records.filter((item): item is { clientId: string; structure: ProjectStructureResponse } => Boolean(item));
-        if (nextEntries.length === 0) return;
-        setProjectStructureCache((prev) => {
-          const next = { ...prev };
-          nextEntries.forEach(({ clientId, structure }) => {
-            next[clientId] = structure;
-          });
-          return next;
-        });
       });
       return () => {
         cancelled = true;
       };
-    }, [listTasks, projectStructureCache, taskViewMode, workspace?.client.id]);
+    }, [listTasks, loadProjectStructureForClient, projectStructureCache, taskViewMode, workspace?.client.id]);
     const baseCalendarTasks = tasks.filter((task) => {
       if (task.status === 'rejected') return false;
       if (hidePersonalTasks && task.scopeMode === 'PERSONAL_ONLY') return false;
@@ -7957,12 +9237,20 @@ export default function App() {
     const activeWeeklyOverview = reviewScope === 'work'
       ? buildWeeklyOverviewModelFromBackendCards(reviewDashboard?.weeklyMainlineCards, fallbackWeeklyOverview)
       : fallbackWeeklyOverview;
+    const weeklyOverviewIsAi = reviewDashboard?.weeklyMainlineCards?.generatedBy === 'ai'
+      && (reviewDashboard.weeklyMainlineCards.mainlines?.length || 0) > 0;
+    const weeklyOverviewIsRefreshing = weeklyOverviewRefreshStatus?.status === 'running';
+    const weeklyOverviewMaterialPackEmpty = weeklyOverviewRefreshStatus?.status === 'failed'
+      && weeklyOverviewRefreshStatus.failureReason === 'material_pack_empty';
     useEffect(() => {
       if (!expandedReviewGroupId) return;
-      if (!activeReviewGroups.some((group) => group.id === expandedReviewGroupId)) {
+      const activeReviewModuleIds = shouldUseEventReviewCards
+        ? activeEventReviewCards.map((card) => card.id)
+        : activeReviewGroups.map((group) => group.id);
+      if (!activeReviewModuleIds.includes(expandedReviewGroupId)) {
         setExpandedReviewGroupId(null);
       }
-    }, [activeReviewGroups, expandedReviewGroupId]);
+    }, [activeEventReviewCards, activeReviewGroups, expandedReviewGroupId, shouldUseEventReviewCards]);
 
     const ownerCollaborator = editingTask.collaborators[0];
     const selectedTaskCollaborators = ownerCollaborator ? editingTask.collaborators.slice(1) : editingTask.collaborators;
@@ -8342,11 +9630,12 @@ export default function App() {
       try {
         clearReviewTasksDirty();
         setSavedReviewGroupId(null);
+        setSelectedReviewWeekLabel(weekLabel);
         setReviewForm((prev) => ({
           weekLabel,
           entriesByTaskId: prev.weekLabel === weekLabel ? prev.entriesByTaskId : {},
         }));
-        const response = await loadReviewBlock(weekLabel, { skipAi: true });
+        const response = await loadSelectedReviewBlock(weekLabel, { skipAi: true });
         const resolvedWeekLabel = response.currentReview?.weekLabel || weekLabel;
         flash('success', `已切换到${reviewWeekMondayLabel(resolvedWeekLabel)}周复盘。`);
       } catch (error) {
@@ -8766,8 +10055,13 @@ export default function App() {
         listName: options.listName,
         listColor: options.listColor,
         ddl: payload.ddl,
+        startDate: payload.startDate ?? null,
         dueDate: payload.dueDate ?? null,
         durationMinutes: payload.durationMinutes,
+        deadlineAt: payload.deadlineAt ?? null,
+        scheduledStartAt: payload.scheduledStartAt ?? null,
+        scheduledEndAt: payload.scheduledEndAt ?? null,
+        completedAt: existingTask?.completedAt ?? null,
         scopeMode: payload.scopeMode,
         clientId: payload.clientId ?? null,
         clientName: options.clientName ?? existingTask?.clientName ?? null,
@@ -8976,6 +10270,18 @@ export default function App() {
       }
       setIsSavingTask(true);
       const combinedDueDate = combineTaskDueDateTime(editingTask.dueDate, editingTask.dueTime);
+      const hasScheduledTime = Boolean((editingTask.dueTime || '').trim());
+      const scheduledStartAt = hasScheduledTime ? combinedDueDate || null : null;
+      const scheduledEndAt = scheduledStartAt
+        ? (() => {
+            const endDate = new Date(new Date(scheduledStartAt).getTime() + Math.max(15, editingTask.durationMinutes || 60) * 60_000);
+            return combineTaskDueDateTime(
+              `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`,
+              `${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`,
+            );
+          })()
+        : null;
+      const deadlineAt = hasScheduledTime ? null : (combinedDueDate || null);
       const resolvedDdl = combinedDueDate
         ? duePickerSummaryLabel
         : (editingTask.ddl.trim() || '待确认');
@@ -8999,7 +10305,11 @@ export default function App() {
         desc: editingTask.desc.trim(),
         priority: editingTask.priority,
         listId: resolvedListId,
-        dueDate: combinedDueDate || null,
+        deadlineAt,
+        scheduledStartAt,
+        scheduledEndAt,
+        dueDate: deadlineAt || scheduledStartAt,
+        startDate: scheduledStartAt,
         durationMinutes: editingTask.durationMinutes,
         clientId: isEditingTaskPersonal ? null : (editingTask.clientId || null),
         eventLineId: isEditingTaskPersonal ? null : (editingTask.eventLineId || null),
@@ -9064,13 +10374,6 @@ export default function App() {
 
       void (async () => {
         try {
-          if (!isEditingTaskPersonal && orgTaskLists.length === 0) {
-            try {
-              await ensureOrgTaskList();
-            } catch {
-              // 组织清单创建失败不阻断保存
-            }
-          }
           const savedTask = draftSnapshot.id
             ? await updateTask(draftSnapshot.id, payload)
             : await createTask(payload);
@@ -9194,83 +10497,81 @@ export default function App() {
             setIsTaskModalOpen(true);
             flash('error', `${error instanceof Error ? error.message : '创建失败'}。草稿已恢复，请检查后重试。`);
           }
-        }
-      })();
+	        }
+	      })();
+	    };
+
+	    const requestDeleteTaskRecord = (
+	      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
+	      options?: { closeEditor?: boolean },
+	    ) => {
+	      void handleDeleteTaskRecord(task, options);
+	    };
+
+	    const handleDeleteTaskRecord = async (
+	      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
+	      options?: { closeEditor?: boolean },
+	    ) => {
+	      if (options?.closeEditor || editingTask.id === task.id) {
+	        closeTaskModal('delete-started');
+	        resetTaskDraft();
+	      }
+	      const deletedId = task.id;
+	      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
+	      flash('success', '任务已删除');
+	      void (async () => {
+	        try {
+	          await deleteTask(deletedId);
+	          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+	          await loadTaskBlock();
+	          setTasks((prev) => prev.filter((t) => t.id !== deletedId));
+	          void loadSelectedReviewBlock();
+	          void refreshWorkspace(task.clientId || undefined);
+	          if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
+	        } catch {
+	          // 删除已经在本地乐观完成；失败时不把旧任务塞回列表，避免重复闪回。
+	        }
+	      })();
+	    };
+
+	    const confirmDeleteTaskRecord = async () => {
+	      if (!pendingTaskDelete) return;
+	      const payload = pendingTaskDelete;
+	      setPendingTaskDelete(null);
+	      await handleDeleteTaskRecord(
+	        {
+	          id: payload.id,
+	          title: payload.title,
+	          clientId: payload.clientId || null,
+	          eventLineId: payload.eventLineId || null,
+	        },
+	        { closeEditor: payload.closeEditor },
+	      );
+	    };
+
+    const allReviewRows = () => [...workReviewRows, ...personalReviewRows];
+
+    const dirtyReviewRows = () => {
+      const dirtyTaskIds = reviewDirtyTaskIdsRef.current;
+      if (dirtyTaskIds.size === 0) return [];
+      return allReviewRows().filter(({ task }) => dirtyTaskIds.has(task.id));
     };
 
-    const requestDeleteTaskRecord = (
-      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
-      options?: { closeEditor?: boolean },
+    const buildReviewPayload = (
+      draftOverride?: { workFreeNote?: string; personalGrowthNote?: string; personalPrivateNote?: string },
+      rows: ReviewTaskRow[] = dirtyReviewRows(),
     ) => {
-      void handleDeleteTaskRecord(task, options);
-    };
-
-    const handleDeleteTaskRecord = async (
-      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
-      options?: { closeEditor?: boolean },
-    ) => {
-      if (options?.closeEditor || editingTask.id === task.id) {
-        closeTaskModal('delete-started');
-        resetTaskDraft();
-      }
-      const deletedId = task.id;
-      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
-      flash('success', '任务已删除');
-      void (async () => {
-        try {
-          await deleteTask(deletedId);
-          // Wait for cloud to process before refreshing
-          await new Promise((r) => setTimeout(r, 2000));
-          await loadTaskBlock();
-          // Ensure deleted task stays deleted even if cloud returned stale data
-          setTasks((prev) => prev.filter((t) => t.id !== deletedId));
-          if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
-          void refreshWorkspace(task.clientId || undefined);
-          if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
-        } catch {
-          // Delete already removed locally — don't restore
-        }
-      })();
-    };
-
-    const confirmDeleteTaskRecord = async () => {
-      if (!pendingTaskDelete) return;
-      const payload = pendingTaskDelete;
-      setPendingTaskDelete(null);
-      await handleDeleteTaskRecord(
-        {
-          id: payload.id,
-          title: payload.title,
-          clientId: payload.clientId || null,
-          eventLineId: payload.eventLineId || null,
-        },
-        { closeEditor: payload.closeEditor },
-      );
-    };
-
-    const handleUploadOrgDna = async (moduleKey: OrganizationDnaModule['moduleKey']) => {
-      const paths = await selectFilesBridge();
-      const filePath = paths[0];
-      if (!filePath) return;
-      setOrgDnaSavingKey(moduleKey);
-      try {
-        await updateOrganizationDnaModule(moduleKey, { filePath });
-        await Promise.all([loadSettingsSectionBlock('org_dna', true), loadLogsBlock()]);
-        flash('success', '组织 DNA 已更新');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '组织 DNA 上传失败');
-      } finally {
-        setOrgDnaSavingKey(null);
-      }
-    };
-
-    const buildReviewPayload = (draftOverride?: { workFreeNote?: string; personalGrowthNote?: string; personalPrivateNote?: string }) => {
-      const taskEntries = [...workReviewRows, ...personalReviewRows].map(({ task, note, structuredNote }) => ({
-        taskId: task.id,
-        contentDomain: isPrivateTask(task) ? 'personal' as const : 'work' as const,
-        note: note.trim(),
-        structuredNote,
-      }));
+      const taskEntries = rows.flatMap(({ task }) => {
+        const structuredNote = reviewForm.entriesByTaskId[task.id] ?? createEmptyReviewStructuredNote();
+        const note = composeReviewNoteFromStructuredFields(structuredNote, task.status).trim();
+        if (!note && !hasMeaningfulReviewStructuredNote(structuredNote)) return [];
+        return [{
+          taskId: task.id,
+          contentDomain: isPrivateTask(task) ? 'personal' as const : 'work' as const,
+          note,
+          structuredNote,
+        }];
+      });
       return {
         weekLabel: reviewForm.weekLabel || currentWeekLabel(),
         taskEntries,
@@ -9281,37 +10582,21 @@ export default function App() {
     };
 
     const buildReviewPayloadForRows = (rows: ReviewTaskRow[]) => {
-      const taskEntriesByTaskId = new Map(
-        [...workReviewItems, ...personalReviewItems].map((item) => [
-          item.taskId,
-          {
-            taskId: item.taskId,
-            contentDomain: item.contentDomain,
-            note: item.note.trim(),
-            structuredNote: item.structuredNote,
-          },
-        ]),
-      );
-
-      rows.forEach(({ task }) => {
+      const taskEntries = rows.flatMap(({ task }) => {
         const structuredNote = reviewForm.entriesByTaskId[task.id] ?? createEmptyReviewStructuredNote();
         const note = composeReviewNoteFromStructuredFields(structuredNote, task.status).trim();
-        const nextEntry = {
+        if (!note && !hasMeaningfulReviewStructuredNote(structuredNote)) return [];
+        return [{
           taskId: task.id,
           contentDomain: isPrivateTask(task) ? 'personal' as const : 'work' as const,
           note,
           structuredNote,
-        };
-        if (note || hasMeaningfulReviewStructuredNote(structuredNote)) {
-          taskEntriesByTaskId.set(task.id, nextEntry);
-        } else {
-          taskEntriesByTaskId.delete(task.id);
-        }
+        }];
       });
 
       return {
         weekLabel: reviewForm.weekLabel || currentWeekLabel(),
-        taskEntries: Array.from(taskEntriesByTaskId.values()),
+        taskEntries,
         workFreeNote: latestReview?.workFreeNote ?? '',
         personalGrowthNote: latestReview?.personalGrowthNote ?? '',
         personalPrivateNote: latestReview?.personalPrivateNote ?? '',
@@ -9422,7 +10707,7 @@ export default function App() {
           listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
           dueDate: null,
           durationMinutes: 60,
-          clientId: primaryClientId,
+          clientId: primaryClientId || organizationClientId || null,
           eventLineId: primaryEventLineId,
           ddl: '待确认',
           ownerId: currentSessionUser?.id || null,
@@ -9435,11 +10720,11 @@ export default function App() {
         await loadTaskBlock();
         flash('success', action.actionType === 'one_on_one' ? '1v1 动作已转成任务。' : '动作已转成任务。');
         return {
-          objectType: 'task',
-          objectId: createdTask.id,
-          objectLabel: createdTask.title,
-          targetClientId: primaryClientId,
-          targetClientName: primaryClientName,
+            objectType: 'task',
+            objectId: createdTask.id,
+            objectLabel: createdTask.title,
+            targetClientId: primaryClientId || organizationClientId,
+            targetClientName: primaryClientName || organizationWorkspaceClient?.name || organizationTaskName,
           targetEventLineId: primaryEventLineId,
           targetEventLineName: primaryEventLineName,
           canOpen: true,
@@ -9532,6 +10817,7 @@ export default function App() {
       setEditingTask({
         id: null,
         scopeMode: 'COLLAB_SHARED',
+        scopeModeTouched: false,
         title: '',
         desc: '',
         listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
@@ -9541,10 +10827,10 @@ export default function App() {
         dueDate: nextDueParts.date,
         dueTime: nextDueParts.time,
         durationMinutes: Math.max(15, options?.durationMinutes ?? 60),
-        clientId: '',
+        clientId: organizationClientId,
         clientTouched: false,
         clientConfidence: 'none',
-        clientReason: '请选择项目。',
+        clientReason: organizationTaskAutoReason,
         eventLineId: '',
         eventLineTouched: false,
         eventLineReason: '可选：把任务挂到一条持续推进的事件线上，后续复盘会按事件线聚合。',
@@ -9563,9 +10849,9 @@ export default function App() {
       setPendingTaskArchiveText('');
     };
 
-    const openTaskEditor = (task?: Task, dueDate?: string, options?: { durationMinutes?: number }) => {
-      if (!task) {
-        resetTaskDraft(dueDate, options);
+	    const openTaskEditor = (task?: Task, dueDate?: string, options?: { durationMinutes?: number }) => {
+	      if (!task) {
+	        resetTaskDraft(dueDate, options);
         setIsTaskModalOpen(true);
         return;
       }
@@ -9573,7 +10859,7 @@ export default function App() {
         flash('info', '任务正在后台保存，稍等一下就会稳定出现在列表里。');
         return;
       }
-      const resolvedDueDate = task.dueDate || dueDate || new Date().toISOString().slice(0, 10);
+      const resolvedDueDate = task.scheduledStartAt || task.deadlineAt || task.dueDate || dueDate || formatDateInputValue(new Date());
       const resolvedDueParts = splitTaskDueDateTime(resolvedDueDate);
       resetTaskModalTransientState();
       const parsedDate = parseTaskDateValue(resolvedDueParts.date);
@@ -9581,6 +10867,7 @@ export default function App() {
       setEditingTask({
         id: task.id,
         scopeMode: task.scopeMode || (isPrivateTask(task) ? 'PERSONAL_ONLY' : 'COLLAB_SHARED'),
+        scopeModeTouched: true,
         title: task.title,
         desc: task.desc,
         listId: task.listId,
@@ -9603,14 +10890,16 @@ export default function App() {
         projectFlowId: task.projectFlowId || '',
         projectFlowTouched: Boolean(task.projectFlowId),
         projectFlowReason: task.projectFlowName ? `当前任务已挂到流程"${task.projectFlowName}"。` : '可选：把任务进一步挂到标准流程，后续复盘和日历会更贴近业务动作。',
-        ddl: task.dueDate ? formatTaskDueLabel(task.dueDate) : task.ddl,
+        ddl: (task.scheduledStartAt || task.deadlineAt || task.dueDate)
+          ? formatTaskDueLabel(task.scheduledStartAt || task.deadlineAt || task.dueDate)
+          : task.ddl,
         tagIds: [],
         collaborators: task.collaborators.map((item) => ({
           id: item.userId,
           fullName: item.fullName,
           email: item.email,
-          primaryRole: currentSessionUser.primaryRole,
-          isSelf: item.userId === currentSessionUser.id,
+          primaryRole: currentSessionUser?.primaryRole || 'employee',
+          isSelf: item.userId === currentSessionUser?.id,
         })),
       });
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
@@ -9630,12 +10919,38 @@ export default function App() {
         mode: 'page_context',
         includeRawEvidence: false,
         includeActionSuggestions: false,
-        shadow: true,
-      }).catch(() => undefined);
-    };
+	        shadow: true,
+	      }).catch(() => undefined);
+	    };
 
-    useEffect(() => {
-      if (activeTab !== 'strategic_accompaniment' || !currentClientId) return;
+	    useEffect(() => {
+	      const openDraftFromStrategic = (payload: StrategicTaskDraftRequest) => {
+	        const descParts = [`【系统建议 · ${payload.thoughtLine}】\n${payload.suggestion}`];
+	        if (payload.ceoComment) {
+	          descParts.push(`\n\n【补充看法 · ${currentSessionUser?.fullName || 'CEO'}】\n${payload.ceoComment}`);
+	        }
+	        setTaskViewMode('list');
+	        resetTaskDraft(payload.dueDate || undefined);
+	        setEditingTask((prev) => ({
+	          ...prev,
+	          desc: descParts.join(''),
+	          clientId: payload.clientId || '',
+	          clientTouched: Boolean(payload.clientId),
+	          clientConfidence: payload.clientId ? 'manual' : 'none',
+	          clientReason: payload.clientId ? `来自战略研判「${payload.thoughtLine}」` : '请选择项目。',
+	        }));
+	        setIsTaskModalOpen(true);
+	      };
+	      openStrategicTaskDraftRef.current = openDraftFromStrategic;
+	      return () => {
+	        if (openStrategicTaskDraftRef.current === openDraftFromStrategic) {
+	          openStrategicTaskDraftRef.current = () => undefined;
+	        }
+	      };
+	    });
+
+	    useEffect(() => {
+	      if (activeTab !== 'strategic_accompaniment' || !currentClientId) return;
       void resolveDataCenterKernel({
         scope: {
           page: 'strategic_cockpit',
@@ -9795,25 +11110,46 @@ export default function App() {
 
     const focusCalendarOnTaskDate = (dueDate?: string | null, ddl?: string | null) => {
       const explicitDate = parseTaskDateValue(dueDate);
-      const fallbackDate = !explicitDate && ddl ? normalizeDdlToDate(ddl) : null;
-      const nextDate = explicitDate || fallbackDate;
+      const nextDate = explicitDate;
       if (!nextDate || Number.isNaN(nextDate.getTime())) return;
       setTaskCalendarDate(new Date(nextDate.getFullYear(), nextDate.getMonth(), 1));
       setTaskSelectedDay(nextDate.getDate());
       setTaskSelectedDate(nextDate);
     };
 
+    const createTaskCompletionPatch = (willBeDone: boolean, completedAt = new Date().toISOString()) => {
+      const nextStatus: Task['status'] = willBeDone ? 'done' : 'doing';
+      return {
+        status: nextStatus,
+        completedAt: willBeDone ? completedAt : null,
+      };
+    };
+
+    const completeTaskRecord = (task: Task, willBeDone: boolean, completedAt?: string) => {
+      return updateTask(task.id, createTaskCompletionPatch(willBeDone, completedAt));
+    };
+
     const toggleTaskStatus = async (id: string, nextDone?: boolean) => {
       const task = tasks.find((item) => item.id === id);
       if (!task) return;
+      if (isLocalDraftTaskId(task.id)) {
+        flash('info', '任务正在保存，稍后再调整时间。');
+        return;
+      }
       const willBeDone = nextDone ?? task.status !== 'done';
-      const nextStatus = willBeDone ? 'done' : 'doing';
+      const completionPatch = createTaskCompletionPatch(willBeDone);
       setUpdatingTaskStatusIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-      setTasks((prev) => prev.map((item) => (item.id === id ? { ...item, status: nextStatus } : item)));
+      setTasks((prev) => prev.map((item) => (item.id === id ? { ...item, ...completionPatch } : item)));
       try {
-        await updateTask(id, { status: nextStatus });
-        await loadTaskBlock();
-        await refreshWorkspace();
+        const updatedTask = await completeTaskRecord(task, willBeDone, completionPatch.completedAt ?? undefined);
+        await Promise.all([
+          loadTaskBlock(),
+          refreshWorkspace(updatedTask.clientId || task.clientId || undefined),
+          loadSelectedReviewBlock(),
+          updatedTask.eventLineId && activeEventLine?.eventLine.id === updatedTask.eventLineId
+            ? openEventLineDetail(updatedTask.eventLineId)
+            : Promise.resolve(null),
+        ]);
         flash('success', willBeDone ? '任务已标记完成' : '任务已恢复待推进');
       } catch (error) {
         await loadTaskBlock().catch(() => undefined);
@@ -9823,11 +11159,94 @@ export default function App() {
       }
     };
 
+    const rememberTaskContextBriefs = (briefs: TaskContextBrief[]) => {
+      if (briefs.length === 0) return;
+      setTaskContextBriefs((prev) => {
+        const next = { ...prev };
+        briefs.forEach((brief) => {
+          next[brief.taskId] = brief;
+        });
+        return next;
+      });
+    };
+
+    const markContextBriefLoading = (taskIds: string[], isLoading: boolean) => {
+      if (taskIds.length === 0) return;
+      setLoadingTaskContextBriefIds((prev) => {
+        if (isLoading) {
+          const next = new Set(prev);
+          taskIds.forEach((id) => next.add(id));
+          return Array.from(next);
+        }
+        return prev.filter((id) => !taskIds.includes(id));
+      });
+    };
+
+    const loadTaskContextBriefsForTasks = async (taskItems: Task[], options?: { silent?: boolean }) => {
+      const candidateIds = taskItems
+        .filter((task) => task.scopeMode !== 'PERSONAL_ONLY' && (task.eventLineId || task.clientId))
+        .map((task) => task.id)
+        .filter((taskId, index, all) => all.indexOf(taskId) === index)
+        .filter((taskId) => !taskContextBriefs[taskId] && !loadingTaskContextBriefIds.includes(taskId))
+        .slice(0, 12);
+      if (candidateIds.length === 0) return;
+      markContextBriefLoading(candidateIds, true);
+      try {
+        const response = await getTaskContextBriefsBatch(candidateIds);
+        rememberTaskContextBriefs(response.briefs || []);
+      } catch (error) {
+        if (!options?.silent) {
+          flash('error', error instanceof Error ? error.message : '任务前情提要加载失败');
+        }
+      } finally {
+        markContextBriefLoading(candidateIds, false);
+      }
+    };
+
+    useEffect(() => {
+      taskContextBriefPreloadRef.current = loadTaskContextBriefsForTasks;
+      return () => {
+        if (taskContextBriefPreloadRef.current === loadTaskContextBriefsForTasks) {
+          taskContextBriefPreloadRef.current = async () => undefined;
+        }
+      };
+    }, [loadTaskContextBriefsForTasks]);
+
+    const loadTaskContextBriefForTask = async (task: Task) => {
+      if (task.scopeMode === 'PERSONAL_ONLY' || (!task.eventLineId && !task.clientId) || taskContextBriefs[task.id]) return;
+      markContextBriefLoading([task.id], true);
+      try {
+        const brief = await getTaskContextBrief(task.id);
+        rememberTaskContextBriefs([brief]);
+      } catch {
+        rememberTaskContextBriefs([{
+          taskId: task.id,
+          brief: '',
+          shouldDisplay: false,
+          materialPackHash: '',
+          usedProjectSignals: [],
+          materialBoundary: '',
+          qualityFlags: ['load_failed'],
+          generationModel: '',
+          generationPromptVersion: '',
+          updatedAt: '',
+        }]);
+      } finally {
+        markContextBriefLoading([task.id], false);
+      }
+    };
+
     const toggleTaskExpanded = (taskId: string) => {
       const isCollapsing = expandedTaskIds.includes(taskId);
       setExpandedTaskIds((prev) =>
         isCollapsing ? prev.filter((id) => id !== taskId) : [...prev, taskId],
       );
+      if (!isCollapsing) {
+        const task = tasks.find((t) => t.id === taskId);
+        if (task) {
+          void loadTaskContextBriefForTask(task);
+        }
+      }
       if (!isCollapsing && !taskSmartBriefs[taskId]) {
         const task = tasks.find((t) => t.id === taskId);
         if (task) {
@@ -9850,13 +11269,22 @@ export default function App() {
     const handleQuickCreateTask = async (title: string, dueDate: string) => {
       const defaultCollaborators = buildDefaultCollaborators();
       const owner = defaultCollaborators[0];
+      const dueParts = splitTaskDueDateTime(dueDate);
+      const hasScheduledTime = Boolean(dueParts.time);
+      const deadlineAt = hasScheduledTime ? null : dueDate;
+      const scheduledStartAt = hasScheduledTime ? dueDate : null;
       await createTask({
         title: title.trim(),
         desc: '',
         priority: effectiveTaskSettings.defaultPriority,
         listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
         dueDate,
+        deadlineAt,
+        scheduledStartAt,
+        scheduledEndAt: null,
+        startDate: scheduledStartAt,
         ddl: dueDate,
+        clientId: organizationClientId || null,
         ownerId: owner?.id || currentSessionUser?.id || null,
         ownerName: owner?.fullName || currentSessionUser?.fullName || currentOperatorName,
         collaboratorIds: defaultCollaborators.map((item) => item.id),
@@ -9876,16 +11304,33 @@ export default function App() {
         flash('info', '任务正在保存，稍后再调整时间。');
         return;
       }
-      const currentParts = splitTaskDueDateTime(task.dueDate);
+      const placement = getTaskCalendarPlacement(task);
+      const currentSchedule = getTaskScheduleRange(task);
+      const currentParts = splitTaskDueDateTime(task.scheduledStartAt || task.startDate || task.dueDate);
       const nextParts = splitTaskDueDateTime(nextDate);
-      const nextDueDate = nextParts.date
+      const isTimedDrop = Boolean(nextParts.time);
+      const shouldMoveSchedule = placement.kind === 'scheduled' || isTimedDrop;
+      const nextScheduleStart = shouldMoveSchedule && nextParts.date
         ? combineTaskDueDateTime(nextParts.date, nextParts.time || currentParts.time)
-        : combineTaskDueDateTime(nextDate, currentParts.time);
-      const nextDueValue = nextDueDate || nextDate;
+        : shouldMoveSchedule
+          ? combineTaskDueDateTime(nextDate, currentParts.time)
+          : null;
+      const scheduleDuration = Math.max(15, task.durationMinutes || (currentSchedule ? Math.round((currentSchedule.end.getTime() - currentSchedule.start.getTime()) / 60_000) : 60));
+      const nextScheduleEnd = nextScheduleStart
+        ? (() => {
+            const endDate = new Date(new Date(nextScheduleStart).getTime() + scheduleDuration * 60_000);
+            return combineTaskDueDateTime(
+              `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`,
+              `${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`,
+            );
+          })()
+        : null;
+      const nextDeadlineAt = shouldMoveSchedule ? (task.deadlineAt || null) : (nextParts.date || nextDate);
+      const nextDueValue = nextDeadlineAt || nextScheduleStart || nextDate;
       const nextDueLabel = formatTaskDueLabel(nextDueValue);
       const previousTaskSnapshot = task;
       const applyLocalTaskPatch = (nextTask: Task) => {
-        const nextTaskDueParts = splitTaskDueDateTime(nextTask.dueDate);
+        const nextTaskDueParts = splitTaskDueDateTime(nextTask.scheduledStartAt || nextTask.dueDate);
         setTasks((prev) => prev.map((item) => (item.id === nextTask.id ? { ...item, ...nextTask } : item)));
         setEditingTask((prev) => (prev.id === nextTask.id
           ? {
@@ -9899,7 +11344,12 @@ export default function App() {
 
       applyLocalTaskPatch({
         ...task,
+        scheduledStartAt: nextScheduleStart,
+        scheduledEndAt: nextScheduleEnd,
+        deadlineAt: nextDeadlineAt,
+        startDate: nextScheduleStart,
         dueDate: nextDueValue,
+        durationMinutes: scheduleDuration,
         ddl: nextDueLabel,
       });
 
@@ -9908,7 +11358,12 @@ export default function App() {
       }
       try {
         const updatedTask = await updateTask(task.id, {
+          scheduledStartAt: nextScheduleStart,
+          scheduledEndAt: nextScheduleEnd,
+          deadlineAt: nextDeadlineAt,
+          startDate: nextScheduleStart,
           dueDate: nextDueValue,
+          durationMinutes: scheduleDuration,
           ddl: nextDueLabel,
         });
         applyLocalTaskPatch(updatedTask);
@@ -9925,8 +11380,19 @@ export default function App() {
         return;
       }
       const safeDuration = Math.max(15, Math.min(12 * 60, Math.round(durationMinutes / 15) * 15));
+      const schedule = getTaskScheduleRange(task);
+      const nextScheduledEndAt = schedule
+        ? (() => {
+            const endDate = new Date(schedule.start.getTime() + safeDuration * 60_000);
+            return combineTaskDueDateTime(
+              `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`,
+              `${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`,
+            );
+          })()
+        : null;
       await updateTask(task.id, {
         durationMinutes: safeDuration,
+        scheduledEndAt: nextScheduledEndAt,
       });
       await loadTaskBlock();
       flash('success', `任务时长已调整为 ${safeDuration} 分钟。`);
@@ -9958,7 +11424,7 @@ export default function App() {
 
     const handleBatchCompleteSelectedTasks = async () => {
       if (isBatchBusy || selectedListTasks.length === 0) return;
-      const allowedTasks = selectedListTasks.filter((task) => task.status !== 'done' && taskCanToggleCompletion(task, currentSessionUser?.id));
+      const allowedTasks = selectedListTasks.filter((task) => !isLocalDraftTaskId(task.id) && task.status !== 'done' && taskCanToggleCompletion(task, currentSessionUser?.id));
       const allowedIds = new Set(allowedTasks.map((task) => task.id));
       const skippedIds = selectedListTasks.filter((task) => !allowedIds.has(task.id)).map((task) => task.id);
       if (allowedTasks.length === 0) {
@@ -9968,15 +11434,17 @@ export default function App() {
       }
       setIsBatchBusy(true);
       setUpdatingTaskStatusIds((prev) => Array.from(new Set([...prev, ...allowedTasks.map((task) => task.id)])));
-      setTasks((prev) => prev.map((task) => (allowedIds.has(task.id) ? { ...task, status: 'done' } : task)));
+      const batchCompletedAt = new Date().toISOString();
+      const batchCompletionPatch = createTaskCompletionPatch(true, batchCompletedAt);
+      setTasks((prev) => prev.map((task) => (allowedIds.has(task.id) ? { ...task, ...batchCompletionPatch } : task)));
       try {
-        const results = await Promise.allSettled(allowedTasks.map((task) => updateTask(task.id, { status: 'done' })));
+        const results = await Promise.allSettled(allowedTasks.map((task) => completeTaskRecord(task, true, batchCompletedAt)));
         const failedIds = allowedTasks
           .filter((_, index) => results[index].status === 'rejected')
           .map((task) => task.id);
         await loadTaskBlock();
         await refreshWorkspace();
-        if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
+        void loadSelectedReviewBlock();
         const unfinishedIds = [...skippedIds, ...failedIds];
         setSelectedListTaskIds(unfinishedIds);
         if (failedIds.length > 0 || skippedIds.length > 0) {
@@ -10003,7 +11471,14 @@ export default function App() {
       setIsBatchBusy(true);
       try {
         const results = await Promise.allSettled(
-          selectedListTasks.map((task) => updateTask(task.id, { dueDate: batchDueDate, ddl: nextLabel })),
+          selectedListTasks.map((task) => updateTask(task.id, {
+            dueDate: batchDueDate,
+            deadlineAt: batchDueDate,
+            scheduledStartAt: null,
+            scheduledEndAt: null,
+            startDate: null,
+            ddl: nextLabel,
+          })),
         );
         const failedIds = selectedListTasks
           .filter((_, index) => results[index].status === 'rejected')
@@ -10087,7 +11562,7 @@ export default function App() {
       await updateAgentWeeklyPlan(payload.weekLabel, payload.agentKey, payload);
       await Promise.all([
         loadAgentWorklogBlock(calendarMonthLabel),
-        loadReviewBlock(),
+        loadSelectedReviewBlock(),
       ]);
       flash('success', '机器人部门正式计划已更新。');
     };
@@ -10096,7 +11571,6 @@ export default function App() {
       if (mode === 'review') {
         setActiveReviewTab((current) => (current === 'overview' ? 'events' : current));
         setGrowthContextJump(null);
-        void loadReviewBlock(reviewDashboard?.currentReview?.weekLabel);
       }
       if (mode !== 'list') {
         setDrillTaskViewOverride(null);
@@ -10109,7 +11583,7 @@ export default function App() {
         await approveTaskReview(taskId);
         await Promise.all([
           loadTaskBlock(),
-          loadReviewBlock(reviewDashboard?.currentReview?.weekLabel),
+          loadSelectedReviewBlock(),
         ]);
         flash('success', '任务已通过复核。');
       } catch (error) {
@@ -10128,7 +11602,7 @@ export default function App() {
         await returnTaskReview(taskId, reason.trim());
         await Promise.all([
           loadTaskBlock(),
-          loadReviewBlock(reviewDashboard?.currentReview?.weekLabel),
+          loadSelectedReviewBlock(),
         ]);
         flash('success', '任务已退回复核。');
       } catch (error) {
@@ -10147,7 +11621,7 @@ export default function App() {
         await completeTaskWithReview(taskId, reviewNote.trim());
         await Promise.all([
           loadTaskBlock(),
-          loadReviewBlock(reviewDashboard?.currentReview?.weekLabel),
+          loadSelectedReviewBlock(),
         ]);
         flash('success', '任务已完成并发起复核。');
       } catch (error) {
@@ -10190,26 +11664,6 @@ export default function App() {
       });
     };
 
-    const handleCreateTaskPrepProposal = async (task: Task) => {
-      const busyKey = `task:${task.id}`;
-      updateProposalBusy(busyKey, 'creating');
-      try {
-        const prepPack = await getTaskPrepPack(task.id);
-        setTaskPrepPacks((prev) => ({ ...prev, [task.id]: prepPack }));
-        const proposal = await createTaskPrepProposal(task.id);
-        setTaskPrepPacks((prev) => ({
-          ...prev,
-          [task.id]: { ...(prev[task.id] || prepPack), proposalId: proposal.id },
-        }));
-        await loadProposalBlock(currentClientId || undefined);
-        flash('success', '事件线摘要 proposal 已进入 Proposal Inbox。');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '事件线摘要 proposal 生成失败');
-      } finally {
-        updateProposalBusy(busyKey, null);
-      }
-    };
-
     const handleProposalDecision = async (proposalId: string, action: 'approve' | 'reject' | 'execute') => {
       const busyKey = `proposal:${proposalId}`;
       updateProposalBusy(busyKey, action);
@@ -10219,7 +11673,7 @@ export default function App() {
           flash('success', 'Proposal 已批准。');
         } else if (action === 'reject') {
           const reason = window.prompt('请填写驳回原因（可选）') || '';
-          await rejectProposal(proposalId, reason.trim());
+          await rejectProposal(proposalId, { note: reason.trim() });
           flash('success', 'Proposal 已驳回。');
         } else {
           const execution = await executeProposal(proposalId);
@@ -10234,16 +11688,18 @@ export default function App() {
       }
     };
 
+    const proposalTargetMeeting = workspace?.meetings.find((meeting) => meeting.id === workspaceSelectedMeetingId) || workspace?.meetings[0] || null;
+
     const handleCreateMeetingProposal = async (kind: 'prepare' | 'followup') => {
-      if (!currentClientId || !selectedMeeting) return;
-      const busyKey = `meeting:${selectedMeeting.id}:${kind}`;
+      if (!currentClientId || !proposalTargetMeeting) return;
+      const busyKey = `meeting:${proposalTargetMeeting.id}:${kind}`;
       updateProposalBusy(busyKey, kind);
       try {
         if (kind === 'prepare') {
-          await createMeetingPrepareProposal(currentClientId, selectedMeeting.id);
+          await createMeetingPrepareProposal(currentClientId, proposalTargetMeeting.id);
           flash('success', '会前 proposal 已进入 Proposal Inbox。');
         } else {
-          await createMeetingFollowupProposal(currentClientId, selectedMeeting.id);
+          await createMeetingFollowupProposal(currentClientId, proposalTargetMeeting.id);
           flash('success', '会后 follow-up proposal 已进入 Proposal Inbox。');
         }
         await loadProposalBlock(currentClientId);
@@ -10292,10 +11748,20 @@ export default function App() {
     const generateGlobalSummary = async () => {
       setIsGeneratingGlobal(true);
       try {
-        const nextDashboard = await createWeeklyReview(buildReviewPayload());
-        clearReviewTasksDirty();
-        setSavedReviewGroupId(null);
-        setReviewDashboard(nextDashboard);
+        const rowsToSave = dirtyReviewRows();
+        let targetWeekLabel = reviewForm.weekLabel || selectedReviewWeekLabel || currentWeekLabel();
+        if (rowsToSave.length > 0) {
+          const nextDashboard = await createWeeklyReview(buildReviewPayload(undefined, rowsToSave));
+          clearReviewTasksDirty(rowsToSave.map(({ task }) => task.id));
+          setSavedReviewGroupId(null);
+          setReviewDashboard(nextDashboard);
+          targetWeekLabel = nextDashboard.weekLabel || nextDashboard.currentReview?.weekLabel || targetWeekLabel;
+        }
+        await triggerWeeklyOverviewRefresh(targetWeekLabel, {
+          force: true,
+          reloadOnDone: true,
+          dedupe: false,
+        });
         void loadReviewHistoryBlock();
         notifyGrowthRefresh();
         setExpandedReviewGroupId(null);
@@ -10332,27 +11798,28 @@ export default function App() {
       try {
         const targetGroup = [...workReviewGroups, ...personalReviewGroups].find((group) => group.id === groupId);
         const targetRows = overrideRows || targetGroup?.rows || null;
-        const targetTaskIds = targetRows
-          ? targetRows.map(({ task }) => task.id)
-          : [...workReviewRows, ...personalReviewRows].map(({ task }) => task.id);
+        const dirtyTargetRows = targetRows
+          ? targetRows.filter(({ task }) => reviewDirtyTaskIdsRef.current.has(task.id))
+          : allReviewRows().filter(({ task }) => reviewDirtyTaskIdsRef.current.has(task.id));
+        if (dirtyTargetRows.length === 0) {
+          setSavedReviewGroupId(groupId);
+          flash('success', '当前复盘条目已保存。');
+          return;
+        }
         const revisionSnapshot = Object.fromEntries(
-          targetTaskIds.map((taskId) => [taskId, reviewDraftRevisionRef.current[taskId] || 0]),
+          dirtyTargetRows.map(({ task }) => [task.id, reviewDraftRevisionRef.current[task.id] || 0]),
         );
-        const nextDashboard = await createWeeklyReviewDraft(targetRows ? buildReviewPayloadForRows(targetRows) : buildReviewPayload());
-        const unchangedTaskIds = targetTaskIds.filter(
+        const nextDashboard = await createWeeklyReviewDraft(buildReviewPayloadForRows(dirtyTargetRows));
+        const unchangedTaskIds = dirtyTargetRows.map(({ task }) => task.id).filter(
           (taskId) => (reviewDraftRevisionRef.current[taskId] || 0) === revisionSnapshot[taskId],
         );
-        if (targetGroup) {
-          clearReviewTasksDirty(unchangedTaskIds);
-        } else {
-          clearReviewTasksDirty(unchangedTaskIds);
-        }
-        setSavedReviewGroupId(unchangedTaskIds.length === targetTaskIds.length ? groupId : null);
+        clearReviewTasksDirty(unchangedTaskIds);
+        setSavedReviewGroupId(unchangedTaskIds.length === dirtyTargetRows.length ? groupId : null);
         setReviewDashboard((current) => mergeDraftReviewDashboard(current, nextDashboard));
         void loadReviewHistoryBlock();
         notifyGrowthRefresh();
         void loadTaskBlock().catch(() => undefined);
-        if (unchangedTaskIds.length === targetTaskIds.length) {
+        if (unchangedTaskIds.length === dirtyTargetRows.length) {
           flash('success', '当前复盘条目已保存。');
         } else {
           flash('info', '已保存提交时的内容；你后续输入的复盘仍在编辑中，请再保存一次。');
@@ -10385,24 +11852,25 @@ export default function App() {
             };
           });
         } else {
-          const nextTaskStatus: Task['status'] = nextStatus === 'done' ? 'done' : 'doing';
-          await Promise.all(group.rows.map(({ task }) => updateTask(task.id, { status: nextTaskStatus })));
+          const willBeDone = nextStatus === 'done';
+          const completedAt = willBeDone ? new Date().toISOString() : undefined;
+          await Promise.all(group.rows.map(({ task }) => completeTaskRecord(task, willBeDone, completedAt)));
           setReviewForm((prev) => ({
             ...prev,
             entriesByTaskId: {
               ...prev.entriesByTaskId,
               ...Object.fromEntries(
-                group.rows.map(({ task }) => {
-                  const current = prev.entriesByTaskId[task.id] ?? createEmptyReviewStructuredNote();
-                  const nextNote =
-                    nextStatus === 'done'
-                      ? {
-                          ...current,
-                          completionStatus: current.completionStatus === 'done_late' ? 'done_late' : 'done_on_time',
-                        }
-                      : {
-                          ...current,
-                          completionStatus: 'not_done',
+	                group.rows.map(({ task }) => {
+	                  const current = prev.entriesByTaskId[task.id] ?? createEmptyReviewStructuredNote();
+	                  const nextNote: WeeklyReviewTaskStructuredNote =
+	                    nextStatus === 'done'
+	                      ? {
+	                          ...current,
+	                          completionStatus: current.completionStatus === 'done_late' ? 'done_late' : 'done_on_time',
+	                        }
+	                      : {
+	                          ...current,
+	                          completionStatus: 'not_done',
                         };
                   return [task.id, nextNote];
                 }),
@@ -10411,7 +11879,7 @@ export default function App() {
           }));
         }
         await loadTaskBlock();
-        await loadReviewBlock(reviewDashboard?.weekLabel);
+        await loadSelectedReviewBlock();
         await refreshWorkspace();
         flash(
           'success',
@@ -10891,10 +12359,10 @@ export default function App() {
                             );
                             const isSelected = selectedListTaskIds.includes(task.id);
                             const dueState = getTaskDueState(task);
-                            const taskPrepPack = taskPrepPacks[task.id];
-                            const prepPackPastMaterials = getPrepPackTimelineMaterials(taskPrepPack, 'past');
-                            const prepPackFutureMaterials = getPrepPackTimelineMaterials(taskPrepPack, 'future');
+                            const taskContextBrief = taskContextBriefs[task.id];
+                            const isTaskContextBriefLoading = loadingTaskContextBriefIds.includes(task.id);
                             const toggleTaskCard = () => toggleTaskExpanded(task.id);
+                            const displayTime = getTaskDisplayTime(task);
                             return (
                               <div
                                 key={task.id}
@@ -11005,6 +12473,12 @@ export default function App() {
                                         <GitMerge size={12} className="shrink-0" />
                                         <span className="truncate">事件线 · {task.eventLineName}</span>
                                       </button>
+                                    )}
+                                    {displayTime && (
+                                      <span className="flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-1 text-indigo-700">
+                                        <CalendarIcon size={12} />
+                                        <span>{displayTime.kind === 'scheduled' ? '安排' : '截止'} · {displayTime.dateLabel}{displayTime.timeLabel ? ` ${displayTime.timeLabel}` : ''}</span>
+                                      </span>
                                     )}
                                     <span className="flex min-w-0 max-w-[260px] items-center gap-1 rounded-md bg-gray-50 px-2 py-1 text-gray-500">
                                       <User size={12} className="shrink-0" />
@@ -11199,64 +12673,37 @@ export default function App() {
                                 )}
                               </div>
                             )}
-                            {task.scopeMode !== 'PERSONAL_ONLY' && task.eventLineId && (
-                              <div className="mb-3 space-y-3">
-                                <div className="flex items-center justify-between rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
-                                  <div>
-                                    <p className="text-[11px] font-bold tracking-[0.18em] text-violet-500">事件线时间摘要</p>
-                                    <p className="mt-1 text-[12px] text-violet-700">只看同一事件线：过去做了什么，未来还要做什么。</p>
-                                  </div>
-                                  <Button
-                                    primary
-                                    className="px-3 py-1.5 text-[12px]"
-                                    disabled={Boolean(proposalBusyState[`task:${task.id}`])}
-                                    onClick={() => void handleCreateTaskPrepProposal(task)}
-                                  >
-                                    {proposalBusyState[`task:${task.id}`] === 'creating' ? '生成中…' : '生成摘要 proposal'}
-                                  </Button>
+                            {task.scopeMode !== 'PERSONAL_ONLY' && (task.eventLineId || task.clientId) && isTaskContextBriefLoading && !taskContextBrief && (
+                              <div className="mb-3 rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-3 w-3 animate-spin rounded-full border-2 border-violet-200 border-t-violet-500" />
+                                  <p className="text-[11px] font-bold tracking-[0.18em] text-violet-500">生成任务前情提要</p>
                                 </div>
-                                {taskPrepPack?.summary && (
-                                  <div className="rounded-2xl border border-violet-100 bg-white px-4 py-3">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <p className="text-[11px] font-bold tracking-[0.18em] text-violet-500">时间线</p>
-                                      {taskPrepPack.sourceLabels.map((label) => (
-                                        <span key={`${task.id}-prep-${label}`} className="rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-600">{label}</span>
+                              </div>
+                            )}
+                            {taskContextBrief?.shouldDisplay && taskContextBrief.brief && (
+                              <div className="mb-3 rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">
+                                <div className="mb-2 flex items-center justify-between gap-3">
+                                  <p className="text-[11px] font-bold tracking-[0.18em] text-violet-500">任务前情提要</p>
+                                  {taskContextBrief.qualityFlags.includes('thin_context') && (
+                                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-violet-500">依据较少</span>
+                                  )}
+                                </div>
+                                <p className="text-[12px] leading-6 text-gray-700">{taskContextBrief.brief}</p>
+                                {taskContextBrief.usedProjectSignals.length > 0 && (
+                                  <details className="mt-3 rounded-xl border border-violet-100 bg-white/80 px-3 py-2">
+                                    <summary className="cursor-pointer text-[11px] font-bold text-violet-600">查看依据</summary>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {taskContextBrief.usedProjectSignals.map((signal) => (
+                                        <span key={`${task.id}-context-signal-${signal}`} className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-semibold text-violet-700">
+                                          {signal}
+                                        </span>
                                       ))}
                                     </div>
-                                    <p className="text-[12px] leading-6 text-gray-600">{taskPrepPack.summary}</p>
-                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                      <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3">
-                                        <p className="text-[11px] font-bold text-gray-700">过去已做</p>
-                                        {prepPackPastMaterials.length > 0 ? (
-                                          <div className="mt-2 space-y-2">
-                                            {prepPackPastMaterials.slice(0, 4).map((item) => (
-                                              <div key={`${task.id}-past-${item.sourceId}`} className="text-[11px] leading-5 text-gray-500">
-                                                <p className="font-semibold text-gray-700">{item.title}</p>
-                                                {item.summary && item.summary !== item.title && <p>{item.summary}</p>}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <p className="mt-2 text-[11px] leading-5 text-gray-400">暂无明确完成记录。</p>
-                                        )}
-                                      </div>
-                                      <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3">
-                                        <p className="text-[11px] font-bold text-gray-700">未来待做</p>
-                                        {prepPackFutureMaterials.length > 0 ? (
-                                          <div className="mt-2 space-y-2">
-                                            {prepPackFutureMaterials.slice(0, 5).map((item) => (
-                                              <div key={`${task.id}-future-${item.sourceId}`} className="text-[11px] leading-5 text-gray-500">
-                                                <p className="font-semibold text-gray-700">{item.title}</p>
-                                                {item.summary && item.summary !== item.title && <p>{item.summary}</p>}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <p className="mt-2 text-[11px] leading-5 text-gray-400">暂无明确待推进任务。</p>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
+                                    {taskContextBrief.materialBoundary && (
+                                      <p className="mt-2 text-[10px] leading-5 text-gray-400">{taskContextBrief.materialBoundary}</p>
+                                    )}
+                                  </details>
                                 )}
                               </div>
                             )}
@@ -11293,10 +12740,6 @@ export default function App() {
                   )}
                 </div>
                 <div className="mb-5 space-y-3">
-                  <div className="rounded-2xl border border-violet-100 bg-violet-50/50 px-4 py-3">
-                    <p className="text-[12px] font-bold text-violet-700">Proposal Inbox / Review Inbox</p>
-                    <p className="mt-1 text-[11px] text-violet-600">任务准备包、会前准备和会后 follow-up 都会先进入这里，人工批准后才能执行。</p>
-                  </div>
                   {pendingReviewProposals.length > 0 && (
                     <div className="space-y-3">
                       {pendingReviewProposals.map((proposal) => {
@@ -11635,27 +13078,21 @@ export default function App() {
               <TaskCalendarView
                 tasks={calendarTasks}
                 clientColorById={clientColorById}
-                eventLinesById={eventLineById}
                 currentUserId={currentSessionUser?.id || null}
-                currentUserRole={currentSessionUser?.primaryRole || null}
                 calendarDisplayMode={taskCalendarDisplayMode}
                 onSetCalendarDisplayMode={setTaskCalendarDisplayMode}
                 calendarDate={taskCalendarDate}
                 selectedDate={taskSelectedDate}
-                isDetailOpen={taskCalendarDetailOpen}
                 onSelectDate={handleTaskCalendarDateSelect}
-                onSetDetailOpen={setTaskCalendarDetailOpen}
                 onShiftMonth={handleCalendarShift}
                 onAlignCalendarDate={handleAlignTaskCalendarDate}
                 onGoToToday={handleCalendarToday}
                 onOpenTaskEditor={openTaskEditor}
                 onToggleTaskStatus={toggleTaskStatus}
-                onQuickCreateTask={handleQuickCreateTask}
                 onRescheduleTask={handleRescheduleTask}
                 onUpdateTaskDuration={handleUpdateTaskDuration}
                 onApproveTaskReview={handleApproveTaskReview}
                 onReturnTaskReview={handleReturnTaskReview}
-                taskDateForCalendar={taskDateForCalendar}
                 isTaskOverdue={isTaskOverdue}
                 showCollaborativeTasks={hidePersonalTasks}
                 onToggleCollaborativeTasks={() => setHidePersonalTasks((prev) => !prev)}
@@ -11685,7 +13122,7 @@ export default function App() {
                   <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                   <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
                 </div>
-                <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' as any }}>
+                <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                   <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
                   <div className="relative" ref={elProjectDropdownRef}>
                     {/* 自定义下拉按钮 — 替代原生 select，绕过 Electron hiddenInset 事件丢失 */}
@@ -11693,7 +13130,7 @@ export default function App() {
                       type="button"
                       onClick={() => setElProjectDropdownOpen((v) => !v)}
                       className="w-full appearance-none rounded-2xl border border-gray-200 bg-white/90 py-3 pl-4 pr-10 text-left text-[13px] font-semibold text-gray-700 shadow-sm outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE] focus:ring-2 focus:ring-[#5B7BFE]/10"
-                      style={{ WebkitAppRegion: 'no-drag' as any }}
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                     >
                       {eventLineProjectFilterId === '__all__'
                         ? `全部项目（${eventLineProjectOptions.length}）`
@@ -11706,7 +13143,7 @@ export default function App() {
                     {elProjectDropdownOpen && (
                       <div
                         className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[260px] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg"
-                        style={{ WebkitAppRegion: 'no-drag' as any }}
+                        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
                       >
                         <button
                           type="button"
@@ -11891,7 +13328,6 @@ export default function App() {
                     { id: 'overview' as const, label: '本周概览', Icon: LayoutDashboard },
                     { id: 'events' as const, label: '事件复盘', Icon: GitMerge },
                     { id: 'signals' as const, label: '部门信号', Icon: Radio },
-                    { id: 'ai' as const, label: 'AI摘要', Icon: Bot },
                   ]).map((tab) => (
                     <button
                       key={tab.id}
@@ -11912,14 +13348,12 @@ export default function App() {
                         <button
                           key={item.key}
                           type="button"
-                          onClick={() => {
-                            const nextDepartmentId = item.key === 'department'
-                              ? item.departmentId || reviewDepartmentId || reviewDepartmentOptions[0]?.id || null
-                              : null;
-                            pendingReviewPerspectiveRef.current = {
-                              perspective: item.key,
-                              departmentId: nextDepartmentId,
-                            };
+	                      onClick={() => {
+		                            const rawDepartmentId = (item as { departmentId?: unknown }).departmentId;
+		                            const itemDepartmentId = typeof rawDepartmentId === 'string' ? rawDepartmentId : null;
+	                            const nextDepartmentId = item.key === 'department'
+	                              ? itemDepartmentId || reviewDepartmentId || reviewDepartmentOptions[0]?.id || null
+	                              : null;
                             setReviewPerspective(item.key);
                             if (item.key === 'organization' || item.key === 'department') {
                               setReviewScope('work');
@@ -11942,10 +13376,6 @@ export default function App() {
                       value={reviewDepartmentId || reviewDepartmentOptions[0]?.id || ''}
                       onChange={(event) => {
                         const nextDepartmentId = event.target.value;
-                        pendingReviewPerspectiveRef.current = {
-                          perspective: 'department',
-                          departmentId: nextDepartmentId,
-                        };
                         setReviewPerspective('department');
                         setReviewDepartmentId(nextDepartmentId);
                         setReviewScope('work');
@@ -11968,7 +13398,14 @@ export default function App() {
               {activeReviewTab === 'overview' && (
                 <div className="space-y-4">
                   <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                    <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-[0.15em] mb-3">本周总览</h3>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h3 className="text-[11px] font-bold text-gray-300 uppercase tracking-[0.15em]">本周总览</h3>
+                      {reviewScope === 'work' && (
+                        <span className={`text-[11px] font-bold ${weeklyOverviewIsRefreshing ? 'text-[#5B7BFE]' : weeklyOverviewIsAi ? 'text-emerald-500' : 'text-gray-300'}`}>
+                          {weeklyOverviewIsRefreshing ? '正在更新智能概览' : weeklyOverviewIsAi ? '已生成智能概览' : weeklyOverviewMaterialPackEmpty ? '基础概览' : '规则概览'}
+                        </span>
+                      )}
+                    </div>
                     {activeWeeklyOverview.totalCount > 0 ? (
                       <p className="text-gray-700 leading-[1.85] text-[14px] font-medium">{activeWeeklyOverview.summaryText}</p>
                     ) : (
@@ -12057,84 +13494,97 @@ export default function App() {
                   )}
 
                   {shouldUseEventReviewCards && activeEventReviewCards.map((card) => {
+                    const isExpanded = expandedReviewGroupId === card.id;
                     const reviewed = card.reviewedCount > 0;
                     const cardHasDirtyEntries = card.rows.some(({ task }) => reviewDirtyTaskIds.includes(task.id));
                     const cardDraftStructuredNote = pickUnifiedReviewStructuredNote(card.rows, card.taskStatus);
                     const cardHasSavableContent = hasMeaningfulReviewStructuredNote(cardDraftStructuredNote);
                     return (
-                      <div key={card.id} className="border border-gray-200 rounded-2xl overflow-hidden bg-white">
-                        <div className="w-full px-5 py-5 bg-white">
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0 flex-1">
+                      <div key={card.id} className={`border rounded-2xl overflow-hidden bg-white transition-all ${isExpanded ? 'border-[#5B7BFE] shadow-[0_8px_30px_rgba(91,123,254,0.12)]' : 'border-gray-200'}`}>
+                        <button
+                          type="button"
+                          className="w-full px-5 py-5 bg-white text-left flex items-start justify-between gap-4"
+                          aria-expanded={isExpanded}
+                          onClick={() => setExpandedReviewGroupId(isExpanded ? null : card.id)}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-[15px] font-bold text-gray-900">{card.title}</p>
+                              <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
+                                {reviewEventCardKindLabel(card.cardKind)}
+                              </span>
+                              {reviewed ? (
+                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>
+                              ) : (
+                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-50 text-gray-400">未复盘</span>
+                              )}
+                            </div>
+                            <p className="mt-3 text-[12px] font-semibold text-gray-500">
+                              {reviewFoldedTaskCountLabel(card.taskCount, card.completedCount, card.pendingCount)}
+                            </p>
+                          </div>
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isExpanded ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-gray-50 text-gray-400'}`}>
+                            {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          </div>
+                        </button>
+                        {isExpanded && (
+                          <div className="border-t border-gray-100 bg-gray-50/50 px-5 py-5">
+                            <div className="grid gap-3 text-[13px] leading-6 md:grid-cols-[88px_1fr]">
+                              <span className="font-bold text-gray-400">已归并任务</span>
                               <div className="flex flex-wrap items-center gap-2">
-                                <p className={`text-[15px] font-bold ${card.taskStatus === 'done' ? 'text-gray-500' : 'text-gray-900'}`}>{card.title}</p>
-                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
-                                  {reviewEventCardKindLabel(card.cardKind)}
-                                </span>
-                                {reviewed && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>}
-                              </div>
-                              <div className="flex flex-wrap gap-2 mt-3 text-[11px]">
-                                <span className="px-2 py-1 rounded-md bg-gray-50 text-gray-500">
-                                  {card.taskCount} 项纳入 · {card.completedCount} 完成{card.pendingCount > 0 ? ` · ${card.pendingCount} 未完成` : ''}
-                                </span>
+                                {card.rows.map(({ task }) => (
+                                  <span key={task.id} className="rounded-full bg-white px-2.5 py-1 text-[12px] font-semibold text-gray-500">
+                                    {task.title}
+                                  </span>
+                                ))}
                                 {card.confidence === 'low' && (
                                   <span className="px-2 py-1 rounded-md bg-amber-50 text-amber-600">建议确认归属</span>
                                 )}
                               </div>
+                              <span className="font-bold text-gray-400">复盘输入</span>
+                              <WeeklyReviewStructuredFields
+                                scope={reviewScope}
+                                value={cardDraftStructuredNote}
+                                taskStatus={card.taskStatus}
+                                textareaLabel="我的复盘"
+                                reflectionPlaceholder={card.reflectionPromptText}
+                                onSave={() => void persistReviewCollectionDraft(card.id, card.rows)}
+                                isSaving={savingReviewGroupId === card.id}
+                                saveDisabled={!cardHasSavableContent}
+                                saveSucceeded={savedReviewGroupId === card.id && !cardHasDirtyEntries}
+                                onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus({
+                                  id: card.id,
+                                  eventLineId: null,
+                                  eventLineName: null,
+                                  title: card.title,
+                                  rows: card.rows,
+                                  taskCount: card.taskCount,
+                                  completedCount: card.completedCount,
+                                  pendingCount: card.pendingCount,
+                                  reviewedCount: card.reviewedCount,
+                                  sharedStructuredNote: cardDraftStructuredNote,
+                                  hasDivergentNotes: false,
+                                  taskStatus: card.taskStatus,
+                                }, nextStatus)}
+                                isStatusChanging={reviewStatusChangingGroupId === card.id}
+                                statusScopeLabel={card.taskCount > 1 ? '本卡任务状态' : '本条任务状态'}
+                                onChange={(nextValue) => {
+                                  setSavedReviewGroupId((current) => (current === card.id ? null : current));
+                                  markReviewTasksDirty(card.rows.map(({ task }) => task.id));
+                                  setReviewForm((prev) => ({
+                                    ...prev,
+                                    entriesByTaskId: {
+                                      ...prev.entriesByTaskId,
+                                      ...Object.fromEntries(
+                                        card.rows.map(({ task }) => [task.id, { ...nextValue }]),
+                                      ),
+                                    },
+                                  }));
+                                }}
+                              />
                             </div>
                           </div>
-                          <div className="mt-4 grid gap-3 text-[13px] leading-6 md:grid-cols-[88px_1fr]">
-                            <span className="font-bold text-gray-400">已归并任务</span>
-                            <div className="flex flex-wrap gap-2">
-                              {card.rows.map(({ task }) => (
-                                <span key={task.id} className="rounded-full bg-gray-50 px-2.5 py-1 text-[12px] font-semibold text-gray-500">
-                                  {task.title}
-                                </span>
-                              ))}
-                            </div>
-                            <span className="font-bold text-gray-400">复盘输入</span>
-                            <WeeklyReviewStructuredFields
-                              scope={reviewScope}
-                              value={cardDraftStructuredNote}
-                              taskStatus={card.taskStatus}
-                              textareaLabel="我的复盘"
-                              reflectionPlaceholder={card.reflectionPromptText}
-                              onSave={() => void persistReviewCollectionDraft(card.id, card.rows)}
-                              isSaving={savingReviewGroupId === card.id}
-                              saveDisabled={!cardHasSavableContent}
-                              saveSucceeded={savedReviewGroupId === card.id && !cardHasDirtyEntries}
-                              onStatusChange={(nextStatus) => void handleUpdateReviewGroupStatus({
-                                id: card.id,
-                                eventLineId: null,
-                                eventLineName: null,
-                                title: card.title,
-                                rows: card.rows,
-                                taskCount: card.taskCount,
-                                completedCount: card.completedCount,
-                                pendingCount: card.pendingCount,
-                                reviewedCount: card.reviewedCount,
-                                sharedStructuredNote: cardDraftStructuredNote,
-                                hasDivergentNotes: false,
-                                taskStatus: card.taskStatus,
-                              }, nextStatus)}
-                              isStatusChanging={reviewStatusChangingGroupId === card.id}
-                              statusScopeLabel={card.taskCount > 1 ? '本卡任务状态' : '本条任务状态'}
-                              onChange={(nextValue) => {
-                                setSavedReviewGroupId((current) => (current === card.id ? null : current));
-                                markReviewTasksDirty(card.rows.map(({ task }) => task.id));
-                                setReviewForm((prev) => ({
-                                  ...prev,
-                                  entriesByTaskId: {
-                                    ...prev.entriesByTaskId,
-                                    ...Object.fromEntries(
-                                      card.rows.map(({ task }) => [task.id, { ...nextValue }]),
-                                    ),
-                                  },
-                                }));
-                              }}
-                            />
-                          </div>
-                        </div>
+                        )}
                       </div>
                     );
                   })}
@@ -12157,20 +13607,19 @@ export default function App() {
                         >
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className={`text-[15px] font-bold ${group.taskStatus === 'done' ? 'text-gray-400 line-through' : 'text-gray-900'}`}>{group.title}</p>
+                              <p className="text-[15px] font-bold text-gray-900">{group.title}</p>
                               <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">
                                 {group.eventLineId ? '事件线复盘' : '单项复盘'}
                               </span>
-                              {reviewed && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>}
+                              {reviewed ? (
+                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-600">已复盘</span>
+                              ) : (
+                                <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-50 text-gray-400">未复盘</span>
+                              )}
                             </div>
-                            <div className="flex flex-wrap gap-2 mt-3 text-[11px]">
-                              <span className="px-2 py-1 rounded-md bg-gray-50 text-gray-500">
-                                本周共 {group.taskCount} 条任务，已完成 {group.completedCount} 条，待推进 {group.pendingCount} 条
-                              </span>
-                              {group.eventLineName ? (
-                                <span className="px-2 py-1 rounded-md bg-[#EEF4FF] text-[#335CFF]">{group.eventLineName}</span>
-                              ) : null}
-                            </div>
+                            <p className="mt-3 text-[12px] font-semibold text-gray-500">
+                              {reviewFoldedTaskCountLabel(group.taskCount, group.completedCount, group.pendingCount)}
+                            </p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isExpanded ? 'bg-blue-50 text-[#5B7BFE]' : 'bg-gray-50 text-gray-400'}`}>
@@ -12306,25 +13755,6 @@ export default function App() {
                     </div>
                   )}
                 </div>
-              )}
-
-              {activeReviewTab === 'ai' && reviewScope === 'work' && (selfReviewReport || departmentReports.length > 0 || executiveOrgReport || simulationBundle || agentDepartmentDigests.length > 0 || agentDepartmentPlans.length > 0) && (
-                <WeeklyReviewSummaryPanel
-                  selfReport={selfReviewReport}
-                  selfAnalysis={collectStageAnalysis}
-                  departmentReports={departmentReports}
-                  executiveOrgReport={executiveOrgReport}
-                  organizationDnaModules={organizationDnaModules}
-                  onUploadOrganizationDna={(moduleKey) => handleUploadOrgDna(moduleKey)}
-                  orgDnaSavingKey={orgDnaSavingKey}
-                  agentDepartmentDigests={agentDepartmentDigests}
-                  agentDepartmentPlans={agentDepartmentPlans}
-                  simulationBundle={simulationBundle}
-                  onTriggerAction={handleTriggerReviewAction}
-                  onOpenActionResult={handleOpenReviewActionResult}
-                  onDrillTarget={handleReviewDashboardDrillTarget}
-                  viewerRole={reviewDashboard?.activePerspective === 'organization' ? 'admin' : reviewDashboard?.activePerspective === 'department' ? 'department_lead' : 'employee'}
-                />
               )}
 
               </div>{/* end overflow-y-auto */}
@@ -13070,11 +14500,11 @@ export default function App() {
                       type="button"
                       className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-[12px] font-semibold text-rose-600 transition hover:bg-rose-100"
                       onClick={() =>
-                        requestDeleteTaskRecord(
-                          {
-                            id: editingTask.id,
-                            title: editingTask.title.trim() || '未命名任务',
-                            clientId: editingTask.clientId || null,
+	                        requestDeleteTaskRecord(
+	                          {
+	                            id: editingTask.id || '',
+	                            title: editingTask.title.trim() || '未命名任务',
+	                            clientId: editingTask.clientId || null,
                             eventLineId: editingTask.eventLineId || null,
                           },
                           { closeEditor: true },
@@ -13314,6 +14744,7 @@ export default function App() {
                                   ...prev,
                                   scopeMode: 'COLLAB_SHARED',
                                   listId: resolveDefaultListId('org') || prev.listId,
+                                  clientId: organizationClientId,
                                   clientTouched: false,
                                   clientConfidence: 'none',
                                   clientReason: organizationTaskAutoReason,
@@ -13746,7 +15177,7 @@ export default function App() {
                                 // Auto-create subsequent steps as separate tasks
                                 const subsequentSteps = allSteps.slice(stepIndex + 1);
                                 if (subsequentSteps.length > 0) {
-                                  const baseDate = new Date(editingTask.dueDate || new Date().toISOString().slice(0, 10));
+                                  const baseDate = new Date(editingTask.dueDate || formatDateInputValue(new Date()));
                                   let prevEndDate = new Date(baseDate);
                                   prevEndDate.setDate(prevEndDate.getDate() + Math.ceil(durationDays) - 1);
 
@@ -13759,7 +15190,7 @@ export default function App() {
                                     tasksToCreate.push({
                                       title: nextStep.title,
                                       desc: nextStep.description || '',
-                                      dueDate: startDate.toISOString().slice(0, 10),
+                                      dueDate: formatDateInputValue(startDate),
                                       durationMinutes: Math.max(30, Math.round(nextDuration * 480)),
                                       priority: nextStep.priority || 'normal',
                                       ownerName: nextStep.ownerName,
@@ -13782,9 +15213,13 @@ export default function App() {
                                           title: t.title,
                                           desc: t.desc,
                                           dueDate: t.dueDate,
+                                          deadlineAt: t.dueDate,
+                                          scheduledStartAt: null,
+                                          scheduledEndAt: null,
+                                          startDate: null,
                                           durationMinutes: t.durationMinutes,
                                           priority: t.priority as 'normal' | 'high',
-                                          ownerName: assignee || editingTask.ownerName || '',
+	                                          ownerName: assignee,
                                           clientId: editingTask.clientId,
                                           eventLineId: editingTask.eventLineId,
                                           projectModuleId: editingTask.projectModuleId,
@@ -14185,13 +15620,26 @@ export default function App() {
     );
   }, []);
 
-  const ClientWorkspaceView = () => {
+  const renderClientWorkspaceView = () => {
     const currentClient = clients.find((client) => client.id === currentClientId) || clients[0];
     const [searchQuery, setSearchQuery] = useState('');
-    const [workspaceFileSearchQuery, setWorkspaceFileSearchQuery] = useState('');
-    const [workspaceFileSearchSubmittedQuery, setWorkspaceFileSearchSubmittedQuery] = useState('');
-    const [workspaceFileSearchResult, setWorkspaceFileSearchResult] = useState<KnowledgeSearchResult | null>(null);
-    const [isWorkspaceFileSearching, setIsWorkspaceFileSearching] = useState(false);
+    const workspaceClientUiKey = currentClientId || WORKSPACE_COMPOSER_NO_CLIENT_KEY;
+    const workspaceFileSearchState = getWorkspaceFileSearchState(workspaceClientUiState, workspaceClientUiKey);
+    const workspaceRightTab = getWorkspaceRightTab(workspaceClientUiState, workspaceClientUiKey);
+    const setWorkspaceRightTab = (tab: WorkspaceRightTabKey) =>
+      dispatchWorkspaceClientUi({ type: 'setRightTab', clientId: workspaceClientUiKey, tab });
+    const workspaceFileSearchQuery = workspaceFileSearchState.query;
+    const workspaceFileSearchSubmittedQuery = workspaceFileSearchState.submittedQuery;
+    const workspaceFileSearchResult = workspaceFileSearchState.result;
+    const isWorkspaceFileSearching = workspaceFileSearchState.isSearching;
+    const setWorkspaceFileSearchQuery = (query: string) =>
+      dispatchWorkspaceClientUi({ type: 'setFileSearchQuery', clientId: workspaceClientUiKey, query });
+    const setWorkspaceFileSearchSubmittedQuery = (submittedQuery: string) =>
+      dispatchWorkspaceClientUi({ type: 'setFileSearchSubmittedQuery', clientId: workspaceClientUiKey, submittedQuery });
+    const setWorkspaceFileSearchResult = (result: KnowledgeSearchResult | null) =>
+      dispatchWorkspaceClientUi({ type: 'setFileSearchResult', clientId: workspaceClientUiKey, result });
+    const setIsWorkspaceFileSearching = (isSearching: boolean) =>
+      dispatchWorkspaceClientUi({ type: 'setFileSearchLoading', clientId: workspaceClientUiKey, isSearching });
     const workspaceComposerDraftKey = currentClientId || WORKSPACE_COMPOSER_NO_CLIENT_KEY;
     const [localInputValue, setLocalInputValue] = useState(() => (
       workspaceComposerDraftRef.current[workspaceComposerDraftKey]
@@ -14208,13 +15656,7 @@ export default function App() {
     }, [workspaceComposerDraftKey]);
     const commitComposerDraft = (nextValue = localInputValueRef.current) => {
       workspaceComposerDraftRef.current[workspaceComposerDraftKey] = nextValue;
-      setWorkspaceComposerDraftByClient((prev) => {
-        if ((prev[workspaceComposerDraftKey] ?? '') === nextValue) return prev;
-        return {
-          ...prev,
-          [workspaceComposerDraftKey]: nextValue,
-        };
-      });
+      dispatchWorkspaceClientUi({ type: 'setComposerDraft', clientKey: workspaceComposerDraftKey, value: nextValue });
     };
     const setInputValue = (nextValue: string, options?: { commit?: boolean }) => {
       workspaceComposerDraftRef.current[workspaceComposerDraftKey] = nextValue;
@@ -14255,53 +15697,271 @@ export default function App() {
       });
       return () => window.cancelAnimationFrame(animationFrame);
     }, [workspaceComposerDraftKey]);
-    const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+    const activeMessageId = currentClientId
+      ? workspaceClientUiState.activeMessageIdByClient[currentClientId] || null
+      : null;
+    const setActiveMessageId = (nextValue: string | null | ((previous: string | null) => string | null)) => {
+      if (!currentClientId) return;
+      const previous = workspaceClientUiState.activeMessageIdByClient[currentClientId] || null;
+      const messageId = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setActiveMessageId', clientId: currentClientId, messageId });
+    };
     const [isEvidencePanelExpanded, setIsEvidencePanelExpanded] = useState(false);
-    const [rightPanelEvidenceSnapshot, setRightPanelEvidenceSnapshot] = useState<{
-      messageId: string | null;
-      evidence: EvidenceItem[];
-      evidenceKey: string;
-    } | null>(null);
-    const [clientImportDropZone, setClientImportDropZone] = useState<'buffer' | 'composer' | null>(null);
-    const [answerActionState, setAnswerActionState] = useState<
-      Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>
-    >({});
+    const rightPanelEvidenceSnapshot = currentClientId
+      ? workspaceClientUiState.rightPanelEvidenceSnapshotByClient[currentClientId] || null
+      : null;
+    const setRightPanelEvidenceSnapshot = (
+      nextValue: WorkspaceRightPanelEvidenceSnapshot | null | ((previous: WorkspaceRightPanelEvidenceSnapshot | null) => WorkspaceRightPanelEvidenceSnapshot | null),
+    ) => {
+      if (!currentClientId) return;
+      const current = workspaceClientUiState.rightPanelEvidenceSnapshotByClient[currentClientId] || null;
+      const snapshot = typeof nextValue === 'function' ? nextValue(current) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setRightPanelEvidenceSnapshot', clientId: currentClientId, snapshot });
+    };
+    const clientImportDropZone = currentClientId
+      ? workspaceClientUiState.importDropZoneByClient[currentClientId] || null
+      : null;
+    const setClientImportDropZone = (
+      nextValue: 'buffer' | 'composer' | null | ((previous: 'buffer' | 'composer' | null) => 'buffer' | 'composer' | null),
+    ) => {
+      if (!currentClientId) return;
+      const previous = workspaceClientUiState.importDropZoneByClient[currentClientId] || null;
+      const zone = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setImportDropZone', clientId: currentClientId, zone });
+    };
+    const answerActionState = currentClientId
+      ? workspaceClientUiState.answerActionStateByClient[currentClientId] || {}
+      : {};
+    const setAnswerActionState = (
+      nextValue:
+        | Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>
+        | ((previous: Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>) => Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>),
+    ) => {
+      if (!currentClientId) return;
+      const previous = workspaceClientUiState.answerActionStateByClient[currentClientId] || {};
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setAnswerActionState', clientId: currentClientId, value });
+    };
     const [isTemplateFilling, setIsTemplateFilling] = useState(false);
-    const [templateFillDialog, setTemplateFillDialog] = useState<TemplateFillDialogState | null>(null);
-    const [isClientModalOpen, setIsClientModalOpen] = useState(false);
-    const [editingClientId, setEditingClientId] = useState<string | null>(null);
-    const [isDeleteClientConfirmOpen, setIsDeleteClientConfirmOpen] = useState(false);
-    const [deleteClientConfirmInput, setDeleteClientConfirmInput] = useState('');
-    const [clientTextDocumentDraft, setClientTextDocumentDraft] = useState<ClientTextDocumentDraft>({
+    const templateFillDialog = currentClientId
+      ? (workspaceClientUiState.templateFillStateByClient[currentClientId] as TemplateFillDialogState | null | undefined) || null
+      : null;
+    const setTemplateFillDialog = (
+      nextValue: TemplateFillDialogState | null | ((previous: TemplateFillDialogState | null) => TemplateFillDialogState | null),
+    ) => {
+      if (!currentClientId) return;
+      const previous = (workspaceClientUiState.templateFillStateByClient[currentClientId] as TemplateFillDialogState | null | undefined) || null;
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setTemplateFillState', clientId: currentClientId, value });
+    };
+    const defaultClientTextDocumentDraft: ClientTextDocumentDraft = {
       title: '',
       content: '',
       titleEdited: false,
-    });
+    };
+    const clientTextDocumentDraft = currentClientId
+      ? (workspaceClientUiState.textDocumentDraftByClient[currentClientId] as ClientTextDocumentDraft | null | undefined) || defaultClientTextDocumentDraft
+      : defaultClientTextDocumentDraft;
+    const setClientTextDocumentDraft = (
+      nextValue: ClientTextDocumentDraft | ((previous: ClientTextDocumentDraft) => ClientTextDocumentDraft),
+    ) => {
+      if (!currentClientId) return;
+      const previous = (workspaceClientUiState.textDocumentDraftByClient[currentClientId] as ClientTextDocumentDraft | null | undefined) || defaultClientTextDocumentDraft;
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setTextDocumentDraft', clientId: currentClientId, value });
+    };
     const [isCreatingClientTextDocument, setIsCreatingClientTextDocument] = useState(false);
+    const defaultClientLinkMaterialDraft: ClientLinkMaterialDraft = {
+      url: '',
+      detectedPlatform: '',
+      detectedLabel: '等待粘贴链接',
+    };
+    const clientLinkMaterialDraft = currentClientId
+      ? (workspaceClientUiState.linkMaterialDraftByClient[currentClientId] as ClientLinkMaterialDraft | null | undefined) || defaultClientLinkMaterialDraft
+      : defaultClientLinkMaterialDraft;
+    const setClientLinkMaterialDraft = (
+      nextValue: ClientLinkMaterialDraft | ((previous: ClientLinkMaterialDraft) => ClientLinkMaterialDraft),
+    ) => {
+      if (!currentClientId) return;
+      const previous = (workspaceClientUiState.linkMaterialDraftByClient[currentClientId] as ClientLinkMaterialDraft | null | undefined) || defaultClientLinkMaterialDraft;
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setLinkMaterialDraft', clientId: currentClientId, value });
+    };
+    const clientLinkMaterialState = getWorkspaceLinkMaterialState(workspaceClientUiState, workspaceClientUiKey);
+    const clientLinkMaterialRun = clientLinkMaterialState.run;
+    const latestClientLinkMaterialRun = clientLinkMaterialState.latestRun;
+    const clientLinkMaterialUseBrowserCookies = clientLinkMaterialState.useBrowserCookies;
+    const clientLinkMaterialCookieBrowser = clientLinkMaterialState.cookieBrowser;
+    const isStartingClientLinkMaterial = clientLinkMaterialState.isStarting;
+    const setClientLinkMaterialRun = (
+      nextValue: LinkMaterialImportRun | null | ((previous: LinkMaterialImportRun | null) => LinkMaterialImportRun | null),
+    ) => {
+      const current = getWorkspaceLinkMaterialState(workspaceClientUiState, workspaceClientUiKey).run;
+      const run = typeof nextValue === 'function' ? nextValue(current) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setLinkMaterialRun', clientId: workspaceClientUiKey, run });
+    };
+    const setLatestClientLinkMaterialRun = (run: LinkMaterialImportRun | null) =>
+      dispatchWorkspaceClientUi({ type: 'setLatestLinkMaterialRun', clientId: workspaceClientUiKey, run });
+    const setClientLinkMaterialUseBrowserCookies = (useBrowserCookies: boolean) =>
+      dispatchWorkspaceClientUi({ type: 'setLinkMaterialUseBrowserCookies', clientId: workspaceClientUiKey, useBrowserCookies });
+    const setClientLinkMaterialCookieBrowser = (cookieBrowser: LinkMaterialCookieBrowser) =>
+      dispatchWorkspaceClientUi({ type: 'setLinkMaterialCookieBrowser', clientId: workspaceClientUiKey, cookieBrowser });
+    const setIsStartingClientLinkMaterial = (isStarting: boolean) =>
+      dispatchWorkspaceClientUi({ type: 'setLinkMaterialStarting', clientId: workspaceClientUiKey, isStarting });
     const [isFolderEditMode, setIsFolderEditMode] = useState(false);
-    const [clientDraft, setClientDraft] = useState({
-      name: '',
-      alias: '',
-      domain: '项目',
-      type: '项目',
-      intro: '',
-      stage: '待导入资料',
-      color: '#5B7BFE',
-    });
-    const [meetingTitle, setMeetingTitle] = useState(clientWorkspaceSettingsState.defaultMeetingTitlePrefix || '本周推进会');
-  const [goalDraft, setGoalDraft] = useState({
+    type FolderRecommendationUiState = {
+      plan: ClientFolderRecommendationPlan | null;
+      open: boolean;
+      loading: boolean;
+      applying: boolean;
+    };
+    const defaultFolderRecommendationState: FolderRecommendationUiState = {
+      plan: null,
+      open: false,
+      loading: false,
+      applying: false,
+    };
+    const folderRecommendationState = currentClientId
+      ? (workspaceClientUiState.folderRecommendationStateByClient[currentClientId] as FolderRecommendationUiState | null | undefined) || defaultFolderRecommendationState
+      : defaultFolderRecommendationState;
+    const setFolderRecommendationState = (
+      nextValue: FolderRecommendationUiState | ((previous: FolderRecommendationUiState) => FolderRecommendationUiState),
+    ) => {
+      if (!currentClientId) return;
+      const previous = (workspaceClientUiState.folderRecommendationStateByClient[currentClientId] as FolderRecommendationUiState | null | undefined) || defaultFolderRecommendationState;
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setFolderRecommendationState', clientId: currentClientId, value });
+    };
+    const folderRecommendationPlan = folderRecommendationState.plan;
+    const isFolderRecommendationOpen = folderRecommendationState.open;
+    const isFolderRecommendationLoading = folderRecommendationState.loading;
+    const isFolderRecommendationApplying = folderRecommendationState.applying;
+    const setFolderRecommendationPlan = (plan: ClientFolderRecommendationPlan | null) =>
+      setFolderRecommendationState((previous) => ({ ...previous, plan }));
+    const setIsFolderRecommendationOpen = (open: boolean) =>
+      setFolderRecommendationState((previous) => ({ ...previous, open }));
+    const setIsFolderRecommendationLoading = (loading: boolean) =>
+      setFolderRecommendationState((previous) => ({ ...previous, loading }));
+    const setIsFolderRecommendationApplying = (applying: boolean) =>
+      setFolderRecommendationState((previous) => ({ ...previous, applying }));
+    type DocumentAutoRepairUiState = {
+      preview: DocumentAutoRepairPreview | null;
+      open: boolean;
+      loading: boolean;
+      applying: boolean;
+    };
+    const defaultDocumentAutoRepairState: DocumentAutoRepairUiState = {
+      preview: null,
+      open: false,
+      loading: false,
+      applying: false,
+    };
+    const documentAutoRepairState = currentClientId
+      ? (workspaceClientUiState.documentAutoRepairStateByClient[currentClientId] as DocumentAutoRepairUiState | null | undefined) || defaultDocumentAutoRepairState
+      : defaultDocumentAutoRepairState;
+    const setDocumentAutoRepairState = (
+      nextValue: DocumentAutoRepairUiState | ((previous: DocumentAutoRepairUiState) => DocumentAutoRepairUiState),
+    ) => {
+      if (!currentClientId) return;
+      const previous = (workspaceClientUiState.documentAutoRepairStateByClient[currentClientId] as DocumentAutoRepairUiState | null | undefined) || defaultDocumentAutoRepairState;
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setDocumentAutoRepairState', clientId: currentClientId, value });
+    };
+    const documentAutoRepairPreview = documentAutoRepairState.preview;
+    const isDocumentAutoRepairOpen = documentAutoRepairState.open;
+    const isDocumentAutoRepairLoading = documentAutoRepairState.loading;
+    const isDocumentAutoRepairApplying = documentAutoRepairState.applying;
+    const setDocumentAutoRepairPreview = (preview: DocumentAutoRepairPreview | null) =>
+      setDocumentAutoRepairState((previous) => ({ ...previous, preview }));
+    const setIsDocumentAutoRepairOpen = (open: boolean) =>
+      setDocumentAutoRepairState((previous) => ({ ...previous, open }));
+    const setIsDocumentAutoRepairLoading = (loading: boolean) =>
+      setDocumentAutoRepairState((previous) => ({ ...previous, loading }));
+    const setIsDocumentAutoRepairApplying = (applying: boolean) =>
+      setDocumentAutoRepairState((previous) => ({ ...previous, applying }));
+    type WorkspaceMeetingDraftState = {
+      meetingTitle: string;
+      goalDraft: {
+        title: string;
+        quarter: string;
+        progress: number;
+        ownerName: string;
+      };
+      dnaDraft: {
+        category: string;
+        canonicalName: string;
+        aliases: string;
+        description: string;
+      };
+    };
+    const defaultWorkspaceMeetingDraftState: WorkspaceMeetingDraftState = {
+      meetingTitle: clientWorkspaceSettingsState.defaultMeetingTitlePrefix || '本周推进会',
+      goalDraft: {
       title: '',
       quarter: clientWorkspaceSettingsState.defaultGoalQuarter || '2026 Q2',
       progress: 50,
       ownerName: currentOperatorName,
-    });
-  const [dnaDraft, setDnaDraft] = useState({ category: '组织习惯', canonicalName: '', aliases: '', description: '' });
+      },
+      dnaDraft: { category: '组织习惯', canonicalName: '', aliases: '', description: '' },
+    };
+    const workspaceMeetingDraftState = currentClientId
+      ? (workspaceClientUiState.meetingDraftsByClient[currentClientId] as WorkspaceMeetingDraftState | null | undefined) || defaultWorkspaceMeetingDraftState
+      : defaultWorkspaceMeetingDraftState;
+    const setWorkspaceMeetingDraftState = (
+      nextValue: WorkspaceMeetingDraftState | ((previous: WorkspaceMeetingDraftState) => WorkspaceMeetingDraftState),
+    ) => {
+      if (!currentClientId) return;
+      const previous = (workspaceClientUiState.meetingDraftsByClient[currentClientId] as WorkspaceMeetingDraftState | null | undefined) || defaultWorkspaceMeetingDraftState;
+      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setMeetingDrafts', clientId: currentClientId, value });
+    };
+    const meetingTitle = workspaceMeetingDraftState.meetingTitle;
+    const goalDraft = workspaceMeetingDraftState.goalDraft;
+    const dnaDraft = workspaceMeetingDraftState.dnaDraft;
+    const setMeetingTitle = (nextValue: string | ((previous: string) => string)) =>
+      setWorkspaceMeetingDraftState((previous) => ({
+        ...previous,
+        meetingTitle: typeof nextValue === 'function' ? nextValue(previous.meetingTitle) : nextValue,
+      }));
+    const setGoalDraft = (
+      nextValue: WorkspaceMeetingDraftState['goalDraft'] | ((previous: WorkspaceMeetingDraftState['goalDraft']) => WorkspaceMeetingDraftState['goalDraft']),
+    ) =>
+      setWorkspaceMeetingDraftState((previous) => ({
+        ...previous,
+        goalDraft: typeof nextValue === 'function' ? nextValue(previous.goalDraft) : nextValue,
+      }));
+    const setDnaDraft = (
+      nextValue: WorkspaceMeetingDraftState['dnaDraft'] | ((previous: WorkspaceMeetingDraftState['dnaDraft']) => WorkspaceMeetingDraftState['dnaDraft']),
+    ) =>
+      setWorkspaceMeetingDraftState((previous) => ({
+        ...previous,
+        dnaDraft: typeof nextValue === 'function' ? nextValue(previous.dnaDraft) : nextValue,
+      }));
   const [clientDnaSavingKey, setClientDnaSavingKey] = useState<ClientDnaModule['moduleKey'] | null>(null);
-  const [threadMessagesById, setThreadMessagesById] = useState<Record<string, DisplayChatMessage[]>>({});
-  const [threadMessagesLoadingId, setThreadMessagesLoadingId] = useState<string | null>(null);
-  const [isStartingMessage, setIsStartingMessage] = useState(false);
-  const [clientWorkspaceSurfaceMode, setClientWorkspaceSurfaceMode] = useState<'setup' | 'workspace'>('workspace');
-  const chatContainerRef = useRef<HTMLDivElement | null>(null);
+    const threadMessagesById = workspaceClientUiState.threadMessagesById;
+    const threadMessagesLoadingId = workspaceClientUiState.threadMessagesLoadingId;
+    const isStartingMessage = currentClientId ? Boolean(workspaceClientUiState.startingMessageByClient[currentClientId]) : false;
+    const setThreadMessagesLoadingId = (nextValue: string | null | ((previous: string | null) => string | null)) => {
+      const threadId = typeof nextValue === 'function' ? nextValue(workspaceClientUiState.threadMessagesLoadingId) : nextValue;
+      dispatchWorkspaceClientUi({ type: 'setThreadMessagesLoadingId', threadId });
+    };
+    const setIsStartingMessage = (isStarting: boolean) => {
+      if (!currentClientId) return;
+      dispatchWorkspaceClientUi({ type: 'setStartingMessage', clientId: currentClientId, isStarting });
+    };
+	  const clientWorkspaceSurfaceMode = currentClientId
+      ? workspaceClientUiState.surfaceModeByClient[currentClientId] || 'workspace'
+      : 'workspace';
+    const setClientWorkspaceSurfaceMode = (mode: 'setup' | 'workspace') => {
+      if (!currentClientId) return;
+      dispatchWorkspaceClientUi({ type: 'setSurfaceMode', clientId: currentClientId, mode });
+    };
+    useEffect(() => {
+      if (!clientWorkspaceSurfaceModeRequest) return;
+      if (clientWorkspaceSurfaceModeRequest.clientId !== currentClientId) return;
+      setClientWorkspaceSurfaceMode(clientWorkspaceSurfaceModeRequest.mode);
+    }, [clientWorkspaceSurfaceModeRequest, currentClientId]);
+	  const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const analysisRunPollTimerRef = useRef<number | null>(null);
   const activePollingRunIdRef = useRef<string | null>(null);
@@ -14380,12 +16040,13 @@ export default function App() {
         if (!targetMeeting) return false;
         setCurrentClientId(clientId);
         setWorkspace(nextWorkspace);
-        setClientWorkspaceSurfaceMode('workspace');
-        setClientOverlayMode('meeting');
-        setWorkspaceSelectedMeetingId(targetMeeting.id);
-        setWorkspaceMeetingTranscript(targetMeeting.transcriptText || '');
-        setWorkspaceMeetingNotes(targetMeeting.notes || '');
-        flash('success', `已打开会议「${targetMeeting.title}」`);
+	        setClientWorkspaceSurfaceMode('workspace');
+	        setClientOverlayMode('meeting');
+	        setWorkspaceSelectedMeetingId(targetMeeting.id);
+	        const meetingRecord = targetMeeting as unknown as Record<string, unknown>;
+	        setWorkspaceMeetingTranscript(typeof meetingRecord.transcriptText === 'string' ? meetingRecord.transcriptText : '');
+	        setWorkspaceMeetingNotes(typeof meetingRecord.notes === 'string' ? meetingRecord.notes : '');
+	        flash('success', `已打开会议「${targetMeeting.title}」`);
         return true;
       };
       const run = async () => {
@@ -14445,58 +16106,26 @@ export default function App() {
     const visibleActiveAnalysisRun = isWorkspaceAnalysisRunPending(activeAnalysisRun) ? activeAnalysisRun : null;
 
     const setClientActiveRun = (clientId: string, run: ClientAnalysisRun | null) => {
-      setWorkspaceActiveRunByClient((prev) => {
-        if (!run) {
-          if (!prev[clientId]) return prev;
-          const next = { ...prev };
-          delete next[clientId];
-          return next;
-        }
-        if (prev[clientId]?.id === run.id && prev[clientId]?.updatedAt === run.updatedAt && prev[clientId]?.status === run.status) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [clientId]: run,
-        };
-      });
+      const previous = workspaceClientUiState.activeRunByClient[clientId];
+      if (run && previous?.id === run.id && previous?.updatedAt === run.updatedAt && previous?.status === run.status) return;
+      if (!run && !previous) return;
+      dispatchWorkspaceClientUi({ type: 'setActiveRun', clientId, run });
     };
 
     const setClientPendingQuestion = (clientId: string, pending: WorkspacePendingQuestionState | null) => {
-      setWorkspacePendingQuestionByClient((prev) => {
-        if (!pending) {
-          if (!prev[clientId]) return prev;
-          const next = { ...prev };
-          delete next[clientId];
-          return next;
-        }
-        if (prev[clientId]?.question === pending.question && prev[clientId]?.startedAt === pending.startedAt) return prev;
-        return {
-          ...prev,
-          [clientId]: pending,
-        };
-      });
+      const previous = workspaceClientUiState.pendingQuestionByClient[clientId];
+      if (!pending && !previous) return;
+      if (pending && previous?.question === pending.question && previous?.startedAt === pending.startedAt) return;
+      dispatchWorkspaceClientUi({ type: 'setPendingQuestion', clientId, pending });
     };
 
     const setThreadOptimisticMessages = (threadId: string, messages: DisplayChatMessage[]) => {
-      setWorkspaceOptimisticMessagesByThread((prev) => {
-        const next = { ...prev };
-        if (messages.length === 0) {
-          if (!next[threadId]) return prev;
-          delete next[threadId];
-          return next;
-        }
-        next[threadId] = messages;
-        return next;
-      });
+      dispatchWorkspaceClientUi({ type: 'setOptimisticMessages', threadId, messages });
     };
 
     const upsertWorkspaceMessages = (messages: DisplayChatMessage[], nextThreadId: string) => {
       setWorkspaceSelectedThreadId(nextThreadId);
-      setThreadMessagesById((prev) => ({
-        ...prev,
-        [nextThreadId]: mergeDisplayMessages(prev[nextThreadId] || [], messages),
-      }));
+      dispatchWorkspaceClientUi({ type: 'upsertThreadMessages', threadId: nextThreadId, messages });
       setWorkspace((prev) => {
         if (!prev) return prev;
         const threadUpdatedAt = messages[messages.length - 1]?.createdAt || new Date().toISOString();
@@ -14585,9 +16214,7 @@ export default function App() {
     useEffect(() => {
       if (workspaceLastClientResetRef.current === currentClientId) return;
       workspaceLastClientResetRef.current = currentClientId;
-      setThreadMessagesById({});
       setThreadMessagesLoadingId(null);
-      setIsStartingMessage(false);
       setClientImportDropZone(null);
       setTemplateFillDialog(null);
       clientImportDropDepthRef.current.buffer = 0;
@@ -14883,6 +16510,108 @@ export default function App() {
       };
     }, [currentClientId, templateFillDialog?.open, templateFillDialog?.runId]);
 
+	    const refreshLatestClientLinkMaterialRun = useCallback(async (clientId: string) => {
+	      try {
+	        const run = await getLatestClientLinkMaterialImportRun(clientId);
+	        dispatchWorkspaceClientUi({ type: 'setLatestLinkMaterialRun', clientId, run });
+	        if (run && ['queued', 'running'].includes(run.status)) {
+	          dispatchWorkspaceClientUi({ type: 'setLinkMaterialRun', clientId, run });
+	        }
+	      } catch {
+	        dispatchWorkspaceClientUi({ type: 'setLatestLinkMaterialRun', clientId, run: null });
+	      }
+	    }, []);
+
+		    useEffect(() => {
+		      if (!currentClientId) {
+		        setLatestClientLinkMaterialRun(null);
+		        return;
+		      }
+		      if (clientEditorModalState.open) return;
+		      void refreshLatestClientLinkMaterialRun(currentClientId);
+		    }, [clientEditorModalState.open, currentClientId, refreshLatestClientLinkMaterialRun]);
+
+		    useEffect(() => {
+		      if (clientEditorModalState.open || !currentClientId || clientOverlayMode !== 'link_material' || !clientLinkMaterialRun?.runId) {
+		        return;
+		      }
+      let cancelled = false;
+      let timeoutId: number | null = null;
+      const poll = async () => {
+        try {
+	          const run = await getClientLinkMaterialImportRun(currentClientId, clientLinkMaterialRun.runId);
+	          if (cancelled) return;
+	          setClientLinkMaterialRun(run);
+	          setLatestClientLinkMaterialRun(run);
+	          if (run.status === 'completed') {
+	            if (run.documentPath) {
+	              void openPathBridge(run.documentPath).catch(() => undefined);
+            }
+            await refreshWorkspace(currentClientId);
+            flash('success', run.title ? `已生成《${run.title}》并保存到线上转写` : '链接资料已保存到线上转写');
+            return;
+          }
+	          if (run.status === 'failed') {
+	            flash('error', run.error || '链接转资料失败');
+	            return;
+          }
+          timeoutId = window.setTimeout(poll, 1200);
+        } catch (error) {
+          if (cancelled) return;
+          flash('error', error instanceof Error ? error.message : '读取链接转资料状态失败');
+          timeoutId = window.setTimeout(poll, 1800);
+	        }
+	      };
+	      void poll();
+	      return () => {
+	        cancelled = true;
+	        if (timeoutId !== null) {
+	          window.clearTimeout(timeoutId);
+	        }
+	      };
+		    }, [clientEditorModalState.open, clientOverlayMode, clientLinkMaterialRun?.runId, currentClientId]);
+
+		    useEffect(() => {
+		      if (
+		        clientEditorModalState.open
+		        ||
+		        !currentClientId
+		        || clientOverlayMode === 'link_material'
+	        || !latestClientLinkMaterialRun
+	        || !['queued', 'running'].includes(latestClientLinkMaterialRun.status)
+	      ) {
+	        return;
+	      }
+	      let cancelled = false;
+	      let timeoutId: number | null = null;
+	      const poll = async () => {
+	        try {
+	          const run = await getClientLinkMaterialImportRun(currentClientId, latestClientLinkMaterialRun.runId);
+	          if (cancelled) return;
+	          setLatestClientLinkMaterialRun(run);
+	          if (clientLinkMaterialRun?.runId === run.runId) {
+	            setClientLinkMaterialRun(run);
+	          }
+	          if (['queued', 'running'].includes(run.status)) {
+	            timeoutId = window.setTimeout(poll, 2000);
+	          } else if (run.status === 'completed') {
+	            await refreshWorkspace(currentClientId);
+	          }
+	        } catch {
+	          if (!cancelled) {
+	            timeoutId = window.setTimeout(poll, 3000);
+	          }
+	        }
+	      };
+	      timeoutId = window.setTimeout(poll, 1200);
+	      return () => {
+	        cancelled = true;
+	        if (timeoutId !== null) {
+	          window.clearTimeout(timeoutId);
+	        }
+	      };
+		    }, [clientEditorModalState.open, clientLinkMaterialRun?.runId, clientOverlayMode, currentClientId, latestClientLinkMaterialRun, refreshWorkspace]);
+
     useEffect(() => {
       const recentMessages = (workspace?.recentMessages || []) as DisplayChatMessage[];
       if (!recentMessages.length) return;
@@ -14893,13 +16622,9 @@ export default function App() {
         accumulator[message.threadId].push(message);
         return accumulator;
       }, {});
-      setThreadMessagesById((prev) => {
-        const next = { ...prev };
-        for (const [threadId, messages] of Object.entries(groupedMessages)) {
-          next[threadId] = mergeDisplayMessages(prev[threadId] || [], messages);
-        }
-        return next;
-      });
+      for (const [threadId, messages] of Object.entries(groupedMessages)) {
+        dispatchWorkspaceClientUi({ type: 'upsertThreadMessages', threadId, messages });
+      }
     }, [workspace?.recentMessages]);
 
     const latestActiveWorkspaceRun = useMemo(
@@ -15017,20 +16742,22 @@ export default function App() {
       ],
     );
 
-    useEffect(() => {
-      if (!currentClientId || !currentThreadId) {
-        setThreadMessagesLoadingId(null);
-        return undefined;
-      }
-      let disposed = false;
+	    useEffect(() => {
+	      if (!currentClientId || !currentThreadId) {
+	        setThreadMessagesLoadingId(null);
+	        return undefined;
+	      }
+	      if (clientEditorModalState.open) return undefined;
+	      let disposed = false;
       setThreadMessagesLoadingId(currentThreadId);
       void getClientChatThread(currentClientId, currentThreadId)
         .then((detail) => {
           if (disposed) return;
-          setThreadMessagesById((prev) => ({
-            ...prev,
-            [currentThreadId]: mergeDisplayMessages(prev[currentThreadId] || [], detail.messages as DisplayChatMessage[]),
-          }));
+          dispatchWorkspaceClientUi({
+            type: 'upsertThreadMessages',
+            threadId: currentThreadId,
+            messages: detail.messages as DisplayChatMessage[],
+          });
         })
         .catch(() => undefined)
         .finally(() => {
@@ -15041,7 +16768,7 @@ export default function App() {
       return () => {
         disposed = true;
       };
-    }, [currentClientId, currentThreadId]);
+	    }, [clientEditorModalState.open, currentClientId, currentThreadId]);
 
     useEffect(() => {
       const assistantMessages = currentChat.filter((message) => message.role === 'assistant');
@@ -15379,8 +17106,11 @@ export default function App() {
         knowledgeStatus?.runningJobs,
         latestKnowledgeJob,
       ]);
-      const composerProviderLabel =
-        health?.ai.provider && health.ai.provider !== 'mock' && health.ai.ready ? providerDisplayNames[health.ai.provider] : 'AI';
+      const workspaceRealAiReady = isRealAiConfigured(health?.ai);
+      const workspaceAiUnavailableReason = getWorkspaceAiUnavailableReason(health?.ai);
+      const composerProviderLabel = workspaceRealAiReady
+        ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
+        : '未配置大模型';
       const latestChatMessageId = currentChat[currentChat.length - 1]?.id || null;
       const transientThinkingPanel = useMemo(() => {
         if (visibleThreadAnalysisRun) {
@@ -15436,8 +17166,8 @@ export default function App() {
         };
       }
       const provider = health.ai.provider as AiProvider;
-      const providerLabel = providerDisplayNames[provider] || provider;
-      if (provider !== 'mock' && health.ai.ready) {
+      const providerLabel = aiModelDisplayLabel(provider, health.ai.model, health.ai.providerLabel);
+      if (isRealAiConfigured(health.ai)) {
         return {
           label: `${providerLabel} 已连接`,
           className: 'text-emerald-600 bg-emerald-50 border-emerald-100 hover:bg-emerald-100',
@@ -15445,21 +17175,29 @@ export default function App() {
           subtitle: health.ai.model,
         };
       }
-      if (provider !== 'mock' && !health.ai.ready) {
+      if (provider !== 'mock') {
         return {
           label: `${providerLabel} 未配置`,
           className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
           dotClassName: 'bg-amber-500',
-          subtitle: '当前回退 mock',
+          subtitle: getWorkspaceAiUnavailableReason(health.ai),
         };
       }
       return {
-        label: '本地 Mock 模式',
-        className: 'text-sky-700 bg-sky-50 border-sky-100 hover:bg-sky-100',
-        dotClassName: 'bg-sky-500',
-        subtitle: '用于流程联调',
+        label: '未配置大模型',
+        className: 'text-amber-700 bg-amber-50 border-amber-100 hover:bg-amber-100',
+        dotClassName: 'bg-amber-500',
+        subtitle: '请到系统设置配置 API',
       };
     }, [health]);
+
+    const openAiSettingsFromWorkspace = () => {
+      setActiveTab('settings');
+      setSettingsSection('overview');
+      void loadSettingsBlock().catch((error) => {
+        flash('error', error instanceof Error ? error.message : '系统设置加载失败');
+      });
+    };
 
     const clientDnaDisplayLabel = 'DNA';
     const clientDnaReady = Boolean(workspace?.dnaModules?.some((module) => module.hasDocument));
@@ -15473,12 +17211,42 @@ export default function App() {
           dotClassName: 'bg-gray-400',
         };
 
-    const workspaceVisibleProposals = useMemo(
-      () => proposals.filter((proposal) => !currentClientId || proposal.clientId === currentClientId),
-      [currentClientId, proposals],
-    );
-    const selectedMeeting = workspace?.meetings.find((meeting) => meeting.id === workspaceSelectedMeetingId) || workspace?.meetings[0];
-    const selectedMeetingPrepareProposal = useMemo(
+	    const workspaceVisibleProposals = useMemo(
+	      () => proposals.filter((proposal) => !currentClientId || proposal.clientId === currentClientId),
+	      [currentClientId, proposals],
+	    );
+	    const selectedMeeting = workspace?.meetings.find((meeting) => meeting.id === workspaceSelectedMeetingId) || workspace?.meetings[0];
+	    const [workspaceProposalBusyState, setWorkspaceProposalBusyState] = useState<Record<string, string>>({});
+	    const updateWorkspaceProposalBusy = (key: string, value: string | null) => {
+	      setWorkspaceProposalBusyState((prev) => {
+	        if (!value) {
+	          const next = { ...prev };
+	          delete next[key];
+	          return next;
+	        }
+	        return { ...prev, [key]: value };
+	      });
+	    };
+	    const handleCreateWorkspaceMeetingProposal = async (kind: 'prepare' | 'followup') => {
+	      if (!currentClientId || !selectedMeeting) return;
+	      const busyKey = `meeting:${selectedMeeting.id}:${kind}`;
+	      updateWorkspaceProposalBusy(busyKey, kind);
+	      try {
+	        if (kind === 'prepare') {
+	          await createMeetingPrepareProposal(currentClientId, selectedMeeting.id);
+	          flash('success', '会前 proposal 已进入 Proposal Inbox。');
+	        } else {
+	          await createMeetingFollowupProposal(currentClientId, selectedMeeting.id);
+	          flash('success', '会后 follow-up proposal 已进入 Proposal Inbox。');
+	        }
+	        await loadProposalBlock(currentClientId);
+	      } catch (error) {
+	        flash('error', error instanceof Error ? error.message : '会议 proposal 生成失败');
+	      } finally {
+	        updateWorkspaceProposalBusy(busyKey, null);
+	      }
+	    };
+	    const selectedMeetingPrepareProposal = useMemo(
       () => (selectedMeeting
         ? workspaceVisibleProposals.find((proposal) =>
           proposal.kind === 'meeting_prep'
@@ -15627,131 +17395,13 @@ export default function App() {
       }
     };
 
-    const openCreateClientModal = () => {
-      setEditingClientId(null);
-      setClientDraft({
-        name: '',
-        alias: '',
-        domain: '项目',
-        type: '项目',
-        intro: '',
-        stage: '待导入资料',
-        color: '#5B7BFE',
-      });
-      setIsClientModalOpen(true);
-    };
-
-    const openEditClientModal = (client: ClientSummary) => {
-      setEditingClientId(client.id);
-      setClientDraft({
-        name: client.name,
-        alias: client.alias,
-        domain: client.domain,
-        type: client.type,
-        intro: client.intro,
-        stage: client.stage,
-        color: (client.color || '').trim() || '#5B7BFE',
-      });
-      setIsClientModalOpen(true);
-    };
-
-    const submitClientModal = async () => {
-      if (!clientDraft.name.trim()) {
-        flash('error', '请先填写项目名称');
-        return;
-      }
-      const isEditingProject = Boolean(editingClientId);
-      const payload = {
-        name: clientDraft.name.trim(),
-        alias: clientDraft.alias.trim() || clientDraft.name.trim(),
-        domain: clientDraft.domain.trim() || '项目',
-        type: clientDraft.type.trim() || '项目',
-        intro: clientDraft.intro.trim() || '等待导入已有资料，系统将自动分析归档并建立项目上下文。',
-        stage: clientDraft.stage.trim() || '待导入资料',
-        color: (clientDraft.color || '').trim() || '#5B7BFE',
-      };
-      try {
-        const savedClient = editingClientId ? await updateClient(editingClientId, payload) : await createClient(payload);
-        setSearchQuery('');
-        setIsClientModalOpen(false);
-        setActiveTab('client_workspace');
-        if (!isEditingProject) {
-          setClientWorkspaceSurfaceMode('setup');
-        }
-        try {
-          await loadClientBlock(savedClient.id);
-        } catch (workspaceError) {
-          const clientItems = await getClients();
-          setClients(clientItems);
-          setCurrentClientId(savedClient.id);
-          setWorkspace(null);
-          flash('success', isEditingProject ? '项目信息已更新' : '项目已创建，先导入已有资料，系统会自动分析归档并建立项目上下文。');
-          return;
-        }
-        flash('success', isEditingProject ? '项目信息已更新' : '项目已创建，先导入已有资料，系统会自动分析归档并建立项目上下文。');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '保存项目失败');
-      }
-    };
-
-    const handleClientModalKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      if (event.key !== 'Enter') return;
-      if (event.currentTarget.tagName === 'TEXTAREA' && !event.metaKey && !event.ctrlKey) return;
-      if (event.shiftKey) return;
-      event.preventDefault();
-      void submitClientModal();
-    };
-
-    const handleDeleteClient = () => {
-      if (!editingClientId) return;
-      setDeleteClientConfirmInput('');
-      setIsDeleteClientConfirmOpen(true);
-    };
-
-    const confirmDeleteClient = async () => {
-      if (!editingClientId) return;
-      const targetClient = clients.find((client) => client.id === editingClientId);
-      const targetName = targetClient?.name || clientDraft.name.trim() || '该客户';
-      if (deleteClientConfirmInput.trim() !== targetName) {
-        flash('error', '项目名称不匹配，已取消删除');
-        return;
-      }
-      try {
-        await deleteClient(editingClientId);
-        const nextClients = await getClients();
-        setClients(nextClients);
-        setIsDeleteClientConfirmOpen(false);
-        setDeleteClientConfirmInput('');
-        setIsClientModalOpen(false);
-        setEditingClientId(null);
-        setClientDraft({
-          name: '',
-          alias: '',
-          domain: '',
-          type: '',
-          intro: '',
-          stage: '战略陪伴中',
-          color: '#5B7BFE',
-        });
-        setActiveMessageId(null);
-        if (currentClientId === editingClientId) {
-          const fallbackClientId = nextClients[0]?.id ?? null;
-          setCurrentClientId(fallbackClientId);
-          if (fallbackClientId) {
-            await loadClientBlock(fallbackClientId);
-          } else {
-            setWorkspace(null);
-          }
-        }
-        flash('success', '客户及其全部档案已删除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除项目失败');
-      }
-    };
-
     const handleDeleteClientFolder = async (folder: ClientWorkspace['folders'][number]) => {
       if (!currentClientId) return;
-      if (!window.confirm(`确认移除快捷通道里的"${folder.label}"？只有空文件夹可以移除。`)) {
+      if (folder.isSystem) {
+        flash('error', '系统文件夹不能移除');
+        return;
+      }
+      if (!window.confirm(`确认隐藏快捷通道里的"${folder.label}"？只有空文件夹可以彻底移除，非空文件夹会保留资料。`)) {
         return;
       }
       try {
@@ -15760,6 +17410,87 @@ export default function App() {
         flash('success', '文件夹已移除');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '移除文件夹失败');
+      }
+    };
+
+    const handleRenameClientFolder = async (folder: ClientWorkspace['folders'][number]) => {
+      if (!currentClientId) return;
+      if (folder.isSystem) {
+        flash('error', '系统文件夹不能重命名');
+        return;
+      }
+      const name = window.prompt('输入新的文件夹名称：', folder.label);
+      if (!name?.trim() || name.trim() === folder.label) return;
+      try {
+        await updateClientFolder(currentClientId, folder.id, { label: name.trim() });
+        await refreshWorkspace(currentClientId);
+        flash('success', '文件夹已重命名');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '重命名文件夹失败');
+      }
+    };
+
+    const handlePreviewFolderRecommendation = async () => {
+      if (!currentClientId) return;
+      setIsFolderRecommendationLoading(true);
+      setIsFolderRecommendationOpen(true);
+      try {
+        const plan = await recommendClientFolderPlan(currentClientId);
+        setFolderRecommendationPlan(plan);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '生成整理建议失败');
+      } finally {
+        setIsFolderRecommendationLoading(false);
+      }
+    };
+
+    const handleApplyFolderRecommendation = async () => {
+      if (!currentClientId || !folderRecommendationPlan) return;
+      setIsFolderRecommendationApplying(true);
+      try {
+        const updatedWorkspace = await applyClientFolderRecommendation(currentClientId, {
+          targetFolderLabels: folderRecommendationPlan.folders.map((folder) => folder.targetFolderLabel),
+        });
+        setWorkspace(updatedWorkspace);
+        setIsFolderRecommendationOpen(false);
+        flash('success', '已按整理建议更新文件夹视图');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '应用整理建议失败');
+      } finally {
+        setIsFolderRecommendationApplying(false);
+      }
+    };
+
+    const handlePreviewDocumentAutoRepair = async () => {
+      if (!currentClientId) return;
+      setIsDocumentAutoRepairOpen(true);
+      setIsDocumentAutoRepairLoading(true);
+      try {
+        const preview = await previewClientDocumentAutoRepair(currentClientId);
+        setDocumentAutoRepairPreview(preview);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '生成自动整理预览失败');
+      } finally {
+        setIsDocumentAutoRepairLoading(false);
+      }
+    };
+
+    const handleApplyDocumentAutoRepair = async () => {
+      if (!currentClientId || !documentAutoRepairPreview) return;
+      setIsDocumentAutoRepairApplying(true);
+      try {
+        const result = await applyClientDocumentAutoRepair(currentClientId, {
+          previewId: documentAutoRepairPreview.previewId,
+          documentIds: documentAutoRepairPreview.items
+            .filter((item) => !item.requiresHuman)
+            .map((item) => item.documentId),
+        });
+        await refreshWorkspace(currentClientId);
+        flash('success', result.message || `已入队 ${result.queuedCount} 条自动整理任务`);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '执行自动整理失败');
+      } finally {
+        setIsDocumentAutoRepairApplying(false);
       }
     };
 
@@ -15793,16 +17524,16 @@ export default function App() {
       setIsWorkspaceFileSearching(false);
     };
 
-    const handleImport = async (mode: 'folder' | 'file', paths: string[]) => {
+    const handleImport = async (mode: 'folder' | 'file', paths: string[], options?: { attachToComposer?: boolean }) => {
       if (!currentClientId) {
         flash('error', '请先选择客户');
-        return;
+        return [];
       }
       if (backendCompatibilityError) {
         flash('error', backendCompatibilityError);
-        return;
+        return [];
       }
-      if (!paths.length) return;
+      if (!paths.length) return [];
       try {
         setIsImportSubmitting(true);
         setLatestImportFeedback(null);
@@ -15811,6 +17542,11 @@ export default function App() {
         const importedCount = importResults.reduce((sum, item) => sum + (item.importedCount || 0), 0);
         const skippedCount = importResults.reduce((sum, item) => sum + (item.skippedCount || 0), 0);
         const queuedImports = importResults.filter((item) => item.status === 'queued').length;
+        const workingDocs = options?.attachToComposer ? buildActiveWorkingDocumentsFromImports(importResults) : [];
+        if (workingDocs.length > 0) {
+          setActiveWorkingDocuments((previous) => mergeActiveWorkingDocuments(workingDocs, previous));
+          void refreshActiveWorkingDocumentPreviews(currentClientId, workingDocs);
+        }
         const nextWorkspace = await refreshWorkspace(currentClientId);
         const nextActiveJobs = (nextWorkspace?.knowledgeStatus?.pendingJobs || 0) + (nextWorkspace?.knowledgeStatus?.runningJobs || 0);
         if (importedCount === 0 && nextActiveJobs === 0) {
@@ -15837,10 +17573,17 @@ export default function App() {
           setLatestImportFeedback({
             tone: 'success',
             text: mode === 'folder' ? `已接收 ${importedCount} 个新文件，后台正在分析归档并建库。` : `已接收 ${importedCount} 个新文件，后台正在处理。`,
-            detail: '你可以留在当前页面观察建库进度，也可以切到工作台继续其他操作。',
+            detail: options?.attachToComposer
+              ? '这些文件已作为当前对话的优先背景；解析完成前可以提问，但回答会标明可用边界。'
+              : '你可以留在当前页面观察建库进度，也可以切到工作台继续其他操作。',
             timestamp: Date.now(),
           });
-          flash('success', mode === 'folder' ? `已入队 ${importedCount} 个新文件，后台正在分析归档并建库` : `已入队 ${importedCount} 个文件，后台正在处理`);
+          flash(
+            'success',
+            options?.attachToComposer
+              ? `已接收 ${importedCount} 个文件，并作为当前对话资料`
+              : mode === 'folder' ? `已入队 ${importedCount} 个新文件，后台正在分析归档并建库` : `已入队 ${importedCount} 个文件，后台正在处理`,
+          );
         } else {
           setLatestImportFeedback({
             tone: 'success',
@@ -15850,6 +17593,7 @@ export default function App() {
           });
           flash('success', `已完成 ${importedCount} 个文件的导入处理`);
         }
+        return importResults;
       } catch (error) {
         setIsImportSubmitting(false);
         setLatestImportFeedback({
@@ -15859,6 +17603,7 @@ export default function App() {
           timestamp: Date.now(),
         });
         flash('error', error instanceof Error ? error.message : '导入失败');
+        return [];
       }
     };
 
@@ -15951,7 +17696,171 @@ export default function App() {
       setClientOverlayMode('paste_document');
     };
 
-    const handleClientTextDocumentContentChange = (value: string) => {
+	    const openClientLinkMaterialOverlay = () => {
+	      if (!currentClientId) {
+	        flash('error', '请先选择项目');
+	        return;
+	      }
+      setClientLinkMaterialDraft({
+        url: '',
+	        detectedPlatform: '',
+	        detectedLabel: '等待粘贴链接',
+	      });
+	      setClientLinkMaterialRun(latestClientLinkMaterialRun);
+	      setClientOverlayMode('link_material');
+	      void refreshLatestClientLinkMaterialRun(currentClientId);
+	    };
+
+	    const handleClientLinkMaterialUrlChange = (value: string) => {
+	      setClientLinkMaterialDraft(detectClientLinkMaterialPlatform(value));
+	      if (value.trim()) {
+	        setClientLinkMaterialRun(null);
+	      }
+	    };
+
+	    const handleStartClientLinkMaterialImport = async () => {
+	      if (!currentClientId) {
+	        flash('error', '请先选择项目');
+        return;
+      }
+      const url = clientLinkMaterialDraft.url.trim();
+      if (!url) {
+        flash('error', '请先粘贴 B 站或小红书链接');
+        return;
+      }
+      if (clientLinkMaterialDraft.detectedPlatform === 'unsupported') {
+        flash('error', '暂不支持这个链接。当前仅支持 B 站链接、BV 号和小红书链接。');
+        return;
+      }
+      try {
+	        setIsStartingClientLinkMaterial(true);
+	        const run = await startClientLinkMaterialImport(currentClientId, url, {
+	          useBrowserCookies: clientLinkMaterialUseBrowserCookies,
+	          cookieBrowser: clientLinkMaterialCookieBrowser,
+	        });
+	        setClientLinkMaterialRun(run);
+	        setLatestClientLinkMaterialRun(run);
+	        flash('info', '已开始链接转资料');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '链接转资料启动失败');
+      } finally {
+	        setIsStartingClientLinkMaterial(false);
+	      }
+	    };
+
+	    const renderLatestLinkMaterialRunStatus = (variant: 'compact' | 'full' = 'full') => {
+	      const run = latestClientLinkMaterialRun;
+	      if (!run) return null;
+	      const metadata = (run.metadata || {}) as Record<string, unknown>;
+	      const accessMode = String(metadata.accessMode || 'anonymous');
+	      const cookieBrowser = metadata.cookieBrowser ? String(metadata.cookieBrowser) : '';
+	      const transcriptSource = metadata.transcriptSource ? String(metadata.transcriptSource) : '';
+	      const logicalFolder = metadata.logicalFolder ? String(metadata.logicalFolder) : '线上转写';
+	      const accessFailureKind = metadata.accessFailureKind ? String(metadata.accessFailureKind) : '';
+	      const downloadAttemptCount = Number(metadata.downloadAttemptCount || 0);
+	      const headersApplied = metadata.headersApplied === true;
+	      const impersonationApplied = metadata.impersonationApplied === true;
+	      const curlCffiAvailable = metadata.curlCffiAvailable;
+	      const externalDownloader = metadata.externalDownloader ? String(metadata.externalDownloader) : '';
+	      const ytDlpVersion = metadata.ytDlpVersion ? String(metadata.ytDlpVersion) : '';
+	      const ytDlpErrorTail = metadata.ytDlpErrorTail ? String(metadata.ytDlpErrorTail) : '';
+	      const impersonationAvailable = metadata.impersonationAvailable;
+	      const isActiveRun = ['queued', 'running'].includes(run.status);
+	      const toneClass =
+	        run.status === 'completed'
+	          ? 'border-emerald-100 bg-emerald-50/60 text-emerald-800'
+	          : run.status === 'failed'
+	            ? 'border-rose-100 bg-rose-50/65 text-rose-700'
+	            : 'border-blue-100 bg-blue-50/65 text-[#3652c9]';
+	      const title =
+	        run.status === 'completed'
+	          ? '最近一次链接转资料已完成'
+	          : run.status === 'failed'
+	            ? '最近一次链接转资料失败'
+	            : '链接转资料处理中';
+	      const rawDetail =
+	        run.status === 'failed'
+	          ? (run.error || '处理失败，请重新打开链接转资料查看原因。')
+	          : run.status === 'completed'
+	            ? `已保存到：${logicalFolder}`
+	            : run.stage;
+	      const detail = (
+	        run.status === 'failed'
+	        && ['http_412', 'login_required', 'cookie_required'].includes(accessFailureKind)
+	        && accessMode !== 'browser_cookie'
+	      )
+	        ? `${rawDetail} 已尝试 B站请求头${impersonationApplied ? '和浏览器模拟' : ''}。可重新打开链接转资料，并勾选“使用浏览器登录态”后重试。`
+	        : rawDetail;
+	      const diagnostics = [
+	        downloadAttemptCount > 0 ? `尝试 ${downloadAttemptCount} 次` : '',
+	        headersApplied ? 'Origin 已尝试' : '',
+	        impersonationApplied
+	          ? '浏览器模拟已尝试'
+	          : curlCffiAvailable === false || impersonationAvailable === false
+	            ? '浏览器模拟不可用'
+	            : '',
+	        externalDownloader ? `兜底：${externalDownloader}` : '',
+	        ytDlpVersion ? `yt-dlp ${ytDlpVersion}` : '',
+	      ].filter(Boolean).join(' · ');
+	      const nextStep = run.status === 'failed'
+	        ? (curlCffiAvailable === false || impersonationAvailable === false
+	            ? '建议：安装或修复 curl-cffi，或启用浏览器登录态 / 安装 BBDown。'
+	            : accessMode !== 'browser_cookie' && ['http_412', 'login_required', 'cookie_required'].includes(accessFailureKind)
+	              ? '建议：启用浏览器登录态；若仍失败，可安装 BBDown。'
+	              : '')
+	        : '';
+	      return (
+	        <div className={`rounded-2xl border px-3 py-2.5 ${toneClass}`}>
+	          <div className="flex items-center justify-between gap-2">
+	            <p className="min-w-0 truncate text-[11px] font-bold">{title}</p>
+	            <span className="shrink-0 text-[10px] font-bold tabular-nums">
+	              {isActiveRun ? `${Math.round(run.progress || 0)}%` : run.status === 'completed' ? '完成' : '失败'}
+	            </span>
+	          </div>
+	          {isActiveRun && (
+	            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/70">
+	              <div
+	                className="h-full rounded-full bg-current transition-all duration-500"
+	                style={{ width: `${Math.min(Math.max(run.progress || 0, 6), 100)}%` }}
+	              />
+	            </div>
+	          )}
+	          <p className={`mt-1.5 ${variant === 'compact' ? 'line-clamp-2' : ''} text-[10px] font-semibold leading-4`} title={detail}>
+	            {detail}
+	          </p>
+	          {run.status === 'completed' && run.title && (
+	            <p className="mt-1 truncate text-[10px] opacity-75" title={run.title}>
+	              {run.title}
+	            </p>
+	          )}
+	          {run.status === 'completed' && run.documentPath && variant !== 'compact' && (
+	            <button
+	              type="button"
+	              className="mt-2 text-[10px] font-bold text-emerald-700 underline decoration-emerald-300 underline-offset-2"
+	              onClick={() => void openPathBridge(run.documentPath || '').catch(() => undefined)}
+	            >
+	              打开 Markdown
+	            </button>
+	          )}
+	          {run.status === 'failed' && diagnostics && (
+	            <p className="mt-1 truncate text-[10px] opacity-75" title={ytDlpErrorTail || diagnostics}>
+	              {diagnostics}
+	            </p>
+	          )}
+	          {run.status === 'failed' && nextStep && variant !== 'compact' && (
+	            <p className="mt-1 text-[10px] font-semibold leading-4 opacity-80">{nextStep}</p>
+	          )}
+	          <p className="mt-1 truncate text-[10px] opacity-75">
+	            {accessMode === 'browser_cookie'
+	              ? `使用浏览器登录态${cookieBrowser ? ` · ${cookieBrowser}` : ''}`
+	              : '匿名访问'}
+	            {transcriptSource ? ` · ${transcriptSource}` : ''}
+	          </p>
+	        </div>
+	      );
+	    };
+
+	    const handleClientTextDocumentContentChange = (value: string) => {
       setClientTextDocumentDraft((prev) => {
         const nextTitle =
           !prev.titleEdited || !prev.title.trim() ? inferClientTextDocumentTitle(value) : prev.title;
@@ -15995,16 +17904,16 @@ export default function App() {
       }
     };
 
-    const handleDroppedClientFiles = async (paths: string[]) => {
+    const handleDroppedClientFiles = async (paths: string[], options?: { attachToComposer?: boolean }) => {
       if (!paths.length) {
         flash('error', '没有识别到可导入文件。');
         return;
       }
-      if (paths.length === 1 && /\.docx$/i.test(paths[0] || '')) {
+      if (!options?.attachToComposer && paths.length === 1 && /\.docx$/i.test(paths[0] || '')) {
         const handled = await fillTemplateFromPath(paths[0], { showDialog: true, allowFallbackImport: true });
         if (handled === 'started' || handled === 'error') return;
       }
-      await handleImport('file', paths);
+      await handleImport('file', paths, options);
     };
 
     const resetClientImportDropZone = (zone?: 'buffer' | 'composer') => {
@@ -16059,14 +17968,14 @@ export default function App() {
         if (droppedDataContainsDirectory(event.dataTransfer)) {
           const inferredDirectoryPath = inferDroppedDirectoryPath(droppedPaths);
           if (inferredDirectoryPath) {
-            void handleImport('folder', [inferredDirectoryPath]);
+            void handleImport('folder', [inferredDirectoryPath], { attachToComposer: zone === 'composer' });
             return;
           }
           flash('info', '已识别到目录拖拽，但系统没有拿到稳定路径。接下来会打开系统目录选择器，请再确认一次文件夹。');
           void handleSelectImportFolder();
           return;
         }
-        void handleDroppedClientFiles(droppedPaths);
+        void handleDroppedClientFiles(droppedPaths, { attachToComposer: zone === 'composer' });
       };
 
     const handleSelectImportFiles = async () => {
@@ -16092,6 +18001,18 @@ export default function App() {
       if (!resolvedPrompt || !currentClientId || hasPendingAnalysisRun || isComposerStartingMessage) return;
       if (backendCompatibilityError) {
         flash('error', backendCompatibilityError);
+        return;
+      }
+      let latestHealth = health;
+      try {
+        latestHealth = await probeLocalBackendHealth(1500);
+        setHealth(latestHealth);
+      } catch {
+        flash('error', '无法确认大模型配置状态，请稍后再试。');
+        return;
+      }
+      if (!isRealAiConfigured(latestHealth?.ai)) {
+        flash('error', getWorkspaceAiUnavailableReason(latestHealth?.ai));
         return;
       }
       const prompt = resolvedPrompt;
@@ -16134,7 +18055,17 @@ export default function App() {
       try {
         const controller = new AbortController();
         workspaceStartMessageAbortControllerRef.current = controller;
-        const started = await startClientMessage(currentClientId, prompt, currentThreadId, undefined, { signal: controller.signal });
+        const workingDocumentIds = activeWorkingDocuments
+          .filter((document) => document.status !== 'failed')
+          .map((document) => document.documentId);
+        const started = await startClientMessage(
+          currentClientId,
+          prompt,
+          currentThreadId || undefined,
+          undefined,
+          workingDocumentIds,
+          { signal: controller.signal },
+        );
         upsertAnalysisRun(started.analysisRun);
         flushSync(() => {
           setThreadOptimisticMessages(draftThreadId, []);
@@ -16525,17 +18456,40 @@ export default function App() {
                             <div className="w-8 h-8 rounded-xl bg-blue-50/50 flex items-center justify-center shrink-0 group-hover:bg-blue-100 transition-colors">
                               <FolderDot size={16} className="text-[#5B7BFE]" />
                             </div>
-                            <span className="text-[12px] xl:text-[13px] font-bold text-gray-700 truncate group-hover:text-[#5B7BFE] transition-colors">{folder.label}</span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[12px] xl:text-[13px] font-bold text-gray-700 truncate group-hover:text-[#5B7BFE] transition-colors">
+                                {folder.label === '待处理' ? '待整理资料' : folder.label}
+                              </span>
+                              <span className="mt-0.5 flex items-center gap-1.5 text-[9px] font-semibold text-gray-400">
+                                {folder.isSystem ? <span>系统</span> : folder.folderKind === 'legacy_business' ? <span>旧分类</span> : <span>客户自定义</span>}
+                                {folder.suggested && <span>AI 建议</span>}
+                                <span>{folder.fileCount || 0} 个文件</span>
+                              </span>
+                            </span>
                           </button>
                           {isFolderEditMode && (
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteClientFolder(folder)}
-                              className="shrink-0 rounded-xl p-2 text-red-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                              title={`移除 ${folder.label}`}
-                            >
-                              <Minus size={14} />
-                            </button>
+                            <div className="shrink-0 flex items-center gap-1">
+                              {!folder.isSystem && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRenameClientFolder(folder)}
+                                  className="rounded-xl px-2 py-1 text-[10px] font-bold text-gray-400 hover:bg-blue-50 hover:text-[#5B7BFE] transition-colors"
+                                  title={`重命名 ${folder.label}`}
+                                >
+                                  改名
+                                </button>
+                              )}
+                              {!folder.isSystem && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteClientFolder(folder)}
+                                  className="rounded-xl p-2 text-red-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                                  title={`隐藏 ${folder.label}`}
+                                >
+                                  <Minus size={14} />
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       ))}
@@ -16758,9 +18712,9 @@ export default function App() {
                       </div>
                       <p className="text-[15px] xl:text-[16px] font-bold text-gray-800 mb-2">已为您加载 {currentClient?.name || '当前客户'} 的业务大脑</p>
                       <p className="text-[12px] xl:text-[13px] text-center max-w-sm xl:max-w-md leading-relaxed text-gray-500">
-                        {health?.ai.provider && health.ai.provider !== 'mock' && health.ai.ready
-                          ? `本次对话已连接到 ${providerDisplayNames[health.ai.provider]} 结构化问答引擎。`
-                          : '本次对话当前运行在本地 mock 模式，可稳定验证流程与数据链路。'}
+                        {workspaceRealAiReady
+                          ? `本次对话已连接到 ${aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)} 结构化问答引擎。`
+                          : '尚未配置真实大模型。资料与工作区可以继续整理，正式问答需要先在系统设置里配置 API。'}
                       </p>
                     </div>
                   ) : (
@@ -16899,6 +18853,10 @@ export default function App() {
                           || answerPresentationSections.length > 0
                         ) && ['ready', 'usable_with_boundary'].includes(userVisibleQualityStatus);
                         const isHardSystemFailure = msg.answerMode === 'system_failure' && !shouldRenderStateSections;
+                        const isHistoricalMockAnswer = msg.role === 'assistant' && (
+                          msg.providerUsed === 'mock'
+                          || /\bmock\b/i.test(String(msg.modelRoute || ''))
+                        );
                         const shouldRenderPlainWorkspaceAnswer = (
                           workspaceWorkflow !== 'file_search'
                           && ['ready', 'usable_with_boundary', 'degraded'].includes(userVisibleQualityStatus)
@@ -16930,7 +18888,7 @@ export default function App() {
                               <div>
                                 <div className="bg-gray-50/80 border-b border-gray-100 px-4 xl:px-5 py-3 flex items-center justify-between">
                                   <span className="flex items-center gap-1.5 text-[10px] xl:text-[11px] font-bold text-gray-500 uppercase tracking-widest">
-                                    <Zap size={14} className="text-amber-500" /> {msg.llmInvoked ? msg.modelRoute || `AI · ${msg.providerUsed || health?.ai.model || 'qwen'}` : '背景整理'}
+                                    <Zap size={14} className="text-amber-500" /> {isHistoricalMockAnswer ? '配置前本地测试回答' : (msg.llmInvoked ? msg.modelRoute || aiRouteLabel(msg.providerUsed || health?.ai.provider, health?.ai.model, health?.ai.providerLabel) : '背景整理')}
                                   </span>
                                   <span className="text-[10px] xl:text-[11px] text-gray-400 font-medium">
                                     {msg.timing?.totalMs ? `耗时 ${formatElapsedLabel(msg.timing.totalMs)}` : '点击激活右侧证据线索'}
@@ -16945,6 +18903,11 @@ export default function App() {
                                         这是一条历史结果：生成当时该客户资料尚未正式入库。当前资料已进入知识库，请重新提问以获取基于现有资料的正式回答。
                                       </div>
                                     )}
+                                  {isHistoricalMockAnswer && (
+                                    <div className="rounded-2xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-[12px] font-bold text-amber-700">
+                                      这是一条清空模型配置前生成的本地测试结果，不代表真实大模型回答。配置模型后请重新提问。
+                                    </div>
+                                  )}
                                   {!shouldRenderPlainWorkspaceAnswer && msg.answerMode === 'grounded_answer' && userVisibleQualityStatus === 'ready' && (
                                     <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-[12px] font-bold text-emerald-700">
                                       已基于当前资料与背景线索生成正式分析回答。
@@ -17166,7 +19129,7 @@ export default function App() {
                                                 <button
                                                   key={`${msg.id}-card-${card.actionType}-${card.title}`}
                                                   type="button"
-                                                  disabled={Boolean(answerActionState[msg.id])}
+                                                  disabled={isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
                                                   className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-left text-[11px] font-semibold text-violet-700 transition-colors hover:bg-violet-100 disabled:opacity-50"
                                                   onClick={(event) => {
                                                     event.stopPropagation();
@@ -17350,7 +19313,7 @@ export default function App() {
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={isHardSystemFailure || Boolean(answerActionState[msg.id])}
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void handleVectorizeAnswer(msg.id);
@@ -17360,7 +19323,7 @@ export default function App() {
                                     </button>
                                     <button
                                       className="text-[11px] xl:text-[12px] text-gray-500 hover:text-gray-900 hover:bg-white hover:shadow-sm font-semibold flex items-center gap-1.5 transition-all px-2.5 py-1.5 rounded-lg disabled:opacity-50"
-                                      disabled={isHardSystemFailure || Boolean(answerActionState[msg.id])}
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer || Boolean(answerActionState[msg.id])}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void handleExportAnswer(msg.id);
@@ -17382,7 +19345,7 @@ export default function App() {
                                   </div>
                                   <button
                                     className="text-[11px] xl:text-[12px] text-white bg-[#5B7BFE] hover:bg-[#4a6be6] shadow-[0_2px_8px_rgba(91,123,254,0.3)] font-bold flex items-center gap-1.5 transition-all px-3 xl:px-4 py-1.5 rounded-xl shrink-0 disabled:opacity-50"
-                                    disabled={isHardSystemFailure}
+                                      disabled={isHardSystemFailure || isHistoricalMockAnswer}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       const taskCard = answerExperienceActionCards.find((item) => item.actionType === 'create_task');
@@ -17459,6 +19422,21 @@ export default function App() {
             </div>
 
             <div className={`${clientWorkspaceSurfaceMode === 'setup' ? 'hidden ' : ''}px-6 xl:px-8 pb-6 xl:pb-8 pt-4 shrink-0 bg-gradient-to-t from-[#F9FAFB] via-[#F9FAFB] to-transparent`}>
+              {!workspaceRealAiReady && (
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-100 bg-amber-50/90 px-4 py-3 text-[12px] text-amber-800">
+                  <div className="flex min-w-0 items-center gap-2 font-bold">
+                    <AlertCircle size={15} className="shrink-0" />
+                    <span className="line-clamp-2">{workspaceAiUnavailableReason}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openAiSettingsFromWorkspace}
+                    className="shrink-0 rounded-xl border border-amber-200 bg-white px-3 py-1.5 text-[12px] font-bold text-amber-700 transition hover:bg-amber-100"
+                  >
+                    去设置
+                  </button>
+                </div>
+              )}
               {workspaceFollowUpPrompts.length > 0 && (
                 <div className="mb-3 rounded-[22px] border border-slate-100 bg-white/82 px-3.5 py-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] backdrop-blur">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
@@ -17495,45 +19473,102 @@ export default function App() {
               >
                 {clientImportDropZone === 'composer' && (
                   <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-[20px] border-2 border-dashed border-[#5B7BFE] bg-white/92 backdrop-blur-sm">
-                    <div className="text-center px-6">
-                      <p className="text-[13px] font-bold text-[#3652c9]">松手即可自动识别处理</p>
-                      <p className="mt-1 text-[11px] text-[#5c6fb8]">普通资料会自动归档；带字段的 docx 模板会直接尝试自动填写</p>
-                    </div>
-                  </div>
-                )}
-                <textarea
-                  ref={composerTextareaRef}
-                  className="w-full bg-transparent p-2.5 pl-4 text-[13px] xl:text-[14px] text-gray-800 outline-none resize-none min-h-[44px] xl:min-h-[50px] max-h-[120px] leading-relaxed placeholder-gray-400 font-medium"
-                  placeholder={`让 ${health?.ai.provider && health.ai.provider !== 'mock' && health.ai.ready ? providerDisplayNames[health.ai.provider] : 'AI'} 帮你推演 ${currentClient?.name || '当前客户'} 的业务问题...`}
-                  value={inputValue}
-                  onFocus={(event) => updateComposerFocusSnapshot(event.currentTarget)}
-                  onBlur={(event) => {
-                    commitComposerDraft(event.currentTarget.value);
-                    if (event.relatedTarget) {
-                      workspaceComposerFocusRef.current = {
-                        ...workspaceComposerFocusRef.current,
-                        focused: false,
-                        updatedAt: Date.now(),
-                      };
-                    }
-                  }}
-                  onSelect={(event) => updateComposerFocusSnapshot(event.currentTarget)}
-                  onCompositionStart={(event) => {
-                    workspaceComposerCompositionRef.current = true;
-                    updateComposerFocusSnapshot(event.currentTarget);
-                  }}
-                  onCompositionEnd={(event) => {
-                    workspaceComposerCompositionRef.current = false;
-                    updateComposerFocusSnapshot(event.currentTarget);
-                    setInputValue(event.currentTarget.value);
-                  }}
-                  onChange={(event) => {
-                    updateComposerFocusSnapshot(event.currentTarget);
-                    setInputValue(event.target.value);
-                  }}
-                  onKeyDown={handleComposerKeyDown}
-                  disabled={hasPendingAnalysisRun || isBackendBlocked || isComposerStartingMessage}
-                />
+	                    <div className="text-center px-6">
+	                      <p className="text-[13px] font-bold text-[#3652c9]">松手即可自动识别处理</p>
+	                      <p className="mt-1 text-[11px] text-[#5c6fb8]">文件会自动归档，并作为当前对话的优先背景</p>
+	                    </div>
+	                  </div>
+	                )}
+	                <div className="min-w-0 flex-1">
+	                  {activeWorkingDocuments.length > 0 && (
+	                    <div className="flex max-h-[70px] flex-wrap gap-1.5 overflow-y-auto px-2.5 pt-1">
+	                      {activeWorkingDocuments.map((document) => {
+	                        const statusLabel = document.status === 'ready'
+	                          ? '已就绪'
+	                          : document.status === 'partial_ready'
+	                            ? '部分可读'
+	                            : document.status === 'failed'
+	                              ? '失败'
+	                              : document.status === 'queued'
+	                                ? '排队中'
+	                                : '解析中';
+	                        const statusClassName = document.status === 'failed'
+	                          ? 'border-rose-200 bg-rose-50 text-rose-700'
+	                          : document.status === 'ready' || document.status === 'partial_ready'
+	                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+	                            : 'border-blue-200 bg-blue-50 text-blue-700';
+	                        return (
+	                          <span
+	                            key={document.documentId}
+	                            className={`group inline-flex max-w-full items-center gap-1.5 rounded-xl border px-2 py-1 text-[11px] font-semibold ${statusClassName}`}
+	                            title={document.lastError || document.preview?.readSummary || document.title}
+	                          >
+	                            <Paperclip size={12} className="shrink-0" />
+	                            <span className="max-w-[220px] truncate">{document.title}</span>
+	                            <span className="shrink-0 opacity-70">{statusLabel}</span>
+	                            <button
+	                              type="button"
+	                              className="shrink-0 rounded-full p-0.5 opacity-55 transition hover:bg-white/70 hover:opacity-100"
+	                              aria-label={`移除当前对话资料 ${document.title}`}
+	                              onClick={() =>
+	                                setActiveWorkingDocuments((previous) =>
+	                                  previous.filter((item) => item.documentId !== document.documentId),
+	                                )
+	                              }
+	                            >
+	                              <X size={11} />
+	                            </button>
+	                          </span>
+	                        );
+	                      })}
+	                    </div>
+	                  )}
+	                  <textarea
+	                    ref={composerTextareaRef}
+	                    className="w-full bg-transparent p-2.5 pl-4 text-[13px] xl:text-[14px] text-gray-800 outline-none resize-none min-h-[44px] xl:min-h-[50px] max-h-[120px] leading-relaxed placeholder-gray-400 font-medium"
+	                    placeholder={workspaceRealAiReady
+	                      ? `让 ${aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)} 帮你推演 ${currentClient?.name || '当前客户'} 的业务问题...`
+	                      : `先配置大模型，再向 ${currentClient?.name || '当前客户'} 提问...`}
+	                    value={inputValue}
+	                    onFocus={(event) => {
+	                      reportWorkspaceInteractionState(true, 'workspace_chat_composer', currentClientId || null);
+	                      updateComposerFocusSnapshot(event.currentTarget);
+	                    }}
+	                    onBlur={(event) => {
+	                      const draftValue = event.currentTarget.value;
+	                      commitComposerDraft(draftValue);
+	                      const hasDraft = draftValue.trim().length > 0;
+	                      reportWorkspaceInteractionState(
+	                        hasDraft,
+	                        hasDraft ? 'workspace_chat_draft' : 'workspace_chat_composer',
+	                        currentClientId || null,
+	                      );
+	                      if (event.relatedTarget) {
+	                        workspaceComposerFocusRef.current = {
+	                          ...workspaceComposerFocusRef.current,
+	                          focused: false,
+	                          updatedAt: Date.now(),
+	                        };
+	                      }
+	                    }}
+	                    onSelect={(event) => updateComposerFocusSnapshot(event.currentTarget)}
+	                    onCompositionStart={(event) => {
+	                      workspaceComposerCompositionRef.current = true;
+	                      updateComposerFocusSnapshot(event.currentTarget);
+	                    }}
+	                    onCompositionEnd={(event) => {
+	                      workspaceComposerCompositionRef.current = false;
+	                      updateComposerFocusSnapshot(event.currentTarget);
+	                      setInputValue(event.currentTarget.value);
+	                    }}
+	                    onChange={(event) => {
+	                      updateComposerFocusSnapshot(event.currentTarget);
+	                      setInputValue(event.target.value);
+	                    }}
+	                    onKeyDown={handleComposerKeyDown}
+	                    disabled={hasPendingAnalysisRun || isBackendBlocked || isComposerStartingMessage}
+	                  />
+	                </div>
                 <button
                   onClick={() => {
                     if (composerBusyMode) {
@@ -17578,7 +19613,7 @@ export default function App() {
                   'aspect-square rounded-[18px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50';
                 return (
                   <>
-                    <div className="mt-3 grid grid-cols-4 gap-2">
+                    <div className="mt-3 grid grid-cols-5 gap-2">
                       <button
                         type="button"
                         className={quickToolButtonClass}
@@ -17627,12 +19662,30 @@ export default function App() {
                           <PenTool size={18} />
                         </span>
                       </button>
+                      <button
+                        type="button"
+                        className={quickToolButtonClass}
+                        disabled={isBackendBlocked}
+                        onClick={openClientLinkMaterialOverlay}
+                        title="链接转资料"
+                        aria-label="链接转资料"
+                      >
+                        <span className="flex h-full w-full items-center justify-center">
+                          <Link2 size={18} />
+                        </span>
+                      </button>
                     </div>
 
                     <div className="mt-2 flex items-center justify-between gap-3 text-[10px] leading-4 text-gray-400">
                       <span>{knowledgeStatus?.totalChunks || 0} 个向量块</span>
                       <span>{(workspace?.recentMessages || []).length} 条最近问答</span>
                     </div>
+
+                    {latestClientLinkMaterialRun && (
+                      <div className="mt-2">
+                        {renderLatestLinkMaterialRunStatus('compact')}
+                      </div>
+                    )}
 
                     <div className={`mt-2 min-h-[46px] transition-opacity duration-200 ${knowledgeJobProgressView.hasActivity ? 'opacity-100' : 'pointer-events-none opacity-0'}`}>
                       <div className="rounded-2xl border border-blue-100 bg-blue-50/60 px-3 py-2">
@@ -17750,6 +19803,18 @@ export default function App() {
                             <PenTool size={23} />
                           </span>
                         </button>
+                        <button
+                          type="button"
+                          className="aspect-square rounded-[24px] border border-gray-200 bg-white text-slate-600 shadow-sm transition hover:border-[#C7D5FF] hover:text-[#4A63CF] hover:shadow-[0_8px_20px_rgba(91,123,254,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={isBackendBlocked}
+                          onClick={openClientLinkMaterialOverlay}
+                          title="链接转资料"
+                          aria-label="链接转资料"
+                        >
+                          <span className="flex h-full w-full items-center justify-center">
+                            <Link2 size={23} />
+                          </span>
+                        </button>
                         {/* 资料速记、结构导入 — 功能待实现，暂不显示入口 */}
                       </div>
 
@@ -17757,6 +19822,12 @@ export default function App() {
                         <span>{knowledgeStatus?.totalChunks || 0} 个向量块</span>
                         <span>{(workspace?.recentMessages || []).length} 条最近问答</span>
                       </div>
+
+                      {latestClientLinkMaterialRun && (
+                        <div className="mt-3">
+                          {renderLatestLinkMaterialRunStatus('full')}
+                        </div>
+                      )}
 
                       {knowledgeJobProgressView.hasActivity && (
                         <div className="mt-3 rounded-2xl border border-blue-100 bg-white px-3 py-3">
@@ -17787,6 +19858,14 @@ export default function App() {
                           ) : null}
                         </div>
                       )}
+                      <DataCenterOpsPanel
+                        clientId={currentClientId}
+                        flash={flash}
+                        onRefreshWorkspace={() => {
+                          if (!currentClientId) return;
+                          void refreshWorkspace(currentClientId);
+                        }}
+                      />
                     </>
                   );
                 })()}
@@ -18487,6 +20566,7 @@ export default function App() {
                     {clientOverlayMode === 'goal' && <Flag size={16} strokeWidth={2.5} />}
                     {clientOverlayMode === 'dna' && <Target size={16} strokeWidth={2.5} />}
                     {clientOverlayMode === 'paste_document' && <PenTool size={16} strokeWidth={2.5} />}
+                    {clientOverlayMode === 'link_material' && <Link2 size={16} strokeWidth={2.5} />}
                   </div>
                   {clientOverlayMode === 'meeting'
                     ? '客户会议流'
@@ -18494,7 +20574,9 @@ export default function App() {
                       ? '目标地图'
                       : clientOverlayMode === 'paste_document'
                         ? '粘贴新增文档'
-                        : clientDnaDisplayLabel}
+                        : clientOverlayMode === 'link_material'
+                          ? '链接转资料'
+                          : clientDnaDisplayLabel}
                 </h3>
               </div>
               <div className="p-8 overflow-y-auto max-h-[calc(88vh-96px)]">
@@ -18585,20 +20667,20 @@ export default function App() {
                               >
                                 发布
                               </Button>
-                              <Button
-                                className="border-violet-200 text-violet-700 hover:bg-violet-50"
-                                disabled={Boolean(proposalBusyState[`meeting:${selectedMeeting.id}:prepare`])}
-                                onClick={() => void handleCreateMeetingProposal('prepare')}
-                              >
-                                {proposalBusyState[`meeting:${selectedMeeting.id}:prepare`] === 'prepare' ? '生成中…' : '会前 proposal'}
-                              </Button>
-                              <Button
-                                className="border-violet-200 text-violet-700 hover:bg-violet-50"
-                                disabled={Boolean(proposalBusyState[`meeting:${selectedMeeting.id}:followup`])}
-                                onClick={() => void handleCreateMeetingProposal('followup')}
-                              >
-                                {proposalBusyState[`meeting:${selectedMeeting.id}:followup`] === 'followup' ? '生成中…' : '会后 proposal'}
-                              </Button>
+	                              <Button
+	                                className="border-violet-200 text-violet-700 hover:bg-violet-50"
+	                                disabled={Boolean(workspaceProposalBusyState[`meeting:${selectedMeeting.id}:prepare`])}
+	                                onClick={() => void handleCreateWorkspaceMeetingProposal('prepare')}
+	                              >
+	                                {workspaceProposalBusyState[`meeting:${selectedMeeting.id}:prepare`] === 'prepare' ? '生成中…' : '会前 proposal'}
+	                              </Button>
+	                              <Button
+	                                className="border-violet-200 text-violet-700 hover:bg-violet-50"
+	                                disabled={Boolean(workspaceProposalBusyState[`meeting:${selectedMeeting.id}:followup`])}
+	                                onClick={() => void handleCreateWorkspaceMeetingProposal('followup')}
+	                              >
+	                                {workspaceProposalBusyState[`meeting:${selectedMeeting.id}:followup`] === 'followup' ? '生成中…' : '会后 proposal'}
+	                              </Button>
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               <div className="rounded-2xl border border-violet-100 bg-violet-50/50 px-4 py-3">
@@ -18713,6 +20795,152 @@ export default function App() {
                       >
                         {isCreatingClientTextDocument ? <RefreshCw size={16} className="animate-spin" /> : <FileBadge size={16} />}
                         {isCreatingClientTextDocument ? '生成中…' : '生成 Word 并入库'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {clientOverlayMode === 'link_material' && (
+                  <div className="space-y-5">
+                    <div className="rounded-2xl border border-blue-100 bg-blue-50/40 px-4 py-3">
+                      <p className="text-[13px] font-semibold text-[#33449a]">把视频链接转成当前项目资料</p>
+                      <p className="mt-1 text-[12px] leading-6 text-[#5d6aa6]">
+                        支持 B 站链接、BV 号和小红书链接。系统只沉淀干净 Markdown 正文、视频题目和原链接；视频或音频只做临时处理，不长期保存在软件里。
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">当前关联项目</p>
+                      <p className="mt-2 text-[14px] font-bold text-gray-900">{currentClient?.name || '未选择项目'}</p>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-[12px] font-bold text-gray-700">视频链接 / BV 号</label>
+                      <input
+                        value={clientLinkMaterialDraft.url}
+                        onChange={(event) => handleClientLinkMaterialUrlChange(event.target.value)}
+                        placeholder="粘贴 B 站、小红书链接，或直接输入 BV 号"
+                        disabled={Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')}
+                        className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[14px] font-medium text-gray-900 outline-none transition focus:border-[#5B7BFE] focus:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+                      />
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px]">
+                        <span className={`rounded-full px-3 py-1 font-bold ${
+                          clientLinkMaterialDraft.detectedPlatform === 'unsupported'
+                            ? 'bg-rose-50 text-rose-600'
+                            : clientLinkMaterialDraft.detectedPlatform
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-gray-100 text-gray-500'
+                        }`}>
+                          {clientLinkMaterialDraft.detectedLabel}
+                        </span>
+	                        <span className="text-gray-400">单次只处理一个链接；没有字幕且未配置转写引擎时会明确失败。</span>
+	                      </div>
+	                    </div>
+
+	                    <div className="rounded-2xl border border-amber-100 bg-amber-50/45 px-4 py-3">
+	                      <label className="flex items-start gap-3">
+	                        <input
+	                          type="checkbox"
+	                          checked={clientLinkMaterialUseBrowserCookies}
+	                          disabled={Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')}
+	                          onChange={(event) => setClientLinkMaterialUseBrowserCookies(event.target.checked)}
+	                          className="mt-1 h-4 w-4 rounded border-amber-200 text-[#5B7BFE] focus:ring-[#5B7BFE]"
+	                        />
+	                        <span className="min-w-0 flex-1">
+	                          <span className="block text-[12px] font-bold text-amber-900">使用浏览器登录态读取链接</span>
+	                          <span className="mt-1 block text-[11px] leading-5 text-amber-700">
+	                            遇到 B 站 HTTP 412、需要登录或 Cookie 才能下载媒体时开启。系统只在本机调用 yt-dlp 时临时读取，不保存、不展示、不上传 Cookie。
+	                          </span>
+	                        </span>
+	                      </label>
+	                      {clientLinkMaterialUseBrowserCookies && (
+	                        <div className="mt-3 flex items-center gap-2">
+	                          <span className="text-[11px] font-bold text-amber-800">浏览器</span>
+	                          <select
+	                            value={clientLinkMaterialCookieBrowser}
+	                            disabled={Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')}
+	                            onChange={(event) => setClientLinkMaterialCookieBrowser(event.target.value as LinkMaterialCookieBrowser)}
+	                            className="rounded-xl border border-amber-200 bg-white px-3 py-1.5 text-[12px] font-bold text-amber-900 outline-none focus:border-[#5B7BFE]"
+	                          >
+	                            <option value="firefox">Firefox</option>
+	                            <option value="chrome">Chrome</option>
+	                            <option value="edge">Edge</option>
+	                            <option value="safari">Safari</option>
+	                          </select>
+	                        </div>
+	                      )}
+	                    </div>
+
+	                    {clientLinkMaterialRun && (
+                      <div className="rounded-[24px] border border-blue-100 bg-white px-4 py-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-[13px] font-bold text-slate-900">
+                              {clientLinkMaterialRun.title || clientLinkMaterialRun.stage}
+                            </p>
+                            <p className="mt-1 text-[12px] text-slate-500">{clientLinkMaterialRun.stage}</p>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-bold ${
+                            clientLinkMaterialRun.status === 'completed'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : clientLinkMaterialRun.status === 'failed'
+                                ? 'bg-rose-50 text-rose-600'
+                                : 'bg-blue-50 text-[#5B7BFE]'
+                          }`}>
+                            {clientLinkMaterialRun.status === 'completed'
+                              ? '完成'
+                              : clientLinkMaterialRun.status === 'failed'
+                                ? '失败'
+                                : '处理中'}
+                          </span>
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#E8EEFF]">
+                          <div
+                            className="h-full rounded-full bg-[#5B7BFE] transition-all duration-500"
+                            style={{ width: `${Math.min(Math.max(clientLinkMaterialRun.progress || 0, 4), 100)}%` }}
+                          />
+                        </div>
+                        {clientLinkMaterialRun.error && (
+                          <p className="mt-3 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-[12px] font-semibold leading-6 text-rose-600">
+                            {clientLinkMaterialRun.error}
+                          </p>
+                        )}
+                        {clientLinkMaterialRun.documentPath && (
+                          <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-slate-500">
+                            <span title={clientLinkMaterialRun.documentPath}>已保存到：线上转写</span>
+                            <button
+                              type="button"
+                              className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[11px] font-bold text-[#4166F5]"
+                              onClick={() => void openPathBridge(clientLinkMaterialRun.documentPath || '').catch(() => undefined)}
+                            >
+                              打开 Markdown
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[12px] leading-6 text-gray-500">
+                        生成的 Markdown 会保存到“线上转写”，并进入数据中心检索、问答和引证。
+                      </p>
+                      <Button
+                        primary
+                        className="shrink-0"
+                        disabled={
+                          isStartingClientLinkMaterial
+                          || !clientLinkMaterialDraft.url.trim()
+                          || clientLinkMaterialDraft.detectedPlatform === 'unsupported'
+                          || Boolean(clientLinkMaterialRun && clientLinkMaterialRun.status !== 'failed' && clientLinkMaterialRun.status !== 'completed')
+                        }
+                        onClick={() => void handleStartClientLinkMaterialImport()}
+                      >
+                        {isStartingClientLinkMaterial || (clientLinkMaterialRun && ['queued', 'running'].includes(clientLinkMaterialRun.status))
+                          ? <RefreshCw size={16} className="animate-spin" />
+                          : <Link2 size={16} />}
+                        {isStartingClientLinkMaterial || (clientLinkMaterialRun && ['queued', 'running'].includes(clientLinkMaterialRun.status))
+                          ? '生成中…'
+                          : '生成资料'}
                       </Button>
                     </div>
                   </div>
@@ -19183,204 +21411,56 @@ export default function App() {
           </div>
         )}
 
-        {isClientModalOpen && (
-          <div
-            className="fixed inset-0 bg-black/30 backdrop-blur-md z-50 flex items-center justify-center animate-in fade-in"
-          >
-            <div className="bg-white rounded-[28px] shadow-[0_20px_60px_rgba(0,0,0,0.15)] w-[580px] overflow-hidden transform animate-in zoom-in-95 border border-gray-100" onClick={(event) => event.stopPropagation()}>
-              <div className="px-8 py-6 border-b border-gray-100 flex items-center gap-4 bg-white">
-                <button
-                  type="button"
-                  className="rounded-2xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:text-gray-700"
-                  onClick={() => {
-                    setIsDeleteClientConfirmOpen(false);
-                    setDeleteClientConfirmInput('');
-                    setIsClientModalOpen(false);
-                  }}
-                  aria-label="关闭项目弹窗"
-                >
-                  <X size={16} />
-                </button>
-                <h3 className="text-[18px] font-bold text-gray-900 flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-blue-50 text-[#5B7BFE] flex items-center justify-center">
-                    <Briefcase size={16} strokeWidth={2.5} />
-                  </div>
-                  {editingClientId ? '编辑项目' : '创建项目'}
-                </h3>
-              </div>
-              <div className="p-8 space-y-5">
-                <div className="grid grid-cols-1 gap-4">
-                  <input value={clientDraft.name} onKeyDown={handleClientModalKeyDown} onChange={(event) => setClientDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="项目名称" className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" />
-                  <input value={clientDraft.alias} onKeyDown={handleClientModalKeyDown} onChange={(event) => setClientDraft((prev) => ({ ...prev, alias: event.target.value }))} placeholder="项目别名（选填）" className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" />
-                  <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3">
-                    <p className="text-[12px] font-bold text-gray-700">项目颜色（会同步到任务日历）</p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {TASK_COLOR_OPTIONS.map((color) => {
-                        const selected = clientDraft.color === color;
-                        return (
-                          <button
-                            key={color}
-                            type="button"
-                            onClick={() => setClientDraft((prev) => ({ ...prev, color }))}
-                            className={`h-7 w-7 rounded-full border-2 transition ${selected ? 'scale-105 border-slate-700' : 'border-white hover:border-slate-300'}`}
-                            style={{ backgroundColor: color }}
-                            title={color}
-                            aria-label={`选择项目颜色 ${color}`}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-[22px] border border-blue-100 bg-blue-50/70 px-4 py-4">
-                  <p className="text-[13px] font-bold text-gray-900">创建后会立刻发生什么</p>
-                  <div className="mt-2 space-y-1.5 text-[12px] leading-6 text-gray-600">
-                    <p>1. 这个项目会立刻出现在客户工作台搜索里。</p>
-                    <p>2. 创建成功后会直接进入资料导入引导页。</p>
-                    <p>3. 下一步先导入已有资料，系统会自动分析归档并建立项目上下文。</p>
-                  </div>
-                </div>
-                <p className="text-[11px] text-gray-400">按 Enter 可直接创建；创建后先导入已有资料即可开始正式建库。</p>
-              </div>
-              <div className="px-8 py-5 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between gap-3">
-                <div>
-                  {editingClientId && (
-                    <button
-                      onClick={() => void handleDeleteClient()}
-                      className="text-[13px] font-bold text-rose-500 hover:text-rose-600 px-3 py-2 transition-colors"
-                    >
-                      删除项目
-                    </button>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                <button
-                  onClick={() => {
-                    setIsDeleteClientConfirmOpen(false);
-                    setDeleteClientConfirmInput('');
-                    setIsClientModalOpen(false);
-                  }}
-                  className="text-[13px] font-bold text-gray-500 hover:text-gray-800 px-5 py-2 transition-colors"
-                >
-                  取消
-                </button>
-                <Button primary onClick={() => void submitClientModal()} className="px-6 shadow-md">
-                  {editingClientId ? '保存项目' : '创建项目'}
-                </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {isClientModalOpen && isDeleteClientConfirmOpen && (
-          <div className="fixed inset-0 bg-black/35 z-[60] flex items-center justify-center animate-in fade-in">
-            <div className="w-[440px] rounded-[24px] bg-white border border-rose-100 shadow-[0_24px_80px_rgba(0,0,0,0.18)] overflow-hidden" onClick={(event) => event.stopPropagation()}>
-              <div className="px-7 py-5 border-b border-rose-100 bg-rose-50/70">
-                <div className="flex items-center gap-4">
-                  <button
-                    type="button"
-                    className="rounded-2xl border border-rose-200 bg-white p-2 text-rose-400 transition hover:text-rose-700"
-                    onClick={() => {
-                      setIsDeleteClientConfirmOpen(false);
-                      setDeleteClientConfirmInput('');
-                    }}
-                    aria-label="关闭删除确认"
-                  >
-                    <X size={16} />
-                  </button>
-                  <div className="text-[16px] font-bold text-rose-700">确认删除客户</div>
-                </div>
-                <p className="mt-2 text-[12px] leading-6 text-rose-600">
-                  这会删除当前客户的资料、工作区、问答记录和知识索引，且无法恢复。
-                </p>
-              </div>
-              <div className="px-7 py-6 space-y-4">
-                <p className="text-[13px] font-medium text-gray-600">
-                  请输入客户名称
-                  <span className="mx-1 font-bold text-gray-900">"{clients.find((client) => client.id === editingClientId)?.name || clientDraft.name.trim() || '该客户'}"</span>
-                  以确认删除。
-                </p>
-                <input
-                  autoFocus
-                  value={deleteClientConfirmInput}
-                  onChange={(event) => setDeleteClientConfirmInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      void confirmDeleteClient();
-                    }
-                  }}
-                  placeholder="输入客户名称"
-                  className="w-full rounded-2xl border border-rose-200 bg-rose-50/40 px-4 py-3 text-[13px] font-bold outline-none focus:border-rose-300"
-                />
-              </div>
-              <div className="px-7 py-5 border-t border-gray-100 bg-gray-50/50 flex items-center justify-end gap-3">
-                <button
-                  onClick={() => {
-                    setIsDeleteClientConfirmOpen(false);
-                    setDeleteClientConfirmInput('');
-                  }}
-                  className="px-4 py-2 text-[13px] font-bold text-gray-500 hover:text-gray-800 transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={() => void confirmDeleteClient()}
-                  className="px-5 py-2 rounded-2xl bg-rose-500 text-white text-[13px] font-bold shadow-[0_12px_30px_rgba(244,63,94,0.28)] hover:bg-rose-600 transition-colors"
-                >
-                  确认删除
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   };
 
-  const SettingsView = () => {
-    const importableLegacyEntries = legacyScanResult?.entries.filter((entry) => entry.importable) || [];
-    const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
-    const canManageOrgTaskList = currentSessionUser?.primaryRole === 'admin';
-    const canManagePersonalTaskList = Boolean(currentSessionUser?.id);
-    const canManageSensitiveSettings = currentSessionUser?.primaryRole === 'admin';
+	  const renderClientEditorModal = () => {
+	    return (
+	      <ClientEditorModal
+	        state={clientEditorModalState}
+        clients={clients}
+        onClose={closeClientEditorModal}
+        onSubmit={submitClientEditorModal}
+        onDelete={confirmClientEditorDelete}
+        onInteractionState={reportWorkspaceInteractionState}
+	      />
+	    );
+	  };
+
+	  const handleApplyMembership = async () => {
+	    if (!isCloudSession) {
+	      flash('error', '请先登录云端账号。');
+	      return;
+	    }
+	    setMembershipApplySubmitting(true);
+	    try {
+	      const nextMembership = await applyOrgMembership({
+	        inviteCode: normalizeDepartmentInviteInput(membershipApplyDraft.inviteCode) || null,
+	        departmentId: membershipApplyDraft.departmentId || null,
+	        jobTitle: membershipApplyDraft.jobTitle.trim() || null,
+	        managerName: membershipApplyDraft.managerName.trim() || null,
+	        currentFocus: membershipApplyDraft.currentFocus.trim() || null,
+	      });
+	      setOrgMembershipState(nextMembership);
+	      await loadAuthBlock();
+	      flash('success', '组织身份申请已提交，等待管理员确认。');
+	    } catch (error) {
+	      flash('error', error instanceof Error ? error.message : '组织身份申请提交失败');
+	    } finally {
+	      setMembershipApplySubmitting(false);
+	    }
+	  };
+
+	  const renderSettingsView = () => {
     const isLocalSession = authState.sessionMode !== 'cloud';
+    const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
+    const canManageSensitiveSettings = isLocalSession || currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
-    const canEditOrgDna = canManageSensitiveSettings || systemAdminSettingsState.allowOrgDnaForEmployees;
     const hasBrandLogoDraftChange = (systemAdminDraft.brandLogoDataUrl || null) !== (systemAdminSettingsState.brandLogoDataUrl || null);
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
-    };
-    const resetListManager = () => {
-      setEditingListId(null);
-      setListManageDraft({ name: '', color: TASK_COLOR_OPTIONS[0], isDefault: false, archived: false, scope: 'org' });
-    };
-
-    const handleImportLegacyEntries = async () => {
-      if (!legacyImportClientId) {
-        flash('error', '请先选择一个客户用于接收旧数据导入');
-        return;
-      }
-      if (!importableLegacyEntries.length) {
-        flash('info', '当前扫描结果中没有可导入的 JSON 或 CSV 文件');
-        return;
-      }
-      setIsImportingLegacy(true);
-      try {
-        const imported = await importPaths(
-          legacyImportClientId,
-          'file',
-          importableLegacyEntries.map((entry) => entry.path),
-          { allowLegacy: true },
-        );
-        await Promise.all([loadLogsBlock(), legacyImportClientId === currentClientId ? refreshWorkspace(legacyImportClientId) : Promise.resolve()]);
-        flash('success', `已向目标客户导入 ${imported.reduce((sum, item) => sum + item.importedCount, 0)} 份旧数据文件`);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '旧数据导入失败');
-      } finally {
-        setIsImportingLegacy(false);
-      }
     };
 
     const handleSaveTag = async () => {
@@ -19423,13 +21503,13 @@ export default function App() {
 
     const handleSaveTaskSettings = async () => {
       try {
+        const allowedDefaultListId = taskDefaultDestinationLists.some((list) => list.id === taskSettingsDraft.defaultListId)
+          ? taskSettingsDraft.defaultListId
+          : taskDefaultDestinationLists[0]?.id || null;
         const next = await updateTaskSettings({
-          defaultListId: taskSettingsDraft.defaultListId || null,
+          defaultListId: allowedDefaultListId,
           defaultPriority: taskSettingsDraft.defaultPriority,
           defaultDueDatePreset: taskSettingsDraft.defaultDueDatePreset,
-          defaultViewMode: taskSettingsDraft.defaultViewMode,
-          listSortMode: taskSettingsDraft.listSortMode,
-          showCompletedTasks: taskSettingsDraft.showCompletedTasks,
           defaultReviewScope: taskSettingsDraft.defaultReviewScope,
           autoAssignSelf: taskSettingsDraft.autoAssignSelf,
         });
@@ -19441,34 +21521,29 @@ export default function App() {
       }
     };
 
-    const handleSaveReviewGovernance = async () => {
-      setIsSavingReviewGovernance(true);
-      try {
-        const next = await updateReviewGovernanceSettings({ departments: reviewGovernanceDraft.departments });
-        setReviewGovernanceState(next);
-        await loadReviewBlock();
-        if (currentSessionUser?.primaryRole === 'admin') {
-          await loadEmployeeReviewBlock();
-        }
-        flash('success', '周复盘聚合治理已保存');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '治理设置保存失败');
-      } finally {
-        setIsSavingReviewGovernance(false);
-      }
+    const handleChangeOrgModelDraft = (nextDraft: OrgModelSettings) => {
+      setIsOrgModelDraftDirty(true);
+      setOrgModelDraft(nextDraft);
     };
 
-    const handleSaveOrgModel = async (nextDraft: OrgModelSettings = orgModelDraft) => {
+    const handleSaveOrgModel = async (nextDraft: OrgModelSettings = orgModelDraft): Promise<boolean> => {
       setOrgModelDraft(nextDraft);
       setIsSavingOrgModel(true);
       try {
         const next = await updateOrgModelProfile(nextDraft);
         setOrgModelState(next);
         setOrgModelDraft(next);
+        clearOrgSetupInputDrafts();
+        setIsOrgModelDraftDirty(false);
+        const defaultReviewPerspective = resolveDefaultReviewPerspectiveForUser(currentSessionUser);
         await Promise.all([
           loadEmployeeReviewBlock(),
           loadTaskBlock(),
-          loadReviewBlock(reviewDashboard?.currentReview?.weekLabel),
+          loadReviewBlock(resolveSelectedReviewWeekLabel(), {
+            skipAi: true,
+            perspective: defaultReviewPerspective,
+            departmentId: resolveDefaultReviewDepartmentIdForUser(currentSessionUser, defaultReviewPerspective),
+          }),
         ]);
         try {
           const backfill = await backfillOrgTaskLinks();
@@ -19477,85 +21552,12 @@ export default function App() {
         } catch (error) {
           flash('error', error instanceof Error ? `组织底盘已保存，但任务关联回填失败：${error.message}` : '组织底盘已保存，但任务关联回填失败');
         }
+        return true;
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '组织底盘保存失败');
+        return false;
       } finally {
         setIsSavingOrgModel(false);
-      }
-    };
-
-    const handleSaveTaskList = async () => {
-      if (listManageDraft.scope === 'org' && !canManageOrgTaskList) {
-        flash('error', '只有管理员可以维护组织清单');
-        return;
-      }
-      const trimmedName = listManageDraft.name.trim();
-      if (!trimmedName) {
-        flash('error', '请先填写清单名称');
-        return;
-      }
-      try {
-        if (editingListId) {
-          await updateTaskList(editingListId, {
-            name: trimmedName,
-            color: listManageDraft.color,
-            isDefault: listManageDraft.isDefault,
-            archived: listManageDraft.archived,
-            scope: listManageDraft.scope,
-          });
-        } else {
-          await createTaskList({
-            name: trimmedName,
-            color: listManageDraft.color,
-            isDefault: listManageDraft.isDefault,
-            scope: listManageDraft.scope,
-          });
-        }
-        await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
-        resetListManager();
-        flash('success', editingListId ? '清单已更新' : '清单已创建');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : editingListId ? '更新清单失败' : '创建清单失败');
-      }
-    };
-
-    const handleToggleTaskListArchived = async (list: TaskList) => {
-      if ((list.scope || 'org') === 'org' && !canManageOrgTaskList) {
-        flash('error', '只有管理员可以维护组织清单');
-        return;
-      }
-      try {
-        await updateTaskList(list.id, {
-          name: list.name,
-          color: list.color,
-          isDefault: list.isDefault,
-          archived: !list.archivedAt,
-          scope: list.scope || 'org',
-        });
-        await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
-        flash('success', list.archivedAt ? '清单已恢复' : '清单已归档');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '清单状态更新失败');
-      }
-    };
-
-    const handleDeleteTaskList = async (list: TaskList) => {
-      if ((list.scope || 'org') === 'org' && !canManageOrgTaskList) {
-        flash('error', '只有管理员可以删除组织清单');
-        return;
-      }
-      if (!window.confirm(`确认删除清单"${list.name}"？只有未被任务使用的清单才能删除。`)) {
-        return;
-      }
-      try {
-        await deleteTaskList(list.id);
-        await Promise.all([loadTaskBlock(), loadTaskSettingsBlock()]);
-        if (editingListId === list.id) {
-          resetListManager();
-        }
-        flash('success', '清单已删除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '删除清单失败');
       }
     };
 
@@ -19579,84 +21581,133 @@ export default function App() {
       }
     };
 
-    const requestDeleteTaskRecord = (
-      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
-      options?: { closeEditor?: boolean },
-    ) => {
-      void handleDeleteTaskRecord(task, options);
-    };
-
-    const handleDeleteTaskRecord = async (
-      task: { id: string; title: string; clientId?: string | null; eventLineId?: string | null },
-      options?: { closeEditor?: boolean },
-    ) => {
-      if (options?.closeEditor || editingTask.id === task.id) {
-        closeTaskModal('delete-started');
-        resetTaskDraft();
+    const applyAiPreset = (presetKey: AiConfigPresetKey) => {
+      const preset = AI_CONFIG_PRESETS[presetKey];
+      if (presetKey === 'custom') {
+        setDraft((prev) => ({
+          ...prev,
+          aiProvider: 'openai_compatible',
+          aiProviderLabel: prev.aiProviderLabel.trim() || preset.providerLabel,
+        }));
+        return;
       }
-      const deletedId = task.id;
-      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
-      flash('success', '任务已删除');
-      void (async () => {
-        try {
-          await deleteTask(deletedId);
-          // Wait for cloud to process before refreshing
-          await new Promise((r) => setTimeout(r, 2000));
-          await loadTaskBlock();
-          // Ensure deleted task stays deleted even if cloud returned stale data
-          setTasks((prev) => prev.filter((t) => t.id !== deletedId));
-          if (reviewDashboard?.weekLabel) void loadReviewBlock(reviewDashboard.weekLabel);
-          void refreshWorkspace(task.clientId || undefined);
-          if (task.eventLineId && activeEventLine?.eventLine.id === task.eventLineId) void openEventLineDetail(task.eventLineId);
-        } catch {
-          // Delete already removed locally — don't restore
-        }
-      })();
+      setDraft((prev) => ({
+        ...prev,
+        aiProvider: preset.provider,
+        aiProviderLabel: preset.providerLabel,
+        aiBaseUrl: preset.baseUrl,
+        aiModel: preset.model,
+        apiKey: presetKey === 'mock' || presetKey === 'local' ? '' : prev.apiKey,
+      }));
     };
 
-    const confirmDeleteTaskRecord = async () => {
-      if (!pendingTaskDelete) return;
-      const payload = pendingTaskDelete;
-      setPendingTaskDelete(null);
-      await handleDeleteTaskRecord(
-        {
-          id: payload.id,
-          title: payload.title,
-          clientId: payload.clientId || null,
-          eventLineId: payload.eventLineId || null,
+    const updateAiModelProfile = (profileKey: AiModelProfileKey, patch: Partial<AiModelProfileRecord>) => {
+      setDraft((prev) => {
+        const current = prev.aiModelProfiles[profileKey] || AI_MODEL_PROFILE_DEFAULTS[profileKey];
+        const nextProfile: AiModelProfileRecord = {
+          ...current,
+          ...patch,
+          provider: 'openai_compatible',
+        };
+        nextProfile.isLocal = isLocalAiBaseUrl(nextProfile.baseUrl);
+        return {
+          ...prev,
+          aiModelProfiles: {
+            ...prev.aiModelProfiles,
+            [profileKey]: nextProfile,
+          },
+        };
+      });
+    };
+
+    const updateAiModelProfileApiKey = (profileKey: AiModelProfileKey, value: string) => {
+      setDraft((prev) => ({
+        ...prev,
+        aiModelProfileApiKeys: {
+          ...prev.aiModelProfileApiKeys,
+          [profileKey]: value,
         },
-        { closeEditor: payload.closeEditor },
-      );
-    };
-
-    const handleSaveOperatorSelection = async () => {
-      try {
-        await updateSettings({ currentOperatorId: draft.currentOperatorId });
-        await Promise.all([loadSettingsBlock(), loadLogsBlock()]);
-        flash('success', '当前操作者已更新');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '保存失败');
-      }
+      }));
     };
 
     const handleSaveAiSettings = async () => {
       try {
+        const providerForSave: AiProvider = draft.aiProvider === 'mock' ? 'mock' : 'openai_compatible';
+        const baseUrlForSave = providerForSave === 'mock' ? '' : draft.aiBaseUrl.trim();
+        const modelForSave = providerForSave === 'mock' ? AI_CONFIG_PRESETS.mock.model : draft.aiModel.trim();
+        const providerLabelForSave = providerForSave === 'mock'
+          ? AI_CONFIG_PRESETS.mock.providerLabel
+          : draft.aiProviderLabel.trim() || AI_CONFIG_PRESETS.custom.providerLabel;
+        if (providerForSave !== 'mock' && !baseUrlForSave) {
+          flash('error', '请填写大模型接口地址 Base URL。');
+          return;
+        }
+        if (providerForSave !== 'mock' && !modelForSave) {
+          flash('error', '请填写模型名。');
+          return;
+        }
+        const apiKeyForSave = providerForSave === 'mock' ? '' : draft.apiKey.trim();
+        const currentModelChanged = providerForSave !== settingsState?.aiProvider
+          || normalizeAiBaseUrl(baseUrlForSave) !== normalizeAiBaseUrl(settingsState?.aiBaseUrl)
+          || modelForSave !== (settingsState?.aiModel || '');
+        const clearApiKey = providerForSave === 'mock'
+          || (isLocalAiBaseUrl(baseUrlForSave) && !apiKeyForSave)
+          || (!apiKeyForSave && currentModelChanged);
+        const normalizedProfiles = normalizeAiModelProfiles(draft.aiModelProfiles);
+        if (draft.advancedAiRoutingEnabled) {
+          const invalidProfile = AI_LOCAL_MODEL_PROFILE_ORDER.find((profileKey) => {
+            const profile = normalizedProfiles[profileKey];
+            if (!profile.enabled) return false;
+            if (profile.provider === 'mock') return false;
+            return !profile.baseUrl.trim() || !profile.model.trim();
+          });
+          if (invalidProfile) {
+            flash('error', `请补全${AI_MODEL_PROFILE_META[invalidProfile].title}的 Base URL 和模型名。`);
+            return;
+          }
+          if (draft.aiModelMode === 'local_only') {
+            const hasLocalProfile = AI_LOCAL_MODEL_PROFILE_ORDER.some((profileKey) => {
+              const profile = normalizedProfiles[profileKey];
+              return profile.enabled && isLocalAiBaseUrl(profile.baseUrl);
+            }) || isLocalAiBaseUrl(baseUrlForSave);
+            if (!hasLocalProfile) {
+              flash('error', '仅本地模式需要至少配置一个本地 Base URL 的模型。');
+              return;
+            }
+          }
+        }
+        const profileApiKeys = AI_LOCAL_MODEL_PROFILE_ORDER.reduce((acc, profileKey) => {
+          const value = String(draft.aiModelProfileApiKeys[profileKey] || '').trim();
+          if (value) acc[profileKey] = value;
+          return acc;
+        }, {} as Partial<Record<AiModelProfileKey, string>>);
         await updateSettings({
-          aiProvider: draft.aiProvider as AiProvider,
-          aiModel: draft.aiModel,
-          apiKey: draft.apiKey.trim() || undefined,
+          cloudApiUrl: cloudApiUrlFromHost(draft.cloudApiUrl),
+          aiProvider: providerForSave,
+          aiProviderLabel: providerLabelForSave,
+          aiBaseUrl: baseUrlForSave,
+          aiModel: modelForSave,
+          apiKey: apiKeyForSave || undefined,
+          clearApiKey,
+          advancedAiRoutingEnabled: draft.advancedAiRoutingEnabled,
+          aiModelMode: draft.aiModelMode,
+          aiModelProfiles: normalizedProfiles,
+          aiModelProfileApiKeys: Object.keys(profileApiKeys).length ? profileApiKeys : undefined,
+          clearAiModelProfileApiKeys: [],
         });
         const nextLocalInputMemory = await saveAiInputMemory({
           rememberApiKey: rememberAiInputKey,
-          apiKey: draft.apiKey.trim() || undefined,
+          apiKey: apiKeyForSave || undefined,
         });
         setLocalInputMemoryState(nextLocalInputMemory);
-        await Promise.all([loadSettingsBlock(), loadLogsBlock()]);
+        await Promise.all([loadSettingsBlock(), loadLogsBlock(), loadAuthBlock()]);
         setDraft((prev) => ({
           ...prev,
           apiKey: nextLocalInputMemory.aiSettings.rememberApiKey ? nextLocalInputMemory.aiSettings.apiKey : '',
+          aiModelProfileApiKeys: {},
         }));
-        flash('success', 'AI 设置已保存');
+        const remoteMissingApiKey = providerForSave !== 'mock' && !isLocalAiBaseUrl(baseUrlForSave) && !apiKeyForSave;
+        flash('success', remoteMissingApiKey ? 'AI 与云端设置已保存；远程接口还缺 API Key，当前不会启用正式回答' : 'AI 与云端设置已保存');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
       }
@@ -19669,6 +21720,7 @@ export default function App() {
         const response = await updateProfile({
           fullName: profileDraft.fullName?.trim() || undefined,
           email: profileDraft.email?.trim() || undefined,
+          phone: profileDraft.phone?.trim() || null,
         });
         setAuthState(response);
         await loadAll();
@@ -19680,30 +21732,41 @@ export default function App() {
       }
     };
 
-    const handleUploadOrgDna = async (moduleKey: OrganizationDnaModule['moduleKey']) => {
-      const paths = await selectFilesBridge();
-      const filePath = paths[0];
-      if (!filePath) return;
-      setOrgDnaSavingKey(moduleKey);
+    const handleApplyMembership = async () => {
+      if (!isCloudSession) {
+        flash('error', '请先登录云端账号。');
+        return;
+      }
+      setMembershipApplySubmitting(true);
       try {
-        await updateOrganizationDnaModule(moduleKey, { filePath });
-        await Promise.all([loadSettingsSectionBlock('org_dna', true), loadLogsBlock()]);
-        flash('success', '组织 DNA 已更新');
+        const nextMembership = await applyOrgMembership({
+          inviteCode: normalizeDepartmentInviteInput(membershipApplyDraft.inviteCode) || null,
+          departmentId: membershipApplyDraft.departmentId || null,
+          jobTitle: membershipApplyDraft.jobTitle.trim() || null,
+          managerName: membershipApplyDraft.managerName.trim() || null,
+          currentFocus: membershipApplyDraft.currentFocus.trim() || null,
+        });
+        setOrgMembershipState(nextMembership);
+        await loadAuthBlock();
+        flash('success', '组织身份申请已提交，等待管理员确认。');
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '组织 DNA 上传失败');
+        flash('error', error instanceof Error ? error.message : '组织身份申请提交失败');
       } finally {
-        setOrgDnaSavingKey(null);
+        setMembershipApplySubmitting(false);
       }
     };
 
-    const handleSaveClientWorkspaceSettings = async () => {
+    const handleParseOrgIntroDocument = async (title: string) => {
+      const paths = await selectFilesBridge();
+      const filePath = paths[0];
+      if (!filePath) return null;
       try {
-        const next = await updateClientWorkspaceSettings(clientWorkspaceDraft);
-        setClientWorkspaceSettingsState(next);
-        await loadLogsBlock();
-        flash('success', '客户工作台设置已保存');
+        const document = await parseOrgIntroDocument({ filePath, title });
+        flash('success', '介绍资料已读取，请点击卡片右上角对勾保存');
+        return document;
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '保存失败');
+        flash('error', error instanceof Error ? error.message : '介绍资料读取失败');
+        return null;
       }
     };
 
@@ -19947,108 +22010,23 @@ export default function App() {
       }
     };
 
-    const parseMainChainBackfillClientIds = () => (
-      mainChainBackfillDraft.clientIdsText
-        .split(/[\s,，]+/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    );
-
-    const handleRefreshMainChainOverview = async () => {
-      setMainChainBusyAction('refresh');
-      try {
-        await loadMainChainOverviewBlock();
-        flash('success', 'AI 接手情况已刷新');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '刷新数据失败');
-      } finally {
-        setMainChainBusyAction('idle');
-      }
-    };
-
-    const handleToggleMainChainBackfillPaused = async () => {
-      setMainChainBusyAction('pause');
-      try {
-        const next = await updateMainChainStabilitySettings({
-          backfillPaused: !mainChainStabilitySettingsState.backfillPaused,
-        });
-        setMainChainStabilitySettingsState(next);
-        flash('success', next.backfillPaused ? '已暂停补算，新补算任务会先停住' : '已恢复补算');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '切换补算状态失败');
-      } finally {
-        setMainChainBusyAction('idle');
-      }
-    };
-
-    const handleToggleLatestJudgmentsShadow = async () => {
-      setMainChainBusyAction('shadow');
-      try {
-        const next = await updateMainChainStabilitySettings({
-          latestJudgmentsShadowOff: !mainChainStabilitySettingsState.latestJudgmentsShadowOff,
-        });
-        setMainChainStabilitySettingsState(next);
-        flash('success', next.latestJudgmentsShadowOff ? '已关闭旧结果通道' : '已临时切回旧结果');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '切换旧结果通道失败');
-      } finally {
-        setMainChainBusyAction('idle');
-      }
-    };
-
-    const handleRunMainChainBackfill = async (dryRun: boolean) => {
-      const clientIds = parseMainChainBackfillClientIds();
-      if (!dryRun && mainChainStabilitySettingsState.backfillPaused) {
-        flash('error', '当前已暂停补算，请先恢复后再开始试跑。');
-        return;
-      }
-      if (!clientIds.length) {
-        flash('error', '请先填写 3-5 个客户 ID，再开始小范围试跑。');
-        return;
-      }
-      setMainChainBusyAction(dryRun ? 'dry_run' : 'queue');
-      try {
-        const result = await backfillAnalysisMainChain({
-          clientIds,
-          dryRun,
-          batchSize: Math.max(1, Number(mainChainBackfillDraft.batchSize) || 1),
-          maxJobs: Math.max(1, Number(mainChainBackfillDraft.maxJobs) || 1),
-          pauseRequested: false,
-        });
-        setMainChainBackfillResult(result);
-        await loadMainChainOverviewBlock();
-        flash(
-          'success',
-          dryRun
-            ? `预估完成：看了 ${result.scannedClients} 个客户，预计可安排 ${result.candidates.length} 条任务`
-            : `已开始小范围试跑，共安排 ${result.queuedJobs} 条任务`,
-        );
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '小范围试跑失败');
-      } finally {
-        setMainChainBusyAction('idle');
-      }
-    };
-
     const sectionGroups: Array<{ group: string; items: Array<{ key: SettingsSectionKey; label: string; icon: typeof Settings; helper: string }> }> = [
       {
         group: '账户与服务',
         items: [
-          { key: 'overview', label: 'Overview', icon: Settings, helper: '登录信息、AI 模型、AI 接手情况、飞书协作、备份与日志' },
+          { key: 'overview', label: 'AI 与云端', icon: Bot, helper: '云端地址、大模型、账号状态' },
         ],
       },
       {
         group: '组织管理',
         items: [
           { key: 'system_admin', label: '组织与权限', icon: ShieldAlert, helper: '组织架构、邀请码、负责人绑定' },
-          { key: 'org_dna', label: '组织 DNA', icon: FileBadge, helper: '组织级知识底座' },
         ],
       },
       {
         group: '功能设置',
         items: [
           { key: 'tasks', label: '任务与日程', icon: CheckSquare, helper: '默认清单、复盘规则' },
-          { key: 'client_workspace', label: '工作台', icon: Briefcase, helper: '聊天、会议、目标' },
           { key: 'topics', label: '资讯情报站', icon: Newspaper, helper: '抓取与转任务' },
           { key: 'handbook', label: '成长手册', icon: BookOpen, helper: '沉淀规则' },
         ],
@@ -20134,6 +22112,7 @@ export default function App() {
         && (
           profileDraft.fullName?.trim() !== (currentSessionUser?.fullName || '')
           || profileDraft.email?.trim() !== (currentSessionUser?.email || '')
+          || (profileDraft.phone || '').trim() !== (currentSessionUser?.phone || '')
         );
       return (
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
@@ -20142,7 +22121,7 @@ export default function App() {
             <p className="text-[12px] text-gray-500 mt-1">
               {cardIsLocal
                 ? '当前还是本机模式。连接云端后，这里会显示并允许修改姓名 / 昵称、邮箱等账号信息。'
-                : '登录云端后，你可以在这里维护姓名 / 昵称和邮箱，密码修改放在下面单独处理。'}
+                : '登录云端后，你可以在这里维护姓名 / 昵称、邮箱和登录手机号。飞书通知手机号在飞书协作里单独维护。'}
             </p>
           </div>
           <input
@@ -20156,6 +22135,13 @@ export default function App() {
             value={cardIsLocal ? '' : (profileDraft.email || '')}
             onChange={(event) => setProfileDraft((prev) => ({ ...prev, email: event.target.value }))}
             placeholder={cardIsLocal ? '登录后显示邮箱' : '邮箱'}
+            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
+            disabled={cardIsLocal}
+          />
+          <input
+            value={cardIsLocal ? '' : (profileDraft.phone || '')}
+            onChange={(event) => setProfileDraft((prev) => ({ ...prev, phone: event.target.value }))}
+            placeholder={cardIsLocal ? '登录后显示手机号' : '登录手机号（可选，不是飞书通知手机号）'}
             className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] outline-none disabled:text-gray-400 disabled:bg-gray-100"
             disabled={cardIsLocal}
           />
@@ -20178,491 +22164,271 @@ export default function App() {
       );
     };
 
-    const renderOverviewSection = () => {
-      const mainChainMetrics = analysisMigrationMetricsState;
-      const mainChainSampleSize = Object.values(mainChainMetrics?.pageBreakdown || {}).reduce(
-        (total, bucket) => total + (bucket.totalRuns || 0),
-        0,
-      );
-      const latestCanaryObservation = mainChainStabilitySettingsState.lastCanaryObservation;
-      const mainChainOverviewCopy = {
-        title: 'AI 接手情况',
-        subtitle: '这里看系统最近接手得稳不稳：有没有真的用上新判断、会不会退回旧逻辑、有没有卡住。',
-        warning:
-          '注意：现在还没有形成通过确认的正式结论。下面看到的是提醒和风险信号，不能直接当成最终判断。',
-        buttons: {
-          refresh: '刷新数据',
-          pauseBackfill: '暂停补算',
-          resumeBackfill: '恢复补算',
-          shadowOff: '关闭旧结果通道',
-          restoreLegacy: '临时切回旧结果',
-          estimate: '先预估一下',
-          startTrial: '开始小范围试跑',
-        },
-        topCards: {
-          window: {
-            label: '最近观察范围',
-            description: '看最近几天的整体表现。',
-          },
-          sampleSize: {
-            label: '本次统计样本',
-            description: '这段时间里一共看了多少次系统判断。',
-          },
-          status: {
-            label: '系统当前状态',
-          },
-        },
-        metricCards: {
-          newObjectHitRate: {
-            label: '新判断接手率',
-            description: '现在有多少结果已经由新判断链路接手。',
-          },
-          fallbackRate: {
-            label: '退回旧逻辑比例',
-            description: '还有多少结果会退回旧方法处理。',
-          },
-          resolverMismatchRate: {
-            label: '页面说法打架率',
-            description: '同一件事在不同页面里，说法有没有不一致。',
-          },
-          approvalBacklog: {
-            label: '待确认判断数',
-            description: '还有多少判断在等人确认。',
-          },
-          approvalLagHoursMedian: {
-            label: '平均等待确认时间',
-            description: '通常要等多久，判断才会被确认。',
-          },
-        },
-        candidateSection: {
-          title: '待确认判断积压情况',
-          description: '重点看有没有越积越多，或卡太久没人处理。',
-          cards: {
-            candidateReviewWarningCount: {
-              label: '超过 24 小时未处理',
-              description: '这些判断已经放了一天，还没人处理。',
-            },
-            candidateReviewOverdueCount: {
-              label: '超过 72 小时还没处理',
-              description: '这些判断已经积压太久，需要尽快清掉。',
-            },
-            newCandidateUnreviewed24h: {
-              label: '最近 24 小时新增待确认',
-              description: '这是最近一天里新冒出来、还没处理的判断。',
-            },
-          },
-        },
-        breakdown: {
-          title: '按场景看表现',
-          description: '看看不同页面里，系统接手得稳不稳。',
-          empty: '现在还没有足够的场景数据。',
-        },
-        backfill: {
-          title: '小范围试跑',
-          description: '先挑少量客户试一下，确认系统稳定后，再逐步扩大。',
-          textareaPlaceholder: '输入要试跑的客户 ID，多个可换行或用逗号分开',
-          batchPlaceholder: '每批处理数量',
-          maxJobsPlaceholder: '最多安排任务数',
-          pausedNotice: '当前已暂停补算：不会继续接新的补算任务，已经开始的会跑完，也不会影响正常使用。',
-          resultLabels: {
-            scannedClients: '覆盖客户数',
-            queuedJobs: '已安排任务数',
-            skippedJobs: '跳过任务数',
-            candidateCount: '预计可安排任务数',
-            paused: '当前是否暂停',
-          },
-        },
-        latestObservation: {
-          title: '最近一次试跑结果',
-          description: '这里记录最近一次试跑的范围、结果和结论。',
-          empty: '还没有记录最近一次试跑结果。',
-          fields: {
-            recordedAt: '记录时间',
-            timeRange: '观察范围',
-            verdict: '结论',
-            jobs: '客户和任务',
-            newObjectHitRate: '新判断接手率',
-            fallbackRate: '退回旧逻辑比例',
-            resolverMismatchRate: '页面说法打架率',
-            approval: '待确认数量 / 等待时间',
-            claimCounts: '实际处理次数',
-            lockContention: '资源抢占情况',
-            backfillThrottle: '补算限流情况',
-            realtimeImpact: '有没有影响正常使用',
-            latestJudgmentsShadowOff: '旧结果通道关闭',
-          },
-          defaultConclusion: '还没写这次试跑的结论。',
-        },
-        workerCounters: {
-          title: '后台处理情况',
-          claimCounts: '实际处理次数',
-          lockContention: '资源抢占情况',
-          backfillThrottle: '补算限流情况',
-        },
-      } as const;
-      const mainChainSceneLabels: Record<string, string> = {
-        task_ai: '任务 AI',
-        weekly_review: '周复盘',
-        meeting_enhance: '会议增强',
-        client_overview: '客户总览',
-        strategic_cockpit: '战略陪伴',
-        dna_summary: 'DNA 总览',
-      };
-      const workerBucketLabels: Record<string, string> = {
-        interactive: '即时任务',
-        system: '系统任务',
-        backfill: '补算任务',
-        orphaned: '异常未释放',
-        stale_lock: '异常未释放',
-        unknown: '其他',
-      };
-      const formatRate = (value: number | undefined | null) => `${((value || 0) * 100).toFixed(1)}%`;
-      const formatVerdict = (value: 'pass' | 'watch' | 'fail' | undefined | null) => {
-        if (value === 'pass') return '通过';
-        if (value === 'fail') return '未通过';
-        return '继续观察';
-      };
-      const formatCountMap = (value: Record<string, number>) => {
-        const entries = Object.entries(value || {}).filter(([, count]) => Number.isFinite(count) && count > 0);
-        if (!entries.length) return '暂无记录';
-        return entries
-          .map(([key, count]) => `${workerBucketLabels[key] || key}: ${count}`)
-          .join(' · ');
-      };
-      const statusCopy = (() => {
-        if (mainChainStabilitySettingsState.backfillPaused) {
-          return {
-            title: '系统已暂停补算',
-            subtitle: '现在先不继续补跑旧数据，但不会影响正常使用。',
-            observation: latestCanaryObservation
-              ? `最近一次试跑：${formatVerdict(latestCanaryObservation.verdict)} · ${latestCanaryObservation.conclusion || mainChainOverviewCopy.latestObservation.defaultConclusion}`
-              : '最近一次试跑：还没有记录',
-          };
-        }
-        if (mainChainStabilitySettingsState.latestJudgmentsShadowOff) {
-          return {
-            title: '系统可以继续补算',
-            subtitle: '旧结果通道已关闭，系统正在按新链路工作。',
-            observation: latestCanaryObservation
-              ? `最近一次试跑：${formatVerdict(latestCanaryObservation.verdict)} · ${latestCanaryObservation.conclusion || mainChainOverviewCopy.latestObservation.defaultConclusion}`
-              : '最近一次试跑：还没有记录',
-          };
-        }
-        return {
-          title: '系统可以继续补算',
-          subtitle: '旧结果通道还保留，必要时可以临时切回。',
-          observation: latestCanaryObservation
-            ? `最近一次试跑：${formatVerdict(latestCanaryObservation.verdict)} · ${latestCanaryObservation.conclusion || mainChainOverviewCopy.latestObservation.defaultConclusion}`
-            : '最近一次试跑：还没有记录',
-        };
-      })();
-      const stabilityCards = [
-        {
-          key: 'newObjectHitRate',
-          label: mainChainOverviewCopy.metricCards.newObjectHitRate.label,
-          description: mainChainOverviewCopy.metricCards.newObjectHitRate.description,
-          value: formatRate(mainChainMetrics?.newObjectHitRate),
-        },
-        {
-          key: 'fallbackRate',
-          label: mainChainOverviewCopy.metricCards.fallbackRate.label,
-          description: mainChainOverviewCopy.metricCards.fallbackRate.description,
-          value: formatRate(mainChainMetrics?.fallbackRate),
-        },
-        {
-          key: 'resolverMismatchRate',
-          label: mainChainOverviewCopy.metricCards.resolverMismatchRate.label,
-          description: mainChainOverviewCopy.metricCards.resolverMismatchRate.description,
-          value: formatRate(mainChainMetrics?.resolverMismatchRate),
-        },
-        {
-          key: 'approvalBacklog',
-          label: mainChainOverviewCopy.metricCards.approvalBacklog.label,
-          description: mainChainOverviewCopy.metricCards.approvalBacklog.description,
-          value: String(mainChainMetrics?.approvalBacklog || 0),
-        },
-        {
-          key: 'approvalLagHoursMedian',
-          label: mainChainOverviewCopy.metricCards.approvalLagHoursMedian.label,
-          description: mainChainOverviewCopy.metricCards.approvalLagHoursMedian.description,
-          value: `${(mainChainMetrics?.approvalLagHoursMedian || 0).toFixed(1)}h`,
-        },
-      ];
-      const candidateSlaCards = [
-        {
-          key: 'candidateReviewWarningCount',
-          label: mainChainOverviewCopy.candidateSection.cards.candidateReviewWarningCount.label,
-          description: mainChainOverviewCopy.candidateSection.cards.candidateReviewWarningCount.description,
-          value: String(mainChainMetrics?.candidateReviewWarningCount || 0),
-        },
-        {
-          key: 'candidateReviewOverdueCount',
-          label: mainChainOverviewCopy.candidateSection.cards.candidateReviewOverdueCount.label,
-          description: mainChainOverviewCopy.candidateSection.cards.candidateReviewOverdueCount.description,
-          value: String(mainChainMetrics?.candidateReviewOverdueCount || 0),
-        },
-        {
-          key: 'newCandidateUnreviewed24h',
-          label: mainChainOverviewCopy.candidateSection.cards.newCandidateUnreviewed24h.label,
-          description: mainChainOverviewCopy.candidateSection.cards.newCandidateUnreviewed24h.description,
-          value: String(mainChainMetrics?.newCandidateUnreviewed24h || 0),
-        },
-      ];
-      const breakdownEntries = Object.entries(mainChainMetrics?.pageBreakdown || {});
-
+    const AccountIdentityCard = () => {
+      const status = orgMembershipState.membershipStatus || currentSessionUser?.membershipStatus || 'none';
+      const canApply = isCloudSession && status !== 'approved';
       return (
-        <div className="space-y-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">{mainChainOverviewCopy.title}</h2>
-                <p className="text-[12px] text-gray-500 mt-1">
-                  {mainChainOverviewCopy.subtitle}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => void handleRefreshMainChainOverview()} disabled={mainChainBusyAction !== 'idle'}>
-                  {mainChainBusyAction === 'refresh' ? <RefreshCw size={16} className="animate-spin" /> : <RefreshCw size={16} />}
-                  {mainChainOverviewCopy.buttons.refresh}
-                </Button>
-                <Button onClick={() => void handleToggleMainChainBackfillPaused()} disabled={!canManageSensitiveSettings || mainChainBusyAction !== 'idle'}>
-                  {mainChainBusyAction === 'pause' ? <RefreshCw size={16} className="animate-spin" /> : <Square size={16} />}
-                  {mainChainStabilitySettingsState.backfillPaused
-                    ? mainChainOverviewCopy.buttons.resumeBackfill
-                    : mainChainOverviewCopy.buttons.pauseBackfill}
-                </Button>
-                <Button onClick={() => void handleToggleLatestJudgmentsShadow()} disabled={!canManageSensitiveSettings || mainChainBusyAction !== 'idle'}>
-                  {mainChainBusyAction === 'shadow' ? <RefreshCw size={16} className="animate-spin" /> : <Radio size={16} />}
-                  {mainChainStabilitySettingsState.latestJudgmentsShadowOff
-                    ? mainChainOverviewCopy.buttons.restoreLegacy
-                    : mainChainOverviewCopy.buttons.shadowOff}
-                </Button>
-              </div>
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-[16px] font-bold text-gray-900">身份与组织</h2>
+              <p className="text-[12px] text-gray-500 mt-1">这里确认账号属于哪个组织和部门；登录手机号和飞书通知手机号互不影响。</p>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-[11px] font-semibold text-slate-500">{mainChainOverviewCopy.topCards.window.label}</p>
-                <p className="mt-2 text-[15px] font-bold text-slate-900">{mainChainMetrics?.windowDays || 0} 天</p>
-                <p className="mt-1 text-[12px] text-slate-600">{mainChainOverviewCopy.topCards.window.description}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-[11px] font-semibold text-slate-500">{mainChainOverviewCopy.topCards.sampleSize.label}</p>
-                <p className="mt-2 text-[15px] font-bold text-slate-900">{mainChainSampleSize}</p>
-                <p className="mt-1 text-[12px] text-slate-600">{mainChainOverviewCopy.topCards.sampleSize.description}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-[11px] font-semibold text-slate-500">{mainChainOverviewCopy.topCards.status.label}</p>
-                <p className="mt-2 text-[15px] font-bold text-slate-900">{statusCopy.title}</p>
-                <p className="mt-1 text-[12px] text-slate-600">{statusCopy.subtitle}</p>
-                <p className="mt-1 text-[12px] text-slate-600">{statusCopy.observation}</p>
-              </div>
+            <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${status === 'approved' ? 'bg-emerald-50 text-emerald-700' : status === 'pending' ? 'bg-amber-50 text-amber-700' : status === 'rejected' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+              {membershipStatusLabel(status)}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px]">
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+              <p className="font-bold text-gray-500">账号</p>
+              <p className="mt-1 text-gray-900">{currentSessionUser?.email || '未登录'}</p>
+              <p className="mt-1 text-gray-500"><Phone size={12} className="inline mr-1" />{currentSessionUser?.phone || '未绑定登录手机号'}</p>
             </div>
-
-            <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-              {mainChainOverviewCopy.warning}
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+              <p className="font-bold text-gray-500">组织 / 部门</p>
+              <p className="mt-1 text-gray-900">{orgMembershipState.organizationName || '尚未确认组织'}</p>
+              <p className="mt-1 text-gray-500">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '尚未确认部门'}</p>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-              {stabilityCards.map((card) => (
-                <div key={card.key} className="rounded-2xl border border-gray-100 bg-gray-50 p-4">
-                  <p className="text-[11px] font-semibold text-gray-500">{card.label}</p>
-                  <p className="mt-2 text-[16px] font-bold text-gray-900">{card.value}</p>
-                  <p className="mt-1 text-[12px] text-gray-600">{card.description}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4 space-y-3">
-              <div>
-                <h3 className="text-[14px] font-bold text-gray-900">{mainChainOverviewCopy.candidateSection.title}</h3>
-                <p className="text-[12px] text-gray-500 mt-1">{mainChainOverviewCopy.candidateSection.description}</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {candidateSlaCards.map((card) => (
-                  <div key={card.key} className="rounded-2xl border border-white bg-white p-4">
-                    <p className="text-[11px] font-semibold text-gray-500">{card.label}</p>
-                    <p className="mt-2 text-[16px] font-bold text-gray-900">{card.value}</p>
-                    <p className="mt-1 text-[12px] text-gray-600">{card.description}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4 space-y-3">
-              <div>
-                <h3 className="text-[14px] font-bold text-gray-900">{mainChainOverviewCopy.breakdown.title}</h3>
-                <p className="text-[12px] text-gray-500 mt-1">{mainChainOverviewCopy.breakdown.description}</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {breakdownEntries.map(([page, bucket]) => (
-                  <div key={page} className="rounded-2xl border border-white bg-white p-4">
-                    <p className="text-[12px] font-bold text-gray-900">{mainChainSceneLabels[page] || page}</p>
-                    <p className="mt-1 text-[11px] text-gray-500">本期使用次数：{bucket.totalRuns}</p>
-                    <div className="mt-3 space-y-1 text-[12px] text-gray-700">
-                      <p>新判断接手率：{formatRate(bucket.newObjectHitRate)}</p>
-                      <p>退回旧逻辑比例：{formatRate(bucket.fallbackRate)}</p>
-                      <p>页面说法打架率：{formatRate(bucket.resolverMismatchRate)}</p>
-                    </div>
-                  </div>
-                ))}
-                {!breakdownEntries.length && (
-                  <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-4 text-[12px] text-gray-500">
-                    {mainChainOverviewCopy.breakdown.empty}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
-              <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4 space-y-3">
-                <div>
-                  <h3 className="text-[14px] font-bold text-gray-900">{mainChainOverviewCopy.backfill.title}</h3>
-                  <p className="text-[12px] text-gray-500 mt-1">{mainChainOverviewCopy.backfill.description}</p>
-                </div>
-                <textarea
-                  value={mainChainBackfillDraft.clientIdsText}
-                  onChange={(event) => setMainChainBackfillDraft((prev) => ({ ...prev, clientIdsText: event.target.value }))}
-                  placeholder={mainChainOverviewCopy.backfill.textareaPlaceholder}
-                  className="min-h-[92px] w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] outline-none"
-                />
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="number"
-                    min={1}
-                    value={mainChainBackfillDraft.batchSize}
-                    onChange={(event) => setMainChainBackfillDraft((prev) => ({ ...prev, batchSize: Number(event.target.value) || 1 }))}
-                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] outline-none"
-                    placeholder={mainChainOverviewCopy.backfill.batchPlaceholder}
-                  />
-                  <input
-                    type="number"
-                    min={1}
-                    value={mainChainBackfillDraft.maxJobs}
-                    onChange={(event) => setMainChainBackfillDraft((prev) => ({ ...prev, maxJobs: Number(event.target.value) || 1 }))}
-                    className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] outline-none"
-                    placeholder={mainChainOverviewCopy.backfill.maxJobsPlaceholder}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => void handleRunMainChainBackfill(true)} disabled={mainChainBusyAction !== 'idle'}>
-                    {mainChainBusyAction === 'dry_run' ? <RefreshCw size={16} className="animate-spin" /> : <Eye size={16} />}
-                    {mainChainOverviewCopy.buttons.estimate}
-                  </Button>
-                  <Button onClick={() => void handleRunMainChainBackfill(false)} disabled={!canManageSensitiveSettings || mainChainBusyAction !== 'idle' || mainChainStabilitySettingsState.backfillPaused}>
-                    {mainChainBusyAction === 'queue' ? <RefreshCw size={16} className="animate-spin" /> : <PlayCircle size={16} />}
-                    {mainChainOverviewCopy.buttons.startTrial}
-                  </Button>
-                </div>
-                {mainChainStabilitySettingsState.backfillPaused && (
-                  <p className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
-                    {mainChainOverviewCopy.backfill.pausedNotice}
-                  </p>
-                )}
-                {mainChainBackfillResult && (
-                  <div className="rounded-2xl border border-white bg-white p-4 text-[12px] text-gray-700 space-y-1">
-                    <p>{mainChainOverviewCopy.backfill.resultLabels.scannedClients}：{mainChainBackfillResult.scannedClients}</p>
-                    <p>{mainChainOverviewCopy.backfill.resultLabels.queuedJobs}：{mainChainBackfillResult.queuedJobs}</p>
-                    <p>{mainChainOverviewCopy.backfill.resultLabels.skippedJobs}：{mainChainBackfillResult.skippedJobs}</p>
-                    <p>{mainChainOverviewCopy.backfill.resultLabels.candidateCount}：{mainChainBackfillResult.candidates.length}</p>
-                    <p>{mainChainOverviewCopy.backfill.resultLabels.paused}：{mainChainBackfillResult.paused ? '是' : '否'}</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-gray-100 bg-gray-50 p-4 space-y-3">
-                <div>
-                  <h3 className="text-[14px] font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.title}</h3>
-                  <p className="text-[12px] text-gray-500 mt-1">{mainChainOverviewCopy.latestObservation.description}</p>
-                </div>
-                {latestCanaryObservation ? (
-                  <div className="rounded-2xl border border-white bg-white p-4 text-[12px] text-gray-700 space-y-2">
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.recordedAt}：</span>{latestCanaryObservation.recordedAt}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.timeRange}：</span>{latestCanaryObservation.timeRange || '未填写'}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.verdict}：</span>{formatVerdict(latestCanaryObservation.verdict)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.jobs}：</span>{latestCanaryObservation.clientCount} 个客户，安排 {latestCanaryObservation.enqueuedJobs}，完成 {latestCanaryObservation.completedJobs}，失败 {latestCanaryObservation.failedJobs}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.newObjectHitRate}：</span>{formatRate(latestCanaryObservation.newObjectHitRateBefore)} → {formatRate(latestCanaryObservation.newObjectHitRateAfter)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.fallbackRate}：</span>{formatRate(latestCanaryObservation.fallbackRateBefore)} → {formatRate(latestCanaryObservation.fallbackRateAfter)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.resolverMismatchRate}：</span>{formatRate(latestCanaryObservation.resolverMismatchRateBefore)} → {formatRate(latestCanaryObservation.resolverMismatchRateAfter)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.approval}：</span>{latestCanaryObservation.approvalBacklog} / {latestCanaryObservation.approvalLagHoursMedian.toFixed(1)}h</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.claimCounts}：</span>{formatCountMap(latestCanaryObservation.claimCounts)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.lockContention}：</span>{formatCountMap(latestCanaryObservation.lockContention)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.backfillThrottle}：</span>{formatCountMap(latestCanaryObservation.backfillThrottle)}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.realtimeImpact}：</span>{latestCanaryObservation.impactedRealtimeTasks ? '有明显影响' : '没有明显影响'}</p>
-                    <p><span className="font-bold text-gray-900">{mainChainOverviewCopy.latestObservation.fields.latestJudgmentsShadowOff}：</span>{latestCanaryObservation.latestJudgmentsShadowOff ? '已关闭' : '未关闭'}</p>
-                    <p className="rounded-2xl bg-slate-50 px-3 py-2 text-slate-700">{latestCanaryObservation.conclusion || mainChainOverviewCopy.latestObservation.defaultConclusion}</p>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-4 text-[12px] text-gray-500">
-                    {mainChainOverviewCopy.latestObservation.empty}
-                  </div>
-                )}
-                <div className="rounded-2xl border border-gray-200 bg-white p-4 text-[12px] text-gray-700">
-                  <p className="font-bold text-gray-900">{mainChainOverviewCopy.workerCounters.title}</p>
-                  <p className="mt-2">{mainChainOverviewCopy.workerCounters.claimCounts}：{formatCountMap(mainChainStabilitySettingsState.workerCounters.claimCounts)}</p>
-                  <p>{mainChainOverviewCopy.workerCounters.lockContention}：{formatCountMap(mainChainStabilitySettingsState.workerCounters.lockContention)}</p>
-                  <p>{mainChainOverviewCopy.workerCounters.backfillThrottle}：{formatCountMap(mainChainStabilitySettingsState.workerCounters.backfillThrottle)}</p>
-                </div>
-              </div>
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+              <p className="font-bold text-gray-500">组织工作台</p>
+              <p className="mt-1 text-gray-900">{organizationWorkspaceClient?.name || (status === 'approved' ? organizationTaskName : '身份确认后自动创建')}</p>
+              <button
+                type="button"
+                className="mt-2 text-[12px] font-bold text-[#5B7BFE] disabled:text-gray-400"
+                disabled={!organizationClientId}
+                onClick={() => {
+                  if (!organizationClientId) return;
+                  setCurrentClientId(organizationClientId);
+                  setActiveTab('client_workspace');
+                  void refreshWorkspace(organizationClientId);
+                }}
+              >
+                打开工作台
+              </button>
             </div>
           </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-[16px] font-bold text-gray-900">{isLocalSession ? '本机模式' : '当前会话'}</h2>
-                  <p className="text-[12px] text-gray-500 mt-1">
-                    {isLocalSession ? '当前只是本机会话，还没有连接云端账号。注册或登录后，才能启用跨设备同步、组织协作和邀请加入。' : '普通登录用户也可以调整当前操作者和个人使用偏好。'}
-                  </p>
-                </div>
-                <Button primary onClick={() => void handleSaveOperatorSelection()} disabled={!canEditBusinessSettings}>
-                  <Settings size={16} /> 保存会话
-                </Button>
-              </div>
-              <select value={draft.currentOperatorId} onChange={(event) => setDraft((prev) => ({ ...prev, currentOperatorId: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-                {operators.map((operator) => (
-                  <option key={operator.id} value={operator.id}>
-                    {operator.name} · {operator.role}
-                  </option>
+          {status === 'rejected' && (
+            <p className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[12px] text-rose-700">
+              {orgMembershipState.membershipRejectedReason || currentSessionUser?.membershipRejectedReason || '组织身份申请未通过，请修改信息后重新提交。'}
+            </p>
+          )}
+          {canApply && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input value={membershipApplyDraft.inviteCode} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码（自动识别组织）" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
+              <select value={membershipApplyDraft.departmentId} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, departmentId: event.target.value }))} className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none">
+                <option value="">选择部门（可选）</option>
+                {departmentOptions.map((department) => (
+                  <option key={department.id} value={department.id}>{department.name}</option>
                 ))}
               </select>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">{isLocalSession ? '当前模式' : '登录身份'}</p>
-                  <p className="text-[13px] font-bold text-slate-900">{isLocalSession ? '本机模式（未连接云端）' : currentSessionUser?.fullName}</p>
-                  <p className="text-[12px] text-slate-600 mt-1">{isLocalSession ? '当前这台电脑可直接使用；注册或登录后再启用云同步与组织协作。' : `${currentSessionUser?.primaryRole} · ${currentSessionUser?.email}`}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4">
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2">系统数据目录</p>
-                  <p className="text-[12px] text-slate-600 break-all">{settingsState?.dataDir || '未加载'}</p>
-                </div>
-              </div>
-            </div>
-
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">AI 与云端</h2>
-                <p className="text-[12px] text-gray-500 mt-1">AI Key、模型与云端接入属于高风险项，只有管理员可写。</p>
-              </div>
-              <Button primary onClick={() => void handleSaveAiSettings()} disabled={!canManageSensitiveSettings}>
-                <Bot size={16} /> 保存 AI 设置
+              <input value={membershipApplyDraft.jobTitle} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位（可选）" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
+              <input value={membershipApplyDraft.managerName} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人（可选）" className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
+              <textarea value={membershipApplyDraft.currentFocus} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, currentFocus: event.target.value }))} rows={2} placeholder="当前工作重点（可选）" className="md:col-span-2 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none resize-none" />
+              <Button primary onClick={() => void handleApplyMembership()} disabled={membershipApplySubmitting} className="md:col-span-2">
+                {membershipApplySubmitting ? <RefreshCw size={16} className="animate-spin" /> : <UserPlus size={16} />}
+                提交组织身份申请
               </Button>
             </div>
-            <select
-              value={draft.aiProvider}
-              onChange={(event) => {
-                const nextProvider = event.target.value as keyof typeof providerDefaultModels;
-                setDraft((prev) => ({ ...prev, aiProvider: nextProvider, aiModel: providerDefaultModels[nextProvider] }));
-              }}
-              className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
-              disabled={!canManageSensitiveSettings}
-            >
-              <option value="doubao">豆包 Seed 2.0 Pro（火山方舟）</option>
-            </select>
-            <input value={draft.aiModel} onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))} placeholder="模型名" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canManageSensitiveSettings} />
-            <input type="password" value={draft.apiKey} onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))} placeholder="API Key（可选）" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canManageSensitiveSettings} />
+          )}
+        </div>
+      );
+    };
+
+    const renderOverviewSection = () => {
+      return (
+        <div className="space-y-6">
+          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h2 className="text-[16px] font-bold text-gray-900">AI 与云端</h2>
+                    <label className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-[#335CFF]">
+                      <input
+                        type="checkbox"
+                        checked={draft.advancedAiRoutingEnabled}
+                        onChange={(event) => setDraft((prev) => ({ ...prev, advancedAiRoutingEnabled: event.target.checked }))}
+                        disabled={!canManageSensitiveSettings}
+                      />
+                      开启高级模型分工
+                    </label>
+                  </div>
+                  <p className="text-[12px] text-gray-500 mt-1">本机模式可先完成首次接入配置；连接云端后，只有管理员可写。</p>
+                </div>
+                {canManageSensitiveSettings && (
+                  <Button primary onClick={() => void handleSaveAiSettings()}>
+                    <Bot size={16} /> 保存 AI 与云端
+                  </Button>
+                )}
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 focus-within:border-[#5B7BFE]">
+                  <span className="shrink-0 border-r border-gray-200 bg-gray-100 px-4 py-3 text-[13px] font-bold text-gray-500">
+                    {CLOUD_API_URL_PREFIX}
+                  </span>
+                  <input
+                    value={cloudApiHostValue(draft.cloudApiUrl)}
+                    onChange={(event) => setDraft((prev) => ({ ...prev, cloudApiUrl: cloudApiUrlFromHost(event.target.value) }))}
+                    placeholder="101.126.34.232"
+                    className="min-w-0 flex-1 bg-transparent px-4 py-3 text-[13px] font-medium text-gray-900 outline-none placeholder:text-gray-400"
+                    disabled={!canManageSensitiveSettings}
+                  />
+                </div>
+                <p className="text-[12px] text-gray-500">
+                  只填写云服务器公网 IP 或域名，例如灰色示例里的 101.126.34.232。留空时不连接任何云端数据库。
+                </p>
+              </div>
+              <label className="block space-y-2">
+                <span className="text-[12px] font-bold text-gray-600">大模型厂商</span>
+                <select
+                  value={resolveAiConfigPresetKey(draft)}
+                  onChange={(event) => applyAiPreset(event.target.value as AiConfigPresetKey)}
+                  disabled={!canManageSensitiveSettings}
+                  className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {AI_CONFIG_PRESET_ORDER.map((presetKey) => (
+                    <option key={presetKey} value={presetKey}>
+                      {AI_CONFIG_PRESETS[presetKey].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input
+                value={draft.aiProviderLabel}
+                onChange={(event) => setDraft((prev) => ({ ...prev, aiProviderLabel: event.target.value }))}
+                placeholder="服务名称"
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
+                disabled={!canManageSensitiveSettings}
+              />
+              <input
+                value={draft.aiModel}
+                onChange={(event) => setDraft((prev) => ({ ...prev, aiModel: event.target.value }))}
+                placeholder="模型名"
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none"
+                disabled={!canManageSensitiveSettings}
+              />
+            </div>
+            <input
+              value={draft.aiBaseUrl}
+              onChange={(event) => setDraft((prev) => ({ ...prev, aiProvider: 'openai_compatible', aiBaseUrl: event.target.value }))}
+              placeholder="接口地址 Base URL"
+              className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
+              disabled={!canManageSensitiveSettings || draft.aiProvider === 'mock'}
+            />
+            <input
+              type="password"
+              value={draft.apiKey}
+              onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
+              placeholder={draft.aiProvider !== 'mock' && isLocalAiBaseUrl(draft.aiBaseUrl) ? 'API Key（本地大模型可留空）' : 'API Key'}
+              className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
+              disabled={!canManageSensitiveSettings || draft.aiProvider === 'mock'}
+              autoComplete="off"
+            />
+            <p className="text-[12px] text-gray-500">
+              当前：{aiModelDisplayLabel(draft.aiProvider, draft.aiModel, draft.aiProviderLabel)}
+              {draft.aiProvider !== 'mock' && draft.aiBaseUrl ? ` · ${draft.aiBaseUrl}` : ''}
+              {draft.cloudApiUrl.trim() ? ` · 云端 ${draft.cloudApiUrl.trim()}` : ' · 云端未配置'}
+            </p>
+            {draft.advancedAiRoutingEnabled && (
+            <div className="rounded-3xl border border-gray-100 bg-gray-50 p-4 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_220px] gap-3 items-start">
+                <div>
+                  <p className="text-[13px] font-bold text-gray-900">模型快速切换</p>
+                  <p className="text-[12px] text-gray-500 mt-1">
+                    高级分工关闭时仍走统一大模型；开启后按任务类型和模式解析实际模型。
+                  </p>
+                </div>
+                <select
+                  value={draft.aiModelMode}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, aiModelMode: event.target.value as AiModelMode }))}
+                  disabled={!canManageSensitiveSettings}
+                  className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {AI_MODEL_MODE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[12px] text-gray-500">
+                {AI_MODEL_MODE_OPTIONS.find((option) => option.value === draft.aiModelMode)?.description}
+              </p>
+              <p className="rounded-2xl border border-blue-100 bg-white px-4 py-3 text-[12px] leading-5 text-gray-500">
+                线上主模型沿用上方统一大模型配置；这里仅配置本地深度文本、本地视觉/OCR、本地快速结构化。
+              </p>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  {AI_LOCAL_MODEL_PROFILE_ORDER.map((profileKey) => {
+                    const profile = draft.aiModelProfiles[profileKey] || AI_MODEL_PROFILE_DEFAULTS[profileKey];
+                    const meta = AI_MODEL_PROFILE_META[profileKey];
+                    const profileHealth = health?.aiProfiles?.[profileKey];
+                    return (
+                      <div key={profileKey} className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[13px] font-bold text-gray-900">{meta.title}</p>
+                            <p className="text-[12px] text-gray-500 mt-1">{meta.purpose}</p>
+                          </div>
+                          <label className="flex items-center gap-2 text-[12px] font-bold text-gray-600">
+                            <input
+                              type="checkbox"
+                              checked={profile.enabled}
+                              onChange={(event) => updateAiModelProfile(profileKey, { enabled: event.target.checked })}
+                              disabled={!canManageSensitiveSettings}
+                            />
+                            启用
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input
+                            value={profile.providerLabel}
+                            onChange={(event) => updateAiModelProfile(profileKey, { providerLabel: event.target.value })}
+                            placeholder="服务名称"
+                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-bold text-gray-900 outline-none"
+                            disabled={!canManageSensitiveSettings || !profile.enabled}
+                          />
+                          <input
+                            value={profile.model}
+                            onChange={(event) => updateAiModelProfile(profileKey, { model: event.target.value })}
+                            placeholder="模型名"
+                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-bold text-gray-900 outline-none"
+                            disabled={!canManageSensitiveSettings || !profile.enabled}
+                          />
+                        </div>
+                        <input
+                          value={profile.baseUrl}
+                          onChange={(event) => updateAiModelProfile(profileKey, { baseUrl: event.target.value })}
+                          placeholder="接口地址 Base URL"
+                          className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-medium text-gray-900 outline-none"
+                          disabled={!canManageSensitiveSettings || !profile.enabled}
+                        />
+                        <input
+                          type="password"
+                          value={draft.aiModelProfileApiKeys[profileKey] || ''}
+                          onChange={(event) => updateAiModelProfileApiKey(profileKey, event.target.value)}
+                          placeholder={profile.isLocal ? 'API Key（本地模型可留空；留空沿用已保存密钥）' : 'API Key（留空沿用已保存密钥）'}
+                          className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-medium text-gray-900 outline-none"
+                          disabled={!canManageSensitiveSettings || !profile.enabled}
+                          autoComplete="off"
+                        />
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
+                          <span className="rounded-full bg-gray-100 px-2 py-1">{profile.isLocal ? '本地' : '远程'}</span>
+                          <span className="rounded-full bg-gray-100 px-2 py-1">{profile.capability}</span>
+                          {profileHealth && (
+                            <span className={profileHealth.ready ? 'text-green-700' : 'text-amber-700'}>
+                              {profileHealth.ready ? '已配置' : '未就绪'}：{profileHealth.detail}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+            </div>
+            )}
+            {isLocalSession && (
+              <p className="text-[12px] text-blue-700 bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3">
+                当前处于本机模式，可以先保存云端服务地址，再打开登录窗口连接云端账号。
+              </p>
+            )}
             <label className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
               <input
                 type="checkbox"
@@ -20672,9 +22438,10 @@ export default function App() {
               />
               记住当前 API Key（仅本机）
             </label>
-            {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
+            {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前云端账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
           </div>
-        </div>
+
+        <AccountIdentityCard />
 
         {isLocalSession ? (
           <AccountProfileCard />
@@ -20697,8 +22464,6 @@ export default function App() {
           onSaveIntegration={handleSaveOrgFeishuIntegration}
           onSaveRememberedInputs={handleSaveFeishuInputMemory}
           onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
-          onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
-          onOpenCloudAuth={() => openCloudAuthModal('login')}
         />
 
         <BrandLogoSettingsCard
@@ -20733,60 +22498,20 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <h2 className="text-[16px] font-bold text-gray-900 mb-4">备份与旧数据导入</h2>
-            <div className="flex flex-wrap gap-3 mb-4">
-              <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
-                <Database size={16} /> 立即备份
-              </Button>
-              <Button onClick={() => { void selectFolderBridge().then((folder) => { if (!folder) return; void scanLegacy(folder).then((result) => setLegacyScanResult(result)).catch((error) => flash('error', error instanceof Error ? error.message : '扫描失败')); }); }}>
-                <FolderOpen size={16} /> 扫描旧数据
-              </Button>
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-[16px] font-bold text-gray-900">备份</h2>
+              <p className="text-[12px] text-gray-500 mt-1">保留正式工作需要的本地备份入口；旧数据迁移和演示数据不再常驻设置首页。</p>
             </div>
-            {legacyScanResult && (
-              <div className="space-y-3">
-                <p className="text-[12px] font-bold text-gray-900">{legacyScanResult.path}</p>
-                <p className="text-[12px] text-gray-500">{legacyScanResult.message}</p>
-                <div className="flex flex-col md:flex-row gap-3">
-                  <select value={legacyImportClientId} onChange={(event) => setLegacyImportClientId(event.target.value)} className="flex-1 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                    <option value="">选择导入目标客户</option>
-                    {clients.map((client) => (
-                      <option key={client.id} value={client.id}>{client.name}</option>
-                    ))}
-                  </select>
-                  <Button onClick={() => void handleImportLegacyEntries()} disabled={isImportingLegacy || !importableLegacyEntries.length}>
-                    {isImportingLegacy ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-                    导入可导入文件
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">演示数据</h2>
-                <p className="text-[12px] text-gray-500 mt-1">只在需要演示时手动载入，正式使用可以随时清空。</p>
-              </div>
-              <span className={`text-[11px] font-bold px-3 py-1.5 rounded-full ${settingsState?.demoDataLoaded ? 'bg-amber-50 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
-                {settingsState?.demoDataLoaded ? '已载入演示数据' : '未载入演示数据'}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <Button onClick={() => { void loadDemoData().then(async () => { await loadAll('client_cffc'); flash('success', '演示数据已载入'); }).catch((error) => flash('error', error instanceof Error ? error.message : '载入失败')); }}>
-                <Sparkles size={16} /> 载入演示数据
-              </Button>
-              <Button onClick={() => { void clearDemoData().then(async () => { await loadAll(); flash('success', '演示数据已清空'); }).catch((error) => flash('error', error instanceof Error ? error.message : '清空失败')); }}>
-                <X size={16} /> 清空演示数据
-              </Button>
-            </div>
+            <Button onClick={() => { void createBackup().then(async (backup) => { await loadSettingsBlock(); flash('success', `已生成备份：${backup.backupPath.split('/').pop()}`); }).catch((error) => flash('error', error instanceof Error ? error.message : '备份失败')); }}>
+              <Database size={16} /> 立即备份
+            </Button>
           </div>
         </div>
 
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <h2 className="text-[16px] font-bold text-gray-900 mb-4">最近操作日志</h2>
+          <h2 className="text-[16px] font-bold text-gray-900 mb-4">最近操作记录</h2>
           <div className="space-y-3 max-h-[420px] overflow-y-auto">
             {logs.map((log) => (
               <div key={log.id} className="border border-gray-100 rounded-2xl p-4">
@@ -20801,53 +22526,7 @@ export default function App() {
         </div>
       </div>
     );
-
-    const renderOrgDnaSection = () => (
-      <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <h2 className="text-[16px] font-bold text-gray-900">组织 DNA</h2>
-          <p className="text-[12px] text-gray-500 mt-2 leading-relaxed">
-            这里是整个软件的组织级知识主库。系统在 AI 型能力中会优先注入这层上下文，再叠加客户补充 DNA 和当前模块材料。
-          </p>
-        </div>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {ORGANIZATION_DNA_MODULES.map((meta) => {
-            const module = organizationDnaModules.find((item) => item.moduleKey === meta.moduleKey);
-            return (
-              <div key={meta.moduleKey} className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-[16px] font-bold text-gray-900">{meta.title}</h3>
-                    <p className="text-[12px] text-gray-500 mt-1">{meta.helper}</p>
-                  </div>
-                  <Button onClick={() => void handleUploadOrgDna(meta.moduleKey)} disabled={!canEditOrgDna || orgDnaSavingKey === meta.moduleKey}>
-                    {orgDnaSavingKey === meta.moduleKey ? <RefreshCw size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-                    {module?.hasDocument ? '替换文档' : '上传文档'}
-                  </Button>
-                </div>
-                <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 text-[12px] text-slate-700 space-y-2">
-                  <p><span className="font-bold text-slate-900">状态：</span>{module?.hasDocument ? '已上传当前生效稿' : '尚未上传'}</p>
-                  <p><span className="font-bold text-slate-900">文件：</span>{module?.fileName || '未上传'}</p>
-                  <p><span className="font-bold text-slate-900">更新：</span>{module?.updatedAt || '未更新'}{module?.updatedBy ? ` · ${module.updatedBy}` : ''}</p>
-                </div>
-                <div className="rounded-2xl bg-blue-50/60 border border-blue-100 p-4">
-                  <p className="text-[12px] font-bold text-[#335CFF] mb-2">摘要</p>
-                  <p className="text-[12px] text-slate-700 leading-relaxed whitespace-pre-wrap">{module?.summary || '上传后，这里会显示提炼后的摘要。'}</p>
-                </div>
-                <details className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
-                  <summary className="cursor-pointer text-[12px] font-bold text-gray-700">查看原文内容</summary>
-                  <pre className="mt-3 whitespace-pre-wrap text-[12px] text-gray-600 max-h-[220px] overflow-y-auto">{module?.markdownContent || '暂无原文'}</pre>
-                </details>
-                <details className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
-                  <summary className="cursor-pointer text-[12px] font-bold text-gray-700">查看解析后的纯文本</summary>
-                  <div className="mt-3 whitespace-pre-wrap text-[12px] text-gray-600 max-h-[220px] overflow-y-auto">{module?.normalizedText || '暂无解析文本'}</div>
-                </details>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
+    };
 
     const renderTasksSection = () => (
       <div className="space-y-6">
@@ -20855,16 +22534,23 @@ export default function App() {
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
               <h2 className="text-[16px] font-bold text-gray-900">任务默认规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">统一任务默认清单、优先级、日期策略、视图偏好和复盘入口。</p>
+              <p className="text-[12px] text-gray-500 mt-1">统一任务默认清单、优先级、日期策略和复盘入口。</p>
             </div>
-            <Button primary onClick={() => void handleSaveTaskSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存任务设置
-            </Button>
+            {canEditBusinessSettings && (
+              <Button primary onClick={() => void handleSaveTaskSettings()}>
+                <Settings size={16} /> 保存任务设置
+              </Button>
+            )}
           </div>
+          {!canEditBusinessSettings && (
+            <p className="mb-4 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] text-amber-700">
+              当前账号只能查看任务默认规则，不能修改。
+            </p>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <select value={taskSettingsDraft.defaultListId || ''} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              {orgTaskLists.map((list) => (
-                <option key={list.id} value={list.id}>{list.name}</option>
+            <select value={taskDefaultDestinationLists.some((list) => list.id === taskSettingsDraft.defaultListId) ? taskSettingsDraft.defaultListId || '' : taskDefaultDestinationLists[0]?.id || ''} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings || taskDefaultDestinationLists.length === 0}>
+              {taskDefaultDestinationLists.map((list) => (
+                <option key={list.id} value={list.id}>{taskDefaultDestinationOptionLabel(list)}</option>
               ))}
             </select>
             <select value={taskSettingsDraft.defaultPriority} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultPriority: event.target.value as TaskSettings['defaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
@@ -20876,25 +22562,9 @@ export default function App() {
               <option value="today">默认日期：今天</option>
               <option value="none">默认日期：无日期</option>
             </select>
-            <select value={taskSettingsDraft.defaultViewMode} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultViewMode: event.target.value as TaskSettings['defaultViewMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="inbox">默认打开：协作收件箱</option>
-              <option value="list">默认打开：清单列表</option>
-              <option value="calendar">默认打开：我的月历</option>
-              <option value="event_lines">默认打开：事件线</option>
-              <option value="review">默认打开：周复盘</option>
-            </select>
-            <select value={taskSettingsDraft.listSortMode} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, listSortMode: event.target.value as TaskSettings['listSortMode'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="manual">清单排序：按时间先后</option>
-              <option value="dueDate">清单排序：按截止日期</option>
-              <option value="priority">清单排序：按优先级</option>
-            </select>
             <select value={taskSettingsDraft.defaultReviewScope} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, defaultReviewScope: event.target.value as TaskSettings['defaultReviewScope'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
               <option value="work">周复盘默认进入组织复盘</option>
               <option value="personal">周复盘默认进入成长复盘</option>
-            </select>
-            <select value={taskSettingsDraft.showCompletedTasks ? 'show' : 'hide'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, showCompletedTasks: event.target.value === 'show' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="hide">清单默认隐藏已完成</option>
-              <option value="show">清单默认显示已完成</option>
             </select>
             <select value={taskSettingsDraft.autoAssignSelf ? 'self' : 'empty'} onChange={(event) => setTaskSettingsDraft((prev) => ({ ...prev, autoAssignSelf: event.target.value === 'self' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
               <option value="self">未选协作者时默认给自己</option>
@@ -20903,117 +22573,6 @@ export default function App() {
           </div>
         </div>
 
-        {currentSessionUser?.primaryRole === 'admin' && (
-          <ReviewGovernanceSettingsPanel
-            value={reviewGovernanceDraft}
-            canEdit={canManageSensitiveSettings}
-            availableMembers={availableReviewGovernanceMembers}
-            isSaving={isSavingReviewGovernance}
-            onChange={setReviewGovernanceDraft}
-            onSave={() => void handleSaveReviewGovernance()}
-          />
-        )}
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-start justify-between gap-4 mb-4">
-              <div>
-                <h2 className="text-[16px] font-bold text-gray-900">清单管理</h2>
-                <p className="text-[12px] text-gray-500 mt-1">组织清单由管理员治理，个人日程清单可自行维护。</p>
-              </div>
-              {editingListId && <button type="button" className="text-[12px] font-bold text-gray-400 hover:text-gray-700" onClick={resetListManager}>取消编辑</button>}
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_120px_120px_auto] gap-3">
-              <input value={listManageDraft.name} onChange={(event) => setListManageDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="输入清单名称" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" />
-              <select value={listManageDraft.color} onChange={(event) => setListManageDraft((prev) => ({ ...prev, color: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                {TASK_COLOR_OPTIONS.map((color) => (
-                  <option key={color} value={color}>{color}</option>
-                ))}
-              </select>
-              <select value={listManageDraft.isDefault ? 'default' : 'normal'} onChange={(event) => setListManageDraft((prev) => ({ ...prev, isDefault: event.target.value === 'default' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                <option value="normal">普通清单</option>
-                <option value="default">默认清单</option>
-              </select>
-              <select value={listManageDraft.scope} onChange={(event) => setListManageDraft((prev) => ({ ...prev, scope: event.target.value as 'org' | 'personal' }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none">
-                <option value="org">组织任务</option>
-                <option value="personal">个人日程</option>
-              </select>
-              <Button
-                primary
-                className="rounded-2xl"
-                onClick={() => void handleSaveTaskList()}
-                disabled={listManageDraft.scope === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}
-              >
-                {editingListId ? '保存清单' : '新建清单'}
-              </Button>
-            </div>
-            <div className="mt-5 space-y-3 max-h-[320px] overflow-y-auto pr-1">
-              {taskLists.map((list) => (
-                <div key={list.id} className="border border-gray-100 rounded-2xl p-4 flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: list.color }} />
-                      <p className="text-[14px] font-bold text-gray-900">{list.name}</p>
-                      <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-slate-100 text-slate-600">
-                        {(list.scope || 'org') === 'personal' ? '个人日程' : '组织任务'}
-                      </span>
-                      {list.isDefault && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-blue-50 text-[#5B7BFE]">默认</span>}
-                      {list.archivedAt && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-gray-100 text-gray-500">已归档</span>}
-                    </div>
-                    <p className="text-[12px] text-gray-500 mt-2">归档后不会再出现在新建任务和默认清单选项里。</p>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Button onClick={() => { setEditingListId(list.id); setListManageDraft({ name: list.name, color: list.color, isDefault: list.isDefault, archived: Boolean(list.archivedAt), scope: (list.scope || 'org') as 'org' | 'personal' }); }} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>编辑</Button>
-                    <Button onClick={() => void handleToggleTaskListArchived(list)} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>{list.archivedAt ? '恢复' : '归档'}</Button>
-                    <Button onClick={() => void handleDeleteTaskList(list)} disabled={(list.scope || 'org') === 'org' ? !canManageOrgTaskList : !canManagePersonalTaskList}>删除</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-        </div>
-      </div>
-    );
-    };
-
-    const renderClientWorkspaceSection = () => (
-      <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-5">
-            <div>
-              <h2 className="text-[16px] font-bold text-gray-900">客户工作台全局规则</h2>
-              <p className="text-[12px] text-gray-500 mt-1">控制客户聊天、会议发布到任务和客户补充 DNA 的组织级规则。</p>
-            </div>
-            <Button primary onClick={() => void handleSaveClientWorkspaceSettings()} disabled={!canEditBusinessSettings}>
-              <Settings size={16} /> 保存客户工作台设置
-            </Button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              聊天默认注入组织 DNA
-              <input type="checkbox" checked={clientWorkspaceDraft.useOrgDnaInChat} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, useOrgDnaInChat: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              知识问答默认注入组织 DNA
-              <input type="checkbox" checked={clientWorkspaceDraft.useOrgDnaInKnowledgeQa} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, useOrgDnaInKnowledgeQa: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <input value={clientWorkspaceDraft.defaultMeetingTitlePrefix} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, defaultMeetingTitlePrefix: event.target.value }))} placeholder="会议标题默认前缀" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <input value={clientWorkspaceDraft.defaultGoalQuarter} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, defaultGoalQuarter: event.target.value }))} placeholder="目标默认季度，例如 2026 Q2" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none" disabled={!canEditBusinessSettings} />
-            <select value={clientWorkspaceDraft.meetingPublishDefaultListId || ''} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultListId: event.target.value || null }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="">跟随任务默认清单</option>
-              {activeTaskLists.map((list) => (
-                <option key={list.id} value={list.id}>{list.name}</option>
-              ))}
-            </select>
-            <select value={clientWorkspaceDraft.meetingPublishDefaultPriority} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, meetingPublishDefaultPriority: event.target.value as ClientWorkspaceSettings['meetingPublishDefaultPriority'] }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
-              <option value="low">会议任务默认低优先级</option>
-              <option value="normal">会议任务默认普通优先级</option>
-              <option value="high">会议任务默认高优先级</option>
-            </select>
-            <input value={clientWorkspaceDraft.clientDnaModeLabel} onChange={(event) => setClientWorkspaceDraft((prev) => ({ ...prev, clientDnaModeLabel: event.target.value }))} placeholder="客户 DNA 显示文案" className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none md:col-span-2" disabled={!canEditBusinessSettings} />
-          </div>
-        </div>
       </div>
     );
 
@@ -21037,14 +22596,6 @@ export default function App() {
             <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
               解析完成前禁止查看解析 / 转任务
               <input type="checkbox" checked={topicsDraft.requireInsightBeforeActions} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, requireInsightBeforeActions: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              候选解析默认注入组织 DNA
-              <input type="checkbox" checked={topicsDraft.useOrgDnaForInsight} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, useOrgDnaForInsight: event.target.checked }))} disabled={!canEditBusinessSettings} />
-            </label>
-            <label className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] font-medium flex items-center justify-between">
-              转任务提炼默认注入组织 DNA
-              <input type="checkbox" checked={topicsDraft.useOrgDnaForTaskPlan} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, useOrgDnaForTaskPlan: event.target.checked }))} disabled={!canEditBusinessSettings} />
             </label>
             <select value={topicsDraft.defaultTimeRange} onChange={(event) => setTopicsDraft((prev) => ({ ...prev, defaultTimeRange: event.target.value }))} className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-bold outline-none" disabled={!canEditBusinessSettings}>
               <option value="1_day">默认时间窗：1 天</option>
@@ -21096,8 +22647,8 @@ export default function App() {
     );
 
     const EmployeeReviewPanel = () => {
-      const pendingList = employeeReviews.filter((e) => e.accountStatus === 'pending');
-      const rejectedList = employeeReviews.filter((e) => e.accountStatus === 'rejected');
+      const pendingList = employeeReviews.filter((e) => (e.membershipStatus || e.accountStatus) === 'pending');
+      const rejectedList = employeeReviews.filter((e) => (e.membershipStatus || e.accountStatus) === 'rejected');
       const disabledList = employeeReviews.filter((e) => e.accountStatus === 'disabled');
 
       const handleApprove = async (id: string) => {
@@ -21195,7 +22746,7 @@ export default function App() {
             <div className="space-y-2">
               <p className="text-[12px] font-bold text-red-500 uppercase tracking-widest">已驳回 ({rejectedList.length})</p>
               {rejectedList.map((employee) => renderEmployeeRow(employee, (
-                <span className="text-[12px] text-red-400">{employee.rejectedReason || '未通过'}</span>
+                <span className="text-[12px] text-red-400">{employee.membershipRejectedReason || employee.rejectedReason || '未通过'}</span>
               )))}
             </div>
           )}
@@ -21207,10 +22758,10 @@ export default function App() {
               )))}
             </div>
           )}
-          {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').length > 0 && (
+          {employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin').length > 0 && (
             <div className="space-y-2">
               <p className="text-[12px] font-bold text-gray-500 uppercase tracking-widest">在职员工管理</p>
-              {employeeReviews.filter((e) => e.accountStatus === 'approved' && e.primaryRole !== 'admin').map((employee) => renderEmployeeRow(employee, (
+              {employeeReviews.filter((e) => e.accountStatus === 'approved' && (e.membershipStatus || 'approved') === 'approved' && e.primaryRole !== 'admin').map((employee) => renderEmployeeRow(employee, (
                 <>
                   {resetPwEmployeeId === employee.id ? (
                     <div className="flex items-center gap-1">
@@ -21238,15 +22789,17 @@ export default function App() {
         {authState.sessionMode === 'cloud' ? (
           <OrganizationSetupCenter
             value={orgModelDraft}
-            organizationDnaModules={organizationDnaModules}
             departmentCatalog={departmentOptions}
             employees={employeeReviews}
             canEdit
             isSaving={isSavingOrgModel}
             activeWeekLabel={currentWeekLabel()}
             initialAdvancedTab={initialAdvancedTab}
-            onChange={setOrgModelDraft}
+            onChange={handleChangeOrgModelDraft}
+            getInputDrafts={getOrgSetupInputDrafts}
+            setInputDrafts={setOrgSetupInputDrafts}
             onSave={(nextDraft) => handleSaveOrgModel(nextDraft)}
+            onUploadIntroDocument={(title) => handleParseOrgIntroDocument(title)}
             onOpenSection={(section) => setSettingsSection(section)}
           />
         ) : (
@@ -21270,12 +22823,10 @@ export default function App() {
       switch (settingsSection) {
         case 'overview':
           return renderOverviewSection();
-        case 'org_dna':
-          return renderOrgDnaSection();
         case 'tasks':
           return renderTasksSection();
         case 'client_workspace':
-          return renderClientWorkspaceSection();
+          return renderOverviewSection();
         case 'topics':
           return renderTopicsSection();
         case 'handbook':
@@ -21293,11 +22844,9 @@ export default function App() {
         case 'system_logs':
           return (
             <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
-              <h2 className="text-[16px] font-bold text-gray-900 mb-1">系统日志</h2>
-              <p className="text-[12px] text-gray-500 mb-5">记录所有 API 请求、错误和业务操作。导出后交给 Claude Code 或 Codex 即可快速定位问题。</p>
+              <h2 className="text-[16px] font-bold text-gray-900 mb-1">系统运行日志</h2>
+              <p className="text-[12px] text-gray-500 mb-5">记录 API 请求、后台任务、桌面界面错误和运行异常；设置首页的“操作记录”只展示业务操作。</p>
               <SystemLogPanel />
-              <DataCenterProposalInboxPanel clientId={currentClientId} />
-              <DataCenterOpsPanel clientId={currentClientId} />
             </div>
           );
         default:
@@ -21312,38 +22861,13 @@ export default function App() {
             <h1 className="text-[20px] lg:text-[24px] font-bold text-gray-900 tracking-tight">系统设置</h1>
             <p className="text-[12px] text-gray-500 mt-1">把整个软件的默认规则、权限边界和组织级知识底座收口到一个设置中心。</p>
           </div>
-          {isLocalSession ? (
-            <Button onClick={() => openCloudAuthModal('login')}>
-              <ShieldAlert size={16} /> 注册 / 登录
-            </Button>
-          ) : (
-            <Button onClick={() => {
-              if (!window.confirm('确定要退出登录吗？')) return;
-              void logout().then(async (response) => { setAuthState(response); await loadAll(); }).catch((error) => flash('error', error instanceof Error ? error.message : '退出失败'));
-            }}>
-              <ShieldAlert size={16} /> 退出登录
-            </Button>
-          )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className={`grid grid-cols-1 gap-6 ${settingsSidebarCollapsed ? 'xl:grid-cols-[92px_minmax(0,1fr)]' : 'xl:grid-cols-[260px_minmax(0,1fr)]'}`}>
-            <div className={`bg-white border border-gray-100 rounded-3xl shadow-sm h-fit ${settingsSidebarCollapsed ? 'p-3' : 'p-4'}`}>
-              <div className={`mb-3 flex items-center ${settingsSidebarCollapsed ? 'justify-center' : 'justify-between gap-3'}`}>
-                {!settingsSidebarCollapsed && (
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">设置导航</p>
-                    <p className="mt-1 text-[12px] text-gray-500">收起后仅保留图标，右侧内容区会自动拉宽。</p>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setSettingsSidebarCollapsed((prev) => !prev)}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-gray-200 bg-gray-50 text-gray-600 transition-colors hover:border-blue-100 hover:bg-blue-50 hover:text-[#335CFF]"
-                  title={settingsSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-                  aria-label={settingsSidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-                >
-                  {settingsSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-                </button>
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="bg-white border border-gray-100 rounded-3xl shadow-sm h-fit p-4">
+              <div className="mb-3">
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-400">设置导航</p>
+                <p className="mt-1 text-[12px] text-gray-500">只保留常用配置入口，低频诊断能力不常驻展示。</p>
               </div>
               <div className="space-y-4">
                 {sectionGroups.map((group) => {
@@ -21351,9 +22875,7 @@ export default function App() {
                   if (visibleItems.length === 0) return null;
                   return (
                     <div key={group.group}>
-                      {!settingsSidebarCollapsed && (
-                        <p className="mb-1.5 px-4 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{group.group}</p>
-                      )}
+                      <p className="mb-1.5 px-4 text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">{group.group}</p>
                       <div className="space-y-1">
                         {visibleItems.map((section) => {
                           const Icon = section.icon;
@@ -21362,17 +22884,14 @@ export default function App() {
                             <button
                               key={section.key}
                               type="button"
-                              title={settingsSidebarCollapsed ? section.label : undefined}
                               onClick={() => {
                                 setSettingsSection(section.key);
                               }}
-                              className={`w-full rounded-2xl border transition-all ${settingsSidebarCollapsed ? 'px-0 py-2.5 text-center' : 'px-4 py-2.5 text-left'} ${isActive ? 'border-blue-200 bg-blue-50/60 text-[#335CFF]' : 'border-transparent hover:border-gray-100 hover:bg-gray-50 text-gray-700'}`}
+                              className={`w-full rounded-2xl border px-4 py-2.5 text-left transition-all ${isActive ? 'border-blue-200 bg-blue-50/60 text-[#335CFF]' : 'border-transparent hover:border-gray-100 hover:bg-gray-50 text-gray-700'}`}
                             >
-                              <div className={`flex ${settingsSidebarCollapsed ? 'justify-center' : 'items-center gap-3'}`}>
+                              <div className="flex items-center gap-3">
                                 <Icon size={15} />
-                                {!settingsSidebarCollapsed && (
-                                  <p className="text-[12px] font-bold">{section.label}</p>
-                                )}
+                                <p className="text-[12px] font-bold">{section.label}</p>
                               </div>
                             </button>
                           );
@@ -21495,61 +23014,25 @@ export default function App() {
 
   const viewMap: Record<NavKey, React.ReactNode> = {
     tasks: <TasksView />,
-    client_workspace: <ClientWorkspaceView key={currentClientId || 'no-client'} />,
+    client_workspace: (
+      <WorkspaceClientStoreProvider state={workspaceClientUiState} dispatch={dispatchWorkspaceClientUi}>
+        <ClientWorkspaceView>{renderClientWorkspaceView}</ClientWorkspaceView>
+      </WorkspaceClientStoreProvider>
+    ),
     strategic_accompaniment: evidenceMode === 'cockpit' ? (
       <CockpitEvidenceView />
     ) : (
       <StrategicBrainView
         clients={clients}
-        tasks={sharedTasks}
         currentClientId={currentClientId}
         onClientChange={(clientId) => {
           setCurrentClientId(clientId);
           void refreshWorkspace(clientId);
-        }}
-        onCreateTaskFromThought={(payload) => {
-          const descParts = [`【系统建议 · ${payload.thoughtLine}】\n${payload.suggestion}`];
-          if (payload.ceoComment) {
-            descParts.push(`\n\n【补充看法 · ${currentSessionUser.fullName || 'CEO'}】\n${payload.ceoComment}`);
-          }
-          resetTaskDraft(payload.dueDate || undefined);
-          setEditingTask((prev) => ({
-            ...prev,
-            desc: descParts.join(''),
-            clientId: payload.clientId,
-            clientTouched: Boolean(payload.clientId),
-            clientConfidence: payload.clientId ? 'manual' : 'none',
-            clientReason: payload.clientId ? `来自战略研判「${payload.thoughtLine}」` : '请选择项目。',
-          }));
-          setIsTaskModalOpen(true);
-        }}
-        onCreateTaskFromLearning={async (payload) => {
-          await createTask({
-            title: payload.title.trim(),
-            desc: payload.desc,
-            priority: 'normal',
-            listId: effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0',
-            dueDate: null,
-            ddl: '待确认',
-            ownerId: currentSessionUser?.id || null,
-            ownerName: currentSessionUser?.fullName || currentOperatorName,
-            collaboratorIds: currentSessionUser?.id ? [currentSessionUser.id] : [],
-            tagIds: [],
-            clientId: payload.clientId || null,
-            sourceType: 'strategic_learning',
-          });
-          await loadTaskBlock();
-        }}
-        onTasksReload={loadTaskBlock}
-        onNavigate={(tab) => {
-          const nextTab = tab as NavKey;
-          if (nextTab === 'tasks' || nextTab === 'client_workspace' || nextTab === 'strategic_accompaniment' || nextTab === 'topics_management' || nextTab === 'growth_handbook' || nextTab === 'settings') {
-            setActiveTab(nextTab);
-            return;
-          }
-          setActiveTab('growth_handbook');
-        }}
-        onOpenContext={(context) => requestGrowthContextJump(context)}
+	        }}
+	        onCreateTaskFromThought={(payload) => {
+	          setActiveTab('tasks');
+	          window.setTimeout(() => openStrategicTaskDraftRef.current(payload), 0);
+	        }}
         flash={flash}
       />
     ),
@@ -21571,7 +23054,67 @@ export default function App() {
     growth_handbook: (
       <GrowthCenterView />
     ),
-    settings: <SettingsView />,
+    settings: renderSettingsView(),
+  };
+
+  const IdentityGate = () => {
+    const status = currentMembershipStatus;
+    return (
+      <div className="min-h-screen bg-[#F9FAFB] flex items-center justify-center px-6">
+        <div className="w-full max-w-[760px] rounded-[32px] border border-gray-100 bg-white p-8 shadow-[0_20px_80px_rgba(15,23,42,0.08)]">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#5B7BFE]">身份与组织</p>
+              <h1 className="mt-3 text-[28px] font-bold text-gray-900">{membershipStatusLabel(status)}</h1>
+              <p className="mt-2 text-[13px] leading-6 text-gray-500">
+                账号已登录，但组织身份还没有确认。确认前不会加载任务、日程、客户、事件线和周复盘数据。
+              </p>
+            </div>
+            <span className={`rounded-full px-3 py-1 text-[12px] font-bold ${status === 'pending' ? 'bg-amber-50 text-amber-700' : status === 'rejected' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+              {membershipStatusLabel(status)}
+            </span>
+          </div>
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3 text-[13px]">
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+              <p className="text-gray-500 font-bold">账号</p>
+              <p className="mt-1 text-gray-900">{currentSessionUser?.fullName} · {currentSessionUser?.email}</p>
+              <p className="mt-1 text-gray-500">{currentSessionUser?.phone || '未绑定登录手机号'}</p>
+            </div>
+            <div className="rounded-2xl border border-gray-100 bg-gray-50 px-4 py-3">
+              <p className="text-gray-500 font-bold">组织 / 部门</p>
+              <p className="mt-1 text-gray-900">{orgMembershipState.organizationName || '尚未确认组织'}</p>
+              <p className="mt-1 text-gray-500">{orgMembershipState.departmentName || currentSessionUser?.departmentName || '尚未确认部门'}</p>
+            </div>
+          </div>
+          {status === 'rejected' && (
+            <p className="mt-4 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[13px] text-rose-700">
+              {orgMembershipState.membershipRejectedReason || currentSessionUser?.membershipRejectedReason || '组织身份申请未通过，请修改后重新提交。'}
+            </p>
+          )}
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <input value={membershipApplyDraft.inviteCode} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, inviteCode: event.target.value }))} placeholder="部门邀请码（自动识别组织）" className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
+            <select value={membershipApplyDraft.departmentId} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, departmentId: event.target.value }))} className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none">
+              <option value="">选择部门（可选）</option>
+              {departmentOptions.map((department) => (
+                <option key={department.id} value={department.id}>{department.name}</option>
+              ))}
+            </select>
+            <input value={membershipApplyDraft.jobTitle} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, jobTitle: event.target.value }))} placeholder="职位（可选）" className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
+            <input value={membershipApplyDraft.managerName} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="直属负责人（可选）" className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none" />
+            <textarea value={membershipApplyDraft.currentFocus} onChange={(event) => setMembershipApplyDraft((prev) => ({ ...prev, currentFocus: event.target.value }))} rows={2} placeholder="当前工作重点（可选）" className="md:col-span-2 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[13px] outline-none resize-none" />
+          </div>
+          <div className="mt-6 flex flex-wrap justify-end gap-3">
+            <Button onClick={() => { void logout().then(async (response) => { setAuthState(response); await loadAll(); }); }}>
+              退出登录
+            </Button>
+            <Button primary onClick={() => void handleApplyMembership()} disabled={membershipApplySubmitting}>
+              {membershipApplySubmitting ? <RefreshCw size={16} className="animate-spin" /> : <UserPlus size={16} />}
+              重新提交身份申请
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const [splashMessageTick, setSplashMessageTick] = useState(0);
@@ -21678,6 +23221,14 @@ export default function App() {
     return <AuthShell />;
   }
 
+  if (shouldShowIdentityGate) {
+    return <IdentityGate />;
+  }
+
+  const sidebarAiStatusLabel = isRealAiConfigured(health?.ai)
+    ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
+    : '未配置大模型';
+
   return (
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
@@ -21733,34 +23284,38 @@ export default function App() {
             })}
           </nav>
 
-          <div className={`px-3 pb-3 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'} hidden md:block`}>
-            <CollabSyncCard
-              collapsed={isSidebarCollapsed}
-              status={collabStatus}
-              loading={isCollabStatusLoading}
-              busyAction={collabBusyAction}
-              onRevealRepo={() => {
-                const targetPath = collabStatus?.repoPath || collabStatus?.suggestedRepoPath;
-                if (!targetPath) {
-                  flash('error', '当前没有可定位的源码目录。');
-                  return;
-                }
-                void revealInFinderBridge(targetPath);
-              }}
-              onPreviewPush={() => {
-                void handlePreviewPush();
-              }}
-              onPreviewPull={() => {
-                void handlePreviewPull();
-              }}
-            />
-          </div>
+          {canUseCollabSync && InternalCollabSyncCard && (
+            <div className={`px-3 pb-3 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'} hidden md:block`}>
+              <React.Suspense fallback={null}>
+                <InternalCollabSyncCard
+                  collapsed={isSidebarCollapsed}
+                  status={collabStatus}
+                  loading={isCollabStatusLoading}
+                  busyAction={collabBusyAction}
+                  onRevealRepo={() => {
+                    const targetPath = collabStatus?.repoPath || collabStatus?.suggestedRepoPath;
+                    if (!targetPath) {
+                      flash('error', '当前没有可定位的源码目录。');
+                      return;
+                    }
+                    void revealInFinderBridge(targetPath);
+                  }}
+                  onPreviewPush={() => {
+                    void handlePreviewPush();
+                  }}
+                  onPreviewPull={() => {
+                    void handlePreviewPull();
+                  }}
+                />
+              </React.Suspense>
+            </div>
+          )}
 
           <div className={`px-4 pb-5 ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>
             <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">当前登录</p>
               <p className="text-[13px] font-bold text-gray-800">{isLocalSession ? '本机模式' : currentSessionUser.fullName}</p>
-              <p className="text-[11px] text-gray-500 mt-1">{isLocalSession ? `未连接云端 · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.clients || 0} 客户` : `${currentSessionUser.primaryRole} · ${settingsState?.aiProvider || 'mock'} · ${health?.stats.clients || 0} 客户`}</p>
+              <p className="text-[11px] text-gray-500 mt-1">{isLocalSession ? `未连接云端 · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户` : `${currentSessionUser.primaryRole} · ${sidebarAiStatusLabel} · ${health?.stats.clients || 0} 客户`}</p>
               {isLocalSession ? (
                 <button
                   className="mt-3 text-[12px] font-bold text-[#5B7BFE]"
@@ -21804,29 +23359,34 @@ export default function App() {
         <GlobalBannerHost />
         {viewMap[activeTab]}
       </main>
-      <CollabPreviewDialog
-        open={Boolean(collabDialogState)}
-        mode={collabDialogState?.mode || 'push'}
-        preview={collabDialogState?.preview || null}
-        selectedPaths={collabSelectedPaths}
-        message={collabCommitMessage}
-        errorMessage={collabDialogError}
-        busy={collabBusyAction === 'push' || collabBusyAction === 'pull'}
-        onClose={() => {
-          if (collabBusyAction === 'push' || collabBusyAction === 'pull') return;
-          setCollabDialogState(null);
-          setCollabDialogError(null);
-        }}
-        onTogglePath={toggleCollabPath}
-        onToggleEffectPaths={toggleCollabEffectPaths}
-        onSelectPullCommit={(targetCommit) => {
-          void handleSelectPullCommit(targetCommit);
-        }}
-        onMessageChange={handleCollabMessageChange}
-        onConfirm={() => {
-          void handleConfirmCollabAction();
-        }}
-      />
+      {renderClientEditorModal()}
+      {canUseCollabSync && InternalCollabPreviewDialog && (
+        <React.Suspense fallback={null}>
+          <InternalCollabPreviewDialog
+            open={Boolean(collabDialogState)}
+            mode={collabDialogState?.mode || 'push'}
+            preview={collabDialogState?.preview || null}
+            selectedPaths={collabSelectedPaths}
+            message={collabCommitMessage}
+            errorMessage={collabDialogError}
+            busy={collabBusyAction === 'push' || collabBusyAction === 'pull'}
+            onClose={() => {
+              if (collabBusyAction === 'push' || collabBusyAction === 'pull') return;
+              setCollabDialogState(null);
+              setCollabDialogError(null);
+            }}
+            onTogglePath={toggleCollabPath}
+            onToggleEffectPaths={toggleCollabEffectPaths}
+            onSelectPullCommit={(targetCommit) => {
+              void handleSelectPullCommit(targetCommit);
+            }}
+            onMessageChange={handleCollabMessageChange}
+            onConfirm={() => {
+              void handleConfirmCollabAction();
+            }}
+          />
+        </React.Suspense>
+      )}
       {renderCloudAuthModal()}
       </div>
     </GrowthProvider>

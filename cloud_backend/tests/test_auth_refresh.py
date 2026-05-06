@@ -14,9 +14,9 @@ def test_refresh_token_rotates_and_restores_session(tmp_path, monkeypatch):
     data_dir = tmp_path / "cloud-data"
     monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
     monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
-    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Qinghua123!")
-    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Jianing123!")
-    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Yishuo123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
 
     app = create_app()
     client = TestClient(app)

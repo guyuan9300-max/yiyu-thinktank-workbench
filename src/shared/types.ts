@@ -14,8 +14,12 @@ export type TopicTaskOwnerMode = 'self' | 'empty';
 export type TopicCandidateStatus = 'candidate' | 'tracking' | 'promoted' | 'archived';
 export type TopicCandidateInsightStatus = 'pending' | 'ready' | 'failed';
 export type MeetingStage = 'prepared' | 'ingested' | 'extracted' | 'resolved' | 'published';
-export type AiProvider = 'mock' | 'qwen' | 'doubao';
+export type AiProvider = 'mock' | 'openai_compatible' | 'qwen' | 'doubao';
+export type AiModelMode = 'auto' | 'online_first' | 'local_first' | 'local_only';
+export type AiModelProfileKey = 'online_primary' | 'local_text_deep' | 'local_vision_ocr' | 'local_fast';
+export type AiModelCapability = 'online_primary' | 'deep_analysis' | 'vision_ocr' | 'fast_structured';
 export type AccountStatus = 'pending' | 'approved' | 'rejected' | 'disabled';
+export type MembershipStatus = 'none' | 'pending' | 'approved' | 'rejected';
 export type EmployeeRole = 'admin' | 'employee';
 export type CollaboratorInboxStatus = 'pending' | 'accepted' | 'returned';
 export type OrgRoleLevel = 'employee' | 'supervisor' | 'department_lead' | 'organization_lead';
@@ -92,9 +96,21 @@ export interface Operator {
   isCurrent: boolean;
 }
 
+export interface AiModelProfileRecord {
+  enabled: boolean;
+  provider: AiProvider;
+  providerLabel: string;
+  baseUrl: string;
+  model: string;
+  capability: AiModelCapability;
+  isLocal: boolean;
+}
+
 export interface AppSettings {
   currentOperatorId: string;
   aiProvider: AiProvider;
+  aiProviderLabel: string;
+  aiBaseUrl: string;
   aiModel: string;
   dataDir: string;
   backupDir: string;
@@ -104,6 +120,9 @@ export interface AppSettings {
   aiConfigured: boolean;
   aiCredentialSource: string;
   aiFingerprint?: string | null;
+  advancedAiRoutingEnabled: boolean;
+  aiModelMode: AiModelMode;
+  aiModelProfiles: Partial<Record<AiModelProfileKey, AiModelProfileRecord>>;
   demoDataLoaded: boolean;
 }
 
@@ -111,9 +130,12 @@ export interface SessionUser {
   id: string;
   organizationId: string;
   email: string;
+  phone?: string | null;
   fullName: string;
   primaryRole: EmployeeRole;
   accountStatus: AccountStatus;
+  membershipStatus?: MembershipStatus;
+  membershipRejectedReason?: string | null;
   departmentId?: string | null;
   departmentName?: string | null;
   isDepartmentLead?: boolean;
@@ -164,9 +186,13 @@ export interface ConsultationKnowledgeProcessSummary {
 export interface EmployeeRecord {
   id: string;
   email: string;
+  phone?: string | null;
   fullName: string;
   primaryRole: EmployeeRole;
   accountStatus: AccountStatus;
+  membershipStatus?: MembershipStatus;
+  membershipRejectedReason?: string | null;
+  membershipSubmittedAt?: string | null;
   departmentId?: string | null;
   departmentName?: string | null;
   jobTitle?: string | null;
@@ -180,10 +206,46 @@ export interface EmployeeRecord {
   createdAt: string;
 }
 
+export interface MaintenanceModeStatus {
+  available: boolean;
+  active: boolean;
+  canEnter: boolean;
+  canManagePermissions: boolean;
+  organizationId?: string | null;
+  userId?: string | null;
+  reason?: string | null;
+}
+
+export interface MaintenanceMemberPermission {
+  userId: string;
+  fullName: string;
+  email: string;
+  primaryRole: EmployeeRole;
+  authorized: boolean;
+  canManagePermissions: boolean;
+}
+
+export interface MaintenancePermissionUpdatePayload {
+  members: Array<{
+    userId: string;
+    authorized: boolean;
+    canManagePermissions: boolean;
+  }>;
+}
+
 export interface DepartmentOption {
   id: string;
   name: string;
   color: string;
+}
+
+export interface OrgInviteResolveResult {
+  valid: boolean;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  message?: string | null;
 }
 
 export interface OrgProfileSettings {
@@ -195,6 +257,8 @@ export interface OrgProfileSettings {
   quarterPlans: OrgQuarterPlanSettings[];
   quarterlyFocus: string[];
   leaderUserId?: string | null;
+  leaderName?: string;
+  introDocument?: OrgIntroDocumentSettings | null;
   managementUserIds: string[];
   updatedAt: string;
 }
@@ -229,6 +293,7 @@ export interface OrgDepartmentSettings {
   color: string;
   leaderUserId?: string | null;
   leaderName?: string;
+  introDocument?: OrgIntroDocumentSettings | null;
   parentDepartmentId?: string | null;
   mission: string;
   businessContext: string;
@@ -238,6 +303,17 @@ export interface OrgDepartmentSettings {
   collaborationDepartmentIds: string[];
   active: boolean;
   updatedAt: string;
+}
+
+export interface OrgIntroDocumentSettings {
+  fileName: string;
+  fileType: string;
+  markdownContent: string;
+  normalizedText: string;
+  summary: string;
+  contentHash: string;
+  uploadedBy: string;
+  uploadedAt: string;
 }
 
 export interface OrgRoleTemplateSettings {
@@ -426,6 +502,19 @@ export interface MentionCandidate {
   isSelf: boolean;
 }
 
+export interface HealthAiState {
+  provider: AiProvider;
+  providerLabel: string;
+  baseUrl: string;
+  model: string;
+  ready: boolean;
+  detail: string;
+  credentialSource: string;
+  fingerprint?: string | null;
+  profileKey?: string;
+  mode?: AiModelMode;
+}
+
 export interface HealthResponse {
   backend: 'online';
   appName: string;
@@ -445,13 +534,18 @@ export interface HealthResponse {
     handbookEntries: number;
     analysisRuns: number;
   };
-  ai: {
-    provider: AiProvider;
-    model: string;
-    ready: boolean;
-    detail: string;
-    credentialSource: string;
-    fingerprint?: string | null;
+  ai: HealthAiState;
+  aiProfiles?: Partial<Record<AiModelProfileKey | 'unified', HealthAiState>>;
+  advancedAiRoutingEnabled?: boolean;
+  aiModelMode?: AiModelMode;
+  linkMaterialDiagnostics?: {
+    ytDlpVersion?: string | null;
+    curlCffiAvailable?: boolean;
+    impersonationAvailable?: boolean;
+    impersonationTarget?: string | null;
+    ffmpegAvailable?: boolean;
+    supportedCookieBrowsers?: string[];
+    bbdownAvailable?: boolean;
   };
 }
 
@@ -477,6 +571,109 @@ export interface ClientFolder {
   path: string;
   fileCount: number;
   lastScannedAt?: string | null;
+  folderKind?: string;
+  sourceType?: string;
+  isSystem?: boolean;
+  isHidden?: boolean;
+  sortOrder?: number;
+  createdByRule?: string;
+  suggested?: boolean;
+  confidence?: number;
+}
+
+export interface ClientFolderRecommendation {
+  targetFolderLabel: string;
+  confidence: number;
+  reason: string;
+  suggestedTags: string[];
+  needsReview?: boolean;
+  documentCount?: number;
+  exampleDocuments?: string[];
+}
+
+export interface ClientFolderRecommendationPlan {
+  clientId: string;
+  generatedAt: string;
+  visibleFolderLimit: number;
+  visibleFolderBudget?: number;
+  recommendedVisibleFolders?: string[];
+  hiddenLegacyFolders?: string[];
+  pendingReasonCounts?: Record<string, number>;
+  folders: ClientFolderRecommendation[];
+  totalDocumentCount: number;
+  pendingDocumentCount: number;
+  lowConfidenceDocumentCount: number;
+}
+
+export interface DocumentAutoRepairPreviewPayload {
+  documentIds?: string[];
+  limit?: number;
+  includeHumanRequired?: boolean;
+}
+
+export interface DocumentAutoRepairApplyPayload {
+  previewId?: string | null;
+  documentIds?: string[];
+  includeHumanRequired?: boolean;
+  limit?: number;
+}
+
+export type DocumentAutoRepairHealthStatus =
+  | 'v2_ready'
+  | 'original_nonzero_no_v2'
+  | 'zero_byte_original'
+  | 'md_compat_candidate'
+  | 'missing_original'
+  | 'parse_failed'
+  | 'duplicate_candidate'
+  | 'unknown';
+
+export type DocumentAutoRepairStage =
+  | 'ready_classify'
+  | 'repair_ingest'
+  | 'repair_markdown'
+  | 'repair_dedupe'
+  | 'soft_cleanup'
+  | 'minimal_human_check'
+  | 'skip';
+
+export interface DocumentAutoRepairItem {
+  documentId: string;
+  v2DocumentId?: string | null;
+  title: string;
+  kind: string;
+  healthStatus: DocumentAutoRepairHealthStatus;
+  stage: DocumentAutoRepairStage;
+  nextSystemAction: string;
+  targetFolder: string;
+  tags: string[];
+  searchPolicy: 'include' | 'include_low_weight' | 'exclude_until_repaired' | 'exclude';
+  requiresHuman: boolean;
+  humanQuestion?: string | null;
+  confidence: number;
+  reason: string;
+  sourcePath?: string | null;
+  duplicateOfDocumentId?: string | null;
+}
+
+export interface DocumentAutoRepairPreview {
+  previewId: string;
+  clientId: string;
+  generatedAt: string;
+  visibleFolderBudget: number;
+  recommendedVisibleFolders: string[];
+  pendingReasonCounts: Record<string, number>;
+  summary: Record<string, number>;
+  items: DocumentAutoRepairItem[];
+}
+
+export interface DocumentAutoRepairApplyResult {
+  jobId?: string | null;
+  status: 'queued' | 'completed' | 'failed';
+  queuedCount: number;
+  skippedCount: number;
+  humanConfirmationCount: number;
+  message: string;
 }
 
 export interface DocumentRecord {
@@ -648,6 +845,13 @@ export interface DocumentCard {
   updatedAt: string;
 }
 
+export interface ImportDocumentRecord {
+  documentId: string;
+  title: string;
+  fileName: string;
+  path: string;
+}
+
 export interface ImportRecord {
   id: string;
   clientId: string;
@@ -657,6 +861,8 @@ export interface ImportRecord {
   importedCount: number;
   skippedCount: number;
   createdAt: string;
+  jobId?: string | null;
+  documents?: ImportDocumentRecord[];
 }
 
 export interface WorkspaceImportBackfillResponse {
@@ -715,6 +921,29 @@ export interface ClientTemplateFillRun {
   fields: ClientTemplateFillField[];
   outputPath?: string | null;
   errorMessage?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LinkMaterialPlatform = 'bilibili' | 'xiaohongshu';
+export type LinkMaterialImportStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type LinkMaterialMediaCacheStatus = 'not_downloaded' | 'cleaned' | 'retained' | 'failed';
+export type LinkMaterialCookieBrowser = 'firefox' | 'chrome' | 'edge' | 'safari';
+
+export interface LinkMaterialImportRun {
+  runId: string;
+  clientId: string;
+  sourcePlatform: LinkMaterialPlatform;
+  sourceUrl: string;
+  title?: string | null;
+  status: LinkMaterialImportStatus;
+  stage: string;
+  progress: number;
+  documentId?: string | null;
+  documentPath?: string | null;
+  mediaCacheStatus: LinkMaterialMediaCacheStatus;
+  error?: string | null;
+  metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -1734,7 +1963,9 @@ export type WorkspaceDataCenterReadinessActionType =
   | 'refresh_context_pack'
   | 'inspect_failed_documents'
   | 'cleanup_invalid_documents'
-  | 'rebind_original_file';
+  | 'rebind_original_file'
+  | 'auto_repair_documents'
+  | 'internet_enrichment';
 
 export interface WorkspaceDocumentProcessingStatus {
   documentId: string;
@@ -1782,6 +2013,14 @@ export interface WorkspaceDataCenterReadinessSummary {
   invalidDocuments: number;
   sourceMissingDocuments: number;
   placeholderOnlyDocuments: number;
+  autoRepairableDocuments: number;
+  zeroByteDocuments: number;
+  legacyFolderDocumentsWithoutV2: number;
+  machineReadableOnlyDocuments: number;
+  dedupeCandidateDocuments: number;
+  orphanTaskCount: number;
+  orphanEventLineCount: number;
+  skippedOrphanClientIngestCount: number;
   parseFailureBuckets: Record<string, number>;
   ocrRecoverableCount: number;
   documentCards: number;
@@ -1797,6 +2036,11 @@ export interface WorkspaceDataCenterReadinessSummary {
   refreshEventQueuedCount: number;
   refreshEventRunningCount: number;
   refreshEventFailedCount: number;
+  internetEnrichmentStatus: string;
+  internetSourceCount: number;
+  internetFactCardCount: number;
+  remainingUserRequiredGaps: string[];
+  lastInternetEnrichmentAt?: string | null;
 }
 
 export interface WorkspaceDataCenterReadinessJobEvent {
@@ -1851,6 +2095,14 @@ export interface WorkspaceDataCenterReadinessActionPayload {
   ocrBatchSize?: number;
   ocrContinueToEnd?: boolean;
   forceOcr?: boolean;
+  seedUrls?: string[];
+  seedQueries?: string[];
+  gaps?: string[];
+  maxPages?: number;
+  maxDepth?: number;
+  targetType?: string;
+  targetId?: string | null;
+  title?: string;
 }
 
 export interface WorkspaceDataCenterReadinessActionResult {
@@ -2122,6 +2374,10 @@ export interface Task {
   startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
+  deadlineAt?: string | null;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+  completedAt?: string | null;
   scopeMode?: TaskScopeMode;
   clientId?: string | null;
   clientName?: string | null;
@@ -2236,6 +2492,10 @@ export interface EventLine {
   participantIds: string[];
   closedAt?: string | null;
   closedByUserId?: string | null;
+  syncStatus?: 'local' | 'syncing' | 'synced' | 'pending' | 'error' | null;
+  cloudId?: string | null;
+  pendingSyncAction?: 'create' | 'update' | 'archive' | null;
+  lastSyncError?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2280,6 +2540,22 @@ export interface TaskSmartBrief {
   summary: string;
   summarySourceLabels: string[];
   actionItems: TaskSmartBriefActionItem[];
+}
+
+export interface TaskContextBrief {
+  id?: string | null;
+  taskId: string;
+  clientId?: string | null;
+  eventLineId?: string | null;
+  brief: string;
+  shouldDisplay: boolean;
+  materialPackHash: string;
+  usedProjectSignals: string[];
+  materialBoundary: string;
+  qualityFlags: string[];
+  generationModel: string;
+  generationPromptVersion: string;
+  updatedAt: string;
 }
 
 export interface PrepPackMaterial {
@@ -2660,6 +2936,7 @@ export interface EventLineApprovalNode {
 }
 
 export interface EventLineMutationPayload {
+  id?: string | null;
   name: string;
   kind?: EventLineKind;
   status?: EventLineStatus;
@@ -2859,6 +3136,10 @@ export interface WeeklyReviewTaskSnapshot {
   status: TaskStatus;
   startDate?: string | null;
   dueDate?: string | null;
+  deadlineAt?: string | null;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+  completedAt?: string | null;
   createdAt: string;
   ownerId?: string | null;
   ownerName?: string | null;
@@ -3214,6 +3495,26 @@ export interface WeeklyEventReviewCards {
   evidenceMeta?: Record<string, unknown>;
 }
 
+export interface WeeklyOverviewRefreshPayload {
+  weekLabel?: string | null;
+  perspective?: ReviewPerspectiveKey | null;
+  departmentId?: string | null;
+  force?: boolean;
+}
+
+export interface WeeklyOverviewRefreshStatus {
+  weekLabel: string;
+  perspective: ReviewPerspectiveKey;
+  departmentId?: string | null;
+  viewerUserId: string;
+  status: 'idle' | 'running' | 'succeeded' | 'failed';
+  startedAt?: string | null;
+  generatedAt?: string | null;
+  failureReason?: string;
+  sourceCounts?: Record<string, unknown>;
+  cacheKey?: string;
+}
+
 export interface TaskContextPreview {
   taskId: string;
   clientId?: string | null;
@@ -3402,6 +3703,8 @@ export interface ReviewPerspectiveOption {
 }
 
 export interface ReviewDashboard {
+  weekLabel?: string;
+  resolvedWeekLabel?: string | null;
   currentReview?: WeeklyReview | null;
   workItems: WeeklyReviewTaskEntry[];
   personalItems: WeeklyReviewTaskEntry[];
@@ -3413,6 +3716,7 @@ export interface ReviewDashboard {
   personalAnalysis?: WeeklyReviewAnalysis | null;
   weeklyMainlineCards?: WeeklyMainlineCards | null;
   weeklyEventReviewCards?: WeeklyEventReviewCards | null;
+  weeklyOverviewGenerationStatus?: WeeklyOverviewRefreshStatus | null;
   selfReport?: HierarchyReport | null;
   workSignalCard?: ManagementSignalCard | null;
   personalGrowthCard?: PersonalGrowthCard | null;
@@ -3816,56 +4120,6 @@ export interface TaskSettings {
   updatedAt: string;
 }
 
-export interface ReviewDepartmentMember {
-  id: string;
-  fullName: string;
-  email?: string | null;
-}
-
-export interface ReviewDepartmentConfig {
-  id: string;
-  name: string;
-  color: string;
-  monthlyDna: string;
-  weeklyFocus: string;
-  leaders: ReviewDepartmentMember[];
-  members: ReviewDepartmentMember[];
-}
-
-export interface ReviewGovernanceSettings {
-  departments: ReviewDepartmentConfig[];
-  updatedAt: string;
-}
-
-export interface OrganizationDnaModule {
-  moduleKey: OrganizationDnaModuleKey;
-  title: string;
-  markdownContent: string;
-  normalizedText: string;
-  summary: string;
-  fileName?: string | null;
-  contentHash?: string | null;
-  updatedAt?: string | null;
-  updatedBy?: string | null;
-  hasDocument: boolean;
-  readinessStatus: 'ready' | 'missing';
-  readinessAnsweredCount: number;
-  readinessQuestionCount: number;
-  readinessSource: 'client_dna' | 'manual_document' | 'auto_enqueued' | 'none';
-  readinessSummary: string;
-  readinessQuestions: DnaReadinessQuestion[];
-}
-
-export interface OrganizationDnaResponse {
-  modules: OrganizationDnaModule[];
-}
-
-export interface DnaReadinessQuestion {
-  question: string;
-  answered: boolean;
-  evidence?: string | null;
-}
-
 export interface ClientDnaModule {
   clientId: string;
   moduleKey: OrganizationDnaModuleKey;
@@ -3891,8 +4145,6 @@ export interface ClientDnaGeneratePayload {
 }
 
 export interface ClientWorkspaceSettings {
-  useOrgDnaInChat: boolean;
-  useOrgDnaInKnowledgeQa: boolean;
   meetingPublishDefaultListId?: string | null;
   meetingPublishDefaultPriority: Priority;
   defaultGoalQuarter: string;
@@ -3907,8 +4159,6 @@ export interface TopicsSettings {
   defaultTaskOwnerMode: TopicTaskOwnerMode;
   defaultTimeRange: string;
   defaultSourceStrategy: string;
-  useOrgDnaForInsight: boolean;
-  useOrgDnaForTaskPlan: boolean;
   updatedAt: string;
 }
 
@@ -4069,7 +4319,6 @@ export interface AnalysisWorkbenchSettings {
   enabledTemplateIds: string[];
   defaultTemplateId?: string | null;
   defaultTitlePrefix: string;
-  useOrgDna: boolean;
   allowEmployeeTemplateEditing: boolean;
   diagnosisProfiles: DiagnosisProfileRecord[];
   organizationRiskDna?: OrganizationRiskDnaDocument | null;
@@ -4092,7 +4341,6 @@ export interface HandbookSettings {
 
 export interface SystemAdminSettings {
   allowBusinessSettingsForEmployees: boolean;
-  allowOrgDnaForEmployees: boolean;
   protectEmployeeAdmin: boolean;
   protectAiAndCloud: boolean;
   protectCloudSecurity: boolean;
@@ -4148,6 +4396,12 @@ export interface OrgMembershipSummary {
   hasOrganization: boolean;
   organizationId?: string | null;
   organizationName?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
+  membershipStatus?: MembershipStatus;
+  membershipSubmittedAt?: string | null;
+  membershipRejectedReason?: string | null;
+  organizationWorkspaceClientId?: string | null;
 }
 
 export interface OrgFeishuIntegrationAuditRecord {
@@ -4165,6 +4419,9 @@ export interface OrgFeishuIntegration {
   organizationId?: string | null;
   organizationName?: string | null;
   appId: string;
+  callbackMode?: string | null;
+  customCallbackUrl?: string | null;
+  effectiveCallbackUrl?: string | null;
   enabled: boolean;
   hasAppSecret: boolean;
   configuredBy?: string | null;
@@ -4172,6 +4429,8 @@ export interface OrgFeishuIntegration {
   updatedAt: string;
   lastValidationStatus: 'idle' | 'success' | 'failed';
   lastValidationMessage?: string | null;
+  authorizationReady?: boolean;
+  authorizationBlockedReason?: string | null;
   recentAudits: OrgFeishuIntegrationAuditRecord[];
 }
 
@@ -4179,6 +4438,8 @@ export interface OrgFeishuIntegrationPayload {
   appId?: string;
   appSecret?: string;
   clearAppSecret?: boolean;
+  callbackMode?: string | null;
+  customCallbackUrl?: string | null;
 }
 
 export interface FeishuDeliveryProfile {
@@ -4409,56 +4670,6 @@ export interface HandbookEntryDetail extends HandbookEntry {
   relatedLedgerEntries: XpLedgerEntry[];
   originContexts: GrowthContextLink[];
   reuseHistory: HandbookReuseRecord[];
-}
-
-export type ExperienceStoryDraftStatus = 'candidate' | 'needs_review' | 'approved' | 'rejected';
-
-export interface ExperienceStoryDraft {
-  id: string;
-  title: string;
-  story: string;
-  status: ExperienceStoryDraftStatus;
-  sourceType: string;
-  sourceId: string;
-  sourceTitle: string;
-  clientId?: string | null;
-  clientName?: string | null;
-  eventLineId?: string | null;
-  eventLineName?: string | null;
-  taskId?: string | null;
-  meetingId?: string | null;
-  handbookEntryId?: string | null;
-  evidenceRefs: string[];
-  materialPack: Record<string, unknown>;
-  growthValue: string;
-  organizationValue: string;
-  qualityScore: Record<string, unknown>;
-  factRiskNote: string;
-  generationModel: string;
-  generationPromptVersion: string;
-  createdAt: string;
-  updatedAt: string;
-  approvedAt?: string | null;
-  approvedBy?: string | null;
-}
-
-export interface ExperienceStoryDraftsResponse {
-  drafts: ExperienceStoryDraft[];
-}
-
-export interface ExperienceStoryGeneratePayload {
-  limit?: number;
-}
-
-export interface ExperienceStoryGenerateResponse {
-  drafts: ExperienceStoryDraft[];
-  generatedCount: number;
-  skippedCount: number;
-}
-
-export interface ExperienceStoryActionResponse {
-  draft: ExperienceStoryDraft;
-  handbookEntry?: HandbookEntry | null;
 }
 
 export interface HandbookReuseRecord {
@@ -5570,6 +5781,20 @@ export interface KnowledgeSearchResult {
   previewSummary?: string | null;
 }
 
+export interface DocumentReadingPreview {
+  documentId: string;
+  title: string;
+  parseStatus: string;
+  folderLabel?: string | null;
+  sectionCount: number;
+  chunkCount: number;
+  sourceKind: string;
+  readSummary: string;
+  keyHeadings: string[];
+  availableForChat: boolean;
+  failureReason?: string | null;
+}
+
 export interface KnowledgeMemoryRecord {
   id: string;
   clientId: string;
@@ -5587,10 +5812,18 @@ export interface KnowledgeMemoryRecord {
 
 export interface SettingsPayload {
   currentOperatorId?: string;
+  cloudApiUrl?: string;
   aiProvider?: AiProvider;
+  aiProviderLabel?: string;
+  aiBaseUrl?: string;
   aiModel?: string;
   apiKey?: string;
   clearApiKey?: boolean;
+  advancedAiRoutingEnabled?: boolean;
+  aiModelMode?: AiModelMode;
+  aiModelProfiles?: Partial<Record<AiModelProfileKey, AiModelProfileRecord>>;
+  aiModelProfileApiKeys?: Partial<Record<AiModelProfileKey, string>>;
+  clearAiModelProfileApiKeys?: AiModelProfileKey[];
 }
 
 export interface LegacyScanReport {
@@ -5631,6 +5864,10 @@ export interface TaskMutationPayload {
   startDate?: string | null;
   dueDate?: string | null;
   durationMinutes?: number;
+  deadlineAt?: string | null;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+  completedAt?: string | null;
   scopeMode?: TaskScopeMode;
   clientId?: string | null;
   eventLineId?: string | null;
@@ -5653,8 +5890,10 @@ export interface TaskMutationPayload {
 
 export interface AuthRegisterPayload {
   email: string;
+  phone?: string | null;
   fullName: string;
   password: string;
+  inviteCode?: string | null;
   departmentId?: string | null;
   jobTitle?: string | null;
   managerName?: string | null;
@@ -5663,13 +5902,15 @@ export interface AuthRegisterPayload {
 }
 
 export interface AuthLoginPayload {
-  email: string;
+  email?: string;
+  identifier?: string;
   password: string;
   rememberMe?: boolean;
 }
 
 export interface RememberedCloudAuthAccount {
   email: string;
+  identifier?: string | null;
   fullName: string;
   password: string;
   updatedAt: string;
@@ -5703,6 +5944,7 @@ export interface LocalInputMemory {
 export interface SaveCloudAuthInputMemoryPayload {
   rememberInputs: boolean;
   email: string;
+  identifier?: string | null;
   fullName?: string | null;
   password?: string | null;
 }
@@ -5740,6 +5982,15 @@ export interface ChangePasswordPayload {
 export interface UpdateProfilePayload {
   fullName?: string;
   email?: string;
+  phone?: string | null;
+}
+
+export interface OrgMembershipApplyPayload {
+  inviteCode?: string | null;
+  departmentId?: string | null;
+  jobTitle?: string | null;
+  managerName?: string | null;
+  currentFocus?: string | null;
 }
 
 export interface AdminResetPasswordPayload {
@@ -5781,14 +6032,17 @@ export interface TaskSettingsPayload {
   autoAssignSelf?: boolean;
 }
 
-export interface ReviewGovernanceSettingsPayload {
-  departments: ReviewDepartmentConfig[];
-}
-
 export interface OrganizationDnaUploadPayload {
   filePath?: string;
   markdownContent?: string;
   fileName?: string;
+}
+
+export interface OrgIntroDocumentUploadPayload {
+  filePath?: string;
+  markdownContent?: string;
+  fileName?: string;
+  title?: string;
 }
 
 export interface ProjectModulePayload {
@@ -5816,8 +6070,6 @@ export interface ProjectFlowPayload {
 }
 
 export interface ClientWorkspaceSettingsPayload {
-  useOrgDnaInChat?: boolean;
-  useOrgDnaInKnowledgeQa?: boolean;
   meetingPublishDefaultListId?: string | null;
   meetingPublishDefaultPriority?: Priority;
   defaultGoalQuarter?: string;
@@ -5831,15 +6083,12 @@ export interface TopicsSettingsPayload {
   defaultTaskOwnerMode?: TopicTaskOwnerMode;
   defaultTimeRange?: string;
   defaultSourceStrategy?: string;
-  useOrgDnaForInsight?: boolean;
-  useOrgDnaForTaskPlan?: boolean;
 }
 
 export interface AnalysisWorkbenchSettingsPayload {
   enabledTemplateIds?: string[];
   defaultTemplateId?: string | null;
   defaultTitlePrefix?: string;
-  useOrgDna?: boolean;
   allowEmployeeTemplateEditing?: boolean;
   diagnosisProfiles?: DiagnosisProfileRecord[];
   organizationRiskDna?: OrganizationRiskDnaDocument | null;
@@ -5860,7 +6109,6 @@ export interface HandbookSettingsPayload {
 
 export interface SystemAdminSettingsPayload {
   allowBusinessSettingsForEmployees?: boolean;
-  allowOrgDnaForEmployees?: boolean;
   protectEmployeeAdmin?: boolean;
   protectAiAndCloud?: boolean;
   protectCloudSecurity?: boolean;
@@ -5886,6 +6134,7 @@ export interface WeeklyReviewPayload {
     contentDomain: 'work' | 'personal';
     note: string;
     structuredNote?: WeeklyReviewTaskStructuredNote;
+    delete?: boolean;
   }>;
   workProgress?: string;
   workBlocker?: string;
@@ -6196,6 +6445,16 @@ declare global {
       previewPullFromMain(repoPath: string, targetCommit?: string | null): Promise<PullPreview>;
       pullSelectedFromMain(payload: PullSelectedFromMainPayload): Promise<CollabActionResult>;
       rebuildAndInstallFromRepo(repoPath: string): Promise<boolean>;
+      setWorkspaceInteractionState(payload: {
+        active: boolean;
+        source: string;
+        detail?: string | null;
+      }): Promise<{
+        active: boolean;
+        source: string;
+        detail?: string | null;
+        updatedAt: string;
+      }>;
       getDroppedFilePath(file: File): string | null;
       readTextFile(targetPath: string): Promise<string>;
       openPath(targetPath: string): Promise<boolean>;

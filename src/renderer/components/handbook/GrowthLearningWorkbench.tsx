@@ -48,6 +48,7 @@ type LearningWorkbenchCard = {
   id: string;
   theme: string;
   reason: string;
+  summary?: string | null;
   whyNow?: string;
   learnContent: {
     type: string;
@@ -119,14 +120,14 @@ type WorkbenchTask = {
   robotReasons: string[];
   recommendationId?: string | null;
   linkedTaskId?: string | null;
-  linkedContexts?: GrowthContextLink[];
+  linkedContexts: GrowthContextLink[];
   xpReward: number;
   contextSummary?: string;
   projectModuleName?: string | null;
   projectFlowName?: string | null;
-  sourceEvidence?: string[];
+  sourceEvidence: string[];
   currentBlocker?: string | null;
-  missingSignals?: string[];
+  missingSignals: string[];
   hasBackground: boolean;
   hasDeadline: boolean;
   isCrossDepartment: boolean;
@@ -667,6 +668,8 @@ function buildWorkbenchTaskFromTask(task: Task): WorkbenchTask {
     });
   }
   const contextSummary = task.projectContext?.backgroundSummary || task.desc || task.note || '';
+  const memoryHints = task.memoryHints || [];
+  const linkedFactsPreview = task.linkedFactsPreview || [];
   const taskIntent = buildFallbackTaskIntent(
     /(协议|合同|条款|合作说明|说明迭代)/.test(`${task.title}${task.desc}`) ? 'agreement_alignment'
       : /(沟通|对接|访谈|老师|客户)/.test(`${task.title}${task.desc}`) ? 'external_communication'
@@ -681,14 +684,14 @@ function buildWorkbenchTaskFromTask(task: Task): WorkbenchTask {
   const projectContextPack = buildFallbackProjectContextPack(task.clientName || task.eventLineName || task.title, contextSummary, {
     taskNotes: [task.desc, task.note || '', task.projectContext?.goalSummary || '', task.recentDecision || ''].map((item) => normalizeText(item)).filter(Boolean).slice(0, 4),
     attachments: task.attachments.map((item) => item.title).filter(Boolean).slice(0, 4),
-    memoryHints: task.memoryHints.slice(0, 4),
-    linkedFacts: task.linkedFactsPreview.map((item) => item.factValue).filter(Boolean).slice(0, 4),
+    memoryHints: memoryHints.slice(0, 4),
+    linkedFacts: linkedFactsPreview.map((item) => item.factValue).filter(Boolean).slice(0, 4),
     clientSummary: task.projectContext?.backgroundSummary || '',
     eventLineSummary: [task.eventLineName || '', task.projectContext?.currentFocus || '', task.projectContext?.currentBlocker || ''].map((item) => normalizeText(item)).filter(Boolean).join('；'),
     keyWarnings: task.projectContext?.riskSummary ? [task.projectContext.riskSummary] : [],
     contextGaps: [
       !normalizeText(task.desc) && !normalizeText(task.note) ? '缺任务背景说明' : '',
-      !task.attachments.length && !task.linkedFactsPreview.length ? '缺附件或事实依据' : '',
+      !task.attachments.length && !linkedFactsPreview.length ? '缺附件或事实依据' : '',
       !task.clientId && !task.eventLineId ? '缺项目归属' : '',
     ].filter(Boolean),
   });

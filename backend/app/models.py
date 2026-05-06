@@ -16,8 +16,12 @@ TopicTaskOwnerMode = Literal["self", "empty"]
 TopicCandidateStatus = Literal["candidate", "tracking", "promoted", "archived"]
 TopicCandidateInsightStatus = Literal["pending", "ready", "failed"]
 MeetingStage = Literal["prepared", "ingested", "extracted", "resolved", "published"]
-AiProvider = Literal["mock", "qwen", "doubao"]
+AiProvider = Literal["mock", "openai_compatible", "qwen", "doubao"]
+AiModelMode = Literal["auto", "online_first", "local_first", "local_only"]
+AiModelProfileKey = Literal["online_primary", "local_text_deep", "local_vision_ocr", "local_fast"]
+AiModelCapability = Literal["online_primary", "deep_analysis", "vision_ocr", "fast_structured"]
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
+MembershipStatus = Literal["none", "pending", "approved", "rejected"]
 EmployeeRole = Literal["admin", "employee"]
 CollaboratorInboxStatus = Literal["pending", "accepted", "returned"]
 OrgRoleLevel = Literal["employee", "supervisor", "department_lead", "organization_lead"]
@@ -28,6 +32,10 @@ OrgRuleActorScope = Literal["assignee", "manager", "department_lead", "organizat
 OrgWorkflowTriggerType = Literal["weekly_followup", "task_created", "meeting_closed", "client_update", "manual"]
 DnaSourceLevel = Literal["organization", "client"]
 OrganizationDnaModuleKey = Literal["organization_intro", "business_intro", "team_intro", "market_intro"]
+OrganizationDnaV2Kind = Literal["stable_dna", "evolving_dna", "gap_dna", "risk_dna"]
+OrganizationDnaV2Status = Literal["candidate", "confirmed", "stale", "deprecated"]
+OrganizationDnaEvidenceLevel = Literal["L1", "L2", "L3", "internal", "weak"]
+DnaToolPurpose = Literal["intro", "strategy", "task_next_action", "asset_gap", "public_material", "risk_check"]
 FeishuReceiveIdType = Literal["open_id", "user_id", "email", "chat_id"]
 GrowthAbilityKey = Literal["exec", "collab", "analyze", "insight", "risk", "write"]
 GrowthEvidenceType = Literal["reflection", "codification", "reuse", "improvement"]
@@ -79,36 +87,63 @@ class OperatorRecord(BaseModel):
     isCurrent: bool
 
 
+class AiModelProfileRecord(BaseModel):
+    enabled: bool = False
+    provider: AiProvider = "openai_compatible"
+    providerLabel: str = ""
+    baseUrl: str = ""
+    model: str = ""
+    capability: AiModelCapability = "deep_analysis"
+    isLocal: bool = False
+
+
 class AppSettingsPayload(BaseModel):
     currentOperatorId: str | None = None
+    cloudApiUrl: str | None = None
     aiProvider: AiProvider | None = None
+    aiProviderLabel: str | None = None
+    aiBaseUrl: str | None = None
     aiModel: str | None = None
     apiKey: str | None = None
     clearApiKey: bool = False
+    advancedAiRoutingEnabled: bool | None = None
+    aiModelMode: AiModelMode | None = None
+    aiModelProfiles: dict[str, AiModelProfileRecord] | None = None
+    aiModelProfileApiKeys: dict[str, str] | None = None
+    clearAiModelProfileApiKeys: list[str] = Field(default_factory=list)
 
 
 class AppSettingsResponse(BaseModel):
     currentOperatorId: str
     aiProvider: AiProvider
+    aiProviderLabel: str = ""
+    aiBaseUrl: str = ""
     aiModel: str
     dataDir: str
     backupDir: str
-    cloudApiUrl: str = "http://127.0.0.1:47830"
+    cloudApiUrl: str = ""
     lastBackupAt: str | None = None
     foldersRootLabel: str
     aiConfigured: bool
     aiCredentialSource: str
     aiFingerprint: str | None = None
+    advancedAiRoutingEnabled: bool = False
+    aiModelMode: AiModelMode = "auto"
+    aiModelProfiles: dict[str, AiModelProfileRecord] = Field(default_factory=dict)
     demoDataLoaded: bool = False
 
 
 class HealthAiState(BaseModel):
     provider: AiProvider
+    providerLabel: str = ""
+    baseUrl: str = ""
     model: str
     ready: bool
     detail: str
     credentialSource: str
     fingerprint: str | None = None
+    profileKey: str = "unified"
+    mode: AiModelMode = "auto"
 
 
 class HealthResponse(BaseModel):
@@ -130,6 +165,10 @@ class HealthResponse(BaseModel):
     dataDir: str
     stats: dict[str, int]
     ai: HealthAiState
+    aiProfiles: dict[str, HealthAiState] = Field(default_factory=dict)
+    advancedAiRoutingEnabled: bool = False
+    aiModelMode: AiModelMode = "auto"
+    linkMaterialDiagnostics: dict[str, object] = Field(default_factory=dict)
 
 
 class SettingsResponse(BaseModel):
@@ -142,9 +181,12 @@ class SessionUserRecord(BaseModel):
     id: str
     organizationId: str
     email: str
+    phone: str | None = None
     fullName: str
     primaryRole: EmployeeRole
     accountStatus: AccountStatus
+    membershipStatus: MembershipStatus = "approved"
+    membershipRejectedReason: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
     isDepartmentLead: bool = False
@@ -203,8 +245,10 @@ class ConsultationKnowledgeProcessSummaryResponse(BaseModel):
 
 class AuthRegisterPayload(BaseModel):
     email: str
+    phone: str | None = None
     fullName: str
     password: str
+    inviteCode: str | None = None
     departmentId: str | None = None
     jobTitle: str | None = None
     managerName: str | None = None
@@ -213,13 +257,15 @@ class AuthRegisterPayload(BaseModel):
 
 
 class AuthLoginPayload(BaseModel):
-    email: str
+    email: str | None = None
+    identifier: str | None = None
     password: str
     rememberMe: bool = True
 
 
 class RememberedCloudAuthAccount(BaseModel):
     email: str
+    identifier: str | None = None
     fullName: str = ""
     password: str = ""
     updatedAt: str
@@ -252,7 +298,8 @@ class LocalInputMemoryResponse(BaseModel):
 
 class SaveCloudAuthInputMemoryPayload(BaseModel):
     rememberInputs: bool = True
-    email: str
+    email: str = ""
+    identifier: str | None = None
     fullName: str | None = None
     password: str | None = None
 
@@ -273,14 +320,19 @@ class SaveFeishuInputMemoryPayload(BaseModel):
 class UpdateProfilePayload(BaseModel):
     fullName: str | None = None
     email: str | None = None
+    phone: str | None = None
 
 
 class EmployeeRecord(BaseModel):
     id: str
     email: str
+    phone: str | None = None
     fullName: str
     primaryRole: EmployeeRole
     accountStatus: AccountStatus
+    membershipStatus: MembershipStatus = "approved"
+    membershipRejectedReason: str | None = None
+    membershipSubmittedAt: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
     jobTitle: str | None = None
@@ -292,6 +344,41 @@ class EmployeeRecord(BaseModel):
     disabledAt: str | None = None
     lastLoginAt: str | None = None
     createdAt: str
+
+
+class MaintenanceModeStatusRecord(BaseModel):
+    available: bool
+    active: bool
+    canEnter: bool
+    canManagePermissions: bool
+    organizationId: str | None = None
+    userId: str | None = None
+    reason: str | None = None
+
+
+class MaintenanceMemberPermissionRecord(BaseModel):
+    userId: str
+    fullName: str
+    email: str
+    primaryRole: EmployeeRole
+    authorized: bool
+    canManagePermissions: bool
+
+
+class MaintenancePermissionMemberPayload(BaseModel):
+    userId: str
+    authorized: bool
+    canManagePermissions: bool = False
+
+
+class MaintenancePermissionUpdatePayloadRecord(BaseModel):
+    members: list[MaintenancePermissionMemberPayload] = Field(default_factory=list)
+
+
+class MaintenanceAuditPayloadRecord(BaseModel):
+    action: str
+    detail: dict[str, object] = Field(default_factory=dict)
+    targetUserId: str | None = None
 
 
 class EmployeeRolePayload(BaseModel):
@@ -312,6 +399,15 @@ class DepartmentOptionRecord(BaseModel):
     color: str
 
 
+class OrgInviteResolveResultRecord(BaseModel):
+    valid: bool
+    organizationId: str | None = None
+    organizationName: str | None = None
+    departmentId: str | None = None
+    departmentName: str | None = None
+    message: str | None = None
+
+
 class OrgProfileRecord(BaseModel):
     organizationId: str
     name: str
@@ -321,6 +417,8 @@ class OrgProfileRecord(BaseModel):
     quarterPlans: list["OrgQuarterPlanRecord"] = Field(default_factory=list)
     quarterlyFocus: list[str] = Field(default_factory=list)
     leaderUserId: str | None = None
+    leaderName: str = ""
+    introDocument: "OrgIntroDocumentRecord | None" = None
     managementUserIds: list[str] = Field(default_factory=list)
     updatedAt: str
 
@@ -353,6 +451,7 @@ class OrgDepartmentRecord(BaseModel):
     color: str
     leaderUserId: str | None = None
     leaderName: str = ""
+    introDocument: "OrgIntroDocumentRecord | None" = None
     parentDepartmentId: str | None = None
     mission: str = ""
     businessContext: str = ""
@@ -362,6 +461,17 @@ class OrgDepartmentRecord(BaseModel):
     collaborationDepartmentIds: list[str] = Field(default_factory=list)
     active: bool = True
     updatedAt: str
+
+
+class OrgIntroDocumentRecord(BaseModel):
+    fileName: str = ""
+    fileType: str = ""
+    markdownContent: str = ""
+    normalizedText: str = ""
+    summary: str = ""
+    contentHash: str = ""
+    uploadedBy: str = ""
+    uploadedAt: str = ""
 
 
 class OrgRoleTemplateRecord(BaseModel):
@@ -643,6 +753,141 @@ class ClientFolder(BaseModel):
     path: str
     fileCount: int
     lastScannedAt: str | None = None
+    folderKind: str = "business"
+    sourceType: str = "legacy"
+    isSystem: bool = False
+    isHidden: bool = False
+    sortOrder: int = 100
+    createdByRule: str = ""
+    suggested: bool = False
+    confidence: float = 0.0
+
+
+class ClientFolderCreatePayload(BaseModel):
+    label: str
+
+
+class ClientFolderUpdatePayload(BaseModel):
+    label: str | None = None
+    isHidden: bool | None = None
+    sortOrder: int | None = None
+
+
+class ClientDocumentMoveFolderPayload(BaseModel):
+    folderId: str | None = None
+    folderLabel: str | None = None
+
+
+class ClientFolderRecommendPayload(BaseModel):
+    documentId: str | None = None
+    title: str | None = None
+    fileName: str | None = None
+    contentPreview: str | None = None
+    sourceType: str | None = None
+
+
+class ClientFolderRecommendationRecord(BaseModel):
+    targetFolderLabel: str
+    confidence: float
+    reason: str
+    suggestedTags: list[str] = Field(default_factory=list)
+    needsReview: bool = False
+    documentCount: int = 0
+    exampleDocuments: list[str] = Field(default_factory=list)
+
+
+class ClientFolderRecommendationPlanRecord(BaseModel):
+    clientId: str
+    generatedAt: str
+    visibleFolderLimit: int = 6
+    visibleFolderBudget: int = 6
+    recommendedVisibleFolders: list[str] = Field(default_factory=list)
+    hiddenLegacyFolders: list[str] = Field(default_factory=list)
+    pendingReasonCounts: dict[str, int] = Field(default_factory=dict)
+    folders: list[ClientFolderRecommendationRecord] = Field(default_factory=list)
+    totalDocumentCount: int = 0
+    pendingDocumentCount: int = 0
+    lowConfidenceDocumentCount: int = 0
+
+
+class ClientFolderApplyRecommendationPayload(BaseModel):
+    targetFolderLabels: list[str] | None = None
+
+
+class DocumentAutoRepairPreviewPayloadRecord(BaseModel):
+    documentIds: list[str] = Field(default_factory=list)
+    limit: int = 300
+    includeHumanRequired: bool = False
+
+
+class DocumentAutoRepairApplyPayloadRecord(BaseModel):
+    previewId: str | None = None
+    documentIds: list[str] = Field(default_factory=list)
+    includeHumanRequired: bool = False
+    limit: int = 300
+
+
+class DocumentAutoRepairItemRecord(BaseModel):
+    documentId: str
+    v2DocumentId: str | None = None
+    title: str
+    kind: str = "document"
+    healthStatus: Literal[
+        "v2_ready",
+        "original_nonzero_no_v2",
+        "zero_byte_original",
+        "md_compat_candidate",
+        "missing_original",
+        "parse_failed",
+        "duplicate_candidate",
+        "unknown",
+    ] = "unknown"
+    stage: Literal[
+        "ready_classify",
+        "repair_ingest",
+        "repair_markdown",
+        "repair_dedupe",
+        "soft_cleanup",
+        "minimal_human_check",
+        "skip",
+    ] = "skip"
+    nextSystemAction: str = ""
+    targetFolder: str = "待处理"
+    tags: list[str] = Field(default_factory=list)
+    searchPolicy: Literal["include", "include_low_weight", "exclude_until_repaired", "exclude"] = "exclude_until_repaired"
+    requiresHuman: bool = False
+    humanQuestion: str | None = None
+    confidence: float = 0.0
+    reason: str = ""
+    sourcePath: str | None = None
+    duplicateOfDocumentId: str | None = None
+
+
+class DocumentAutoRepairPreviewRecord(BaseModel):
+    previewId: str
+    clientId: str
+    generatedAt: str
+    visibleFolderBudget: int = 6
+    recommendedVisibleFolders: list[str] = Field(default_factory=list)
+    pendingReasonCounts: dict[str, int] = Field(default_factory=dict)
+    summary: dict[str, int] = Field(default_factory=dict)
+    items: list[DocumentAutoRepairItemRecord] = Field(default_factory=list)
+
+
+class DocumentAutoRepairApplyResultRecord(BaseModel):
+    jobId: str | None = None
+    status: Literal["queued", "completed", "failed"] = "queued"
+    queuedCount: int = 0
+    skippedCount: int = 0
+    humanConfirmationCount: int = 0
+    message: str = ""
+
+
+class ImportDocumentRecord(BaseModel):
+    documentId: str
+    title: str
+    fileName: str
+    path: str
 
 
 class ImportRecord(BaseModel):
@@ -654,6 +899,8 @@ class ImportRecord(BaseModel):
     importedCount: int
     skippedCount: int
     createdAt: str
+    jobId: str | None = None
+    documents: list[ImportDocumentRecord] = Field(default_factory=list)
 
 
 class ImportPayload(BaseModel):
@@ -1001,6 +1248,7 @@ class ChatRequest(BaseModel):
     threadId: str | None = None
     prompt: str
     searchId: str | None = None
+    workingDocumentIds: list[str] = Field(default_factory=list)
 
 
 class ChatStartResponse(BaseModel):
@@ -1008,6 +1256,8 @@ class ChatStartResponse(BaseModel):
     userMessage: ChatMessageRecord
     assistantMessage: ChatMessageRecord
     analysisRun: "ClientAnalysisRunRecord"
+    reusedActiveRun: bool = False
+    dedupeReason: Literal["client_active_run"] | None = None
 
 
 class ChatThreadDetailResponse(BaseModel):
@@ -1137,6 +1387,10 @@ class TaskRecord(BaseModel):
     ddl: str
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
     clientId: str | None = None
@@ -1378,16 +1632,32 @@ class ReviewGovernanceSettingsRecord(BaseModel):
     updatedAt: str
 
 
-class ReviewGovernanceSettingsPayload(BaseModel):
-    departments: list[ReviewDepartmentConfigRecord] = Field(default_factory=list)
-
-
 class TaskTagLibraryResponse(BaseModel):
     tags: list[TaskTagRecord]
 
 
 class TaskListLibraryResponse(BaseModel):
     lists: list[TaskListRecord]
+
+
+class TaskListDuplicateRepairGroupRecord(BaseModel):
+    organizationId: str | None = None
+    scope: Literal["org", "personal"]
+    name: str
+    canonicalId: str
+    mergedIds: list[str] = Field(default_factory=list)
+    movedTaskCount: int = 0
+    deletedListCount: int = 0
+    skippedIds: list[str] = Field(default_factory=list)
+
+
+class TaskListDuplicateRepairResponse(BaseModel):
+    groups: list[TaskListDuplicateRepairGroupRecord] = Field(default_factory=list)
+    movedTaskCount: int = 0
+    deletedListCount: int = 0
+    skippedListCount: int = 0
+    updatedSettingsCount: int = 0
+    updatedAt: str
 
 
 class TaskBoardResponse(BaseModel):
@@ -1425,6 +1695,10 @@ class TaskPayload(BaseModel):
     listId: str
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
     clientId: str | None = None
@@ -1454,6 +1728,10 @@ class TaskUpdatePayload(BaseModel):
     listId: str | None = None
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
     clientId: str | None = None
@@ -1569,6 +1847,13 @@ class OrganizationDnaUploadPayload(BaseModel):
     fileName: str | None = None
 
 
+class OrgIntroDocumentUploadPayload(BaseModel):
+    filePath: str | None = None
+    markdownContent: str | None = None
+    fileName: str | None = None
+    title: str | None = None
+
+
 class ProjectModulePayload(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     alias: str | None = None
@@ -1618,8 +1903,6 @@ class ClientDnaModulesResponse(BaseModel):
 
 
 class ClientWorkspaceSettingsRecord(BaseModel):
-    useOrgDnaInChat: bool = False
-    useOrgDnaInKnowledgeQa: bool = False
     meetingPublishDefaultListId: str | None = None
     meetingPublishDefaultPriority: Priority = "normal"
     defaultGoalQuarter: str = ""
@@ -1629,8 +1912,6 @@ class ClientWorkspaceSettingsRecord(BaseModel):
 
 
 class ClientWorkspaceSettingsPayload(BaseModel):
-    useOrgDnaInChat: bool | None = None
-    useOrgDnaInKnowledgeQa: bool | None = None
     meetingPublishDefaultListId: str | None = None
     meetingPublishDefaultPriority: Priority | None = None
     defaultGoalQuarter: str | None = None
@@ -1644,8 +1925,6 @@ class TopicsSettingsRecord(BaseModel):
     defaultTaskOwnerMode: TopicTaskOwnerMode = "self"
     defaultTimeRange: str = "3_days"
     defaultSourceStrategy: str = "google_bing_news"
-    useOrgDnaForInsight: bool = True
-    useOrgDnaForTaskPlan: bool = True
     updatedAt: str
 
 
@@ -1655,8 +1934,6 @@ class TopicsSettingsPayload(BaseModel):
     defaultTaskOwnerMode: TopicTaskOwnerMode | None = None
     defaultTimeRange: str | None = None
     defaultSourceStrategy: str | None = None
-    useOrgDnaForInsight: bool | None = None
-    useOrgDnaForTaskPlan: bool | None = None
 
 
 class DiagnosisProfileRecord(BaseModel):
@@ -1816,7 +2093,6 @@ class AnalysisWorkbenchSettingsRecord(BaseModel):
     enabledTemplateIds: list[str] = Field(default_factory=list)
     defaultTemplateId: str | None = None
     defaultTitlePrefix: str = "系统分析"
-    useOrgDna: bool = True
     allowEmployeeTemplateEditing: bool = True
     diagnosisProfiles: list[DiagnosisProfileRecord] = Field(default_factory=list)
     organizationRiskDna: OrganizationRiskDnaDocument | None = None
@@ -1832,7 +2108,6 @@ class AnalysisWorkbenchSettingsPayload(BaseModel):
     enabledTemplateIds: list[str] | None = None
     defaultTemplateId: str | None = None
     defaultTitlePrefix: str | None = None
-    useOrgDna: bool | None = None
     allowEmployeeTemplateEditing: bool | None = None
     diagnosisProfiles: list[DiagnosisProfileRecord] | None = None
     organizationRiskDna: OrganizationRiskDnaDocument | None = None
@@ -1862,7 +2137,6 @@ class HandbookSettingsPayload(BaseModel):
 
 class SystemAdminSettingsRecord(BaseModel):
     allowBusinessSettingsForEmployees: bool = True
-    allowOrgDnaForEmployees: bool = True
     protectEmployeeAdmin: bool = True
     protectAiAndCloud: bool = True
     protectCloudSecurity: bool = True
@@ -1872,7 +2146,6 @@ class SystemAdminSettingsRecord(BaseModel):
 
 class SystemAdminSettingsPayload(BaseModel):
     allowBusinessSettingsForEmployees: bool | None = None
-    allowOrgDnaForEmployees: bool | None = None
     protectEmployeeAdmin: bool | None = None
     protectAiAndCloud: bool | None = None
     protectCloudSecurity: bool | None = None
@@ -2006,6 +2279,20 @@ class OrgMembershipSummaryRecord(BaseModel):
     hasOrganization: bool = False
     organizationId: str | None = None
     organizationName: str | None = None
+    departmentId: str | None = None
+    departmentName: str | None = None
+    membershipStatus: MembershipStatus = "none"
+    membershipSubmittedAt: str | None = None
+    membershipRejectedReason: str | None = None
+    organizationWorkspaceClientId: str | None = None
+
+
+class OrgMembershipApplyPayload(BaseModel):
+    inviteCode: str | None = None
+    departmentId: str | None = None
+    jobTitle: str | None = None
+    managerName: str | None = None
+    currentFocus: str | None = None
 
 
 class OrgFeishuIntegrationAuditRecord(BaseModel):
@@ -2139,6 +2426,10 @@ class WeeklyReviewTaskSnapshotRecord(BaseModel):
     status: TaskStatus
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     createdAt: str
     ownerId: str | None = None
     ownerName: str | None = None
@@ -2211,6 +2502,10 @@ class EventLineRecord(BaseModel):
     participantIds: list[str] = Field(default_factory=list)
     closedAt: str | None = None
     closedByUserId: str | None = None
+    syncStatus: Literal["local", "syncing", "synced", "pending", "error"] | None = None
+    cloudId: str | None = None
+    pendingSyncAction: Literal["create", "update", "archive"] | None = None
+    lastSyncError: str | None = None
     createdAt: str
     updatedAt: str
 
@@ -2264,6 +2559,7 @@ class EventLineApprovalNodeRecord(BaseModel):
 
 
 class EventLineCreatePayload(BaseModel):
+    id: str | None = None
     name: str = Field(min_length=1)
     kind: Literal["project_line", "issue_line", "coordination_line", "case_line", "custom"] = "custom"
     status: Literal["active", "blocked", "paused", "done", "archived"] = "active"
@@ -2630,6 +2926,26 @@ class WeeklyEventReviewCardsRecord(BaseModel):
     evidenceMeta: dict[str, object] = Field(default_factory=dict)
 
 
+class WeeklyOverviewRefreshPayloadRecord(BaseModel):
+    weekLabel: str | None = None
+    perspective: Literal["organization", "department", "mine"] | None = None
+    departmentId: str | None = None
+    force: bool = False
+
+
+class WeeklyOverviewRefreshStatusRecord(BaseModel):
+    weekLabel: str = ""
+    perspective: Literal["organization", "department", "mine"] = "mine"
+    departmentId: str | None = None
+    viewerUserId: str = ""
+    status: Literal["idle", "running", "succeeded", "failed"] = "idle"
+    startedAt: str | None = None
+    generatedAt: str | None = None
+    failureReason: str = ""
+    sourceCounts: dict[str, object] = Field(default_factory=dict)
+    cacheKey: str = ""
+
+
 class TaskContextPreviewRecord(BaseModel):
     taskId: str
     clientId: str | None = None
@@ -2663,6 +2979,30 @@ class TaskSmartBriefRecord(BaseModel):
     summary: str
     summarySourceLabels: list[str] = Field(default_factory=list)
     actionItems: list[TaskSmartBriefActionItem] = Field(default_factory=list)
+
+
+class TaskContextBriefRecord(BaseModel):
+    id: str | None = None
+    taskId: str
+    clientId: str | None = None
+    eventLineId: str | None = None
+    brief: str = ""
+    shouldDisplay: bool = False
+    materialPackHash: str = ""
+    usedProjectSignals: list[str] = Field(default_factory=list)
+    materialBoundary: str = ""
+    qualityFlags: list[str] = Field(default_factory=list)
+    generationModel: str = ""
+    generationPromptVersion: str = ""
+    updatedAt: str = ""
+
+
+class TaskContextBriefBatchPayload(BaseModel):
+    taskIds: list[str] = Field(default_factory=list)
+
+
+class TaskContextBriefBatchResponse(BaseModel):
+    briefs: list[TaskContextBriefRecord] = Field(default_factory=list)
 
 
 class WorkspaceStateItemRecord(BaseModel):
@@ -2865,6 +3205,8 @@ class RetrievalTraceRecord(BaseModel):
     selectedDocumentFamilyCount: int = 0
     selectedCanonicalKinds: list[str] = Field(default_factory=list)
     softwareMaterialIncluded: bool = False
+    workingDocumentIds: list[str] = Field(default_factory=list)
+    workingDocumentHitCount: int = 0
     fallbackUsed: bool = False
     latencyMs: dict[str, float] = Field(default_factory=dict)
 
@@ -3004,6 +3346,7 @@ class DataCenterRequestRecord(BaseModel):
     shadow: bool = True
     persistDrafts: bool = False
     persistQuality: bool = False
+    workingDocumentIds: list[str] = Field(default_factory=list)
 
 
 class AnswerPlanRecord(BaseModel):
@@ -3490,6 +3833,14 @@ class WorkspaceDataCenterReadinessSummaryRecord(BaseModel):
     invalidDocuments: int = 0
     sourceMissingDocuments: int = 0
     placeholderOnlyDocuments: int = 0
+    autoRepairableDocuments: int = 0
+    zeroByteDocuments: int = 0
+    legacyFolderDocumentsWithoutV2: int = 0
+    machineReadableOnlyDocuments: int = 0
+    dedupeCandidateDocuments: int = 0
+    orphanTaskCount: int = 0
+    orphanEventLineCount: int = 0
+    skippedOrphanClientIngestCount: int = 0
     parseFailureBuckets: dict[str, int] = Field(default_factory=dict)
     ocrRecoverableCount: int = 0
     documentCards: int = 0
@@ -3505,6 +3856,11 @@ class WorkspaceDataCenterReadinessSummaryRecord(BaseModel):
     refreshEventQueuedCount: int = 0
     refreshEventRunningCount: int = 0
     refreshEventFailedCount: int = 0
+    internetEnrichmentStatus: str = "none"
+    internetSourceCount: int = 0
+    internetFactCardCount: int = 0
+    remainingUserRequiredGaps: list[str] = Field(default_factory=list)
+    lastInternetEnrichmentAt: str | None = None
 
 
 class WorkspaceDataCenterReadinessJobEventRecord(BaseModel):
@@ -3543,6 +3899,8 @@ class WorkspaceDataCenterReadinessFixRecord(BaseModel):
         "inspect_failed_documents",
         "cleanup_invalid_documents",
         "rebind_original_file",
+        "auto_repair_documents",
+        "internet_enrichment",
     ]
     severity: Literal["info", "warning", "critical"] = "info"
     reason: str = ""
@@ -3572,9 +3930,19 @@ class WorkspaceDataCenterReadinessActionPayloadRecord(BaseModel):
         "inspect_failed_documents",
         "cleanup_invalid_documents",
         "rebind_original_file",
+        "auto_repair_documents",
+        "internet_enrichment",
     ]
     targetIds: list[str] = Field(default_factory=list)
     reason: str = ""
+    seedUrls: list[str] = Field(default_factory=list)
+    seedQueries: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    maxPages: int = 30
+    maxDepth: int = 2
+    targetType: str = "client"
+    targetId: str | None = None
+    title: str = ""
     ocrMaxPages: int = 60
     ocrBatchSize: int = 8
     ocrContinueToEnd: bool = True
@@ -4329,6 +4697,63 @@ class DigitalAssetScoreBreakdownRecord(BaseModel):
     understood: int = 0
     computable: int = 0
     compounding: int = 0
+    structuralCompleteness: int = 0
+    evidenceChain: int = 0
+    timeContinuity: int = 0
+    resultFeedbackLoop: int = 0
+
+
+class DigitalAssetMaterialMaturityRowRecord(BaseModel):
+    key: str
+    label: str
+    percent: int = 0
+    level: str = "资料归档期"
+    seenSummary: str = ""
+    missingSummary: str = ""
+    suggestedAction: str = ""
+    unlockedValue: str = ""
+    sourceHighlights: list[str] = Field(default_factory=list)
+
+
+class DigitalAssetPulseFunnelItemRecord(BaseModel):
+    key: str
+    label: str
+    value: int = 0
+
+
+class DigitalAssetPulseOrganizationRecord(BaseModel):
+    clientId: str
+    name: str
+    assetProfileType: str = ""
+    maturityScore: int = 0
+    depositThickness: int = 0
+    weeklyNewFacts: int = 0
+    weeklyNewDocuments: int = 0
+    weeklyNewEvidenceCards: int = 0
+    summary: str = ""
+
+
+class DigitalAssetPulseSignalRecord(BaseModel):
+    clientId: str | None = None
+    name: str = ""
+    title: str = ""
+    summary: str = ""
+    assetProfileType: str = ""
+    maturityScore: int = 0
+    severity: Literal["info", "warning", "critical"] = "info"
+
+
+class DigitalAssetPulseRecord(BaseModel):
+    headline: str = ""
+    daysAccompanied: int = 0
+    weeklyNewFacts: int = 0
+    weeklyNewDocuments: int = 0
+    weeklyNewEvidenceCards: int = 0
+    weeklyNewJudgments: int = 0
+    digestionFunnel: list[DigitalAssetPulseFunnelItemRecord] = Field(default_factory=list)
+    activeOrganizations: list[DigitalAssetPulseOrganizationRecord] = Field(default_factory=list)
+    learningHighlights: list[DigitalAssetPulseSignalRecord] = Field(default_factory=list)
+    assetAlerts: list[DigitalAssetPulseSignalRecord] = Field(default_factory=list)
 
 
 class DigitalAssetUnitRecord(BaseModel):
@@ -4392,6 +4817,14 @@ class DigitalAssetClientSummaryRecord(BaseModel):
     depositedValueLevel: str = ""
     nextValueSpace: str = ""
     depositXp: int = 0
+    assetProfileType: str = "组织战略陪伴型"
+    secondaryProfileTypes: list[str] = Field(default_factory=list)
+    maturityScore: int = 0
+    depositThickness: int = 0
+    scoreMethodVersion: str = ""
+    scoreBreakdown: DigitalAssetScoreBreakdownRecord = Field(default_factory=DigitalAssetScoreBreakdownRecord)
+    scoreRationale: list[str] = Field(default_factory=list)
+    materialMaturityRows: list[DigitalAssetMaterialMaturityRowRecord] = Field(default_factory=list)
     assetStage: str = "资料整理期"
     assetTrackTitle: str = "组织资产型"
     growthMode: Literal["均衡成长", "单项突破", "结构偏科"] = "均衡成长"
@@ -4426,7 +4859,75 @@ class DigitalAssetNarrativeRecord(BaseModel):
 
 class DigitalAssetDashboardRecord(BaseModel):
     generatedAt: str
+    pulse: DigitalAssetPulseRecord = Field(default_factory=DigitalAssetPulseRecord)
     clients: list[DigitalAssetClientSummaryRecord] = Field(default_factory=list)
+
+
+class OrganizationDnaV2ItemRecord(BaseModel):
+    id: str
+    moduleKind: OrganizationDnaV2Kind
+    title: str
+    contentMarkdown: str
+    summary: str = ""
+    status: OrganizationDnaV2Status = "candidate"
+    evidenceLevel: OrganizationDnaEvidenceLevel = "internal"
+    sourceType: str
+    sourceId: str
+    sourceLabel: str
+    observedAt: str
+    sourceCreatedAt: str | None = None
+    lastSeenAt: str
+    validUntil: str | None = None
+    confidenceScore: int = 60
+    createdAt: str
+    updatedAt: str
+
+
+class OrganizationDnaRefreshEventRecord(BaseModel):
+    id: str
+    runId: str
+    level: Literal["info", "warning", "error"] = "info"
+    message: str
+    detail: dict[str, object] = Field(default_factory=dict)
+    createdAt: str
+
+
+class OrganizationDnaRefreshRunRecord(BaseModel):
+    id: str
+    jobType: Literal["organization_dna_refresh"] = "organization_dna_refresh"
+    status: Literal["queued", "running", "completed", "failed"] = "queued"
+    triggerSource: str = "manual"
+    totalItems: int = 0
+    processedItems: int = 0
+    error: str | None = None
+    createdAt: str
+    startedAt: str | None = None
+    finishedAt: str | None = None
+    updatedAt: str
+    events: list[OrganizationDnaRefreshEventRecord] = Field(default_factory=list)
+
+
+class OrganizationDnaV2SnapshotRecord(BaseModel):
+    generatedAt: str
+    stableItems: list[OrganizationDnaV2ItemRecord] = Field(default_factory=list)
+    evolvingItems: list[OrganizationDnaV2ItemRecord] = Field(default_factory=list)
+    gapItems: list[OrganizationDnaV2ItemRecord] = Field(default_factory=list)
+    riskItems: list[OrganizationDnaV2ItemRecord] = Field(default_factory=list)
+    itemCounts: dict[str, int] = Field(default_factory=dict)
+    confirmedCount: int = 0
+    candidateCount: int = 0
+    staleCount: int = 0
+    latestRun: OrganizationDnaRefreshRunRecord | None = None
+    updatedAt: str | None = None
+
+
+class OrganizationDnaToolContextRecord(BaseModel):
+    purpose: DnaToolPurpose
+    selectedKinds: list[OrganizationDnaV2Kind] = Field(default_factory=list)
+    contextText: str = ""
+    sourceLevelSummary: dict[str, int] = Field(default_factory=dict)
+    timeScopeSummary: str = ""
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DigitalAssetClientDetailRecord(DigitalAssetClientSummaryRecord):
@@ -5462,6 +5963,8 @@ class ReviewPerspectiveOptionRecord(BaseModel):
 
 
 class ReviewResponse(BaseModel):
+    weekLabel: str = ""
+    resolvedWeekLabel: str | None = None
     currentReview: WeeklyReviewRecord | None = None
     workItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)
     personalItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)
@@ -5473,6 +5976,7 @@ class ReviewResponse(BaseModel):
     personalAnalysis: WeeklyReviewAnalysisRecord | None = None
     weeklyMainlineCards: WeeklyMainlineCardsRecord | None = None
     weeklyEventReviewCards: WeeklyEventReviewCardsRecord | None = None
+    weeklyOverviewGenerationStatus: WeeklyOverviewRefreshStatusRecord | None = None
     selfReport: HierarchyReportRecord | None = None
     workSignalCard: ManagementSignalCardRecord | None = None
     personalGrowthCard: PersonalGrowthCardRecord | None = None
@@ -5770,57 +6274,6 @@ class HandbookEntryDetailRecord(HandbookEntryRecord):
     reuseHistory: list[HandbookReuseRecord] = Field(default_factory=list)
 
 
-ExperienceStoryDraftStatus = Literal["candidate", "needs_review", "approved", "rejected"]
-
-
-class ExperienceStoryDraftRecord(BaseModel):
-    id: str
-    title: str = ""
-    story: str = ""
-    status: ExperienceStoryDraftStatus = "candidate"
-    sourceType: str
-    sourceId: str
-    sourceTitle: str = ""
-    clientId: str | None = None
-    clientName: str | None = None
-    eventLineId: str | None = None
-    eventLineName: str | None = None
-    taskId: str | None = None
-    meetingId: str | None = None
-    handbookEntryId: str | None = None
-    evidenceRefs: list[str] = Field(default_factory=list)
-    materialPack: dict[str, object] = Field(default_factory=dict)
-    growthValue: str = ""
-    organizationValue: str = ""
-    qualityScore: dict[str, object] = Field(default_factory=dict)
-    factRiskNote: str = ""
-    generationModel: str = ""
-    generationPromptVersion: str = ""
-    createdAt: str
-    updatedAt: str
-    approvedAt: str | None = None
-    approvedBy: str | None = None
-
-
-class ExperienceStoryDraftsResponse(BaseModel):
-    drafts: list[ExperienceStoryDraftRecord] = Field(default_factory=list)
-
-
-class ExperienceStoryGeneratePayload(BaseModel):
-    limit: int = Field(default=5, ge=1, le=10)
-
-
-class ExperienceStoryGenerateResponse(BaseModel):
-    drafts: list[ExperienceStoryDraftRecord] = Field(default_factory=list)
-    generatedCount: int = 0
-    skippedCount: int = 0
-
-
-class ExperienceStoryActionResponse(BaseModel):
-    draft: ExperienceStoryDraftRecord
-    handbookEntry: HandbookEntryRecord | None = None
-
-
 class FileReclassEventRecord(BaseModel):
     id: str
     knowledgeDocumentId: str
@@ -5896,6 +6349,20 @@ class KnowledgeSearchResponse(BaseModel):
     failureReason: str | None = None
     hits: list[KnowledgeSearchHitRecord] = Field(default_factory=list)
     previewSummary: str | None = None
+
+
+class DocumentReadingPreviewRecord(BaseModel):
+    documentId: str
+    title: str
+    parseStatus: str
+    folderLabel: str | None = None
+    sectionCount: int = 0
+    chunkCount: int = 0
+    sourceKind: str = "raw_file"
+    readSummary: str = ""
+    keyHeadings: list[str] = Field(default_factory=list)
+    availableForChat: bool = False
+    failureReason: str | None = None
 
 
 class ClientAnalysisEvidenceSummaryRecord(BaseModel):
@@ -6486,6 +6953,30 @@ class ClientTextDocumentResponse(BaseModel):
     title: str
     fileName: str
     path: str
+
+
+class LinkMaterialImportStartPayload(BaseModel):
+    url: str
+    useBrowserCookies: bool = False
+    cookieBrowser: Literal["firefox", "chrome", "edge", "safari"] = "firefox"
+
+
+class LinkMaterialImportRunRecord(BaseModel):
+    runId: str
+    clientId: str
+    sourcePlatform: Literal["bilibili", "xiaohongshu"]
+    sourceUrl: str
+    title: str | None = None
+    status: Literal["queued", "running", "completed", "failed"]
+    stage: str
+    progress: float = 0.0
+    documentId: str | None = None
+    documentPath: str | None = None
+    mediaCacheStatus: Literal["not_downloaded", "cleaned", "retained", "failed"] = "not_downloaded"
+    error: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    createdAt: str
+    updatedAt: str
 
 
 class ClientTemplateFillFieldRecord(BaseModel):

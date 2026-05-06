@@ -46,7 +46,7 @@ DEPARTMENTS: tuple[DepartmentSeed, ...] = (
         unit_id="dept_consult_strategy",
         name="咨询策略部",
         leader_user_id="user_qinghua",
-        leader_password="Qinghua123!",
+        leader_password=DEFAULT_SIM_PASSWORD,
         monthly_dna="本月重点是把客户战略诊断、提案叙事和组织DNA对齐成一条稳定交付链，确保每个客户项目都能快速形成判断、方案和复盘。",
         focus_tracks=("客户战略诊断", "提案叙事", "访谈提纲", "组织DNA对齐", "项目节奏校准", "合作方案收束"),
         blocker_pool=("客户输入还不够完整", "跨部门信息口径不一致", "决策边界尚未最终确认", "案例证据不足以支撑最终判断"),
@@ -64,7 +64,7 @@ DEPARTMENTS: tuple[DepartmentSeed, ...] = (
         unit_id="dept_tech_development",
         name="科技发展部",
         leader_user_id="user_jiale",
-        leader_password="Jiale123!",
+        leader_password=DEFAULT_SIM_PASSWORD,
         monthly_dna="本月重点是把周复盘、部门模拟日程、任务链路和系统设置打成一套稳定可用的产品闭环，优先处理可靠性与交互一致性。",
         focus_tracks=("周复盘链路", "部门模拟日程", "任务协作收件箱", "系统设置持久化", "稳定性回归", "权限可见性"),
         blocker_pool=("接口返回字段仍有兼容差异", "页面状态切换后缺少稳定性兜底", "一部分交互还没有做完验证", "历史数据结构和新模型之间还存在缝隙"),
@@ -82,7 +82,7 @@ DEPARTMENTS: tuple[DepartmentSeed, ...] = (
         unit_id="dept_info_data",
         name="信息数据部",
         leader_user_id="user_dazhou",
-        leader_password="Dazhou123!",
+        leader_password=DEFAULT_SIM_PASSWORD,
         monthly_dna="本月重点是把情报抓取、候选清洗、标签治理和数据库维护跑成稳定生产流，确保一线决策能看到及时、可靠、可追踪的信息。",
         focus_tracks=("情报抓取", "候选清洗", "标签治理", "数据库校对", "样本归档", "监测日报"),
         blocker_pool=("源站结构变化导致抓取成本上升", "标签边界还不够稳定", "历史样本质量参差不齐", "一线需求描述还不够标准"),
@@ -100,7 +100,7 @@ DEPARTMENTS: tuple[DepartmentSeed, ...] = (
         unit_id="dept_customer_service",
         name="客户服务部",
         leader_user_id="user_jianing",
-        leader_password="Jianing123!",
+        leader_password=DEFAULT_SIM_PASSWORD,
         monthly_dna="本月重点是把客户交付、跨部门交接和服务资料回流收成一条更稳的客户服务链路。",
         focus_tracks=("客户交付排期", "反馈收口", "跨部门交接", "客户材料回流", "服务节奏校准", "项目复盘沉淀"),
         blocker_pool=("前序输入交接还不够完整", "客户反馈回流速度偏慢", "服务边界暂时还不够清楚", "资料沉淀动作经常被放到收尾"),
@@ -450,9 +450,7 @@ def _all_employee_profiles() -> list[EmployeeSeed]:
                 if user_id == "user_jianing"
                 else ("yishuo@yiyu-system.com" if user_id == "user_yishuo" else f"{user_id.replace('user_', '')}@yiyu-system.com")
             )
-            password = (
-                "Jianing123!" if user_id == "user_jianing" else ("Yishuo123!" if user_id == "user_yishuo" else DEFAULT_SIM_PASSWORD)
-            )
+            password = DEFAULT_SIM_PASSWORD
             employees.append(
                 EmployeeSeed(
                     user_id=user_id,

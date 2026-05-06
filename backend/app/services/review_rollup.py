@@ -1291,6 +1291,10 @@ def build_executive_review_rollup(
     organization_dna_modules: list[OrganizationDnaModuleRecord],
     org_model_profile: OrgModelProfileRecord | None = None,
 ) -> tuple[HierarchyReportRecord | None, list[HierarchyReportRecord]]:
+    # LEGACY REVIEW GOVERNANCE COMPAT:
+    # This still consumes the old governance-shaped object while the new
+    # department/organization plan-background domain is not implemented yet.
+    # Do not add new Settings-page monthly/weekly plan behavior here.
     if not governance.departments:
         return None, []
 

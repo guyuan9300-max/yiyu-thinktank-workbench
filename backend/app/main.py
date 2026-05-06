@@ -12,10 +12,10 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from app.services.system_logger import SystemLogger as _SystemLogger
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Callable, Literal, cast
 from urllib.parse import quote, urlparse, urlunparse
@@ -90,6 +90,18 @@ from app.models import (
     ClientAnalysisEvidenceSummaryRecord,
     ClientAnalysisRunRecord,
     ClientFolder,
+    ClientFolderApplyRecommendationPayload,
+    ClientFolderCreatePayload,
+    ClientFolderRecommendationPlanRecord,
+    ClientFolderRecommendationRecord,
+    ClientFolderRecommendPayload,
+    ClientFolderUpdatePayload,
+    ClientDocumentMoveFolderPayload,
+    DocumentAutoRepairApplyPayloadRecord,
+    DocumentAutoRepairApplyResultRecord,
+    DocumentAutoRepairItemRecord,
+    DocumentAutoRepairPreviewPayloadRecord,
+    DocumentAutoRepairPreviewRecord,
     ClientMutationPayload,
     ClientSummary,
     ClientTemplateFillFieldRecord,
@@ -117,12 +129,8 @@ from app.models import (
     DigitalAssetNarrativeRecord,
     DnaDeltaCreatePayload,
     DnaDeltaRecord,
+    DocumentReadingPreviewRecord,
     EvidenceItem,
-    ExperienceStoryActionResponse,
-    ExperienceStoryDraftRecord,
-    ExperienceStoryDraftsResponse,
-    ExperienceStoryGeneratePayload,
-    ExperienceStoryGenerateResponse,
     ExportAnswerPayload,
     JudgmentConfirmPayload,
     JudgmentVersionRecord,
@@ -168,6 +176,8 @@ from app.models import (
     ImportPayload,
     ImportRecord,
     WorkspaceImportBackfillResponse,
+    LinkMaterialImportRunRecord,
+    LinkMaterialImportStartPayload,
     LegacyScanEntry,
     LegacyScanRequest,
     LegacyScanResponse,
@@ -178,6 +188,7 @@ from app.models import (
     KnowledgeStatusRecord,
     MemoryStatus,
     DepartmentOptionRecord,
+    OrgInviteResolveResultRecord,
     MentionCandidateRecord,
     MeetingCreatePayload,
     MeetingDetail,
@@ -188,6 +199,10 @@ from app.models import (
     EmployeeRecord,
     EmployeeRejectPayload,
     EmployeeRolePayload,
+    MaintenanceAuditPayloadRecord,
+    MaintenanceMemberPermissionRecord,
+    MaintenanceModeStatusRecord,
+    MaintenancePermissionUpdatePayloadRecord,
     FeishuBotSettingsPayload,
     FeishuBotSettingsRecord,
     FeishuMemberAuthorizationRecord,
@@ -197,7 +212,6 @@ from app.models import (
     FeishuReceiveIdType,
     FeishuUserBindingRecord,
     FeishuUserBindingStartResponse,
-    DnaReadinessQuestionRecord,
     EventLineActivityRecord,
     EventLineClarificationDraftPayload,
     EventLineClarificationDraftRecord,
@@ -218,7 +232,10 @@ from app.models import (
     OrgEmployeeBindingRecord,
     OrgFeishuIntegrationRecord,
     OrgFeishuIntegrationSavePayload,
+    OrgIntroDocumentRecord,
+    OrgIntroDocumentUploadPayload,
     OrgModelProfileRecord,
+    OrgMembershipApplyPayload,
     OrgMembershipSummaryRecord,
     OrgWritingNorm,
     OrgProfileRecord,
@@ -226,8 +243,11 @@ from app.models import (
     OrgRoleTemplateRecord,
     OrgTaskControlRuleRecord,
     OrganizationDnaModuleRecord,
+    OrganizationDnaRefreshEventRecord,
+    OrganizationDnaRefreshRunRecord,
     OrganizationDnaResponse,
     OrganizationDnaUploadPayload,
+    OrganizationDnaV2SnapshotRecord,
     OrganizationNotebookSnapshot,
     ProjectFlowPayload,
     ProjectFlowRecord,
@@ -241,7 +261,6 @@ from app.models import (
     ReviewDashboardCardTargetRecord,
     ReviewDashboardEvidenceRefRecord,
     ReviewDashboardDrillTargetResponse,
-    ReviewGovernanceSettingsPayload,
     ReviewGovernanceSettingsRecord,
     ReviewHistoryEntryRecord,
     ReviewHistoryResponse,
@@ -249,6 +268,8 @@ from app.models import (
     ReviewResponse,
     ReviewSimulationBundleRecord,
     WeeklyEventReviewCardsRecord,
+    WeeklyOverviewRefreshPayloadRecord,
+    WeeklyOverviewRefreshStatusRecord,
     RiskItem,
     RunComparison,
     SessionUserRecord,
@@ -284,6 +305,11 @@ from app.models import (
     StateSourceSummaryRecord,
     TaskSmartBriefRecord,
     TaskSmartBriefActionItem,
+    TaskContextBriefBatchPayload,
+    TaskContextBriefBatchResponse,
+    TaskContextBriefRecord,
+    TaskListDuplicateRepairGroupRecord,
+    TaskListDuplicateRepairResponse,
     TaskListLibraryResponse,
     TaskListMutationPayload,
     TaskListRecord,
@@ -465,7 +491,16 @@ from app.models import (
     EvidenceQualityAnnotationLabelPayloadRecord,
     ExternalEvidenceCardRecord,
 )
-from app.services.ai import AiInvocationError, AiService, DEFAULT_MODEL, DEFAULT_PROVIDER, classify_llm_error_kind
+from app.services.ai import (
+    AiInvocationError,
+    AiService,
+    DEFAULT_MODEL,
+    DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+    DEFAULT_OPENAI_COMPATIBLE_LABEL,
+    DEFAULT_PROVIDER,
+    OPENAI_COMPATIBLE_PROVIDER,
+    classify_llm_error_kind,
+)
 from app.services.analysis_context import (
     build_client_page_context_pack,
     build_event_line_page_context_pack,
@@ -487,6 +522,7 @@ from app.services.data_center_kernel import resolve_data_center_kernel
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
     build_consultant_synthesis_material_pack,
+    build_dna_tool_context_from_workspace,
     build_open_workspace_answer_context,
     build_workspace_context_quality_summary,
     build_workspace_data_center_request,
@@ -502,6 +538,14 @@ from app.services.workspace_followups import (
     classify_workspace_followup_scenario,
 )
 from app.services.workspace_query_router import route_workspace_query
+from app.services.workspace_thread_memory import (
+    build_contextual_prompt,
+    inject_thread_memory_into_context,
+    load_thread_context_pack,
+    render_thread_memory_context,
+    resolve_thread_references,
+    update_thread_context_after_answer,
+)
 from app.services.data_center_shadow import (
     get_data_center_shadow_summary,
     list_data_center_shadow_runs,
@@ -537,6 +581,7 @@ from app.services.evidence_quality_feedback_snapshot import (
 )
 from app.services.event_line_timeline import build_event_line_timeline_nodes
 from app.services.execution_retry_metrics import get_execution_retry_metrics
+from app.services.task_context_brief_engine import generate_task_context_brief_snapshot
 from app.services.generation_runtime_policy import (
     decide_generation_runtime_policy,
     get_generation_runtime_state,
@@ -651,7 +696,6 @@ from app.services.agent_worklogs import (
     sync_agent_execution_tasks,
     upsert_agent_weekly_plan_override,
 )
-from app.services.department_catalog import get_department_entry, list_department_catalog
 from app.services.knowledge_base import (
     batch_enrich_surrogates,
     create_memory_surrogate_from_answer,
@@ -669,7 +713,8 @@ from app.services.knowledge_base import (
     sync_qdrant_for_client,
 )
 from app.services.knowledge_v2 import (
-    HUMAN_VISIBLE_CATEGORIES,
+    LEGACY_FIXED_CATEGORIES,
+    SYSTEM_FOLDER_CATEGORIES,
     V2_PIPELINE_VERSION,
     backfill_knowledge_documents,
     backfill_workspace_import,
@@ -693,6 +738,16 @@ from app.services.knowledge_v2 import (
     tokenize,
     parse_failure_recoverable,
 )
+from app.services.link_material_import import (
+    LinkMaterialImportError,
+    LinkMaterialImportOptions,
+    build_link_material_runtime_diagnostics,
+    build_clean_video_markdown,
+    cleanup_temp_dir,
+    cleanup_transcript_text,
+    detect_link_material,
+    extract_link_material_source,
+)
 from app.services.client_profile import backfill_all_clients, build_client_profile
 from app.services.digital_asset_center import build_client_digital_assets, build_digital_asset_dashboard
 from app.services.digital_asset_narrative import (
@@ -700,7 +755,13 @@ from app.services.digital_asset_narrative import (
     get_latest_digital_asset_narrative,
     refresh_digital_asset_narrative,
 )
+from app.services.organization_dna_v2 import (
+    get_organization_dna_snapshot,
+    refresh_organization_dna_v2,
+)
 from app.services.data_center_ingest import (
+    SKIPPED_ORPHAN_CLIENT_STATUS,
+    ensure_data_center_ingest_schema,
     ingest_event_line_by_id,
     ingest_meeting_by_id,
     ingest_task_attachment_by_id,
@@ -711,6 +772,7 @@ from app.services.data_center_ingest import (
     purge_private_task_ingest_events,
 )
 from app.services.data_center_access import DataCenterAccessContext
+from app.services.internet_crawler import run_internet_enrichment
 from app.services.memory_foundation import (
     answer_clarification_record,
     backfill_memory_foundation,
@@ -729,7 +791,7 @@ from app.services.memory_foundation import (
     refresh_organization_notebook_snapshot,
     sanitize_memory_background_text,
 )
-from app.services.platform_dna import extract_platform_dna_text
+from app.services.platform_dna import extract_platform_dna_text, supported_platform_dna_extensions
 from app.services.template_fill import (
     TemplateWebSource,
     apply_docx_template_values,
@@ -768,7 +830,6 @@ from app.services.feishu import (
 )
 from app.services.badge_engine import build_badge_board
 from app.services.growth_engine import (
-    backfill_handbook_entries,
     build_growth_ledger,
     build_generic_learning_fallback,
     build_growth_overview,
@@ -783,13 +844,6 @@ from app.services.growth_engine import (
     mark_recommendation_accepted,
     mark_recommendation_dismissed,
     update_pending_capture_state,
-)
-from app.services.experience_story_engine import (
-    build_experience_story_draft_record,
-    generate_experience_story_drafts,
-    list_experience_story_drafts,
-    regenerate_experience_story_draft,
-    reject_experience_story_draft,
 )
 from app.services.learning_presets import (
     build_actions_from_presets,
@@ -839,75 +893,12 @@ BACKEND_FEATURE_FLAGS = [
     "chat.analysis-runs",
 ]
 
-ORGANIZATION_DNA_MODULES = [
-    ("organization_intro", "组织介绍"),
-    ("business_intro", "业务介绍"),
-    ("team_intro", "团队介绍"),
-    ("market_intro", "市场介绍"),
-]
-
 CLIENT_DNA_MODULES = [
     ("organization_intro", "组织介绍"),
     ("business_intro", "项目介绍"),
     ("team_intro", "团队介绍"),
     ("market_intro", "市场背景介绍"),
 ]
-
-SELF_CLIENT_NAME_CANDIDATES = ["益语智库", "益语"]
-
-DNA_READINESS_RULES: dict[str, list[dict[str, object]]] = {
-    "organization_intro": [
-        {
-            "question": "组织定位是否清楚",
-            "contentKeywords": ["定位", "战略陪伴者", "成长合伙人", "可落地的增长咨询"],
-            "missingKeywords": [],
-        },
-        {
-            "question": "组织为什么存在、主要解决什么问题是否清楚",
-            "contentKeywords": ["使命", "市场不确定性", "组织效率", "数字化焦虑", "穿越不确定期"],
-            "missingKeywords": [],
-        },
-        {
-            "question": "当前升级方向或阶段是否清楚",
-            "contentKeywords": ["内部引擎", "应用共建", "学习加速", "升级", "转型"],
-            "missingKeywords": [],
-        },
-    ],
-    "business_intro": [
-        {
-            "question": "主要服务或交付内容是否清楚",
-            "contentKeywords": ["增长咨询", "战略设计", "流程陪伴", "应用共建", "学习加速", "工作平台"],
-            "missingKeywords": [],
-        },
-        {
-            "question": "服务对象和价值是否清楚",
-            "contentKeywords": ["适应性组织", "企业", "持续增长", "客户痛点", "解决方案"],
-            "missingKeywords": [],
-        },
-        {
-            "question": "当前业务重点或推进路径是否清楚",
-            "contentKeywords": ["技术规划", "产品", "0.5", "3.0", "GPT 5.4", "升级"],
-            "missingKeywords": [],
-        },
-    ],
-    "team_intro": [
-        {
-            "question": "关键成员与角色是否清楚",
-            "contentKeywords": ["成员", "负责人", "角色", "团队"],
-            "missingKeywords": ["成员名单", "创始人", "负责人", "履历"],
-        },
-        {
-            "question": "分工与协作结构是否清楚",
-            "contentKeywords": ["分工", "协作", "组织架构", "接口"],
-            "missingKeywords": ["组织架构", "分工", "接口"],
-        },
-        {
-            "question": "当前团队能力重点是否清楚",
-            "contentKeywords": ["AI 技术", "工作平台", "技术布局", "能力", "升级"],
-            "missingKeywords": [],
-        },
-    ],
-}
 
 STRATEGIC_PLACEHOLDER_CONTEXT_PATTERNS = [
     "当前重点仍待补充",
@@ -1053,6 +1044,27 @@ def summarize_markdown_document(title: str, normalized_text: str) -> str:
     return summary[:320]
 
 
+def normalize_configured_cloud_api_url(raw_url: str | None) -> str:
+    value = (raw_url or "").strip().rstrip("/")
+    if not value:
+        return ""
+    normalized_value = value if re.match(r"^https?://", value, flags=re.I) else f"http://{value}"
+    parsed = urlparse(normalized_value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or re.search(r"\s", parsed.netloc):
+        raise ValueError("云端服务地址必须是有效的公网 IP 或域名")
+    return normalized_value
+
+
+def resolve_initial_cloud_api_url(db: Database) -> str:
+    raw_env_url = os.environ.get("YIYU_CLOUD_API_URL")
+    raw_url = raw_env_url if raw_env_url is not None else db.get_setting("cloud_api_url", "")
+    try:
+        return normalize_configured_cloud_api_url(raw_url)
+    except ValueError as exc:
+        logging.getLogger(__name__).warning("Invalid cloud API URL ignored: %s", exc)
+        return ""
+
+
 @dataclass
 class AppState:
     data_dir: Path
@@ -1067,10 +1079,17 @@ class AppState:
     topic_insight_executor: ThreadPoolExecutor | None = None
     chat_answer_executor: ThreadPoolExecutor | None = None
     template_fill_executor: ThreadPoolExecutor | None = None
+    link_material_executor: ThreadPoolExecutor | None = None
+    weekly_overview_refresh_lock: Lock = field(default_factory=Lock)
+    weekly_overview_refresh_status: dict[str, WeeklyOverviewRefreshStatusRecord] = field(default_factory=dict)
     volatile_cloud_access_token: str = ""
     volatile_cloud_refresh_token: str = ""
     volatile_cloud_session_user_json: str = ""
     cloud_session_persistent: bool = False
+    maintenance_mode_active: bool = False
+    maintenance_mode_user_id: str = ""
+    maintenance_mode_entered_at: str = ""
+    maintenance_mode_lock: Lock = field(default_factory=Lock)
     consultation_knowledge_sync_running: bool = False
     system_logger: _SystemLogger | None = None
 
@@ -1178,10 +1197,19 @@ def _week_bounds(week_label: str) -> tuple[datetime.date, datetime.date] | None:
 
 
 def _task_review_date(task: TaskRecord) -> datetime.date | None:
-    due_date = _parse_date_only(task.dueDate)
-    if due_date:
-        return due_date
-    return _parse_date_only(task.createdAt)
+    if task.status == "done":
+        return (
+            _parse_date_only(task.completedAt)
+            or _parse_date_only(task.updatedAt)
+            or _parse_date_only(task.scheduledStartAt)
+            or _parse_date_only(task.deadlineAt)
+            or _parse_date_only(task.dueDate)
+        )
+    return (
+        _parse_date_only(task.scheduledStartAt)
+        or _parse_date_only(task.deadlineAt)
+        or _parse_date_only(task.dueDate)
+    )
 
 
 def _task_in_week(task: TaskRecord, week_label: str) -> bool:
@@ -1218,12 +1246,46 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
             archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
         )
 
+    def _is_task_settings_default_local_list_row(row) -> bool:
+        if row is None:
+            return False
+        if row["archived_at"]:
+            return False
+        if str(row["scope"] or "org") != "org":
+            return False
+        normalized_name = " ".join(str(row["name"] or "").strip().split()).casefold()
+        return str(row["id"]) == "list-0" or normalized_name in {"收集箱", "收件箱", "组织任务"}
+
+    def _task_settings_default_local_destination_row():
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM task_lists
+            WHERE scope = 'org' AND (archived_at IS NULL OR archived_at = '')
+            ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
+            """
+        )
+        candidates = [row for row in rows if _is_task_settings_default_local_list_row(row)]
+        if not candidates:
+            return None
+        return sorted(
+            candidates,
+            key=lambda row: (
+                0 if str(row["id"]) == "list-0" else 1 if " ".join(str(row["name"] or "").strip().split()).casefold() in {"收集箱", "收件箱"} else 2,
+                int(row["sort_order"] or 0),
+                str(row["id"]),
+            ),
+        )[0]
+
+    def _is_task_settings_default_local_list_id(list_id: str | None) -> bool:
+        if not list_id:
+            return False
+        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        return _is_task_settings_default_local_list_row(row)
+
     def _local_default_list_id() -> str | None:
-        default_row = state.db.fetchone("SELECT id FROM task_lists WHERE is_default = 1 ORDER BY sort_order ASC LIMIT 1")
-        if default_row:
-            return str(default_row["id"])
-        first_row = state.db.fetchone("SELECT id FROM task_lists ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1")
-        return str(first_row["id"]) if first_row else None
+        default_row = _task_settings_default_local_destination_row()
+        return str(default_row["id"]) if default_row else None
 
     def _default_local_task_settings() -> TaskSettingsRecord:
         return TaskSettingsRecord(
@@ -1240,8 +1302,10 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
 
     def _local_task_settings_record(row) -> TaskSettingsRecord:
         defaults = _default_local_task_settings()
+        stored_default_list_id = str(row["default_list_id"]) if row["default_list_id"] else None
+        resolved_default_list_id = stored_default_list_id if _is_task_settings_default_local_list_id(stored_default_list_id) else defaults.defaultListId
         return TaskSettingsRecord(
-            defaultListId=str(row["default_list_id"]) if row["default_list_id"] else defaults.defaultListId,
+            defaultListId=resolved_default_list_id,
             defaultPriority=str(row["default_priority"] or defaults.defaultPriority),  # type: ignore[arg-type]
             defaultDueDatePreset=str(row["default_due_date_preset"] or defaults.defaultDueDatePreset),  # type: ignore[arg-type]
             defaultViewMode=str(row["default_view_mode"] or defaults.defaultViewMode),  # type: ignore[arg-type]
@@ -2006,7 +2070,12 @@ def _task_snapshot_from_task(task: TaskRecord, db: Database | None = None) -> di
     return {
         "title": task.title,
         "status": task.status,
+        "startDate": task.startDate,
         "dueDate": task.dueDate,
+        "deadlineAt": task.deadlineAt,
+        "scheduledStartAt": task.scheduledStartAt,
+        "scheduledEndAt": task.scheduledEndAt,
+        "completedAt": task.completedAt,
         "createdAt": task.createdAt,
         "ownerId": task.ownerId,
         "ownerName": task.ownerName,
@@ -2393,10 +2462,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception:
             return MemorySecretStore()
 
+    openai_compatible_store = build_secret_store("com.yiyu.self-workbench.openai-compatible")
     qwen_store = build_secret_store("com.yiyu.self-workbench.qwen")
     doubao_store = build_secret_store("com.yiyu.self-workbench.doubao")
+    online_primary_store = build_secret_store("com.yiyu.self-workbench.ai-profile.online-primary")
+    local_text_deep_store = build_secret_store("com.yiyu.self-workbench.ai-profile.local-text-deep")
+    local_vision_ocr_store = build_secret_store("com.yiyu.self-workbench.ai-profile.local-vision-ocr")
+    local_fast_store = build_secret_store("com.yiyu.self-workbench.ai-profile.local-fast")
     feishu_secret_store = build_secret_store("com.yiyu.self-workbench.feishu")
-    ai = AiService(db, {"qwen": qwen_store, "doubao": doubao_store})
+    ai = AiService(
+        db,
+        {
+            OPENAI_COMPATIBLE_PROVIDER: openai_compatible_store,
+            "qwen": qwen_store,
+            "doubao": doubao_store,
+            "ai_profile:online_primary": online_primary_store,
+            "ai_profile:local_text_deep": local_text_deep_store,
+            "ai_profile:local_vision_ocr": local_vision_ocr_store,
+            "ai_profile:local_fast": local_fast_store,
+        },
+    )
     backup_dir = resolved_data_dir / "backups"
     state = AppState(
         data_dir=resolved_data_dir,
@@ -2404,11 +2489,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         db=db,
         ai=ai,
         feishu_secret_store=feishu_secret_store,
-        cloud_api_url=os.environ.get("YIYU_CLOUD_API_URL", "http://127.0.0.1:47830").rstrip("/"),
+        cloud_api_url=resolve_initial_cloud_api_url(db),
         job_stop=Event(),
         topic_insight_executor=ThreadPoolExecutor(max_workers=3),
         chat_answer_executor=ThreadPoolExecutor(max_workers=2),
         template_fill_executor=ThreadPoolExecutor(max_workers=1),
+        link_material_executor=ThreadPoolExecutor(max_workers=1),
     )
     state.system_logger = _SystemLogger(resolved_data_dir / "logs")
     state.system_logger.info("system", f"后端启动: data_dir={resolved_data_dir}")
@@ -2420,6 +2506,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             f"migration_backup={str(migration_backup_path) if migration_backup_path else 'none'}"
         ),
     )
+    workspace_chat_start_locks_guard = Lock()
+    workspace_chat_start_locks: dict[str, Lock] = {}
+
+    def workspace_chat_start_lock_for_client(client_id: str) -> Lock:
+        lock_key = str(client_id or "").strip() or "__unknown_client__"
+        with workspace_chat_start_locks_guard:
+            lock = workspace_chat_start_locks.get(lock_key)
+            if lock is None:
+                lock = Lock()
+                workspace_chat_start_locks[lock_key] = lock
+            return lock
+
+    def cloud_api_base_url() -> str:
+        base_url = (state.cloud_api_url or "").strip().rstrip("/")
+        if not base_url:
+            raise HTTPException(status_code=503, detail="尚未配置云端服务地址，请先在设置页填写云端服务地址。")
+        return base_url
 
     seed_defaults(state)
     state.db.set_setting("runtime.build_version", APP_BUILD_VERSION)
@@ -2441,6 +2544,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             callback()
         except Exception as exc:
             logger.warning("DataCenterIngest %s failed: %s", label, exc)
+
+    def _safe_growth_ingest(label: str, callback) -> None:
+        try:
+            callback()
+        except Exception as exc:
+            logger.warning("GrowthIngest %s failed: %s", label, exc)
 
     app.add_middleware(
         CORSMiddleware,
@@ -2677,11 +2786,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.analysis_job_thread = Thread(target=analysis_job_worker_loop, name="analysis-job-worker", daemon=True)
         state.analysis_job_thread.start()
         # Probe cloud backend connectivity at startup — clear circuit breaker if reachable
-        if get_cloud_token():
+        if state.cloud_api_url and get_cloud_token():
             def _probe_cloud():
                 import time as _time
                 try:
-                    httpx.get(f"{state.cloud_api_url}/health", timeout=3.0)
+                    httpx.get(f"{cloud_api_base_url()}/health", timeout=3.0)
                     _cloud_circuit_breaker["last_failure"] = 0.0  # cloud OK — clear breaker
                 except Exception:
                     _cloud_circuit_breaker["last_failure"] = _time.time()  # cloud down — keep breaker
@@ -2700,6 +2809,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.chat_answer_executor.shutdown(wait=False, cancel_futures=False)
         if state.template_fill_executor:
             state.template_fill_executor.shutdown(wait=False, cancel_futures=False)
+        if state.link_material_executor:
+            state.link_material_executor.shutdown(wait=False, cancel_futures=False)
 
     def current_operator_row():
         operator_id = state.db.get_setting("current_operator_id", "")
@@ -2741,12 +2852,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
         )
 
+    def _is_task_settings_default_local_list_row(row) -> bool:
+        if row is None:
+            return False
+        if row["archived_at"]:
+            return False
+        if str(row["scope"] or "org") != "org":
+            return False
+        normalized_name = " ".join(str(row["name"] or "").strip().split()).casefold()
+        return str(row["id"]) == "list-0" or normalized_name in {"收集箱", "收件箱", "组织任务"}
+
+    def _task_settings_default_local_destination_row():
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM task_lists
+            WHERE scope = 'org' AND (archived_at IS NULL OR archived_at = '')
+            ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
+            """
+        )
+        candidates = [row for row in rows if _is_task_settings_default_local_list_row(row)]
+        if not candidates:
+            return None
+        return sorted(
+            candidates,
+            key=lambda row: (
+                0 if str(row["id"]) == "list-0" else 1 if " ".join(str(row["name"] or "").strip().split()).casefold() in {"收集箱", "收件箱"} else 2,
+                int(row["sort_order"] or 0),
+                str(row["id"]),
+            ),
+        )[0]
+
+    def _is_task_settings_default_local_list_id(list_id: str | None) -> bool:
+        if not list_id:
+            return False
+        row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (list_id,))
+        return _is_task_settings_default_local_list_row(row)
+
     def _local_default_list_id() -> str | None:
-        default_row = state.db.fetchone("SELECT id FROM task_lists WHERE is_default = 1 ORDER BY sort_order ASC LIMIT 1")
-        if default_row:
-            return str(default_row["id"])
-        first_row = state.db.fetchone("SELECT id FROM task_lists ORDER BY sort_order ASC, name COLLATE NOCASE ASC LIMIT 1")
-        return str(first_row["id"]) if first_row else None
+        default_row = _task_settings_default_local_destination_row()
+        return str(default_row["id"]) if default_row else None
 
     def _default_local_task_settings() -> TaskSettingsRecord:
         return TaskSettingsRecord(
@@ -2763,8 +2908,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _local_task_settings_record(row) -> TaskSettingsRecord:
         defaults = _default_local_task_settings()
+        stored_default_list_id = str(row["default_list_id"]) if row["default_list_id"] else None
+        resolved_default_list_id = stored_default_list_id if _is_task_settings_default_local_list_id(stored_default_list_id) else defaults.defaultListId
         return TaskSettingsRecord(
-            defaultListId=str(row["default_list_id"]) if row["default_list_id"] else defaults.defaultListId,
+            defaultListId=resolved_default_list_id,
             defaultPriority=str(row["default_priority"] or defaults.defaultPriority),  # type: ignore[arg-type]
             defaultDueDatePreset=str(row["default_due_date_preset"] or defaults.defaultDueDatePreset),  # type: ignore[arg-type]
             defaultViewMode=str(row["default_view_mode"] or defaults.defaultViewMode),  # type: ignore[arg-type]
@@ -3120,71 +3267,179 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             refresh_template_fill_executor(reason=f"expired_runs={len(expired_ids)}")
         return len(expired_ids)
 
-    STALE_LOADING_CHAT_SECONDS = 120
+    STALE_LOADING_CHAT_QUEUED_SECONDS = 300
+    STALE_LOADING_CHAT_GENERATING_SECONDS = 420
+    STALE_LOADING_CHAT_ORPHAN_SECONDS = 900
 
-    def recover_stale_loading_chat_messages() -> None:
-        stale_rows = state.db.fetchall(
-            """
-            SELECT id, retrieval_summary_json, created_at
-            FROM chat_messages
-            WHERE role = 'assistant' AND status = 'loading'
-            ORDER BY created_at ASC
-            """
+    def _parse_local_datetime(value: object, *, fallback: datetime) -> datetime:
+        raw = str(value or "").strip()
+        if not raw:
+            return fallback
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return fallback
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    def _loading_message_has_partial_content(row) -> bool:
+        content = str(row["content"] or "").strip()
+        if not content:
+            return False
+        placeholders = {
+            "庆华正在整理背景材料，并组织分析答案……",
+            "数据中心主链已就绪，正在组织回答……",
+            "庆华暂时没能完成这次回答。",
+            "正在调用模型生成回答",
+        }
+        return content not in placeholders
+
+    def _recover_one_stale_loading_chat_message(
+        row,
+        *,
+        reason: Literal["analysis_run_stale_recovered", "orphan_loading_message_recovered"],
+        basis: str,
+        basis_time: datetime,
+        threshold_seconds: int,
+        now: datetime,
+        run_row=None,
+    ) -> bool:
+        age_seconds = max((now - basis_time).total_seconds(), 0.0)
+        if age_seconds < threshold_seconds:
+            return False
+
+        timestamp = now_iso()
+        summary = from_json(str(row["retrieval_summary_json"] or "{}"), {})
+        if not isinstance(summary, dict):
+            summary = {}
+        summary.update(
+            {
+                "staleRecoveryBasis": basis,
+                "runUpdatedAt": str(run_row["updated_at"]) if run_row and run_row["updated_at"] else None,
+                "staleThresholdSeconds": threshold_seconds,
+                "recoveredAt": timestamp,
+                "lastUpdatedAt": timestamp,
+            }
         )
-        if not stale_rows:
-            return
-        now = datetime.now()
-        for row in stale_rows:
-            created_at_raw = str(row["created_at"] or "")
-            try:
-                created_at = datetime.fromisoformat(created_at_raw)
-            except ValueError:
-                created_at = now - timedelta(minutes=10)
-            age_seconds = max((now - created_at).total_seconds(), 0.0)
-            if age_seconds < STALE_LOADING_CHAT_SECONDS:
-                continue
-            summary = from_json(str(row["retrieval_summary_json"] or "{}"), {})
-            if not isinstance(summary, dict):
-                summary = {}
+        timing = {"totalMs": round(age_seconds * 1000, 2), "retrievalMs": 0.0, "llmMs": 0.0}
+        message_id = str(row["id"])
+
+        if _loading_message_has_partial_content(row):
+            partial_content = str(row["content"] or "").strip()
+            structured = AiStructuredResponse(
+                content=partial_content,
+                judgment="模型生成过程超时，系统已保留已经生成的部分有效回答。",
+                analysis="后台回答任务长时间没有继续推进，系统按 stale recovery 收口，但没有覆盖已生成正文。",
+                actions="可以基于这段回答继续追问，或重新生成一次完整回答。",
+                timeline=f"自动收口时间：{timestamp}",
+            )
             summary.update(
                 {
-                    "phase": "failed",
+                    "phase": "completed",
                     "progress": 100.0,
                     "progressFloor": 100.0,
                     "progressCeiling": 100.0,
-                    "stageLabel": "回答生成失败",
-                    "failureReason": "后台回答任务中断或超时，已自动收口。",
-                    "lastUpdatedAt": now_iso(),
+                    "stageLabel": "已保留部分回答",
+                    "failureReason": "llm_partial_preserved_after_stale_recovery",
+                    "partialGenerationPreserved": True,
+                    "finalFailureStage": "stale_recovery_partial_preserved",
                 }
             )
             state.db.execute(
                 """
                 UPDATE chat_messages
-                SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = 0, provider_used = COALESCE(provider_used, ?),
-                    answer_mode = 'system_failure', evidence_status = 'none', failure_reason = ?, timing_json = ?,
-                    retrieval_summary_json = ?, evidence_json = COALESCE(evidence_json, '[]'), status = 'success', created_at = ?
+                SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = 1,
+                    provider_used = COALESCE(provider_used, ?), answer_mode = 'grounded_fallback',
+                    evidence_status = 'partial', failure_reason = ?, timing_json = ?,
+                    retrieval_summary_json = ?, evidence_json = COALESCE(evidence_json, '[]'),
+                    status = 'success'
                 WHERE id = ? AND status = 'loading'
                 """,
                 (
-                    "庆华暂时没能完成这次回答。",
-                    to_json(
-                        AiStructuredResponse(
-                            content="庆华暂时没能完成这次回答。",
-                            judgment="后台回答任务中断或超时，本次回答已自动收口为失败态。",
-                            analysis="该消息此前一直停留在生成中，没有成功写回最终结果。系统已自动把它标记为失败，避免前端一直卡在加载状态。",
-                            actions="请直接重试这个问题；如果反复出现，请检查本地后端与千问配置。",
-                            timeline="修复后可立即重新生成。",
-                        ).model_dump()
-                    ),
-                    "AI 调用失败",
+                    partial_content,
+                    to_json(structured.model_dump()),
+                    "AI 调用中断",
                     state.ai.current_provider(),
-                    "stale_loading_message_recovered",
-                    to_json({"totalMs": round(age_seconds * 1000, 2), "retrievalMs": 0.0, "llmMs": 0.0}),
+                    "llm_partial_preserved_after_stale_recovery",
+                    to_json(timing),
                     to_json(summary),
-                    now_iso(),
-                    str(row["id"]),
+                    message_id,
                 ),
             )
+            if run_row:
+                state.db.execute(
+                    """
+                    UPDATE client_analysis_runs
+                    SET status = 'completed',
+                        phase = 'completed',
+                        progress = 100.0,
+                        progress_floor = 100.0,
+                        progress_ceiling = 100.0,
+                        stage_label = '已保留部分回答',
+                        long_answer = ?,
+                        structured_summary_json = ?,
+                        long_answer_status = 'fallback',
+                        summary_status = 'fallback',
+                        answer_mode = 'grounded_fallback',
+                        llm_invoked = 1,
+                        provider_used = COALESCE(provider_used, ?),
+                        failure_reason = 'llm_partial_preserved_after_stale_recovery',
+                        elapsed_ms = ?,
+                        timing_json = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status IN ('queued', 'running')
+                    """,
+                    (
+                        partial_content,
+                        to_json(structured.model_dump()),
+                        state.ai.current_provider(),
+                        round(age_seconds * 1000, 2),
+                        to_json(timing),
+                        timestamp,
+                        str(run_row["id"]),
+                    ),
+                )
+            return True
+
+        summary.update(
+            {
+                "phase": "failed",
+                "progress": 100.0,
+                "progressFloor": 100.0,
+                "progressCeiling": 100.0,
+                "stageLabel": "回答生成失败",
+                "failureReason": "后台回答任务中断或超时，已自动收口。",
+            }
+        )
+        state.db.execute(
+            """
+            UPDATE chat_messages
+            SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = 0, provider_used = COALESCE(provider_used, ?),
+                answer_mode = 'system_failure', evidence_status = 'none', failure_reason = ?, timing_json = ?,
+                retrieval_summary_json = ?, evidence_json = COALESCE(evidence_json, '[]'), status = 'success'
+            WHERE id = ? AND status = 'loading'
+            """,
+            (
+                "庆华暂时没能完成这次回答。",
+                to_json(
+                    AiStructuredResponse(
+                        content="庆华暂时没能完成这次回答。",
+                        judgment="后台回答任务中断或超时，本次回答已自动收口为失败态。",
+                        analysis="该消息此前一直停留在生成中，没有成功写回最终结果。系统已自动把它标记为失败，避免前端一直卡在加载状态。",
+                        actions="请直接重试这个问题；如果反复出现，请检查本地后端与模型连接状态。",
+                        timeline="修复后可立即重新生成。",
+                    ).model_dump()
+                ),
+                "AI 调用失败",
+                state.ai.current_provider(),
+                reason,
+                to_json(timing),
+                to_json(summary),
+                message_id,
+            ),
+        )
+        if run_row:
             state.db.execute(
                 """
                 UPDATE client_analysis_runs
@@ -3196,19 +3451,93 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     stage_label = '回答生成失败',
                     long_answer_status = 'failed',
                     summary_status = 'failed',
-                    failure_reason = 'stale_loading_message_recovered',
+                    answer_mode = 'system_failure',
+                    failure_reason = ?,
                     elapsed_ms = ?,
                     timing_json = ?,
                     updated_at = ?
-                WHERE assistant_message_id = ? AND status IN ('queued', 'running')
+                WHERE id = ? AND status IN ('queued', 'running')
                 """,
                 (
+                    reason,
                     round(age_seconds * 1000, 2),
-                    to_json({"totalMs": round(age_seconds * 1000, 2), "retrievalMs": 0.0, "llmMs": 0.0}),
-                    now_iso(),
-                    str(row["id"]),
+                    to_json(timing),
+                    timestamp,
+                    str(run_row["id"]),
                 ),
             )
+        return True
+
+    def recover_stale_loading_chat_messages(*, run_id: str | None = None, message_id: str | None = None) -> int:
+        filters: list[str] = ["role = 'assistant'", "status = 'loading'"]
+        params: list[object] = []
+        if message_id:
+            filters.append("id = ?")
+            params.append(message_id)
+        elif run_id:
+            filters.append("id IN (SELECT assistant_message_id FROM client_analysis_runs WHERE id = ?)")
+            params.append(run_id)
+        stale_rows = state.db.fetchall(
+            f"""
+            SELECT id, content, retrieval_summary_json, created_at
+            FROM chat_messages
+            WHERE {' AND '.join(filters)}
+            ORDER BY created_at ASC
+            """,
+            tuple(params),
+        )
+        if not stale_rows:
+            return 0
+        now = datetime.now()
+        recovered = 0
+        for row in stale_rows:
+            latest_run = state.db.fetchone(
+                """
+                SELECT *
+                FROM client_analysis_runs
+                WHERE assistant_message_id = ?
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (str(row["id"]),),
+            )
+            if latest_run:
+                run_status = str(latest_run["status"] or "")
+                if run_status in {"completed", "failed", "canceled"}:
+                    continue
+                run_phase = str(latest_run["phase"] or "queued")
+                threshold = (
+                    STALE_LOADING_CHAT_GENERATING_SECONDS
+                    if run_phase == "generating_long_answer"
+                    else STALE_LOADING_CHAT_QUEUED_SECONDS
+                )
+                basis_time = _parse_local_datetime(
+                    latest_run["updated_at"] or latest_run["created_at"],
+                    fallback=now,
+                )
+                if _recover_one_stale_loading_chat_message(
+                    row,
+                    reason="analysis_run_stale_recovered",
+                    basis=f"analysis_run.{run_phase}.updated_at",
+                    basis_time=basis_time,
+                    threshold_seconds=threshold,
+                    now=now,
+                    run_row=latest_run,
+                ):
+                    recovered += 1
+                continue
+            message_created_at = _parse_local_datetime(row["created_at"], fallback=now)
+            if _recover_one_stale_loading_chat_message(
+                row,
+                reason="orphan_loading_message_recovered",
+                basis="chat_message.created_at",
+                basis_time=message_created_at,
+                threshold_seconds=STALE_LOADING_CHAT_ORPHAN_SECONDS,
+                now=now,
+                run_row=None,
+            ):
+                recovered += 1
+        return recovered
 
     def claim_next_knowledge_job() -> dict[str, object] | None:
         row = state.db.fetchone(
@@ -3368,6 +3697,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 except Exception:
                     pass
             return
+        if job_type == "workspace_document_auto_repair":
+            _run_workspace_document_auto_repair_job(client_id, payload if isinstance(payload, dict) else {}, job_id)
+            processed_items = int(
+                state.db.scalar(
+                    "SELECT processed_items FROM knowledge_jobs WHERE id = ?",
+                    (job_id,),
+                )
+                or 0
+            )
+            finish_knowledge_job(job_id, status="completed", processed_items=processed_items)
+            return
         if job_type == "retry_parse":
             document_ids_payload = payload.get("documentIds", [])
             document_ids = [str(item) for item in document_ids_payload] if isinstance(document_ids_payload, list) else []
@@ -3391,6 +3731,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if job_status == "failed":
                 last_error = f"解析重试全部失败：{retry_result.failureBuckets}"
             finish_knowledge_job(job_id, status=job_status, processed_items=processed_items, last_error=last_error)
+            return
+        if job_type == "internet_enrichment":
+            enrichment_result = run_internet_enrichment(
+                state.db,
+                data_dir=state.data_dir,
+                client_id=client_id,
+                ai_service=state.ai,
+                payload=payload if isinstance(payload, dict) else {},
+                event_callback=lambda level, message, detail=None: append_knowledge_job_event(job_id, level, message, detail or {}),
+                progress_callback=lambda count, message: update_knowledge_job_progress(job_id, count, message),
+            )
+            processed_items = int(enrichment_result.source_doc_count)
+            job_status = "completed" if enrichment_result.source_doc_count > 0 or enrichment_result.fact_card_count > 0 else "failed"
+            last_error = None if job_status == "completed" else "互联网资料补全未抓取到可入库正文"
+            finish_knowledge_job(job_id, status=job_status, processed_items=processed_items, last_error=last_error)
+            if job_status == "completed":
+                _enqueue_workspace_refresh_safe(
+                    client_id=client_id,
+                    source_type="internet_enrichment_complete",
+                    source_id=job_id,
+                    reason="internet_enrichment_completed",
+                    scope_type="client",
+                    scope_id=client_id,
+                    priority="normal",
+                )
             return
         if job_type == "rebuild_client_knowledge":
             summary = backfill_knowledge_documents(
@@ -3512,6 +3877,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def build_health() -> HealthResponse:
         ai_health = state.ai.get_health()
+        ai_profile_health = state.ai.get_profile_health_map()
+
+        def _health_ai_state(health: object) -> HealthAiState:
+            return HealthAiState(
+                provider=getattr(health, "provider"),  # type: ignore[arg-type]
+                providerLabel=getattr(health, "provider_label"),
+                baseUrl=getattr(health, "base_url"),
+                model=getattr(health, "model"),
+                ready=getattr(health, "ready"),
+                detail=getattr(health, "detail"),
+                credentialSource=getattr(health, "credential_source"),
+                fingerprint=getattr(health, "fingerprint"),
+                profileKey=getattr(health, "profile_key", "unified"),
+                mode=getattr(health, "mode", state.ai.current_ai_model_mode()),  # type: ignore[arg-type]
+            )
+
         return HealthResponse(
             appName=APP_NAME,
             appVersion=APP_VERSION,
@@ -3535,14 +3916,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "handbookEntries": state.db.scalar("SELECT COUNT(1) AS count FROM handbook_entries"),
                 "analysisRuns": state.db.scalar("SELECT COUNT(1) AS count FROM analysis_runs"),
             },
-            ai=HealthAiState(
-                provider=ai_health.provider,  # type: ignore[arg-type]
-                model=ai_health.model,
-                ready=ai_health.ready,
-                detail=ai_health.detail,
-                credentialSource=ai_health.credential_source,
-                fingerprint=ai_health.fingerprint,
-            ),
+            ai=_health_ai_state(ai_health),
+            aiProfiles={key: _health_ai_state(value) for key, value in ai_profile_health.items()},
+            advancedAiRoutingEnabled=state.ai.advanced_ai_routing_enabled(),
+            aiModelMode=state.ai.current_ai_model_mode(),  # type: ignore[arg-type]
+            linkMaterialDiagnostics=build_link_material_runtime_diagnostics(),
         )
 
     def build_settings_response() -> SettingsResponse:
@@ -3551,15 +3929,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         settings = AppSettingsResponse(
             currentOperatorId=str(operator["id"]),
             aiProvider=state.ai.current_provider(),  # type: ignore[arg-type]
+            aiProviderLabel=state.ai.current_provider_label(),
+            aiBaseUrl=state.ai.current_base_url(),
             aiModel=state.ai.current_model(),
             dataDir=str(state.data_dir),
             backupDir=str(state.backup_dir),
             cloudApiUrl=state.cloud_api_url,
             lastBackupAt=state.db.get_setting("last_backup_at", "") or None,
             foldersRootLabel=state.db.get_setting("folders_root_label", "桌面客户资料"),
-            aiConfigured=bool(ai_health.fingerprint),
+            aiConfigured=bool(ai_health.ready and ai_health.provider != "mock"),
             aiCredentialSource=ai_health.credential_source,
             aiFingerprint=ai_health.fingerprint,
+            advancedAiRoutingEnabled=state.ai.advanced_ai_routing_enabled(),
+            aiModelMode=state.ai.current_ai_model_mode(),  # type: ignore[arg-type]
+            aiModelProfiles=state.ai.current_ai_model_profiles(),  # type: ignore[arg-type]
             demoDataLoaded=demo_data_loaded(state.db),
         )
         operators = [
@@ -3622,6 +4005,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.volatile_cloud_refresh_token = ""
         state.volatile_cloud_session_user_json = ""
         state.cloud_session_persistent = False
+        with state.maintenance_mode_lock:
+            state.maintenance_mode_active = False
+            state.maintenance_mode_user_id = ""
+            state.maintenance_mode_entered_at = ""
 
     def get_cached_session_user() -> SessionUserRecord | None:
         raw = state.db.get_setting("cloud_session_user", "")
@@ -4186,38 +4573,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _default_feishu_bot_settings() -> FeishuBotSettingsRecord:
         return FeishuBotSettingsRecord(updatedAt=now_iso())
 
-    def _fixed_review_department_records() -> list[ReviewDepartmentConfigRecord]:
-        return [
-            ReviewDepartmentConfigRecord(
-                id=item.id,
-                name=item.name,
-                color=item.color,
-                monthlyDna="",
-                weeklyFocus="",
-                leaders=[],
-                members=[],
-            )
-            for item in list_department_catalog()
-        ]
-
+    # LEGACY REVIEW GOVERNANCE COMPAT:
+    # The Settings page no longer owns department monthly DNA / weekly focus.
+    # Keep this read path only so existing weekly-review rollups can keep running
+    # until the replacement "department/organization plan background" domain lands.
     def _default_review_governance_settings() -> ReviewGovernanceSettingsRecord:
-        return ReviewGovernanceSettingsRecord(departments=_fixed_review_department_records(), updatedAt=now_iso())
+        return ReviewGovernanceSettingsRecord(departments=[], updatedAt=now_iso())
 
     def _sanitize_review_governance_settings(
         departments: list[ReviewDepartmentConfigRecord],
         *,
         keep_updated_at: str | None = None,
     ) -> ReviewGovernanceSettingsRecord:
-        fixed_departments = _fixed_review_department_records()
-        incoming_by_id: dict[str, ReviewDepartmentConfigRecord] = {}
-        for department in departments:
-            matched = get_department_entry(department.id, department.name)
-            if matched:
-                incoming_by_id[matched.id] = department
-
         sanitized_departments: list[ReviewDepartmentConfigRecord] = []
-        for fixed_department in fixed_departments:
-            department = incoming_by_id.get(fixed_department.id, fixed_department)
+        seen_department_ids: set[str] = set()
+        for department in departments:
+            department_id = department.id.strip()
+            department_name = department.name.strip()
+            if not department_id or not department_name or department_id in seen_department_ids:
+                continue
+            seen_department_ids.add(department_id)
             seen_leader_names: set[str] = set()
             leaders: list[ReviewDepartmentMemberRecord] = []
             for leader in department.leaders:
@@ -4254,9 +4629,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
             sanitized_departments.append(
                 ReviewDepartmentConfigRecord(
-                    id=fixed_department.id,
-                    name=fixed_department.name,
-                    color=department.color.strip() or fixed_department.color,
+                    id=department_id,
+                    name=department_name,
+                    color=department.color.strip() or "#5B7BFE",
                     monthlyDna=department.monthlyDna.strip(),
                     weeklyFocus=department.weeklyFocus.strip(),
                     leaders=leaders,
@@ -4275,8 +4650,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ReviewGovernanceSettingsRecord,
         )
         sanitized = _sanitize_review_governance_settings(current.departments, keep_updated_at=current.updatedAt)
-        if sanitized.model_dump() != current.model_dump():
-            state.db.set_setting("settings.review_governance", to_json(sanitized.model_dump()))
         return sanitized
 
     def _sync_review_governance_members(
@@ -4285,15 +4658,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> ReviewGovernanceSettingsRecord:
         employees_by_department: dict[str, list[ReviewDepartmentMemberRecord]] = {department.id: [] for department in governance.departments}
         seen_keys: dict[str, set[str]] = {department.id: set() for department in governance.departments}
+        department_id_by_name = {department.name.strip().lower(): department.id for department in governance.departments if department.name.strip()}
         for employee in employees:
-            department = get_department_entry(employee.departmentId, employee.departmentName)
-            if not department or department.id not in employees_by_department:
+            department_id = employee.departmentId if employee.departmentId in employees_by_department else None
+            if not department_id and employee.departmentName:
+                department_id = department_id_by_name.get(employee.departmentName.strip().lower())
+            if not department_id:
                 continue
             key = employee.id.strip() or employee.fullName.strip().lower()
-            if not key or key in seen_keys[department.id]:
+            if not key or key in seen_keys[department_id]:
                 continue
-            seen_keys[department.id].add(key)
-            employees_by_department[department.id].append(
+            seen_keys[department_id].add(key)
+            employees_by_department[department_id].append(
                 ReviewDepartmentMemberRecord(
                     id=employee.id,
                     fullName=employee.fullName,
@@ -4617,12 +4993,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         hidden = get_hidden_client_folders(client_id)
         hidden.add(label)
         save_hidden_client_folders(client_id, hidden)
+        state.db.execute(
+            "UPDATE client_folders SET is_hidden = 1 WHERE client_id = ? AND label = ? AND is_system = 0",
+            (client_id, label),
+        )
 
     def unhide_client_folder_label(client_id: str, label: str) -> None:
         hidden = get_hidden_client_folders(client_id)
         if label in hidden:
             hidden.remove(label)
             save_hidden_client_folders(client_id, hidden)
+        state.db.execute(
+            "UPDATE client_folders SET is_hidden = 0 WHERE client_id = ? AND label = ?",
+            (client_id, label),
+        )
 
     def get_topics_settings() -> TopicsSettingsRecord:
         return _load_json_settings_record("settings.topics", _default_topics_settings, TopicsSettingsRecord)
@@ -4706,7 +5090,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _remembered_cloud_auth_store(email: str):
         normalized_email = email.strip().lower()
         if not normalized_email:
-            raise HTTPException(status_code=400, detail="请先提供要记住的邮箱。")
+            raise HTTPException(status_code=400, detail="请先提供要记住的账号。")
         return build_secret_store(REMEMBERED_CLOUD_AUTH_SERVICE, account_name=normalized_email)
 
     def _remembered_ai_store():
@@ -4733,12 +5117,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if raw_record.cloudAuth.rememberInputs:
             for account in raw_record.cloudAuth.accounts:
                 password = ""
+                account_identifier = (account.identifier or account.email).strip().lower()
                 try:
-                    password = _remembered_cloud_auth_store(account.email).get_api_key()
+                    password = _remembered_cloud_auth_store(account_identifier).get_api_key()
                 except Exception:
                     password = ""
                 remembered_accounts.append(
-                    account.model_copy(update={"password": password})
+                    account.model_copy(update={"identifier": account_identifier, "email": account.email or account_identifier, "password": password})
                 )
         cloud_auth = LocalInputMemoryCloudAuth(
             rememberInputs=raw_record.cloudAuth.rememberInputs,
@@ -4888,7 +5273,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         state.db.set_setting(_feishu_user_binding_pending_key(user_id), "")
 
     def _feishu_cloud_relay_callback_url() -> str:
-        return f"{state.cloud_api_url.rstrip('/')}/api/v1/integrations/feishu/user-binding/callback"
+        return f"{cloud_api_base_url()}/api/v1/integrations/feishu/user-binding/callback"
 
     def _save_feishu_user_binding_error(user_id: str, message: str) -> FeishuUserBindingRecord:
         existing = get_feishu_user_binding(user_id)
@@ -5317,16 +5702,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not admin_settings.allowBusinessSettingsForEmployees:
             raise HTTPException(status_code=403, detail="当前账号不能编辑业务设置")
 
-    def ensure_org_dna_editable() -> None:
-        session_user = get_cached_session_user()
-        if not session_user:
-            return
-        if session_user.primaryRole == "admin":
-            return
-        admin_settings = get_system_admin_settings()
-        if not admin_settings.allowOrgDnaForEmployees:
-            raise HTTPException(status_code=403, detail="当前账号不能编辑组织 DNA")
-
     def ensure_admin_for_sensitive_settings() -> None:
         session_user = get_cached_session_user()
         if not session_user:
@@ -5334,180 +5709,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if session_user.primaryRole != "admin":
             raise HTTPException(status_code=403, detail="只有管理员可以编辑该设置")
 
-    def _organization_dna_record(module_key: str, module_title: str, row=None) -> OrganizationDnaModuleRecord:
-        return OrganizationDnaModuleRecord(
-            moduleKey=module_key,  # type: ignore[arg-type]
-            title=module_title,
-            markdownContent=str(row["markdown_content"]) if row else "",
-            normalizedText=str(row["normalized_text"]) if row else "",
-            summary=str(row["summary"]) if row else "",
-            fileName=str(row["file_name"]) if row else None,
-            contentHash=str(row["content_hash"]) if row else None,
-            updatedAt=str(row["updated_at"]) if row else None,
-            updatedBy=str(row["updated_by"]) if row else None,
-            hasDocument=bool(row),
-        )
-
-    def _find_self_client_row():
-        for candidate in SELF_CLIENT_NAME_CANDIDATES:
-            row = state.db.fetchone(
-                """
-                SELECT *
-                FROM clients
-                WHERE name = ? OR alias = ?
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                (candidate, candidate),
-            )
-            if row:
-                return row
-        return None
-
-    def _extract_readiness_evidence(text: str, keywords: list[str]) -> str | None:
-        normalized_text = re.sub(r"\s+", " ", text).strip()
-        if not normalized_text:
-            return None
-        for keyword in keywords:
-            if not keyword:
-                continue
-            hit_index = normalized_text.find(keyword)
-            if hit_index < 0:
-                continue
-            start = max(0, hit_index - 24)
-            end = min(len(normalized_text), hit_index + 40)
-            snippet = normalized_text[start:end].strip()
-            if not snippet:
-                continue
-            if start > 0:
-                snippet = f"…{snippet}"
-            if end < len(normalized_text):
-                snippet = f"{snippet}…"
-            return snippet
-        return None
-
-    def _build_dna_readiness_questions(
-        module_key: str,
-        normalized_text: str,
-        missing_info: list[str],
-    ) -> list[DnaReadinessQuestionRecord]:
-        rules = DNA_READINESS_RULES.get(module_key, [])
-        if not rules:
-            return []
-        questions: list[DnaReadinessQuestionRecord] = []
-        compact_text = normalized_text or ""
-        for rule in rules:
-            content_keywords = [str(item) for item in (rule.get("contentKeywords") or [])]
-            missing_keywords = [str(item) for item in (rule.get("missingKeywords") or [])]
-            has_content = any(keyword and keyword in compact_text for keyword in content_keywords)
-            blocked = any(
-                keyword and keyword in str(item)
-                for item in missing_info
-                for keyword in missing_keywords
-            )
-            answered = bool(has_content and not blocked)
-            evidence = _extract_readiness_evidence(compact_text, content_keywords) if answered else None
-            questions.append(
-                DnaReadinessQuestionRecord(
-                    question=str(rule.get("question") or ""),
-                    answered=answered,
-                    evidence=evidence,
-                )
-            )
-        return questions
-
-    def _build_organization_dna_readiness(
-        base_module: OrganizationDnaModuleRecord,
-        *,
-        client_module=None,
-        auto_enqueued: bool = False,
-    ) -> OrganizationDnaModuleRecord:
-        preferred_text = ""
-        missing_info: list[str] = []
-        readiness_source: str = "none"
-        if client_module and client_module.hasDocument and client_module.normalizedText.strip():
-            preferred_text = client_module.normalizedText
-            missing_info = list(client_module.missingInfo or [])
-            readiness_source = "client_dna"
-        elif base_module.hasDocument and base_module.normalizedText.strip():
-            preferred_text = base_module.normalizedText
-            missing_info = extract_markdown_missing_info(base_module.markdownContent)
-            readiness_source = "manual_document"
-        elif auto_enqueued:
-            readiness_source = "auto_enqueued"
-
-        questions = _build_dna_readiness_questions(base_module.moduleKey, preferred_text, missing_info)
-        answered_count = sum(1 for item in questions if item.answered)
-        question_count = len(questions)
-        readiness_status: Literal["ready", "missing"] = "missing"
-        if question_count > 0 and answered_count >= (2 if question_count >= 3 else question_count):
-            readiness_status = "ready"
-        elif question_count == 0 and preferred_text.strip():
-            readiness_status = "ready"
-
-        if readiness_source == "client_dna":
-            readiness_summary = f"优先采用客户 DNA，自动判定 {answered_count}/{question_count or 0} 项明确。"
-        elif readiness_source == "manual_document":
-            readiness_summary = f"当前采用手工上传文档，自动判定 {answered_count}/{question_count or 0} 项明确。"
-        elif readiness_source == "auto_enqueued":
-            readiness_summary = "客户 DNA 仍缺失，系统已自动发起补跑。"
-        else:
-            readiness_summary = "当前还没有客户 DNA，也没有补充文档。"
-
-        return base_module.model_copy(
-            update={
-                "readinessStatus": readiness_status,
-                "readinessAnsweredCount": answered_count,
-                "readinessQuestionCount": question_count,
-                "readinessSource": readiness_source,
-                "readinessSummary": readiness_summary,
-                "readinessQuestions": questions,
-            }
-        )
-
     def list_organization_dna_modules() -> list[OrganizationDnaModuleRecord]:
-        records_by_key = {
-            str(row["module_key"]): row
-            for row in state.db.fetchall("SELECT * FROM organization_dna_documents")
-        }
-        base_modules = {
-            module_key: _organization_dna_record(module_key, module_title, records_by_key.get(module_key))
-            for module_key, module_title in ORGANIZATION_DNA_MODULES
-        }
-        self_client_row = _find_self_client_row()
-        client_modules_by_key = {}
-        auto_enqueued_keys: set[str] = set()
-        if self_client_row:
-            client_id = str(self_client_row["id"])
-            client_modules = list_client_dna_modules(client_id)
-            client_modules_by_key = {module.moduleKey: module for module in client_modules}
-            required_keys = {"organization_intro", "business_intro", "team_intro"}
-            missing_client_keys = {
-                module_key
-                for module_key in required_keys
-                if not (
-                    client_modules_by_key.get(module_key)
-                    and client_modules_by_key[module_key].hasDocument
-                    and client_modules_by_key[module_key].normalizedText.strip()
-                )
-            }
-            if missing_client_keys:
-                job = maybe_enqueue_client_dna_generation_job(client_id)
-                if job is not None:
-                    auto_enqueued_keys = set(missing_client_keys)
-
-        return [
-            _build_organization_dna_readiness(
-                base_modules[module_key],
-                client_module=client_modules_by_key.get(module_key),
-                auto_enqueued=module_key in auto_enqueued_keys,
-            )
-            for module_key, _module_title in ORGANIZATION_DNA_MODULES
-        ]
+        # Legacy organization DNA has been removed as an active knowledge source.
+        # Keep the function for older service call sites, but return no material so
+        # the next-generation org DNA can be rebuilt without stale injections.
+        return []
 
     def _is_supported_org_dna_file_name(file_name: str) -> bool:
         lower_name = file_name.strip().lower()
-        return lower_name.endswith(".md") or lower_name.endswith(".markdown") or lower_name.endswith(".docx")
+        return any(lower_name.endswith(extension) for extension in supported_platform_dna_extensions())
+
+    def _supported_org_intro_file_label() -> str:
+        return "、".join(supported_platform_dna_extensions())
 
     def _sanitize_text_list(values: list[str] | None) -> list[str]:
         if not values:
@@ -5528,59 +5741,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not source_path.exists() or not source_path.is_file():
                 raise HTTPException(status_code=400, detail="背景文件不存在")
             if not _is_supported_org_dna_file_name(source_path.name):
-                raise HTTPException(status_code=400, detail="只允许上传 .md、.markdown 或 .docx 文件")
-            if source_path.suffix.lower() == ".docx":
+                raise HTTPException(status_code=400, detail=f"只允许上传 {_supported_org_intro_file_label()} 文件")
+            try:
                 document_content = extract_platform_dna_text(source_path).strip()
-            else:
-                document_content = source_path.read_text(encoding="utf-8")
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"只允许上传 {_supported_org_intro_file_label()} 文件") from None
             file_name = file_name or source_path.name
         if file_name and not _is_supported_org_dna_file_name(file_name):
-            raise HTTPException(status_code=400, detail="只允许上传 .md、.markdown 或 .docx 文件")
+            raise HTTPException(status_code=400, detail=f"只允许上传 {_supported_org_intro_file_label()} 文件")
         if not document_content.strip():
             raise HTTPException(status_code=400, detail="请提供可解析的背景内容")
         return document_content, file_name or "uploaded.md"
 
-    def upsert_organization_dna_module(module_key: str, payload: OrganizationDnaUploadPayload) -> OrganizationDnaModuleRecord:
-        module_map = dict(ORGANIZATION_DNA_MODULES)
-        if module_key not in module_map:
-            raise HTTPException(status_code=404, detail="未知的组织 DNA 模块")
-        markdown_content, file_name = read_organization_document_payload(payload)
+    def parse_org_intro_document(payload: OrgIntroDocumentUploadPayload) -> OrgIntroDocumentRecord:
+        markdown_content, file_name = read_organization_document_payload(
+            OrganizationDnaUploadPayload(
+                filePath=payload.filePath,
+                markdownContent=payload.markdownContent,
+                fileName=payload.fileName,
+            )
+        )
         normalized_text = normalize_markdown_text(markdown_content)
-        summary = summarize_markdown_document(module_map[module_key], normalized_text)
+        title = (payload.title or "介绍资料").strip() or "介绍资料"
         content_hash = hashlib.sha256(markdown_content.encode("utf-8")).hexdigest()
         session_user = get_cached_session_user()
-        updated_by = session_user.fullName if session_user else str(current_operator_row()["name"])
-        timestamp = now_iso()
-        state.db.execute(
-            """
-            INSERT INTO organization_dna_documents(
-                module_key, title, markdown_content, normalized_text, summary, file_name, content_hash, updated_at, updated_by
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(module_key) DO UPDATE SET
-                title = excluded.title,
-                markdown_content = excluded.markdown_content,
-                normalized_text = excluded.normalized_text,
-                summary = excluded.summary,
-                file_name = excluded.file_name,
-                content_hash = excluded.content_hash,
-                updated_at = excluded.updated_at,
-                updated_by = excluded.updated_by
-            """,
-            (module_key, module_map[module_key], markdown_content, normalized_text, summary, file_name, content_hash, timestamp, updated_by),
+        uploaded_by = session_user.fullName if session_user else str(current_operator_row()["name"])
+        return OrgIntroDocumentRecord(
+            fileName=file_name,
+            fileType=Path(file_name).suffix.lower().lstrip(".") or "document",
+            markdownContent=markdown_content,
+            normalizedText=normalized_text,
+            summary=summarize_markdown_document(title, normalized_text),
+            contentHash=content_hash,
+            uploadedBy=uploaded_by,
+            uploadedAt=now_iso(),
         )
-        row = state.db.fetchone("SELECT * FROM organization_dna_documents WHERE module_key = ?", (module_key,))
-        if not row:
-            raise HTTPException(status_code=500, detail="组织 DNA 保存失败")
-        return _organization_dna_record(module_key, module_map[module_key], row)
 
-    def build_organization_dna_context(max_chars: int = 2800) -> str:
-        modules = [module for module in list_organization_dna_modules() if module.hasDocument and module.normalizedText.strip()]
-        if not modules:
-            return ""
-        lines = ["组织 DNA：以下内容代表本组织的稳定背景、业务语境和市场定位。"]
-        for module in modules:
-            lines.append(f"[{module.title}]\n{module.normalizedText[:700]}")
-        return "\n\n".join(lines)[:max_chars]
+    def upsert_organization_dna_module(module_key: str, payload: OrganizationDnaUploadPayload) -> OrganizationDnaModuleRecord:
+        raise HTTPException(status_code=410, detail="旧组织 DNA 已拆除，等待新的组织 DNA 引擎接入")
 
     def _client_dna_record(client_id: str, module_key: str, module_title: str, row=None) -> ClientDnaModuleRecord:
         return ClientDnaModuleRecord(
@@ -5714,6 +5912,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def upsert_client_dna_module(client_id: str, module_key: str, payload: OrganizationDnaUploadPayload) -> ClientDnaModuleRecord:
         build_client_summary(client_id)
         markdown_content, file_name = read_organization_document_payload(payload)
+        suffix = Path(file_name).suffix.lower()
+        if suffix not in {".md", ".markdown"}:
+            raise HTTPException(status_code=400, detail="只允许上传 .md 或 .markdown 文件")
         session_user = get_cached_session_user()
         updated_by = session_user.fullName if session_user else str(current_operator_row()["name"])
         return save_client_dna_module(
@@ -6285,16 +6486,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not normalized_event_line_id:
             return normalized_client_id, None
         event_line_row = state.db.fetchone(
-            "SELECT id, primary_client_id FROM event_lines WHERE id = ?",
-            (normalized_event_line_id,),
+            "SELECT id, primary_client_id FROM event_lines WHERE id = ? OR cloud_id = ?",
+            (normalized_event_line_id, normalized_event_line_id),
         )
         if not event_line_row and get_cloud_token():
             try:
                 cloud_el = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
-                if _upsert_cloud_event_line_shadow_local(cloud_el):
+                local_event_line_id = _upsert_cloud_event_line_shadow_local(cloud_el)
+                if local_event_line_id:
                     event_line_row = state.db.fetchone(
                         "SELECT id, primary_client_id FROM event_lines WHERE id = ?",
-                        (normalized_event_line_id,),
+                        (local_event_line_id,),
                     )
             except Exception:
                 pass
@@ -6307,7 +6509,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if event_line_client_id and normalized_client_id != event_line_client_id:
             normalized_client_id = event_line_client_id
-        return normalized_client_id, normalized_event_line_id
+        return normalized_client_id, str(event_line_row["id"])
 
     def _build_task_scope_refresh_payload(
         task: TaskRecord,
@@ -6708,7 +6910,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             response = httpx.request(
                 "POST",
-                f"{state.cloud_api_url}/api/v1/auth/refresh",
+                f"{cloud_api_base_url()}/api/v1/auth/refresh",
                 json={"refreshToken": refresh_token},
                 timeout=20.0,
             )
@@ -6745,10 +6947,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def cloud_request(method: str, path: str, *, json_body: dict | None = None, allow_unauthenticated: bool = False, timeout: float = 3.0) -> object:
         import time as _time
+        base_url = cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)
         if _time.time() - _cloud_circuit_breaker["last_failure"] < 60:
-            raise CloudUnavailableError("Cloud backend unavailable (circuit breaker active)")
+            raise HTTPException(status_code=502, detail="Cloud backend unavailable (circuit breaker active)")
 
         def perform_request(token: str | None):
             headers = {}
@@ -6756,7 +6959,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 headers["Authorization"] = f"Bearer {token}"
             return httpx.request(
                 method,
-                f"{state.cloud_api_url}{path}",
+                f"{base_url}{path}",
                 json=json_body,
                 headers=headers,
                 timeout=timeout,
@@ -6804,6 +7007,80 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return {}
         return response.json()
 
+    def _inactive_maintenance_status(reason: str) -> MaintenanceModeStatusRecord:
+        session_user = get_cached_session_user()
+        return MaintenanceModeStatusRecord(
+            available=False,
+            active=False,
+            canEnter=False,
+            canManagePermissions=False,
+            organizationId=session_user.organizationId if session_user else None,
+            userId=session_user.id if session_user else None,
+            reason=reason,
+        )
+
+    def _coerce_maintenance_status(payload: object, *, active: bool | None = None) -> MaintenanceModeStatusRecord:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Invalid maintenance mode payload")
+        status_record = MaintenanceModeStatusRecord(**payload)
+        if active is not None:
+            status_record = status_record.model_copy(update={"active": bool(active and status_record.canEnter and status_record.available)})
+        return status_record
+
+    def _cloud_maintenance_status() -> MaintenanceModeStatusRecord:
+        if not state.cloud_api_url:
+            with state.maintenance_mode_lock:
+                state.maintenance_mode_active = False
+            return _inactive_maintenance_status("尚未配置云端服务地址")
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            with state.maintenance_mode_lock:
+                state.maintenance_mode_active = False
+            return _inactive_maintenance_status("尚未登录云端账号")
+        try:
+            cloud_status = _coerce_maintenance_status(cloud_request("GET", "/api/v1/maintenance-mode/status", timeout=6.0))
+        except HTTPException as exc:
+            if exc.status_code in {401, 403}:
+                with state.maintenance_mode_lock:
+                    state.maintenance_mode_active = False
+                return _inactive_maintenance_status(str(exc.detail or "当前账号无维护权限"))
+            raise
+        with state.maintenance_mode_lock:
+            cached_user = get_cached_session_user()
+            active = (
+                state.maintenance_mode_active
+                and bool(cached_user)
+                and cached_user.id == cloud_status.userId
+                and bool(cloud_status.canEnter)
+                and bool(cloud_status.available)
+            )
+            if not active:
+                state.maintenance_mode_active = False
+                state.maintenance_mode_user_id = ""
+                state.maintenance_mode_entered_at = ""
+        return cloud_status.model_copy(update={"active": active})
+
+    def _require_active_maintenance_mode() -> MaintenanceModeStatusRecord:
+        status_record = _cloud_maintenance_status()
+        if not status_record.active:
+            raise HTTPException(status_code=403, detail=status_record.reason or "尚未进入维护模式")
+        return status_record
+
+    def _safe_local_maintenance_audit_detail(detail: dict[str, object]) -> dict[str, object]:
+        safe: dict[str, object] = {}
+        blocked_tokens = ("token", "secret", "password", "apiKey", "authorization", "key")
+        for key, value in detail.items():
+            if any(token.lower() in key.lower() for token in blocked_tokens):
+                continue
+            if isinstance(value, str):
+                safe[key] = value[:240]
+            elif isinstance(value, (int, float, bool)) or value is None:
+                safe[key] = value
+            elif isinstance(value, list):
+                safe[key] = value[:20]
+            elif isinstance(value, dict):
+                safe[key] = {str(k): str(v)[:160] for k, v in list(value.items())[:20]}
+        return safe
+
     def cloud_upload_file(
         path: str,
         *,
@@ -6812,12 +7089,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         content_type: str = "application/octet-stream",
         form_fields: dict[str, str] | None = None,
     ) -> object:
+        base_url = cloud_api_base_url()
+
         def _do_upload(token: str):
             headers = {"Authorization": f"Bearer {token}"}
             files = {"file": (file_name, file_content, content_type)}
             data = form_fields or {}
             return httpx.post(
-                f"{state.cloud_api_url}{path}",
+                f"{base_url}{path}",
                 headers=headers,
                 files=files,
                 data=data,
@@ -6990,6 +7269,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return datetime(today.year, month, day).date().isoformat()
         return text if re.match(r"^\d{4}-\d{2}-\d{2}$", text) else None
 
+    def task_has_explicit_time(value: str | None) -> bool:
+        if not value:
+            return False
+        return bool(re.match(r"^\d{4}-\d{2}-\d{2}[T\s]\d{1,2}:\d{2}", value.strip()))
+
+    def normalize_task_time_field(value: str | None) -> str | None:
+        if not value:
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        match = re.match(r"^(\d{4}-\d{2}-\d{2})[T\s](\d{1,2}):(\d{2})(?::\d{2})?$", text)
+        if match:
+            return f"{match.group(1)}T{int(match.group(2)):02d}:{match.group(3)}"
+        return text
+
+    def derive_task_temporal_fields(
+        *,
+        start_date: str | None,
+        due_date: str | None,
+        duration_minutes: int | None,
+        deadline_at: str | None = None,
+        scheduled_start_at: str | None = None,
+        scheduled_end_at: str | None = None,
+        completed_at: str | None = None,
+        previous_completed_at: str | None = None,
+        status: str | None = None,
+        timestamp: str | None = None,
+    ) -> dict[str, object | None]:
+        normalized_start = normalize_task_time_field(start_date)
+        normalized_due = normalize_task_time_field(due_date)
+        normalized_deadline = normalize_task_time_field(deadline_at)
+        normalized_scheduled_start = normalize_task_time_field(scheduled_start_at)
+        normalized_scheduled_end = normalize_task_time_field(scheduled_end_at)
+        safe_duration = max(15, int(duration_minutes or 60))
+        if not normalized_deadline and not normalized_scheduled_start:
+            if normalized_start:
+                normalized_scheduled_start = normalized_start
+            elif normalized_due:
+                if task_has_explicit_time(normalized_due):
+                    normalized_scheduled_start = normalized_due
+                else:
+                    normalized_deadline = normalized_due
+        compat_start = normalized_scheduled_start
+        compat_due = normalized_deadline or normalized_scheduled_start
+        if status == "done":
+            resolved_completed_at = normalize_task_time_field(completed_at) or normalize_task_time_field(previous_completed_at) or timestamp or now_iso()
+        elif status:
+            resolved_completed_at = None
+        else:
+            resolved_completed_at = normalize_task_time_field(completed_at) or normalize_task_time_field(previous_completed_at)
+        return {
+            "deadline_at": normalized_deadline,
+            "scheduled_start_at": normalized_scheduled_start,
+            "scheduled_end_at": normalized_scheduled_end,
+            "completed_at": resolved_completed_at,
+            "start_date": compat_start,
+            "due_date": compat_due,
+            "duration_minutes": safe_duration,
+        }
+
     def build_cloud_task_tag(payload: dict[str, object]) -> TaskTagRecord:
         return TaskTagRecord(
             id=str(payload.get("id", "")),
@@ -7121,6 +7461,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )
         progress_status = str(payload.get("progressStatus", "todo"))
+        duration_minutes = int(payload.get("durationMinutes") or 60)
+        temporal_fields = derive_task_temporal_fields(
+            start_date=str(payload.get("startDate")) if payload.get("startDate") else None,
+            due_date=str(payload.get("dueDate")) if payload.get("dueDate") else None,
+            duration_minutes=duration_minutes,
+            deadline_at=str(payload.get("deadlineAt")) if payload.get("deadlineAt") else None,
+            scheduled_start_at=str(payload.get("scheduledStartAt")) if payload.get("scheduledStartAt") else None,
+            scheduled_end_at=str(payload.get("scheduledEndAt")) if payload.get("scheduledEndAt") else None,
+            completed_at=str(payload.get("completedAt")) if payload.get("completedAt") else None,
+            status=progress_status,
+            timestamp=str(payload.get("updatedAt") or payload.get("createdAt") or now_iso()),
+        )
         viewer_status = payload.get("viewerInboxStatus")
         task_status = "inbox" if viewer_status == "pending" else progress_status
         org_context_payload = payload.get("orgContext")
@@ -7222,9 +7574,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             listId=list_record.id,
             listName=list_record.name,
             listColor=list_record.color,
-            ddl=task_due_label(payload.get("dueDate") if isinstance(payload.get("dueDate"), str) else None),
-            dueDate=payload.get("dueDate") if isinstance(payload.get("dueDate"), str) else None,
-            durationMinutes=int(payload.get("durationMinutes") or 60),
+            ddl=task_due_label(str(temporal_fields["due_date"])) if temporal_fields["due_date"] else "待确认",
+            startDate=temporal_fields["start_date"] if isinstance(temporal_fields["start_date"], str) else None,
+            dueDate=temporal_fields["due_date"] if isinstance(temporal_fields["due_date"], str) else None,
+            deadlineAt=temporal_fields["deadline_at"] if isinstance(temporal_fields["deadline_at"], str) else None,
+            scheduledStartAt=temporal_fields["scheduled_start_at"] if isinstance(temporal_fields["scheduled_start_at"], str) else None,
+            scheduledEndAt=temporal_fields["scheduled_end_at"] if isinstance(temporal_fields["scheduled_end_at"], str) else None,
+            completedAt=temporal_fields["completed_at"] if isinstance(temporal_fields["completed_at"], str) else None,
+            durationMinutes=int(temporal_fields["duration_minutes"] or 60),
             scopeMode=str(payload.get("scopeMode") or "COLLAB_SHARED"),  # type: ignore[arg-type]
             clientId=client_id,
             clientName=str(client_row["name"]) if client_row else None,
@@ -7332,6 +7689,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _upsert_cloud_event_line_shadow_local(
         payload: object,
         *,
+        local_id: str | None = None,
         fallback_client_id: str | None = None,
         fallback_name: str | None = None,
     ) -> str | None:
@@ -7342,7 +7700,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not cloud_id:
             return None
 
-        existing = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (cloud_id, cloud_id))
+        normalized_local_id = (local_id or "").strip() or None
+        if normalized_local_id:
+            existing = state.db.fetchone(
+                "SELECT * FROM event_lines WHERE id = ? OR cloud_id = ? OR id = ?",
+                (cloud_id, cloud_id, normalized_local_id),
+            )
+        else:
+            existing = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (cloud_id, cloud_id))
+        local_event_line_id = str(existing["id"]) if existing and existing["id"] else (normalized_local_id or cloud_id)
         timestamp = now_iso()
 
         def value(key: str, column: str, default: object | None = None) -> object | None:
@@ -7431,7 +7797,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 last_sync_error = excluded.last_sync_error
             """,
             (
-                cloud_id,
+                local_event_line_id,
                 text_value("organizationId", "organization_id", "") or "",
                 resolved_name,
                 text_value("kind", "kind", "custom") or "custom",
@@ -7465,9 +7831,205 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "",
             ),
         )
-        refresh_event_line_memory_snapshot(state.db, cloud_id)
-        _invalidate_event_line_snapshot_cache(cloud_id)
-        return cloud_id
+        refresh_event_line_memory_snapshot(state.db, local_event_line_id)
+        _invalidate_event_line_snapshot_cache(local_event_line_id)
+        return local_event_line_id
+
+    _event_line_sync_lock = Lock()
+
+    def _event_line_cloud_payload_from_row(row, *, include_id: bool = False) -> dict[str, object | None]:
+        local_id = str(row["id"])
+        client_id = str(row["primary_client_id"]).strip() if row["primary_client_id"] else None
+        client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
+        primary_client_name = (
+            str(client_row["name"])
+            if client_row and client_row["name"]
+            else (str(row["primary_client_name"]) if row["primary_client_name"] else None)
+        )
+        payload: dict[str, object | None] = {
+            "name": str(row["name"]),
+            "kind": str(row["kind"] or "custom"),
+            "status": str(row["status"] or "active"),
+            "visibilityScope": str(row["visibility_scope"] or "project_public"),
+            "businessCategory": str(row["business_category"]) if row["business_category"] else None,
+            "stage": str(row["stage"]) if row["stage"] else None,
+            "summary": str(row["summary"]) if row["summary"] else None,
+            "intent": str(row["intent"]) if row["intent"] else None,
+            "currentBlocker": str(row["current_blocker"]) if row["current_blocker"] else None,
+            "recentDecision": str(row["recent_decision"]) if row["recent_decision"] else None,
+            "nextStep": str(row["next_step"]) if row["next_step"] else None,
+            "evidenceCount": int(row["evidence_count"] or 0),
+            "ownerId": str(row["owner_id"]) if row["owner_id"] else None,
+            "primaryClientId": client_id,
+            "primaryClientName": primary_client_name,
+            "primaryDepartmentId": str(row["primary_department_id"]) if row["primary_department_id"] else None,
+            "participantIds": [str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
+            "closedAt": str(row["closed_at"]) if row["closed_at"] else None,
+            "closedByUserId": str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
+            "createdAt": str(row["created_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
+        if include_id:
+            payload["id"] = local_id
+        return payload
+
+    def _sync_error_text(error: Exception) -> str:
+        detail = getattr(error, "detail", None)
+        if detail:
+            return str(detail)[:500]
+        return str(error or type(error).__name__)[:500]
+
+    def _mark_event_line_pending(event_line_id: str, action: str, error: Exception | str, payload: dict[str, object | None] | None = None) -> None:
+        error_text = str(error)[:500] if isinstance(error, str) else _sync_error_text(error)
+        state.db.execute(
+            """
+            UPDATE event_lines
+            SET sync_status = 'pending',
+                pending_sync_action = ?,
+                cloud_payload_json = ?,
+                last_sync_error = ?,
+                updated_at = updated_at
+            WHERE id = ?
+            """,
+            (action, to_json(payload or {}), error_text, event_line_id),
+        )
+
+    def _mark_event_line_synced_without_payload(event_line_id: str, cloud_id: str) -> None:
+        synced_at = now_iso()
+        state.db.execute(
+            """
+            UPDATE event_lines
+            SET sync_status = 'synced',
+                cloud_id = ?,
+                last_synced_at = ?,
+                last_cloud_version = ?,
+                pending_sync_action = '',
+                last_sync_error = ''
+            WHERE id = ?
+            """,
+            (cloud_id, synced_at, synced_at, event_line_id),
+        )
+
+    def _sync_event_line_row_to_cloud(row, *, forced_action: str | None = None) -> bool:
+        if not get_cloud_token():
+            return False
+        local_event_line_id = str(row["id"])
+        cloud_id = str(row["cloud_id"] or "").strip()
+        pending_action = (forced_action or str(row["pending_sync_action"] or "").strip() or ("update" if cloud_id else "create")).strip()
+        if pending_action not in {"create", "update", "archive"}:
+            pending_action = "update" if cloud_id else "create"
+        create_payload = _event_line_cloud_payload_from_row(row, include_id=True)
+        update_payload = _event_line_cloud_payload_from_row(row, include_id=False)
+        try:
+            if not cloud_id:
+                try:
+                    existing_payload = cloud_request("GET", f"/api/v1/event-lines/{local_event_line_id}", timeout=6.0)
+                    if isinstance(existing_payload, dict):
+                        _upsert_cloud_event_line_shadow_local(existing_payload, local_id=local_event_line_id)
+                        refreshed = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+                        cloud_id = str(refreshed["cloud_id"] or "").strip() if refreshed else local_event_line_id
+                except HTTPException as exc:
+                    if exc.status_code not in {404, 405}:
+                        raise
+                if not cloud_id:
+                    response = cloud_request("POST", "/api/v1/event-lines", json_body=create_payload, timeout=6.0)
+                    if not isinstance(response, dict):
+                        raise HTTPException(status_code=502, detail="Invalid event line payload")
+                    _upsert_cloud_event_line_shadow_local(response, local_id=local_event_line_id)
+                    refreshed = state.db.fetchone("SELECT cloud_id FROM event_lines WHERE id = ?", (local_event_line_id,))
+                    cloud_id = str(refreshed["cloud_id"] or "").strip() if refreshed and refreshed["cloud_id"] else local_event_line_id
+            if pending_action == "archive":
+                try:
+                    response = cloud_request("POST", f"/api/v1/event-lines/{cloud_id}/close", timeout=6.0)
+                except HTTPException as exc:
+                    if exc.status_code not in {404, 405}:
+                        raise
+                    response = cloud_request("PATCH", f"/api/v1/event-lines/{cloud_id}", json_body={"status": "archived"}, timeout=6.0)
+            elif pending_action == "update" or cloud_id:
+                response = cloud_request("PATCH", f"/api/v1/event-lines/{cloud_id}", json_body=update_payload, timeout=6.0)
+            else:
+                response = {}
+            if isinstance(response, dict) and (response.get("id") or response.get("eventLine")):
+                _upsert_cloud_event_line_shadow_local(response, local_id=local_event_line_id)
+            else:
+                _mark_event_line_synced_without_payload(local_event_line_id, cloud_id or local_event_line_id)
+            return True
+        except Exception as error:
+            failed_payload = create_payload if not cloud_id else update_payload
+            _mark_event_line_pending(local_event_line_id, pending_action, error, failed_payload)
+            return False
+
+    def sync_pending_event_lines(limit: int = 10) -> int:
+        if not get_cloud_token():
+            return 0
+        if not _event_line_sync_lock.acquire(blocking=False):
+            return 0
+        try:
+            rows = state.db.fetchall(
+                """
+                SELECT *
+                FROM event_lines
+                WHERE sync_status IN ('pending', 'error')
+                   OR (sync_status = 'local' AND (cloud_id IS NULL OR cloud_id = ''))
+                ORDER BY updated_at ASC, created_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            synced = 0
+            for row in rows:
+                if _sync_event_line_row_to_cloud(row):
+                    synced += 1
+            return synced
+        finally:
+            _event_line_sync_lock.release()
+
+    def ensure_event_line_cloud_id(event_line_id: str | None) -> str | None:
+        normalized_event_line_id = (event_line_id or "").strip()
+        if not normalized_event_line_id:
+            return None
+        row = state.db.fetchone(
+            "SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?",
+            (normalized_event_line_id, normalized_event_line_id),
+        )
+        if row:
+            cloud_id = str(row["cloud_id"] or "").strip()
+            if cloud_id:
+                return cloud_id
+            if _sync_event_line_row_to_cloud(row, forced_action="create"):
+                synced_row = state.db.fetchone("SELECT cloud_id FROM event_lines WHERE id = ?", (str(row["id"]),))
+                return str(synced_row["cloud_id"] or "").strip() if synced_row and synced_row["cloud_id"] else str(row["id"])
+            return None
+        if not get_cloud_token():
+            return None
+        try:
+            payload = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}", timeout=6.0)
+            local_id = _upsert_cloud_event_line_shadow_local(payload)
+            if local_id:
+                synced_row = state.db.fetchone("SELECT cloud_id FROM event_lines WHERE id = ?", (local_id,))
+                return str(synced_row["cloud_id"] or "").strip() if synced_row and synced_row["cloud_id"] else normalized_event_line_id
+        except Exception:
+            return None
+        return None
+
+    def _resolve_task_cloud_event_line_dependency(task_id: str, cloud_payload: dict[str, object | None]) -> bool:
+        event_line_ref = str(cloud_payload.get("eventLineId") or "").strip()
+        if not event_line_ref:
+            return True
+        cloud_event_line_id = ensure_event_line_cloud_id(event_line_ref)
+        if cloud_event_line_id:
+            cloud_payload["eventLineId"] = cloud_event_line_id
+            return True
+        state.db.execute(
+            """
+            UPDATE tasks
+            SET sync_status = 'pending',
+                last_sync_error = ?
+            WHERE id = ?
+            """,
+            ("等待事件线先同步到云端", task_id),
+        )
+        return False
 
     def _upsert_cloud_task_shadow_local(payload: dict[str, object]) -> str | None:
         cloud_id = str(payload.get("id") or "").strip()
@@ -7486,34 +8048,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         existing = state.db.fetchone(
             """
             SELECT id, organization_id, creator_id, owner_name, ddl, created_at,
-                   status, progress_status, sync_status, pending_sync_action, updated_at
+                   status, progress_status, sync_status, pending_sync_action, updated_at, completed_at
             FROM tasks
             WHERE id = ? OR cloud_id = ?
             """,
             (cloud_id, cloud_id),
         )
         local_task_id = str(existing["id"]) if existing and existing["id"] else cloud_id
-        due_date = str(payload.get("dueDate")) if payload.get("dueDate") else None
         progress_status = str(payload.get("progressStatus") or "todo")
+        temporal_fields = derive_task_temporal_fields(
+            start_date=str(payload.get("startDate")) if payload.get("startDate") else None,
+            due_date=str(payload.get("dueDate")) if payload.get("dueDate") else None,
+            duration_minutes=int(payload.get("durationMinutes") or 60),
+            deadline_at=str(payload.get("deadlineAt")) if payload.get("deadlineAt") else None,
+            scheduled_start_at=str(payload.get("scheduledStartAt")) if payload.get("scheduledStartAt") else None,
+            scheduled_end_at=str(payload.get("scheduledEndAt")) if payload.get("scheduledEndAt") else None,
+            completed_at=str(payload.get("completedAt")) if payload.get("completedAt") else None,
+            previous_completed_at=str(existing["completed_at"]) if existing and existing["completed_at"] else None,
+            status=progress_status,
+            timestamp=str(payload.get("updatedAt") or now_iso()),
+        )
+        due_date = str(temporal_fields["due_date"]) if temporal_fields["due_date"] else None
         viewer_status = str(payload.get("viewerInboxStatus")) if payload.get("viewerInboxStatus") else None
         local_status = "inbox" if viewer_status == "pending" else progress_status
         payload_event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
         if payload_event_line_id and get_cloud_token():
             try:
                 event_line_payload = cloud_request("GET", f"/api/v1/event-lines/{payload_event_line_id}")
-                _upsert_cloud_event_line_shadow_local(
+                local_event_line_id = _upsert_cloud_event_line_shadow_local(
                     event_line_payload,
                     fallback_client_id=str(payload.get("clientId")) if payload.get("clientId") else None,
                     fallback_name=str(payload.get("eventLineName")) if payload.get("eventLineName") else None,
                 )
+                if local_event_line_id:
+                    payload_event_line_id = local_event_line_id
             except Exception:
-                _upsert_cloud_event_line_shadow_local(
+                local_event_line_id = _upsert_cloud_event_line_shadow_local(
                     {
                         "id": payload_event_line_id,
                         "name": payload.get("eventLineName") or payload_event_line_id,
                         "primaryClientId": payload.get("clientId"),
                     }
                 )
+                if local_event_line_id:
+                    payload_event_line_id = local_event_line_id
         tags = [item for item in payload.get("tags", []) if isinstance(item, dict)]
         timestamp = now_iso()
         resolved_updated_at = str(payload.get("updatedAt") or timestamp)
@@ -7532,11 +8110,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # Otherwise an older cloud pull can flip a calendar-completed task back to todo.
             return local_task_id
         if existing and progress_status != "done" and _latest_local_task_status_update(local_task_id, cloud_id) == "done":
+            completed_at = str(existing["completed_at"]) if existing and existing["completed_at"] else now_iso()
             state.db.execute(
                 """
                 UPDATE tasks
                 SET status = 'done',
                     progress_status = 'done',
+                    completed_at = COALESCE(completed_at, ?),
                     sync_status = 'pending',
                     pending_sync_action = 'update',
                     cloud_payload_json = ?,
@@ -7544,18 +8124,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (to_json({"progressStatus": "done"}), now_iso(), local_task_id),
+                (completed_at, to_json({"progressStatus": "done", "completedAt": completed_at}), completed_at, local_task_id),
             )
             return local_task_id
         state.db.execute(
             """
             INSERT INTO tasks(
                 id, organization_id, title, description, status, priority, list_id, creator_id, owner_id, owner_name,
-                progress_status, ddl, due_date, duration_minutes, scope_mode, client_id, event_line_id, project_module_id,
+                progress_status, ddl, deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date, due_date, duration_minutes, scope_mode, client_id, event_line_id, project_module_id,
                 project_flow_id, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 source_type, source_id, tags_json, tag_ids_json, created_at, updated_at, sync_status, cloud_id,
                 cloud_payload_json, last_synced_at, last_cloud_version, pending_sync_action, last_sync_error
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 organization_id = excluded.organization_id,
                 title = excluded.title,
@@ -7568,6 +8148,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 owner_name = excluded.owner_name,
                 progress_status = excluded.progress_status,
                 ddl = excluded.ddl,
+                deadline_at = excluded.deadline_at,
+                scheduled_start_at = excluded.scheduled_start_at,
+                scheduled_end_at = excluded.scheduled_end_at,
+                completed_at = excluded.completed_at,
+                start_date = excluded.start_date,
                 due_date = excluded.due_date,
                 duration_minutes = excluded.duration_minutes,
                 scope_mode = excluded.scope_mode,
@@ -7606,8 +8191,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 str(payload.get("ownerName") or (str(existing["owner_name"]) if existing and existing["owner_name"] else "")),
                 progress_status,
                 task_due_label(due_date) if due_date else (str(existing["ddl"]) if existing and existing["ddl"] else "待确认"),
+                temporal_fields["deadline_at"],
+                temporal_fields["scheduled_start_at"],
+                temporal_fields["scheduled_end_at"],
+                temporal_fields["completed_at"],
+                temporal_fields["start_date"],
                 due_date,
-                int(payload.get("durationMinutes") or 60),
+                int(temporal_fields["duration_minutes"] or 60),
                 str(payload.get("scopeMode") or "COLLAB_SHARED"),
                 str(payload.get("clientId")) if payload.get("clientId") else None,
                 payload_event_line_id,
@@ -7737,11 +8327,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             should_restore_done = latest_status == "done" or str(row["status"] or "") == "done"
             if not should_restore_done:
                 continue
+            completed_at = now_iso()
             state.db.execute(
                 """
                 UPDATE tasks
                 SET status = 'done',
                     progress_status = 'done',
+                    completed_at = COALESCE(completed_at, ?),
                     sync_status = CASE WHEN cloud_id IS NOT NULL AND cloud_id != '' THEN 'pending' ELSE sync_status END,
                     pending_sync_action = CASE WHEN cloud_id IS NOT NULL AND cloud_id != '' THEN 'update' ELSE pending_sync_action END,
                     cloud_payload_json = CASE WHEN cloud_id IS NOT NULL AND cloud_id != '' THEN ? ELSE cloud_payload_json END,
@@ -7749,7 +8341,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     updated_at = CASE WHEN status = 'done' THEN updated_at ELSE ? END
                 WHERE id = ?
                 """,
-                (to_json({"progressStatus": "done"}), now_iso(), local_id),
+                (completed_at, to_json({"progressStatus": "done", "completedAt": completed_at}), completed_at, local_id),
             )
             restored += 1
         return restored
@@ -8019,6 +8611,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             event_line_id=event_line_id,
         )
         collaborators, collaboration_summary, viewer_inbox_status = _task_collaboration_state(str(row["id"]))
+        temporal_fields = derive_task_temporal_fields(
+            start_date=str(row["start_date"]) if row["start_date"] else None,
+            due_date=str(row["due_date"]) if row["due_date"] else None,
+            duration_minutes=int(row["duration_minutes"] or 60),
+            deadline_at=str(row["deadline_at"]) if row["deadline_at"] else None,
+            scheduled_start_at=str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None,
+            scheduled_end_at=str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None,
+            completed_at=str(row["completed_at"]) if row["completed_at"] else None,
+            status=str(row["status"]),
+            timestamp=str(row["updated_at"]),
+        )
         return TaskRecord(
             id=str(row["id"]),
             title=str(row["title"]),
@@ -8029,8 +8632,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             listName=str(row["list_name"]),
             listColor=str(row["list_color"]),
             ddl=str(row["ddl"]),
-            dueDate=str(row["due_date"]) if row["due_date"] else None,
-            durationMinutes=int(row["duration_minutes"] or 60),
+            startDate=temporal_fields["start_date"] if isinstance(temporal_fields["start_date"], str) else None,
+            dueDate=temporal_fields["due_date"] if isinstance(temporal_fields["due_date"], str) else None,
+            deadlineAt=temporal_fields["deadline_at"] if isinstance(temporal_fields["deadline_at"], str) else None,
+            scheduledStartAt=temporal_fields["scheduled_start_at"] if isinstance(temporal_fields["scheduled_start_at"], str) else None,
+            scheduledEndAt=temporal_fields["scheduled_end_at"] if isinstance(temporal_fields["scheduled_end_at"], str) else None,
+            completedAt=temporal_fields["completed_at"] if isinstance(temporal_fields["completed_at"], str) else None,
+            durationMinutes=int(temporal_fields["duration_minutes"] or 60),
             scopeMode=str(row["scope_mode"] or "COLLAB_SHARED"),  # type: ignore[arg-type]
             clientId=client_id,
             clientName=str(row["client_name"]) if row["client_name"] else None,
@@ -8085,12 +8693,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ownerId=str(payload.get("ownerId")) if payload.get("ownerId") else None,
             ownerName=str(payload.get("ownerName")) if payload.get("ownerName") else None,
             primaryClientId=client_id,
-            primaryClientName=cloud_client_name or (str(client_row["name"]) if client_row else None),
+            primaryClientName=(str(client_row["name"]) if client_row else None) or cloud_client_name,
             primaryDepartmentId=str(payload.get("primaryDepartmentId")) if payload.get("primaryDepartmentId") else None,
             primaryDepartmentName=str(payload.get("primaryDepartmentName")) if payload.get("primaryDepartmentName") else None,
             participantIds=[str(item) for item in payload.get("participantIds", [])] if isinstance(payload.get("participantIds"), list) else [],
             closedAt=str(payload.get("closedAt")) if payload.get("closedAt") else None,
             closedByUserId=str(payload.get("closedByUserId")) if payload.get("closedByUserId") else None,
+            syncStatus="synced",
+            cloudId=str(payload.get("id")) if payload.get("id") else None,
+            pendingSyncAction=None,
+            lastSyncError=None,
             createdAt=str(payload.get("createdAt", now_iso())),
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
@@ -8153,6 +8765,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
             closedAt=str(row["closed_at"]) if row["closed_at"] else None,
             closedByUserId=str(row["closed_by_user_id"]) if row["closed_by_user_id"] else None,
+            syncStatus=str(row["sync_status"]) if row["sync_status"] else None,
+            cloudId=str(row["cloud_id"]) if row["cloud_id"] else None,
+            pendingSyncAction=str(row["pending_sync_action"]) if row["pending_sync_action"] else None,  # type: ignore[arg-type]
+            lastSyncError=str(row["last_sync_error"]) if row["last_sync_error"] else None,
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -8747,7 +9363,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "未决问题",
         )
 
-        def is_strategic_learning_task(task: TaskRecord, target_client_id: str | None) -> bool:
+        def matches_strategic_growth_task(task: TaskRecord, target_client_id: str | None) -> bool:
             if target_client_id and task_client_matches(task, target_client_id):
                 return True
             haystack = " ".join(
@@ -10154,7 +10770,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             strategic_ranked: list[tuple[int, int, TaskRecord]] = []
             for index, task in enumerate(real_tasks):
                 is_client_match = bool(scoped_client_id and task_client_matches(task, scoped_client_id))
-                is_keyword_match = is_strategic_learning_task(task, scoped_client_id)
+                is_keyword_match = matches_strategic_growth_task(task, scoped_client_id)
                 if is_client_match:
                     strategic_ranked.append((0, index, task))
                     continue
@@ -10213,7 +10829,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     activeTaskId=None,
                     learningSummary=GrowthLearningSummaryRecord(
                         headline="还没有真实任务，先从基础训练开始",
-                        whyItMatters="这些是战略陪伴高频方法卡，不是针对某个客户的个性化判断。创建客户任务或会议行动项后，系统会自动生成更具体的学习清单。",
+                        whyItMatters="这些是战略陪伴高频方法卡，不是针对某个客户的个性化判断。创建客户任务或会议行动项后，系统会自动生成更具体的成长建议。",
                         immediateMove="先选择一张方法卡，或从客户工作台把一个问题转成任务。",
                         generator="rules",
                         confidence="low",
@@ -10267,7 +10883,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     checklistItems=preset_checklist,
                     supportCopy=GrowthWorkbenchSupportCopyRecord(
                         title="当前是基础训练模式（非个性化判断）",
-                        intro="你还没有把真实任务带入学习清单。先练一张方法卡，或先创建客户任务，再回来即可获得更精准推荐。",
+                        intro="你还没有把真实任务带入学习导航。先练一张方法卡，或先创建客户任务，再回来即可获得更精准推荐。",
                         bullets=["本轮为规则匹配，没有调用 AI 自由生成学习建议。"],
                     ),
                     robotPlan=[],
@@ -10605,7 +11221,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
             bullets=[
                 "当前轮次为规则匹配，没有调用 AI 自由生成学习建议。" if normalized_mode == "strategic" else ("当前任务已经有基础背景，可以直接对齐关键动作。" if active_task.hasBackground else "先写清任务目标、对象和预期交付物。"),
-                "先把当前问题转成真实任务，系统再给个性化学习清单。" if normalized_mode == "strategic" and source_mode != "task" else ("当前已经有时间点，下一步重点是把责任和边界讲清楚。" if active_task.hasDeadline else "没有截止时间时，动作很容易在中途失焦。"),
+                "先把当前问题转成真实任务，系统再给个性化成长建议。" if normalized_mode == "strategic" and source_mode != "task" else ("当前已经有时间点，下一步重点是把责任和边界讲清楚。" if active_task.hasDeadline else "没有截止时间时，动作很容易在中途失焦。"),
                 "沉淀到成长手册后，下次可直接复用这张方法卡。" if normalized_mode == "strategic" else ("跨部门任务要优先处理协作边界，避免会后推诿返工。" if active_task.isCrossDepartment else "单点任务更要先补事实依据和当前阶段判断。"),
             ],
         )
@@ -11162,7 +11778,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             intro=str(row["intro"]),
             stage=str(row["stage"]),
             color=str(row["color"] or "#5B7BFE"),
-            folderCount=len(HUMAN_VISIBLE_CATEGORIES),
+            folderCount=state.db.scalar("SELECT COUNT(DISTINCT label) AS count FROM client_folders WHERE client_id = ? AND is_hidden = 0", (client_id,)),
             documentCount=state.db.scalar("SELECT COUNT(1) AS count FROM documents WHERE client_id = ?", (client_id,)),
             taskCount=state.db.scalar(
                 """
@@ -11176,6 +11792,100 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
             lastActivityAt=str(row["updated_at"]),
         )
+
+    ORGANIZATION_WORKSPACE_CLIENT_TYPE = "organization_workspace"
+
+    def _normalize_workspace_client_name(value: str | None) -> str:
+        return " ".join(str(value or "").strip().split()).casefold()
+
+    def _ensure_local_organization_workspace_client(organization_name: str | None) -> ClientSummary | None:
+        resolved_name = " ".join(str(organization_name or "").strip().split())
+        if not resolved_name:
+            return None
+        normalized_name = _normalize_workspace_client_name(resolved_name)
+        rows = state.db.fetchall("SELECT * FROM clients ORDER BY updated_at DESC, name COLLATE NOCASE ASC")
+        same_name_row = None
+        typed_workspace_row = None
+        for row in rows:
+            row_name = _normalize_workspace_client_name(str(row["name"] or ""))
+            row_alias = _normalize_workspace_client_name(str(row["alias"] or ""))
+            row_type = str(row["type"] or "")
+            if row_name == normalized_name or row_alias == normalized_name:
+                same_name_row = row
+                break
+            if row_type == ORGANIZATION_WORKSPACE_CLIENT_TYPE and typed_workspace_row is None:
+                typed_workspace_row = row
+
+        timestamp = now_iso()
+        if same_name_row is not None:
+            client_id = str(same_name_row["id"])
+            if str(same_name_row["type"] or "") != ORGANIZATION_WORKSPACE_CLIENT_TYPE:
+                state.db.execute(
+                    "UPDATE clients SET type = ?, updated_at = ? WHERE id = ?",
+                    (ORGANIZATION_WORKSPACE_CLIENT_TYPE, timestamp, client_id),
+                )
+            ensure_standard_client_folders(client_id)
+            return build_client_summary(client_id)
+
+        if typed_workspace_row is not None:
+            client_id = str(typed_workspace_row["id"])
+            ensure_standard_client_folders(client_id)
+            return build_client_summary(client_id)
+
+        client_id = new_id("client")
+        client_color = "#5B7BFE"
+        state.db.execute(
+            """
+            INSERT INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                client_id,
+                resolved_name,
+                resolved_name,
+                "组织工作台",
+                ORGANIZATION_WORKSPACE_CLIENT_TYPE,
+                "当前组织自己的工作台，用于承载组织内部任务、日历安排和资料沉淀。",
+                "组织工作台",
+                client_color,
+                timestamp,
+                timestamp,
+            ),
+        )
+        thread_id = new_id("thread")
+        state.db.execute(
+            "INSERT INTO chat_threads(id, client_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+            (thread_id, client_id, "默认研判线程", timestamp, timestamp),
+        )
+        ensure_standard_client_folders(client_id)
+        log_activity(
+            "client.ensure_organization_workspace",
+            "client",
+            client_id,
+            {"organizationName": resolved_name, "clientType": ORGANIZATION_WORKSPACE_CLIENT_TYPE},
+        )
+        return build_client_summary(client_id)
+
+    def _with_local_organization_workspace_client_id(payload: dict[str, object]) -> dict[str, object]:
+        status = str(payload.get("membershipStatus") or "")
+        organization_name = str(payload.get("organizationName") or "").strip()
+        has_organization = bool(payload.get("hasOrganization"))
+        if status == "approved" and has_organization and organization_name:
+            local_workspace = _ensure_local_organization_workspace_client(organization_name)
+            if local_workspace is not None:
+                payload = dict(payload)
+                payload["organizationWorkspaceClientId"] = local_workspace.id
+        return payload
+
+    def _ensure_local_organization_workspace_from_cloud_membership() -> None:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return
+        try:
+            membership_payload = cloud_request("GET", "/api/v1/me/org-membership")
+            if isinstance(membership_payload, dict):
+                _with_local_organization_workspace_client_id(membership_payload)
+        except Exception:
+            pass
 
     def build_task_project_context(
         client_id: str | None,
@@ -11411,39 +12121,450 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             sourceEvidence=source_evidence,
         )
 
-    def ensure_standard_client_folders(client_id: str) -> None:
-        folders = ensure_client_workspace(state.data_dir, client_id)
+    ONLINE_TRANSCRIPT_FOLDER_LABEL = "线上转写"
+    ONLINE_TRANSCRIPT_MATERIAL_LAYER = "external_media_transcript"
+
+    def _online_transcript_target_path(client_id: str, file_name: str, folders: dict[str, Path] | None = None) -> Path:
+        workspace_folders = folders or ensure_client_workspace(state.data_dir, client_id)
+        target_dir = workspace_folders.get(ONLINE_TRANSCRIPT_FOLDER_LABEL)
+        if target_dir is None:
+            target_dir = state.data_dir / "client_workspace" / client_id / ONLINE_TRANSCRIPT_FOLDER_LABEL
+            target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / file_name
+
+    def _force_online_transcript_document_classification(
+        *,
+        client_id: str,
+        document_id: str,
+        target_path: Path,
+        run_id: str | None = None,
+        tags: list[str] | None = None,
+        folder_id: str | None = None,
+    ) -> None:
         timestamp = now_iso()
-        for label, path in folders.items():
-            existing = state.db.fetchone(
+        resolved_tags = tags or [
+            "video_transcript",
+            ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+            ONLINE_TRANSCRIPT_FOLDER_LABEL,
+            "md",
+        ]
+        if folder_id is None:
+            folder_row = state.db.fetchone(
                 "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
+                (client_id, ONLINE_TRANSCRIPT_FOLDER_LABEL),
+            )
+            folder_id = str(folder_row["id"]) if folder_row else None
+        state.db.execute(
+            """
+            UPDATE documents
+            SET folder_id = ?, path = ?, original_source_path = ?, source = 'video_transcript',
+                tags_json = ?, canonical_kind = 'raw_file', origin_type = 'video_transcript',
+                origin_id = ?, source_entity_type = 'video_transcript', source_entity_id = ?,
+                is_searchable = 1, lifecycle_status = 'active'
+            WHERE id = ? AND client_id = ?
+            """,
+            (
+                folder_id,
+                str(target_path),
+                str(target_path),
+                to_json(resolved_tags),
+                run_id or document_id,
+                run_id or document_id,
+                document_id,
+                client_id,
+            ),
+        )
+        state.db.execute(
+            """
+            UPDATE knowledge_documents
+            SET current_human_path = ?, human_folder_category = ?, normalized_path = ?,
+                primary_category = ?, secondary_category = ?, kind = COALESCE(NULLIF(kind, ''), 'md'),
+                reclassified_at = ?, reclass_reason = ?, reclass_confidence = 1.0, updated_at = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (
+                str(target_path),
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                str(target_path),
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                timestamp,
+                "link_material_online_transcript_archive",
+                timestamp,
+                client_id,
+                document_id,
+            ),
+        )
+        state.db.execute(
+            """
+            UPDATE v2_documents
+            SET original_path = ?, managed_path = ?, material_layer = ?, visible_category = ?,
+                secondary_category = ?, canonical_kind = 'raw_file', origin_type = 'video_transcript',
+                origin_id = ?, source_entity_type = 'video_transcript', source_entity_id = ?,
+                is_searchable = 1, lifecycle_status = 'active', updated_at = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (
+                str(target_path),
+                str(target_path),
+                ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                run_id or document_id,
+                run_id or document_id,
+                timestamp,
+                client_id,
+                document_id,
+            ),
+        )
+        state.db.execute(
+            """
+            UPDATE knowledge_surrogates
+            SET folder_category = ?, document_role = ?, updated_at = ?
+            WHERE client_id = ? AND id = ?
+            """,
+            (
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+                timestamp,
+                client_id,
+                f"ks_instant_{document_id}",
+            ),
+        )
+        state.db.execute(
+            """
+            UPDATE knowledge_master_index
+            SET folder_category = ?, document_role = ?, source_path = ?, updated_at = ?
+            WHERE client_id = ? AND (id = ? OR surrogate_id = ?)
+            """,
+            (
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+                str(target_path),
+                timestamp,
+                client_id,
+                f"v2doc_{document_id}",
+                f"ks_instant_{document_id}",
+            ),
+        )
+        refresh_client_folder_counts(state.db, client_id)
+
+    def migrate_client_link_material_documents_to_online_transcripts(
+        client_id: str,
+        folders: dict[str, Path] | None = None,
+    ) -> int:
+        workspace_folders = folders or ensure_client_workspace(state.data_dir, client_id)
+        target_dir = workspace_folders.get(ONLINE_TRANSCRIPT_FOLDER_LABEL)
+        if target_dir is None:
+            target_dir = state.data_dir / "client_workspace" / client_id / ONLINE_TRANSCRIPT_FOLDER_LABEL
+            target_dir.mkdir(parents=True, exist_ok=True)
+        folder_row = state.db.fetchone(
+            "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
+            (client_id, ONLINE_TRANSCRIPT_FOLDER_LABEL),
+        )
+        folder_id = str(folder_row["id"]) if folder_row else None
+        rows = state.db.fetchall(
+            """
+            SELECT d.id, d.title, d.path, d.original_source_path, d.tags_json,
+                   vd.managed_path, vd.markdown_path, vd.visible_category, vd.material_layer,
+                   d.origin_id, d.source_entity_id
+            FROM documents d
+            LEFT JOIN v2_documents vd ON vd.document_id = d.id
+            WHERE d.client_id = ?
+              AND d.source = 'video_transcript'
+              AND (
+                COALESCE(vd.visible_category, '') != ?
+                OR COALESCE(vd.material_layer, '') != ?
+                OR d.path NOT LIKE ?
+              )
+            """,
+            (
+                client_id,
+                ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+                f"%/{ONLINE_TRANSCRIPT_FOLDER_LABEL}/%",
+            ),
+        )
+        migrated = 0
+        for row in rows:
+            document_id = str(row["id"])
+            source_candidates = [
+                row["original_source_path"],
+                row["path"],
+                row["managed_path"],
+                row["markdown_path"],
+            ]
+            source_path = next((Path(str(value)) for value in source_candidates if value and Path(str(value)).is_file()), None)
+            if source_path is None:
+                continue
+            target_path = _online_transcript_target_path(client_id, safe_filename(source_path.name), workspace_folders)
+            if source_path.resolve() != target_path.resolve():
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                if target_path.exists():
+                    target_path = target_path.with_name(f"{target_path.stem}_{document_id[-6:]}{target_path.suffix}")
+                shutil.copy2(source_path, target_path)
+            tags = from_json(str(row["tags_json"] or "[]"), [])
+            if not isinstance(tags, list):
+                tags = []
+            merged_tags = list(dict.fromkeys([*map(str, tags), "video_transcript", ONLINE_TRANSCRIPT_MATERIAL_LAYER, ONLINE_TRANSCRIPT_FOLDER_LABEL, "md"]))
+            run_id = str(row["source_entity_id"] or row["origin_id"] or document_id)
+            _force_online_transcript_document_classification(
+                client_id=client_id,
+                document_id=document_id,
+                target_path=target_path,
+                run_id=run_id,
+                tags=merged_tags,
+                folder_id=folder_id,
+            )
+            migrated += 1
+        return migrated
+
+    SYSTEM_CLIENT_FOLDER_LABELS = tuple(SYSTEM_FOLDER_CATEGORIES)
+    LEGACY_BUSINESS_FOLDER_LABELS = tuple(label for label in LEGACY_FIXED_CATEGORIES if label not in SYSTEM_CLIENT_FOLDER_LABELS)
+    DEFAULT_PENDING_FOLDER_LABEL = "待处理"
+    CLIENT_FOLDER_VISIBLE_LIMIT = 6
+    AUTO_BUSINESS_FOLDER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+        ("合同与合作文件", ("合同", "协议", "报价", "条款", "付款", "发票", "甲方", "乙方", "合作", "服务期", "知识产权"), ("合同", "合作", "协议")),
+        ("会议纪要与沟通记录", ("会议", "纪要", "访谈", "沟通", "共识", "行动项", "复盘", "交流", "对齐会", "q1", "q2", "q3", "q4"), ("会议", "沟通", "纪要")),
+        ("战略陪伴与组织升级", ("战略", "规划", "陪伴", "组织", "升级", "定位", "核心资产", "发展", "治理", "第二曲线", "使命", "愿景", "价值观"), ("战略", "组织", "陪伴")),
+        ("核心项目与服务模式", ("项目", "服务", "产品", "模式", "方案", "课程", "交付", "教师", "培训", "心愿", "心盈", "心盛", "心松松", "心灵魔法学院", "繁星"), ("项目", "服务", "模式")),
+        ("品牌传播与对外材料", ("品牌", "传播", "宣传", "手册", "介绍", "路演", "官网", "公众号", "新闻", "对外", "视觉", "vi"), ("品牌", "传播", "对外")),
+        ("研究与行业资料", ("研究", "行业", "案例", "对标", "调研", "数据", "报告", "趋势", "领域"), ("研究", "行业", "对标")),
+    )
+    AUTO_REPAIR_RECONCILING_CLIENTS: set[str] = set()
+
+    def _client_workspace_folder_path(client_id: str, label: str) -> Path:
+        workspace_root = state.data_dir / "client_workspace" / client_id
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        safe_label = safe_filename(normalize_text(label) or DEFAULT_PENDING_FOLDER_LABEL)
+        folder_path = workspace_root / safe_label
+        folder_path.mkdir(parents=True, exist_ok=True)
+        return folder_path
+
+    def _client_folder_file_count(client_id: str, label: str, folder_id: str | None = None) -> int:
+        knowledge_count = int(
+            state.db.scalar(
+                """
+                SELECT COUNT(1) AS count
+                FROM knowledge_documents
+                WHERE client_id = ? AND human_folder_category = ?
+                """,
                 (client_id, label),
             )
-            file_count = int(
+        )
+        v2_count = int(
+            state.db.scalar(
+                """
+                SELECT COUNT(1) AS count
+                FROM v2_documents
+                WHERE client_id = ? AND visible_category = ?
+                """,
+                (client_id, label),
+            )
+        )
+        document_count = 0
+        if folder_id:
+            if label == DEFAULT_PENDING_FOLDER_LABEL:
+                # Pending is a processing queue. Count unresolved legacy rows only once
+                # instead of letting stale documents.folder_id inflate the visible folder forever.
+                unresolved_legacy_count = int(
+                    state.db.scalar(
+                        """
+                        SELECT COUNT(1) AS count
+                        FROM documents d
+                        LEFT JOIN v2_documents v ON v.client_id = d.client_id AND v.document_id = d.id
+                        WHERE d.client_id = ?
+                          AND d.folder_id = ?
+                          AND v.id IS NULL
+                          AND COALESCE(d.lifecycle_status, 'active') = 'active'
+                          AND COALESCE(d.is_searchable, 1) = 1
+                        """,
+                        (client_id, folder_id),
+                    )
+                )
+                return v2_count + unresolved_legacy_count
+            document_count = int(
                 state.db.scalar(
                     """
                     SELECT COUNT(1) AS count
-                    FROM knowledge_documents
-                    WHERE client_id = ? AND human_folder_category = ?
+                    FROM documents
+                    WHERE client_id = ? AND folder_id = ?
                     """,
-                    (client_id, label),
+                    (client_id, folder_id),
                 )
             )
+        return max(knowledge_count, v2_count, document_count)
+
+    def _ensure_client_folder_row(
+        client_id: str,
+        label: str,
+        *,
+        folder_kind: str = "business",
+        source_type: str = "user",
+        is_system: bool = False,
+        is_hidden: bool = False,
+        sort_order: int = 100,
+        created_by_rule: str = "",
+        suggested: bool = False,
+        confidence: float = 0.0,
+    ) -> str:
+        normalized_label = normalize_text(label)
+        if not normalized_label:
+            raise HTTPException(status_code=400, detail="文件夹名称不能为空")
+        timestamp = now_iso()
+        path = _client_workspace_folder_path(client_id, normalized_label)
+        existing = state.db.fetchone(
+            "SELECT * FROM client_folders WHERE client_id = ? AND label = ?",
+            (client_id, normalized_label),
+        )
+        if existing:
+            folder_id = str(existing["id"])
+            file_count = _client_folder_file_count(client_id, normalized_label, folder_id)
+            state.db.execute(
+                """
+                UPDATE client_folders
+                SET path = ?, file_count = ?, last_scanned_at = ?,
+                    folder_kind = ?, source_type = ?, is_system = ?,
+                    is_hidden = ?, sort_order = ?, created_by_rule = ?,
+                    suggested = ?, confidence = ?
+                WHERE id = ?
+                """,
+                (
+                    str(path),
+                    file_count,
+                    timestamp,
+                    folder_kind,
+                    source_type,
+                    1 if is_system else int(existing["is_system"] or 0),
+                    1 if is_hidden else 0,
+                    sort_order,
+                    created_by_rule or str(existing["created_by_rule"] or ""),
+                    1 if suggested else int(existing["suggested"] or 0),
+                    max(float(confidence or 0.0), float(existing["confidence"] or 0.0)),
+                    folder_id,
+                ),
+            )
+            return folder_id
+        folder_id = new_id("fld")
+        state.db.execute(
+            """
+            INSERT INTO client_folders(
+                id, client_id, label, path, file_count, last_scanned_at,
+                folder_kind, source_type, is_system, is_hidden, sort_order,
+                created_by_rule, suggested, confidence, created_at
+            )
+            VALUES(?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                folder_id,
+                client_id,
+                normalized_label,
+                str(path),
+                timestamp,
+                folder_kind,
+                source_type,
+                1 if is_system else 0,
+                1 if is_hidden else 0,
+                sort_order,
+                created_by_rule,
+                1 if suggested else 0,
+                float(confidence or 0.0),
+                timestamp,
+            ),
+        )
+        return folder_id
+
+    def _refresh_client_folder_rows(client_id: str) -> None:
+        timestamp = now_iso()
+        hidden_labels = get_hidden_client_folders(client_id)
+        for row in state.db.fetchall("SELECT * FROM client_folders WHERE client_id = ?", (client_id,)):
+            folder_id = str(row["id"])
+            label = str(row["label"])
+            is_system = bool(int(row["is_system"] or 0))
+            created_by_rule = str(row["created_by_rule"] or "")
+            source_type = str(row["source_type"] or "")
+            file_count = _client_folder_file_count(client_id, label, folder_id)
+            is_hidden = bool(int(row["is_hidden"] or 0)) or label in hidden_labels
             if file_count > 0:
-                unhide_client_folder_label(client_id, label)
-            if existing:
-                state.db.execute(
-                    "UPDATE client_folders SET path = ?, file_count = ?, last_scanned_at = ? WHERE id = ?",
-                    (str(path), file_count, timestamp, str(existing["id"])),
-                )
+                is_hidden = False
+            elif created_by_rule == "manual" and source_type == "user":
+                # A user-created empty folder should remain visible so the user can place files into it.
+                is_hidden = False
             else:
+                # Empty legacy/AI/system-duplicate rows are display noise. Keep the record for traceability,
+                # but hide it from the workspace folder list.
+                is_hidden = True
+            state.db.execute(
+                """
+                UPDATE client_folders
+                SET file_count = ?, last_scanned_at = ?, is_hidden = ?
+                WHERE id = ?
+                """,
+                (file_count, timestamp, 1 if is_hidden else 0, folder_id),
+            )
+
+    def ensure_standard_client_folders(client_id: str) -> None:
+        folders = ensure_client_workspace(state.data_dir, client_id)
+        timestamp = now_iso()
+        for index, label in enumerate(SYSTEM_CLIENT_FOLDER_LABELS):
+            _ensure_client_folder_row(
+                client_id,
+                label,
+                folder_kind="system",
+                source_type="system",
+                is_system=True,
+                is_hidden=False,
+                sort_order=index * 10,
+                created_by_rule="system_default",
+            )
+        # Legacy folders are compatibility data only. Do not create missing legacy business folders.
+        for row in state.db.fetchall("SELECT * FROM client_folders WHERE client_id = ?", (client_id,)):
+            label = str(row["label"])
+            if label in SYSTEM_CLIENT_FOLDER_LABELS:
+                continue
+            if label in LEGACY_BUSINESS_FOLDER_LABELS:
+                file_count = _client_folder_file_count(client_id, label, str(row["id"]))
                 state.db.execute(
                     """
-                    INSERT INTO client_folders(id, client_id, label, path, file_count, last_scanned_at, created_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    UPDATE client_folders
+                    SET folder_kind = 'legacy_business', source_type = 'legacy',
+                        file_count = ?, last_scanned_at = ?,
+                        is_hidden = CASE WHEN ? = 0 AND COALESCE(created_by_rule, '') != 'manual' THEN 1 ELSE is_hidden END
+                    WHERE id = ?
                     """,
-                    (new_id("fld"), client_id, label, str(path), file_count, timestamp, timestamp),
-                    )
+                    (file_count, timestamp, file_count, str(row["id"])),
+                )
+        _refresh_client_folder_rows(client_id)
+        try:
+            migrate_client_link_material_documents_to_online_transcripts(client_id, folders)
+            _refresh_client_folder_rows(client_id)
+        except Exception:
+            logger.warning("[link-material] failed to migrate online transcript documents for client %s", client_id, exc_info=True)
+        try:
+            reconcile_pending_documents_for_client(client_id)
+            _refresh_client_folder_rows(client_id)
+        except Exception:
+            logger.warning("[auto-repair] failed to reconcile pending documents for client %s", client_id, exc_info=True)
+
+    def _folder_display_priority(folder: ClientFolder) -> tuple[int, int, int, str]:
+        system_order = {
+            "收件箱": 0,
+            DEFAULT_PENDING_FOLDER_LABEL: 1,
+            ONLINE_TRANSCRIPT_FOLDER_LABEL: 2,
+            "归档": 3,
+        }
+        if folder.isSystem:
+            return (0, system_order.get(folder.label, 20), -int(folder.fileCount or 0), folder.label)
+        if folder.sourceType == "user" or folder.createdByRule == "manual":
+            return (1, int(folder.sortOrder or 100), -int(folder.fileCount or 0), folder.label)
+        if folder.folderKind == "auto_business" or folder.sourceType == "ai":
+            return (2, -int(folder.fileCount or 0), -int((folder.confidence or 0.0) * 100), folder.label)
+        return (3, int(folder.sortOrder or 100), -int(folder.fileCount or 0), folder.label)
+
+    def _apply_client_folder_display_budget(folders: list[ClientFolder]) -> list[ClientFolder]:
+        if len(folders) <= CLIENT_FOLDER_VISIBLE_LIMIT:
+            return sorted(folders, key=_folder_display_priority)
+        return sorted(folders, key=_folder_display_priority)[:CLIENT_FOLDER_VISIBLE_LIMIT]
 
     def build_document_card_record(payload: dict[str, object]) -> DocumentCardRecord:
         return DocumentCardRecord(**payload)
@@ -11538,6 +12659,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         prompt: str,
         *,
         answer_intent: WorkspaceAnswerIntent | None = None,
+        working_document_ids: list[str] | None = None,
     ):
         hint_terms = build_client_dna_retrieval_hint(client_id, prompt)
         expansion_terms = list(RETRIEVAL_INTENT_EXPANSION_TERMS.get(answer_intent or "", ()))
@@ -11547,7 +12669,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if expansion_terms:
             retrieval_prompt_parts.append(f"检索扩展词：{' '.join(expansion_terms)}")
         retrieval_prompt = "\n".join(part for part in retrieval_prompt_parts if part).strip()
-        bundle = retrieve_knowledge_bundle(state.db, state.data_dir, client_id, retrieval_prompt)
+        bundle = retrieve_knowledge_bundle(
+            state.db,
+            state.data_dir,
+            client_id,
+            retrieval_prompt,
+            priority_document_ids=working_document_ids,
+        )
         retrieval_summary = bundle.retrieval_summary if isinstance(bundle.retrieval_summary, dict) else {}
         bundle.retrieval_summary = {
             **retrieval_summary,
@@ -11555,6 +12683,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "clientDnaHintTerms": hint_terms,
             "answerIntent": answer_intent,
             "retrievalExpansionTerms": expansion_terms,
+            "workingDocumentIds": [str(item).strip() for item in (working_document_ids or []) if str(item).strip()],
         }
         return bundle
 
@@ -12214,6 +13343,151 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("chat.cancel", "chat_thread", run.threadId, {"clientId": client_id, "runId": run_id, "prompt": run.question})
         return fetch_analysis_run_for_client(client_id, run_id)
 
+    def _workspace_chat_prompt_hash(prompt: str | None) -> str:
+        return hashlib.sha256(str(prompt or "").strip().encode("utf-8")).hexdigest()[:16]
+
+    def _build_chat_start_response_from_run(
+        row,
+        *,
+        reused_active_run: bool,
+        dedupe_reason: Literal["client_active_run"] | None = None,
+    ) -> ChatStartResponse | None:
+        user_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (str(row["user_message_id"]),))
+        assistant_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (str(row["assistant_message_id"]),))
+        thread_row = state.db.fetchone("SELECT * FROM chat_threads WHERE id = ? AND client_id = ?", (str(row["thread_id"]), str(row["client_id"])))
+        if not user_row or not assistant_row or not thread_row:
+            return None
+        return ChatStartResponse(
+            threadId=str(row["thread_id"]),
+            userMessage=build_chat_message(user_row),
+            assistantMessage=build_chat_message(assistant_row),
+            analysisRun=build_client_analysis_run(row),
+            reusedActiveRun=reused_active_run,
+            dedupeReason=dedupe_reason,
+        )
+
+    def fetch_active_workspace_chat_start_response(client_id: str, *, current_prompt: str) -> ChatStartResponse | None:
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM client_analysis_runs
+            WHERE client_id = ?
+              AND status IN ('queued', 'running')
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 4
+            """,
+            (client_id,),
+        )
+        for row in rows:
+            run_id = str(row["id"])
+            recover_stale_loading_chat_messages(run_id=run_id)
+            refreshed = state.db.fetchone("SELECT * FROM client_analysis_runs WHERE id = ? AND client_id = ?", (run_id, client_id))
+            if not refreshed or str(refreshed["status"] or "") not in {"queued", "running"}:
+                continue
+            response = _build_chat_start_response_from_run(
+                refreshed,
+                reused_active_run=True,
+                dedupe_reason="client_active_run",
+            )
+            if response is None:
+                continue
+            current_prompt_hash = _workspace_chat_prompt_hash(current_prompt)
+            existing_prompt_hash = _workspace_chat_prompt_hash(str(refreshed["question"] or ""))
+            if state.system_logger:
+                state.system_logger.info(
+                    "workspace_chat",
+                    "workspace_chat_start_reused_active_run",
+                    clientId=client_id,
+                    threadId=response.threadId,
+                    runId=response.analysisRun.id,
+                    currentPromptHash=current_prompt_hash,
+                    existingQuestionHash=existing_prompt_hash,
+                )
+            logger.info(
+                "workspace_chat_start_reused_active_run client=%s thread=%s run=%s currentPromptHash=%s existingQuestionHash=%s",
+                client_id,
+                response.threadId,
+                response.analysisRun.id,
+                current_prompt_hash,
+                existing_prompt_hash,
+            )
+            return response
+        return None
+
+    def mark_chat_start_submission_failed(
+        *,
+        client_id: str,
+        thread_id: str,
+        user_message_id: str,
+        assistant_id: str,
+        analysis_run: ClientAnalysisRunRecord,
+        error: Exception | str,
+        timestamp: str,
+    ) -> ChatStartResponse:
+        error_text = str(error or "聊天执行器不可用")
+        structured = AiStructuredResponse(
+            content="本轮回答没有成功启动。系统没有进入后台生成流程，请稍后重试。",
+            judgment="后台聊天执行器不可用，本次任务已明确失败。",
+            analysis=f"启动失败：{error_text}",
+            actions="请重试；如果反复出现，请检查本地后端运行状态。",
+            timeline=f"失败时间：{timestamp}",
+        )
+        summary = {
+            "phase": "failed",
+            "progress": 100.0,
+            "progressFloor": 100.0,
+            "progressCeiling": 100.0,
+            "stageLabel": "回答启动失败",
+            "failureReason": "chat_executor_unavailable",
+            "lastUpdatedAt": timestamp,
+        }
+        state.db.execute(
+            """
+            UPDATE chat_messages
+            SET content = ?, structured_data_json = ?, model_route = ?, llm_invoked = 0, provider_used = NULL,
+                answer_mode = 'system_failure', evidence_status = 'none', failure_reason = 'chat_executor_unavailable',
+                timing_json = ?, retrieval_summary_json = ?, evidence_json = '[]', status = 'success', created_at = ?
+            WHERE id = ?
+            """,
+            (
+                structured.content,
+                to_json(structured.model_dump()),
+                "后台启动失败",
+                to_json({"totalMs": 0.0, "retrievalMs": 0.0, "llmMs": 0.0}),
+                to_json(summary),
+                timestamp,
+                assistant_id,
+            ),
+        )
+        update_client_analysis_run(
+            analysis_run.id,
+            status="failed",
+            phase="failed",
+            progress=100.0,
+            progress_floor=100.0,
+            progress_ceiling=100.0,
+            stage_label="回答启动失败",
+            long_answer=None,
+            structured_summary=structured,
+            long_answer_status="failed",
+            summary_status="failed",
+            answer_mode="system_failure",
+            llm_invoked=False,
+            provider_used=None,
+            failure_reason="chat_executor_unavailable",
+            timing={"totalMs": 0.0, "retrievalMs": 0.0, "llmMs": 0.0},
+        )
+        user_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (user_message_id,))
+        assistant_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
+        run_row = state.db.fetchone("SELECT * FROM client_analysis_runs WHERE id = ?", (analysis_run.id,))
+        assert user_row is not None and assistant_row is not None and run_row is not None
+        return ChatStartResponse(
+            threadId=thread_id,
+            userMessage=build_chat_message(user_row),
+            assistantMessage=build_chat_message(assistant_row),
+            analysisRun=build_client_analysis_run(run_row),
+        )
+
     def build_answer_memory_markdown(client_id: str, message: ChatMessageRecord) -> str:
         client_name = build_client_summary(client_id).name
         lines = [
@@ -12629,6 +13903,385 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             path=resolved_path,
         )
 
+    def create_client_link_markdown_document(
+        client_id: str,
+        *,
+        run_id: str,
+        title: str,
+        markdown_content: str,
+        source_platform: str,
+        source_url: str,
+    ) -> ClientTextDocumentResponse:
+        client = build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        folders = ensure_client_workspace(state.data_dir, client_id)
+        target_dir = folders.get(ONLINE_TRANSCRIPT_FOLDER_LABEL) or (state.data_dir / "client_workspace" / client_id / ONLINE_TRANSCRIPT_FOLDER_LABEL)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        normalized_content = str(markdown_content or "").replace("\r\n", "\n").strip()
+        if not normalized_content:
+            raise HTTPException(status_code=400, detail="链接转资料没有生成可入库正文。")
+
+        resolved_title = str(title or "").strip() or infer_text_document_title(normalized_content)
+        safe_stem = safe_filename(resolved_title or "链接转资料")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_path = target_dir / f"{timestamp}_{safe_stem}.md"
+        if target_path.exists():
+            target_path = target_dir / f"{timestamp}_{safe_stem}_{uuid4().hex[:6]}.md"
+        target_path.write_text(normalized_content + "\n", encoding="utf-8")
+
+        timestamp_iso = now_iso()
+        folder_row = state.db.fetchone(
+            "SELECT id FROM client_folders WHERE client_id = ? AND label = ?",
+            (client_id, ONLINE_TRANSCRIPT_FOLDER_LABEL),
+        )
+        document_id = new_id("doc")
+        excerpt = normalize_markdown_text(normalized_content)[:180] or f"{resolved_title} 已进入当前项目文档库。"
+        tags = [
+            "video_transcript",
+            ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+            ONLINE_TRANSCRIPT_FOLDER_LABEL,
+            source_platform,
+            "md",
+        ]
+        state.db.execute(
+            """
+            INSERT INTO documents(id, client_id, folder_id, title, path, original_source_path, kind, source, excerpt, tags_json, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id,
+                client_id,
+                str(folder_row["id"]) if folder_row else None,
+                target_path.name,
+                str(target_path),
+                str(target_path),
+                "md",
+                "video_transcript",
+                excerpt,
+                to_json(tags),
+                timestamp_iso,
+            ),
+        )
+        ingest_document_knowledge(
+            state.db,
+            data_dir=state.data_dir,
+            client_id=client_id,
+            import_id=None,
+            document_id=document_id,
+            source_path=target_path,
+            original_source_path=target_path,
+            title=target_path.name,
+            kind="md",
+            source="video_transcript",
+            fallback_excerpt=excerpt,
+            created_at=timestamp_iso,
+            ai_service=None,
+        )
+        _force_online_transcript_document_classification(
+            client_id=client_id,
+            document_id=document_id,
+            target_path=target_path,
+            run_id=run_id,
+            tags=tags,
+            folder_id=str(folder_row["id"]) if folder_row else None,
+        )
+        refresh_event, _deduped = enqueue_workspace_context_refresh(
+            state.db,
+            client_id=client_id,
+            source_type="link_material_import",
+            source_id=run_id,
+            reason="link_material_import_completed",
+            priority="normal",
+        )
+        log_activity(
+            "client.document.create_from_link_material",
+            "document",
+            document_id,
+            {
+                "clientId": client_id,
+                "clientName": client.name,
+                "title": resolved_title,
+                "path": str(target_path),
+                "sourcePlatform": source_platform,
+                "sourceUrl": source_url,
+                "runId": run_id,
+                "refreshEventId": str(refresh_event.id or ""),
+            },
+        )
+        return ClientTextDocumentResponse(
+            clientId=client_id,
+            documentId=document_id,
+            title=resolved_title,
+            fileName=target_path.name,
+            path=str(target_path),
+        )
+
+    def build_link_material_import_run(row) -> LinkMaterialImportRunRecord:
+        metadata = from_json(str(row["metadata_json"] or "{}"), {})
+        return LinkMaterialImportRunRecord(
+            runId=str(row["id"]),
+            clientId=str(row["client_id"]),
+            sourcePlatform=str(row["source_platform"]),  # type: ignore[arg-type]
+            sourceUrl=str(row["source_url"]),
+            title=str(row["title"]) if row["title"] else None,
+            status=str(row["status"]),  # type: ignore[arg-type]
+            stage=str(row["stage"]),
+            progress=float(row["progress"] or 0.0),
+            documentId=str(row["document_id"]) if row["document_id"] else None,
+            documentPath=str(row["document_path"]) if row["document_path"] else None,
+            mediaCacheStatus=str(row["media_cache_status"] or "not_downloaded"),  # type: ignore[arg-type]
+            error=str(row["error"]) if row["error"] else None,
+            metadata=metadata if isinstance(metadata, dict) else {},
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
+    def create_link_material_import_run(
+        client_id: str,
+        source_url: str,
+        *,
+        use_browser_cookies: bool = False,
+        cookie_browser: str = "firefox",
+    ) -> LinkMaterialImportRunRecord:
+        detection = detect_link_material(source_url)
+        timestamp = now_iso()
+        run_id = new_id("linkimp")
+        metadata = {
+            "displayName": detection.display_name,
+            "accessMode": "browser_cookie" if use_browser_cookies else "anonymous",
+            "cookieBrowser": cookie_browser if use_browser_cookies else None,
+            "keepMedia": False,
+            "pipelineMode": "media_first",
+            "mediaDownloaded": False,
+            "downloadedMediaKind": "unknown",
+            "tempDirStatus": "not_created",
+            "tempMediaKind": "none",
+            "subtitleAvailable": False,
+            "transcriptSource": "none",
+            "audioExtracted": False,
+            "logicalFolder": ONLINE_TRANSCRIPT_FOLDER_LABEL,
+            "visibleCategory": ONLINE_TRANSCRIPT_FOLDER_LABEL,
+            "materialLayer": ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+        }
+        state.db.execute(
+            """
+            INSERT INTO workspace_link_import_runs(
+                id, client_id, source_platform, source_url, title, status, stage, progress,
+                document_id, document_path, media_cache_status, error, metadata_json, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, NULL, 'queued', '等待开始提取链接资料', 0, NULL, NULL, 'not_downloaded', NULL, ?, ?, ?)
+            """,
+            (
+                run_id,
+                client_id,
+                detection.platform,
+                detection.normalized_url,
+                to_json(metadata),
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = state.db.fetchone("SELECT * FROM workspace_link_import_runs WHERE id = ?", (run_id,))
+        assert row is not None
+        return build_link_material_import_run(row)
+
+    def fetch_latest_link_material_import_run(client_id: str) -> LinkMaterialImportRunRecord | None:
+        row = state.db.fetchone(
+            """
+            SELECT *
+            FROM workspace_link_import_runs
+            WHERE client_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (client_id,),
+        )
+        return build_link_material_import_run(row) if row else None
+
+    def fetch_active_link_material_import_run(client_id: str) -> LinkMaterialImportRunRecord | None:
+        row = state.db.fetchone(
+            """
+            SELECT *
+            FROM workspace_link_import_runs
+            WHERE client_id = ? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (client_id,),
+        )
+        return build_link_material_import_run(row) if row else None
+
+    def update_link_material_import_run(
+        run_id: str,
+        *,
+        status: str | None = None,
+        stage: str | None = None,
+        progress: float | None = None,
+        title: str | None = None,
+        document_id: str | None = None,
+        document_path: str | None = None,
+        media_cache_status: str | None = None,
+        error: str | None = None,
+        metadata_patch: dict[str, object] | None = None,
+    ) -> None:
+        row = state.db.fetchone("SELECT * FROM workspace_link_import_runs WHERE id = ?", (run_id,))
+        if not row:
+            return
+        metadata = from_json(str(row["metadata_json"] or "{}"), {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if metadata_patch:
+            metadata.update(metadata_patch)
+        state.db.execute(
+            """
+            UPDATE workspace_link_import_runs
+            SET status = ?, stage = ?, progress = ?, title = ?, document_id = ?, document_path = ?,
+                media_cache_status = ?, error = ?, metadata_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status or str(row["status"]),
+                stage if stage is not None else str(row["stage"]),
+                float(progress if progress is not None else row["progress"]),
+                title if title is not None else (str(row["title"]) if row["title"] else None),
+                document_id if document_id is not None else (str(row["document_id"]) if row["document_id"] else None),
+                document_path if document_path is not None else (str(row["document_path"]) if row["document_path"] else None),
+                media_cache_status if media_cache_status is not None else str(row["media_cache_status"] or "not_downloaded"),
+                error if error is not None else (str(row["error"]) if row["error"] else None),
+                to_json(metadata),
+                now_iso(),
+                run_id,
+            ),
+        )
+
+    def fetch_link_material_import_run(client_id: str, run_id: str) -> LinkMaterialImportRunRecord:
+        row = state.db.fetchone(
+            "SELECT * FROM workspace_link_import_runs WHERE id = ? AND client_id = ?",
+            (run_id, client_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Link material import run not found")
+        return build_link_material_import_run(row)
+
+    def run_link_material_import(client_id: str, run_id: str) -> None:
+        temp_dir = state.data_dir / "tmp" / "link_material_imports" / run_id
+        media_cache_status = "not_downloaded"
+        try:
+            row = state.db.fetchone("SELECT * FROM workspace_link_import_runs WHERE id = ? AND client_id = ?", (run_id, client_id))
+            if not row:
+                return
+            source_url = str(row["source_url"])
+            run_metadata = from_json(str(row["metadata_json"] or "{}"), {})
+            if not isinstance(run_metadata, dict):
+                run_metadata = {}
+            def update_link_stage(stage: str, progress: float, metadata_patch: dict[str, object] | None = None) -> None:
+                update_link_material_import_run(
+                    run_id,
+                    status="running",
+                    stage=stage,
+                    progress=progress,
+                    metadata_patch=metadata_patch,
+                )
+
+            import_options = LinkMaterialImportOptions(
+                use_browser_cookies=bool(run_metadata.get("accessMode") == "browser_cookie"),
+                cookie_browser=str(run_metadata.get("cookieBrowser") or "firefox"),  # type: ignore[arg-type]
+                stage_callback=update_link_stage,
+            )
+            update_link_material_import_run(
+                run_id,
+                status="running",
+                stage="下载临时媒体中",
+                progress=12.0,
+                metadata_patch={"tempDirStatus": "created", "pipelineMode": "media_first"},
+            )
+            source = extract_link_material_source(source_url, temp_dir, options=import_options)
+            update_link_material_import_run(
+                run_id,
+                status="running",
+                stage="清理正文中",
+                progress=52.0,
+                title=source.title,
+                metadata_patch={
+                    "sourcePlatform": source.platform,
+                    "sourceUrl": source.source_url,
+                    "videoTitle": source.title,
+                    "keepMedia": False,
+                    **source.metadata,
+                },
+            )
+            cleaned_body = cleanup_transcript_text(
+                ai_service=state.ai,
+                title=source.title,
+                source_url=source.source_url,
+                transcript_text=source.transcript_text,
+            )
+            markdown = build_clean_video_markdown(title=source.title, source_url=source.source_url, body=cleaned_body)
+            update_link_material_import_run(run_id, status="running", stage="正在写入客户资料库", progress=82.0)
+            generated = create_client_link_markdown_document(
+                client_id,
+                run_id=run_id,
+                title=source.title,
+                markdown_content=markdown,
+                source_platform=source.platform,
+                source_url=source.source_url,
+            )
+            update_link_material_import_run(run_id, status="running", stage="清理临时文件", progress=94.0)
+            media_cache_status = cleanup_temp_dir(temp_dir)
+            temp_dir_status = "cleaned" if media_cache_status == "cleaned" else "cleanup_failed"
+            update_link_material_import_run(
+                run_id,
+                status="completed",
+                stage="链接资料已生成并入库",
+                progress=100.0,
+                title=source.title,
+                document_id=generated.documentId,
+                document_path=generated.path,
+                media_cache_status=media_cache_status,
+                error="",
+                metadata_patch={
+                    "mediaCacheStatus": media_cache_status,
+                    "tempDirStatus": temp_dir_status,
+                    "documentPath": generated.path,
+                    "documentId": generated.documentId,
+                    "logicalFolder": ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                    "visibleCategory": ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                    "materialLayer": ONLINE_TRANSCRIPT_MATERIAL_LAYER,
+                },
+            )
+        except LinkMaterialImportError as error:
+            media_cache_status = cleanup_temp_dir(temp_dir) if temp_dir.exists() else media_cache_status
+            temp_dir_status = "cleaned" if media_cache_status == "cleaned" else ("cleanup_failed" if temp_dir.exists() else "not_created")
+            update_link_material_import_run(
+                run_id,
+                status="failed",
+                stage="链接转资料失败",
+                progress=96.0,
+                media_cache_status=media_cache_status,
+                error=str(error),
+                metadata_patch={
+                    **getattr(error, "metadata", {}),
+                    "mediaCacheStatus": media_cache_status,
+                    "tempDirStatus": temp_dir_status,
+                },
+            )
+        except Exception as error:
+            media_cache_status = cleanup_temp_dir(temp_dir) if temp_dir.exists() else media_cache_status
+            temp_dir_status = "cleaned" if media_cache_status == "cleaned" else ("cleanup_failed" if temp_dir.exists() else "not_created")
+            update_link_material_import_run(
+                run_id,
+                status="failed",
+                stage="链接转资料失败",
+                progress=96.0,
+                media_cache_status=media_cache_status,
+                error=str(error),
+                metadata_patch={
+                    "mediaCacheStatus": media_cache_status,
+                    "tempDirStatus": temp_dir_status,
+                },
+            )
+
     def build_template_fill_context(
         client_id: str,
         template_name: str,
@@ -12723,9 +14376,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             f"模板：{template_name}",
             f"待填写字段：{field_label}",
         ]
-        client_dna_context = build_client_dna_context(client_id, field_label, max_chars=dna_max_chars)
-        if client_dna_context:
-            lines.append(client_dna_context)
+        dna_tool_context = build_dna_tool_context_from_workspace(
+            workspace_for_client(client_id),
+            prompt=f"{template_name} {field_label}",
+            purpose="public_material",
+            max_chars=max(dna_max_chars, 12000),
+        )
+        if dna_tool_context.context_text:
+            lines.append(dna_tool_context.context_text)
         if curated_evidence:
             blocks: list[str] = []
             used_chars = 0
@@ -13348,27 +15006,52 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ensure_standard_client_folders(client_id)
         hidden_labels = get_hidden_client_folders(client_id)
         document_limit = 200
-        folder_rows = {
-            str(row["label"]): row
-            for row in state.db.fetchall(
-                "SELECT * FROM client_folders WHERE client_id = ?",
-                (client_id,),
+        folder_rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM client_folders
+            WHERE client_id = ?
+            ORDER BY is_system DESC, sort_order ASC, file_count DESC, label ASC
+            """,
+            (client_id,),
+        )
+        folders: list[ClientFolder] = []
+        seen_folder_labels: set[str] = set()
+        for row in folder_rows:
+            label = str(row["label"])
+            is_system = bool(int(row["is_system"] or 0))
+            is_hidden = bool(int(row["is_hidden"] or 0)) or label in hidden_labels
+            file_count = int(row["file_count"] or 0)
+            created_by_rule = str(row["created_by_rule"] or "")
+            source_type = str(row["source_type"] or "")
+            if is_hidden:
+                continue
+            if not is_system and file_count == 0 and not (created_by_rule == "manual" and source_type == "user"):
+                continue
+            if is_system and file_count == 0:
+                continue
+            if label in seen_folder_labels:
+                continue
+            seen_folder_labels.add(label)
+            folders.append(
+                ClientFolder(
+                    id=str(row["id"]),
+                    clientId=str(row["client_id"]),
+                    label=label,
+                    path=str(row["path"]),
+                    fileCount=file_count,
+                    lastScannedAt=str(row["last_scanned_at"]) if row["last_scanned_at"] else None,
+                    folderKind=str(row["folder_kind"] or "business"),
+                    sourceType=str(row["source_type"] or "legacy"),
+                    isSystem=is_system,
+                    isHidden=is_hidden,
+                    sortOrder=int(row["sort_order"] or 100),
+                    createdByRule=str(row["created_by_rule"] or ""),
+                    suggested=bool(int(row["suggested"] or 0)),
+                    confidence=float(row["confidence"] or 0.0),
+                )
             )
-            if str(row["label"]) in HUMAN_VISIBLE_CATEGORIES and str(row["label"]) not in hidden_labels
-        }
-        folders = [
-            ClientFolder(
-                id=str(folder_rows[label]["id"]),
-                clientId=str(folder_rows[label]["client_id"]),
-                label=str(folder_rows[label]["label"]),
-                path=str(folder_rows[label]["path"]),
-                fileCount=int(folder_rows[label]["file_count"]),
-                lastScannedAt=str(folder_rows[label]["last_scanned_at"]) if folder_rows[label]["last_scanned_at"] else None,
-            )
-            for label in HUMAN_VISIBLE_CATEGORIES
-            if label not in hidden_labels
-            if label in folder_rows
-        ]
+        folders = _apply_client_folder_display_budget(folders)
         documents = [
             DocumentRecord(
                 id=str(row["id"]),
@@ -14801,7 +16484,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for fact in task.linkedFactsPreview
             )
             if has_non_self_memory and (
-                {"event_line_memory", "event_line_facts", "client_facts"} & readiness_sources
+                {"event_line_memory", "event_line_facts"} & readiness_sources
             ) and background_score >= 0.55:
                 return True
             if _strategic_has_contextual_description(task):
@@ -16017,6 +17700,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             limit=max(12, len(thoughts)),
         )
 
+    def _hide_stale_unfavorite_strategic_thoughts(
+        *,
+        client_id: str,
+        project_module_id: str | None,
+        limit: int,
+    ) -> list[StrategicThoughtRecord]:
+        now = now_iso()
+        if project_module_id:
+            state.db.execute(
+                """
+                UPDATE strategic_thought_insights
+                SET is_deleted = 1, updated_at = ?
+                WHERE client_id = ?
+                  AND project_module_id = ?
+                  AND is_favorite = 0
+                  AND is_deleted = 0
+                """,
+                (now, client_id, project_module_id),
+            )
+        else:
+            state.db.execute(
+                """
+                UPDATE strategic_thought_insights
+                SET is_deleted = 1, updated_at = ?
+                WHERE client_id = ?
+                  AND project_module_id IS NULL
+                  AND is_favorite = 0
+                  AND is_deleted = 0
+                """,
+                (now, client_id),
+            )
+        return _list_cached_strategic_thoughts(
+            selected_client_id=client_id,
+            selected_project_module_id=project_module_id,
+            include_deleted=False,
+            limit=limit,
+        )
+
     def _refresh_strategic_thoughts(
         *,
         client_id: str,
@@ -16030,10 +17751,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         stable_labels = {str(item.get("label") or "") for item in records if item.get("category") == "stable_base"}
         dynamic_labels = {str(item.get("label") or "") for item in records if item.get("category") == "dynamic_signal"}
         if len(records) < 3 or not stable_labels or not dynamic_labels:
-            return _list_cached_strategic_thoughts(
-                selected_client_id=client_id,
-                selected_project_module_id=project_module_id,
-                include_deleted=False,
+            return _hide_stale_unfavorite_strategic_thoughts(
+                client_id=client_id,
+                project_module_id=project_module_id,
                 limit=limit,
             )
         context_pack = _build_insight_context_pack(context, limit=limit)
@@ -16041,10 +17761,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         raw_payload = _generate_strategic_insights_with_ai(context_pack, limit=limit)
         thoughts = _normalize_and_score_ai_insights(context, raw_payload, source_fingerprint=source_fingerprint, max_items=limit)
         if not thoughts:
-            return _list_cached_strategic_thoughts(
-                selected_client_id=client_id,
-                selected_project_module_id=project_module_id,
-                include_deleted=False,
+            return _hide_stale_unfavorite_strategic_thoughts(
+                client_id=client_id,
+                project_module_id=project_module_id,
                 limit=limit,
             )
         return _persist_generated_insights(context, thoughts, raw_payload=raw_payload, source_fingerprint=source_fingerprint)
@@ -19317,6 +21036,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _try_cloud_sync_task(task_id: str, cloud_payload: dict) -> None:
         """Try to push a locally-saved task to cloud. Non-blocking: updates sync_status on result."""
         try:
+            if not _resolve_task_cloud_event_line_dependency(task_id, cloud_payload):
+                return
             response = cloud_request("POST", "/api/v1/tasks", json_body=cloud_payload, timeout=6.0)
             if isinstance(response, dict) and response.get("id"):
                 cloud_id = str(response["id"])
@@ -19368,6 +21089,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT id, cloud_id, pending_sync_action, cloud_payload_json,
                    title, description, status, priority, list_id, due_date,
+                   deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date,
                    duration_minutes, scope_mode, client_id, event_line_id,
                    project_module_id, project_flow_id, owner_id, business_category,
                    current_blocker, next_action, recent_decision, evidence_count
@@ -19394,6 +21116,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "description": str(row["description"] or ""),
                     "priority": str(row["priority"] or "normal"),
                     "listId": str(row["list_id"] or "list-0"),
+                    "deadlineAt": str(row["deadline_at"]) if row["deadline_at"] else None,
+                    "scheduledStartAt": str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None,
+                    "scheduledEndAt": str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None,
+                    "completedAt": str(row["completed_at"]) if row["completed_at"] else None,
+                    "startDate": str(row["start_date"]) if row["start_date"] else None,
                     "dueDate": str(row["due_date"]) if row["due_date"] else None,
                     "durationMinutes": int(row["duration_minutes"] or 60),
                     "scopeMode": str(row["scope_mode"] or "COLLAB_SHARED"),
@@ -19422,6 +21149,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     )
                     continue
             try:
+                if not _resolve_task_cloud_event_line_dependency(task_id, cloud_payload):
+                    continue
                 if pending_action == "update":
                     if not cloud_id:
                         state.db.execute(
@@ -19510,15 +21239,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         resolved_tags = normalize_local_task_tags(payload.tagIds, payload.tags)
         has_cloud = bool(get_cloud_token())
         initial_sync_status = "local" if not has_cloud else "syncing"
+        temporal_fields = derive_task_temporal_fields(
+            start_date=payload.startDate,
+            due_date=payload.dueDate or normalize_due_date_input(payload.ddl),
+            duration_minutes=payload.durationMinutes,
+            deadline_at=payload.deadlineAt,
+            scheduled_start_at=payload.scheduledStartAt,
+            scheduled_end_at=payload.scheduledEndAt,
+            completed_at=payload.completedAt,
+            status=status,
+            timestamp=timestamp,
+        )
+        resolved_due_date = str(temporal_fields["due_date"]) if temporal_fields["due_date"] else None
+        resolved_ddl = payload.ddl or (task_due_label(resolved_due_date) if resolved_due_date else "待确认")
 
         state.db.execute(
             """
             INSERT INTO tasks(
-                id, title, description, status, priority, list_id, owner_id, owner_name, ddl, due_date, duration_minutes, event_line_id, source_type, source_id,
+                id, title, description, status, priority, list_id, owner_id, owner_name, ddl,
+                deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date, due_date, duration_minutes,
+                event_line_id, source_type, source_id,
                 client_id, project_module_id, project_flow_id, scope_mode, business_category, current_blocker, next_action, recent_decision, evidence_count,
                 tags_json, tag_ids_json, sync_status, created_at, updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -19529,9 +21273,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 list_id,
                 payload.ownerId,
                 payload.ownerName,
-                payload.ddl,
-                payload.dueDate or normalize_due_date_input(payload.ddl),
-                payload.durationMinutes,
+                resolved_ddl,
+                temporal_fields["deadline_at"],
+                temporal_fields["scheduled_start_at"],
+                temporal_fields["scheduled_end_at"],
+                temporal_fields["completed_at"],
+                temporal_fields["start_date"],
+                resolved_due_date,
+                temporal_fields["duration_minutes"],
                 normalized_event_line_id,
                 payload.sourceType,
                 payload.sourceId,
@@ -19606,8 +21355,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "description": payload.desc,
                 "priority": payload.priority,
                 "listId": payload.listId,
-                "dueDate": payload.dueDate or normalize_due_date_input(payload.ddl),
-                "durationMinutes": payload.durationMinutes,
+                "deadlineAt": temporal_fields["deadline_at"],
+                "scheduledStartAt": temporal_fields["scheduled_start_at"],
+                "scheduledEndAt": temporal_fields["scheduled_end_at"],
+                "completedAt": temporal_fields["completed_at"],
+                "startDate": temporal_fields["start_date"],
+                "dueDate": resolved_due_date,
+                "durationMinutes": temporal_fields["duration_minutes"],
                 "scopeMode": scope_mode,
                 "clientId": normalized_client_id,
                 "eventLineId": normalized_event_line_id,
@@ -21538,12 +23292,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "fingerprint": hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest(),
         }
 
+    def _weekly_cache_part(value: object) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip())
+        return cleaned[:80] or "all"
+
+    def _weekly_overview_cache_scope(perspective_meta: dict[str, object] | None) -> str:
+        meta = perspective_meta or {}
+        return "::".join(
+            [
+                _weekly_cache_part(meta.get("perspective") or "mine"),
+                _weekly_cache_part(meta.get("departmentId") or "all"),
+                _weekly_cache_part(meta.get("viewerUserId") or "shared"),
+            ]
+        )
+
+    def _weekly_cache_setting_key(prefix: str, week_label: str, cache_scope: str = "") -> str:
+        scope = _weekly_cache_part(cache_scope) if cache_scope else ""
+        return f"{prefix}::{week_label}::{scope}" if scope else f"{prefix}::{week_label}"
+
     def _load_cached_weekly_overview(
         *,
         week_label: str,
         fingerprint: str,
+        cache_scope: str = "",
     ) -> tuple[str, list[str], list[str]] | None:
-        raw = state.db.get_setting(f"weekly_overview_cache::{week_label}", "")
+        raw = state.db.get_setting(_weekly_cache_setting_key("weekly_overview_cache", week_label, cache_scope), "")
         if not raw:
             return None
         try:
@@ -21565,9 +23338,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         overview: str,
         focus_lines: list[str],
         next_focus: list[str],
+        cache_scope: str = "",
     ) -> None:
         state.db.set_setting(
-            f"weekly_overview_cache::{week_label}",
+            _weekly_cache_setting_key("weekly_overview_cache", week_label, cache_scope),
             json.dumps(
                 {
                     "cacheVersion": "v3-live-task-state",
@@ -21584,16 +23358,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _load_cached_weekly_mainline_cards(
         *,
         week_label: str,
-        fingerprint: str,
+        fingerprint: str = "",
+        cache_scope: str = "",
+        allow_stale: bool = False,
     ) -> WeeklyMainlineCardsRecord | None:
-        raw = state.db.get_setting(f"weekly_mainline_cards_cache::{week_label}", "")
+        raw = state.db.get_setting(_weekly_cache_setting_key("weekly_mainline_cards_cache", week_label, cache_scope), "")
         if not raw:
             return None
         try:
             payload = json.loads(raw)
         except Exception:
             return None
-        if not isinstance(payload, dict) or str(payload.get("fingerprint") or "") != fingerprint:
+        if not isinstance(payload, dict):
+            return None
+        if not allow_stale and str(payload.get("fingerprint") or "") != fingerprint:
             return None
         cards_payload = payload.get("cards")
         if not isinstance(cards_payload, dict):
@@ -21611,14 +23389,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         week_label: str,
         fingerprint: str,
         cards: WeeklyMainlineCardsRecord,
+        cache_scope: str = "",
     ) -> None:
         if cards.generatedBy != "ai" or not cards.mainlines:
             return
         state.db.set_setting(
-            f"weekly_mainline_cards_cache::{week_label}",
+            _weekly_cache_setting_key("weekly_mainline_cards_cache", week_label, cache_scope),
             json.dumps(
                 {
-                    "cacheVersion": "v1-task-bound-evidence",
+                    "cacheVersion": "v2-task-background-evidence",
                     "fingerprint": fingerprint,
                     "cards": cards.model_dump(),
                     "updatedAt": now_iso(),
@@ -21630,16 +23409,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _load_cached_weekly_event_review_cards(
         *,
         week_label: str,
-        fingerprint: str,
+        fingerprint: str = "",
+        cache_scope: str = "",
+        allow_stale: bool = False,
     ) -> WeeklyEventReviewCardsRecord | None:
-        raw = state.db.get_setting(f"weekly_event_review_cards_cache::{week_label}", "")
+        raw = state.db.get_setting(_weekly_cache_setting_key("weekly_event_review_cards_cache", week_label, cache_scope), "")
         if not raw:
             return None
         try:
             payload = json.loads(raw)
         except Exception:
             return None
-        if not isinstance(payload, dict) or str(payload.get("fingerprint") or "") != fingerprint:
+        if not isinstance(payload, dict):
+            return None
+        if not allow_stale and str(payload.get("fingerprint") or "") != fingerprint:
             return None
         cards_payload = payload.get("cards")
         if not isinstance(cards_payload, dict):
@@ -21657,11 +23440,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         week_label: str,
         fingerprint: str,
         cards: WeeklyEventReviewCardsRecord,
+        cache_scope: str = "",
     ) -> None:
         if cards.generatedBy != "ai" or not cards.cards:
             return
         state.db.set_setting(
-            f"weekly_event_review_cards_cache::{week_label}",
+            _weekly_cache_setting_key("weekly_event_review_cards_cache", week_label, cache_scope),
             json.dumps(
                 {
                     "cacheVersion": "v2-open-reflection-prompt",
@@ -21672,6 +23456,165 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ensure_ascii=False,
             ),
         )
+
+    def _weekly_refresh_viewer_id(session_user: SessionUserRecord | None, active_perspective: str) -> str:
+        if session_user is not None and active_perspective == "mine":
+            return session_user.id
+        return ""
+
+    def _weekly_refresh_cache_scope(
+        *,
+        perspective: str,
+        department_id: str | None,
+        viewer_user_id: str = "",
+    ) -> str:
+        return _weekly_overview_cache_scope(
+            {
+                "perspective": perspective,
+                "departmentId": department_id or "",
+                "viewerUserId": viewer_user_id,
+            }
+        )
+
+    def _weekly_refresh_status_key(*, week_label: str, cache_scope: str) -> str:
+        return _weekly_cache_setting_key("weekly_overview_refresh_status", week_label, cache_scope)
+
+    def _weekly_refresh_status_from_cache(
+        *,
+        week_label: str,
+        perspective: str,
+        department_id: str | None,
+        viewer_user_id: str,
+        cache_scope: str,
+    ) -> WeeklyOverviewRefreshStatusRecord:
+        key = _weekly_refresh_status_key(week_label=week_label, cache_scope=cache_scope)
+        with state.weekly_overview_refresh_lock:
+            running = state.weekly_overview_refresh_status.get(key)
+        if running is not None:
+            return running
+        raw = state.db.get_setting(key, "")
+        if raw:
+            try:
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    return WeeklyOverviewRefreshStatusRecord.model_validate(payload)
+            except Exception:
+                pass
+        return WeeklyOverviewRefreshStatusRecord(
+            weekLabel=week_label,
+            perspective=cast(Literal["organization", "department", "mine"], perspective),
+            departmentId=department_id,
+            viewerUserId=viewer_user_id,
+            status="idle",
+            cacheKey=cache_scope,
+        )
+
+    def _weekly_refresh_counts_from_response(response: ReviewResponse) -> dict[str, object]:
+        cards = response.weeklyMainlineCards
+        meta = cards.evidenceMeta if cards is not None else {}
+        counts = meta.get("materialPackSourceCounts") if isinstance(meta, dict) else {}
+        if isinstance(counts, dict):
+            return counts
+        return {}
+
+    def _resolve_weekly_refresh_request(
+        week_label: str,
+        perspective: str | None,
+        department_id: str | None,
+    ) -> tuple[Literal["organization", "department", "mine"], str | None, str, str]:
+        session_user = get_cached_session_user()
+        governance = _review_governance_with_members() if session_user else None
+        active_perspective, active_department, _options, _role = _resolve_review_perspective(
+            session_user,
+            governance,
+            perspective,
+            department_id,
+        )
+        active_department_id = active_department.id if active_department else None
+        viewer_user_id = _weekly_refresh_viewer_id(session_user, active_perspective)
+        cache_scope = _weekly_refresh_cache_scope(
+            perspective=active_perspective,
+            department_id=active_department_id,
+            viewer_user_id=viewer_user_id,
+        )
+        return active_perspective, active_department_id, viewer_user_id, cache_scope
+
+    def _save_weekly_refresh_status(status: WeeklyOverviewRefreshStatusRecord) -> None:
+        key = _weekly_refresh_status_key(week_label=status.weekLabel, cache_scope=status.cacheKey)
+        state.db.set_setting(key, to_json(status.model_dump()))
+        with state.weekly_overview_refresh_lock:
+            if status.status == "running":
+                state.weekly_overview_refresh_status[key] = status
+            else:
+                state.weekly_overview_refresh_status.pop(key, None)
+
+    def _run_weekly_overview_refresh(
+        *,
+        week_label: str,
+        perspective: str,
+        department_id: str | None,
+        viewer_user_id: str,
+        cache_scope: str,
+        force: bool,
+    ) -> None:
+        started_at = now_iso()
+        _save_weekly_refresh_status(
+            WeeklyOverviewRefreshStatusRecord(
+                weekLabel=week_label,
+                perspective=cast(Literal["organization", "department", "mine"], perspective),
+                departmentId=department_id,
+                viewerUserId=viewer_user_id,
+                status="running",
+                startedAt=started_at,
+                cacheKey=cache_scope,
+            )
+        )
+        try:
+            base_response = local_review_dashboard_base(week_label, include_analysis=False)
+            refreshed = augment_review_response(
+                base_response,
+                week_label,
+                generate_weekly_overview=True,
+                force_generate_weekly_overview=force,
+                perspective=perspective,
+                department_id=department_id,
+            )
+            cards = refreshed.weeklyMainlineCards
+            meta = cards.evidenceMeta if cards is not None else {}
+            failure_reason = ""
+            status_value: Literal["succeeded", "failed"] = "succeeded"
+            if cards is None or cards.generatedBy != "ai" or not cards.mainlines:
+                failure_reason = str(meta.get("failureReason") or "ai_result_unavailable") if isinstance(meta, dict) else "ai_result_unavailable"
+                status_value = "failed"
+            _save_weekly_refresh_status(
+                WeeklyOverviewRefreshStatusRecord(
+                    weekLabel=week_label,
+                    perspective=cast(Literal["organization", "department", "mine"], perspective),
+                    departmentId=department_id,
+                    viewerUserId=viewer_user_id,
+                    status=status_value,
+                    startedAt=started_at,
+                    generatedAt=now_iso(),
+                    failureReason=failure_reason,
+                    sourceCounts=_weekly_refresh_counts_from_response(refreshed),
+                    cacheKey=cache_scope,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Weekly overview background refresh failed: %s", exc, exc_info=True)
+            _save_weekly_refresh_status(
+                WeeklyOverviewRefreshStatusRecord(
+                    weekLabel=week_label,
+                    perspective=cast(Literal["organization", "department", "mine"], perspective),
+                    departmentId=department_id,
+                    viewerUserId=viewer_user_id,
+                    status="failed",
+                    startedAt=started_at,
+                    generatedAt=now_iso(),
+                    failureReason=str(exc),
+                    cacheKey=cache_scope,
+                )
+            )
 
     def local_rollup_work_items(week_label: str) -> list[WeeklyReviewTaskEntryRecord]:
         rows = state.db.fetchall(
@@ -21776,10 +23719,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         week_label: str | None = None,
         *,
         generate_weekly_overview: bool = True,
+        force_generate_weekly_overview: bool = False,
         perspective: str | None = None,
         department_id: str | None = None,
     ) -> ReviewResponse:
-        target_week = week_label or (response.currentReview.weekLabel if response.currentReview else current_review_week_label())
+        target_week = week_label or response.weekLabel or (response.currentReview.weekLabel if response.currentReview else current_review_week_label())
         session_user = get_cached_session_user()
         governance = _review_governance_with_members() if session_user else None
         active_perspective, active_department, available_perspectives, actual_viewer_role = _resolve_review_perspective(
@@ -21820,6 +23764,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "departmentId": active_department.id if active_department else "",
             "viewerUserId": session_user.id if session_user and active_perspective == "mine" else "",
         }
+        weekly_cache_scope = _weekly_overview_cache_scope(perspective_meta)
+        weekly_generation_status = _weekly_refresh_status_from_cache(
+            week_label=target_week,
+            perspective=active_perspective,
+            department_id=active_department.id if active_department else None,
+            viewer_user_id=str(perspective_meta.get("viewerUserId") or ""),
+            cache_scope=weekly_cache_scope,
+        )
         material_access_context = DataCenterAccessContext()
         if session_user is not None:
             department_ids: tuple[str, ...] = (active_department.id,) if active_perspective == "department" and active_department else ()
@@ -21877,6 +23829,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 except Exception as exc:
                     logger.warning("Weekly mainline evidence pack build failed: %s", exc)
                     weekly_mainline_evidence_pack = None
+            if not generate_weekly_overview:
+                weekly_event_review_cards = _load_cached_weekly_event_review_cards(
+                    week_label=target_week,
+                    cache_scope=weekly_cache_scope,
+                    allow_stale=True,
+                )
+                weekly_mainline_cards = _load_cached_weekly_mainline_cards(
+                    week_label=target_week,
+                    cache_scope=weekly_cache_scope,
+                    allow_stale=True,
+                )
             if generate_weekly_overview and weekly_mainline_evidence_pack:
                 try:
                     event_review_fingerprint = weekly_mainline_evidence_fingerprint(
@@ -21890,8 +23853,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         cached_event_cards = _load_cached_weekly_event_review_cards(
                             week_label=target_week,
                             fingerprint=event_review_fingerprint,
+                            cache_scope=weekly_cache_scope,
                         )
-                        if cached_event_cards is not None:
+                        if cached_event_cards is not None and not force_generate_weekly_overview:
                             weekly_event_review_cards = cached_event_cards
                         else:
                             generated_event_cards = build_weekly_event_review_cards_draft(
@@ -21904,6 +23868,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 week_label=target_week,
                                 fingerprint=event_review_fingerprint,
                                 cards=generated_event_cards,
+                                cache_scope=weekly_cache_scope,
                             )
                     else:
                         weekly_event_review_cards = build_weekly_event_review_cards_fallback(
@@ -21916,7 +23881,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     mainline_fingerprint = weekly_mainline_evidence_fingerprint(
                         {
-                            "version": "v1-task-bound-evidence",
+                            "version": "v2-task-background-evidence",
                             "perspective": perspective_meta,
                             "evidence": weekly_mainline_evidence_pack,
                         }
@@ -21924,8 +23889,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     cached_mainlines = _load_cached_weekly_mainline_cards(
                         week_label=target_week,
                         fingerprint=mainline_fingerprint,
+                        cache_scope=weekly_cache_scope,
                     )
-                    if cached_mainlines is not None:
+                    if cached_mainlines is not None and not force_generate_weekly_overview:
                         weekly_mainline_cards = cached_mainlines
                     else:
                         generated_mainlines = build_weekly_mainline_cards_draft(
@@ -21938,6 +23904,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             week_label=target_week,
                             fingerprint=mainline_fingerprint,
                             cards=generated_mainlines,
+                            cache_scope=weekly_cache_scope,
                         )
                 except Exception as exc:
                     logger.warning("Weekly mainline cards generation failed: %s", exc)
@@ -21962,8 +23929,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 cached_overview = _load_cached_weekly_overview(
                     week_label=target_week,
                     fingerprint=fingerprint,
+                    cache_scope=weekly_cache_scope,
                 )
-                if cached_overview is not None:
+                if cached_overview is not None and not force_generate_weekly_overview:
                     weekly_overview, weekly_focus_lines, weekly_next_focus = cached_overview
                 else:
                     review_attachment_texts = (
@@ -21998,6 +23966,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             overview=weekly_overview,
                             focus_lines=weekly_focus_lines,
                             next_focus=weekly_next_focus,
+                            cache_scope=weekly_cache_scope,
                         )
                         # Auto-update weekly memory snapshot + extract quotes from overview
                         try:
@@ -22185,10 +24154,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         return response.model_copy(
             update={
+                "weekLabel": target_week,
+                "resolvedWeekLabel": target_week if not week_label else None,
                 "workAnalysis": work_analysis,
                 "personalAnalysis": personal_analysis,
                 "weeklyMainlineCards": weekly_mainline_cards,
                 "weeklyEventReviewCards": weekly_event_review_cards,
+                "weeklyOverviewGenerationStatus": weekly_generation_status,
                 "selfReport": self_report,
                 "executiveOrgReport": executive_org_report,
                 "departmentReports": department_reports,
@@ -22282,6 +24254,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         self_report = None
         base_response = ReviewResponse(
+            weekLabel=target_week,
+            resolvedWeekLabel=target_week if not week_label else None,
             currentReview=current_review,
             workItems=work_items,
             personalItems=personal_items,
@@ -22328,7 +24302,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         week_label: str | None = None,
     ) -> ReviewResponse:
         """Keep review notes from cloud, but derive the weekly task set/status from local tasks."""
-        target_week = week_label or (response.currentReview.weekLabel if response.currentReview else current_review_week_label())
+        target_week = week_label or response.weekLabel or (response.currentReview.weekLabel if response.currentReview else current_review_week_label())
         local_base = local_review_dashboard_base(target_week, include_analysis=False)
         if not local_base.workItems and not local_base.personalItems:
             return response
@@ -22361,6 +24335,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         return response.model_copy(
             update={
+                "weekLabel": target_week,
+                "resolvedWeekLabel": target_week if not week_label else None,
                 "currentReview": response.currentReview or local_base.currentReview,
                 "workItems": [apply_overlay(item) for item in local_base.workItems],
                 "personalItems": [apply_overlay(item) for item in local_base.personalItems],
@@ -22466,7 +24442,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             token = get_cloud_token()
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             resp = httpx.get(
-                f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}",
+                f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}",
                 headers=headers,
                 timeout=30.0,
                 follow_redirects=True,
@@ -22495,7 +24471,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Not found")
         try:
             resp = httpx.get(
-                f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/thumbnail",
+                f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/thumbnail",
                 timeout=15.0,
             )
             if resp.status_code >= 400:
@@ -22584,7 +24560,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not get_cloud_token():
             raise HTTPException(status_code=404, detail="Not found")
         try:
-            resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
+            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0)
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail="Not found")
             result = resp.json()
@@ -22634,7 +24610,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not get_cloud_token():
             return {"title": "", "summary": "未登录", "unsupported": True}
         try:
-            resp = httpx.get(f"{state.cloud_api_url}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
+            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0)
             if resp.status_code >= 400:
                 return {"title": "", "summary": "OCR 不可用"}
             result = resp.json()
@@ -22652,7 +24628,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
         try:
             resp = httpx.post(
-                f"{state.cloud_api_url}/api/v1/event-lines/{event_line_id}/attachments/download-zip",
+                f"{cloud_api_base_url()}/api/v1/event-lines/{event_line_id}/attachments/download-zip",
                 headers=headers,
                 json=payload or {},
                 timeout=60.0,
@@ -22670,8 +24646,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/brain/dashboard")
     def get_brain_dashboard() -> dict:
         """Strategic brain dashboard — aggregate pulse metrics from all subsystems."""
-        client_rows = state.db.fetchall("SELECT id, name, stage, intro FROM clients ORDER BY updated_at DESC")
-        task_count = int(state.db.scalar("SELECT COUNT(*) FROM tasks") or 0)
+        client_rows = state.db.fetchall(
+            """
+            SELECT id, name, stage, intro
+            FROM clients
+            WHERE COALESCE(alias, '') != 'workspace-smoke'
+              AND COALESCE(name, '') != '安装态冒烟客户'
+            ORDER BY updated_at DESC
+            """
+        )
+        task_count = int(state.db.scalar("SELECT COUNT(*) FROM tasks WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'") or 0)
         chat_count = int(state.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE role = 'user'") or 0)
         event_line_count = int(state.db.scalar("SELECT COUNT(*) FROM event_lines") or 0)
         review_count = int(state.db.scalar("SELECT COUNT(*) FROM weekly_reviews") or 0)
@@ -22681,7 +24665,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         badge_count = int(state.db.scalar("SELECT COUNT(*) FROM growth_evidence_records WHERE validation_state IN ('validated','institutionalized')") or 0)
         doc_count = int(state.db.scalar("SELECT COUNT(*) FROM documents") or 0)
         dna_count = int(state.db.scalar("SELECT COUNT(*) FROM client_dna_documents WHERE summary != '' AND summary IS NOT NULL") or 0)
-        first_client_row = state.db.fetchone("SELECT MIN(created_at) AS val FROM clients")
+        first_client_row = state.db.fetchone(
+            """
+            SELECT MIN(created_at) AS val
+            FROM clients
+            WHERE COALESCE(alias, '') != 'workspace-smoke'
+              AND COALESCE(name, '') != '安装态冒烟客户'
+            """
+        )
         first_client_at = str(first_client_row["val"]) if first_client_row and first_client_row["val"] else None
         days_accompanied = 0
         if first_client_at:
@@ -22736,6 +24727,137 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_digital_asset_dashboard() -> DigitalAssetDashboardRecord:
         """Organization digital asset center — read-only asset map across clients."""
         return build_digital_asset_dashboard(state.db)
+
+    def _append_organization_dna_refresh_event(run_id: str, level: str, message: str, detail: dict[str, object] | None = None) -> None:
+        state.db.execute(
+            """
+            INSERT INTO organization_dna_refresh_events(id, run_id, level, message, detail_json, created_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (f"orgdna_evt_{uuid4().hex[:12]}", run_id, level, message, to_json(detail or {}), now_iso()),
+        )
+
+    def _build_organization_dna_refresh_run(run_id: str, *, include_events: bool = True) -> OrganizationDnaRefreshRunRecord:
+        row = state.db.fetchone("SELECT * FROM organization_dna_refresh_runs WHERE id = ?", (run_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Organization DNA refresh run not found")
+        events: list[OrganizationDnaRefreshEventRecord] = []
+        if include_events:
+            event_rows = state.db.fetchall(
+                """
+                SELECT * FROM organization_dna_refresh_events
+                WHERE run_id = ?
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            for event in event_rows:
+                detail = from_json(str(event["detail_json"] or "{}"), {})
+                if not isinstance(detail, dict):
+                    detail = {}
+                events.append(
+                    OrganizationDnaRefreshEventRecord(
+                        id=str(event["id"]),
+                        runId=str(event["run_id"]),
+                        level=str(event["level"] or "info"),  # type: ignore[arg-type]
+                        message=str(event["message"] or ""),
+                        detail=detail,  # type: ignore[arg-type]
+                        createdAt=str(event["created_at"]),
+                    )
+                )
+        return OrganizationDnaRefreshRunRecord(
+            id=str(row["id"]),
+            jobType="organization_dna_refresh",
+            status=str(row["status"] or "queued"),  # type: ignore[arg-type]
+            triggerSource=str(row["trigger_source"] or "manual"),
+            totalItems=int(row["total_items"] or 0),
+            processedItems=int(row["processed_items"] or 0),
+            error=str(row["error"]) if row["error"] else None,
+            createdAt=str(row["created_at"]),
+            startedAt=str(row["started_at"]) if row["started_at"] else None,
+            finishedAt=str(row["finished_at"]) if row["finished_at"] else None,
+            updatedAt=str(row["updated_at"]),
+            events=events,
+        )
+
+    def _create_organization_dna_refresh_run(trigger_source: str) -> str:
+        run_id = f"orgdna_run_{uuid4().hex[:12]}"
+        created_at = now_iso()
+        state.db.execute(
+            """
+            INSERT INTO organization_dna_refresh_runs(
+                id, job_type, status, trigger_source, total_items, processed_items,
+                error, created_at, started_at, finished_at, updated_at
+            ) VALUES(?, 'organization_dna_refresh', 'queued', ?, 0, 0, NULL, ?, NULL, NULL, ?)
+            """,
+            (run_id, trigger_source, created_at, created_at),
+        )
+        _append_organization_dna_refresh_event(run_id, "info", "组织 DNA v2 刷新已创建", {"triggerSource": trigger_source})
+        return run_id
+
+    def _execute_organization_dna_refresh_run(run_id: str, trigger_source: str) -> OrganizationDnaRefreshRunRecord:
+        started_at = now_iso()
+        state.db.execute(
+            """
+            UPDATE organization_dna_refresh_runs
+            SET status = 'running', started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (started_at, started_at, run_id),
+        )
+        try:
+            org_model = read_org_model_profile()
+            snapshot = refresh_organization_dna_v2(
+                state.db,
+                org_model,
+                run_id=run_id,
+                trigger_source=trigger_source,
+                event_callback=lambda level, message, detail: _append_organization_dna_refresh_event(run_id, level, message, detail),
+            )
+            processed_items = (
+                len(snapshot.stableItems)
+                + len(snapshot.evolvingItems)
+                + len(snapshot.gapItems)
+                + len(snapshot.riskItems)
+            )
+            finished_at = now_iso()
+            state.db.execute(
+                """
+                UPDATE organization_dna_refresh_runs
+                SET status = 'completed', total_items = ?, processed_items = ?,
+                    finished_at = ?, updated_at = ?, error = NULL
+                WHERE id = ?
+                """,
+                (processed_items, processed_items, finished_at, finished_at, run_id),
+            )
+            _append_organization_dna_refresh_event(
+                run_id,
+                "info",
+                "组织 DNA v2 刷新完成",
+                {"processedItems": processed_items, "itemCounts": snapshot.itemCounts},
+            )
+        except Exception as exc:
+            finished_at = now_iso()
+            state.db.execute(
+                """
+                UPDATE organization_dna_refresh_runs
+                SET status = 'failed', error = ?, finished_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (str(exc), finished_at, finished_at, run_id),
+            )
+            _append_organization_dna_refresh_event(run_id, "error", "组织 DNA v2 刷新失败", {"error": str(exc)})
+        return _build_organization_dna_refresh_run(run_id, include_events=True)
+
+    @app.get("/api/v1/digital-assets/organization-dna", response_model=OrganizationDnaV2SnapshotRecord)
+    def get_organization_dna_v2_snapshot() -> OrganizationDnaV2SnapshotRecord:
+        return get_organization_dna_snapshot(state.db)
+
+    @app.post("/api/v1/digital-assets/organization-dna/refresh", response_model=OrganizationDnaRefreshRunRecord)
+    def refresh_organization_dna_v2_endpoint(payload: dict[str, object] | None = Body(default=None)) -> OrganizationDnaRefreshRunRecord:
+        trigger_source = str((payload or {}).get("triggerSource") or "manual").strip() or "manual"
+        run_id = _create_organization_dna_refresh_run(trigger_source)
+        return _execute_organization_dna_refresh_run(run_id, trigger_source)
 
     @app.get("/api/v1/clients/{client_id}/digital-assets", response_model=DigitalAssetClientDetailRecord)
     def get_client_digital_assets(client_id: str) -> DigitalAssetClientDetailRecord:
@@ -22831,11 +24953,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not isinstance(secret_payload, dict):
                 return
             provider = str(secret_payload.get("aiProvider", "")).strip()
+            provider_label = str(secret_payload.get("aiProviderLabel", "")).strip()
+            base_url = str(secret_payload.get("aiBaseUrl", "")).strip()
             model = str(secret_payload.get("aiModel", "")).strip()
             api_key = str(secret_payload.get("apiKey", "")).strip()
             if not provider or provider == "mock":
                 return
-            state.ai.configure(provider, model, api_key, False)
+            if state.ai.advanced_ai_routing_enabled():
+                state.ai.configure_cloud_online_profile(
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    provider_label=provider_label or None,
+                    base_url=base_url or None,
+                )
+            else:
+                state.ai.configure(
+                    provider,
+                    model,
+                    api_key,
+                    False,
+                    provider_label=provider_label or None,
+                    base_url=base_url or None,
+                )
         except Exception:
             pass  # 云端不可用时保留本地配置
 
@@ -22849,6 +24989,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 fullName="本机用户",
                 primaryRole="employee",
                 accountStatus="approved",
+                membershipStatus="approved",
             )
 
         def _local_auth_state(message: str | None = None) -> AuthStateResponse:
@@ -22863,9 +25004,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         refresh_token = get_cloud_refresh_token()
         if not token and not refresh_token:
             return _local_auth_state()
+        if not state.cloud_api_url:
+            clear_cloud_session()
+            return _local_auth_state("尚未配置云端服务地址，已切回本机模式。")
         cached_user = get_cached_session_user()
         try:
             user = require_session_user()
+            _ensure_local_organization_workspace_from_cloud_membership()
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
                 clear_cloud_session()
@@ -22898,6 +25043,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     fullName="本机用户",
                     primaryRole="employee",
                     accountStatus="approved",
+                    membershipStatus="approved",
+                ),
+            )
+        if not state.cloud_api_url:
+            clear_cloud_session()
+            return AccountOverviewResponse(
+                sessionMode="local",
+                cloudConnected=False,
+                cloudConfig=CloudConfigResponse(mode="disabled"),
+                user=SessionUserRecord(
+                    id="local-device-user",
+                    organizationId="local-device",
+                    email="local@device.yiyu",
+                    fullName="本机用户",
+                    primaryRole="employee",
+                    accountStatus="approved",
+                    membershipStatus="approved",
                 ),
             )
         cached_user = get_cached_session_user()
@@ -22922,7 +25084,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         for account in existing_accounts:
             if not payload.rememberInputs:
                 try:
-                    _remembered_cloud_auth_store(account.email).delete_api_key()
+                    _remembered_cloud_auth_store(account.identifier or account.email).delete_api_key()
                 except Exception:
                     pass
         if not payload.rememberInputs:
@@ -22938,31 +25100,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _save_local_input_memory_record(record)
             return _hydrate_local_input_memory(record)
 
-        email = payload.email.strip().lower()
-        if not email:
-            raise HTTPException(status_code=400, detail="请先填写邮箱，再决定是否记住账号和密码。")
-        previous_account = next((account for account in existing_accounts if account.email.strip().lower() == email), None)
+        identifier = (payload.identifier or payload.email).strip().lower()
+        if not identifier:
+            raise HTTPException(status_code=400, detail="请先填写邮箱或手机号，再决定是否记住账号和密码。")
+        previous_account = next((account for account in existing_accounts if (account.identifier or account.email).strip().lower() == identifier), None)
         full_name = (payload.fullName or "").strip() or (previous_account.fullName if previous_account else "")
         password = (payload.password or "").strip()
         if password:
-            _remembered_cloud_auth_store(email).set_api_key(password)
+            _remembered_cloud_auth_store(identifier).set_api_key(password)
         updated_account = RememberedCloudAuthAccount(
-            email=email,
+            email=payload.email.strip().lower() or identifier,
+            identifier=identifier,
             fullName=full_name,
             updatedAt=now_iso(),
         )
         next_accounts = [updated_account]
-        seen_emails = {email}
+        seen_emails = {identifier}
         for account in existing_accounts:
-            normalized_email = account.email.strip().lower()
+            normalized_email = (account.identifier or account.email).strip().lower()
             if not normalized_email or normalized_email in seen_emails:
                 continue
             seen_emails.add(normalized_email)
             next_accounts.append(
                 account.model_copy(
                     update={
-                        "email": normalized_email,
-                        "fullName": full_name if normalized_email == email and full_name else account.fullName,
+                        "identifier": normalized_email,
+                        "email": account.email.strip().lower() or normalized_email,
+                        "fullName": full_name if normalized_email == identifier and full_name else account.fullName,
                     }
                 )
             )
@@ -22970,7 +25134,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             update={
                 "cloudAuth": LocalInputMemoryCloudAuth(
                     rememberInputs=True,
-                    lastEmail=email,
+                    lastEmail=identifier,
                     accounts=next_accounts[:8],
                 )
             }
@@ -23027,10 +25191,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         try:
             payload = cloud_request("GET", "/api/v1/me/org-membership")
             if isinstance(payload, dict):
-                return OrgMembershipSummaryRecord(**payload)
+                return OrgMembershipSummaryRecord(**_with_local_organization_workspace_client_id(payload))
         except Exception:
             pass
         return OrgMembershipSummaryRecord(hasOrganization=False)
+
+    @app.post("/api/v1/me/org-membership/apply", response_model=OrgMembershipSummaryRecord)
+    def apply_me_org_membership(payload: OrgMembershipApplyPayload) -> OrgMembershipSummaryRecord:
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=400, detail="当前处于本机模式，请先登录云端账号。")
+        response = cloud_request(
+            "POST",
+            "/api/v1/me/org-membership/apply",
+            json_body=payload.model_dump(exclude_none=True),
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid org membership payload")
+        membership = OrgMembershipSummaryRecord(**_with_local_organization_workspace_client_id(response))
+        try:
+            user = require_session_user()
+            set_cloud_session(get_cloud_token(), user)
+        except Exception:
+            pass
+        return membership
 
     @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
     def get_org_feishu_integration() -> OrgFeishuIntegrationRecord:
@@ -23111,11 +25294,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return FeishuMemberAuthorizationRecord(**payload)
 
     @app.get("/api/v1/auth/department-options", response_model=list[DepartmentOptionRecord])
-    def auth_department_options() -> list[DepartmentOptionRecord]:
-        return [
-            DepartmentOptionRecord(id=item.id, name=item.name, color=item.color)
-            for item in list_department_catalog()
-        ]
+    def auth_department_options(
+        organizationId: str | None = None,
+        inviteCode: str | None = None,
+    ) -> list[DepartmentOptionRecord]:
+        query: list[str] = []
+        if organizationId:
+            query.append(f"organizationId={quote(organizationId)}")
+        if inviteCode:
+            query.append(f"inviteCode={quote(inviteCode)}")
+        suffix = f"?{'&'.join(query)}" if query else ""
+        response = cloud_request(
+            "GET",
+            f"/api/v1/auth/department-options{suffix}",
+            allow_unauthenticated=True,
+        )
+        if not isinstance(response, list):
+            return []
+        return [DepartmentOptionRecord(**item) for item in response if isinstance(item, dict)]
+
+    @app.get("/api/v1/auth/invite-code/resolve", response_model=OrgInviteResolveResultRecord)
+    def auth_resolve_invite_code(code: str = "") -> OrgInviteResolveResultRecord:
+        normalized = (code or "").strip()
+        if not normalized:
+            return OrgInviteResolveResultRecord(valid=False, message="请输入组织或部门邀请码")
+        response = cloud_request(
+            "GET",
+            f"/api/v1/auth/invite-code/resolve?code={quote(normalized)}",
+            allow_unauthenticated=True,
+        )
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid invite resolve payload")
+        return OrgInviteResolveResultRecord(**response)
 
     @app.post("/api/v1/auth/register", response_model=AuthStateResponse)
     def auth_register(payload: AuthRegisterPayload) -> AuthStateResponse:
@@ -23136,6 +25346,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=True)
         set_cloud_refresh_token(refresh_token, persist=True)
+        _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.register", "session", user.id, {"email": user.email})
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
@@ -23157,6 +25368,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=payload.rememberMe)
         set_cloud_refresh_token(refresh_token, persist=payload.rememberMe)
+        _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.login", "session", user.id, {"email": user.email})
         return AuthStateResponse(authenticated=True, user=user)
 
@@ -23194,6 +25406,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 fullName="本机用户",
                 primaryRole="employee",
                 accountStatus="approved",
+                membershipStatus="approved",
             ),
             sessionMode="local",
         )
@@ -23274,7 +25487,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def process_pending_consultation_knowledge_requests() -> ConsultationKnowledgeProcessSummaryResponse:
         if not get_cloud_token() and not get_cloud_refresh_token():
             return ConsultationKnowledgeProcessSummaryResponse(updatedAt=now_iso())
-        require_session_user()
+        try:
+            require_session_user()
+        except CloudUnavailableError as exc:
+            if state.system_logger:
+                state.system_logger.warn("cloud", "综合库后台同步跳过：云端暂不可用", error=str(exc))
+            return ConsultationKnowledgeProcessSummaryResponse(updatedAt=now_iso())
+        except HTTPException as exc:
+            if exc.status_code in (502, 503, 504):
+                if state.system_logger:
+                    state.system_logger.warn("cloud", "综合库后台同步跳过：云端代理暂不可用", error=str(exc.detail))
+                return ConsultationKnowledgeProcessSummaryResponse(updatedAt=now_iso())
+            raise
         if state.consultation_knowledge_sync_running:
             return ConsultationKnowledgeProcessSummaryResponse(updatedAt=now_iso())
         state.consultation_knowledge_sync_running = True
@@ -23295,27 +25519,45 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def read_org_model_profile() -> OrgModelProfileRecord:
+        def empty_org_model_profile() -> OrgModelProfileRecord:
+            return OrgModelProfileRecord(
+                organization=OrgProfileRecord(
+                    organizationId="",
+                    name="",
+                    updatedAt="",
+                ),
+                updatedAt=now_iso(),
+            )
+
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            return empty_org_model_profile()
         try:
             payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
             if isinstance(payload, dict):
                 return OrgModelProfileRecord(**payload)
-        except Exception:
-            pass
-        return OrgModelProfileRecord(
-            organization=OrgProfileRecord(
-                organizationId="",
-                name="",
-                updatedAt="",
-            ),
-            updatedAt=now_iso(),
-        )
+            raise HTTPException(status_code=502, detail="云端组织设置读取失败：Invalid org model payload")
+        except HTTPException as exc:
+            status_code = exc.status_code if exc.status_code in (401, 403) else 502
+            raise HTTPException(status_code=status_code, detail=f"云端组织设置读取失败：{exc.detail}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"云端组织设置读取失败：{exc}") from exc
 
     @app.post("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def update_org_model_profile(payload: OrgModelProfileRecord) -> OrgModelProfileRecord:
-        response = cloud_request("POST", "/api/v1/settings/org-model/profile", json_body=payload.model_dump())
+        try:
+            response = cloud_request("POST", "/api/v1/settings/org-model/profile", json_body=payload.model_dump())
+        except HTTPException as exc:
+            status_code = exc.status_code if exc.status_code in (401, 403) else 502
+            raise HTTPException(status_code=status_code, detail=f"云端组织设置保存失败：{exc.detail}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"云端组织设置保存失败：{exc}") from exc
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid org model payload")
         return OrgModelProfileRecord(**response)
+
+    @app.post("/api/v1/settings/org-model/intro-document", response_model=OrgIntroDocumentRecord)
+    def parse_org_model_intro_document(payload: OrgIntroDocumentUploadPayload) -> OrgIntroDocumentRecord:
+        return parse_org_intro_document(payload)
 
     @app.post("/api/v1/settings/org-model/backfill-task-links", response_model=TaskOrgBackfillResultRecord)
     def backfill_org_task_links() -> TaskOrgBackfillResultRecord:
@@ -23333,7 +25575,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
                 for item in response:
                     _upsert_cloud_event_line_shadow_local(item)
-                return [build_cloud_event_line(item) for item in response if isinstance(item, dict)]
             except HTTPException:
                 pass
         rows = state.db.fetchall(
@@ -23347,27 +25588,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines", response_model=EventLineRecord)
     def create_event_line(payload: EventLineCreatePayload) -> EventLineRecord:
-        if get_cloud_token():
-            try:
-                response = cloud_request("POST", "/api/v1/event-lines", json_body=payload.model_dump())
-                if not isinstance(response, dict):
-                    raise HTTPException(status_code=502, detail="Invalid event line payload")
-                _upsert_cloud_event_line_shadow_local(response)
-                return build_cloud_event_line(response)
-            except HTTPException:
-                pass
         timestamp = now_iso()
-        event_line_id = new_id("eline")
+        event_line_id = (payload.id or "").strip() or new_id("eline")
         client_id = str(payload.primaryClientId).strip() if payload.primaryClientId else None
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
+        has_cloud = bool(get_cloud_token())
         state.db.execute(
             """
             INSERT INTO event_lines(
                 id, name, kind, status, visibility_scope, business_category, stage, summary, intent, current_blocker,
                 recent_decision, next_step, evidence_count, owner_id, owner_name, primary_client_id,
                 primary_client_name, primary_department_id, primary_department_name, participant_ids_json,
-                created_at, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, sync_status, cloud_payload_json, pending_sync_action, last_sync_error
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_line_id,
@@ -23392,11 +25625,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 to_json(payload.participantIds),
                 timestamp,
                 timestamp,
+                "syncing" if has_cloud else "local",
+                "{}",
+                "create" if has_cloud else "",
+                "",
             ),
         )
         row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         if not row:
             raise HTTPException(status_code=500, detail="Event line creation failed")
+        if has_cloud:
+            cloud_payload = _event_line_cloud_payload_from_row(row, include_id=True)
+            try:
+                response = cloud_request("POST", "/api/v1/event-lines", json_body=cloud_payload, timeout=6.0)
+                if not isinstance(response, dict):
+                    raise HTTPException(status_code=502, detail="Invalid event line payload")
+                _upsert_cloud_event_line_shadow_local(response, local_id=event_line_id)
+                row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+            except Exception as error:
+                _mark_event_line_pending(event_line_id, "create", error, cloud_payload)
+                row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
         _safe_data_center_ingest(
             "event_line_manual_update",
             lambda: ingest_event_line_by_id(state.db, state.data_dir, event_line_id),
@@ -23410,23 +25658,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             scope_id=event_line_id,
             priority="normal",
         )
+        if not row:
+            raise HTTPException(status_code=500, detail="Event line creation failed")
         return build_event_line(row)
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
+        if row:
+            return build_event_line_detail(row)
         if get_cloud_token():
             try:
                 response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line detail payload")
-                _upsert_cloud_event_line_shadow_local(response)
+                local_id = _upsert_cloud_event_line_shadow_local(response)
+                if local_id:
+                    local_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_id,))
+                    if local_row:
+                        return build_event_line_detail(local_row)
                 return build_cloud_event_line_detail(response)
             except HTTPException:
                 pass
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
-        return build_event_line_detail(row)
+        raise HTTPException(status_code=404, detail="Event line not found")
 
     @app.post("/api/v1/event-lines/{event_line_id}/clarification-draft", response_model=EventLineClarificationDraftRecord)
     def generate_event_line_clarification_draft(
@@ -24222,14 +26476,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         prompt_context, attachment_sections = _build_task_brief_prompt_context(bundle, title, desc)
 
-        # 直接调用豆包 API 生成（绕过 state.ai 的 provider 设置问题）
-        try:
-            from app.services.secrets import MacOSKeychainSecretStore
-            doubao_store = MacOSKeychainSecretStore(service_name="com.yiyu.self-workbench.doubao", account_name="default")
-            api_key = doubao_store.get_api_key()
-        except Exception:
-            api_key = ""
-        if api_key:
+        health = state.ai.get_health()
+        if health.provider != "mock" and health.ready:
             try:
                 prompt = (
                     f"以下是这条任务最关键的上下文资料：\n{prompt_context}\n\n"
@@ -24246,37 +26494,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     f"- who 参考：策略/判断/成效→顾源源，跟进/对接/安排→乐乐，技术/系统/试点→佳维\n"
                     f"- deliverable 尽量写清楚，如果资料里没有就留空字符串\n"
                 )
-                model = state.db.get_setting("ai_model", "doubao-seed-2-0-pro-260215")
                 result: dict[str, object] | None = None
                 last_error: Exception | None = None
                 for timeout_seconds in (10.0, 16.0):
                     try:
-                        resp = httpx.post(
-                            "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                            json={
-                                "model": model,
-                                "messages": [
-                                    {"role": "system", "content": "你是益语智库的项目助手。只返回纯 JSON，不要 Markdown，不要解释过程。"},
-                                    {"role": "user", "content": prompt},
-                                ],
-                                "max_tokens": 3000,
-                                "temperature": 0.5,
+                        payload = state.ai._qwen_generate(
+                            prompt=prompt,
+                            system_instruction="你是益语智库的项目助手。只返回纯 JSON，不要 Markdown，不要解释过程。",
+                            response_schema={
+                                "type": "OBJECT",
+                                "properties": {
+                                    "summaryPoints": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                    "nextActions": {"type": "ARRAY", "items": {"type": "OBJECT"}},
+                                },
                             },
-                            timeout=timeout_seconds,
+                            timeout_seconds=timeout_seconds,
+                            max_tokens=3000,
+                            temperature=0.5,
+                            top_p=0.9,
+                            enable_thinking=False,
                         )
-                        if resp.status_code != 200:
-                            raise RuntimeError(f"doubao status={resp.status_code} body={resp.text[:300]}")
-                        raw = resp.json()["choices"][0]["message"]["content"].strip()
-                        if raw.startswith("```"):
-                            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                        try:
-                            result = json.loads(raw)
-                        except Exception:
-                            match = re.search(r"\{.*\}", raw, re.S)
-                            if not match:
-                                raise
-                            result = json.loads(match.group(0))
+                        if isinstance(payload, dict):
+                            result = payload
+                        else:
+                            raw = str(payload or "").strip()
+                            if raw.startswith("```"):
+                                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                            try:
+                                result = json.loads(raw)
+                            except Exception:
+                                match = re.search(r"\{.*\}", raw, re.S)
+                                if not match:
+                                    raise
+                                result = json.loads(match.group(0))
                         break
                     except Exception as error:
                         last_error = error
@@ -24397,6 +26647,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     actionItems=[],
                 ))
         return results
+
+    @app.get("/api/v1/tasks/{task_id}/context-brief", response_model=TaskContextBriefRecord)
+    def get_task_context_brief(task_id: str) -> TaskContextBriefRecord:
+        try:
+            record = generate_task_context_brief_snapshot(state.db, state.ai, task_id)
+            return TaskContextBriefRecord.model_validate(record)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Task not found")
+        except Exception:
+            return TaskContextBriefRecord(taskId=task_id, shouldDisplay=False, brief="", qualityFlags=["generation_failed"])
+
+    @app.post("/api/v1/tasks/context-briefs/batch", response_model=TaskContextBriefBatchResponse)
+    def get_task_context_briefs_batch(payload: TaskContextBriefBatchPayload) -> TaskContextBriefBatchResponse:
+        briefs: list[TaskContextBriefRecord] = []
+        seen: set[str] = set()
+        for raw_task_id in payload.taskIds[:20]:
+            task_id = str(raw_task_id or "").strip()
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            try:
+                record = generate_task_context_brief_snapshot(state.db, state.ai, task_id)
+                briefs.append(TaskContextBriefRecord.model_validate(record))
+            except KeyError:
+                continue
+            except Exception:
+                briefs.append(TaskContextBriefRecord(taskId=task_id, shouldDisplay=False, brief="", qualityFlags=["generation_failed"]))
+        return TaskContextBriefBatchResponse(briefs=briefs)
 
     @app.post("/api/v1/tasks/{task_id}/smart-brief-actions/{action_key}/adopt")
     def adopt_task_smart_brief_action(task_id: str, action_key: str, payload: dict | None = Body(default=None)) -> dict:
@@ -25780,7 +28058,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         target_path = target_dir / safe_filename(f"{attachment_id}_{title}")
         try:
             if not target_path.exists():
-                url = download_url if download_url.startswith("http") else f"{state.cloud_api_url}{download_url}"
+                url = download_url if download_url.startswith("http") else f"{cloud_api_base_url()}{download_url}"
                 response = httpx.get(url, timeout=20.0)
                 if response.status_code >= 400 or not response.content:
                     return None
@@ -26795,7 +29073,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         # Show image inline (like preview expanded)
                         try:
                             if download_url:
-                                img_resp = httpx.get(f"{state.cloud_api_url}{download_url}", timeout=15.0)
+                                img_resp = httpx.get(f"{cloud_api_base_url()}{download_url}", timeout=15.0)
                                 if img_resp.status_code == 200:
                                     img_stream = _BytesIO(img_resp.content)
                                     doc.add_picture(img_stream, width=Inches(4.5))
@@ -26821,7 +29099,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         # Fetch document summary
                         try:
                             text_resp = httpx.get(
-                                f"{state.cloud_api_url}/api/public/task-attachments/{att_id}/text-content",
+                                f"{cloud_api_base_url()}/api/public/task-attachments/{att_id}/text-content",
                                 timeout=15.0,
                             )
                             doc_text = ""
@@ -26864,21 +29142,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.patch("/api/v1/event-lines/{event_line_id}", response_model=EventLineRecord)
     def update_event_line(event_line_id: str, payload: EventLineUpdatePayload) -> EventLineRecord:
-        cloud_response_payload: dict[str, object] | None = None
-        if get_cloud_token():
-            try:
-                response = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body=payload.model_dump(exclude_unset=True))
-                if not isinstance(response, dict):
-                    raise HTTPException(status_code=502, detail="Invalid event line payload")
-                cloud_response_payload = response
-                _upsert_cloud_event_line_shadow_local(response)
-            except HTTPException:
-                pass
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
         if not row:
-            if cloud_response_payload is not None:
-                return build_cloud_event_line(cloud_response_payload)
             raise HTTPException(status_code=404, detail="Event line not found")
+        local_event_line_id = str(row["id"])
         updates = payload.model_dump(exclude_unset=True)
         previous_client_id = str(row["primary_client_id"]).strip() if row["primary_client_id"] else None
         previous_client_name = str(row["primary_client_name"]).strip() if row["primary_client_name"] else None
@@ -26924,7 +29191,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 updates.get("primaryDepartmentName", row["primary_department_name"]),
                 to_json(participant_ids if participant_ids is not None else from_json(row["participant_ids_json"], [])),
                 updated_at,
-                event_line_id,
+                local_event_line_id,
             ),
         )
         if should_sync_linked_task_client_ids:
@@ -26935,7 +29202,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 WHERE event_line_id = ?
                   AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
-                (next_client_id, updated_at, event_line_id),
+                (next_client_id, updated_at, local_event_line_id),
             )
             task_rows = state.db.fetchall(
                 """
@@ -26944,7 +29211,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 WHERE event_line_id = ?
                   AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
                 """,
-                (event_line_id,),
+                (local_event_line_id,),
             )
             for task_row in task_rows:
                 task_id = str(task_row["id"])
@@ -26956,7 +29223,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ensure_standard_client_folders,
                     task_id,
                     next_client_id,
-                    event_line_id,
+                    local_event_line_id,
                     cloud=False,
                 )
                 _sync_task_attachment_scope(
@@ -26967,12 +29234,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ensure_standard_client_folders,
                     task_id,
                     next_client_id,
-                    event_line_id,
+                    local_event_line_id,
                     cloud=True,
                 )
             _sync_event_line_client_scope_records(
                 state.db,
-                event_line_id=event_line_id,
+                event_line_id=local_event_line_id,
                 client_id=next_client_id,
                 client_name=next_client_name,
                 updated_at=updated_at,
@@ -26982,33 +29249,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     state.data_dir,
                     previous_client_id,
                     next_client_id,
-                    event_line_id,
+                    local_event_line_id,
                     str(updates.get("name", row["name"])),
                     next_client_name,
                 )
             for affected_client_id in {previous_client_id, next_client_id}:
                 if affected_client_id:
                     refresh_organization_notebook_snapshot(state.db, affected_client_id)
-            refresh_event_line_memory_snapshot(state.db, event_line_id)
-            _invalidate_event_line_snapshot_cache(event_line_id)
-        updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+            refresh_event_line_memory_snapshot(state.db, local_event_line_id)
+            _invalidate_event_line_snapshot_cache(local_event_line_id)
+        updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+        if not updated_row:
+            raise HTTPException(status_code=500, detail="Event line update failed")
+        if get_cloud_token():
+            action = "update" if updated_row["cloud_id"] else "create"
+            state.db.execute(
+                """
+                UPDATE event_lines
+                SET sync_status = 'syncing',
+                    pending_sync_action = ?,
+                    cloud_payload_json = ?,
+                    last_sync_error = ''
+                WHERE id = ?
+                """,
+                (action, to_json(_event_line_cloud_payload_from_row(updated_row, include_id=action == "create")), local_event_line_id),
+            )
+            updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+            if updated_row:
+                _sync_event_line_row_to_cloud(updated_row, forced_action=action)
+                updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
         if not updated_row:
             raise HTTPException(status_code=500, detail="Event line update failed")
         _safe_data_center_ingest(
             "event_line_manual_update",
-            lambda: ingest_event_line_by_id(state.db, state.data_dir, event_line_id),
+            lambda: ingest_event_line_by_id(state.db, state.data_dir, local_event_line_id),
         )
         _enqueue_workspace_refresh_safe(
             client_id=next_client_id or previous_client_id,
             source_type="event_line_update",
-            source_id=event_line_id,
+            source_id=local_event_line_id,
             reason="event_line_updated",
             scope_type="event_line",
-            scope_id=event_line_id,
+            scope_id=local_event_line_id,
             priority="normal",
         )
-        if cloud_response_payload is not None:
-            return build_cloud_event_line(cloud_response_payload)
         return build_event_line(updated_row)
 
     def _event_line_dependency_counts(event_line_id: str) -> dict[str, int]:
@@ -27037,89 +29321,84 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/event-lines/{event_line_id}/close")
     def close_event_line(event_line_id: str) -> dict:
-        cloud_result: dict | None = None
-        if get_cloud_token():
-            # Try dedicated /close first; if 404/405, fall back to PATCH status=archived
-            try:
-                resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/close")
-                if isinstance(resp, dict):
-                    cloud_result = resp
-                    _upsert_cloud_event_line_shadow_local(resp)
-            except HTTPException as exc:
-                if exc.status_code not in (404, 405):
-                    raise
-                # Fallback: use PATCH to set status=archived
-                try:
-                    resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "archived"})
-                    if isinstance(resp, dict):
-                        cloud_result = resp if resp.get("id") or resp.get("eventLine") else {"status": "archived"}
-                        _upsert_cloud_event_line_shadow_local(resp)
-                except HTTPException:
-                    pass
-        # Always sync local copy
-        row = state.db.fetchone("SELECT id, status, primary_client_id FROM event_lines WHERE id = ?", (event_line_id,))
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        local_event_line_id = str(row["id"])
         if row and str(row["status"]) not in ("done", "archived"):
             timestamp = now_iso()
             state.db.execute(
-                "UPDATE event_lines SET status = 'archived', closed_at = ?, closed_by_user_id = ?, updated_at = ? WHERE id = ?",
-                (timestamp, current_operator_name(), timestamp, event_line_id),
+                """
+                UPDATE event_lines
+                SET status = 'archived',
+                    closed_at = ?,
+                    closed_by_user_id = ?,
+                    sync_status = CASE WHEN ? THEN 'syncing' ELSE sync_status END,
+                    pending_sync_action = CASE WHEN ? THEN 'archive' ELSE pending_sync_action END,
+                    last_sync_error = CASE WHEN ? THEN '' ELSE last_sync_error END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    timestamp,
+                    current_operator_name(),
+                    1 if get_cloud_token() else 0,
+                    1 if get_cloud_token() else 0,
+                    1 if get_cloud_token() else 0,
+                    timestamp,
+                    local_event_line_id,
+                ),
             )
             _enqueue_workspace_refresh_safe(
                 client_id=str(row["primary_client_id"] or "").strip() or None,
                 source_type="event_line_close",
-                source_id=event_line_id,
+                source_id=local_event_line_id,
                 reason="event_line_closed",
                 scope_type="event_line",
-                scope_id=event_line_id,
+                scope_id=local_event_line_id,
                 priority="normal",
             )
-        if cloud_result:
-            return cloud_result
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        if get_cloud_token():
+            updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+            if updated_row:
+                _sync_event_line_row_to_cloud(updated_row, forced_action="archive")
         return {"status": "archived"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/reopen")
     def reopen_event_line(event_line_id: str) -> dict:
-        cloud_result: dict | None = None
-        if get_cloud_token():
-            # Try dedicated /reopen first; if 404/405, fall back to PATCH status=active
-            try:
-                resp = cloud_request("POST", f"/api/v1/event-lines/{event_line_id}/reopen")
-                if isinstance(resp, dict):
-                    cloud_result = resp
-                    _upsert_cloud_event_line_shadow_local(resp)
-            except HTTPException as exc:
-                if exc.status_code not in (404, 405):
-                    raise
-                try:
-                    resp = cloud_request("PATCH", f"/api/v1/event-lines/{event_line_id}", json_body={"status": "active"})
-                    if isinstance(resp, dict):
-                        cloud_result = resp if resp.get("id") or resp.get("eventLine") else {"status": "active"}
-                        _upsert_cloud_event_line_shadow_local(resp)
-                except HTTPException:
-                    pass
-        # Always sync local copy
-        row = state.db.fetchone("SELECT id, primary_client_id FROM event_lines WHERE id = ?", (event_line_id,))
-        if row:
-            timestamp = now_iso()
-            state.db.execute(
-                "UPDATE event_lines SET status = 'active', closed_at = NULL, closed_by_user_id = NULL, updated_at = ? WHERE id = ?",
-                (timestamp, event_line_id),
-            )
-            _enqueue_workspace_refresh_safe(
-                client_id=str(row["primary_client_id"] or "").strip() or None,
-                source_type="event_line_reopen",
-                source_id=event_line_id,
-                reason="event_line_reopened",
-                scope_type="event_line",
-                scope_id=event_line_id,
-                priority="normal",
-            )
-        if cloud_result:
-            return cloud_result
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
         if not row:
             raise HTTPException(status_code=404, detail="Event line not found")
+        local_event_line_id = str(row["id"])
+        has_cloud = bool(get_cloud_token())
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE event_lines
+            SET status = 'active',
+                closed_at = NULL,
+                closed_by_user_id = NULL,
+                sync_status = CASE WHEN ? THEN 'syncing' ELSE sync_status END,
+                pending_sync_action = CASE WHEN ? THEN CASE WHEN cloud_id IS NULL OR cloud_id = '' THEN 'create' ELSE 'update' END ELSE pending_sync_action END,
+                last_sync_error = CASE WHEN ? THEN '' ELSE last_sync_error END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (1 if has_cloud else 0, 1 if has_cloud else 0, 1 if has_cloud else 0, timestamp, local_event_line_id),
+        )
+        _enqueue_workspace_refresh_safe(
+            client_id=str(row["primary_client_id"] or "").strip() or None,
+            source_type="event_line_reopen",
+            source_id=local_event_line_id,
+            reason="event_line_reopened",
+            scope_type="event_line",
+            scope_id=local_event_line_id,
+            priority="normal",
+        )
+        if has_cloud:
+            updated_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+            if updated_row:
+                _sync_event_line_row_to_cloud(updated_row, forced_action="update" if updated_row["cloud_id"] else "create")
         return {"status": "active"}
 
     @app.delete("/api/v1/event-lines/{event_line_id}")
@@ -27494,6 +29773,85 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_settings() -> SettingsResponse:
         return build_settings_response()
 
+    @app.get("/api/v1/maintenance-mode/status", response_model=MaintenanceModeStatusRecord)
+    def get_maintenance_mode_status() -> MaintenanceModeStatusRecord:
+        return _cloud_maintenance_status()
+
+    @app.post("/api/v1/maintenance-mode/enter", response_model=MaintenanceModeStatusRecord)
+    def enter_maintenance_mode() -> MaintenanceModeStatusRecord:
+        if not state.cloud_api_url:
+            raise HTTPException(status_code=403, detail="尚未配置云端服务地址")
+        if not get_cloud_token() and not get_cloud_refresh_token():
+            raise HTTPException(status_code=403, detail="尚未登录云端账号")
+        cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/enter", timeout=6.0), active=True)
+        if not cloud_status.canEnter or not cloud_status.available:
+            raise HTTPException(status_code=403, detail=cloud_status.reason or "当前账号无维护权限")
+        with state.maintenance_mode_lock:
+            state.maintenance_mode_active = True
+            state.maintenance_mode_user_id = cloud_status.userId or ""
+            state.maintenance_mode_entered_at = now_iso()
+        log_activity("maintenance.enter", "maintenance_mode", cloud_status.userId or "current", {"organizationId": cloud_status.organizationId})
+        return cloud_status.model_copy(update={"active": True})
+
+    @app.post("/api/v1/maintenance-mode/exit", response_model=MaintenanceModeStatusRecord)
+    def exit_maintenance_mode() -> MaintenanceModeStatusRecord:
+        previous_user_id = state.maintenance_mode_user_id
+        previous_org_id = get_cached_session_user().organizationId if get_cached_session_user() else None
+        with state.maintenance_mode_lock:
+            state.maintenance_mode_active = False
+            state.maintenance_mode_user_id = ""
+            state.maintenance_mode_entered_at = ""
+        try:
+            cloud_status = _coerce_maintenance_status(cloud_request("POST", "/api/v1/maintenance-mode/exit", timeout=6.0), active=False)
+        except HTTPException:
+            cloud_status = _inactive_maintenance_status("已在本机退出维护模式")
+        log_activity("maintenance.exit", "maintenance_mode", previous_user_id or "current", {"organizationId": previous_org_id})
+        return cloud_status.model_copy(update={"active": False})
+
+    @app.get("/api/v1/admin/maintenance-mode/members", response_model=list[MaintenanceMemberPermissionRecord])
+    def get_maintenance_mode_members() -> list[MaintenanceMemberPermissionRecord]:
+        _require_active_maintenance_mode()
+        payload = cloud_request("GET", "/api/v1/admin/maintenance-mode/members", timeout=6.0)
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Invalid maintenance members payload")
+        return [MaintenanceMemberPermissionRecord(**item) for item in payload if isinstance(item, dict)]
+
+    @app.patch("/api/v1/admin/maintenance-mode/members", response_model=list[MaintenanceMemberPermissionRecord])
+    def update_maintenance_mode_members(payload: MaintenancePermissionUpdatePayloadRecord) -> list[MaintenanceMemberPermissionRecord]:
+        _require_active_maintenance_mode()
+        response = cloud_request(
+            "PATCH",
+            "/api/v1/admin/maintenance-mode/members",
+            json_body=payload.model_dump(),
+            timeout=6.0,
+        )
+        if not isinstance(response, list):
+            raise HTTPException(status_code=502, detail="Invalid maintenance members payload")
+        log_activity(
+            "maintenance.permissions.update",
+            "maintenance_mode",
+            "members",
+            {"memberCount": len(payload.members)},
+        )
+        return [MaintenanceMemberPermissionRecord(**item) for item in response if isinstance(item, dict)]
+
+    @app.post("/api/v1/maintenance-mode/audit")
+    def audit_maintenance_mode_action(payload: MaintenanceAuditPayloadRecord) -> dict[str, bool]:
+        status_record = _require_active_maintenance_mode()
+        action = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", payload.action.strip())[:80] or "maintenance.action"
+        detail = _safe_local_maintenance_audit_detail(payload.detail)
+        log_activity(action, "maintenance_mode", payload.targetUserId or status_record.userId or "current", detail)
+        try:
+            cloud_request(
+                "POST",
+                "/api/v1/maintenance-mode/audit",
+                json_body={"action": action, "detail": detail, "targetUserId": payload.targetUserId},
+                timeout=6.0,
+            )
+        except HTTPException:
+            pass
+        return {"ok": True}
+
     @app.get("/api/v1/settings/logs", response_model=list[ActivityLogRecord])
     def get_activity_logs() -> list[ActivityLogRecord]:
         return [
@@ -27510,6 +29868,52 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ]
 
     # ── System Log Endpoints ───────────────────────────────────────
+    def _runtime_log_entries(limit: int = 500) -> list[dict[str, object]]:
+        log_path = state.data_dir / "runtime" / "logs" / "electron-launch.log"
+        if not log_path.exists():
+            return []
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return []
+        entries: list[dict[str, object]] = []
+        for line in reversed(lines[-max(limit * 4, limit):]):
+            text = line.strip()
+            if not text:
+                continue
+            match = re.match(r"^\[(?P<ts>[^\]]+)\]\s+\[(?P<level>[^\]]+)\]\s+(?P<message>.*)$", text)
+            ts = match.group("ts") if match else ""
+            raw_level = (match.group("level") if match else "INFO").upper()
+            message = match.group("message") if match else text
+            level_value = "ERROR" if ("Traceback" in message or "window-error" in message or raw_level == "ERROR") else raw_level
+            entries.append({
+                "ts": ts,
+                "level": level_value,
+                "source": "desktop",
+                "message": message,
+                "detail": {"raw": text},
+            })
+            if len(entries) >= limit:
+                break
+        return entries
+
+    def _runtime_logs_markdown(limit: int = 1000) -> str:
+        entries = _runtime_log_entries(limit)
+        lines = [
+            "# 桌面运行日志导出",
+            "",
+            f"- 条目数量：{len(entries)}",
+            f"- 导出时间：{now_iso()}",
+            "",
+            "```",
+        ]
+        for entry in entries:
+            detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
+            raw = detail.get("raw") if isinstance(detail, dict) else None
+            lines.append(str(raw or entry.get("message") or ""))
+        lines.append("```")
+        return "\n".join(lines)
+
     @app.get("/api/v1/logs")
     def get_system_logs(
         startDate: str | None = Query(default=None),
@@ -27521,6 +29925,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> dict:
         if not state.system_logger:
             return {"entries": [], "dates": [], "total": 0}
+        if source == "desktop":
+            entries = _runtime_log_entries(limit)
+            if level:
+                entries = [entry for entry in entries if entry.get("level") == level]
+            if keyword:
+                lower_keyword = keyword.lower()
+                entries = [entry for entry in entries if lower_keyword in json.dumps(entry, ensure_ascii=False).lower()]
+            dates = state.system_logger.list_log_dates()
+            return {"entries": entries, "dates": dates, "total": len(entries)}
         entries = state.system_logger.query(
             start_date=startDate, end_date=endDate, level=level,
             source=source, keyword=keyword, limit=limit,
@@ -27533,12 +29946,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         startDate: str | None = Query(default=None),
         endDate: str | None = Query(default=None),
         level: str | None = Query(default=None),
+        source: str | None = Query(default=None),
         keyword: str | None = Query(default=None),
     ) -> Response:
         if not state.system_logger:
             return Response(content="# 无日志数据", media_type="text/markdown")
+        if source == "desktop":
+            md = _runtime_logs_markdown()
+            return Response(
+                content=md,
+                media_type="text/markdown",
+                headers={"Content-Disposition": 'attachment; filename="yiyu-desktop-runtime-logs.md"'},
+            )
         md = state.system_logger.export_markdown(
-            start_date=startDate, end_date=endDate, level=level, keyword=keyword,
+            start_date=startDate, end_date=endDate, level=level, source=source, keyword=keyword,
         )
         date_label = startDate or "today"
         return Response(
@@ -27608,8 +30029,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def update_settings(payload: AppSettingsPayload) -> SettingsResponse:
         wants_sensitive_update = any(
             value is not None and value != ""
-            for value in [payload.aiProvider, payload.aiModel, payload.apiKey]
+            for value in [payload.aiProvider, payload.aiProviderLabel, payload.aiBaseUrl, payload.aiModel, payload.apiKey]
         ) or payload.clearApiKey
+        if (
+            payload.advancedAiRoutingEnabled is not None
+            or payload.aiModelMode is not None
+            or payload.aiModelProfiles is not None
+            or bool(payload.aiModelProfileApiKeys)
+            or bool(payload.clearAiModelProfileApiKeys)
+        ):
+            wants_sensitive_update = True
+        if payload.cloudApiUrl is not None:
+            wants_sensitive_update = True
         if wants_sensitive_update and get_system_admin_settings().protectAiAndCloud:
             ensure_admin_for_sensitive_settings()
         elif payload.currentOperatorId:
@@ -27620,8 +30051,45 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Operator not found")
             state.db.set_setting("current_operator_id", payload.currentOperatorId)
             state.db.execute("UPDATE operators SET is_current = CASE WHEN id = ? THEN 1 ELSE 0 END", (payload.currentOperatorId,))
-        state.ai.configure(payload.aiProvider, payload.aiModel, payload.apiKey, payload.clearApiKey)
-        log_activity("settings.update", "settings", "app", payload.model_dump(exclude_none=True))
+        if payload.cloudApiUrl is not None:
+            try:
+                next_cloud_api_url = normalize_configured_cloud_api_url(payload.cloudApiUrl)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if next_cloud_api_url != state.cloud_api_url:
+                clear_cloud_session()
+                state.cloud_api_url = next_cloud_api_url
+            state.db.set_setting("cloud_api_url", next_cloud_api_url)
+        state.ai.configure(
+            payload.aiProvider,
+            payload.aiModel,
+            payload.apiKey,
+            payload.clearApiKey,
+            provider_label=payload.aiProviderLabel,
+            base_url=payload.aiBaseUrl,
+        )
+        profile_payload = None
+        if payload.aiModelProfiles is not None:
+            profile_payload = {
+                key: value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+                for key, value in payload.aiModelProfiles.items()
+            }
+        state.ai.configure_advanced_ai(
+            advanced_enabled=payload.advancedAiRoutingEnabled,
+            model_mode=payload.aiModelMode,
+            profiles=profile_payload,
+            profile_api_keys=payload.aiModelProfileApiKeys,
+            clear_profile_api_keys=payload.clearAiModelProfileApiKeys,
+        )
+        safe_payload = payload.model_dump(
+            exclude_none=True,
+            exclude={"apiKey", "aiModelProfileApiKeys"},
+        )
+        if "clearAiModelProfileApiKeys" in safe_payload:
+            safe_payload["clearAiModelProfileApiKeys"] = [
+                key for key in safe_payload.get("clearAiModelProfileApiKeys", []) if str(key).strip()
+            ]
+        log_activity("settings.update", "settings", "app", safe_payload)
         return build_settings_response()
 
     @app.get("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
@@ -27630,7 +30098,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 payload = cloud_request("GET", "/api/v1/settings/tasks")
                 if isinstance(payload, dict):
-                    return TaskSettingsRecord(**payload)
+                    record = TaskSettingsRecord(**payload)
+                    if record.defaultListId and not _is_task_settings_default_local_list_id(record.defaultListId):
+                        record.defaultListId = _local_default_list_id()
+                    return record
             except Exception:
                 pass  # cloud down — fall back to local
         return _get_local_task_settings()
@@ -27638,6 +30109,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
     def update_task_settings(payload: TaskSettingsPayload) -> TaskSettingsRecord:
         ensure_business_settings_editable()
+        if payload.defaultListId is not None and not _is_task_settings_default_local_list_id(payload.defaultListId):
+            raise HTTPException(status_code=400, detail="任务默认清单只能选择收集箱或组织任务")
         if get_cloud_token():
             response = cloud_request("POST", "/api/v1/settings/tasks", json_body=payload.model_dump(exclude_none=True))
             if not isinstance(response, dict):
@@ -27650,6 +30123,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             list_row = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (next_default_list_id,))
             if not list_row or list_row["archived_at"]:
                 raise HTTPException(status_code=400, detail="默认清单无效")
+            if not _is_task_settings_default_local_list_row(list_row):
+                raise HTTPException(status_code=400, detail="任务默认清单只能选择收集箱或组织任务")
         timestamp = now_iso()
         next_record = TaskSettingsRecord(
             defaultListId=next_default_list_id,
@@ -27684,50 +30159,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )
         if next_record.defaultListId:
+            default_scope_row = state.db.fetchone("SELECT scope FROM task_lists WHERE id = ?", (next_record.defaultListId,))
+            default_scope = str(default_scope_row["scope"] or "org") if default_scope_row else "org"
             state.db.execute(
-                "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END",
-                (next_record.defaultListId,),
+                "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
+                (next_record.defaultListId, default_scope),
         )
         log_activity("settings.tasks.update", "settings", operator_id, payload.model_dump(exclude_none=True))
         return _get_local_task_settings(operator_id)
 
-    @app.get("/api/v1/settings/review-governance", response_model=ReviewGovernanceSettingsRecord)
-    def read_review_governance_settings() -> ReviewGovernanceSettingsRecord:
-        ensure_admin_for_sensitive_settings()
-        return _review_governance_with_members()
-
-    @app.post("/api/v1/settings/review-governance", response_model=ReviewGovernanceSettingsRecord)
-    def update_review_governance_settings(payload: ReviewGovernanceSettingsPayload) -> ReviewGovernanceSettingsRecord:
-        ensure_admin_for_sensitive_settings()
-        record = _sanitize_review_governance_settings(payload.departments)
-        state.db.set_setting("settings.review_governance", to_json(record.model_dump()))
-        _review_governance_members_cache.update({"token": "", "record": None, "ts": 0.0})
-        log_activity(
-            "settings.review_governance.update",
-            "settings",
-            "review_governance",
-            {"departmentCount": len(record.departments)},
-        )
-        return record
-
     @app.get("/api/v1/settings/org-dna", response_model=OrganizationDnaResponse)
     def get_organization_dna() -> OrganizationDnaResponse:
-        return OrganizationDnaResponse(modules=list_organization_dna_modules())
+        return OrganizationDnaResponse(modules=[])
 
     @app.get("/api/v1/settings/org-dna/{module_key}", response_model=OrganizationDnaModuleRecord)
     def get_organization_dna_module(module_key: str) -> OrganizationDnaModuleRecord:
-        modules = {module.moduleKey: module for module in list_organization_dna_modules()}
-        module = modules.get(module_key)
-        if not module:
-            raise HTTPException(status_code=404, detail="未知的组织 DNA 模块")
-        return module
+        raise HTTPException(status_code=410, detail="旧组织 DNA 已拆除，等待新的组织 DNA 引擎接入")
 
     @app.post("/api/v1/settings/org-dna/{module_key}", response_model=OrganizationDnaModuleRecord)
     def update_organization_dna_module(module_key: str, payload: OrganizationDnaUploadPayload) -> OrganizationDnaModuleRecord:
-        ensure_org_dna_editable()
-        record = upsert_organization_dna_module(module_key, payload)
-        log_activity("settings.org_dna.update", "settings", module_key, {"moduleKey": module_key, "fileName": record.fileName, "contentHash": record.contentHash})
-        return record
+        raise HTTPException(status_code=410, detail="旧组织 DNA 已拆除，等待新的组织 DNA 引擎接入")
 
     @app.get("/api/v1/settings/client-workspace", response_model=ClientWorkspaceSettingsRecord)
     def read_client_workspace_settings() -> ClientWorkspaceSettingsRecord:
@@ -28002,6 +30453,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/clients", response_model=list[ClientSummary])
     def list_clients() -> list[ClientSummary]:
+        _ensure_local_organization_workspace_from_cloud_membership()
         return [build_client_summary(str(row["id"])) for row in state.db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC")]
 
     @app.post("/api/v1/clients", response_model=ClientSummary)
@@ -28038,10 +30490,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.put("/api/v1/clients/{client_id}", response_model=ClientSummary)
     def update_client(client_id: str, payload: ClientMutationPayload) -> ClientSummary:
-        row = state.db.fetchone("SELECT color FROM clients WHERE id = ?", (client_id,))
+        row = state.db.fetchone("SELECT color, name FROM clients WHERE id = ?", (client_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
+        previous_name = str(row["name"] or "").strip()
         client_color = (payload.color or "").strip() or str(row["color"] or "#5B7BFE")
+        updated_at = now_iso()
         state.db.execute(
             """
             UPDATE clients
@@ -28056,13 +30510,1367 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.intro,
                 payload.stage,
                 client_color,
-                now_iso(),
+                updated_at,
                 client_id,
             ),
         )
+        next_name = payload.name.strip()
+        if next_name and next_name != previous_name:
+            state.db.execute(
+                """
+                UPDATE event_lines
+                SET primary_client_name = ?,
+                    sync_status = CASE WHEN sync_status = 'synced' THEN 'pending' ELSE sync_status END,
+                    pending_sync_action = CASE
+                        WHEN sync_status = 'synced' AND cloud_id IS NOT NULL AND cloud_id != '' THEN 'update'
+                        WHEN sync_status = 'synced' THEN 'create'
+                        ELSE pending_sync_action
+                    END,
+                    last_sync_error = CASE WHEN sync_status = 'synced' THEN '' ELSE last_sync_error END,
+                    updated_at = CASE WHEN sync_status = 'synced' THEN ? ELSE updated_at END
+                WHERE primary_client_id = ?
+                """,
+                (next_name, updated_at, client_id),
+            )
         ensure_standard_client_folders(client_id)
         log_activity("client.update", "client", client_id, payload.model_dump())
         return build_client_summary(client_id)
+
+    def _folder_record_from_row(row) -> ClientFolder:
+        return ClientFolder(
+            id=str(row["id"]),
+            clientId=str(row["client_id"]),
+            label=str(row["label"]),
+            path=str(row["path"]),
+            fileCount=int(row["file_count"] or 0),
+            lastScannedAt=str(row["last_scanned_at"]) if row["last_scanned_at"] else None,
+            folderKind=str(row["folder_kind"] or "business"),
+            sourceType=str(row["source_type"] or "legacy"),
+            isSystem=bool(int(row["is_system"] or 0)),
+            isHidden=bool(int(row["is_hidden"] or 0)),
+            sortOrder=int(row["sort_order"] or 100),
+            createdByRule=str(row["created_by_rule"] or ""),
+            suggested=bool(int(row["suggested"] or 0)),
+            confidence=float(row["confidence"] or 0.0),
+        )
+
+    def _folder_row_or_404(client_id: str, folder_id: str):
+        row = state.db.fetchone("SELECT * FROM client_folders WHERE id = ? AND client_id = ?", (folder_id, client_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        return row
+
+    def _folder_label_exists(client_id: str, label: str, *, exclude_id: str | None = None) -> bool:
+        rows = state.db.fetchall("SELECT id, label FROM client_folders WHERE client_id = ?", (client_id,))
+        normalized = normalize_text(label).casefold()
+        return any(str(row["label"]).casefold() == normalized and str(row["id"]) != str(exclude_id or "") for row in rows)
+
+    def _safe_move_managed_document_path(client_id: str, document_id: str, target_folder_path: str) -> str | None:
+        row = state.db.fetchone("SELECT * FROM documents WHERE id = ? AND client_id = ?", (document_id, client_id))
+        if not row:
+            return None
+        source_path = Path(str(row["path"]))
+        data_root = state.data_dir.resolve()
+        try:
+            if not source_path.exists() or not source_path.resolve().is_relative_to(data_root):
+                return None
+        except Exception:
+            return None
+        target_dir = Path(target_folder_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / source_path.name
+        if source_path.resolve() == target_path.resolve():
+            return str(target_path)
+        if target_path.exists():
+            target_path = target_dir / f"{source_path.stem}-{document_id}{source_path.suffix}"
+        shutil.move(str(source_path), str(target_path))
+        return str(target_path)
+
+    def _folder_labels_for_classification(client_id: str) -> list[str]:
+        rows = state.db.fetchall(
+            """
+            SELECT label
+            FROM client_folders
+            WHERE client_id = ? AND is_hidden = 0
+            ORDER BY is_system DESC, sort_order ASC, file_count DESC
+            """,
+            (client_id,),
+        )
+        return [str(row["label"]) for row in rows]
+
+    def _classify_client_folder_target(
+        *,
+        title: str = "",
+        file_name: str = "",
+        content_preview: str = "",
+        source_type: str = "",
+        existing_labels: list[str] | None = None,
+    ) -> ClientFolderRecommendationRecord:
+        labels = list(existing_labels or [])
+        haystack = normalize_text(" ".join(part for part in (title, file_name, content_preview, source_type) if part)).lower()
+        if source_type == "video_transcript" or any(token in haystack for token in ("bilibili", "小红书", "视频", "转写", "线上转写")):
+            return ClientFolderRecommendationRecord(
+                targetFolderLabel=ONLINE_TRANSCRIPT_FOLDER_LABEL,
+                confidence=0.96,
+                reason="链接转资料固定归档到线上转写",
+                suggestedTags=["线上转写", "外部媒体"],
+                needsReview=False,
+            )
+        if any(token in haystack for token in ("解析重试", "解析后暂无可用正文", "0字节", "0 字节", "parser_exception", "empty_text")):
+            return ClientFolderRecommendationRecord(
+                targetFolderLabel=DEFAULT_PENDING_FOLDER_LABEL,
+                confidence=0.28,
+                reason="资料解析质量低，需要先确认是否保留或重新解析",
+                suggestedTags=["解析质量低"],
+                needsReview=True,
+            )
+        for label in labels:
+            if label in SYSTEM_CLIENT_FOLDER_LABELS:
+                continue
+            label_tokens = [label, *[token for token in re.split(r"[\s/、·_-]+", label) if token]]
+            if any(token and token.lower() in haystack for token in label_tokens):
+                return ClientFolderRecommendationRecord(
+                    targetFolderLabel=label,
+                    confidence=0.88,
+                    reason=f"资料标题或内容命中当前客户已有文件夹「{label}」",
+                    suggestedTags=[label],
+                    needsReview=False,
+                )
+        for canonical_label, keywords, tags in AUTO_BUSINESS_FOLDER_RULES:
+            if not any(keyword in haystack for keyword in keywords):
+                continue
+            matching_existing = next((label for label in labels if label not in SYSTEM_CLIENT_FOLDER_LABELS and any(keyword in label for keyword in keywords)), "")
+            target_label = matching_existing or canonical_label
+            return ClientFolderRecommendationRecord(
+                targetFolderLabel=target_label,
+                confidence=0.78 if matching_existing else 0.72,
+                reason=f"资料内容命中「{canonical_label}」主题规则",
+                suggestedTags=list(tags),
+                needsReview=False,
+            )
+        return ClientFolderRecommendationRecord(
+            targetFolderLabel=DEFAULT_PENDING_FOLDER_LABEL,
+            confidence=0.42,
+            reason="暂未识别出稳定客户级业务主题，先进入待处理",
+            suggestedTags=[],
+            needsReview=True,
+        )
+
+    def _recommend_client_folder(
+        client_id: str,
+        *,
+        title: str = "",
+        file_name: str = "",
+        content_preview: str = "",
+        source_type: str = "",
+    ) -> ClientFolderRecommendationRecord:
+        return _classify_client_folder_target(
+            title=title,
+            file_name=file_name,
+            content_preview=content_preview,
+            source_type=source_type,
+            existing_labels=_folder_labels_for_classification(client_id),
+        )
+
+    def _client_folder_recommendation_rows(client_id: str) -> list[dict[str, object]]:
+        rows = state.db.fetchall(
+            """
+            SELECT
+                d.id AS document_id,
+                d.title,
+                d.path,
+                d.source,
+                d.excerpt,
+                d.tags_json,
+                v.visible_category,
+                v.material_layer,
+                k.human_folder_category,
+                cf.label AS folder_label
+            FROM documents d
+            LEFT JOIN v2_documents v ON v.client_id = d.client_id AND v.document_id = d.id
+            LEFT JOIN knowledge_documents k ON k.client_id = d.client_id AND k.document_id = d.id
+            LEFT JOIN client_folders cf ON cf.id = d.folder_id
+            WHERE d.client_id = ?
+            ORDER BY d.created_at DESC
+            """,
+            (client_id,),
+        )
+        return [dict(row) for row in rows]
+
+    def _build_client_folder_recommendation_plan(client_id: str) -> tuple[ClientFolderRecommendationPlanRecord, dict[str, ClientFolderRecommendationRecord]]:
+        existing_labels = _folder_labels_for_classification(client_id)
+        rows = _client_folder_recommendation_rows(client_id)
+        classified_by_document: dict[str, ClientFolderRecommendationRecord] = {}
+        groups: dict[str, dict[str, object]] = {}
+        for row in rows:
+            document_id = str(row["document_id"])
+            source_type = str(row.get("source") or "")
+            material_layer = str(row.get("material_layer") or "")
+            if material_layer == ONLINE_TRANSCRIPT_MATERIAL_LAYER:
+                source_type = "video_transcript"
+            recommendation = _classify_client_folder_target(
+                title=str(row.get("title") or ""),
+                file_name=Path(str(row.get("path") or "")).name,
+                content_preview=" ".join(
+                    str(item or "")
+                    for item in (
+                        row.get("excerpt"),
+                        row.get("visible_category"),
+                        row.get("human_folder_category"),
+                        row.get("folder_label"),
+                    )
+                ),
+                source_type=source_type,
+                existing_labels=existing_labels,
+            )
+            classified_by_document[document_id] = recommendation
+            group = groups.setdefault(
+                recommendation.targetFolderLabel,
+                {
+                    "count": 0,
+                    "confidence_sum": 0.0,
+                    "needs_review": False,
+                    "reasons": [],
+                    "tags": [],
+                    "examples": [],
+                },
+            )
+            group["count"] = int(group["count"]) + 1
+            group["confidence_sum"] = float(group["confidence_sum"]) + float(recommendation.confidence)
+            group["needs_review"] = bool(group["needs_review"]) or bool(recommendation.needsReview)
+            if recommendation.reason and recommendation.reason not in group["reasons"]:
+                group["reasons"] = [*list(group["reasons"]), recommendation.reason][:3]
+            for tag in recommendation.suggestedTags:
+                if tag not in group["tags"]:
+                    group["tags"] = [*list(group["tags"]), tag][:6]
+            title = normalize_text(str(row.get("title") or Path(str(row.get("path") or "")).name))
+            if title and title not in group["examples"]:
+                group["examples"] = [*list(group["examples"]), title][:4]
+
+        system_labels = [
+            label
+            for label in SYSTEM_CLIENT_FOLDER_LABELS
+            if label != DEFAULT_PENDING_FOLDER_LABEL and int(groups.get(label, {}).get("count", 0) or 0) > 0
+        ]
+        pending_count = int(groups.get(DEFAULT_PENDING_FOLDER_LABEL, {}).get("count", 0) or 0)
+        business_candidates = [
+            (label, data)
+            for label, data in groups.items()
+            if label not in SYSTEM_CLIENT_FOLDER_LABELS and int(data.get("count", 0) or 0) > 0
+        ]
+        preliminary_business_limit = max(0, CLIENT_FOLDER_VISIBLE_LIMIT - len(system_labels) - (1 if pending_count > 0 else 0))
+        pending_slot_required = pending_count > 0 or len(business_candidates) > preliminary_business_limit
+        reserved_system_count = len(system_labels) + (1 if pending_slot_required else 0)
+        business_limit = max(0, CLIENT_FOLDER_VISIBLE_LIMIT - reserved_system_count)
+        selected_business = {
+            label
+            for label, _data in sorted(
+                business_candidates,
+                key=lambda item: (-int(item[1].get("count", 0) or 0), -float(item[1].get("confidence_sum", 0.0) or 0.0), item[0]),
+            )[:business_limit]
+        }
+        overflow_pending_count = sum(int(data.get("count", 0) or 0) for label, data in business_candidates if label not in selected_business)
+        final_records: list[ClientFolderRecommendationRecord] = []
+        final_labels = [*system_labels, *sorted(selected_business), *( [DEFAULT_PENDING_FOLDER_LABEL] if pending_count + overflow_pending_count > 0 else [] )]
+        for label in final_labels[:CLIENT_FOLDER_VISIBLE_LIMIT]:
+            data = groups.get(label, {})
+            count = int(data.get("count", 0) or 0)
+            if label == DEFAULT_PENDING_FOLDER_LABEL:
+                count += overflow_pending_count
+            if count <= 0:
+                continue
+            confidence_sum = float(data.get("confidence_sum", 0.0) or 0.0)
+            confidence = confidence_sum / max(int(data.get("count", 0) or 0), 1)
+            reason = "；".join(list(data.get("reasons", []))[:2]) if data else ""
+            if label == DEFAULT_PENDING_FOLDER_LABEL and overflow_pending_count > 0:
+                reason = (reason + "；" if reason else "") + "超过 6 个文件夹预算的低频主题先进入待处理"
+            final_records.append(
+                ClientFolderRecommendationRecord(
+                    targetFolderLabel=label,
+                    confidence=confidence if label != DEFAULT_PENDING_FOLDER_LABEL else min(confidence or 0.42, 0.52),
+                    reason=reason or ("保留系统文件夹" if label in SYSTEM_CLIENT_FOLDER_LABELS else "按客户资料主题自动聚合"),
+                    suggestedTags=[str(item) for item in list(data.get("tags", []))[:6]],
+                    needsReview=label == DEFAULT_PENDING_FOLDER_LABEL or bool(data.get("needs_review", False)),
+                    documentCount=count,
+                    exampleDocuments=[str(item) for item in list(data.get("examples", []))[:4]],
+                )
+            )
+        return (
+            ClientFolderRecommendationPlanRecord(
+                clientId=client_id,
+                generatedAt=now_iso(),
+                visibleFolderLimit=CLIENT_FOLDER_VISIBLE_LIMIT,
+                visibleFolderBudget=CLIENT_FOLDER_VISIBLE_LIMIT,
+                recommendedVisibleFolders=[item.targetFolderLabel for item in final_records[:CLIENT_FOLDER_VISIBLE_LIMIT]],
+                hiddenLegacyFolders=[
+                    str(row["label"])
+                    for row in state.db.fetchall(
+                        """
+                        SELECT label
+                        FROM client_folders
+                        WHERE client_id = ?
+                          AND folder_kind = 'legacy_business'
+                          AND is_hidden = 1
+                        ORDER BY label ASC
+                        """,
+                        (client_id,),
+                    )
+                ],
+                pendingReasonCounts={
+                    **({"低置信度或无法稳定归类": pending_count} if pending_count > 0 else {}),
+                    **({"超过 6 个文件夹预算": overflow_pending_count} if overflow_pending_count > 0 else {}),
+                },
+                folders=final_records[:CLIENT_FOLDER_VISIBLE_LIMIT],
+                totalDocumentCount=len(rows),
+                pendingDocumentCount=pending_count + overflow_pending_count,
+                lowConfidenceDocumentCount=sum(1 for item in classified_by_document.values() if item.needsReview or item.confidence < 0.6),
+            ),
+            classified_by_document,
+        )
+
+    AUTO_REPAIR_PENDING_LABELS = {DEFAULT_PENDING_FOLDER_LABEL, "待整理资料", "待确认归类"}
+    AUTO_REPAIR_LOW_RISK_STAGES = {"ready_classify", "repair_ingest", "repair_markdown", "repair_dedupe", "soft_cleanup"}
+
+    def _auto_repair_rows(client_id: str, *, document_ids: list[str] | None = None, limit: int = 300) -> list[dict[str, object]]:
+        params: list[object] = [client_id]
+        id_clause = ""
+        if document_ids:
+            placeholders = ",".join("?" for _ in document_ids)
+            id_clause = f"AND d.id IN ({placeholders})"
+            params.extend(document_ids)
+        else:
+            pending_placeholders = ",".join("?" for _ in AUTO_REPAIR_PENDING_LABELS)
+            id_clause = f"""
+              AND (
+                v.id IS NULL
+                OR COALESCE(v.visible_category, '') IN ({pending_placeholders})
+                OR COALESCE(k.human_folder_category, '') IN ({pending_placeholders})
+                OR COALESCE(cf.label, '') IN ({pending_placeholders})
+                OR COALESCE(v.parse_status, '') IN ('failed', 'queued')
+              )
+            """
+            params.extend(sorted(AUTO_REPAIR_PENDING_LABELS) * 3)
+        params.append(max(1, min(int(limit or 300), 1000)))
+        rows = state.db.fetchall(
+            f"""
+            SELECT
+                d.id AS document_id,
+                d.title AS title,
+                d.path AS document_path,
+                d.original_source_path AS original_source_path,
+                d.kind AS document_kind,
+                d.source AS document_source,
+                d.excerpt AS document_excerpt,
+                d.tags_json AS tags_json,
+                d.created_at AS document_created_at,
+                d.is_searchable AS document_is_searchable,
+                d.lifecycle_status AS document_lifecycle_status,
+                v.id AS v2_document_id,
+                v.original_path AS v2_original_path,
+                v.managed_path AS v2_managed_path,
+                v.markdown_path AS v2_markdown_path,
+                v.file_name AS v2_file_name,
+                v.kind AS v2_kind,
+                v.visible_category AS v2_visible_category,
+                v.material_layer AS v2_material_layer,
+                v.parse_status AS v2_parse_status,
+                v.parse_error AS v2_parse_error,
+                v.preview_text AS v2_preview_text,
+                v.doc_index_text AS v2_doc_index_text,
+                v.markdown_content AS v2_markdown_content,
+                v.section_count AS v2_section_count,
+                v.chunk_count AS v2_chunk_count,
+                v.updated_at AS v2_updated_at,
+                v.is_searchable AS v2_is_searchable,
+                v.lifecycle_status AS v2_lifecycle_status,
+                k.id AS knowledge_document_id,
+                k.original_path AS knowledge_original_path,
+                k.current_human_path AS knowledge_current_human_path,
+                k.human_folder_category AS knowledge_folder_category,
+                k.vector_status AS vector_status,
+                cf.label AS folder_label
+            FROM documents d
+            LEFT JOIN v2_documents v ON v.client_id = d.client_id AND v.document_id = d.id
+            LEFT JOIN knowledge_documents k ON k.client_id = d.client_id AND k.document_id = d.id
+            LEFT JOIN client_folders cf ON cf.id = d.folder_id
+            WHERE d.client_id = ?
+            {id_clause}
+            ORDER BY d.created_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [dict(row) for row in rows]
+
+    def _auto_repair_path_candidates(row: dict[str, object]) -> list[Path]:
+        values = [
+            row.get("original_source_path"),
+            row.get("document_path"),
+            row.get("v2_original_path"),
+            row.get("v2_managed_path"),
+            row.get("v2_markdown_path"),
+            row.get("knowledge_original_path"),
+            row.get("knowledge_current_human_path"),
+        ]
+        candidates: list[Path] = []
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            try:
+                path = Path(text).expanduser()
+            except Exception:
+                continue
+            if path not in candidates:
+                candidates.append(path)
+        return candidates
+
+    def _auto_repair_existing_paths(row: dict[str, object]) -> tuple[list[Path], list[Path], list[Path]]:
+        existing: list[Path] = []
+        zero_byte: list[Path] = []
+        missing: list[Path] = []
+        for path in _auto_repair_path_candidates(row):
+            if path.is_file():
+                existing.append(path)
+                try:
+                    if path.stat().st_size == 0:
+                        zero_byte.append(path)
+                except OSError:
+                    zero_byte.append(path)
+            else:
+                missing.append(path)
+        return existing, zero_byte, missing
+
+    def _read_auto_repair_markdown(path: Path) -> str:
+        if path.suffix.lower() not in {".md", ".markdown", ".txt"}:
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="ignore")[:20000]
+        except Exception:
+            return ""
+
+    def _auto_repair_has_effective_text(row: dict[str, object]) -> bool:
+        machine_text = " ".join(
+            str(row.get(key) or "")
+            for key in ("v2_markdown_content", "v2_preview_text", "v2_doc_index_text", "document_excerpt")
+        )
+        md_text = ""
+        for path in _auto_repair_path_candidates(row):
+            if path.is_file() and path.suffix.lower() in {".md", ".markdown", ".txt"}:
+                md_text = _read_auto_repair_markdown(path)
+                if md_text:
+                    break
+        return has_effective_machine_text(machine_text, md_text, str(row.get("v2_preview_text") or ""))
+
+    def _auto_repair_source_path(row: dict[str, object]) -> str | None:
+        existing, zero_byte, _missing = _auto_repair_existing_paths(row)
+        for path in existing:
+            if path not in zero_byte and path.suffix.lower() not in {".md", ".markdown", ".txt"}:
+                return str(path)
+        for path in existing:
+            if path not in zero_byte:
+                return str(path)
+        return None
+
+    def _auto_repair_duplicate_key(row: dict[str, object]) -> str:
+        title = normalize_text(str(row.get("title") or row.get("v2_file_name") or Path(str(row.get("document_path") or "")).name))
+        stem = Path(title).stem if title else ""
+        normalized = re.sub(r"[\s_（）()\\[\\]-]+", "", stem.lower())
+        normalized = re.sub(r"(副本|复制|copy|final|最终|整理版|定稿|第[一二三四五六七八九十0-9]+版|v\d+)$", "", normalized)
+        normalized = re.sub(r"20\d{6,}|\d{8,}", "", normalized)
+        return normalized or str(row.get("document_id") or "")
+
+    LOW_VALUE_PENDING_DOCUMENT_TOKENS = (
+        "test",
+        "smoke",
+        "offline_upload",
+        "prog_test",
+        "no_client_test",
+        "final_test",
+        "test_attachment",
+        "attachment smoke",
+        "yiyu-attach",
+        "测试附件",
+        "烟测",
+        "解析重试",
+        "解析后暂无可用正文",
+        "资料缓冲池",
+        "审批9账号指令",
+        "软件反馈总表",
+        "严重错误与阻塞记录",
+        "命名冲突待确认",
+        "重复件已移至废纸篓",
+    )
+
+    def _low_value_pending_document_reason(row: dict[str, object]) -> str:
+        def _basename(value: object) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return ""
+            try:
+                return Path(text).name
+            except Exception:
+                return text
+
+        haystack = normalize_text(
+            " ".join(
+                [
+                    str(row.get("title") or ""),
+                    _basename(row.get("document_path")),
+                    _basename(row.get("original_source_path")),
+                    str(row.get("document_excerpt") or ""),
+                    str(row.get("v2_preview_text") or ""),
+                    str(row.get("v2_parse_error") or ""),
+                    str(row.get("tags_json") or ""),
+                ]
+            )
+        ).lower()
+        for token in LOW_VALUE_PENDING_DOCUMENT_TOKENS:
+            if token.lower() in haystack:
+                return f"命中低价值/测试资料标记：{token}"
+        return ""
+
+    def _build_auto_repair_items(
+        client_id: str,
+        *,
+        document_ids: list[str] | None = None,
+        limit: int = 300,
+    ) -> list[DocumentAutoRepairItemRecord]:
+        rows = _auto_repair_rows(client_id, document_ids=document_ids, limit=limit)
+        existing_labels = _folder_labels_for_classification(client_id)
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            grouped.setdefault(_auto_repair_duplicate_key(row), []).append(row)
+        preferred_by_key: dict[str, str] = {}
+        for key, candidates in grouped.items():
+            if len(candidates) <= 1:
+                continue
+            def candidate_score(row: dict[str, object]) -> tuple[int, int, int, str]:
+                existing, zero_byte, _missing = _auto_repair_existing_paths(row)
+                healthy_file = any(path not in zero_byte for path in existing)
+                v2_ready = str(row.get("v2_parse_status") or "") in {"ready", "partial", "partial_ready"}
+                chunks = int(row.get("v2_chunk_count") or 0) + int(row.get("v2_section_count") or 0)
+                effective = _auto_repair_has_effective_text(row)
+                return (
+                    3 if v2_ready and chunks > 0 and effective else 0,
+                    2 if healthy_file else 0,
+                    chunks,
+                    str(row.get("document_created_at") or ""),
+                )
+            preferred_by_key[key] = str(max(candidates, key=candidate_score).get("document_id") or "")
+
+        items: list[DocumentAutoRepairItemRecord] = []
+        for row in rows:
+            document_id = str(row.get("document_id") or "")
+            title = normalize_text(str(row.get("title") or row.get("v2_file_name") or Path(str(row.get("document_path") or "")).name)) or "未命名资料"
+            source_path = _auto_repair_source_path(row)
+            existing, zero_byte, missing = _auto_repair_existing_paths(row)
+            parse_status = str(row.get("v2_parse_status") or "")
+            chunks = int(row.get("v2_chunk_count") or 0) + int(row.get("v2_section_count") or 0)
+            effective_text = _auto_repair_has_effective_text(row)
+            duplicate_key = _auto_repair_duplicate_key(row)
+            duplicate_of = preferred_by_key.get(duplicate_key)
+            source_type = str(row.get("document_source") or "")
+            material_layer = str(row.get("v2_material_layer") or "")
+            if material_layer == ONLINE_TRANSCRIPT_MATERIAL_LAYER:
+                source_type = "video_transcript"
+            recommendation = _classify_client_folder_target(
+                title=title,
+                file_name=Path(str(row.get("document_path") or "")).name,
+                content_preview=" ".join(
+                    str(row.get(key) or "")
+                    for key in ("document_excerpt", "v2_preview_text", "v2_visible_category", "knowledge_folder_category", "folder_label")
+                )[:3000],
+                source_type=source_type,
+                existing_labels=existing_labels,
+            )
+
+            health = "unknown"
+            stage = "skip"
+            action = "保持当前状态"
+            search_policy = "exclude_until_repaired"
+            requires_human = False
+            human_question: str | None = None
+            target_folder = recommendation.targetFolderLabel
+            confidence = float(recommendation.confidence)
+            reason = recommendation.reason
+            low_value_reason = _low_value_pending_document_reason(row)
+
+            if low_value_reason:
+                health = "unknown"
+                stage = "soft_cleanup"
+                action = "归档为测试/运维资料并排除出检索池"
+                target_folder = "归档"
+                search_policy = "exclude"
+                confidence = 0.94
+                reason = low_value_reason
+            elif duplicate_of and duplicate_of != document_id:
+                health = "duplicate_candidate"
+                stage = "repair_dedupe"
+                action = "自动归并为重复资料，保留最佳版本参与检索，其余进入归档"
+                target_folder = "归档"
+                search_policy = "exclude"
+                confidence = 0.9
+                reason = f"与同族资料重复，最佳版本为 {duplicate_of}"
+            elif zero_byte:
+                health = "zero_byte_original"
+                stage = "soft_cleanup"
+                action = "标记为无效资料并排除出检索池"
+                target_folder = "归档"
+                search_policy = "exclude"
+                confidence = 0.96
+                reason = "原文件为 0 字节，没有可用正文"
+            elif parse_status in {"ready", "partial", "partial_ready"} and chunks > 0 and effective_text:
+                health = "v2_ready"
+                stage = "ready_classify"
+                action = "更新展示文件夹与标签"
+                search_policy = "include"
+                requires_human = False
+            elif source_path and Path(source_path).suffix.lower() in {".md", ".markdown", ".txt"} and effective_text:
+                health = "md_compat_candidate"
+                stage = "repair_markdown"
+                action = "作为历史机读稿重新入库并降权参与检索"
+                search_policy = "include_low_weight"
+                confidence = max(confidence, 0.72)
+            elif source_path and Path(source_path).suffix.lower() not in {".md", ".markdown", ".txt"}:
+                health = "original_nonzero_no_v2"
+                stage = "repair_ingest"
+                action = "自动进入 v2 解析、资料卡、索引和向量队列"
+                search_policy = "exclude_until_repaired"
+                confidence = max(confidence, 0.76)
+            elif parse_status == "failed" and not effective_text:
+                health = "parse_failed"
+                stage = "soft_cleanup"
+                action = "标记为无效资料并排除出检索池"
+                target_folder = "归档"
+                search_policy = "exclude"
+                confidence = 0.82
+                reason = str(row.get("v2_parse_error") or "解析失败且没有有效机读正文")
+            elif missing and effective_text:
+                health = "missing_original"
+                stage = "minimal_human_check"
+                action = "保留机读稿前需要确认原文件缺失后的使用边界"
+                search_policy = "include_low_weight"
+                requires_human = True
+                human_question = "原文件缺失但仍有部分机读正文，是否保留为历史机读稿？"
+                confidence = 0.5
+                reason = "原文件缺失，需要最小人工确认是否保留机读稿"
+            else:
+                health = "missing_original" if missing else "unknown"
+                stage = "soft_cleanup"
+                action = "软清理为不可检索资料，等待重新上传或重绑定"
+                target_folder = "归档"
+                search_policy = "exclude"
+                confidence = 0.7
+                reason = "没有稳定可用的原文件或机读正文"
+
+            items.append(
+                DocumentAutoRepairItemRecord(
+                    documentId=document_id,
+                    v2DocumentId=str(row.get("v2_document_id") or "") or None,
+                    title=title,
+                    kind=str(row.get("v2_kind") or row.get("document_kind") or "document"),
+                    healthStatus=health,
+                    stage=stage,
+                    nextSystemAction=action,
+                    targetFolder=target_folder,
+                    tags=list(dict.fromkeys([*recommendation.suggestedTags, health, stage])),
+                    searchPolicy=search_policy,
+                    requiresHuman=requires_human,
+                    humanQuestion=human_question,
+                    confidence=confidence,
+                    reason=reason,
+                    sourcePath=source_path,
+                    duplicateOfDocumentId=duplicate_of if duplicate_of != document_id else None,
+                )
+            )
+        return items
+
+    def _build_document_auto_repair_preview(
+        client_id: str,
+        payload: DocumentAutoRepairPreviewPayloadRecord | None = None,
+    ) -> DocumentAutoRepairPreviewRecord:
+        payload = payload or DocumentAutoRepairPreviewPayloadRecord()
+        items = _build_auto_repair_items(client_id, document_ids=payload.documentIds or None, limit=payload.limit)
+        summary: dict[str, int] = {
+            "total": len(items),
+            "autoRepairable": sum(1 for item in items if item.stage in AUTO_REPAIR_LOW_RISK_STAGES),
+            "requiresHuman": sum(1 for item in items if item.requiresHuman),
+            "softCleanup": sum(1 for item in items if item.stage == "soft_cleanup"),
+            "dedupeCandidates": sum(1 for item in items if item.stage == "repair_dedupe"),
+            "ingestQueued": sum(1 for item in items if item.stage in {"repair_ingest", "repair_markdown"}),
+        }
+        pending_reason_counts: dict[str, int] = {}
+        for item in items:
+            if item.healthStatus == "original_nonzero_no_v2":
+                key = "待解析"
+            elif item.healthStatus == "duplicate_candidate":
+                key = "重复候选"
+            elif item.healthStatus == "zero_byte_original":
+                key = "0 字节"
+            elif item.healthStatus == "md_compat_candidate":
+                key = "兼容 MD"
+            elif item.requiresHuman:
+                key = "需确认"
+            else:
+                key = "可自动整理"
+            pending_reason_counts[key] = pending_reason_counts.get(key, 0) + 1
+        folder_counter: dict[str, int] = {}
+        for item in items:
+            folder_counter[item.targetFolder] = folder_counter.get(item.targetFolder, 0) + 1
+        recommended_visible = [
+            label
+            for label, _count in sorted(
+                folder_counter.items(),
+                key=lambda pair: (0 if pair[0] in SYSTEM_CLIENT_FOLDER_LABELS else 1, -pair[1], pair[0]),
+            )
+        ][:CLIENT_FOLDER_VISIBLE_LIMIT]
+        return DocumentAutoRepairPreviewRecord(
+            previewId=new_id("auto_repair_preview"),
+            clientId=client_id,
+            generatedAt=now_iso(),
+            visibleFolderBudget=CLIENT_FOLDER_VISIBLE_LIMIT,
+            recommendedVisibleFolders=recommended_visible,
+            pendingReasonCounts=pending_reason_counts,
+            summary=summary,
+            items=items,
+        )
+
+    def _set_document_auto_repair_folder(client_id: str, document_id: str, label: str, *, confidence: float, reason: str) -> None:
+        folder_id = _ensure_client_folder_row(
+            client_id,
+            label,
+            folder_kind="system" if label in SYSTEM_CLIENT_FOLDER_LABELS else "auto_business",
+            source_type="system" if label in SYSTEM_CLIENT_FOLDER_LABELS else "ai",
+            is_system=label in SYSTEM_CLIENT_FOLDER_LABELS,
+            is_hidden=False,
+            sort_order=(SYSTEM_CLIENT_FOLDER_LABELS.index(label) * 10 if label in SYSTEM_CLIENT_FOLDER_LABELS else 60),
+            created_by_rule="auto_repair",
+            suggested=label not in SYSTEM_CLIENT_FOLDER_LABELS,
+            confidence=confidence,
+        )
+        timestamp = now_iso()
+        state.db.execute("UPDATE documents SET folder_id = ? WHERE client_id = ? AND id = ?", (folder_id, client_id, document_id))
+        state.db.execute(
+            """
+            UPDATE v2_documents
+            SET visible_category = ?, secondary_category = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (label, label, client_id, document_id),
+        )
+        state.db.execute(
+            """
+            UPDATE knowledge_documents
+            SET human_folder_category = ?, reclassified_at = ?, reclass_reason = ?, reclass_confidence = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (label, timestamp, reason, confidence, client_id, document_id),
+        )
+
+    def _soft_mark_document_invalid(client_id: str, document_id: str, *, reason: str, archived: bool = False) -> None:
+        lifecycle = "archived" if archived else "invalid"
+        parse_error = reason or ("重复资料已归档" if archived else "自动修复判定为无效资料")
+        state.db.execute(
+            """
+            UPDATE documents
+            SET is_searchable = 0, lifecycle_status = ?
+            WHERE client_id = ? AND id = ?
+            """,
+            (lifecycle, client_id, document_id),
+        )
+        state.db.execute(
+            """
+            UPDATE v2_documents
+            SET is_searchable = 0, lifecycle_status = ?, parse_status = 'failed', parse_error = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (lifecycle, parse_error, client_id, document_id),
+        )
+        state.db.execute(
+            """
+            UPDATE knowledge_documents
+            SET human_folder_category = '归档', dedup_status = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            ("duplicate" if archived else "invalid", client_id, document_id),
+        )
+        _set_document_auto_repair_folder(client_id, document_id, "归档", confidence=0.98, reason="workspace_document_auto_repair")
+
+    def _apply_document_auto_repair_item(client_id: str, item: DocumentAutoRepairItemRecord, *, reason_prefix: str) -> None:
+        if item.stage == "ready_classify":
+            _set_document_auto_repair_folder(
+                client_id,
+                item.documentId,
+                item.targetFolder,
+                confidence=item.confidence,
+                reason=f"{reason_prefix}_classify",
+            )
+            return
+        if item.stage in {"repair_ingest", "repair_markdown"}:
+            source_path = Path(item.sourcePath or "")
+            if not source_path.is_file() or source_path.stat().st_size <= 0:
+                raise RuntimeError("源文件不存在或为空，无法重新解析")
+            ingest_document_knowledge(
+                state.db,
+                data_dir=state.data_dir,
+                client_id=client_id,
+                import_id=None,
+                document_id=item.documentId,
+                source_path=source_path,
+                original_source_path=source_path,
+                title=item.title,
+                kind=item.kind,
+                source="auto_repair",
+                fallback_excerpt="",
+                created_at=now_iso(),
+                ai_service=state.ai,
+            )
+            _set_document_auto_repair_folder(
+                client_id,
+                item.documentId,
+                item.targetFolder,
+                confidence=item.confidence,
+                reason=f"{reason_prefix}_ingest",
+            )
+            return
+        if item.stage == "repair_dedupe":
+            _soft_mark_document_invalid(client_id, item.documentId, reason=item.reason, archived=True)
+            return
+        if item.stage == "soft_cleanup":
+            _soft_mark_document_invalid(client_id, item.documentId, reason=item.reason, archived=False)
+            return
+        raise RuntimeError(f"不支持的自动整理阶段：{item.stage}")
+
+    def _run_workspace_document_auto_repair_job(client_id: str, payload: dict[str, object], job_id: str) -> None:
+        document_ids = [str(item) for item in payload.get("documentIds", []) if str(item).strip()]
+        include_human = bool(payload.get("includeHumanRequired"))
+        preview = _build_document_auto_repair_preview(
+            client_id,
+            DocumentAutoRepairPreviewPayloadRecord(documentIds=document_ids, includeHumanRequired=include_human),
+        )
+        actionable = [
+            item
+            for item in preview.items
+            if item.stage in AUTO_REPAIR_LOW_RISK_STAGES and (include_human or not item.requiresHuman)
+        ]
+        total = max(len(actionable), 1)
+        for index, item in enumerate(actionable, start=1):
+            update_knowledge_job_progress(job_id, index - 1, f"正在自动整理：{item.title}")
+            append_knowledge_job_event(job_id, "info", f"{item.title}: {item.nextSystemAction}")
+            try:
+                _apply_document_auto_repair_item(
+                    client_id,
+                    item,
+                    reason_prefix="workspace_document_auto_repair",
+                )
+                update_knowledge_job_progress(job_id, index, f"已自动整理：{item.title}")
+            except Exception as exc:
+                append_knowledge_job_event(job_id, "error", f"{item.title}: {exc}")
+                logger.warning("[auto-repair] failed document %s", item.documentId, exc_info=True)
+        _refresh_client_folder_rows(client_id)
+        try:
+            refresh_event, _created = enqueue_workspace_context_refresh(
+                state.db,
+                client_id=client_id,
+                scope_type="client",
+                scope_id=client_id,
+                source_type="document_auto_repair",
+                source_id=job_id,
+                reason="workspace_document_auto_repair_completed",
+                priority="normal",
+            )
+            append_knowledge_job_event(job_id, "info", f"已触发上下文刷新：{refresh_event.id}")
+        except Exception:
+            logger.warning("[auto-repair] failed to enqueue context refresh for %s", client_id, exc_info=True)
+
+    def _has_active_workspace_document_auto_repair_job(client_id: str) -> bool:
+        return bool(
+            int(
+                state.db.scalar(
+                    """
+                    SELECT COUNT(1) AS count
+                    FROM knowledge_jobs
+                    WHERE client_id = ?
+                      AND job_type = 'workspace_document_auto_repair'
+                      AND status IN ('queued', 'running')
+                    """,
+                    (client_id,),
+                )
+            )
+        )
+
+    def _pending_document_ids_for_auto_reconcile(client_id: str, *, limit: int = 300) -> list[str]:
+        pending_placeholders = ",".join("?" for _ in AUTO_REPAIR_PENDING_LABELS)
+        params: list[object] = [
+            client_id,
+            *sorted(AUTO_REPAIR_PENDING_LABELS),
+            *sorted(AUTO_REPAIR_PENDING_LABELS),
+            *sorted(AUTO_REPAIR_PENDING_LABELS),
+            max(1, min(int(limit or 300), 1000)),
+        ]
+        rows = state.db.fetchall(
+            f"""
+            SELECT d.id
+            FROM documents d
+            LEFT JOIN v2_documents v ON v.client_id = d.client_id AND v.document_id = d.id
+            LEFT JOIN knowledge_documents k ON k.client_id = d.client_id AND k.document_id = d.id
+            LEFT JOIN client_folders cf ON cf.id = d.folder_id
+            WHERE d.client_id = ?
+              AND (
+                COALESCE(cf.label, '') IN ({pending_placeholders})
+                OR COALESCE(v.visible_category, '') IN ({pending_placeholders})
+                OR COALESCE(k.human_folder_category, '') IN ({pending_placeholders})
+              )
+            ORDER BY d.created_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [str(row["id"]) for row in rows if str(row["id"] or "").strip()]
+
+    def reconcile_pending_documents_for_client(client_id: str) -> dict[str, int]:
+        if client_id in AUTO_REPAIR_RECONCILING_CLIENTS:
+            return {"inlineApplied": 0, "queued": 0, "skipped": 0}
+        AUTO_REPAIR_RECONCILING_CLIENTS.add(client_id)
+        try:
+            pending_document_ids = _pending_document_ids_for_auto_reconcile(client_id, limit=300)
+            if not pending_document_ids:
+                return {"inlineApplied": 0, "queued": 0, "skipped": 0}
+            preview = _build_document_auto_repair_preview(
+                client_id,
+                DocumentAutoRepairPreviewPayloadRecord(
+                    documentIds=pending_document_ids,
+                    limit=len(pending_document_ids),
+                    includeHumanRequired=False,
+                ),
+            )
+            inline_items = [
+                item
+                for item in preview.items
+                if item.stage in {"ready_classify", "repair_dedupe", "soft_cleanup"} and not item.requiresHuman
+            ]
+            queued_items = [
+                item
+                for item in preview.items
+                if item.stage in {"repair_ingest", "repair_markdown"} and not item.requiresHuman
+            ]
+            inline_applied = 0
+            skipped = 0
+            for item in inline_items:
+                try:
+                    _apply_document_auto_repair_item(
+                        client_id,
+                        item,
+                        reason_prefix="workspace_document_auto_reconcile",
+                    )
+                    inline_applied += 1
+                except Exception:
+                    skipped += 1
+                    logger.warning("[auto-repair] reconcile failed document %s", item.documentId, exc_info=True)
+            queued_count = 0
+            if queued_items and not _has_active_workspace_document_auto_repair_job(client_id):
+                job = enqueue_knowledge_job(
+                    client_id,
+                    "workspace_document_auto_repair",
+                    {
+                        "documentIds": [item.documentId for item in queued_items],
+                        "includeHumanRequired": False,
+                        "previewId": preview.previewId,
+                        "autoReconcile": True,
+                    },
+                    total_items=len(queued_items),
+                )
+                queued_count = len(queued_items)
+                append_knowledge_job_event(
+                    job.id,
+                    "info",
+                    f"自动整理收口已入队 {queued_count} 条待整理资料",
+                    {"source": "reconcile_pending_documents_for_client"},
+                )
+            elif queued_items:
+                skipped += len(queued_items)
+            if inline_applied or queued_count:
+                _refresh_client_folder_rows(client_id)
+                log_activity(
+                    "client.documents.auto_repair.reconcile",
+                    "client",
+                    client_id,
+                    {
+                        "inlineApplied": inline_applied,
+                        "queued": queued_count,
+                        "skipped": skipped,
+                        "previewId": preview.previewId,
+                    },
+                )
+            return {"inlineApplied": inline_applied, "queued": queued_count, "skipped": skipped}
+        finally:
+            AUTO_REPAIR_RECONCILING_CLIENTS.discard(client_id)
+
+    def _apply_client_folder_recommendation_plan(client_id: str, selected_labels: set[str] | None = None) -> ClientFolderRecommendationPlanRecord:
+        plan, classified_by_document = _build_client_folder_recommendation_plan(client_id)
+        allowed_labels = set(selected_labels or [item.targetFolderLabel for item in plan.folders])
+        if DEFAULT_PENDING_FOLDER_LABEL in [item.targetFolderLabel for item in plan.folders]:
+            allowed_labels.add(DEFAULT_PENDING_FOLDER_LABEL)
+        folder_ids: dict[str, str] = {}
+        for item in plan.folders:
+            label = item.targetFolderLabel
+            if label not in allowed_labels:
+                continue
+            folder_ids[label] = _ensure_client_folder_row(
+                client_id,
+                label,
+                folder_kind="system" if label in SYSTEM_CLIENT_FOLDER_LABELS else "auto_business",
+                source_type="system" if label in SYSTEM_CLIENT_FOLDER_LABELS else "ai",
+                is_system=label in SYSTEM_CLIENT_FOLDER_LABELS,
+                is_hidden=False,
+                sort_order=(SYSTEM_CLIENT_FOLDER_LABELS.index(label) * 10 if label in SYSTEM_CLIENT_FOLDER_LABELS else 60),
+                created_by_rule="system_default" if label in SYSTEM_CLIENT_FOLDER_LABELS else "ai_folder_recommendation",
+                suggested=label not in SYSTEM_CLIENT_FOLDER_LABELS,
+                confidence=item.confidence,
+            )
+        if DEFAULT_PENDING_FOLDER_LABEL not in folder_ids:
+            folder_ids[DEFAULT_PENDING_FOLDER_LABEL] = _ensure_client_folder_row(
+                client_id,
+                DEFAULT_PENDING_FOLDER_LABEL,
+                folder_kind="system",
+                source_type="system",
+                is_system=True,
+                is_hidden=False,
+                sort_order=SYSTEM_CLIENT_FOLDER_LABELS.index(DEFAULT_PENDING_FOLDER_LABEL) * 10 if DEFAULT_PENDING_FOLDER_LABEL in SYSTEM_CLIENT_FOLDER_LABELS else 30,
+                created_by_rule="system_default",
+            )
+
+        timestamp = now_iso()
+        for row in _client_folder_recommendation_rows(client_id):
+            document_id = str(row["document_id"])
+            recommendation = classified_by_document.get(document_id)
+            if not recommendation:
+                continue
+            target_label = recommendation.targetFolderLabel if recommendation.targetFolderLabel in allowed_labels else DEFAULT_PENDING_FOLDER_LABEL
+            folder_id = folder_ids.get(target_label) or folder_ids[DEFAULT_PENDING_FOLDER_LABEL]
+            state.db.execute("UPDATE documents SET folder_id = ? WHERE id = ? AND client_id = ?", (folder_id, document_id, client_id))
+            state.db.execute(
+                """
+                UPDATE v2_documents
+                SET visible_category = ?, secondary_category = ?
+                WHERE client_id = ? AND document_id = ?
+                """,
+                (target_label, target_label, client_id, document_id),
+            )
+            state.db.execute(
+                """
+                UPDATE knowledge_documents
+                SET human_folder_category = ?, reclassified_at = ?, reclass_reason = ?, reclass_confidence = ?
+                WHERE client_id = ? AND document_id = ?
+                """,
+                (
+                    target_label,
+                    timestamp,
+                    "ai_folder_recommendation" if target_label != DEFAULT_PENDING_FOLDER_LABEL else "ai_folder_recommendation_pending",
+                    float(recommendation.confidence),
+                    client_id,
+                    document_id,
+                ),
+            )
+            state.db.execute(
+                """
+                UPDATE knowledge_surrogates
+                SET folder_category = ?
+                WHERE client_id = ?
+                  AND knowledge_document_id IN (
+                    SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ?
+                  )
+                """,
+                (target_label, client_id, client_id, document_id),
+            )
+            state.db.execute(
+                """
+                UPDATE knowledge_master_index
+                SET folder_category = ?
+                WHERE client_id = ?
+                  AND surrogate_id IN (
+                    SELECT id FROM knowledge_surrogates
+                    WHERE client_id = ?
+                      AND knowledge_document_id IN (
+                        SELECT id FROM knowledge_documents WHERE client_id = ? AND document_id = ?
+                      )
+                  )
+                """,
+                (target_label, client_id, client_id, client_id, document_id),
+            )
+        _refresh_client_folder_rows(client_id)
+        log_activity(
+            "client.folder.apply_recommendation",
+            "client",
+            client_id,
+            {"folderLabels": sorted(allowed_labels), "visibleFolderLimit": CLIENT_FOLDER_VISIBLE_LIMIT},
+        )
+        updated_plan, _ = _build_client_folder_recommendation_plan(client_id)
+        return updated_plan
+
+    @app.post("/api/v1/clients/{client_id}/folders", response_model=ClientFolder)
+    def create_client_folder(client_id: str, payload: ClientFolderCreatePayload) -> ClientFolder:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        label = normalize_text(payload.label)
+        if not label:
+            raise HTTPException(status_code=400, detail="文件夹名称不能为空")
+        if _folder_label_exists(client_id, label):
+            row = state.db.fetchone("SELECT * FROM client_folders WHERE client_id = ? AND label = ?", (client_id, label))
+            if row and int(row["is_hidden"] or 0):
+                unhide_client_folder_label(client_id, label)
+                state.db.execute(
+                    "UPDATE client_folders SET created_by_rule = 'manual', source_type = 'user', is_hidden = 0 WHERE id = ?",
+                    (str(row["id"]),),
+                )
+                return _folder_record_from_row(_folder_row_or_404(client_id, str(row["id"])))
+            raise HTTPException(status_code=409, detail="该文件夹已存在")
+        folder_id = _ensure_client_folder_row(
+            client_id,
+            label,
+            folder_kind="business",
+            source_type="user",
+            is_system=False,
+            is_hidden=False,
+            sort_order=100,
+            created_by_rule="manual",
+        )
+        log_activity("client.folder.create", "client_folder", folder_id, {"clientId": client_id, "label": label})
+        return _folder_record_from_row(_folder_row_or_404(client_id, folder_id))
+
+    @app.patch("/api/v1/clients/{client_id}/folders/{folder_id}", response_model=ClientFolder)
+    def update_client_folder(client_id: str, folder_id: str, payload: ClientFolderUpdatePayload) -> ClientFolder:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        row = _folder_row_or_404(client_id, folder_id)
+        updates: list[str] = []
+        params: list[object] = []
+        if payload.label is not None:
+            label = normalize_text(payload.label)
+            if not label:
+                raise HTTPException(status_code=400, detail="文件夹名称不能为空")
+            if int(row["is_system"] or 0):
+                raise HTTPException(status_code=400, detail="系统文件夹不能重命名")
+            if _folder_label_exists(client_id, label, exclude_id=folder_id):
+                raise HTTPException(status_code=409, detail="该文件夹名称已存在")
+            folder_path = _client_workspace_folder_path(client_id, label)
+            updates.extend(["label = ?", "path = ?", "created_by_rule = 'manual'", "source_type = 'user'"])
+            params.extend([label, str(folder_path)])
+            state.db.execute(
+                "UPDATE knowledge_documents SET human_folder_category = ? WHERE client_id = ? AND human_folder_category = ?",
+                (label, client_id, str(row["label"])),
+            )
+            state.db.execute(
+                "UPDATE v2_documents SET visible_category = ?, secondary_category = ? WHERE client_id = ? AND visible_category = ?",
+                (label, label, client_id, str(row["label"])),
+            )
+        if payload.isHidden is not None:
+            if int(row["is_system"] or 0) and payload.isHidden:
+                raise HTTPException(status_code=400, detail="系统文件夹不能隐藏")
+            updates.append("is_hidden = ?")
+            params.append(1 if payload.isHidden else 0)
+            if payload.isHidden:
+                hide_client_folder_label(client_id, str(row["label"]))
+            else:
+                unhide_client_folder_label(client_id, str(row["label"]))
+        if payload.sortOrder is not None:
+            updates.append("sort_order = ?")
+            params.append(int(payload.sortOrder))
+        if updates:
+            params.append(folder_id)
+            state.db.execute(f"UPDATE client_folders SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        _refresh_client_folder_rows(client_id)
+        log_activity("client.folder.update", "client_folder", folder_id, {"clientId": client_id, "payload": payload.model_dump(exclude_none=True)})
+        return _folder_record_from_row(_folder_row_or_404(client_id, folder_id))
+
+    @app.put("/api/v1/clients/{client_id}/folders/{folder_id}", response_model=ClientFolder)
+    def rename_client_folder_compat(client_id: str, folder_id: str, payload: ClientFolderUpdatePayload) -> ClientFolder:
+        return update_client_folder(client_id, folder_id, payload)
+
+    @app.post("/api/v1/clients/{client_id}/documents/{document_id}/move-folder", response_model=DocumentRecord)
+    def move_client_document_folder(client_id: str, document_id: str, payload: ClientDocumentMoveFolderPayload) -> DocumentRecord:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        document = state.db.fetchone("SELECT * FROM documents WHERE id = ? AND client_id = ?", (document_id, client_id))
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        folder = None
+        if normalize_text(payload.folderId):
+            folder = _folder_row_or_404(client_id, str(payload.folderId))
+        elif normalize_text(payload.folderLabel):
+            folder = state.db.fetchone("SELECT * FROM client_folders WHERE client_id = ? AND label = ?", (client_id, normalize_text(payload.folderLabel)))
+        if not folder:
+            raise HTTPException(status_code=404, detail="Target folder not found")
+        target_label = str(folder["label"])
+        moved_path = _safe_move_managed_document_path(client_id, document_id, str(folder["path"]))
+        if moved_path:
+            state.db.execute(
+                """
+                UPDATE documents
+                SET folder_id = ?, path = ?,
+                    original_source_path = CASE WHEN original_source_path = ? THEN ? ELSE original_source_path END
+                WHERE id = ?
+                """,
+                (str(folder["id"]), moved_path, str(document["path"]), moved_path, document_id),
+            )
+            state.db.execute(
+                """
+                UPDATE v2_documents
+                SET managed_path = CASE WHEN managed_path = ? THEN ? ELSE managed_path END,
+                    markdown_path = CASE WHEN markdown_path = ? THEN ? ELSE markdown_path END,
+                    original_path = CASE WHEN original_path = ? THEN ? ELSE original_path END
+                WHERE client_id = ? AND document_id = ?
+                """,
+                (str(document["path"]), moved_path, str(document["path"]), moved_path, str(document["path"]), moved_path, client_id, document_id),
+            )
+            state.db.execute(
+                """
+                UPDATE knowledge_documents
+                SET current_human_path = CASE WHEN current_human_path = ? THEN ? ELSE current_human_path END,
+                    normalized_path = CASE WHEN normalized_path = ? THEN ? ELSE normalized_path END
+                WHERE client_id = ? AND document_id = ?
+                """,
+                (str(document["path"]), moved_path, str(document["path"]), moved_path, client_id, document_id),
+            )
+        else:
+            state.db.execute("UPDATE documents SET folder_id = ? WHERE id = ?", (str(folder["id"]), document_id))
+        state.db.execute(
+            """
+            UPDATE v2_documents
+            SET visible_category = ?, secondary_category = ?
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (target_label, target_label, client_id, document_id),
+        )
+        state.db.execute(
+            """
+            UPDATE knowledge_documents
+            SET human_folder_category = ?, reclassified_at = ?, reclass_reason = 'manual_folder_move', reclass_confidence = 1.0
+            WHERE client_id = ? AND document_id = ?
+            """,
+            (target_label, now_iso(), client_id, document_id),
+        )
+        _refresh_client_folder_rows(client_id)
+        row = state.db.fetchone("SELECT * FROM documents WHERE id = ? AND client_id = ?", (document_id, client_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        log_activity("client.document.move_folder", "document", document_id, {"clientId": client_id, "folderId": str(folder["id"]), "folderLabel": target_label})
+        return DocumentRecord(
+            id=str(row["id"]),
+            clientId=str(row["client_id"]),
+            folderId=str(row["folder_id"]) if row["folder_id"] else None,
+            title=str(row["title"]),
+            path=str(row["path"]),
+            kind=str(row["kind"]),
+            source=str(row["source"]),
+            excerpt=str(row["excerpt"]),
+            tags=_parse_json_list(row["tags_json"]),
+            importedAt=str(row["created_at"]),
+        )
+
+    @app.post("/api/v1/clients/{client_id}/folders/recommend", response_model=ClientFolderRecommendationRecord | ClientFolderRecommendationPlanRecord)
+    def recommend_client_folder(
+        client_id: str,
+        payload: ClientFolderRecommendPayload | None = None,
+    ) -> ClientFolderRecommendationRecord | ClientFolderRecommendationPlanRecord:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        payload = payload or ClientFolderRecommendPayload()
+        if not any((payload.documentId, payload.title, payload.fileName, payload.contentPreview, payload.sourceType)):
+            plan, _classified = _build_client_folder_recommendation_plan(client_id)
+            return plan
+        document_title = normalize_text(payload.title or "")
+        file_name = normalize_text(payload.fileName or "")
+        content_preview = normalize_text(payload.contentPreview or "")
+        source_type = normalize_text(payload.sourceType or "")
+        if payload.documentId:
+            row = state.db.fetchone("SELECT * FROM documents WHERE id = ? AND client_id = ?", (payload.documentId, client_id))
+            if row:
+                document_title = document_title or str(row["title"])
+                file_name = file_name or Path(str(row["path"])).name
+                content_preview = content_preview or str(row["excerpt"])
+                source_type = source_type or str(row["source"])
+        return _recommend_client_folder(
+            client_id,
+            title=document_title,
+            file_name=file_name,
+            content_preview=content_preview,
+            source_type=source_type,
+        )
+
+    @app.post("/api/v1/clients/{client_id}/folders/apply-recommendation", response_model=ClientWorkspaceResponse)
+    def apply_client_folder_recommendation(client_id: str, payload: ClientFolderApplyRecommendationPayload | None = None) -> ClientWorkspaceResponse:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        requested_labels = payload.targetFolderLabels if payload and payload.targetFolderLabels else []
+        selected_labels = {normalize_text(label) for label in requested_labels if normalize_text(label)}
+        _apply_client_folder_recommendation_plan(client_id, selected_labels or None)
+        return workspace_for_client(client_id)
+
+    @app.post("/api/v1/clients/{client_id}/documents/auto-repair/preview", response_model=DocumentAutoRepairPreviewRecord)
+    def preview_client_document_auto_repair(
+        client_id: str,
+        payload: DocumentAutoRepairPreviewPayloadRecord | None = None,
+    ) -> DocumentAutoRepairPreviewRecord:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        return _build_document_auto_repair_preview(client_id, payload or DocumentAutoRepairPreviewPayloadRecord())
+
+    @app.post("/api/v1/clients/{client_id}/documents/auto-repair/apply", response_model=DocumentAutoRepairApplyResultRecord)
+    def apply_client_document_auto_repair(
+        client_id: str,
+        payload: DocumentAutoRepairApplyPayloadRecord | None = None,
+    ) -> DocumentAutoRepairApplyResultRecord:
+        build_client_summary(client_id)
+        ensure_standard_client_folders(client_id)
+        payload = payload or DocumentAutoRepairApplyPayloadRecord()
+        preview_payload = DocumentAutoRepairPreviewPayloadRecord(
+            documentIds=payload.documentIds,
+            limit=payload.limit,
+            includeHumanRequired=payload.includeHumanRequired,
+        )
+        preview = _build_document_auto_repair_preview(client_id, preview_payload)
+        actionable = [
+            item
+            for item in preview.items
+            if item.stage in AUTO_REPAIR_LOW_RISK_STAGES and (payload.includeHumanRequired or not item.requiresHuman)
+        ]
+        human_count = sum(1 for item in preview.items if item.requiresHuman)
+        skipped_count = max(0, len(preview.items) - len(actionable))
+        if not actionable:
+            return DocumentAutoRepairApplyResultRecord(
+                jobId=None,
+                status="completed",
+                queuedCount=0,
+                skippedCount=skipped_count,
+                humanConfirmationCount=human_count,
+                message="没有可自动执行的低风险整理项。",
+            )
+        job = enqueue_knowledge_job(
+            client_id,
+            "workspace_document_auto_repair",
+            {
+                "documentIds": [item.documentId for item in actionable],
+                "includeHumanRequired": bool(payload.includeHumanRequired),
+                "previewId": payload.previewId or preview.previewId,
+            },
+            total_items=len(actionable),
+        )
+        log_activity(
+            "client.documents.auto_repair.apply",
+            "client",
+            client_id,
+            {"jobId": job.id, "queuedCount": len(actionable), "skippedCount": skipped_count, "humanConfirmationCount": human_count},
+        )
+        return DocumentAutoRepairApplyResultRecord(
+            jobId=job.id,
+            status="queued",
+            queuedCount=len(actionable),
+            skippedCount=skipped_count,
+            humanConfirmationCount=human_count,
+            message=f"已入队 {len(actionable)} 条自动整理任务，需确认 {human_count} 条。",
+        )
 
     @app.delete("/api/v1/clients/{client_id}/folders/{folder_id}")
     def delete_client_folder(client_id: str, folder_id: str) -> dict[str, bool]:
@@ -28072,6 +31880,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="Folder not found")
         label = str(row["label"])
+        if int(row["is_system"] or 0):
+            raise HTTPException(status_code=400, detail="系统文件夹不能移除")
         file_count = int(row["file_count"] or 0)
         if file_count > 0:
             raise HTTPException(status_code=400, detail="该文件夹下还有文件，暂时不能移除")
@@ -28407,14 +32217,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         save_strategic_cockpit_snapshot(client_id, payload, session_user)
         snapshot = build_strategic_cockpit_snapshot(client_id)
         growth_user_id, growth_user_name = resolve_growth_actor()
-        ingest_strategic_growth_candidate(
-            state.db,
-            user_id=growth_user_id,
-            user_name=growth_user_name,
-            snapshot=snapshot,
-            source_type="strategic_confirm",
-            source_id=client_id,
-            created_at=now_iso(),
+        _safe_growth_ingest(
+            "strategic_confirm",
+            lambda: ingest_strategic_growth_candidate(
+                state.db,
+                user_id=growth_user_id,
+                user_name=growth_user_name,
+                snapshot=snapshot,
+                source_type="strategic_confirm",
+                source_id=client_id,
+                created_at=now_iso(),
+            ),
         )
         return snapshot
 
@@ -28457,15 +32270,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("strategic_cockpit.apply_meeting_pack", "meeting", meeting_id, {"clientId": client_id})
         snapshot = build_strategic_cockpit_snapshot(client_id)
         growth_user_id, growth_user_name = resolve_growth_actor()
-        ingest_strategic_growth_candidate(
-            state.db,
-            user_id=growth_user_id,
-            user_name=growth_user_name,
-            snapshot=snapshot,
-            source_type="strategic_meeting_apply",
-            source_id=meeting_id,
-            meeting_id=meeting_id,
-            created_at=now_iso(),
+        _safe_growth_ingest(
+            "strategic_meeting_apply",
+            lambda: ingest_strategic_growth_candidate(
+                state.db,
+                user_id=growth_user_id,
+                user_name=growth_user_name,
+                snapshot=snapshot,
+                source_type="strategic_meeting_apply",
+                source_id=meeting_id,
+                meeting_id=meeting_id,
+                created_at=now_iso(),
+            ),
         )
         return snapshot
 
@@ -29033,7 +32849,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         response_model=WorkspaceDataCenterReadinessRecord,
     )
     def get_workspace_data_center_readiness(client_id: str) -> WorkspaceDataCenterReadinessRecord:
-        build_client_summary(client_id)
+        client_summary = build_client_summary(client_id)
         ensure_standard_client_folders(client_id)
         knowledge_status = build_knowledge_status_record(client_id)
         vector_status_payload = get_vector_index_manifest_status(
@@ -29190,6 +33006,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if str(item.vectorStatus or "").strip().lower() not in {"ready", "chunk_indexed"} and item.documentId:
                 stale_vector_ids.append(item.documentId)
 
+        auto_repairable_documents = 0
+        zero_byte_documents = 0
+        legacy_folder_documents_without_v2 = 0
+        machine_readable_only_documents = 0
+        dedupe_candidate_documents = 0
+        auto_repair_target_ids: list[str] = []
+        try:
+            auto_repair_preview = _build_document_auto_repair_preview(
+                client_id,
+                DocumentAutoRepairPreviewPayloadRecord(limit=500),
+            )
+            auto_repairable_documents = int(auto_repair_preview.summary.get("autoRepairable", 0) or 0)
+            zero_byte_documents = sum(1 for item in auto_repair_preview.items if item.healthStatus == "zero_byte_original")
+            legacy_folder_documents_without_v2 = sum(1 for item in auto_repair_preview.items if item.healthStatus == "original_nonzero_no_v2")
+            machine_readable_only_documents = sum(1 for item in auto_repair_preview.items if item.healthStatus == "md_compat_candidate")
+            dedupe_candidate_documents = sum(1 for item in auto_repair_preview.items if item.healthStatus == "duplicate_candidate")
+            auto_repair_target_ids = [
+                item.documentId
+                for item in auto_repair_preview.items
+                if item.stage in AUTO_REPAIR_LOW_RISK_STAGES and not item.requiresHuman
+            ][:120]
+        except Exception:
+            logger.warning("[readiness] failed to build auto repair preview for %s", client_id, exc_info=True)
+
+        ensure_data_center_ingest_schema(state.db)
+        orphan_task_count = int(
+            state.db.scalar(
+                """
+                SELECT COUNT(1) AS count
+                FROM tasks t
+                LEFT JOIN clients c ON c.id = t.client_id
+                WHERE COALESCE(t.client_id, '') != ''
+                  AND c.id IS NULL
+                """
+            )
+            or 0
+        )
+        orphan_event_line_count = int(
+            state.db.scalar(
+                """
+                SELECT COUNT(1) AS count
+                FROM event_lines e
+                LEFT JOIN clients c ON c.id = e.primary_client_id
+                WHERE COALESCE(e.primary_client_id, '') != ''
+                  AND c.id IS NULL
+                """
+            )
+            or 0
+        )
+        skipped_orphan_client_ingest_count = int(
+            state.db.scalar(
+                """
+                SELECT COUNT(1) AS count
+                FROM data_center_ingest_events
+                WHERE status = ?
+                """,
+                (SKIPPED_ORPHAN_CLIENT_STATUS,),
+            )
+            or 0
+        )
+
         running_knowledge_jobs = int(
             state.db.scalar(
                 "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status IN ('queued', 'running')",
@@ -29247,6 +33124,108 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for row in recent_job_rows
         ]
+
+        internet_source_kinds = [
+            "internet_source_doc",
+            "evaluation_reference_doc",
+            "similar_case_doc",
+            "policy_context_doc",
+        ]
+        internet_source_placeholders = _sql_placeholders(internet_source_kinds)
+        internet_source_count = int(
+            state.db.scalar(
+                f"""
+                SELECT COUNT(1) AS count
+                FROM v2_documents
+                WHERE client_id = ?
+                  AND COALESCE(is_searchable, 1) = 1
+                  AND COALESCE(lifecycle_status, 'active') = 'active'
+                  AND canonical_kind IN ({internet_source_placeholders})
+                """,
+                (client_id, *internet_source_kinds),
+            )
+            or 0
+        )
+        internet_fact_card_count = int(
+            state.db.scalar(
+                """
+                SELECT COUNT(1) AS count
+                FROM v2_documents
+                WHERE client_id = ?
+                  AND COALESCE(is_searchable, 1) = 1
+                  AND COALESCE(lifecycle_status, 'active') = 'active'
+                  AND canonical_kind = 'internet_fact_card'
+                """,
+                (client_id,),
+            )
+            or 0
+        )
+        latest_internet_doc_row = state.db.fetchone(
+            """
+            SELECT MAX(updated_at) AS latest
+            FROM v2_documents
+            WHERE client_id = ?
+              AND (
+                COALESCE(content_domain, '') = 'internet_enrichment'
+                OR canonical_kind IN ('internet_source_doc', 'internet_fact_card', 'project_enrichment_doc',
+                                      'evaluation_reference_doc', 'similar_case_doc', 'policy_context_doc')
+              )
+            """,
+            (client_id,),
+        )
+        latest_internet_doc_at = str(latest_internet_doc_row["latest"] or "").strip() if latest_internet_doc_row else ""
+        latest_internet_job_row = state.db.fetchone(
+            """
+            SELECT status, updated_at, last_error
+            FROM knowledge_jobs
+            WHERE client_id = ? AND job_type = 'internet_enrichment'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (client_id,),
+        )
+        latest_internet_job_status = str(latest_internet_job_row["status"] or "").strip().lower() if latest_internet_job_row else ""
+        if latest_internet_job_status in {"queued", "running"}:
+            internet_enrichment_status = latest_internet_job_status
+        elif internet_source_count > 0 or internet_fact_card_count > 0:
+            internet_enrichment_status = "ready"
+        elif latest_internet_job_status == "failed":
+            internet_enrichment_status = "failed"
+        else:
+            internet_enrichment_status = "none"
+
+        def _extract_remaining_user_required_gaps(markdown_text: str | None) -> list[str]:
+            text = str(markdown_text or "")
+            if "## 仍需用户补充" not in text:
+                return []
+            tail = text.split("## 仍需用户补充", 1)[1]
+            block = tail.split("\n## ", 1)[0]
+            gaps: list[str] = []
+            for raw_line in block.splitlines():
+                line = raw_line.strip()
+                if not line.startswith("- "):
+                    continue
+                item = line[2:].strip()
+                if not item or "暂未识别" in item:
+                    continue
+                gaps.append(item)
+            return gaps[:12]
+
+        latest_project_enrichment_row = state.db.fetchone(
+            """
+            SELECT markdown_content
+            FROM v2_documents
+            WHERE client_id = ?
+              AND canonical_kind = 'project_enrichment_doc'
+              AND COALESCE(content_domain, '') = 'internet_enrichment'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (client_id,),
+        )
+        remaining_user_required_gaps = _extract_remaining_user_required_gaps(
+            str(latest_project_enrichment_row["markdown_content"] or "") if latest_project_enrichment_row else ""
+        )
 
         latest_context_pack_row = state.db.fetchone(
             "SELECT MAX(updated_at) AS latest FROM context_packs WHERE client_id = ?",
@@ -29325,6 +33304,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         refresh_event_failed_count = int(sum(1 for item in refresh_events if item.status == "failed"))
 
         recommended_fixes: list[WorkspaceDataCenterReadinessFixRecord] = []
+        if auto_repair_target_ids:
+            recommended_fixes.append(
+                WorkspaceDataCenterReadinessFixRecord(
+                    id="fix_auto_repair_documents",
+                    label="自动整理待处理资料",
+                    actionType="auto_repair_documents",
+                    severity="warning",
+                    reason=f"当前有 {len(auto_repair_target_ids)} 份资料可由系统自动解析、归并、软清理或重分类。",
+                    targetIds=list(dict.fromkeys(auto_repair_target_ids)),
+                    estimatedImpact="系统先处理低风险项，减少待整理资料数量，并刷新数据中心上下文。",
+                )
+            )
         if invalid_document_ids:
             recommended_fixes.append(
                 WorkspaceDataCenterReadinessFixRecord(
@@ -29468,6 +33459,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     estimatedImpact="触发新一轮上下文构建，减少 stale 回答。",
                 )
             )
+        if internet_enrichment_status in {"none", "failed"} and latest_internet_job_status not in {"queued", "running"}:
+            recommended_fixes.append(
+                WorkspaceDataCenterReadinessFixRecord(
+                    id="fix_internet_enrichment",
+                    label="补全互联网资料",
+                    actionType="internet_enrichment",
+                    severity="info",
+                    reason=f"当前客户“{client_summary.name}”还没有可检索的互联网补充资料；可按任务、事件线或项目缺口抓取官网、项目页、报告和同类案例。",
+                    targetIds=[],
+                    estimatedImpact="互联网资料会先沉淀为 clean markdown、事实卡和项目补全文档，再进入 raw_reading_pack_v2。",
+                )
+            )
 
         summary = WorkspaceDataCenterReadinessSummaryRecord(
             totalDocuments=len(document_items),
@@ -29480,6 +33483,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             invalidDocuments=invalid_documents,
             sourceMissingDocuments=source_missing_documents,
             placeholderOnlyDocuments=placeholder_only_documents,
+            autoRepairableDocuments=auto_repairable_documents,
+            zeroByteDocuments=zero_byte_documents,
+            legacyFolderDocumentsWithoutV2=legacy_folder_documents_without_v2,
+            machineReadableOnlyDocuments=machine_readable_only_documents,
+            dedupeCandidateDocuments=dedupe_candidate_documents,
+            orphanTaskCount=orphan_task_count,
+            orphanEventLineCount=orphan_event_line_count,
+            skippedOrphanClientIngestCount=skipped_orphan_client_ingest_count,
             parseFailureBuckets=parse_failure_buckets,
             ocrRecoverableCount=ocr_recoverable_count,
             documentCards=int(sum(1 for item in document_items if item.hasDocumentCard)),
@@ -29495,6 +33506,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             refreshEventQueuedCount=refresh_event_queued_count,
             refreshEventRunningCount=refresh_event_running_count,
             refreshEventFailedCount=refresh_event_failed_count,
+            internetEnrichmentStatus=internet_enrichment_status,
+            internetSourceCount=internet_source_count,
+            internetFactCardCount=internet_fact_card_count,
+            remainingUserRequiredGaps=remaining_user_required_gaps,
+            lastInternetEnrichmentAt=str(latest_internet_doc_at or (latest_internet_job_row["updated_at"] if latest_internet_job_row else "")).strip()
+            or None,
         )
         jobs = WorkspaceDataCenterReadinessJobsRecord(
             runningKnowledgeJobs=running_knowledge_jobs,
@@ -29535,6 +33552,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         mark_workspace_context_refresh_event_running(state.db, event_id=refresh_event.id)
         try:
+            if action_type == "auto_repair_documents":
+                preview = _build_document_auto_repair_preview(
+                    client_id,
+                    DocumentAutoRepairPreviewPayloadRecord(documentIds=payload.targetIds),
+                )
+                actionable = [
+                    item
+                    for item in preview.items
+                    if item.stage in AUTO_REPAIR_LOW_RISK_STAGES and not item.requiresHuman
+                ]
+                if not actionable:
+                    result = WorkspaceDataCenterReadinessActionResultRecord(
+                        actionType=action_type,
+                        status="completed",
+                        jobId=None,
+                        refreshEventId=refresh_event.id,
+                        affectedCount=0,
+                        message="当前没有可自动整理的低风险资料。",
+                        errors=[],
+                    )
+                    mark_workspace_context_refresh_event_completed(state.db, event_id=refresh_event.id)
+                    return result
+                job = enqueue_knowledge_job(
+                    client_id,
+                    "workspace_document_auto_repair",
+                    {
+                        "documentIds": [item.documentId for item in actionable],
+                        "includeHumanRequired": False,
+                        "source": "readiness_action",
+                    },
+                    total_items=len(actionable),
+                )
+                result = WorkspaceDataCenterReadinessActionResultRecord(
+                    actionType=action_type,
+                    status="queued",
+                    jobId=job.id,
+                    refreshEventId=refresh_event.id,
+                    affectedCount=len(actionable),
+                    message=f"自动整理已入队：{len(actionable)} 份资料。",
+                    errors=[],
+                )
+                mark_workspace_context_refresh_event_status(
+                    state.db,
+                    event_id=refresh_event.id,
+                    status="queued",
+                    job_id=job.id,
+                )
+                return result
             if action_type == "retry_parse":
                 retry_payload = KnowledgeParseFailureRetryPayloadRecord(
                     documentIds=payload.targetIds,
@@ -29579,6 +33644,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     state.db,
                     event_id=refresh_event.id,
                     job_id=result.jobId,
+                )
+                return result
+            if action_type == "internet_enrichment":
+                client_summary = build_client_summary(client_id)
+                seed_urls = [item.strip() for item in payload.seedUrls if item and item.strip()]
+                seed_queries = [item.strip() for item in payload.seedQueries if item and item.strip()]
+                if not seed_queries:
+                    seed_queries = [
+                        f"{client_summary.name} 项目 介绍",
+                        f"{client_summary.name} 公益 项目 报告",
+                        f"{client_summary.name} 新闻 动态",
+                        f"{client_summary.name} filetype:pdf",
+                    ]
+                gaps = [item.strip() for item in payload.gaps if item and item.strip()]
+                if not gaps:
+                    gaps = [
+                        "项目基本信息、执行方法和合作方",
+                        "项目时间线、典型案例和传播资料",
+                        "成效数据、评估指标和仍需用户补充的信息",
+                    ]
+                target_type = str(payload.targetType or "client").strip() or "client"
+                target_id = str(payload.targetId or client_id).strip() or client_id
+                job_payload: dict[str, object] = {
+                    "clientId": client_id,
+                    "targetType": target_type,
+                    "targetId": target_id,
+                    "seedUrls": seed_urls,
+                    "seedQueries": seed_queries,
+                    "gaps": gaps,
+                    "maxPages": max(1, min(int(payload.maxPages or 30), 100)),
+                    "maxDepth": max(0, min(int(payload.maxDepth or 2), 4)),
+                    "reason": refresh_reason,
+                    "source": "readiness_action",
+                    "title": payload.title.strip() if payload.title.strip() else f"{client_summary.name}互联网资料补全文档",
+                }
+                total_items = int(job_payload["maxPages"])
+                job = enqueue_knowledge_job(client_id, "internet_enrichment", job_payload, total_items=total_items)
+                result = WorkspaceDataCenterReadinessActionResultRecord(
+                    actionType=action_type,
+                    status="queued",
+                    jobId=job.id,
+                    refreshEventId=refresh_event.id,
+                    affectedCount=total_items,
+                    message=f"互联网资料补全已入队：最多抓取 {total_items} 条来源。",
+                    errors=[],
+                )
+                mark_workspace_context_refresh_event_status(
+                    state.db,
+                    event_id=refresh_event.id,
+                    status="queued",
+                    job_id=job.id,
                 )
                 return result
             if action_type == "rebuild_client_knowledge":
@@ -30036,8 +34152,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         embedding_ready = True
         if settings.embeddingProvider == "doubao":
             try:
-                store = state.ai._store_for("doubao")  # type: ignore[attr-defined]
-                has_key = bool(store and str(store.get_api_key() or "").strip())
+                store = state.ai._store_for(OPENAI_COMPATIBLE_PROVIDER)  # type: ignore[attr-defined]
+                legacy_store = state.ai._store_for("doubao")  # type: ignore[attr-defined]
+                has_key = bool(
+                    (store and str(store.get_api_key() or "").strip())
+                    or (legacy_store and str(legacy_store.get_api_key() or "").strip())
+                )
             except Exception:
                 has_key = False
             if not has_key:
@@ -30047,8 +34167,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         router_error: str | None = None
         if settings.routerEnabled and settings.routerProvider == "doubao":
             try:
-                store = state.ai._store_for("doubao")  # type: ignore[attr-defined]
-                has_key = bool(store and str(store.get_api_key() or "").strip())
+                health = state.ai.get_health()
+                has_key = bool(health.ready and health.provider != "mock")
             except Exception:
                 has_key = False
             if not has_key:
@@ -31144,7 +35264,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         build_client_summary(client_id)
         query = payload.prompt.strip()
         retrieval_started = perf_counter()
-        bundle = build_retrieval_bundle(client_id, query)
+        bundle = build_retrieval_bundle(client_id, query, working_document_ids=payload.workingDocumentIds)
         retrieval_elapsed_ms = round((perf_counter() - retrieval_started) * 1000, 2)
         hits = [
             KnowledgeSearchHitRecord(
@@ -31202,7 +35322,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             progress=38.0,
             progressFloor=25.0,
             progressCeiling=55.0,
-            stageLabel="庆华已经整理好当前问题所需的背景材料，准备调用千问组织答案",
+            stageLabel=f"庆华已经整理好当前问题所需的背景材料，准备调用{state.ai.current_model_label()}组织答案",
             lastUpdatedAt=now_iso(),
             failureReason=bundle.failure_reason,
             hits=hits,
@@ -31738,6 +35858,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         importedCount=0,
                         skippedCount=skipped,
                         createdAt=timestamp,
+                        jobId=None,
+                        documents=[],
                     )
                 )
                 continue
@@ -31763,9 +35885,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     importedCount=queued,
                     skippedCount=skipped,
                     createdAt=timestamp,
+                    jobId=job.id,
+                    documents=[
+                        {
+                            "documentId": str(item.get("documentId") or ""),
+                            "title": str(item.get("title") or item.get("fileName") or "资料"),
+                            "fileName": str(item.get("title") or item.get("fileName") or "资料"),
+                            "path": str(item.get("sourcePath") or ""),
+                        }
+                        for item in queued_documents
+                    ],
                 )
             )
         return results
+
+    def build_document_reading_preview_record(client_id: str, document_id: str) -> DocumentReadingPreviewRecord:
+        row = state.db.fetchone(
+            """
+            SELECT
+                d.id AS document_id,
+                d.title AS document_title,
+                d.excerpt AS document_excerpt,
+                d.kind AS document_kind,
+                cf.label AS folder_label,
+                vd.id AS v2_document_id,
+                vd.file_name AS v2_file_name,
+                vd.parse_status AS parse_status,
+                vd.parse_error AS parse_error,
+                vd.preview_text AS preview_text,
+                vd.doc_index_text AS doc_index_text,
+                vd.canonical_kind AS canonical_kind,
+                vd.visible_category AS visible_category
+            FROM documents d
+            LEFT JOIN client_folders cf ON cf.id = d.folder_id
+            LEFT JOIN v2_documents vd ON vd.document_id = d.id
+            WHERE d.client_id = ? AND d.id = ?
+            """,
+            (client_id, document_id),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="document_not_found")
+        v2_document_id = str(row["v2_document_id"] or "")
+        parse_status = str(row["parse_status"] or "processing")
+        section_count = 0
+        chunk_count = 0
+        key_headings: list[str] = []
+        if v2_document_id:
+            section_count = int(state.db.scalar("SELECT COUNT(1) AS count FROM v2_sections WHERE v2_document_id = ?", (v2_document_id,)) or 0)
+            chunk_count = int(state.db.scalar("SELECT COUNT(1) AS count FROM v2_chunks WHERE v2_document_id = ?", (v2_document_id,)) or 0)
+            heading_rows = state.db.fetchall(
+                """
+                SELECT title
+                FROM v2_sections
+                WHERE v2_document_id = ?
+                ORDER BY section_index ASC
+                LIMIT 12
+                """,
+                (v2_document_id,),
+            )
+            for heading_row in heading_rows:
+                title = re.sub(r"\s+", " ", str(heading_row["title"] or "").strip())
+                if not title or title == "正文" or title in key_headings:
+                    continue
+                key_headings.append(title[:80])
+        if chunk_count <= 0:
+            knowledge_row = state.db.fetchone("SELECT id FROM knowledge_documents WHERE document_id = ?", (document_id,))
+            if knowledge_row:
+                chunk_count = int(state.db.scalar("SELECT COUNT(1) AS count FROM document_chunks WHERE knowledge_document_id = ?", (str(knowledge_row["id"]),)) or 0)
+        summary_source = str(row["preview_text"] or row["doc_index_text"] or row["document_excerpt"] or "").strip()
+        read_summary = re.sub(r"\s+", " ", summary_source).strip()[:420]
+        available_for_chat = parse_status in {"ready", "partial_ready"} and (section_count > 0 or chunk_count > 0 or bool(read_summary))
+        return DocumentReadingPreviewRecord(
+            documentId=document_id,
+            title=str(row["v2_file_name"] or row["document_title"] or "资料"),
+            parseStatus=parse_status,
+            folderLabel=str(row["folder_label"] or row["visible_category"] or "") or None,
+            sectionCount=section_count,
+            chunkCount=chunk_count,
+            sourceKind=str(row["canonical_kind"] or "raw_file"),
+            readSummary=read_summary,
+            keyHeadings=key_headings[:8],
+            availableForChat=available_for_chat,
+            failureReason=str(row["parse_error"] or "") or None,
+        )
+
+    @app.get("/api/v1/clients/{client_id}/documents/{document_id}/reading-preview", response_model=DocumentReadingPreviewRecord)
+    def get_document_reading_preview(client_id: str, document_id: str) -> DocumentReadingPreviewRecord:
+        build_client_summary(client_id)
+        return build_document_reading_preview_record(client_id, document_id)
 
     def ensure_chat_thread(client_id: str, thread_id: str | None, prompt: str, timestamp: str) -> str:
         existing_thread_id = thread_id
@@ -31810,7 +36017,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         assistant_id = new_id("msg")
         provider_used = state.ai.current_provider()
         model_used = state.ai.current_model()
+        model_label = state.ai.model_label(provider_used, model_used)
         merged_summary = dict(retrieval_summary)
+        merged_summary.setdefault("providerUsed", provider_used)
+        merged_summary.setdefault("modelUsed", model_used)
+        merged_summary.setdefault("modelLabel", model_label)
         merged_summary.setdefault("startedAt", timestamp)
         phase = str(merged_summary.get("phase") or "").strip()
         if not phase:
@@ -31823,7 +36034,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         merged_summary["progressCeiling"] = float(merged_summary.get("progressCeiling", ceiling) or ceiling)
         merged_summary.setdefault(
             "stageLabel",
-            "背景材料已整理完成，正在准备调用千问组织答案" if phase == "grounding" else "正在整理客户背景材料",
+            f"背景材料已整理完成，正在准备调用{model_label}组织答案" if phase == "grounding" else "正在整理客户背景材料",
         )
         merged_summary["lastUpdatedAt"] = timestamp
         loading_content = str(merged_summary.get("stageLabel") or "庆华正在整理背景材料，并组织分析答案……")
@@ -31839,7 +36050,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 assistant_id,
                 thread_id,
                 loading_content,
-                f"AI · {provider_used}",
+                f"AI · {model_label}",
                 provider_used,
                 to_json(merged_summary),
                 timestamp,
@@ -32172,6 +36383,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         primary_sources: list[str],
         missing_context: list[str],
         search_result: DataCenterSearchResultRecord | None = None,
+        raise_on_generation_error: bool = False,
     ) -> WorkspaceFollowupResult:
         scenario = classify_workspace_followup_scenario(
             prompt=prompt,
@@ -32226,6 +36438,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 workspace_workflow=workspace_workflow,
             )
         except Exception:
+            if raise_on_generation_error:
+                raise
             return build_workspace_followup_result_from_candidates(
                 [],
                 scenario=scenario,
@@ -32242,6 +36456,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         search_id: str | None,
         request_started: float,
         run_id: str | None = None,
+        working_document_ids: list[str] | None = None,
     ) -> ChatMessageRecord:
         del search_id
         if is_client_analysis_run_canceled(run_id):
@@ -32249,20 +36464,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # P2.16 REMOVE(raw-document-pack-legacy-fallback): legacy fallback setting is ignored for
         # workspace/chat main answers; failures may use only the open short fault fallback below.
         use_legacy_fallback = False
+        thread_memory_pack = load_thread_context_pack(state.db, client_id, thread_id, bootstrap=True)
+        thread_memory_resolved_references = resolve_thread_references(prompt, thread_memory_pack)
+        thread_memory_context = (
+            render_thread_memory_context(thread_memory_pack, thread_memory_resolved_references)
+            if thread_memory_resolved_references
+            else ""
+        )
+        thread_memory_applied = bool(thread_memory_resolved_references and thread_memory_context)
+        prompt_for_context = build_contextual_prompt(prompt, thread_memory_context) if thread_memory_context else prompt
         workspace_snapshot = workspace_for_client(client_id)
-        page_intent = infer_page_intent(prompt, "workspace_chat")
-        state_context_pack = build_state_answer_context_pack(workspace_snapshot, prompt)
+        page_intent = infer_page_intent(prompt_for_context, "workspace_chat")
+        state_context_pack = build_state_answer_context_pack(workspace_snapshot, prompt_for_context)
         workspace_route = route_workspace_query(
-            prompt=prompt,
+            prompt=prompt_for_context,
             client_id=client_id,
             current_page="workspace_chat",
             selected_scope_type="client",
             selected_scope_id=client_id,
         )
-        legacy_intent = classify_workspace_chat_intent(prompt)
-        legacy_judgment_mode = detect_judgment_query_mode(prompt, state_context_pack)
+        legacy_intent = classify_workspace_chat_intent(prompt_for_context)
+        legacy_judgment_mode = detect_judgment_query_mode(prompt_for_context, state_context_pack)
         _, legacy_retrieval_reason = decide_workspace_chat_retrieval_strategy(
-            prompt,
+            prompt_for_context,
             state_context_pack,
             search_id=None,
             judgment_query_mode=legacy_judgment_mode,
@@ -32270,9 +36494,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         kernel_request = build_workspace_data_center_request_from_route(
             route=workspace_route,
-            prompt=prompt,
+            prompt=prompt_for_context,
             shadow=True,
             persist_drafts=False,
+            working_document_ids=working_document_ids,
         )
         kernel_result = resolve_data_center_kernel(
             state.db,
@@ -32284,7 +36509,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db,
             data_dir=state.data_dir,
             client_id=client_id,
-            prompt=prompt,
+            prompt=prompt_for_context,
             page="workspace_chat",
             intent=page_intent,
             include_raw_evidence=True,
@@ -32297,7 +36522,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         route_decision = route_page_query(
             state.db,
             page="workspace_chat",
-            prompt=prompt,
+            prompt=prompt_for_context,
             client_id=client_id,
             page_context=page_context_pack,
             settings=retrieval_settings,
@@ -32319,7 +36544,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         workspace_generation_mode = workspace_route.generationMode
         primary_sources = list(workspace_route.dataSources)
         question_focus_frame = build_question_focus_frame(
-            prompt=prompt,
+            prompt=prompt_for_context,
             route_decision=route_decision,
             page_context=page_context_pack,
         ).model_dump(mode="json")
@@ -32332,7 +36557,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         quality_summary = build_workspace_context_quality_summary(page_context_pack, kernel_result.quality)
         state_confidence = _context_quality_to_state_confidence(str(quality_summary.get("contextQuality") or "none"))
         state_sources = _state_sources_from_page_context(page_context_pack)
-        judgment_query_mode = route_decision.judgmentQueryMode or detect_judgment_query_mode(prompt, state_context_pack)
+        judgment_query_mode = route_decision.judgmentQueryMode or detect_judgment_query_mode(prompt_for_context, state_context_pack)
         focus_goal = str(question_focus_frame.get("goal") or "") if isinstance(question_focus_frame, dict) else ""
         focus_subject_facet = str(question_focus_frame.get("subjectFacet") or "") if isinstance(question_focus_frame, dict) else ""
         focus_suppressed = (
@@ -32355,6 +36580,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         generation_profile = material_access_mode
         primary_context_chars = 100000
         consultant_material_pack = None
+        dna_tool_context = build_dna_tool_context_from_workspace(
+            workspace_snapshot,
+            prompt=prompt_for_context,
+            purpose=None,
+            max_chars=22000,
+        )
         if workspace_generation_mode == "no_generation":
             generation_profile = "search_only"
         if workspace_generation_mode == "consultant_synthesis":
@@ -32362,7 +36593,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             generation_profile = "consultant_synthesis"
             primary_context_chars = 36000
             consultant_material_pack = build_consultant_synthesis_material_pack(
-                prompt=prompt,
+                prompt=prompt_for_context,
                 kernel_result=kernel_result,
                 workspace_snapshot=workspace_snapshot,
                 max_chars=primary_context_chars,
@@ -32370,22 +36601,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             open_context = consultant_material_pack.content
         else:
             open_context = build_open_workspace_answer_context(
-                prompt=prompt,
+                prompt=prompt_for_context,
                 kernel_result=kernel_result,
                 workspace_snapshot=workspace_snapshot,
                 max_chars=primary_context_chars,
                 question_focus_frame=question_focus_frame if isinstance(question_focus_frame, dict) else None,
                 profile_draft=None,
+                dna_tool_context=dna_tool_context,
             )
+        open_context = inject_thread_memory_into_context(open_context, thread_memory_context)
         evidence_summary = build_analysis_evidence_summary(
             client_id,
-            prompt,
+            prompt_for_context,
             evidence=evidence,
             retrieval_trace=kernel_result.retrievalTrace,
             search_result=kernel_result.searchResult,
         )
         live_work_trace = build_kernel_primary_work_trace(
-            prompt,
+            prompt_for_context,
             evidence,
             evidence_summary,
             focus_frame=question_focus_frame,
@@ -32405,9 +36638,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 or kernel_result.retrievalTrace.latencyMs.get("retrievalMs")
                 or 0.0
             )
+        generation_timeout_seconds = 300.0
+        generation_started_at = now_iso()
+        generation_snapshot = state.ai.resolved_model_snapshot(task_kind="deep_analysis")
+        generation_provider = str(generation_snapshot.get("provider") or state.ai.current_provider())
+        generation_model = str(generation_snapshot.get("model") or state.ai.current_model())
+        generation_model_label = str(generation_snapshot.get("modelLabel") or state.ai.model_label(generation_provider, generation_model))
+        generation_profile_key = str(generation_snapshot.get("profileKey") or "unified")
+        generation_model_mode = str(generation_snapshot.get("mode") or state.ai.current_ai_model_mode())
         pre_llm_meta = {
             "phase": "generating",
-            "stageLabel": "数据中心已完成路由与供料，正在生成回答",
+            "stageLabel": f"数据中心已完成路由与供料，正在调用{generation_model_label}生成回答",
             "progress": 62.0,
             "progressFloor": 58.0,
             "progressCeiling": 96.0,
@@ -32428,6 +36669,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "selectedDocumentFamilyCount": int(getattr(kernel_result.retrievalTrace, "selectedDocumentFamilyCount", 0) or 0),
             "selectedCanonicalKinds": list(getattr(kernel_result.retrievalTrace, "selectedCanonicalKinds", []) or []),
             "softwareMaterialIncluded": bool(getattr(kernel_result.retrievalTrace, "softwareMaterialIncluded", False)),
+            "dnaToolPurpose": dna_tool_context.purpose,
+            "dnaToolChars": dna_tool_context.context_chars,
+            "selectedDnaModules": dna_tool_context.selected_modules,
+            "selectedDnaKinds": dna_tool_context.selected_kinds,
+            "dnaToolSourceLevelSummary": dna_tool_context.source_level_summary,
+            "dnaToolTimeScopeSummary": dna_tool_context.time_scope_summary,
+            "dnaToolWarnings": dna_tool_context.warnings,
+            "generationStartedAt": generation_started_at,
+            "generationTimeoutSeconds": generation_timeout_seconds,
+            "providerUsed": generation_provider,
+            "modelUsed": generation_model,
+            "modelLabel": generation_model_label,
+            "modelProfileKey": generation_profile_key,
+            "aiModelMode": generation_model_mode,
+            "threadMemoryApplied": thread_memory_applied,
+            "threadMemoryVersion": thread_memory_pack.version,
+            "threadMemoryResolvedReferences": [item.model_dump(mode="json") for item in thread_memory_resolved_references],
+            "threadMemoryContextChars": len(thread_memory_context),
+            "threadMemoryUpdateMode": "pending",
+            "workingDocumentIds": [str(item).strip() for item in (working_document_ids or []) if str(item).strip()],
+            "workingDocumentHitCount": int(getattr(kernel_result.retrievalTrace, "workingDocumentHitCount", 0) or 0),
         }
         if consultant_material_pack is not None:
             pre_llm_meta.update(
@@ -32452,7 +36714,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 progress=62.0,
                 progress_floor=58.0,
                 progress_ceiling=96.0,
-                stage_label="数据中心已完成路由与供料，正在生成回答",
+                stage_label=f"数据中心已完成路由与供料，正在调用{generation_model_label}生成回答",
                 elapsed_ms=retrieval_elapsed_ms,
                 evidence_summary=evidence_summary,
             )
@@ -32492,14 +36754,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if not cleaned:
                 return False
             normalized = re.sub(r"\s+", "", cleaned)
+            model_generation_placeholder_suffix = re.sub(r"\s+", "", "正在基于完整材料直接生成长文回答。")
             placeholder_variants = {
                 re.sub(r"\s+", "", "正在围绕核心判断、关键张力和潜在风险整合原始证据，准备输出连续长文分析。"),
-                re.sub(r"\s+", "", "千问正在基于完整材料直接生成长文回答。"),
+                re.sub(r"\s+", "", f"{generation_model_label}正在基于完整材料直接生成长文回答。"),
                 re.sub(r"\s+", "", "数据中心主链已就绪，正在组织回答……"),
                 re.sub(r"\s+", "", "庆华正在整理背景材料，并组织分析答案……"),
                 re.sub(r"\s+", "", "正在调用模型生成回答"),
             }
-            return normalized not in placeholder_variants
+            return normalized not in placeholder_variants and not normalized.endswith(model_generation_placeholder_suffix)
 
         def load_preserved_partial() -> tuple[str, dict[str, object] | None]:
             preserved_content = latest_partial_content
@@ -32539,21 +36802,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "phase": "generating",
                     "stageLabel": str(partial.get("stageLabel") or "正在生成回答"),
                     "progress": float(partial.get("progress") or 74.0),
+                    "generationStartedAt": generation_started_at,
+                    "generationTimeoutSeconds": generation_timeout_seconds,
+                    "providerUsed": generation_provider,
+                    "modelUsed": generation_model,
+                    "modelLabel": generation_model_label,
                 },
                 content=partial_content if has_meaningful_partial_content(partial_content) else None,
             )
+            if run_id:
+                update_kwargs: dict[str, object] = {
+                    "phase": "generating_long_answer",
+                    "progress": float(partial.get("progress") or 74.0),
+                    "progress_floor": 58.0,
+                    "progress_ceiling": 96.0,
+                    "stage_label": str(partial.get("stageLabel") or "正在生成回答"),
+                }
+                if has_meaningful_partial_content(partial_content):
+                    update_kwargs["long_answer"] = partial_content
+                update_client_analysis_run(run_id, **update_kwargs)
 
         llm_started = perf_counter()
         llm_attempt_count = 0
+        state.ai.reset_last_model_snapshot()
         compact_retry_attempted = False
         fallback_template_used = False
         final_failure_stage: str | None = None
         generation_failure_detail: str | None = None
         llm_error_kind: str | None = None
         partial_generation_preserved = False
-        provider_used: str | None = state.ai.current_provider()
-        model_used: str | None = state.ai.current_model()
-        model_route = f"AI · {provider_used}"
+        provider_used: str | None = generation_provider
+        model_used: str | None = generation_model
+        model_route = f"AI · {generation_model_label}"
         llm_invoked = True
         answer_mode = "grounded_answer" if evidence else "general_answer"
         evidence_status: Literal["sufficient", "partial", "none"] = "sufficient" if evidence else "none"
@@ -32584,17 +36864,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 llm_attempt_count += 1
                 structured = state.ai.generate_raw_evidence_response(
-                    prompt,
+                    prompt_for_context,
                     open_model_system_instruction,
                     open_context,
                     on_partial=push_partial_analysis,
-                    timeout_seconds=300.0 if workspace_generation_mode == "consultant_synthesis" else 300.0,
+                    timeout_seconds=generation_timeout_seconds,
                     max_tokens=5600 if workspace_generation_mode == "consultant_synthesis" else 5200,
                     enable_thinking=True,
                 )
             except AiInvocationError as error:
                 provider_used = error.provider
-                model_route = f"AI · {error.provider}"
+                model_route = f"AI · {state.ai.model_label(error.provider, model_used)}"
                 generation_failure_detail = str(error.detail or "").strip() or None
                 preserved_content, preserved_structured = load_preserved_partial()
                 if preserved_content:
@@ -32612,34 +36892,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 else:
                     final_failure_stage = "raw_evidence_generation_failed"
                     generation_failure_detail = f"primary={error.detail}"
-                    if evidence:
-                        structured = build_local_retrieval_fallback(
-                            client_id,
-                            prompt,
-                            evidence,
-                            build_empty_retrieval_bundle(
-                                failure_reason="raw_evidence_generation_failed",
-                                retrieval_summary={"source": "data_center_primary"},
-                            ),
-                            f"主链失败：{error.detail}",
-                            answer_intent=answer_intent,
-                            state_answer_sections=state_answer_sections,
-                            answer_material=kernel_result.answerMaterial,
-                        )
-                        answer_mode = "grounded_fallback"
-                        evidence_status = "partial"
-                        failure_reason = "llm_local_fallback_after_primary_failure"
-                    else:
-                        structured = AiStructuredResponse(
-                            content="这次模型没有成功完成回答。系统已经命中相关资料，但没有生成可交付文本。请重试。",
-                            judgment="模型生成失败，不输出本地模板伪答案。",
-                            analysis=f"主链失败：{error.detail}",
-                            actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
-                            timeline="可立即重试。",
-                        )
-                        answer_mode = "system_failure"
-                        evidence_status = "none"
-                        failure_reason = "llm_generation_failed"
+                    structured = AiStructuredResponse(
+                        content="本轮模型没有成功完成回答。系统已命中相关资料，但没有生成可交付文本。你可以重试，或先处理资料缺口/候选动作。",
+                        judgment="模型生成失败，不输出本地模板伪答案。",
+                        analysis=f"主链失败：{error.detail}",
+                        actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
+                        timeline="可立即重试。",
+                    )
+                    answer_mode = "system_failure"
+                    evidence_status = "partial" if evidence else "none"
+                    failure_reason = "llm_generation_failed"
             except Exception as error:
                 final_failure_stage = "primary_generation_exception"
                 generation_failure_detail = str(error)
@@ -32660,7 +36922,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         quality_gate_warned = False
         if kernel_result.answerPlan and kernel_result.answerMaterial and answer_mode != "system_failure":
             answer_quality_report = validate_answer_quality(
-                prompt=prompt,
+                prompt=prompt_for_context,
                 content=structured.content,
                 answer_plan=kernel_result.answerPlan,
                 evidence=evidence,
@@ -32685,6 +36947,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             failure_reason = "llm_generation_failed"
         elif answer_mode == "grounded_fallback" and not failure_reason:
             failure_reason = "partial_materials"
+        actual_generation_snapshot = state.ai.last_model_snapshot() if llm_invoked else {}
+        if actual_generation_snapshot:
+            actual_provider = str(actual_generation_snapshot.get("provider") or generation_provider)
+            actual_model = str(actual_generation_snapshot.get("model") or generation_model)
+            actual_model_label = str(actual_generation_snapshot.get("modelLabel") or state.ai.model_label(actual_provider, actual_model))
+            generation_provider = actual_provider
+            generation_model = actual_model
+            generation_model_label = actual_model_label
+            generation_profile_key = str(actual_generation_snapshot.get("profileKey") or generation_profile_key)
+            generation_model_mode = str(actual_generation_snapshot.get("mode") or generation_model_mode)
+            provider_used = actual_provider
+            model_used = actual_model
+            model_route = f"AI · {actual_model_label}"
 
         finalization = finalize_workspace_answer(
             content=structured.content,
@@ -32721,19 +36996,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             answer_presentation=answer_presentation,
             answer_intent=kernel_result.answerPlan.intent if kernel_result.answerPlan else None,
         )
-        followup_result = build_workspace_followup_questions(
-            prompt=prompt,
-            answer_content=structured.content,
-            workspace_workflow=workspace_workflow,
-            client_name=workspace_snapshot.client.name if getattr(workspace_snapshot, "client", None) else "",
-            primary_sources=primary_sources,
-            missing_context=list(page_context_pack.missingContext[:6]) if page_context_pack is not None else [],
-            search_result=kernel_result.searchResult,
-        )
+        client_name = workspace_snapshot.client.name if getattr(workspace_snapshot, "client", None) else ""
+        if answer_mode == "system_failure":
+            followup_result = WorkspaceFollowupResult(
+                questions=[],
+                scenario="general_consulting",
+                generation_mode="skipped_system_failure",
+                rejected_count=0,
+            )
+        else:
+            followup_result = WorkspaceFollowupResult(
+                questions=[],
+                scenario=classify_workspace_followup_scenario(
+                    prompt=prompt,
+                    answer_content=structured.content,
+                    workspace_workflow=workspace_workflow,
+                    primary_sources=primary_sources,
+                    missing_context=list(page_context_pack.missingContext[:6]) if page_context_pack is not None else [],
+                ),
+                generation_mode="deferred",
+                rejected_count=0,
+            )
         evidence, citation_meta = prioritize_answer_citations(
-            prompt=prompt,
+            prompt=prompt_for_context,
             answer_content=structured.content,
             evidence=evidence,
+        )
+
+        thread_memory_update_mode = "skipped_system_failure" if answer_mode == "system_failure" else "deferred"
+        answer_material_summary = (
+            kernel_result.answerMaterial.model_dump(mode="json")
+            if kernel_result.answerMaterial is not None
+            else {}
         )
 
         llm_elapsed_ms = round((perf_counter() - llm_started) * 1000, 2) if llm_attempt_count > 0 else 0.0
@@ -32814,6 +37108,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "answerPresentation": answer_presentation,
                 "workspaceAnswerExperience": workspace_answer_experience,
                 "generationFailureDetail": generation_failure_detail,
+                "providerUsed": provider_used,
+                "modelUsed": model_used,
+                "modelLabel": generation_model_label,
+                "modelProfileKey": generation_profile_key,
+                "aiModelMode": generation_model_mode,
                 "sourceIntegrityReport": source_integrity_report,
                 "llmErrorHiddenFromUserBecauseAnswerPassedQuality": bool(
                     generation_failure_detail
@@ -32826,6 +37125,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "kernelAnswerPlanIntent": kernel_result.answerPlan.intent if kernel_result.answerPlan else None,
                 "kernelAnswerQualityGrade": answer_quality_report.get("grade"),
                 "kernelSelectedEvidenceCount": len(evidence),
+                "selectedEvidenceCount": len(evidence),
                 "chatAnswerPlanIntent": kernel_result.answerPlan.intent if kernel_result.answerPlan else map_route_intent_to_workspace_intent(route_decision.intent),
                 "kernelConsistency": {
                     "routeIntentMatched": True,
@@ -32843,9 +37143,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "excludedNoiseCount": consultant_material_pack.excluded_noise_count if consultant_material_pack is not None else response_meta.get("excludedNoiseCount", 0),
                 "consultantContextChars": consultant_material_pack.context_chars if consultant_material_pack is not None else response_meta.get("consultantContextChars", 0),
                 "consultantBoundaryNotes": consultant_material_pack.boundary_notes if consultant_material_pack is not None else response_meta.get("consultantBoundaryNotes", []),
+                "dnaToolPurpose": dna_tool_context.purpose,
+                "dnaToolChars": dna_tool_context.context_chars,
+                "selectedDnaModules": dna_tool_context.selected_modules,
+                "selectedDnaKinds": dna_tool_context.selected_kinds,
+                "dnaToolSourceLevelSummary": dna_tool_context.source_level_summary,
+                "dnaToolTimeScopeSummary": dna_tool_context.time_scope_summary,
+                "dnaToolWarnings": dna_tool_context.warnings,
                 "answerUsedEvidenceIds": citation_meta.get("answerUsedEvidenceIds", []),
                 "pinnedCitationCount": citation_meta.get("pinnedCitationCount", 0),
                 "citationPrioritizationReason": citation_meta.get("citationPrioritizationReason"),
+                "threadMemoryApplied": thread_memory_applied,
+                "threadMemoryVersion": thread_memory_pack.version,
+                "threadMemoryResolvedReferences": [item.model_dump(mode="json") for item in thread_memory_resolved_references],
+                "threadMemoryContextChars": len(thread_memory_context),
+                "threadMemoryUpdateMode": thread_memory_update_mode,
                 "phase": "completed" if answer_mode != "system_failure" else "failed",
                 "progress": 100.0,
                 "progressFloor": 100.0,
@@ -32885,6 +37197,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 assistant_id,
             ),
         )
+        if answer_mode != "system_failure":
+            _run_post_finalize_step(
+                assistant_id,
+                stage="post_answer_enrichment_submit",
+                action=lambda: _schedule_post_answer_enrichment(
+                    assistant_id=assistant_id,
+                    client_id=client_id,
+                    thread_id=thread_id,
+                    prompt=prompt,
+                    answer_content=structured.content,
+                    answer_mode=answer_mode,
+                    workspace_workflow=workspace_workflow,
+                    workspace_generation_mode=workspace_generation_mode,
+                    client_name=client_name,
+                    primary_sources=primary_sources,
+                    missing_context=list(page_context_pack.missingContext[:6]) if page_context_pack is not None else [],
+                    search_result=kernel_result.searchResult,
+                    answer_material_summary=answer_material_summary,
+                ),
+            )
         answer_run_id = new_id("ans")
         _run_post_finalize_step(
             assistant_id,
@@ -32987,18 +37319,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 },
             ),
         )
-        _run_post_finalize_step(
-            assistant_id,
-            stage="chat_fact_extraction",
-            action=lambda: _schedule_chat_fact_extraction(
-                state,
-                client_id=client_id,
-                thread_id=thread_id,
-                user_prompt=prompt,
-                assistant_content=structured.content,
-                answer_mode=answer_mode,
-            ),
-        )
+        if workspace_workflow != "file_search":
+            _run_post_finalize_step(
+                assistant_id,
+                stage="chat_fact_extraction",
+                action=lambda: _schedule_chat_fact_extraction(
+                    state,
+                    client_id=client_id,
+                    thread_id=thread_id,
+                    user_prompt=prompt,
+                    assistant_content=structured.content,
+                    answer_mode=answer_mode,
+                ),
+            )
         row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
         assert row is not None
         return build_chat_message(row)
@@ -33011,6 +37344,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         search_id: str | None,
         request_started: float,
         run_id: str | None = None,
+        working_document_ids: list[str] | None = None,
     ) -> ChatMessageRecord:
         # P2.16 REMOVE(raw-document-pack-main-chain): workspace/chat 主回答不再允许
         # 通过关闭 primary 或质量回退进入旧 raw_document_pack / generate_chat_response 链。
@@ -33023,6 +37357,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             search_id,
             request_started,
             run_id,
+            working_document_ids,
         )
 
     def _assistant_message_has_final_answer(row) -> bool:
@@ -33095,9 +37430,161 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             logger.warning("[workspace-chat] post finalize warning stage=%s", stage, exc_info=True)
             _append_post_finalize_warning(assistant_id, stage=stage, error=exc)
 
-    def background_resolve_chat_answer(client_id: str, thread_id: str, prompt: str, assistant_id: str, search_id: str | None, request_started: float, run_id: str | None = None) -> None:
+    def _merge_assistant_retrieval_summary(assistant_id: str, updates: dict[str, object]) -> None:
+        if not updates:
+            return
+        row = state.db.fetchone(
+            "SELECT retrieval_summary_json FROM chat_messages WHERE id = ?",
+            (assistant_id,),
+        )
+        summary = from_json(str(row["retrieval_summary_json"] or "{}"), {}) if row else {}
+        if not isinstance(summary, dict):
+            summary = {}
+        summary.update(updates)
+        summary["lastUpdatedAt"] = now_iso()
+        state.db.execute(
+            """
+            UPDATE chat_messages
+            SET retrieval_summary_json = ?
+            WHERE id = ?
+            """,
+            (to_json(summary), assistant_id),
+        )
+
+    def _schedule_post_answer_enrichment(
+        *,
+        assistant_id: str,
+        client_id: str,
+        thread_id: str,
+        prompt: str,
+        answer_content: str,
+        answer_mode: str,
+        workspace_workflow: str,
+        workspace_generation_mode: str,
+        client_name: str,
+        primary_sources: list[str],
+        missing_context: list[str],
+        search_result: DataCenterSearchResultRecord | None,
+        answer_material_summary: dict[str, object],
+    ) -> None:
+        if answer_mode == "system_failure":
+            return
+
+        def run_enrichment() -> None:
+            followup_mode = "failed"
+            try:
+                if workspace_workflow == "file_search":
+                    scenario = classify_workspace_followup_scenario(
+                        prompt=prompt,
+                        answer_content=answer_content,
+                        workspace_workflow=workspace_workflow,
+                        primary_sources=primary_sources,
+                        missing_context=missing_context,
+                    )
+                    raw_candidates = (
+                        [str(item) for item in (search_result.suggestedFollowups or []) if str(item).strip()]
+                        if search_result is not None
+                        else []
+                    )
+                    followup_mode = "file_search" if raw_candidates else "fallback"
+                    followup_result = build_workspace_followup_result_from_candidates(
+                        raw_candidates,
+                        scenario=scenario,
+                        generation_mode=followup_mode,
+                        client_name=client_name,
+                        workspace_workflow=workspace_workflow,
+                    )
+                else:
+                    followup_result = build_workspace_followup_questions(
+                        prompt=prompt,
+                        answer_content=answer_content,
+                        workspace_workflow=workspace_workflow,
+                        client_name=client_name,
+                        primary_sources=primary_sources,
+                        missing_context=missing_context,
+                        search_result=search_result,
+                        raise_on_generation_error=True,
+                    )
+                    followup_mode = followup_result.generation_mode
+                _merge_assistant_retrieval_summary(
+                    assistant_id,
+                    {
+                        "suggestedFollowups": followup_result.questions,
+                        "followupScenario": followup_result.scenario,
+                        "followupGenerationMode": followup_result.generation_mode,
+                        "followupRejectedCount": followup_result.rejected_count,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("[workspace-chat] followup enrichment failed", exc_info=True)
+                _merge_assistant_retrieval_summary(
+                    assistant_id,
+                    {
+                        "followupGenerationMode": followup_mode,
+                    },
+                )
+                _append_post_finalize_warning(assistant_id, stage="followup_enrichment", error=exc)
+
+            try:
+                _, thread_memory_update_mode = update_thread_context_after_answer(
+                    state.db,
+                    ai_service=state.ai,
+                    client_id=client_id,
+                    thread_id=thread_id,
+                    prompt=prompt,
+                    answer_content=answer_content,
+                    retrieval_summary={
+                        "workspaceWorkflow": workspace_workflow,
+                        "generationMode": workspace_generation_mode,
+                        "primarySources": primary_sources,
+                        "answerMaterialSummary": answer_material_summary,
+                    },
+                    answer_mode=answer_mode,
+                    timestamp=now_iso(),
+                    allow_model=workspace_workflow != "file_search",
+                )
+                _merge_assistant_retrieval_summary(
+                    assistant_id,
+                    {
+                        "threadMemoryUpdateMode": thread_memory_update_mode,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("[workspace-chat] thread memory enrichment failed", exc_info=True)
+                _merge_assistant_retrieval_summary(
+                    assistant_id,
+                    {
+                        "threadMemoryUpdateMode": "failed",
+                    },
+                )
+                _append_post_finalize_warning(assistant_id, stage="thread_memory_enrichment", error=exc)
+
+        executor = state.topic_insight_executor or state.chat_answer_executor
+        if executor is not None:
+            try:
+                executor.submit(run_enrichment)
+                return
+            except Exception as exc:
+                logger.warning("[workspace-chat] failed to submit post-answer enrichment", exc_info=True)
+                _append_post_finalize_warning(assistant_id, stage="post_answer_enrichment_submit", error=exc)
         try:
-            resolve_chat_answer(client_id, thread_id, prompt, assistant_id, search_id, request_started, run_id)
+            Thread(target=run_enrichment, name="workspace-answer-enrichment", daemon=True).start()
+        except Exception as exc:
+            logger.warning("[workspace-chat] failed to start post-answer enrichment thread", exc_info=True)
+            _append_post_finalize_warning(assistant_id, stage="post_answer_enrichment_thread", error=exc)
+
+    def background_resolve_chat_answer(
+        client_id: str,
+        thread_id: str,
+        prompt: str,
+        assistant_id: str,
+        search_id: str | None,
+        request_started: float,
+        run_id: str | None = None,
+        working_document_ids: list[str] | None = None,
+    ) -> None:
+        try:
+            resolve_chat_answer(client_id, thread_id, prompt, assistant_id, search_id, request_started, run_id, working_document_ids)
         except Exception as error:
             if is_client_analysis_run_canceled(run_id):
                 return
@@ -33400,49 +37887,89 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ai_service=state.ai,
         )
 
+    def _packaged_workspace_chat_ai_unavailable_detail() -> str | None:
+        if BACKEND_RUNTIME_MODE != "packaged":
+            return None
+        ai_health = state.ai.get_health()
+        if ai_health.provider == "mock":
+            return "还没有配置真实大模型。请先到系统设置的 AI 与云端填写 Base URL、模型名和 API Key。"
+        if not ai_health.ready:
+            return ai_health.detail or "当前大模型配置未完成，暂时不能生成正式回答。"
+        if not str(ai_health.fingerprint or "").strip():
+            return f"{state.ai.model_label(ai_health.provider, ai_health.model)} API Key 未配置，暂时不能生成正式回答。"
+        return None
+
     @app.post("/api/v1/clients/{client_id}/workspace/chat/start", response_model=ChatStartResponse)
     def start_chat_message(client_id: str, payload: ChatRequest) -> ChatStartResponse:
         build_client_summary(client_id)
-        timestamp = now_iso()
-        thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
-        user_message_id = insert_user_chat_message(thread_id, payload.prompt, timestamp)
-        retrieval_summary: dict[str, object] = {}
-        if payload.searchId:
-            bundle, _ = load_cached_retrieval_bundle(client_id, payload.searchId, payload.prompt)
-            if bundle and isinstance(bundle.retrieval_summary, dict):
-                retrieval_summary = {
-                    **bundle.retrieval_summary,
-                    "searchId": payload.searchId,
-                }
-        assistant_id = insert_loading_assistant_message(thread_id, retrieval_summary, timestamp)
-        analysis_run = create_client_analysis_run(client_id, thread_id, user_message_id, assistant_id, payload.prompt, timestamp)
-        state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id))
-        user_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (user_message_id,))
-        assistant_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
-        assert user_row is not None and assistant_row is not None
-        if state.chat_answer_executor is None:
-            raise HTTPException(status_code=500, detail="聊天执行器不可用")
-        state.chat_answer_executor.submit(
-            background_resolve_chat_answer,
-            client_id,
-            thread_id,
-            payload.prompt,
-            assistant_id,
-            payload.searchId,
-            perf_counter(),
-            analysis_run.id,
-        )
-        return ChatStartResponse(
-            threadId=thread_id,
-            userMessage=build_chat_message(user_row),
-            assistantMessage=build_chat_message(assistant_row),
-            analysisRun=analysis_run,
-        )
+        ai_unavailable_detail = _packaged_workspace_chat_ai_unavailable_detail()
+        if ai_unavailable_detail:
+            raise HTTPException(status_code=409, detail=ai_unavailable_detail)
+        with workspace_chat_start_lock_for_client(client_id):
+            active_response = fetch_active_workspace_chat_start_response(client_id, current_prompt=payload.prompt)
+            if active_response is not None:
+                return active_response
+
+            timestamp = now_iso()
+            thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
+            user_message_id = insert_user_chat_message(thread_id, payload.prompt, timestamp)
+            retrieval_summary: dict[str, object] = {}
+            if payload.searchId:
+                bundle, _ = load_cached_retrieval_bundle(client_id, payload.searchId, payload.prompt)
+                if bundle and isinstance(bundle.retrieval_summary, dict):
+                    retrieval_summary = {
+                        **bundle.retrieval_summary,
+                        "searchId": payload.searchId,
+                    }
+            assistant_id = insert_loading_assistant_message(thread_id, retrieval_summary, timestamp)
+            analysis_run = create_client_analysis_run(client_id, thread_id, user_message_id, assistant_id, payload.prompt, timestamp)
+            state.db.execute("UPDATE chat_threads SET updated_at = ? WHERE id = ?", (timestamp, thread_id))
+            user_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (user_message_id,))
+            assistant_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
+            assert user_row is not None and assistant_row is not None
+            if state.chat_answer_executor is None:
+                return mark_chat_start_submission_failed(
+                    client_id=client_id,
+                    thread_id=thread_id,
+                    user_message_id=user_message_id,
+                    assistant_id=assistant_id,
+                    analysis_run=analysis_run,
+                    error="聊天执行器不可用",
+                    timestamp=timestamp,
+                )
+            try:
+                state.chat_answer_executor.submit(
+                    background_resolve_chat_answer,
+                    client_id,
+                    thread_id,
+                    payload.prompt,
+                    assistant_id,
+                    payload.searchId,
+                    perf_counter(),
+                    analysis_run.id,
+                    payload.workingDocumentIds,
+                )
+            except Exception as error:
+                return mark_chat_start_submission_failed(
+                    client_id=client_id,
+                    thread_id=thread_id,
+                    user_message_id=user_message_id,
+                    assistant_id=assistant_id,
+                    analysis_run=analysis_run,
+                    error=error,
+                    timestamp=timestamp,
+                )
+            return ChatStartResponse(
+                threadId=thread_id,
+                userMessage=build_chat_message(user_row),
+                assistantMessage=build_chat_message(assistant_row),
+                analysisRun=analysis_run,
+            )
 
     @app.get("/api/v1/clients/{client_id}/analysis-runs/{run_id}", response_model=ClientAnalysisRunRecord)
     def get_client_analysis_run(client_id: str, run_id: str) -> ClientAnalysisRunRecord:
         build_client_summary(client_id)
-        recover_stale_loading_chat_messages()
+        recover_stale_loading_chat_messages(run_id=run_id)
         return fetch_analysis_run_for_client(client_id, run_id)
 
     @app.post("/api/v1/clients/{client_id}/analysis-runs/{run_id}/cancel", response_model=ClientAnalysisRunRecord)
@@ -33452,7 +37979,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/clients/{client_id}/workspace/chat/messages/{message_id}", response_model=ChatMessageRecord)
     def get_chat_message(client_id: str, message_id: str) -> ChatMessageRecord:
-        recover_stale_loading_chat_messages()
+        recover_stale_loading_chat_messages(message_id=message_id)
         return fetch_chat_message_for_client(client_id, message_id)
 
     @app.get("/api/v1/clients/{client_id}/workspace/chat/threads/{thread_id}", response_model=ChatThreadDetailResponse)
@@ -33466,11 +37993,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/workspace/chat", response_model=ChatMessageRecord)
     def send_chat_message(client_id: str, payload: ChatRequest) -> ChatMessageRecord:
         build_client_summary(client_id)
+        ai_unavailable_detail = _packaged_workspace_chat_ai_unavailable_detail()
+        if ai_unavailable_detail:
+            raise HTTPException(status_code=409, detail=ai_unavailable_detail)
         timestamp = now_iso()
         thread_id = ensure_chat_thread(client_id, payload.threadId, payload.prompt, timestamp)
         insert_user_chat_message(thread_id, payload.prompt, timestamp)
         assistant_id = insert_loading_assistant_message(thread_id, {}, timestamp)
-        return resolve_chat_answer(client_id, thread_id, payload.prompt, assistant_id, payload.searchId, perf_counter())
+        return resolve_chat_answer(
+            client_id,
+            thread_id,
+            payload.prompt,
+            assistant_id,
+            payload.searchId,
+            perf_counter(),
+            working_document_ids=payload.workingDocumentIds,
+        )
 
     @app.post("/api/v1/clients/{client_id}/knowledge/vectorize-answer", response_model=ClientTextDocumentResponse)
     def vectorize_answer(client_id: str, payload: VectorizeAnswerPayload) -> ClientTextDocumentResponse:
@@ -33592,6 +38130,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/documents/from-text", response_model=ClientTextDocumentResponse)
     def create_client_document_from_text(client_id: str, payload: ClientTextDocumentPayload) -> ClientTextDocumentResponse:
         return create_client_text_document(client_id, payload)
+
+    @app.post("/api/v1/clients/{client_id}/link-materials/import/start", response_model=LinkMaterialImportRunRecord)
+    def start_client_link_material_import(client_id: str, payload: LinkMaterialImportStartPayload) -> LinkMaterialImportRunRecord:
+        build_client_summary(client_id)
+        active_run = fetch_active_link_material_import_run(client_id)
+        if active_run:
+            raise HTTPException(status_code=409, detail="已有链接转资料任务正在运行，请等待完成后再导入新的链接。")
+        try:
+            run = create_link_material_import_run(
+                client_id,
+                payload.url,
+                use_browser_cookies=payload.useBrowserCookies,
+                cookie_browser=payload.cookieBrowser,
+            )
+        except LinkMaterialImportError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        if state.link_material_executor is None:
+            raise HTTPException(status_code=503, detail="链接转资料执行器不可用。")
+        state.link_material_executor.submit(run_link_material_import, client_id, run.runId)
+        return fetch_link_material_import_run(client_id, run.runId)
+
+    @app.get("/api/v1/clients/{client_id}/link-materials/import-runs/latest", response_model=LinkMaterialImportRunRecord | None)
+    def get_latest_client_link_material_import_run(client_id: str) -> LinkMaterialImportRunRecord | None:
+        build_client_summary(client_id)
+        return fetch_latest_link_material_import_run(client_id)
+
+    @app.get("/api/v1/clients/{client_id}/link-materials/import-runs/{run_id}", response_model=LinkMaterialImportRunRecord)
+    def get_client_link_material_import_run(client_id: str, run_id: str) -> LinkMaterialImportRunRecord:
+        build_client_summary(client_id)
+        return fetch_link_material_import_run(client_id, run_id)
 
     @app.post("/api/v1/clients/{client_id}/documents/fill-template", response_model=ClientTemplateFillResponse)
     def fill_client_template(client_id: str, payload: ClientTemplateFillPayload) -> ClientTemplateFillResponse:
@@ -34230,14 +38798,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             lambda: ingest_meeting_by_id(state.db, state.data_dir, meeting_id),
         )
         growth_user_id, growth_user_name = resolve_growth_actor()
-        ingest_meeting_growth_candidate(
-            state.db,
-            user_id=growth_user_id,
-            user_name=growth_user_name,
-            client_id=client_id,
-            meeting=meeting,
-            event_line_ids=strategic_event_line_ids,
-            created_at=now_iso(),
+        _safe_growth_ingest(
+            "meeting_publish",
+            lambda: ingest_meeting_growth_candidate(
+                state.db,
+                user_id=growth_user_id,
+                user_name=growth_user_name,
+                client_id=client_id,
+                meeting=meeting,
+                event_line_ids=strategic_event_line_ids,
+                created_at=now_iso(),
+            ),
         )
         # Write meeting activity to each related event line
         meeting_ts = now_iso()
@@ -34293,20 +38864,290 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             tags=task_tags(),
         )
 
+    def _normalize_task_list_name_for_repair(name: object) -> str:
+        return " ".join(str(name or "").strip().split()).casefold()
+
+    stable_task_list_ids: dict[tuple[str, str], str] = {
+        ("org", "收集箱"): "list-0",
+        ("personal", "健身"): "plist-1",
+        ("personal", "约会"): "plist-2",
+        ("personal", "吃饭"): "plist-3",
+        ("personal", "学习"): "plist-4",
+    }
+
+    def _find_active_local_task_list_by_name(scope: str, name: str):
+        normalized = _normalize_task_list_name_for_repair(name)
+        for row in state.db.fetchall(
+            """
+            SELECT *
+            FROM task_lists
+            WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')
+            ORDER BY CASE WHEN is_default = 1 THEN 0 ELSE 1 END, sort_order ASC, id ASC
+            """,
+            (scope,),
+        ):
+            if _normalize_task_list_name_for_repair(row["name"]) == normalized:
+                return row
+        return None
+
+    def _is_active_task_list_item(item: dict[str, object]) -> bool:
+        return not bool(item.get("archivedAt") or item.get("archived_at"))
+
+    def _task_list_item_scope(item: dict[str, object]) -> str:
+        return str(item.get("scope") or "org")
+
+    def _task_list_item_name(item: dict[str, object]) -> str:
+        return str(item.get("name") or "").strip()
+
+    def _task_list_item_id(item: dict[str, object]) -> str:
+        return str(item.get("id") or "")
+
+    def _pick_task_list_item_canonical(items: list[dict[str, object]]) -> dict[str, object] | None:
+        if not items:
+            return None
+        first = items[0]
+        stable_id = stable_task_list_ids.get((_task_list_item_scope(first), _task_list_item_name(first)))
+        if stable_id:
+            stable_item = next((item for item in items if _task_list_item_id(item) == stable_id), None)
+            if stable_item is not None:
+                return stable_item
+        return sorted(
+            items,
+            key=lambda item: (
+                -int(bool(item.get("isDefault") or item.get("is_default"))),
+                int(item.get("sortOrder") or item.get("sort_order") or 0),
+                _task_list_item_id(item),
+            ),
+        )[0]
+
+    def _dedupe_task_list_payload_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
+        groups: dict[tuple[str, str], list[dict[str, object]]] = {}
+        for item in items:
+            if not _is_active_task_list_item(item):
+                continue
+            key = (_task_list_item_scope(item), _normalize_task_list_name_for_repair(_task_list_item_name(item)))
+            groups.setdefault(key, []).append(item)
+        selected_ids: set[str] = set()
+        for group_items in groups.values():
+            canonical = _pick_task_list_item_canonical(group_items)
+            if canonical is not None:
+                selected_ids.add(_task_list_item_id(canonical))
+        return [
+            item
+            for item in items
+            if not _is_active_task_list_item(item) or _task_list_item_id(item) in selected_ids
+        ]
+
+    def _find_active_task_list_payload_item_by_name(
+        items: list[dict[str, object]],
+        scope: str,
+        name: str,
+    ) -> dict[str, object] | None:
+        normalized = _normalize_task_list_name_for_repair(name)
+        matches = [
+            item
+            for item in items
+            if _is_active_task_list_item(item)
+            and _task_list_item_scope(item) == scope
+            and _normalize_task_list_name_for_repair(_task_list_item_name(item)) == normalized
+        ]
+        return _pick_task_list_item_canonical(matches)
+
+    def _make_task_list_patch_body(
+        item: dict[str, object],
+        *,
+        is_default: bool | None = None,
+    ) -> dict[str, object]:
+        return {
+            "name": _task_list_item_name(item),
+            "color": str(item.get("color") or "#5B7BFE"),
+            "sortOrder": int(item.get("sortOrder") or item.get("sort_order") or 0),
+            "isDefault": bool(item.get("isDefault") or item.get("is_default")) if is_default is None else is_default,
+            "scope": _task_list_item_scope(item),
+        }
+
+    def _pick_local_task_list_canonical(rows: list, task_counts: dict[str, int]):
+        if not rows:
+            return None
+        first = rows[0]
+        stable_id = stable_task_list_ids.get((str(first["scope"] or "org"), str(first["name"] or "").strip()))
+        if stable_id:
+            stable_row = next((row for row in rows if str(row["id"]) == stable_id), None)
+            if stable_row is not None:
+                return stable_row
+        return sorted(
+            rows,
+            key=lambda row: (
+                -int(task_counts.get(str(row["id"]), 0)),
+                -int(row["is_default"] or 0),
+                int(row["sort_order"] or 0),
+                str(row["id"]),
+            ),
+        )[0]
+
+    def _enforce_local_task_list_default_for_scope(scope: str) -> None:
+        default_row = state.db.fetchone(
+            """
+            SELECT id
+            FROM task_lists
+            WHERE scope = ? AND is_default = 1 AND (archived_at IS NULL OR archived_at = '')
+            ORDER BY sort_order ASC, id ASC
+            LIMIT 1
+            """,
+            (scope,),
+        )
+        if not default_row:
+            default_row = state.db.fetchone(
+                """
+                SELECT id
+                FROM task_lists
+                WHERE scope = ? AND (archived_at IS NULL OR archived_at = '')
+                ORDER BY sort_order ASC, id ASC
+                LIMIT 1
+                """,
+                (scope,),
+            )
+        if default_row:
+            state.db.execute(
+                "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
+                (str(default_row["id"]), scope),
+            )
+
+    def _repair_local_duplicate_task_lists() -> TaskListDuplicateRepairResponse:
+        rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM task_lists
+            WHERE archived_at IS NULL OR archived_at = ''
+            ORDER BY scope ASC, name COLLATE NOCASE ASC, sort_order ASC, id ASC
+            """
+        )
+        task_counts = {
+            str(row["list_id"]): int(row["count"] or 0)
+            for row in state.db.fetchall("SELECT list_id, COUNT(1) AS count FROM tasks GROUP BY list_id")
+            if row["list_id"]
+        }
+        groups: dict[tuple[str, str], list] = {}
+        for row in rows:
+            key = (str(row["scope"] or "org"), _normalize_task_list_name_for_repair(row["name"]))
+            groups.setdefault(key, []).append(row)
+
+        report_groups: list[TaskListDuplicateRepairGroupRecord] = []
+        moved_total = 0
+        deleted_total = 0
+        skipped_total = 0
+        updated_settings_total = 0
+        touched_scopes: set[str] = set()
+
+        for (scope, _normalized_name), group_rows in groups.items():
+            if len(group_rows) <= 1:
+                continue
+            canonical = _pick_local_task_list_canonical(group_rows, task_counts)
+            if canonical is None:
+                continue
+            canonical_id = str(canonical["id"])
+            merged_ids: list[str] = []
+            skipped_ids: list[str] = []
+            moved_count = 0
+            deleted_count = 0
+            touched_scopes.add(scope)
+            if any(int(row["is_default"] or 0) for row in group_rows):
+                state.db.execute("UPDATE task_lists SET is_default = 1 WHERE id = ?", (canonical_id,))
+            for row in group_rows:
+                duplicate_id = str(row["id"])
+                if duplicate_id == canonical_id:
+                    continue
+                task_count = int(task_counts.get(duplicate_id, 0))
+                if task_count:
+                    state.db.execute(
+                        "UPDATE tasks SET list_id = ?, updated_at = ? WHERE list_id = ?",
+                        (canonical_id, now_iso(), duplicate_id),
+                    )
+                    moved_count += task_count
+                settings_count = state.db.scalar(
+                    "SELECT COUNT(1) AS count FROM task_settings WHERE default_list_id = ?",
+                    (duplicate_id,),
+                )
+                if settings_count:
+                    state.db.execute(
+                        "UPDATE task_settings SET default_list_id = ?, updated_at = ? WHERE default_list_id = ?",
+                        (canonical_id, now_iso(), duplicate_id),
+                    )
+                    updated_settings_total += int(settings_count)
+                remaining = state.db.scalar("SELECT COUNT(1) AS count FROM tasks WHERE list_id = ?", (duplicate_id,))
+                if remaining == 0:
+                    state.db.execute("DELETE FROM task_lists WHERE id = ?", (duplicate_id,))
+                    merged_ids.append(duplicate_id)
+                    deleted_count += 1
+                else:
+                    skipped_ids.append(duplicate_id)
+            moved_total += moved_count
+            deleted_total += deleted_count
+            skipped_total += len(skipped_ids)
+            report_groups.append(
+                TaskListDuplicateRepairGroupRecord(
+                    organizationId=None,
+                    scope=scope,  # type: ignore[arg-type]
+                    name=str(canonical["name"]),
+                    canonicalId=canonical_id,
+                    mergedIds=merged_ids,
+                    movedTaskCount=moved_count,
+                    deletedListCount=deleted_count,
+                    skippedIds=skipped_ids,
+                )
+            )
+
+        for scope in touched_scopes:
+            _enforce_local_task_list_default_for_scope(scope)
+
+        return TaskListDuplicateRepairResponse(
+            groups=report_groups,
+            movedTaskCount=moved_total,
+            deletedListCount=deleted_total,
+            skippedListCount=skipped_total,
+            updatedSettingsCount=updated_settings_total,
+            updatedAt=now_iso(),
+        )
+
     @app.get("/api/v1/task-lists", response_model=TaskListLibraryResponse)
     def list_task_lists() -> TaskListLibraryResponse:
         if get_cloud_token():
             try:
                 payload = cloud_request("GET", "/api/v1/task-lists")
                 if isinstance(payload, dict):
-                    return TaskListLibraryResponse(lists=[TaskListRecord(**item) for item in payload.get("lists", []) if isinstance(item, dict)])
+                    items = [item for item in payload.get("lists", []) if isinstance(item, dict)]
+                    return TaskListLibraryResponse(lists=[TaskListRecord(**item) for item in _dedupe_task_list_payload_items(items)])
             except Exception:
                 pass  # cloud down — fall back to local
         return TaskListLibraryResponse(lists=task_lists())
 
     @app.post("/api/v1/task-lists", response_model=TaskListRecord)
     def create_task_list(payload: TaskListMutationPayload) -> TaskListRecord:
+        trimmed_name = payload.name.strip()
+        if not trimmed_name:
+            raise HTTPException(status_code=400, detail="清单名称不能为空")
+        next_scope = payload.scope or "org"
         if get_cloud_token():
+            try:
+                library_payload = cloud_request("GET", "/api/v1/task-lists")
+                if isinstance(library_payload, dict):
+                    items = [item for item in library_payload.get("lists", []) if isinstance(item, dict)]
+                    existing_item = _find_active_task_list_payload_item_by_name(items, next_scope, trimmed_name)
+                    if existing_item is not None:
+                        if payload.isDefault and not bool(existing_item.get("isDefault") or existing_item.get("is_default")):
+                            try:
+                                updated = cloud_request(
+                                    "PATCH",
+                                    f"/api/v1/task-lists/{_task_list_item_id(existing_item)}",
+                                    json_body=_make_task_list_patch_body(existing_item, is_default=True),
+                                )
+                                if isinstance(updated, dict):
+                                    return TaskListRecord(**updated)
+                            except Exception:
+                                pass
+                        return TaskListRecord(**existing_item)
+            except Exception:
+                pass
             try:
                 response = cloud_request("POST", "/api/v1/task-lists", json_body=payload.model_dump(exclude_none=True))
                 if isinstance(response, dict):
@@ -34316,12 +39157,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session_user = get_cached_session_user()
         if session_user and session_user.primaryRole != "admin" and (payload.scope or "org") != "personal":
             raise HTTPException(status_code=403, detail="Only admin can create public task lists")
-        trimmed_name = payload.name.strip()
-        if not trimmed_name:
-            raise HTTPException(status_code=400, detail="清单名称不能为空")
         timestamp = now_iso()
         list_id = new_id("list")
-        next_scope = payload.scope or "org"
+        existing_active = _find_active_local_task_list_by_name(next_scope, trimmed_name)
+        if existing_active is not None:
+            if payload.isDefault:
+                state.db.execute(
+                    "UPDATE task_lists SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE scope = ?",
+                    (str(existing_active["id"]), next_scope),
+                )
+                existing_active = state.db.fetchone("SELECT * FROM task_lists WHERE id = ?", (str(existing_active["id"]),))
+            return _local_task_list_record(existing_active)
         is_default = bool(payload.isDefault) or state.db.scalar("SELECT COUNT(1) AS count FROM task_lists WHERE scope = ?", (next_scope,)) == 0
         sort_order = payload.sortOrder if payload.sortOrder is not None else state.db.scalar("SELECT COALESCE(MAX(sort_order), -1) + 1 AS count FROM task_lists")
         if is_default:
@@ -34338,9 +39184,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("task-list.create", "task_list", list_id, payload.model_dump(exclude_none=True))
         return _local_task_list_record(row)
 
+    @app.post("/api/v1/task-lists/repair-duplicates", response_model=TaskListDuplicateRepairResponse)
+    def repair_duplicate_task_lists() -> TaskListDuplicateRepairResponse:
+        ensure_admin_for_sensitive_settings()
+        if get_cloud_token():
+            try:
+                response = cloud_request("POST", "/api/v1/task-lists/repair-duplicates")
+                if isinstance(response, dict):
+                    return TaskListDuplicateRepairResponse(**response)
+            except Exception:
+                pass
+        report = _repair_local_duplicate_task_lists()
+        log_activity("task-list.repair-duplicates", "task_list", "local", report.model_dump())
+        return report
+
     @app.patch("/api/v1/task-lists/{list_id}", response_model=TaskListRecord)
     def update_task_list(list_id: str, payload: TaskListMutationPayload) -> TaskListRecord:
         if get_cloud_token():
+            try:
+                library_payload = cloud_request("GET", "/api/v1/task-lists")
+                if isinstance(library_payload, dict):
+                    items = [item for item in library_payload.get("lists", []) if isinstance(item, dict)]
+                    current_item = next((item for item in items if _task_list_item_id(item) == list_id), None)
+                    next_scope = payload.scope or (_task_list_item_scope(current_item) if current_item else "org")
+                    trimmed_name = payload.name.strip()
+                    if not trimmed_name:
+                        raise HTTPException(status_code=400, detail="清单名称不能为空")
+                    existing_item = _find_active_task_list_payload_item_by_name(items, next_scope, trimmed_name)
+                    if (
+                        existing_item is not None
+                        and _task_list_item_id(existing_item) != list_id
+                        and payload.archived is not True
+                    ):
+                        raise HTTPException(status_code=400, detail="同名清单已存在")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
             try:
                 response = cloud_request("PATCH", f"/api/v1/task-lists/{list_id}", json_body=payload.model_dump(exclude_none=True))
                 if isinstance(response, dict):
@@ -34373,6 +39253,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         elif payload.archived is False:
             next_archived_at = None
         next_is_default = bool(payload.isDefault) if payload.isDefault is not None else bool(int(row["is_default"] or 0))
+        existing_active = _find_active_local_task_list_by_name(next_scope, trimmed_name)
+        if existing_active is not None and str(existing_active["id"]) != list_id and not next_archived_at:
+            raise HTTPException(status_code=400, detail="同名清单已存在")
         if next_archived_at:
             next_is_default = False
         if next_is_default:
@@ -34668,10 +39551,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 event_line_context=event_line_context,
                 attachment_count=attachment_count,
             )
+            update_timestamp = now_iso()
+            next_status = payload.status or row["status"]
+            temporal_fields = derive_task_temporal_fields(
+                start_date=payload.startDate if "startDate" in payload.model_fields_set else (str(row["start_date"]) if row["start_date"] else None),
+                due_date=(
+                    payload.dueDate
+                    if "dueDate" in payload.model_fields_set
+                    else normalize_due_date_input(payload.ddl)
+                    if "ddl" in payload.model_fields_set
+                    else (str(row["due_date"]) if row["due_date"] else None)
+                ),
+                duration_minutes=payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
+                deadline_at=payload.deadlineAt if "deadlineAt" in payload.model_fields_set else (str(row["deadline_at"]) if row["deadline_at"] else None),
+                scheduled_start_at=payload.scheduledStartAt if "scheduledStartAt" in payload.model_fields_set else (str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None),
+                scheduled_end_at=payload.scheduledEndAt if "scheduledEndAt" in payload.model_fields_set else (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None),
+                completed_at=payload.completedAt if "completedAt" in payload.model_fields_set else (str(row["completed_at"]) if row["completed_at"] else None),
+                previous_completed_at=str(row["completed_at"]) if row["completed_at"] else None,
+                status=str(next_status),
+                timestamp=update_timestamp,
+            )
+            temporal_due_date = str(temporal_fields["due_date"]) if temporal_fields["due_date"] else None
+            if "ddl" in payload.model_fields_set:
+                next_ddl = payload.ddl or "待确认"
+            elif any(field in payload.model_fields_set for field in ("dueDate", "startDate", "deadlineAt", "scheduledStartAt", "scheduledEndAt")):
+                next_ddl = task_due_label(temporal_due_date) if temporal_due_date else "待确认"
+            else:
+                next_ddl = row["ddl"]
             merged = {
                 "title": payload.title or row["title"],
                 "description": payload.desc if payload.desc is not None else row["description"],
-                "status": payload.status or row["status"],
+                "status": next_status,
                 "priority": payload.priority or row["priority"],
                 "list_id": payload.listId or row["list_id"],
                 "scope_mode": next_scope_mode,
@@ -34679,9 +39589,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "event_line_id": event_line_id,
                 "project_module_id": project_module.id if project_module else None,
                 "project_flow_id": project_flow.id if project_flow else None,
-                "ddl": payload.ddl or row["ddl"],
-                "due_date": payload.dueDate if payload.dueDate is not None else row["due_date"],
-                "duration_minutes": payload.durationMinutes if payload.durationMinutes is not None else int(row["duration_minutes"] or 60),
+                "ddl": next_ddl,
+                "deadline_at": temporal_fields["deadline_at"],
+                "scheduled_start_at": temporal_fields["scheduled_start_at"],
+                "scheduled_end_at": temporal_fields["scheduled_end_at"],
+                "completed_at": temporal_fields["completed_at"],
+                "start_date": temporal_fields["start_date"],
+                "due_date": temporal_due_date,
+                "duration_minutes": temporal_fields["duration_minutes"],
                 "owner_name": payload.ownerName or row["owner_name"],
                 "business_category": business_category,
                 "current_blocker": current_blocker,
@@ -34690,12 +39605,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "evidence_count": evidence_count,
                 "tags_json": to_json([tag.name for tag in resolved_tags]),
                 "tag_ids_json": to_json([tag.id for tag in resolved_tags]),
-                "updated_at": now_iso(),
+                "updated_at": update_timestamp,
             }
             state.db.execute(
                 """
                 UPDATE tasks
-                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, due_date = ?, duration_minutes = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
+                SET title = ?, description = ?, status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -34710,6 +39625,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     merged["project_module_id"],
                     merged["project_flow_id"],
                     merged["ddl"],
+                    merged["deadline_at"],
+                    merged["scheduled_start_at"],
+                    merged["scheduled_end_at"],
+                    merged["completed_at"],
+                    merged["start_date"],
                     merged["due_date"],
                     merged["duration_minutes"],
                     merged["owner_name"],
@@ -34880,6 +39800,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "desc": "description",
             "priority": "priority",
             "listId": "listId",
+            "startDate": "startDate",
+            "deadlineAt": "deadlineAt",
+            "scheduledStartAt": "scheduledStartAt",
+            "scheduledEndAt": "scheduledEndAt",
+            "completedAt": "completedAt",
             "durationMinutes": "durationMinutes",
             "scopeMode": "scopeMode",
             "clientId": "clientId",
@@ -34903,6 +39828,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cloud_update_payload["dueDate"] = normalize_due_date_input(payload.ddl)
         if "status" in payload_fields and payload.status:
             cloud_update_payload["progressStatus"] = cloud_status_map.get(payload.status)
+            if payload.status == "done" and "completedAt" not in payload_fields:
+                cloud_update_payload["completedAt"] = now_iso()
+            elif payload.status != "done" and "completedAt" not in payload_fields:
+                cloud_update_payload["completedAt"] = None
         local_row_for_cloud = state.db.fetchone(
             """
             SELECT id, cloud_id
@@ -34920,6 +39849,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             else task_id
         )
         try:
+            if not _resolve_task_cloud_event_line_dependency(local_task_id, cloud_update_payload):
+                raise HTTPException(status_code=409, detail="等待事件线先同步到云端")
             response = cloud_request("PATCH", f"/api/v1/tasks/{cloud_task_id}", json_body=cloud_update_payload)
             if not isinstance(response, dict):
                 raise HTTPException(status_code=502, detail="Invalid cloud task payload")
@@ -34965,6 +39896,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 else:
                     fallback_ddl = None
                 fallback_progress_status = cloud_status_map.get(payload.status) if payload.status else None
+                fallback_status = payload.status if payload.status else str(local_row["status"] or "todo")
+                fallback_temporal_fields = derive_task_temporal_fields(
+                    start_date=payload.startDate if "startDate" in payload_fields else (str(local_row["start_date"]) if local_row["start_date"] else None),
+                    due_date=(
+                        fallback_due_date
+                        if fallback_due_date_was_set
+                        else (str(local_row["due_date"]) if local_row["due_date"] else None)
+                    ),
+                    duration_minutes=payload.durationMinutes if payload.durationMinutes is not None else int(local_row["duration_minutes"] or 60),
+                    deadline_at=payload.deadlineAt if "deadlineAt" in payload_fields else (str(local_row["deadline_at"]) if local_row["deadline_at"] else None),
+                    scheduled_start_at=payload.scheduledStartAt if "scheduledStartAt" in payload_fields else (str(local_row["scheduled_start_at"]) if local_row["scheduled_start_at"] else None),
+                    scheduled_end_at=payload.scheduledEndAt if "scheduledEndAt" in payload_fields else (str(local_row["scheduled_end_at"]) if local_row["scheduled_end_at"] else None),
+                    completed_at=payload.completedAt if "completedAt" in payload_fields else (str(local_row["completed_at"]) if local_row["completed_at"] else None),
+                    previous_completed_at=str(local_row["completed_at"]) if local_row["completed_at"] else None,
+                    status=str(fallback_status),
+                    timestamp=now_iso(),
+                )
+                fallback_due_value = str(fallback_temporal_fields["due_date"]) if fallback_temporal_fields["due_date"] else None
+                if fallback_due_date_was_set:
+                    fallback_due_date = fallback_due_value
                 sync_error_message = str(getattr(error, "detail", "") or str(error) or type(error).__name__)[:500]
                 state.db.execute(
                     """
@@ -34975,6 +39926,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         progress_status = CASE WHEN ? THEN ? ELSE progress_status END,
                         priority = CASE WHEN ? THEN ? ELSE priority END,
                         list_id = CASE WHEN ? THEN ? ELSE list_id END,
+                        deadline_at = CASE WHEN ? THEN ? ELSE deadline_at END,
+                        scheduled_start_at = CASE WHEN ? THEN ? ELSE scheduled_start_at END,
+                        scheduled_end_at = CASE WHEN ? THEN ? ELSE scheduled_end_at END,
+                        completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
+                        start_date = CASE WHEN ? THEN ? ELSE start_date END,
                         due_date = CASE WHEN ? THEN ? ELSE due_date END,
                         ddl = CASE WHEN ? THEN ? ELSE ddl END,
                         duration_minutes = CASE WHEN ? THEN ? ELSE duration_minutes END,
@@ -35009,6 +39965,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         payload.priority,
                         1 if "listId" in payload_fields else 0,
                         payload.listId,
+                        1 if "deadlineAt" in payload_fields or fallback_due_date_was_set else 0,
+                        fallback_temporal_fields["deadline_at"],
+                        1 if "scheduledStartAt" in payload_fields or fallback_due_date_was_set else 0,
+                        fallback_temporal_fields["scheduled_start_at"],
+                        1 if "scheduledEndAt" in payload_fields or fallback_due_date_was_set else 0,
+                        fallback_temporal_fields["scheduled_end_at"],
+                        1 if "completedAt" in payload_fields or ("status" in payload_fields and payload.status is not None) else 0,
+                        fallback_temporal_fields["completed_at"],
+                        1 if "startDate" in payload_fields or fallback_due_date_was_set else 0,
+                        fallback_temporal_fields["start_date"],
                         1 if fallback_due_date_was_set else 0,
                         fallback_due_date,
                         1 if fallback_ddl is not None else 0,
@@ -35729,7 +40695,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         perspective: Literal["organization", "department", "mine"] | None = Query(default=None),
         departmentId: str | None = Query(default=None),
     ) -> ReviewResponse:
-        if get_cloud_token() and not skipAi:
+        if get_cloud_token():
             cloud_search = []
             if weekLabel:
                 cloud_search.append(f"weekLabel={quote(weekLabel)}")
@@ -35756,6 +40722,70 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             generate_weekly_overview=not skipAi,
             perspective=perspective,
             department_id=departmentId,
+        )
+
+    @app.post("/api/v1/reviews/weekly-overview/refresh", response_model=WeeklyOverviewRefreshStatusRecord)
+    def refresh_weekly_overview(
+        payload: WeeklyOverviewRefreshPayloadRecord | None = Body(default=None),
+    ) -> WeeklyOverviewRefreshStatusRecord:
+        request_payload = payload or WeeklyOverviewRefreshPayloadRecord()
+        target_week = request_payload.weekLabel or current_review_week_label()
+        active_perspective, active_department_id, viewer_user_id, cache_scope = _resolve_weekly_refresh_request(
+            target_week,
+            request_payload.perspective,
+            request_payload.departmentId,
+        )
+        current_status = _weekly_refresh_status_from_cache(
+            week_label=target_week,
+            perspective=active_perspective,
+            department_id=active_department_id,
+            viewer_user_id=viewer_user_id,
+            cache_scope=cache_scope,
+        )
+        if current_status.status == "running":
+            return current_status
+        running_status = WeeklyOverviewRefreshStatusRecord(
+            weekLabel=target_week,
+            perspective=active_perspective,
+            departmentId=active_department_id,
+            viewerUserId=viewer_user_id,
+            status="running",
+            startedAt=now_iso(),
+            cacheKey=cache_scope,
+        )
+        _save_weekly_refresh_status(running_status)
+        Thread(
+            target=_run_weekly_overview_refresh,
+            kwargs={
+                "week_label": target_week,
+                "perspective": active_perspective,
+                "department_id": active_department_id,
+                "viewer_user_id": viewer_user_id,
+                "cache_scope": cache_scope,
+                "force": bool(request_payload.force),
+            },
+            daemon=True,
+        ).start()
+        return running_status
+
+    @app.get("/api/v1/reviews/weekly-overview/status", response_model=WeeklyOverviewRefreshStatusRecord)
+    def weekly_overview_refresh_status(
+        weekLabel: str | None = Query(default=None),
+        perspective: Literal["organization", "department", "mine"] | None = Query(default=None),
+        departmentId: str | None = Query(default=None),
+    ) -> WeeklyOverviewRefreshStatusRecord:
+        target_week = weekLabel or current_review_week_label()
+        active_perspective, active_department_id, viewer_user_id, cache_scope = _resolve_weekly_refresh_request(
+            target_week,
+            perspective,
+            departmentId,
+        )
+        return _weekly_refresh_status_from_cache(
+            week_label=target_week,
+            perspective=active_perspective,
+            department_id=active_department_id,
+            viewer_user_id=viewer_user_id,
+            cache_scope=cache_scope,
         )
 
     @app.get("/api/v1/reviews/history", response_model=ReviewHistoryResponse)
@@ -35816,23 +40846,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task_id = str(entry.get("taskId", "")).strip()
             if not task_id:
                 continue
-            task_items = fetch_tasks("t.id = ?", (task_id,))
-            if not task_items:
-                continue
-            task_row = task_items[0]
             existing_entry = state.db.fetchone(
                 "SELECT id FROM weekly_review_task_entries WHERE review_id = ? AND task_id = ?",
                 (review_id, task_id),
             )
-            if not is_shared_task(task_row):
+            if bool(entry.get("delete")):
                 if existing_entry:
                     state.db.execute("DELETE FROM weekly_review_task_entries WHERE id = ?", (str(existing_entry["id"]),))
+                continue
+            task_items = fetch_tasks("t.id = ?", (task_id,))
+            if not task_items:
+                continue
+            task_row = task_items[0]
+            if not is_shared_task(task_row):
                 continue
             structured_note = coerce_review_structured_note(entry.get("structuredNote"))
             note = compose_review_note(structured_note, str(entry.get("note", "")).strip())
             if not note:
-                if existing_entry:
-                    state.db.execute("DELETE FROM weekly_review_task_entries WHERE id = ?", (str(existing_entry["id"]),))
                 continue
             content_domain = "work"
             snapshot = _task_snapshot_from_task(task_row, state.db)
@@ -35880,6 +40910,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         db=state.db,
                     )
                 )
+        current_reviewed_work_items = [
+            item
+            for item in local_review_dashboard_base(payload.weekLabel, include_analysis=False).workItems
+            if _review_item_has_user_content(item)
+        ]
         state.db.execute(
             """
             UPDATE weekly_reviews
@@ -35887,7 +40922,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             WHERE id = ?
             """,
             (
-                summarize_local_review_notes(reviewed_work_items),
+                summarize_local_review_notes(current_reviewed_work_items),
                 payload.workFreeNote.strip(),
                 payload.personalGrowthNote.strip(),
                 payload.personalPrivateNote.strip(),
@@ -35901,7 +40936,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "weekly_review",
             lambda: ingest_weekly_review_by_id(state.db, state.data_dir, review_id),
         )
-        return review_id, created_at, operator_id, reviewed_work_items
+        return review_id, created_at, operator_id, current_reviewed_work_items
 
     def enqueue_review_memory_writeback(
         reviewed_work_items: list[WeeklyReviewTaskEntryRecord],
@@ -35964,35 +40999,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         _thr.Thread(target=_bg_update_memory_from_review, daemon=True).start()
 
-    @app.post("/api/v1/reviews/weekly/draft", response_model=ReviewResponse)
-    def save_weekly_review_draft(payload: WeeklyReviewPayload) -> ReviewResponse:
-        if get_cloud_token():
-            response_payload = cloud_request("POST", "/api/v1/reviews/weekly", json_body=payload.model_dump())
-            if not isinstance(response_payload, dict):
-                raise HTTPException(status_code=502, detail="Invalid review payload")
-            log_activity(
-                "review.draft.save",
-                "weekly_review",
-                str(response_payload.get("currentReview", {}).get("id", "review")),
-                {"weekLabel": payload.weekLabel},
+    def weekly_review_payload_for_cloud(payload: WeeklyReviewPayload) -> dict:
+        cloud_payload = payload.model_dump()
+        cloud_entries: list[dict[str, object]] = []
+        remapped_count = 0
+        skipped_local_only_count = 0
+        for raw_entry in payload.taskEntries:
+            if not isinstance(raw_entry, dict):
+                continue
+            entry = dict(raw_entry)
+            task_id = str(entry.get("taskId", "")).strip()
+            if not task_id:
+                cloud_entries.append(entry)
+                continue
+            task_row = state.db.fetchone(
+                "SELECT id, cloud_id FROM tasks WHERE id = ? OR cloud_id = ?",
+                (task_id, task_id),
             )
-            response = ReviewResponse(**response_payload)
-            response = response.model_copy(update={"personalItems": [], "personalAnalysis": None})
-            if response.currentReview:
-                user_id, user_name = resolve_growth_actor()
-                ingest_review_growth(
-                    state.db,
-                    user_id=user_id,
-                    user_name=user_name,
-                    review=response.currentReview,
-                    task_entries=response.workItems,
-                )
-            try:
-                save_local_weekly_review(payload)
-            except Exception as exc:
-                logger.warning("cloud weekly review draft local mirror failed: %s", exc)
-            return response
+            if not task_row:
+                cloud_entries.append(entry)
+                continue
+            cloud_task_id = str(task_row["cloud_id"] or "").strip()
+            if cloud_task_id:
+                if cloud_task_id != task_id:
+                    remapped_count += 1
+                entry["taskId"] = cloud_task_id
+                cloud_entries.append(entry)
+                continue
+            skipped_local_only_count += 1
+        cloud_payload["taskEntries"] = cloud_entries
+        if remapped_count or skipped_local_only_count:
+            logger.info(
+                "weekly review cloud payload prepared: remapped=%s skippedLocalOnly=%s",
+                remapped_count,
+                skipped_local_only_count,
+            )
+        return cloud_payload
 
+    def cloud_weekly_review_missing_task(exc: HTTPException) -> bool:
+        if exc.status_code != 404:
+            return False
+        detail = exc.detail
+        if isinstance(detail, (dict, list)):
+            detail_text = json.dumps(detail, ensure_ascii=False)
+        else:
+            detail_text = str(detail or "")
+        return "Task not found" in detail_text or "任务不存在" in detail_text
+
+    def save_weekly_review_draft_locally(payload: WeeklyReviewPayload) -> ReviewResponse:
         _, created_at, operator_id, reviewed_work_items = save_local_weekly_review(payload)
         response = local_review_dashboard_base(payload.weekLabel)
         if response.currentReview:
@@ -36008,10 +41062,69 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         enqueue_review_memory_writeback(reviewed_work_items, week_label=payload.weekLabel)
         return response
 
+    def save_weekly_review_locally(payload: WeeklyReviewPayload) -> ReviewResponse:
+        _, created_at, operator_id, reviewed_work_items = save_local_weekly_review(payload)
+        response = local_review_dashboard(payload.weekLabel)
+        if response.currentReview:
+            _, user_name = resolve_growth_actor()
+            ingest_review_growth(
+                state.db,
+                user_id=operator_id,
+                user_name=user_name,
+                review=response.currentReview,
+                task_entries=response.workItems,
+                created_at=created_at,
+            )
+            response = local_review_dashboard(payload.weekLabel)
+        enqueue_review_memory_writeback(reviewed_work_items, week_label=payload.weekLabel)
+        return response
+
+    @app.post("/api/v1/reviews/weekly/draft", response_model=ReviewResponse)
+    def save_weekly_review_draft(payload: WeeklyReviewPayload) -> ReviewResponse:
+        if get_cloud_token():
+            try:
+                response_payload = cloud_request(
+                    "POST",
+                    "/api/v1/reviews/weekly",
+                    json_body=weekly_review_payload_for_cloud(payload),
+                )
+            except HTTPException as exc:
+                if cloud_weekly_review_missing_task(exc):
+                    logger.warning(
+                        "cloud weekly review draft save skipped after missing cloud task; saved local draft instead: %s",
+                        exc.detail,
+                    )
+                    return save_weekly_review_draft_locally(payload)
+                raise
+            if not isinstance(response_payload, dict):
+                raise HTTPException(status_code=502, detail="Invalid review payload")
+            log_activity(
+                "review.draft.save",
+                "weekly_review",
+                str(response_payload.get("currentReview", {}).get("id", "review")),
+                {"weekLabel": payload.weekLabel},
+            )
+            return save_weekly_review_draft_locally(payload)
+
+        return save_weekly_review_draft_locally(payload)
+
     @app.post("/api/v1/reviews/weekly", response_model=ReviewResponse)
     def create_weekly_review(payload: WeeklyReviewPayload) -> ReviewResponse:
         if get_cloud_token():
-            response_payload = cloud_request("POST", "/api/v1/reviews/weekly", json_body=payload.model_dump())
+            try:
+                response_payload = cloud_request(
+                    "POST",
+                    "/api/v1/reviews/weekly",
+                    json_body=weekly_review_payload_for_cloud(payload),
+                )
+            except HTTPException as exc:
+                if cloud_weekly_review_missing_task(exc):
+                    logger.warning(
+                        "cloud weekly review create skipped after missing cloud task; saved local review instead: %s",
+                        exc.detail,
+                    )
+                    return save_weekly_review_locally(payload)
+                raise
             if not isinstance(response_payload, dict):
                 raise HTTPException(status_code=502, detail="Invalid review payload")
             log_activity(
@@ -36050,21 +41163,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception as exc:
                 logger.warning("cloud weekly review local mirror failed: %s", exc)
             return response
-        _, created_at, operator_id, reviewed_work_items = save_local_weekly_review(payload)
-        response = local_review_dashboard(payload.weekLabel)
-        if response.currentReview:
-            _, user_name = resolve_growth_actor()
-            ingest_review_growth(
-                state.db,
-                user_id=operator_id,
-                user_name=user_name,
-                review=response.currentReview,
-                task_entries=response.workItems,
-                created_at=created_at,
-            )
-            response = local_review_dashboard(payload.weekLabel)
-        enqueue_review_memory_writeback(reviewed_work_items, week_label=payload.weekLabel)
-        return response
+        return save_weekly_review_locally(payload)
 
     def build_topic_candidate(row) -> TopicCandidateRecord:
         return TopicCandidateRecord(
@@ -36286,7 +41385,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             published_at=str(candidate_row["published_at"]) if candidate_row["published_at"] else None,
             source_url=str(candidate_row["source_url"]) if candidate_row["source_url"] else None,
             source_content=source_content,
-            organization_context=build_organization_dna_context() if topics_settings.useOrgDnaForInsight else "",
+            organization_context="",
         )
         insight = save_topic_candidate_insight(
             candidate_id=str(candidate_row["id"]),
@@ -36803,7 +41902,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             source_url=str(row["source_url"]) if row["source_url"] else None,
             source_content=source_content,
             candidate_insight=insight.model_dump(),
-            organization_context=build_organization_dna_context() if topics_settings.useOrgDnaForTaskPlan else "",
+            organization_context="",
         )
         tasks = [
             TopicTaskSuggestionRecord(**task)
@@ -36992,7 +42091,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             and (not norm.modeIds or mode_id in norm.modeIds)
             and (not norm.triggerKeywords or any(keyword and keyword in payload.inputText for keyword in norm.triggerKeywords))
         ]
-        org_context = build_organization_dna_context() if analysis_settings.useOrgDna else ""
+        org_context = ""
         norms_context = "\n".join(
             f"- {norm.title}：{norm.instruction}"
             for norm in active_norms[:4]
@@ -37570,135 +42669,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("handbook.create", "handbook_entry", entry.id, payload.model_dump())
         return entry
 
-    @app.get("/api/v1/growth/experience-stories/drafts", response_model=ExperienceStoryDraftsResponse)
-    def list_growth_experience_story_drafts(
-        status: str | None = Query(default=None),
-        limit: int = Query(default=100, ge=1, le=200),
-    ) -> ExperienceStoryDraftsResponse:
-        return ExperienceStoryDraftsResponse(
-            drafts=list_experience_story_drafts(state.db, status=status, limit=limit)
-        )
-
-    @app.post("/api/v1/growth/experience-stories/generate", response_model=ExperienceStoryGenerateResponse)
-    def generate_growth_experience_story_drafts(
-        payload: ExperienceStoryGeneratePayload | None = Body(default=None),
-    ) -> ExperienceStoryGenerateResponse:
-        request_payload = payload or ExperienceStoryGeneratePayload()
-        drafts, skipped_count = generate_experience_story_drafts(
-            state.db,
-            state.ai,
-            limit=request_payload.limit,
-        )
-        log_activity(
-            "growth.experience_story.generate",
-            "experience_story_draft",
-            "batch",
-            {"generatedCount": len(drafts), "skippedCount": skipped_count, "limit": request_payload.limit},
-        )
-        return ExperienceStoryGenerateResponse(
-            drafts=drafts,
-            generatedCount=len(drafts),
-            skippedCount=skipped_count,
-        )
-
-    def create_handbook_entry_from_experience_story(draft_id: str) -> tuple[ExperienceStoryDraftRecord, HandbookEntryRecord]:
-        row = state.db.fetchone("SELECT * FROM experience_story_drafts WHERE id = ?", (draft_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="经验故事草稿不存在")
-        draft = build_experience_story_draft_record(state.db, row)
-        if draft.status == "rejected":
-            raise HTTPException(status_code=400, detail="已驳回的经验故事不能入墙")
-        if not draft.story.strip():
-            raise HTTPException(status_code=400, detail="经验故事正文为空，不能入墙")
-        if not draft.evidenceRefs:
-            raise HTTPException(status_code=400, detail="经验故事缺少证据引用，不能入墙")
-        if draft.handbookEntryId:
-            existing_row = state.db.fetchone("SELECT * FROM handbook_entries WHERE id = ?", (draft.handbookEntryId,))
-            if existing_row:
-                return draft, build_handbook_entry_record(existing_row)
-
-        user_id, user_name = resolve_growth_actor()
-        entry_id = new_id("handbook")
-        created_at = now_iso()
-        context_summary = "\n".join(
-            part
-            for part in [
-                f"个人成长：{draft.growthValue}" if draft.growthValue else "",
-                f"组织沉淀：{draft.organizationValue}" if draft.organizationValue else "",
-                f"事实风险：{draft.factRiskNote}" if draft.factRiskNote else "",
-            ]
-            if part
-        )
-        state.db.execute(
-            """
-            INSERT INTO handbook_entries(
-                id, title, summary, tags_json, source_type, client_id, source_object_type, source_object_id, source_title,
-                event_line_id, event_line_name, project_module_id, project_module_name, project_flow_id, project_flow_name,
-                project_stage, business_category, ability_keys_json, evidence_refs_json, context_summary, reuse_count, last_reused_at,
-                author_user_id, author_user_name, created_at
-            ) VALUES(?, ?, ?, ?, 'experience_story', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, '[]', ?, ?, 0, NULL, ?, ?, ?)
-            """,
-            (
-                entry_id,
-                draft.title.strip() or draft.sourceTitle or "经验故事",
-                draft.story.strip(),
-                to_json(["经验故事", "组织智慧"]),
-                draft.clientId,
-                draft.sourceType,
-                draft.sourceId,
-                draft.sourceTitle,
-                draft.eventLineId,
-                draft.eventLineName,
-                to_json(draft.evidenceRefs),
-                context_summary,
-                user_id,
-                user_name,
-                created_at,
-            ),
-        )
-        state.db.execute(
-            """
-            UPDATE experience_story_drafts
-            SET status = 'approved',
-                handbook_entry_id = ?,
-                approved_at = ?,
-                approved_by = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (entry_id, created_at, user_name, created_at, draft_id),
-        )
-        entry_row = state.db.fetchone("SELECT * FROM handbook_entries WHERE id = ?", (entry_id,))
-        if not entry_row:
-            raise HTTPException(status_code=500, detail="经验故事入墙失败")
-        entry = build_handbook_entry_record(entry_row)
-        ingest_handbook_codification(state.db, user_id=user_id, user_name=user_name, entry=entry, created_at=entry.createdAt)
-        updated_draft_row = state.db.fetchone("SELECT * FROM experience_story_drafts WHERE id = ?", (draft_id,))
-        updated_draft = build_experience_story_draft_record(state.db, updated_draft_row) if updated_draft_row else draft
-        return updated_draft, entry
-
-    @app.post("/api/v1/growth/experience-stories/drafts/{draft_id}/approve", response_model=ExperienceStoryActionResponse)
-    def approve_growth_experience_story_draft(draft_id: str) -> ExperienceStoryActionResponse:
-        draft, entry = create_handbook_entry_from_experience_story(draft_id)
-        log_activity("growth.experience_story.approve", "experience_story_draft", draft_id, {"handbookEntryId": entry.id})
-        return ExperienceStoryActionResponse(draft=draft, handbookEntry=entry)
-
-    @app.post("/api/v1/growth/experience-stories/drafts/{draft_id}/reject", response_model=ExperienceStoryActionResponse)
-    def reject_growth_experience_story_draft(draft_id: str) -> ExperienceStoryActionResponse:
-        draft = reject_experience_story_draft(state.db, draft_id=draft_id)
-        if draft is None:
-            raise HTTPException(status_code=404, detail="经验故事草稿不存在")
-        log_activity("growth.experience_story.reject", "experience_story_draft", draft_id, {})
-        return ExperienceStoryActionResponse(draft=draft, handbookEntry=None)
-
-    @app.post("/api/v1/growth/experience-stories/drafts/{draft_id}/regenerate", response_model=ExperienceStoryActionResponse)
-    def regenerate_growth_experience_story_draft(draft_id: str) -> ExperienceStoryActionResponse:
-        draft = regenerate_experience_story_draft(state.db, state.ai, draft_id=draft_id)
-        if draft is None:
-            raise HTTPException(status_code=404, detail="经验故事草稿不存在")
-        log_activity("growth.experience_story.regenerate", "experience_story_draft", draft_id, {"status": draft.status})
-        return ExperienceStoryActionResponse(draft=draft, handbookEntry=None)
-
     @app.post("/api/v1/growth/enrich-insights")
     def enrich_growth_insights() -> dict:
         """Backfill AI-distilled insight quotes for existing pending captures and handbook entries."""
@@ -37799,10 +42769,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/growth/overview", response_model=GrowthOverviewRecord)
     def get_growth_overview(weekLabel: str | None = Query(default=None)) -> GrowthOverviewRecord:
         user_id, user_name = resolve_growth_actor()
-        handbook_entries = list_handbook().entries
-        if handbook_entries:
-            backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
         return build_growth_overview(
             state.db,
             user_id=user_id,
@@ -37817,10 +42784,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         mode: Literal["global", "strategic"] = Query(default="global"),
     ) -> GrowthWorkbenchSnapshotRecord:
         user_id, user_name = resolve_growth_actor()
-        handbook_entries = list_handbook().entries
-        if handbook_entries:
-            backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
         return build_growth_workbench_snapshot(
             week_label=resolve_growth_week_label(user_id, weekLabel),
             client_id=clientId,
@@ -37833,26 +42797,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         weekLabel: str | None = Query(default=None),
     ) -> GrowthLedgerResponse:
         user_id, user_name = resolve_growth_actor()
-        handbook_entries = list_handbook().entries
-        if handbook_entries:
-            backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
         return build_growth_ledger(state.db, user_id=user_id, ability_key=abilityKey, week_label=weekLabel)
 
     @app.get("/api/v1/growth/badges", response_model=BadgeBoardResponse)
     def get_growth_badges() -> BadgeBoardResponse:
         user_id, user_name = resolve_growth_actor()
-        handbook_entries = list_handbook().entries
-        if handbook_entries:
-            backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
-        return build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=True)
+        return build_badge_board(state.db, user_id=user_id, user_name=user_name, auto_sync=False)
 
     @app.get("/api/v1/growth/recommendations", response_model=list[LearningRecommendationRecord])
     def get_growth_recommendations() -> list[LearningRecommendationRecord]:
         user_id, user_name = resolve_growth_actor()
-        handbook_entries = list_handbook().entries
-        if handbook_entries:
-            backfill_handbook_entries(state.db, user_id=user_id, user_name=user_name, entries=handbook_entries)
         return list_learning_recommendations(state.db, user_id)
 
     @app.post("/api/v1/growth/pending-captures/{capture_id}/state", response_model=GrowthPendingCaptureActionResponse)
@@ -37969,6 +42924,8 @@ def seed_defaults(state: AppState) -> None:
     timestamp = now_iso()
     state.db.set_setting("folders_root_label", state.db.get_setting("folders_root_label", "桌面客户资料"))
     state.db.set_setting("ai_provider", state.db.get_setting("ai_provider", DEFAULT_PROVIDER))
+    state.db.set_setting("ai_provider_label", state.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL))
+    state.db.set_setting("ai_base_url", state.db.get_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL))
     state.db.set_setting("ai_model", state.db.get_setting("ai_model", DEFAULT_MODEL))
     state.db.set_setting("demo_data_loaded", state.db.get_setting("demo_data_loaded", "0"))
     state.db.set_setting(

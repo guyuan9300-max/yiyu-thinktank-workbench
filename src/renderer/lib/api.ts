@@ -28,6 +28,14 @@ import type {
   ClientDnaModule,
   ClientDnaModulesResponse,
   ClientAnalysisRun,
+  ClientFolder,
+  ClientFolderRecommendation,
+  ClientFolderRecommendationPlan,
+  DocumentAutoRepairApplyPayload,
+  DocumentAutoRepairApplyResult,
+  DocumentAutoRepairPreview,
+  DocumentAutoRepairPreviewPayload,
+  DocumentReadingPreview,
   ClientTemplateFillResponse,
   ClientTemplateFillRun,
   ClientMutationPayload,
@@ -44,11 +52,13 @@ import type {
   ClientWorkspaceSettings,
   ClientWorkspaceSettingsPayload,
   DepartmentOption,
+  OrgInviteResolveResult,
   DeepDnaDraft,
   DeepDnaRecord,
   DnaDelta,
   DnaDeltaCreatePayload,
   DnaTerm,
+  DocumentRecord,
   DemoDataReport,
   EmployeeRecord,
   EmployeeRejectPayload,
@@ -58,15 +68,11 @@ import type {
   FeishuBotSettingsPayload,
   FeishuDeliveryProfile,
   FeishuDeliveryProfilePayload,
-  FeishuMemberAuthorizationRecord,
-  FeishuMemberAuthorizationStartResponse,
+  FeishuMemberAuthorization,
+  FeishuMemberAuthorizationStartResult,
   FeishuUserBinding,
   FeishuUserBindingStartResult,
   EmployeeRolePayload,
-  ExperienceStoryActionResponse,
-  ExperienceStoryDraftsResponse,
-  ExperienceStoryGeneratePayload,
-  ExperienceStoryGenerateResponse,
   EventLine,
   EventLineClarificationDraftPayload,
   EventLineClarificationDraftResult,
@@ -93,10 +99,14 @@ import type {
   KnowledgeSearchResult,
   KnowledgeStatus,
   LegacyScanReport,
+  LinkMaterialImportRun,
+  MaintenanceMemberPermission,
+  MaintenanceModeStatus,
+  MaintenancePermissionUpdatePayload,
   MentionCandidate,
-  OrganizationDnaModule,
+  OrgIntroDocumentSettings,
+  OrgIntroDocumentUploadPayload,
   OrgModelSettings,
-  OrganizationDnaResponse,
   OrganizationDnaUploadPayload,
   MeetingPipelineResult,
   Operator,
@@ -171,6 +181,7 @@ import type {
   WorkspaceAnswerExperience,
   WorkspaceAnswerFinalization,
   WorkspaceValueValidationSession,
+  TaskContextBrief,
   TaskSmartBrief,
   TaskTag,
   TaskTagMutationPayload,
@@ -200,10 +211,9 @@ import type {
   TopicRadarPayload,
   ReviewDashboard,
   ReviewPerspectiveKey,
+  WeeklyOverviewRefreshPayload,
+  WeeklyOverviewRefreshStatus,
   ReviewHistoryResponse,
-  ReviewGovernanceSettings,
-  ReviewGovernanceSettingsPayload,
-  RedeemOrgInvitationPayload,
   JudgmentConfirmPayload,
   JudgmentVersion,
   ConflictGroup,
@@ -211,6 +221,7 @@ import type {
   OrgWritingNorm,
   OrgFeishuIntegration,
   OrgFeishuIntegrationPayload,
+  OrgMembershipApplyPayload,
   OrgMembershipSummary,
   RunComparison,
   RuntimeRunLog,
@@ -340,6 +351,12 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
     previewPullFromMain: async () => notAvailable('从 main 拉取'),
     pullSelectedFromMain: async () => notAvailable('从 main 拉取'),
     rebuildAndInstallFromRepo: async () => notAvailable('重装应用'),
+    setWorkspaceInteractionState: async (payload: { active: boolean; source: string; detail?: string | null }) => ({
+      active: payload.active,
+      source: payload.source,
+      detail: payload.detail ?? null,
+      updatedAt: new Date().toISOString(),
+    }),
     getDroppedFilePath: () => null,
     readTextFile: async () => notAvailable('读取本地文件'),
     openPath: async () => notAvailable('打开本地路径'),
@@ -538,6 +555,63 @@ export type DigitalAssetScoreBreakdown = {
   understood: number;
   computable: number;
   compounding: number;
+  structuralCompleteness: number;
+  evidenceChain: number;
+  timeContinuity: number;
+  resultFeedbackLoop: number;
+};
+
+export type DigitalAssetMaterialMaturityRow = {
+  key: string;
+  label: string;
+  percent: number;
+  level: string;
+  seenSummary: string;
+  missingSummary: string;
+  suggestedAction: string;
+  unlockedValue: string;
+  sourceHighlights: string[];
+};
+
+export type DigitalAssetPulseFunnelItem = {
+  key: string;
+  label: string;
+  value: number;
+};
+
+export type DigitalAssetPulseOrganization = {
+  clientId: string;
+  name: string;
+  assetProfileType: string;
+  maturityScore: number;
+  depositThickness: number;
+  weeklyNewFacts: number;
+  weeklyNewDocuments: number;
+  weeklyNewEvidenceCards: number;
+  summary: string;
+};
+
+export type DigitalAssetPulseSignal = {
+  clientId?: string | null;
+  name: string;
+  title: string;
+  summary: string;
+  assetProfileType: string;
+  maturityScore: number;
+  severity: 'info' | 'warning' | 'critical';
+};
+
+export type DigitalAssetPulse = {
+  headline: string;
+  daysAccompanied: number;
+  weeklyNewFacts: number;
+  weeklyNewDocuments: number;
+  weeklyNewEvidenceCards: number;
+  weeklyNewJudgments: number;
+  digestionFunnel: DigitalAssetPulseFunnelItem[];
+  activeOrganizations: DigitalAssetPulseOrganization[];
+  learningHighlights: DigitalAssetPulseSignal[];
+  assetAlerts: DigitalAssetPulseSignal[];
 };
 
 export type DigitalAssetUnit = {
@@ -601,6 +675,14 @@ export type DigitalAssetClientSummary = {
   depositedValueLevel: string;
   nextValueSpace: string;
   depositXp: number;
+  assetProfileType: string;
+  secondaryProfileTypes: string[];
+  maturityScore: number;
+  depositThickness: number;
+  scoreMethodVersion: string;
+  scoreBreakdown: DigitalAssetScoreBreakdown;
+  scoreRationale: string[];
+  materialMaturityRows: DigitalAssetMaterialMaturityRow[];
   assetStage: string;
   assetTrackTitle: string;
   growthMode: '均衡成长' | '单项突破' | '结构偏科';
@@ -635,7 +717,70 @@ export type DigitalAssetNarrative = {
 
 export type DigitalAssetDashboard = {
   generatedAt: string;
+  pulse: DigitalAssetPulse;
   clients: DigitalAssetClientSummary[];
+};
+
+export type OrganizationDnaV2Kind = 'stable_dna' | 'evolving_dna' | 'gap_dna' | 'risk_dna';
+export type OrganizationDnaV2Status = 'candidate' | 'confirmed' | 'stale' | 'deprecated';
+export type OrganizationDnaEvidenceLevel = 'L1' | 'L2' | 'L3' | 'internal' | 'weak';
+
+export type OrganizationDnaV2Item = {
+  id: string;
+  moduleKind: OrganizationDnaV2Kind;
+  title: string;
+  contentMarkdown: string;
+  summary: string;
+  status: OrganizationDnaV2Status;
+  evidenceLevel: OrganizationDnaEvidenceLevel;
+  sourceType: string;
+  sourceId: string;
+  sourceLabel: string;
+  observedAt: string;
+  sourceCreatedAt?: string | null;
+  lastSeenAt: string;
+  validUntil?: string | null;
+  confidenceScore: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrganizationDnaRefreshEvent = {
+  id: string;
+  runId: string;
+  level: 'info' | 'warning' | 'error';
+  message: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type OrganizationDnaRefreshRun = {
+  id: string;
+  jobType: 'organization_dna_refresh';
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  triggerSource: string;
+  totalItems: number;
+  processedItems: number;
+  error?: string | null;
+  createdAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  updatedAt: string;
+  events: OrganizationDnaRefreshEvent[];
+};
+
+export type OrganizationDnaV2Snapshot = {
+  generatedAt: string;
+  stableItems: OrganizationDnaV2Item[];
+  evolvingItems: OrganizationDnaV2Item[];
+  gapItems: OrganizationDnaV2Item[];
+  riskItems: OrganizationDnaV2Item[];
+  itemCounts: Record<string, number>;
+  confirmedCount: number;
+  candidateCount: number;
+  staleCount: number;
+  latestRun?: OrganizationDnaRefreshRun | null;
+  updatedAt?: string | null;
 };
 
 export type DigitalAssetClientDetail = DigitalAssetClientSummary & {
@@ -648,6 +793,17 @@ export type DigitalAssetClientDetail = DigitalAssetClientSummary & {
 
 export async function getDigitalAssetDashboard() {
   return request<DigitalAssetDashboard>('/api/v1/digital-assets/dashboard');
+}
+
+export async function getOrganizationDnaV2Snapshot() {
+  return request<OrganizationDnaV2Snapshot>('/api/v1/digital-assets/organization-dna');
+}
+
+export async function refreshOrganizationDnaV2(triggerSource = 'manual') {
+  return request<OrganizationDnaRefreshRun>('/api/v1/digital-assets/organization-dna/refresh', {
+    method: 'POST',
+    body: JSON.stringify({ triggerSource }),
+  });
 }
 
 export async function getClientDigitalAssets(clientId: string) {
@@ -736,6 +892,17 @@ export async function getTaskSmartBrief(taskId: string) {
   return request<TaskSmartBrief>(`/api/v1/tasks/${taskId}/smart-brief`);
 }
 
+export async function getTaskContextBrief(taskId: string) {
+  return request<TaskContextBrief>(`/api/v1/tasks/${taskId}/context-brief`);
+}
+
+export async function getTaskContextBriefsBatch(taskIds: string[]) {
+  return request<{ briefs: TaskContextBrief[] }>('/api/v1/tasks/context-briefs/batch', {
+    method: 'POST',
+    body: JSON.stringify({ taskIds }),
+  });
+}
+
 export async function getTaskPrepPack(taskId: string) {
   return request<PrepPackCard>(`/api/v1/tasks/${taskId}/prep-pack`);
 }
@@ -774,8 +941,16 @@ export async function register(payload: AuthRegisterPayload) {
   });
 }
 
-export async function getDepartmentOptions() {
-  return request<DepartmentOption[]>('/api/v1/auth/department-options');
+export async function getDepartmentOptions(params?: { organizationId?: string | null; inviteCode?: string | null }) {
+  const searchParams = new URLSearchParams();
+  if (params?.organizationId) searchParams.set('organizationId', params.organizationId);
+  if (params?.inviteCode) searchParams.set('inviteCode', params.inviteCode);
+  const suffix = searchParams.toString() ? `?${searchParams.toString()}` : '';
+  return request<DepartmentOption[]>(`/api/v1/auth/department-options${suffix}`);
+}
+
+export async function resolveInviteCode(code: string) {
+  return request<OrgInviteResolveResult>(`/api/v1/auth/invite-code/resolve?code=${encodeURIComponent(code)}`);
 }
 
 export async function login(payload: AuthLoginPayload) {
@@ -845,6 +1020,29 @@ export async function getSettings() {
   return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse }>('/api/v1/settings');
 }
 
+export async function getMaintenanceModeStatus() {
+  return request<MaintenanceModeStatus>('/api/v1/maintenance-mode/status');
+}
+
+export async function enterMaintenanceMode() {
+  return request<MaintenanceModeStatus>('/api/v1/maintenance-mode/enter', { method: 'POST' });
+}
+
+export async function exitMaintenanceMode() {
+  return request<MaintenanceModeStatus>('/api/v1/maintenance-mode/exit', { method: 'POST' });
+}
+
+export async function getMaintenanceModeMembers() {
+  return request<MaintenanceMemberPermission[]>('/api/v1/admin/maintenance-mode/members');
+}
+
+export async function updateMaintenanceModeMembers(payload: MaintenancePermissionUpdatePayload) {
+  return request<MaintenanceMemberPermission[]>('/api/v1/admin/maintenance-mode/members', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function updateSettings(payload: SettingsPayload) {
   return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse }>('/api/v1/settings', {
     method: 'POST',
@@ -863,17 +1061,6 @@ export async function updateTaskSettings(payload: TaskSettingsPayload) {
   });
 }
 
-export async function getReviewGovernanceSettings() {
-  return request<ReviewGovernanceSettings>('/api/v1/settings/review-governance');
-}
-
-export async function updateReviewGovernanceSettings(payload: ReviewGovernanceSettingsPayload) {
-  return request<ReviewGovernanceSettings>('/api/v1/settings/review-governance', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
 export async function getOrgModelProfile() {
   return request<OrgModelSettings>('/api/v1/settings/org-model/profile');
 }
@@ -885,20 +1072,16 @@ export async function updateOrgModelProfile(payload: OrgModelSettings) {
   });
 }
 
-export async function backfillOrgTaskLinks() {
-  return request<TaskOrgBackfillResult>('/api/v1/settings/org-model/backfill-task-links', {
+export async function parseOrgIntroDocument(payload: OrgIntroDocumentUploadPayload) {
+  return request<OrgIntroDocumentSettings>('/api/v1/settings/org-model/intro-document', {
     method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 
-export async function getOrganizationDna() {
-  return request<OrganizationDnaResponse>('/api/v1/settings/org-dna');
-}
-
-export async function updateOrganizationDnaModule(moduleKey: OrganizationDnaModule['moduleKey'], payload: OrganizationDnaUploadPayload) {
-  return request<OrganizationDnaModule>(`/api/v1/settings/org-dna/${moduleKey}`, {
+export async function backfillOrgTaskLinks() {
+  return request<TaskOrgBackfillResult>('/api/v1/settings/org-model/backfill-task-links', {
     method: 'POST',
-    body: JSON.stringify(payload),
   });
 }
 
@@ -999,18 +1182,25 @@ export async function getOrgMembershipSummary() {
   return request<OrgMembershipSummary>('/api/v1/me/org-membership');
 }
 
+export async function applyOrgMembership(payload: OrgMembershipApplyPayload) {
+  return request<OrgMembershipSummary>('/api/v1/me/org-membership/apply', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getFeishuMemberAuthorization() {
-  return request<FeishuMemberAuthorizationRecord>('/api/v1/me/feishu-authorization');
+  return request<FeishuMemberAuthorization>('/api/v1/me/feishu-authorization');
 }
 
 export async function startFeishuMemberAuthorization() {
-  return request<FeishuMemberAuthorizationStartResponse>('/api/v1/me/feishu-authorization/start', {
+  return request<FeishuMemberAuthorizationStartResult>('/api/v1/me/feishu-authorization/start', {
     method: 'POST',
   });
 }
 
 export async function clearFeishuMemberAuthorization() {
-  return request<FeishuMemberAuthorizationRecord>('/api/v1/me/feishu-authorization', {
+  return request<FeishuMemberAuthorization>('/api/v1/me/feishu-authorization', {
     method: 'DELETE',
   });
 }
@@ -1119,12 +1309,14 @@ export async function exportSystemLogs(params?: {
   startDate?: string;
   endDate?: string;
   level?: string;
+  source?: string;
   keyword?: string;
 }) {
   const search = new URLSearchParams();
   if (params?.startDate) search.set('startDate', params.startDate);
   if (params?.endDate) search.set('endDate', params.endDate);
   if (params?.level) search.set('level', params.level);
+  if (params?.source) search.set('source', params.source);
   if (params?.keyword) search.set('keyword', params.keyword);
   const suffix = search.toString() ? `?${search.toString()}` : '';
   const res = await fetch(`${baseUrl}/api/v1/logs/export${suffix}`);
@@ -1982,17 +2174,24 @@ export async function importPaths(clientId: string, mode: 'folder' | 'file', pat
   });
 }
 
+export async function getDocumentReadingPreview(clientId: string, documentId: string) {
+  return request<DocumentReadingPreview>(`/api/v1/clients/${clientId}/documents/${documentId}/reading-preview`);
+}
+
 export async function startClientMessage(
   clientId: string,
   prompt: string,
   threadId?: string,
   searchId?: string,
+  workingDocumentIdsOrOptions?: string[] | RequestInit,
   options?: RequestInit,
 ) {
+  const workingDocumentIds = Array.isArray(workingDocumentIdsOrOptions) ? workingDocumentIdsOrOptions : [];
+  const requestOptions = Array.isArray(workingDocumentIdsOrOptions) ? options : workingDocumentIdsOrOptions;
   return request<ChatStartResponse>(`/api/v1/clients/${clientId}/workspace/chat/start`, {
     method: 'POST',
-    body: JSON.stringify({ prompt, threadId, searchId }),
-    ...options,
+    body: JSON.stringify({ prompt, threadId, searchId, workingDocumentIds: workingDocumentIds || [] }),
+    ...requestOptions,
   });
 }
 
@@ -2033,6 +2232,29 @@ export async function createClientTextDocument(clientId: string, payload: { titl
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export async function startClientLinkMaterialImport(
+  clientId: string,
+  url: string,
+  options: { useBrowserCookies?: boolean; cookieBrowser?: 'firefox' | 'chrome' | 'edge' | 'safari' } = {},
+) {
+  return request<LinkMaterialImportRun>(`/api/v1/clients/${clientId}/link-materials/import/start`, {
+    method: 'POST',
+    body: JSON.stringify({
+      url,
+      useBrowserCookies: Boolean(options.useBrowserCookies),
+      cookieBrowser: options.cookieBrowser || 'firefox',
+    }),
+  });
+}
+
+export async function getLatestClientLinkMaterialImportRun(clientId: string) {
+  return request<LinkMaterialImportRun | null>(`/api/v1/clients/${clientId}/link-materials/import-runs/latest`);
+}
+
+export async function getClientLinkMaterialImportRun(clientId: string, runId: string) {
+  return request<LinkMaterialImportRun>(`/api/v1/clients/${clientId}/link-materials/import-runs/${runId}`);
 }
 
 export async function startClientTemplateFill(clientId: string, templatePath: string) {
@@ -2121,16 +2343,68 @@ export async function reviewStrategicThought(thoughtId: string, payload: Strateg
 }
 
 export async function createClientFolder(clientId: string, label: string) {
-  return request<{ id: string; label: string; created: boolean }>(`/api/v1/clients/${clientId}/folders`, {
+  return request<ClientFolder>(`/api/v1/clients/${clientId}/folders`, {
     method: 'POST',
     body: JSON.stringify({ label }),
   });
 }
 
 export async function renameClientFolder(clientId: string, folderId: string, label: string) {
-  return request<{ id: string; label: string }>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
-    method: 'PUT',
+  return request<ClientFolder>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
+    method: 'PATCH',
     body: JSON.stringify({ label }),
+  });
+}
+
+export async function updateClientFolder(clientId: string, folderId: string, payload: { label?: string; isHidden?: boolean; sortOrder?: number }) {
+  return request<ClientFolder>(`/api/v1/clients/${clientId}/folders/${folderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function moveClientDocumentToFolder(clientId: string, documentId: string, payload: { folderId?: string | null; folderLabel?: string | null }) {
+  return request<DocumentRecord>(`/api/v1/clients/${clientId}/documents/${documentId}/move-folder`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function recommendClientFolder(
+  clientId: string,
+  payload: { documentId?: string; title?: string; fileName?: string; contentPreview?: string; sourceType?: string },
+) {
+  return request<ClientFolderRecommendation>(`/api/v1/clients/${clientId}/folders/recommend`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function recommendClientFolderPlan(clientId: string) {
+  return request<ClientFolderRecommendationPlan>(`/api/v1/clients/${clientId}/folders/recommend`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function applyClientFolderRecommendation(clientId: string, payload?: { targetFolderLabels?: string[] }) {
+  return request<ClientWorkspace>(`/api/v1/clients/${clientId}/folders/apply-recommendation`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function previewClientDocumentAutoRepair(clientId: string, payload?: DocumentAutoRepairPreviewPayload) {
+  return request<DocumentAutoRepairPreview>(`/api/v1/clients/${clientId}/documents/auto-repair/preview`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function applyClientDocumentAutoRepair(clientId: string, payload?: DocumentAutoRepairApplyPayload) {
+  return request<DocumentAutoRepairApplyResult>(`/api/v1/clients/${clientId}/documents/auto-repair/apply`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
   });
 }
 
@@ -2637,6 +2911,26 @@ export async function getReviews(weekLabel?: string, options?: { skipAi?: boolea
   return request<ReviewDashboard>(`/api/v1/reviews${suffix}`, { signal: options?.signal });
 }
 
+export async function refreshWeeklyOverview(payload: WeeklyOverviewRefreshPayload) {
+  return request<WeeklyOverviewRefreshStatus>('/api/v1/reviews/weekly-overview/refresh', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getWeeklyOverviewRefreshStatus(params: {
+  weekLabel?: string | null;
+  perspective?: ReviewPerspectiveKey | null;
+  departmentId?: string | null;
+}) {
+  const search = new URLSearchParams();
+  if (params.weekLabel) search.set('weekLabel', params.weekLabel);
+  if (params.perspective) search.set('perspective', params.perspective);
+  if (params.departmentId) search.set('departmentId', params.departmentId);
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<WeeklyOverviewRefreshStatus>(`/api/v1/reviews/weekly-overview/status${suffix}`);
+}
+
 export async function getReviewDashboardDrillTarget(params: {
   targetType: string;
   targetId: string;
@@ -2881,39 +3175,6 @@ export async function createHandbook(payload: HandbookEntryPayload) {
   });
 }
 
-export async function getExperienceStoryDrafts(params?: { status?: string; limit?: number }) {
-  const search = new URLSearchParams();
-  if (params?.status) search.set('status', params.status);
-  if (params?.limit) search.set('limit', String(params.limit));
-  const suffix = search.toString() ? `?${search.toString()}` : '';
-  return request<ExperienceStoryDraftsResponse>(`/api/v1/growth/experience-stories/drafts${suffix}`);
-}
-
-export async function generateExperienceStoryDrafts(payload: ExperienceStoryGeneratePayload = {}) {
-  return request<ExperienceStoryGenerateResponse>('/api/v1/growth/experience-stories/generate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function approveExperienceStoryDraft(id: string) {
-  return request<ExperienceStoryActionResponse>(`/api/v1/growth/experience-stories/drafts/${encodeURIComponent(id)}/approve`, {
-    method: 'POST',
-  });
-}
-
-export async function rejectExperienceStoryDraft(id: string) {
-  return request<ExperienceStoryActionResponse>(`/api/v1/growth/experience-stories/drafts/${encodeURIComponent(id)}/reject`, {
-    method: 'POST',
-  });
-}
-
-export async function regenerateExperienceStoryDraft(id: string) {
-  return request<ExperienceStoryActionResponse>(`/api/v1/growth/experience-stories/drafts/${encodeURIComponent(id)}/regenerate`, {
-    method: 'POST',
-  });
-}
-
 export async function getGrowthOverview(weekLabel?: string) {
   const search = weekLabel ? `?weekLabel=${encodeURIComponent(weekLabel)}` : '';
   return request<GrowthOverview>(`/api/v1/growth/overview${search}`);
@@ -2998,4 +3259,8 @@ export async function pullSelectedFromMain(payload: PullSelectedFromMainPayload)
 
 export async function rebuildAndInstallFromRepo(repoPath: string) {
   return window.yiyuWorkbench.rebuildAndInstallFromRepo(repoPath) as Promise<boolean>;
+}
+
+export async function setWorkspaceInteractionState(payload: { active: boolean; source: string; detail?: string | null }) {
+  return window.yiyuWorkbench.setWorkspaceInteractionState(payload);
 }

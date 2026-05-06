@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
     ipcRenderer.invoke('yiyu-workbench:pullSelectedFromMain', payload),
   rebuildAndInstallFromRepo: (repoPath: string): Promise<boolean> =>
     ipcRenderer.invoke('yiyu-workbench:rebuildAndInstallFromRepo', repoPath),
+  setWorkspaceInteractionState: (payload: { active: boolean; source: string; detail?: string | null }): Promise<{
+    active: boolean;
+    source: string;
+    detail?: string | null;
+    updatedAt: string;
+  }> => ipcRenderer.invoke('yiyu-workbench:setWorkspaceInteractionState', payload),
   getDroppedFilePath: (file: File): string | null => {
     try {
       return webUtils.getPathForFile(file) || null;

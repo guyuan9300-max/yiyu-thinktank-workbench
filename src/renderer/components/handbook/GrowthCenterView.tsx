@@ -5,7 +5,6 @@ import {
   BrainCircuit,
   ChevronDown,
   ChevronUp,
-  Crown,
   Eye,
   Heart,
   Layers3,
@@ -40,14 +39,7 @@ import {
   getGrowthOverview,
   getHandbook,
   getGrowthBadges,
-  getGrowthLedger,
-  getGrowthWorkbench,
   markHandbookEntryReused,
-  getExperienceStoryDrafts,
-  generateExperienceStoryDrafts,
-  approveExperienceStoryDraft,
-  rejectExperienceStoryDraft,
-  regenerateExperienceStoryDraft,
 } from '../../lib/api';
 import { useGrowthOverviewState } from '../growth/GrowthContext';
 import type {
@@ -62,9 +54,6 @@ import type {
   BadgeState,
   BadgeCategory,
   BadgeBoardOverview,
-  GrowthSourceCoverage,
-  GrowthProjectHighlight,
-  ExperienceStoryDraft,
 } from '../../../shared/types';
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -75,6 +64,7 @@ const GROWTH_CSS = `
 
 /* Header */
 .gc-header { background: #fff; border-bottom: 1px solid #F3F4F6; padding: 20px 24px 0; flex-shrink: 0; }
+.gc-header-inner { width: 100%; max-width: 1160px; margin: 0 auto; box-sizing: border-box; }
 .gc-header-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
 .gc-page-title { font-size: 18px; font-weight: 600; color: #0f172a; letter-spacing: -0.3px; }
 .gc-page-subtitle { font-size: 11px; color: #94a3b8; font-weight: 500; margin-top: 3px; }
@@ -92,7 +82,7 @@ const GROWTH_CSS = `
 
 /* Content */
 .gc-content { flex: 1; overflow-y: auto; padding: 20px 24px; }
-.gc-content-inner { max-width: 860px; margin: 0 auto; }
+.gc-content-inner { width: 100%; max-width: 1160px; margin: 0 auto; box-sizing: border-box; }
 
 /* Cards */
 .gc-card { background: #fff; border: 1px solid #f3f4f6; border-radius: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
@@ -134,30 +124,8 @@ const GROWTH_CSS = `
 .gc-btn-ghost { background: none; border: 1px solid #e2e8f0; color: #64748b; border-radius: 999px; padding: 8px 16px; font-size: 12px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
 .gc-btn-ghost:hover { background: #f8fafc; }
 
-/* Stats grid */
-.gc-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.gc-stat-card { border-radius: 22px; border: 1px solid #f3f4f6; background: #fff; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-.gc-stat-label { font-size: 12px; font-weight: 500; color: #94a3b8; }
-.gc-stat-value { font-size: 24px; font-weight: 600; color: #0f172a; margin-top: 8px; letter-spacing: -0.5px; }
-
-/* Template cards */
-.gc-template-list { display: flex; flex-direction: column; gap: 8px; }
-.gc-template-header { width: 100%; padding: 16px 20px; text-align: left; display: flex; align-items: center; gap: 16px; background: none; border: none; cursor: pointer; transition: background 0.2s; }
-.gc-template-header:hover { background: rgba(248,250,252,0.5); }
-.gc-template-info { flex: 1; min-width: 0; }
-.gc-template-top { display: flex; align-items: center; justify-content: space-between; }
-.gc-template-name { font-size: 13px; font-weight: 600; color: #1e293b; }
-.gc-template-calls { font-size: 12px; font-weight: 600; color: #335CFE; flex-shrink: 0; margin-left: 12px; }
-.gc-template-bottom { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
-.gc-template-meta { font-size: 11px; font-weight: 500; color: #94a3b8; }
 .gc-progress-track { flex: 1; height: 3px; background: #f1f5f9; border-radius: 999px; overflow: hidden; }
 .gc-progress-fill { height: 100%; border-radius: 999px; }
-.gc-template-detail { padding: 0 20px 16px; }
-.gc-template-detail-inner { background: #f8fafc; border-radius: 18px; padding: 16px; }
-.gc-step-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
-.gc-step-num { font-size: 11px; font-weight: 600; color: #cbd5e1; width: 20px; text-align: right; }
-.gc-step-text { font-size: 12px; font-weight: 500; color: #64748b; }
-.gc-chevron { color: #cbd5e1; font-size: 12px; flex-shrink: 0; }
 
 /* XP Overview hero */
 .gc-xp-hero { border-radius: 28px; border: 1px solid #DDE6FF; background: radial-gradient(circle at top left, rgba(51,92,254,0.08), transparent 34%), linear-gradient(180deg, #fff 0%, #fafbff 100%); padding: 24px; box-shadow: 0 24px 70px rgba(15,23,42,0.04); }
@@ -171,42 +139,56 @@ const GROWTH_CSS = `
 .gc-xp-break-label { font-size: 10px; font-weight: 500; color: #94a3b8; }
 .gc-xp-break-val { font-size: 20px; font-weight: 600; color: #0f172a; letter-spacing: -0.3px; }
 
-/* Badge grid */
-.gc-badge-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
-.gc-badge-cell { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 4px; cursor: pointer; transition: transform 0.2s; background: none; border: none; }
-.gc-badge-cell:hover { transform: scale(1.03); }
-.gc-badge-name { font-size: 11px; font-weight: 500; text-align: center; line-height: 1.3; max-width: 80px; }
+/* Badge milestones */
+.gc-badge-section { border-radius: 24px; border: 1px solid #eef2ff; background: #fff; padding: 20px; box-shadow: 0 16px 48px rgba(15,23,42,0.035); }
+.gc-badge-section + .gc-badge-section { margin-top: 16px; }
+.gc-badge-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.gc-badge-section-title { font-size: 14px; font-weight: 600; color: #0f172a; letter-spacing: -0.2px; }
+.gc-badge-section-hint { font-size: 11px; font-weight: 500; color: #94a3b8; text-align: right; }
+.gc-badge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+.gc-badge-cell { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 8px; cursor: pointer; transition: transform 0.2s, background 0.2s; background: none; border: none; border-radius: 18px; }
+.gc-badge-cell:hover { transform: translateY(-2px); background: rgba(248,250,252,0.86); }
+.gc-badge-name { font-size: 11px; font-weight: 500; text-align: center; line-height: 1.35; max-width: 96px; min-height: 30px; display: flex; align-items: center; justify-content: center; }
 .gc-badge-name.lit { color: #334155; }
 .gc-badge-name.prog { color: #64748b; }
-.gc-badge-name.lock { color: #cbd5e1; }
+.gc-badge-name.lock { color: #94a3b8; }
 .gc-badge-sub { font-size: 10px; font-weight: 600; }
+.gc-badge-status { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: 9px; font-weight: 600; }
+.gc-badge-status.lit { background: #ecfdf5; color: #059669; }
+.gc-badge-status.ready { background: rgba(91,123,254,0.1); color: #335CFE; }
+.gc-badge-status.progress { background: rgba(91,123,254,0.08); color: #5B7BFE; }
+.gc-badge-status.locked { background: #f1f5f9; color: #94a3b8; }
+.gc-badge-category-list { display: flex; flex-direction: column; gap: 14px; }
+.gc-badge-category-card { border: 1px solid #edf2f7; border-radius: 22px; background: #fff; padding: 18px; }
+.gc-badge-category-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.gc-badge-category-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.gc-badge-category-name { font-size: 13px; font-weight: 600; color: #0f172a; letter-spacing: -0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-badge-category-meta { font-size: 11px; font-weight: 500; color: #94a3b8; flex-shrink: 0; }
+.gc-badge-category-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 8px; }
 
-/* Leaderboard */
+/* Personal rank */
 .gc-rank-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 4px; }
 .gc-rank-header-left { display: flex; align-items: center; gap: 8px; }
-.gc-rank-toggle { display: flex; background: #f1f5f9; border-radius: 999px; padding: 2px; }
-.gc-rank-toggle-btn { padding: 6px 12px; font-size: 11px; font-weight: 500; border: none; cursor: pointer; border-radius: 999px; background: none; color: #94a3b8; transition: all 0.2s; }
-.gc-rank-toggle-btn.active { background: #fff; color: #334155; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-.gc-rank-list { padding: 12px; display: flex; flex-direction: column; gap: 4px; }
-.gc-rank-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 16px; }
-.gc-rank-row.top3 { background: rgba(248,250,252,0.7); }
-.gc-rank-num { font-size: 14px; font-weight: 600; width: 24px; text-align: center; flex-shrink: 0; }
-.gc-rank-name-text { font-size: 13px; font-weight: 500; color: #334155; width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gc-rank-xp { font-size: 12px; font-weight: 600; color: #64748b; width: 64px; text-align: right; flex-shrink: 0; }
-.gc-rank-bar { flex: 1; height: 3px; background: #f1f5f9; border-radius: 999px; overflow: hidden; margin-left: 8px; }
-.gc-rank-bar-fill { height: 100%; border-radius: 999px; }
-
-/* MVP */
-.gc-mvp { margin-top: 12px; border-radius: 22px; background: rgba(254,243,199,0.6); border: 1px solid #fde68a; padding: 16px 20px; }
-.gc-mvp-top { display: flex; align-items: center; gap: 8px; }
-.gc-mvp-title { font-size: 12px; font-weight: 600; color: #92400e; }
-.gc-mvp-desc { font-size: 11px; color: rgba(146,64,14,0.7); margin-top: 4px; margin-left: 24px; }
+.gc-rank-list { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.gc-rank-row { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 18px; background: rgba(248,250,252,0.72); }
+.gc-rank-name-text { font-size: 14px; font-weight: 600; color: #0f172a; letter-spacing: -0.2px; }
+.gc-rank-meta { font-size: 11px; font-weight: 500; color: #94a3b8; margin-top: 3px; }
+.gc-rank-xp { font-size: 13px; font-weight: 600; color: #335CFE; text-align: right; white-space: nowrap; flex-shrink: 0; }
+.gc-rank-bar { height: 4px; background: #f1f5f9; border-radius: 999px; overflow: hidden; }
+.gc-rank-bar-fill { height: 100%; border-radius: 999px; background: #5B7BFE; }
+.gc-rank-week { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 18px; background: rgba(236,253,245,0.72); border: 1px solid #d1fae5; padding: 14px 16px; font-size: 12px; font-weight: 500; color: #047857; }
+.gc-modal-subtitle { font-size: 11px; font-weight: 600; letter-spacing: 1.2px; color: #94a3b8; margin-bottom: 8px; }
+.gc-modal-link-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.gc-modal-link-pill { border-radius: 999px; border: 1px solid #dbeafe; background: #eff6ff; padding: 4px 10px; font-size: 10px; font-weight: 600; color: #335CFE; }
 
 .gc-space-y > * + * { margin-top: 24px; }
 
 /* Ability growth tab */
-.gc-radar-card { display: flex; flex-direction: column; align-items: center; gap: 48px; padding: 32px; }
-@media (min-width: 768px) { .gc-radar-card { flex-direction: row; } }
+.gc-radar-card { display: flex; flex-direction: column; align-items: stretch; gap: 28px; padding: 32px 36px; }
+@media (min-width: 900px) { .gc-radar-card { flex-direction: row; align-items: center; gap: 56px; } }
+.gc-radar-visual { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+.gc-radar-visual svg { max-width: 100%; height: auto; }
+@media (min-width: 900px) { .gc-radar-visual { width: 380px; } }
 .gc-radar-legend { display: flex; align-items: center; gap: 16px; font-size: 11px; font-weight: 500; color: #94a3b8; margin-top: 4px; }
 .gc-radar-legend-dot { width: 8px; height: 8px; border-radius: 999px; margin-right: 6px; display: inline-block; }
 .gc-ability-list { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
@@ -238,8 +220,21 @@ const GROWTH_CSS = `
 
 /* Gap card */
 .gc-gap-card { padding: 20px; }
-.gc-gap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.gc-gap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .gc-no-gap { border-radius: 24px; background: rgba(236,253,245,0.4); border: 1px solid #a7f3d0; padding: 16px 20px; }
+
+@media (max-width: 640px) {
+  .gc-header { padding: 16px 16px 0; }
+  .gc-content { padding: 16px; }
+  .gc-header-top { gap: 12px; }
+  .gc-radar-card { padding: 24px 16px; }
+  .gc-xp-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gc-badge-section { padding: 16px; }
+  .gc-badge-section-head, .gc-badge-category-header { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .gc-badge-section-hint { text-align: left; }
+  .gc-badge-grid, .gc-badge-category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gc-rank-row { align-items: flex-start; }
+}
 
 /* Loading */
 .gc-loading { display: flex; align-items: center; justify-content: center; padding: 80px 0; }
@@ -302,7 +297,130 @@ const MOTIF_ICON_MAP: Record<string, LucideIcon> = {
   cards_spark: Sparkles,
   path_flag: Flag,
   wrench_up: Wrench,
+  spark_card: Sparkles,
+  converge_box: CircleDashed,
+  check_list: ShieldCheck,
+  steps_forward: ArrowRight,
+  split_arrows: ArrowRight,
+  split_blocks: Layers3,
+  roadblock_light: ShieldAlert,
+  calendar_zero: CalendarClock,
+  bullseye_arrow: Target,
+  shield_card: ShieldCheck,
+  loop_flag: Flag,
+  time_blocks: CalendarClock,
+  door_focus: Lock,
+  bell_early: CalendarClock,
+  bubble_basket: HandHelping,
+  dial_clock: Gauge,
+  timeline_split: ArrowRight,
+  sunrise_card: Sparkles,
+  lamp_notebook: BookOpen,
+  parallel_lines: Layers3,
+  week_baton: CalendarClock,
+  hand_card: HandHelping,
+  highlight_lines: Lightbulb,
+  bubble_to_list: ArrowRight,
+  flag_margin: Flag,
+  anchor_bubbles: Target,
+  stamp_card: ShieldCheck,
+  path_branch: Target,
+  card_stack: Layers3,
+  question_bridge: Search,
+  sync_loop: CircleDashed,
+  focus_lens: Eye,
+  decision_gate: ShieldAlert,
+  orbit_users: Users,
+  pen_signal: PenTool,
+  file_stack: FileStack,
+  star_step: Star,
+  arrow_db_return: ArrowRight,
+  boundary_blocks: Layers3,
+  bridge_bubble_gear: Handshake,
+  bridge_depts: Handshake,
+  bridge_platforms: Handshake,
+  bulb_question: Lightbulb,
+  card_to_box: Briefcase,
+  card_to_people: Users,
+  card_up_arrow: ArrowRight,
+  center_copy: FileStack,
+  chairs_lamp: Users,
+  cloud_to_tag: BookOpen,
+  compass_correct: Target,
+  connector_dual: Handshake,
+  dialog_reverse: ArrowRight,
+  doc_shelf_light: BookOpen,
+  door_source: Lock,
+  dual_pens: PenTool,
+  dual_rings: Users,
+  eye_dials: Eye,
+  filter_clean: Search,
+  flag_people: Flag,
+  flow_to_ui: ArrowRight,
+  folder_stack: FileStack,
+  footprint_box: Target,
+  gauge_red: Gauge,
+  gears_people: Users,
+  hand_light_path: HandHelping,
+  helix_card: BrainCircuit,
+  ice_warm: Sparkles,
+  knot_hand: Handshake,
+  lens_seed: Search,
+  lever_rock: Wrench,
+  map_pieces: Layers3,
+  map_to_cards: Layers3,
+  milestone_steps: Target,
+  mirror_outline: Eye,
+  modules_chain: Layers3,
+  mold_cards: Layers3,
+  net_sparkle: Sparkles,
+  news_to_task: ArrowRight,
+  page_sections: FileStack,
+  page_structure: FileStack,
+  pan_gold: ShieldCheck,
+  part_slot: Layers3,
+  pen_screen_correct: PenTool,
+  person_highlight: Users,
+  person_lens: Users,
+  pin_evidence: ShieldCheck,
+  puzzle_outline: Layers3,
+  question_frame: Search,
+  radar_waves: Radar,
+  reply_bubble: Users,
+  scene_frame: Eye,
+  scissors_vine: Wrench,
+  spotlight_crack: ShieldAlert,
+  sprout_flow: Sparkles,
+  stacked_stones: Layers3,
+  stamp_smooth: ShieldCheck,
+  stone_stairs: Target,
+  table_path: Layers3,
+  thermometer_hand: Gauge,
+  thick_line: PenTool,
+  thread_nodes: Target,
+  toolbox_docs: Wrench,
+  version_up: ArrowRight,
+  warning_crack: ShieldAlert,
+  wave_to_text: PenTool,
+  web_nodes: Target,
+  whiteboard_spot: BookOpen,
+  window_path_stars: Sparkles,
+  wrench_module: Wrench,
+  zip_folder: Briefcase,
 };
+
+const ABILITY_FALLBACK_ICONS: Record<GrowthAbilityKey, LucideIcon> = {
+  exec: Rocket,
+  collab: Users,
+  analyze: BrainCircuit,
+  insight: Eye,
+  risk: ShieldAlert,
+  write: PenTool,
+};
+
+function badgeIconFor(badge: BadgeProgress): LucideIcon {
+  return MOTIF_ICON_MAP[badge.iconMotif] || ABILITY_FALLBACK_ICONS[badge.abilityKey] || Sparkles;
+}
 
 /* ══════════════════════════════════════════════════════════════════════
    Ability visual config
@@ -342,7 +460,6 @@ function weekLabelFromDate(value: string): string {
 }
 
 const SOURCE_TYPE_CN: Record<string, string> = {
-  experience_story: '经验故事',
   weekly_review_task_entry: '任务复盘',
   task_note: '任务备注',
   review_insight: '复盘提炼',
@@ -420,9 +537,20 @@ function badgePalette(state: BadgeState) {
   };
 }
 
+function badgeIsLit(badge: BadgeProgress): boolean {
+  return badge.state === 'lit' || badge.state === 'mastered';
+}
+
+function normalizeProgressPercent(value?: number | null): number {
+  const raw = Number(value ?? 0);
+  const pct = raw <= 1 ? raw * 100 : raw;
+  if (!Number.isFinite(pct)) return 0;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
 function BadgeToken({ badge, size = 'md' }: { badge: BadgeProgress; size?: 'md' | 'lg' }) {
   const pal = badgePalette(badge.state);
-  const Icon = MOTIF_ICON_MAP[badge.iconMotif] || Sparkles;
+  const Icon = badgeIconFor(badge);
   const d = size === 'lg' ? 116 : 84;
   const r = size === 'lg' ? 44 : 31;
   const sw = size === 'lg' ? 5 : 4;
@@ -449,6 +577,23 @@ function BadgeToken({ badge, size = 'md' }: { badge: BadgeProgress; size?: 'md' 
         <Icon width={iconSize} height={iconSize} color={pal.iconColor} strokeWidth={1.9} />
       </div>
     </div>
+  );
+}
+
+function BadgeCell({ badge, onSelect }: { badge: BadgeProgress; onSelect: (badge: BadgeProgress) => void }) {
+  const isLit = badgeIsLit(badge);
+  const isReady = badge.state === 'ready';
+  const inProgress = badge.state === 'progress';
+  const nameClass = isLit ? 'lit' : inProgress || isReady ? 'prog' : 'lock';
+  const statusClass = isLit ? 'lit' : isReady ? 'ready' : inProgress ? 'progress' : 'locked';
+  const statusText = isLit ? STATE_LABELS[badge.state] : isReady ? '即将点亮' : inProgress ? `${badge.progressPercent}%` : '未解锁';
+
+  return (
+    <button className="gc-badge-cell" onClick={() => onSelect(badge)}>
+      <BadgeToken badge={badge} size="md" />
+      <span className={`gc-badge-name ${nameClass}`}>{badge.name}</span>
+      <span className={`gc-badge-status ${statusClass}`}>{statusText}</span>
+    </button>
   );
 }
 
@@ -479,10 +624,24 @@ function BadgeModal({ badge, onClose }: { badge: BadgeProgress; onClose: () => v
           </button>
         </div>
 
-        <p style={{ fontSize: 13, lineHeight: 1.8, color: '#475569' }}>{badge.whyItMatters || badge.description}</p>
+        <div>
+          <div className="gc-modal-subtitle">为什么重要</div>
+          <p style={{ fontSize: 13, lineHeight: 1.8, color: '#475569' }}>{badge.whyItMatters || badge.description}</p>
+          {badge.description && badge.description !== badge.whyItMatters && (
+            <p style={{ marginTop: 8, fontSize: 12, lineHeight: 1.7, color: '#64748b' }}>{badge.description}</p>
+          )}
+        </div>
+
+        {badge.systemHowText && (
+          <div style={{ marginTop: 16 }}>
+            <div className="gc-modal-subtitle">系统如何识别</div>
+            <p style={{ fontSize: 12, lineHeight: 1.7, color: '#64748b' }}>{badge.systemHowText}</p>
+          </div>
+        )}
 
         {/* Progress bar */}
         <div style={{ marginTop: 16, borderRadius: 18, background: '#f8fafc', padding: 16 }}>
+          <div className="gc-modal-subtitle">当前进度</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>{badge.progressText}</span>
             <span style={{ fontSize: 14, fontWeight: 600, color: '#335CFE' }}>{badge.progressPercent}%</span>
@@ -501,7 +660,7 @@ function BadgeModal({ badge, onClose }: { badge: BadgeProgress; onClose: () => v
 
         {badge.missingSignals.length > 0 && (
           <div style={{ marginTop: 16 }}>
-            <p style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1.5, color: '#94a3b8', marginBottom: 8 }}>离点亮还差</p>
+            <p style={{ fontSize: 11, fontWeight: 600, letterSpacing: 1.2, color: '#94a3b8', marginBottom: 8 }}>还差什么</p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {badge.missingSignals.map((signal) => (
                 <span key={signal} style={{ borderRadius: 999, border: '1px solid #e2e8f0', background: '#f8fafc', padding: '4px 10px', fontSize: 10, fontWeight: 500, color: '#64748b' }}>
@@ -521,6 +680,17 @@ function BadgeModal({ badge, onClose }: { badge: BadgeProgress; onClose: () => v
                 <p style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{ev.subtitle} · {formatRelativeMoment(ev.occurredAt)}</p>
               </div>
             ))}
+          </div>
+        )}
+
+        {badge.actionLinks.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div className="gc-modal-subtitle">相关入口</div>
+            <div className="gc-modal-link-list">
+              {badge.actionLinks.map((link) => (
+                <span key={`${link.tab}-${link.label}`} className="gc-modal-link-pill">{link.label}</span>
+              ))}
+            </div>
           </div>
         )}
 
@@ -596,45 +766,19 @@ function AbilityRadar({ abilities, gaps }: { abilities: GrowthAbilityScore[]; ga
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   Tab 1: Experience Wall
+   Tab 1: Quote Wall
    ══════════════════════════════════════════════════════════════════ */
-type ExperienceWallSection = 'approved' | 'drafts' | 'materials';
-
-function draftIssues(draft: ExperienceStoryDraft): string[] {
-  const raw = draft.qualityScore?.issues;
-  return Array.isArray(raw) ? raw.map((item) => String(item)).filter(Boolean) : [];
-}
-
-function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
+function ExperienceWallTab() {
   const [entries, setEntries] = useState<HandbookEntry[]>([]);
-  const [drafts, setDrafts] = useState<ExperienceStoryDraft[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'month' | 'quarter'>('all');
-  const [activeSection, setActiveSection] = useState<ExperienceWallSection>('approved');
-  const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null);
-  const [busyDraftIds, setBusyDraftIds] = useState<Set<string>>(new Set());
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
-
-  const showToast = useCallback((text: string, type: 'success' | 'error') => {
-    setToastMsg({ text, type });
-    setTimeout(() => setToastMsg(null), 2500);
-  }, []);
 
   const reloadExperienceWall = useCallback(async () => {
-    const [handbookResult, draftsResult] = await Promise.allSettled([
-      getHandbook(),
-      getExperienceStoryDrafts({ limit: 100 }),
-    ]);
-    if (handbookResult.status === 'fulfilled') {
-      setEntries(handbookResult.value.entries || []);
-    } else {
+    try {
+      const result = await getHandbook();
+      setEntries(result.entries || []);
+    } catch {
       setEntries([]);
-    }
-    if (draftsResult.status === 'fulfilled') {
-      setDrafts(draftsResult.value.drafts || []);
-    } else {
-      setDrafts([]);
     }
   }, []);
 
@@ -657,292 +801,84 @@ function ExperienceWallTab({ overview }: { overview: GrowthOverview | null }) {
     return filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [entries, filter]);
 
-  const pendingDrafts = useMemo(
-    () => drafts.filter((draft) => draft.status === 'candidate' || draft.status === 'needs_review'),
-    [drafts],
-  );
-  const legacyPendingCount = overview?.pendingCaptures?.filter((item) => item.status === 'open').length || 0;
-
-  const handleGenerateDrafts = useCallback(async () => {
-    if (isGenerating) return;
-    setIsGenerating(true);
-    try {
-      const result = await generateExperienceStoryDrafts({ limit: 5 });
-      await reloadExperienceWall();
-      setActiveSection('drafts');
-      showToast(result.generatedCount > 0 ? `已生成 ${result.generatedCount} 条待确认故事` : '暂未发现新的高价值素材', 'success');
-    } catch (err) {
-      console.error('[GrowthCenter] 生成经验故事失败:', err);
-      showToast(err instanceof Error ? err.message : '生成失败，请重试', 'error');
-    } finally {
-      setIsGenerating(false);
-    }
-  }, [isGenerating, reloadExperienceWall, showToast]);
-
-  const runDraftAction = useCallback(async (
-    draftId: string,
-    action: () => Promise<unknown>,
-    successText: string,
-  ) => {
-    if (busyDraftIds.has(draftId)) return;
-    setBusyDraftIds((prev) => new Set([...prev, draftId]));
-    try {
-      await action();
-      await reloadExperienceWall();
-      showToast(successText, 'success');
-    } catch (err) {
-      console.error('[GrowthCenter] 处理经验故事失败:', err);
-      showToast(err instanceof Error ? err.message : '操作失败，请重试', 'error');
-    } finally {
-      setBusyDraftIds((prev) => {
-        const next = new Set(prev);
-        next.delete(draftId);
-        return next;
-      });
-    }
-  }, [busyDraftIds, reloadExperienceWall, showToast]);
-
   if (isLoading) {
     return (
       <div className="gc-loading">
         <div style={{ textAlign: 'center' }}>
           <div className="gc-loading-icon"><BookOpen size={20} color="#335CFE" /></div>
-          <div className="gc-loading-text">加载经验故事...</div>
+          <div className="gc-loading-text">加载经验金句...</div>
         </div>
       </div>
     );
   }
 
-  const sectionTabs: { key: ExperienceWallSection; label: string; count: number }[] = [
-    { key: 'approved', label: '已入墙故事', count: sortedEntries.length },
-    { key: 'drafts', label: '待确认故事', count: pendingDrafts.length },
-    { key: 'materials', label: '素材池', count: legacyPendingCount },
-  ];
-
   return (
-    <div style={{ position: 'relative' }}>
-      {toastMsg && (
-        <div style={{
-          position: 'fixed', top: 24, left: '50%', transform: 'translateX(-50%)', zIndex: 9999,
-          background: toastMsg.type === 'success' ? '#10b981' : '#ef4444', color: '#fff',
-          padding: '8px 20px', borderRadius: 999, fontSize: 13, fontWeight: 500,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)', animation: 'gc-toast-in 0.2s ease-out',
-        }}>
-          {toastMsg.text}
+    <div>
+      <div className="gc-section-header">
+        <div>
+          <div className="gc-section-title">组织经验金句</div>
+          <span className="gc-section-hint">已沉淀 {sortedEntries.length} 条</span>
         </div>
-      )}
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
-        <div className="gc-tab-bar">
-          {sectionTabs.map((tab) => (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {(['all', 'month', 'quarter'] as const).map((f) => (
             <button
-              key={tab.key}
-              className={`gc-tab-btn${activeSection === tab.key ? ' active' : ''}`}
-              onClick={() => setActiveSection(tab.key)}
+              key={f}
+              onClick={() => setFilter(f)}
+              style={{
+                padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
+                background: filter === f ? '#EEF3FF' : 'transparent',
+                color: filter === f ? '#335CFE' : '#94a3b8',
+              }}
             >
-              {tab.label}{tab.count > 0 ? ` ${tab.count}` : ''}
+              {{ all: '全部', month: '本月', quarter: '本季度' }[f]}
             </button>
           ))}
         </div>
-        <button className="gc-btn-brand" disabled={isGenerating} onClick={() => void handleGenerateDrafts()}>
-          <Sparkles size={12} color="#fff" /> {isGenerating ? '生成中…' : '生成故事'}
-        </button>
       </div>
 
-      {activeSection === 'approved' && sortedEntries.length > 0 && (
-        <div>
-          <div className="gc-section-header">
-            <div className="gc-section-title">组织经验故事</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {(['all', 'month', 'quarter'] as const).map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  style={{
-                    padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
-                    background: filter === f ? '#EEF3FF' : 'transparent',
-                    color: filter === f ? '#335CFE' : '#94a3b8',
-                  }}
-                >
-                  {{ all: '全部', month: '本月', quarter: '本季度' }[f]}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="gc-insight-grid">
-            {sortedEntries.map((entry) => {
-              const isAI = entry.authorUserName?.includes('大周') || entry.authorUserName?.includes('庆华') || entry.authorUserName?.includes('花花') || entry.authorUserName?.includes('罗茜茜') || entry.sourceType?.includes('ai');
-              const hasLikes = entry.reuseCount > 0;
-              const quoteText = pickQuoteText(entry);
-              const isStory = entry.sourceType === 'experience_story';
-              const authorName = entry.authorUserName || '团队';
-              const projectName = entry.clientName || '';
-              return (
-                <div key={entry.id} className="gc-card gc-insight-card">
-                  <div className="gc-insight-quote">{isStory ? quoteText : `“${quoteText}”`}</div>
-                  <div className="gc-insight-meta">
-                    <div className="gc-insight-author">
-                      <div className={`gc-icon-token sm ${isAI ? 'brand' : 'gray'}`}>
-                        {isAI ? <Sparkles size={10} color="#335CFE" /> : <Users size={10} color="#64748b" />}
-                      </div>
-                      <span className="gc-author-name">{authorName}</span>
-                      {projectName && <span className="gc-source-tag">{projectName}</span>}
-                      <span className="gc-source-tag">{sourceTypeCN(entry.sourceType || '经验')} · {weekLabelFromDate(entry.createdAt)}</span>
+      {sortedEntries.length > 0 ? (
+        <div className="gc-insight-grid">
+          {sortedEntries.map((entry) => {
+            const isAI = entry.authorUserName?.includes('大周') || entry.authorUserName?.includes('庆华') || entry.authorUserName?.includes('花花') || entry.authorUserName?.includes('罗茜茜') || entry.sourceType?.includes('ai');
+            const hasLikes = entry.reuseCount > 0;
+            const quoteText = pickQuoteText(entry);
+            const authorName = entry.authorUserName || '团队';
+            const projectName = entry.clientName || '';
+            return (
+              <div key={entry.id} className="gc-card gc-insight-card">
+                <div className="gc-insight-quote">“{quoteText}”</div>
+                <div className="gc-insight-meta">
+                  <div className="gc-insight-author">
+                    <div className={`gc-icon-token sm ${isAI ? 'brand' : 'gray'}`}>
+                      {isAI ? <Sparkles size={10} color="#335CFE" /> : <Users size={10} color="#64748b" />}
                     </div>
-                    <button
-                      className={`gc-like-btn${hasLikes ? ' liked' : ''}`}
-                      onClick={() => {
-                        markHandbookEntryReused(entry.id)
-                          .then(() => reloadExperienceWall())
-                          .catch(() => {});
-                      }}
-                    >
-                      <Heart size={12} fill={hasLikes ? '#5B7BFE' : 'none'} color={hasLikes ? '#5B7BFE' : '#D1D5DB'} strokeWidth={2} />
-                      {entry.reuseCount > 0 ? ` ${entry.reuseCount}` : ''}
-                    </button>
+                    <span className="gc-author-name">{authorName}</span>
+                    {projectName && <span className="gc-source-tag">{projectName}</span>}
+                    <span className="gc-source-tag">{sourceTypeCN(entry.sourceType || '经验')} · {weekLabelFromDate(entry.createdAt)}</span>
                   </div>
+                  <button
+                    className={`gc-like-btn${hasLikes ? ' liked' : ''}`}
+                    onClick={() => {
+                      markHandbookEntryReused(entry.id)
+                        .then(() => reloadExperienceWall())
+                        .catch(() => {});
+                    }}
+                  >
+                    <Heart size={12} fill={hasLikes ? '#5B7BFE' : 'none'} color={hasLikes ? '#5B7BFE' : '#D1D5DB'} strokeWidth={2} />
+                    {entry.reuseCount > 0 ? ` ${entry.reuseCount}` : ''}
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {activeSection === 'drafts' && (
-        <div>
-          <div className="gc-section-header">
-            <div className="gc-section-title">待确认故事</div>
-            <span className="gc-section-hint">人工确认后进入经验墙</span>
-          </div>
-          {pendingDrafts.length > 0 ? (
-            <div className="gc-insight-grid">
-              {pendingDrafts.map((draft) => {
-                const issues = draftIssues(draft);
-                const isBusy = busyDraftIds.has(draft.id);
-                const isExpanded = expandedDraftId === draft.id;
-                const sourceLabel = [draft.clientName, draft.eventLineName, draft.sourceTitle].filter(Boolean).join(' · ');
-                return (
-                  <div key={draft.id} className="gc-card gc-insight-card">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                      <div className="gc-icon-token md brand">
-                        <BookOpen size={14} color="#335CFE" />
-                      </div>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', lineHeight: 1.4 }}>{draft.title || draft.sourceTitle}</div>
-                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{formatRelativeMoment(draft.updatedAt)} · {sourceTypeCN(draft.sourceType)}</div>
-                      </div>
-                    </div>
-                    <div className="gc-insight-quote">{draft.story}</div>
-                    <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {sourceLabel && <span className="gc-source-tag">{sourceLabel}</span>}
-                      <span className="gc-source-tag">{draft.evidenceRefs.length} 条证据</span>
-                      {draft.status === 'needs_review' && <span className="gc-source-tag" style={{ color: '#f97316' }}>需复核</span>}
-                    </div>
-                    {draft.factRiskNote && (
-                      <div style={{ marginTop: 10, fontSize: 11, color: '#64748b', lineHeight: 1.6 }}>
-                        {draft.factRiskNote}
-                      </div>
-                    )}
-                    {issues.length > 0 && (
-                      <div style={{ marginTop: 8, fontSize: 10, color: '#94a3b8', lineHeight: 1.6 }}>
-                        {issues.slice(0, 2).join('；')}
-                      </div>
-                    )}
-                    {isExpanded && (
-                      <div style={{ marginTop: 12, padding: 12, borderRadius: 12, background: '#f8fafc', border: '1px solid #eef2f7' }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', marginBottom: 6 }}>证据引用</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                          {draft.evidenceRefs.map((ref) => <span key={ref} className="gc-source-tag">{ref}</span>)}
-                        </div>
-                        {typeof draft.materialPack?.primaryText === 'string' && (
-                          <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.7, marginTop: 8 }}>
-                            {String(draft.materialPack.primaryText).slice(0, 220)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <div className="gc-pending-actions">
-                      <button
-                        className="gc-btn-brand"
-                        disabled={isBusy}
-                        onClick={() => void runDraftAction(draft.id, () => approveExperienceStoryDraft(draft.id), '已确认入墙')}
-                      >
-                        <ArrowRight size={12} color="#fff" /> 入墙
-                      </button>
-                      <button
-                        className="gc-btn-ghost"
-                        disabled={isBusy}
-                        onClick={() => void runDraftAction(draft.id, () => regenerateExperienceStoryDraft(draft.id), '已重新生成')}
-                      >
-                        <Sparkles size={12} /> 重写
-                      </button>
-                      <button
-                        className="gc-btn-ghost"
-                        disabled={isBusy}
-                        onClick={() => setExpandedDraftId(isExpanded ? null : draft.id)}
-                      >
-                        <FileStack size={12} /> 证据
-                      </button>
-                      <button
-                        className="gc-btn-ghost"
-                        disabled={isBusy}
-                        onClick={() => void runDraftAction(draft.id, () => rejectExperienceStoryDraft(draft.id), '已驳回')}
-                      >
-                        <X size={12} /> 驳回
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="gc-empty">
-              <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
-                <BookOpen size={20} color="#335CFE" />
               </div>
-              <div className="gc-empty-title">没有待确认故事</div>
-              <div className="gc-empty-desc">从真实复盘和业务材料中生成新的组织经验故事。</div>
-              <button className="gc-btn-brand" style={{ marginTop: 14 }} disabled={isGenerating} onClick={() => void handleGenerateDrafts()}>
-                <Sparkles size={12} color="#fff" /> {isGenerating ? '生成中…' : '生成故事'}
-              </button>
-            </div>
-          )}
+            );
+          })}
         </div>
-      )}
-
-      {activeSection === 'materials' && (
-        <div className="gc-ai-section" style={{ marginTop: 0 }}>
-          <div className="gc-ai-chip">
-            <Lightbulb size={14} color="#335CFE" />
-            真实素材优先
-          </div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#1e293b', marginBottom: 8 }}>
-            从复盘、会议、任务和真实文档里筛选故事
-          </div>
-          <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.8, maxWidth: 640 }}>
-            系统会排除战略思考洞察、AI 金句、系统生成文档和测试数据，只把有场景、有行动、有判断的真实材料生成草稿。
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 }}>
-            <span className="gc-source-tag">任务复盘</span>
-            <span className="gc-source-tag">会议纪要</span>
-            <span className="gc-source-tag">任务备注</span>
-            <span className="gc-source-tag">真实文档</span>
-            <span className="gc-source-tag">事件线活动</span>
-            {legacyPendingCount > 0 && <span className="gc-source-tag">{legacyPendingCount} 条旧版金句候选</span>}
-          </div>
-          <button className="gc-btn-brand" style={{ marginTop: 18 }} disabled={isGenerating} onClick={() => void handleGenerateDrafts()}>
-            <Sparkles size={12} color="#fff" /> {isGenerating ? '生成中…' : '生成故事草稿'}
-          </button>
-        </div>
-      )}
-
-      {activeSection === 'approved' && sortedEntries.length === 0 && (
+      ) : (
         <div className="gc-empty">
           <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
             <BookOpen size={20} color="#335CFE" />
           </div>
-          <div className="gc-empty-title">经验墙暂无故事</div>
-          <div className="gc-empty-desc">从真实复盘和业务材料中沉淀经验故事。</div>
+          <div className="gc-empty-title">金句墙暂无内容</div>
+          <div className="gc-empty-desc">完成任务复盘和经验沉淀后，值得复用的经验金句会展示在这里。</div>
         </div>
       )}
     </div>
@@ -1003,7 +939,7 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
     <div className="gc-space-y">
       {/* Radar + Ability List */}
       <div className="gc-card gc-radar-card">
-        <div style={{ flexShrink: 0 }}>
+        <div className="gc-radar-visual">
           <AbilityRadar abilities={abilities} gaps={topGaps} />
           <div className="gc-radar-legend" style={{ justifyContent: 'center', marginTop: 12 }}>
             <span><span className="gc-radar-legend-dot" style={{ background: '#5B7BFE' }} />当前</span>
@@ -1144,143 +1080,12 @@ function AbilityGrowthTab({ overview }: { overview: GrowthOverview | null }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   Tab 3: Org Contribution
-   ══════════════════════════════════════════════════════════════════ */
-function OrgContributionTab({ overview }: { overview: GrowthOverview | null }) {
-  const [handbookEntries, setHandbookEntries] = useState<HandbookEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  useEffect(() => {
-    getHandbook()
-      .then((res) => setHandbookEntries(res.entries || []))
-      .catch(() => setHandbookEntries([]))
-      .finally(() => setIsLoading(false));
-  }, []);
-
-  const totalReuses = useMemo(() => handbookEntries.reduce((sum, e) => sum + e.reuseCount, 0), [handbookEntries]);
-  const templateEntries = useMemo(() => [...handbookEntries].sort((a, b) => b.reuseCount - a.reuseCount).slice(0, 8), [handbookEntries]);
-  const totalContribXp = useMemo(() => handbookEntries.reduce((sum, e) => sum + e.reuseCount * 6, 0), [handbookEntries]);
-  const monthlyXp = useMemo(() => {
-    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
-    return handbookEntries
-      .filter((e) => new Date(e.createdAt).getTime() > cutoff)
-      .reduce((sum, e) => sum + (e.reuseCount > 0 ? e.reuseCount * 6 : 0), 0);
-  }, [handbookEntries]);
-
-  const stats = [
-    { label: '我创建的模板', value: String(handbookEntries.length) },
-    { label: '被调用次数', value: String(totalReuses) },
-    { label: '累计贡献 XP', value: `+${totalContribXp}` },
-    { label: '本月', value: `+${monthlyXp}` },
-  ];
-
-  if (isLoading && !overview) {
-    return (
-      <div className="gc-loading">
-        <div style={{ textAlign: 'center' }}>
-          <div className="gc-loading-icon"><Layers3 size={20} color="#335CFE" /></div>
-          <div className="gc-loading-text">加载贡献数据...</div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="gc-space-y">
-      {/* Stats grid */}
-      <div className="gc-stats-grid">
-        {stats.map((stat) => (
-          <div key={stat.label} className="gc-stat-card">
-            <div className="gc-stat-label">{stat.label}</div>
-            <div className="gc-stat-value">{stat.value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Work templates */}
-      {templateEntries.length > 0 && (
-        <div>
-          <div className="gc-section-header">
-            <div className="gc-section-title">工作模板</div>
-            <span className="gc-section-hint">被团队复用的标准流程</span>
-          </div>
-          <div className="gc-template-list">
-            {templateEntries.map((entry) => {
-              const isExpanded = expandedId === entry.id;
-              const abilityKey = entry.abilityKeys?.[0];
-              const v = abilityKey ? ABILITY_VISUALS[abilityKey] : null;
-              const AbIcon = v?.icon || Target;
-              const iconColor = v?.color || '#335CFE';
-              const pct = Math.min(100, (entry.reuseCount / 10) * 100);
-              const estimatedXp = entry.reuseCount * 6 + entry.tags.length * 2;
-
-              return (
-                <div key={entry.id} className="gc-card" style={{ overflow: 'hidden' }}>
-                  <button
-                    className="gc-template-header"
-                    onClick={() => setExpandedId(isExpanded ? null : entry.id)}
-                  >
-                    <div className="gc-icon-token lg brand">
-                      <AbIcon size={20} color="#335CFE" />
-                    </div>
-                    <div className="gc-template-info">
-                      <div className="gc-template-top">
-                        <span className="gc-template-name">{entry.title}</span>
-                        <span className="gc-template-calls">调用 {entry.reuseCount} 次</span>
-                      </div>
-                      <div className="gc-template-bottom">
-                        <span className="gc-template-meta">{entry.tags.length} 个标签 · +{estimatedXp} XP</span>
-                        <div className="gc-progress-track">
-                          <div className="gc-progress-fill" style={{ width: `${pct}%`, background: 'rgba(91,123,254,0.4)' }} />
-                        </div>
-                      </div>
-                    </div>
-                    <span className="gc-chevron">{isExpanded ? '▴' : '▾'}</span>
-                  </button>
-                  {isExpanded && (
-                    <div className="gc-template-detail">
-                      <div className="gc-template-detail-inner">
-                        <p style={{ fontSize: 12, lineHeight: 1.8, color: '#64748b', marginBottom: entry.tags.length > 0 ? 12 : 0 }}>
-                          {entry.summary || entry.contextSummary}
-                        </p>
-                        {entry.tags.length > 0 && entry.tags.map((tag, i) => (
-                          <div key={tag} className="gc-step-row">
-                            <span className="gc-step-num">{i + 1}.</span>
-                            <span className="gc-step-text">{tag}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {templateEntries.length === 0 && (
-        <div className="gc-empty">
-          <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
-            <Layers3 size={20} color="#335CFE" />
-          </div>
-          <div className="gc-empty-title">贡献数据还在积累中</div>
-          <div className="gc-empty-desc">完成更多任务和复盘后，你的组织贡献分析会在这里展示。</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   Tab 4: Badges & Rank
+   Tab 3: Badges & Rank
    ══════════════════════════════════════════════════════════════════ */
 function BadgesAndRankTab({ overview }: { overview: GrowthOverview | null }) {
   const [badgeBoard, setBadgeBoard] = useState<BadgeBoard | null>(null);
   const [selectedBadge, setSelectedBadge] = useState<BadgeProgress | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [rankView, setRankView] = useState<'total' | 'week'>('total');
 
   useEffect(() => {
     setIsLoading(true);
@@ -1294,22 +1099,39 @@ function BadgesAndRankTab({ overview }: { overview: GrowthOverview | null }) {
   const totalXp = overview?.totalXp ?? 0;
   const weeklyXp = overview?.weeklyXp ?? 0;
   const boardOverview = badgeBoard?.overview;
+  const categories = badgeBoard?.categories ?? [];
+  const rankProgressPercent = normalizeProgressPercent(rank?.progress);
 
   const allBadges = useMemo(() => {
-    if (!badgeBoard?.categories) return [];
-    return badgeBoard.categories.flatMap((cat) => cat.badges);
-  }, [badgeBoard]);
+    return categories.flatMap((cat) => cat.badges);
+  }, [categories]);
 
-  const coverage = overview?.sourceCoverage;
-  const xpBreakdown = useMemo(() => {
-    if (!coverage) return [];
-    return [
-      { label: '模板贡献', value: coverage.handbookSignals, icon: Layers3 },
-      { label: '经验墙', value: coverage.reviewSignals, icon: Lightbulb },
-      { label: '流程调用', value: coverage.taskSignals, icon: ArrowRight },
-      { label: '执行质量', value: coverage.meetingSignals, icon: ShieldCheck },
-    ];
-  }, [coverage]);
+  const litBadges = useMemo(() => {
+    return allBadges
+      .filter(badgeIsLit)
+      .sort((a, b) => new Date(b.unlockedAt || 0).getTime() - new Date(a.unlockedAt || 0).getTime());
+  }, [allBadges]);
+
+  const upcomingBadges = useMemo(() => {
+    const ids = new Set(boardOverview?.upcomingBadgeIds ?? []);
+    const explicit = allBadges.filter((badge) => ids.has(badge.id) && !badgeIsLit(badge));
+    const fallback = allBadges.filter((badge) => !badgeIsLit(badge) && badge.progressPercent > 0);
+    const source = explicit.length > 0 ? explicit : fallback;
+    return source
+      .slice()
+      .sort((a, b) => b.progressPercent - a.progressPercent || a.name.localeCompare(b.name, 'zh-CN'))
+      .slice(0, 8);
+  }, [allBadges, boardOverview?.upcomingBadgeIds]);
+
+  const totalBadgeCount = boardOverview?.totalBadges ?? allBadges.length;
+  const litBadgeCount = boardOverview?.litBadges ?? litBadges.length;
+  const badgeXp = boardOverview?.totalXp ?? litBadges.reduce((sum, badge) => sum + badge.xp, 0);
+  const badgeStats = [
+    { label: '已点亮', value: `${litBadgeCount}/${totalBadgeCount}`, icon: Trophy },
+    { label: '即将点亮', value: upcomingBadges.length, icon: Sparkles },
+    { label: '本月新增', value: boardOverview?.monthlyNewBadges ?? 0, icon: CalendarClock },
+    { label: '徽章 XP', value: badgeXp.toLocaleString(), icon: Swords },
+  ];
 
   if (isLoading) {
     return (
@@ -1350,68 +1172,95 @@ function BadgesAndRankTab({ overview }: { overview: GrowthOverview | null }) {
               <span style={{ fontSize: 11, fontWeight: 500, color: '#94a3b8' }}>
                 {rank.nextName ? `距${rank.nextName}还需 ${rank.xpToNext} XP` : '已达最高段位'}
               </span>
-              <span style={{ fontSize: 11, fontWeight: 500, color: '#94a3b8' }}>{rank.progress}%</span>
+              <span style={{ fontSize: 11, fontWeight: 500, color: '#94a3b8' }}>{rankProgressPercent}%</span>
             </div>
             <div className="gc-progress-track" style={{ height: 4 }}>
-              <div className="gc-progress-fill" style={{ width: `${rank.progress}%`, background: '#5B7BFE' }} />
+              <div className="gc-progress-fill" style={{ width: `${rankProgressPercent}%`, background: '#5B7BFE' }} />
             </div>
           </div>
         )}
-        {xpBreakdown.length > 0 && (
-          <div className="gc-xp-breakdown">
-            {xpBreakdown.map((item) => {
-              const BIcon = item.icon;
-              return (
-                <div key={item.label} className="gc-xp-break-card">
-                  <div className="gc-xp-break-top">
-                    <BIcon size={14} color="#335CFE" />
-                    <span className="gc-xp-break-label">{item.label}</span>
-                  </div>
-                  <div className="gc-xp-break-val">{item.value}</div>
+        <div className="gc-xp-breakdown">
+          {badgeStats.map((item) => {
+            const BIcon = item.icon;
+            return (
+              <div key={item.label} className="gc-xp-break-card">
+                <div className="gc-xp-break-top">
+                  <BIcon size={14} color="#335CFE" />
+                  <span className="gc-xp-break-label">{item.label}</span>
                 </div>
-              );
-            })}
-          </div>
-        )}
+                <div className="gc-xp-break-val">{item.value}</div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Badge Grid */}
+      {/* Badge milestones */}
       <div>
         <div className="gc-section-header">
           <div className="gc-section-title">我的徽章</div>
-          <span className="gc-section-hint">已点亮 {boardOverview?.litBadges ?? 0}/{boardOverview?.totalBadges ?? allBadges.length}</span>
+          <span className="gc-section-hint">已点亮 {litBadgeCount}/{totalBadgeCount}</span>
         </div>
         {allBadges.length > 0 ? (
-          <div className="gc-card" style={{ padding: 20 }}>
-            <div className="gc-badge-grid">
-              {allBadges.map((badge) => {
-                const isLit = badge.state === 'lit' || badge.state === 'mastered';
-                const isReady = badge.state === 'ready';
-                const inProgress = badge.state === 'progress';
-                const nameClass = isLit ? 'lit' : inProgress ? 'prog' : 'lock';
+          <div>
+            {upcomingBadges.length > 0 && (
+              <div className="gc-badge-section">
+                <div className="gc-badge-section-head">
+                  <div className="gc-badge-section-title">即将点亮</div>
+                  <div className="gc-badge-section-hint">离完成最近的成长里程碑</div>
+                </div>
+                <div className="gc-badge-grid">
+                  {upcomingBadges.map((badge) => (
+                    <BadgeCell key={badge.id} badge={badge} onSelect={setSelectedBadge} />
+                  ))}
+                </div>
+              </div>
+            )}
 
-                return (
-                  <button key={badge.id} className="gc-badge-cell" onClick={() => setSelectedBadge(badge)}>
-                    <BadgeToken badge={badge} size="md" />
-                    <span className={`gc-badge-name ${nameClass}`}>
-                      {badge.state === 'locked' ? '???' : badge.name}
-                    </span>
-                    {isLit && (
-                      <span style={{ display: 'inline-block', background: '#ecfdf5', borderRadius: 999, padding: '2px 8px', fontSize: 9, fontWeight: 600, color: '#059669' }}>
-                        {STATE_LABELS[badge.state]}
-                      </span>
-                    )}
-                    {isReady && (
-                      <span style={{ display: 'inline-block', background: 'rgba(91,123,254,0.1)', borderRadius: 999, padding: '2px 8px', fontSize: 9, fontWeight: 600, color: '#335CFE' }}>
-                        待点亮
-                      </span>
-                    )}
-                    {inProgress && (
-                      <span className="gc-badge-sub" style={{ color: '#5B7BFE' }}>{badge.progressPercent}%</span>
-                    )}
-                  </button>
-                );
-              })}
+            {litBadges.length > 0 && (
+              <div className="gc-badge-section">
+                <div className="gc-badge-section-head">
+                  <div className="gc-badge-section-title">已点亮</div>
+                  <div className="gc-badge-section-hint">展示最近点亮的 {Math.min(litBadges.length, 12)} 枚</div>
+                </div>
+                <div className="gc-badge-grid">
+                  {litBadges.slice(0, 12).map((badge) => (
+                    <BadgeCell key={badge.id} badge={badge} onSelect={setSelectedBadge} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="gc-badge-section">
+              <div className="gc-badge-section-head">
+                <div className="gc-badge-section-title">全部徽章分类</div>
+                <div className="gc-badge-section-hint">按能力方向查看未来成长目标</div>
+              </div>
+              <div className="gc-badge-category-list">
+                {categories.map((category) => {
+                  const CategoryIcon = ABILITY_VISUALS[category.abilityKey]?.icon || ABILITY_FALLBACK_ICONS[category.abilityKey] || Trophy;
+                  const categoryLitCount = category.litCount ?? category.badges.filter(badgeIsLit).length;
+                  const categoryTotalCount = category.totalCount ?? category.badges.length;
+                  return (
+                    <div key={category.id} className="gc-badge-category-card">
+                      <div className="gc-badge-category-header">
+                        <div className="gc-badge-category-title">
+                          <div className="gc-icon-token sm brand">
+                            <CategoryIcon size={12} color="#335CFE" />
+                          </div>
+                          <span className="gc-badge-category-name">{category.label}</span>
+                        </div>
+                        <span className="gc-badge-category-meta">已点亮 {categoryLitCount}/{categoryTotalCount}</span>
+                      </div>
+                      <div className="gc-badge-category-grid">
+                        {category.badges.map((badge) => (
+                          <BadgeCell key={badge.id} badge={badge} onSelect={setSelectedBadge} />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         ) : (
@@ -1419,57 +1268,43 @@ function BadgesAndRankTab({ overview }: { overview: GrowthOverview | null }) {
             <div className="gc-loading-icon" style={{ margin: '0 auto 12px', animation: 'none' }}>
               <Trophy size={20} color="#335CFE" />
             </div>
-            <div className="gc-empty-title">徽章系统加载中</div>
+            <div className="gc-empty-title">还没有可展示的成长徽章</div>
             <div className="gc-empty-desc">徽章数据暂未就绪，完成更多工作后会自动解锁。</div>
           </div>
         )}
       </div>
 
-      {/* Leaderboard */}
+      {/* Personal rank */}
       <div>
         <div className="gc-rank-header">
           <div className="gc-rank-header-left">
             <Trophy size={16} color="#f59e0b" />
-            <div className="gc-section-title" style={{ marginBottom: 0 }}>组织排行榜</div>
-          </div>
-          <div className="gc-rank-toggle">
-            <button
-              className={`gc-rank-toggle-btn${rankView === 'total' ? ' active' : ''}`}
-              onClick={() => setRankView('total')}
-            >总榜</button>
-            <button
-              className={`gc-rank-toggle-btn${rankView === 'week' ? ' active' : ''}`}
-              onClick={() => setRankView('week')}
-            >本周</button>
+            <div className="gc-section-title" style={{ marginBottom: 0 }}>我的成长段位</div>
           </div>
         </div>
         <div className="gc-card gc-rank-list">
-          {overview?.userName ? (
-            <div className="gc-rank-row top3">
-              <span className="gc-rank-num" style={{ color: '#5B7BFE' }}>1</span>
-              <div className="gc-icon-token md brand">
-                <Users size={14} color="#335CFE" />
-              </div>
-              <span className="gc-rank-name-text">{overview.userName}</span>
-              <span className="gc-rank-xp">{totalXp.toLocaleString()}</span>
-              <div className="gc-rank-bar">
-                <div className="gc-rank-bar-fill" style={{ width: '100%', background: '#5B7BFE' }} />
+          <div className="gc-rank-row">
+            <div className="gc-icon-token md brand">
+              <Users size={14} color="#335CFE" />
+            </div>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="gc-rank-name-text">{overview?.userName || '当前用户'} · {rank?.fullLabel || '成长段位'}</div>
+              <div className="gc-rank-meta">
+                {rank?.nextName ? `下一段位：${rank.nextName}，还需 ${rank.xpToNext} XP` : '已达当前最高段位'}
               </div>
             </div>
-          ) : null}
-          <p style={{ textAlign: 'center', padding: '16px 0', fontSize: 12, color: '#94a3b8' }}>更多团队成员数据积累中...</p>
-        </div>
-
-        {/* MVP */}
-        {weeklyXp > 0 && overview?.userName && (
-          <div className="gc-mvp">
-            <div className="gc-mvp-top">
-              <Crown size={16} color="#b45309" />
-              <div className="gc-mvp-title">本周 MVP：{overview.userName}（+{weeklyXp} XP）</div>
-            </div>
-            <div className="gc-mvp-desc">持续成长，保持领先</div>
+            <div className="gc-rank-xp">{totalXp.toLocaleString()} XP</div>
           </div>
-        )}
+          <div className="gc-rank-bar">
+            <div className="gc-rank-bar-fill" style={{ width: `${rankProgressPercent}%` }} />
+          </div>
+          {weeklyXp > 0 && (
+            <div className="gc-rank-week">
+              <span>本周新增成长值</span>
+              <span>+{weeklyXp} XP</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {selectedBadge && <BadgeModal badge={selectedBadge} onClose={() => setSelectedBadge(null)} />}
@@ -1480,12 +1315,11 @@ function BadgesAndRankTab({ overview }: { overview: GrowthOverview | null }) {
 /* ══════════════════════════════════════════════════════════════════════
    Main Export — GrowthCenterView
    ══════════════════════════════════════════════════════════════════ */
-type GrowthTab = 'experience' | 'ability' | 'contribution' | 'badges';
+type GrowthTab = 'experience' | 'ability' | 'badges';
 
 const TABS: { key: GrowthTab; label: string }[] = [
   { key: 'experience', label: '经验墙' },
   { key: 'ability', label: '能力成长' },
-  { key: 'contribution', label: '组织贡献' },
   { key: 'badges', label: '徽章与排行' },
 ];
 
@@ -1512,41 +1346,42 @@ export function GrowthCenterView() {
     <div className="gc-root">
       {/* Header */}
       <div className="gc-header">
-        <div className="gc-header-top">
-          <div>
-            <div className="gc-page-title">成长中心</div>
-            <div className="gc-page-subtitle">把工作经验变成组织资产</div>
-          </div>
-          <div className="gc-xp-area">
-            <div className="gc-rank-chip">
-              <Swords size={14} color="#335CFE" strokeWidth={2} />
-              {rankLabel}
-            </div>
+        <div className="gc-header-inner">
+          <div className="gc-header-top">
             <div>
-              <div className="gc-xp-num">{totalXp.toLocaleString()} <span className="gc-xp-label">XP</span></div>
-              {weeklyXp > 0 && <div className="gc-xp-week">+{weeklyXp}</div>}
+              <div className="gc-page-title">成长中心</div>
+              <div className="gc-page-subtitle">把工作经验变成组织资产</div>
+            </div>
+            <div className="gc-xp-area">
+              <div className="gc-rank-chip">
+                <Swords size={14} color="#335CFE" strokeWidth={2} />
+                {rankLabel}
+              </div>
+              <div>
+                <div className="gc-xp-num">{totalXp.toLocaleString()} <span className="gc-xp-label">XP</span></div>
+                {weeklyXp > 0 && <div className="gc-xp-week">+{weeklyXp}</div>}
+              </div>
             </div>
           </div>
-        </div>
-        <div className="gc-tab-bar">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              className={`gc-tab-btn${activeTab === tab.key ? ' active' : ''}`}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
+          <div className="gc-tab-bar">
+            {TABS.map((tab) => (
+              <button
+                key={tab.key}
+                className={`gc-tab-btn${activeTab === tab.key ? ' active' : ''}`}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Content */}
       <div className="gc-content">
         <div className="gc-content-inner">
-          {activeTab === 'experience' && <ExperienceWallTab overview={overview} />}
+          {activeTab === 'experience' && <ExperienceWallTab />}
           {activeTab === 'ability' && <AbilityGrowthTab overview={overview} />}
-          {activeTab === 'contribution' && <OrgContributionTab overview={overview} />}
           {activeTab === 'badges' && <BadgesAndRankTab overview={overview} />}
         </div>
       </div>

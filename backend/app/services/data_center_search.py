@@ -120,6 +120,7 @@ def build_data_center_retrieval_items(
     route_decision: RouteDecisionRecord,
     settings: RetrievalModelSettingsRecord,
     access_context: DataCenterAccessContext | dict[str, object] | None = None,
+    working_document_ids: list[str] | None = None,
 ) -> tuple[list[EvidenceItem], RetrievalTraceRecord | None]:
     is_client_scope = page_context.scopeType == "client"
     base_items: list[EvidenceItem] = []
@@ -235,7 +236,14 @@ def build_data_center_retrieval_items(
     if use_reading_pack_v2 and client_id:
         backfill_client_document_family_metadata(db, client_id)
         materialize_workspace_native_documents(db, data_dir=data_dir, client_id=client_id)
-        bundle = retrieve_knowledge_bundle(db, data_dir, client_id, prompt, access_context=access_context)
+        bundle = retrieve_knowledge_bundle(
+            db,
+            data_dir,
+            client_id,
+            prompt,
+            access_context=access_context,
+            priority_document_ids=working_document_ids,
+        )
         bundle_summary = bundle.retrieval_summary if isinstance(bundle.retrieval_summary, dict) else {}
         for index, citation in enumerate(bundle.citations, start=1):
             bundle_items.append(_citation_to_evidence_item(index, citation))
@@ -269,6 +277,12 @@ def build_data_center_retrieval_items(
                     if str(item).strip()
                 ],
                 "softwareMaterialIncluded": bool(bundle_summary.get("softwareMaterialIncluded", trace.softwareMaterialIncluded)),
+                "workingDocumentIds": [
+                    str(item)
+                    for item in bundle_summary.get("workingDocumentIds", trace.workingDocumentIds or [])
+                    if str(item).strip()
+                ],
+                "workingDocumentHitCount": int(bundle_summary.get("workingDocumentHitCount") or trace.workingDocumentHitCount or 0),
             }
         )
     return merged_items, trace

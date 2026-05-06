@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-05-06T12:09:27.425Z",
+  "branch": "codex/release-cleanup-audit",
+  "head": "2fdf594df15d",
+  "outDir": "output/release-cleanup-audit",
+  "reports": [
+    "00_scope_snapshot.md",
+    "01_packaging_artifacts.md",
+    "02_packaging_guard_status.md",
+    "03_frontend_reachability.md",
+    "04_backend_reachability.md",
+    "05_product_deprecated_candidates.md",
+    "06_keep_exclude_delete_matrix.csv",
+    "07_autonomous_safe_cleanup_policy.md",
+    "README.md"
+  ],
+  "counts": {
+    "packagingArtifacts": 819,
+    "frontendCandidates": 12,
+    "backendCandidates": 15,
+    "productCandidates": 180,
+    "matrixRows": 267
+  },
+  "safety": {
+    "scannedUserApplicationSupport": false,
+    "deletedFiles": false,
+    "installedAppTouched": false,
+    "scriptEntrypointsDowngradedToProductReview": true,
+    "autonomousPolicyAdded": true
+  },
+  "refinedAt": "2026-05-06T12:10:37.562Z",
+  "updatedAt": "2026-05-06T12:14:16.803Z"
+}

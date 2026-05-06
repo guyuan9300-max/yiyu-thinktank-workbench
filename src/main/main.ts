@@ -5,6 +5,7 @@ try { appendFileSync('/tmp/yiyu-thinktank-electron-bootstrap.log', `[${new Date(
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
@@ -14,14 +15,7 @@ import type {
   DesktopStartupGateResumeResult,
   PullSelectedFromMainPayload,
 } from '../shared/types.js';
-import {
-  commitAndPushToMain,
-  findSuggestedCollabRepoPath,
-  getCollabRepoStatus,
-  previewPullFromMain,
-  previewPushToMain,
-  pullSelectedFromMain,
-} from './collabGit.js';
+import { buildRendererLaunchQuery } from '../shared/rendererLaunchQuery.js';
 import {
   buildDesktopAppInfo,
   type BackendHealthPayload,
@@ -59,6 +53,37 @@ type RuntimeSyncMetadata = {
   project: 'backend' | 'cloud_backend';
 };
 
+type PackagedRuntimeSeedManifest = {
+  schemaVersion?: number;
+  platform?: string;
+  arch?: string;
+  python?: {
+    executable?: string;
+    version?: string;
+    treeSha256?: string;
+  };
+  backend?: {
+    requirementsPath?: string;
+    requirementsSha256?: string;
+    pyprojectSha256?: string;
+    uvLockSha256?: string;
+  };
+  wheelhouse?: {
+    path?: string;
+    sha256?: string;
+    fileCount?: number;
+  };
+};
+
+type PackagedRuntimeSeed = {
+  root: string;
+  manifestPath: string;
+  manifest: PackagedRuntimeSeedManifest;
+  seedPython: string;
+  requirementsPath: string;
+  wheelhousePath: string;
+};
+
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
 let cloudBackendProcess: ChildProcessWithoutNullStreams | null = null;
@@ -75,19 +100,20 @@ let ownsCloudBackendProcess = false;
 let backendExitDetail: string | null = null;
 const backendRecentLogLines: string[] = [];
 let latestDesktopAppInfo: DesktopAppInfo | null = null;
-const LOCAL_DEV_CLOUD_SEED_ENV = {
-  YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD: process.env.YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD || 'Admin123!',
-  YIYU_CLOUD_GUYUAN_PASSWORD: process.env.YIYU_CLOUD_GUYUAN_PASSWORD || 'Guyuan31',
-  YIYU_CLOUD_QINGHUA_PASSWORD: process.env.YIYU_CLOUD_QINGHUA_PASSWORD || 'Qinghua123!',
-  YIYU_CLOUD_JIANING_PASSWORD: process.env.YIYU_CLOUD_JIANING_PASSWORD || 'Jianing123!',
-  YIYU_CLOUD_YISHUO_PASSWORD: process.env.YIYU_CLOUD_YISHUO_PASSWORD || 'Yishuo123!',
-} satisfies NodeJS.ProcessEnv;
+const LOCAL_DEV_CLOUD_SEED_ENV_KEYS = [
+  'YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD',
+  'YIYU_CLOUD_BOOTSTRAP_ADMIN_EMAIL',
+  'YIYU_CLOUD_INSECURE_SEED_PASSWORDS',
+  'YIYU_CLOUD_SECRET_KEY',
+] as const;
 const platformDnaExtractorScriptPath = path.join(projectRoot, 'backend', 'scripts', 'extract_platform_dna_text.py');
 const legacyAppBasenames = new Set(['益语智库.app', '益语智库工作台.app']);
 const staleInstallBundlePrefix = `.${APP_DISPLAY_NAME}.installing-`;
-const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
-const DEPRECATED_PACKAGED_REMOTE_CLOUD_API_URLS = new Set(['https://api.yiyu.love', 'http://api.yiyu.love']);
 const RENDERER_QUERY_ARG = '--yiyu-renderer-query';
+const PACKAGED_RUNTIME_MANIFEST_FILE = 'runtime-seed-manifest.json';
+const PACKAGED_RUNTIME_REQUIREMENTS_FILE = 'backend-requirements.txt';
+const PACKAGED_RUNTIME_WHEELHOUSE_DIR = 'wheelhouse';
+const PACKAGED_RUNTIME_PYTHON_SEED_DIR = 'python-seed';
 
 function normalizeHttpUrl(rawUrl?: string | null) {
   const trimmed = rawUrl?.trim();
@@ -95,22 +121,30 @@ function normalizeHttpUrl(rawUrl?: string | null) {
   return trimmed.replace(/\/+$/, '');
 }
 
+function localDevCloudSeedEnv() {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of LOCAL_DEV_CLOUD_SEED_ENV_KEYS) {
+    const value = process.env[key]?.trim();
+    if (value) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
 function remoteCloudBackendUrl() {
-  const explicitUrl = (
+  return (
     normalizeHttpUrl(process.env.YIYU_REMOTE_CLOUD_API_URL)
     || normalizeHttpUrl(process.env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL)
   );
-  if (!app.isPackaged) {
-    return explicitUrl;
-  }
-  if (explicitUrl && !DEPRECATED_PACKAGED_REMOTE_CLOUD_API_URLS.has(explicitUrl)) {
-    return explicitUrl;
-  }
-  return DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL;
 }
 
 function shouldUseRemoteCloudBackend() {
   return Boolean(remoteCloudBackendUrl());
+}
+
+function shouldUseBundledLocalCloudBackend() {
+  return !app.isPackaged && !shouldUseRemoteCloudBackend();
 }
 
 function rendererLaunchQuery() {
@@ -124,15 +158,7 @@ function rendererLaunchQuery() {
     || process.env.YIYU_RENDERER_QUERY
     || ''
   ).trim();
-  const query = rawValue.replace(/^\?+/, '');
-  const params = new URLSearchParams(query);
-  if (app.isPackaged && !params.has('workspaceThread')) {
-    // Default packaged launches back to the latest workspace thread so
-    // previously asked questions remain visible after restart.
-    params.set('workspaceThread', 'latest');
-  }
-  const serialized = params.toString();
-  return serialized ? `?${serialized}` : '';
+  return buildRendererLaunchQuery(rawValue, { packaged: app.isPackaged });
 }
 
 function appendElectronLaunchLog(level: 'INFO' | 'ERROR', message: string) {
@@ -167,6 +193,62 @@ function logElectronError(message: string) {
   writeProcessStreamSafely(process.stderr, `${message}\n`);
 }
 
+type WorkspaceInteractionState = {
+  active: boolean;
+  source: string;
+  detail?: string | null;
+  updatedAt: string;
+};
+
+type QuitRequestMetadata = Record<string, unknown>;
+
+let workspaceInteractionState: WorkspaceInteractionState = {
+  active: false,
+  source: 'startup',
+  detail: null,
+  updatedAt: new Date().toISOString(),
+};
+let lastQuitRequest: {
+  reason: string;
+  source: string;
+  metadata: QuitRequestMetadata;
+  requestedAt: string;
+} | null = null;
+
+function currentRendererUrl() {
+  try {
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.getURL() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isStartupGatePageActive() {
+  const url = currentRendererUrl() || '';
+  return url.includes('__startup_gate_blocked__.html');
+}
+
+function requestAppQuit(reason: string, source: string, metadata: QuitRequestMetadata = {}) {
+  lastQuitRequest = {
+    reason,
+    source,
+    metadata: {
+      ...metadata,
+      rendererUrl: currentRendererUrl(),
+      workspaceInteractionActive: workspaceInteractionState.active,
+      workspaceInteractionSource: workspaceInteractionState.source,
+      workspaceInteractionDetail: workspaceInteractionState.detail || null,
+    },
+    requestedAt: new Date().toISOString(),
+  };
+  appendElectronLaunchLog('INFO', `[app:quit-request] ${JSON.stringify(lastQuitRequest)}`);
+  app.quit();
+}
+
+function shouldDeferDangerousRestart() {
+  return workspaceInteractionState.active && !isStartupGatePageActive();
+}
+
 function rememberBackendLogLine(line: string) {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -186,6 +268,14 @@ function getCollabSuggestedCandidates() {
     path.join(app.getPath('documents'), 'yiyu-thinktank-workbench'),
     path.join(app.getPath('desktop'), 'yiyu-thinktank-workbench'),
   ];
+}
+
+type InternalCollabGitModule = typeof import('./collabGit.js');
+let internalCollabGitModulePromise: Promise<InternalCollabGitModule> | null = null;
+
+async function loadInternalCollabGit() {
+  internalCollabGitModulePromise ??= import('./collabGit.js');
+  return internalCollabGitModulePromise;
 }
 
 function resolveBundlePath(executablePath: string) {
@@ -532,7 +622,7 @@ async function runUiSurfaceAudit(window: BrowserWindow) {
     if (autoQuit) {
       setTimeout(() => {
         try {
-          app.quit();
+          requestAppQuit('ui_runtime_audit_autoquit', 'runUiSurfaceAudit', { outputPath });
         } catch {}
       }, 800);
     }
@@ -859,7 +949,12 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
     pathEntries.add(path.join(env.VIRTUAL_ENV, 'bin'));
   }
   env.PATH = Array.from(pathEntries).join(path.delimiter);
-  env.YIYU_CLOUD_API_URL = cloudBackendUrl();
+  const configuredCloudUrl = cloudBackendUrl();
+  if (configuredCloudUrl) {
+    env.YIYU_CLOUD_API_URL = configuredCloudUrl;
+  } else {
+    delete env.YIYU_CLOUD_API_URL;
+  }
   env.YIYU_WORKBENCH_DATA_DIR = fixedUserDataPath;
   env.PYTHONDONTWRITEBYTECODE = '1';
   env.PYTHONPYCACHEPREFIX = path.join(fixedUserDataPath, 'runtime', 'pycache');
@@ -964,6 +1059,132 @@ function buildRuntimeFingerprint(projectDirName: 'backend' | 'cloud_backend') {
   }).join('|');
 }
 
+function sha256FileHex(targetPath: string) {
+  return crypto.createHash('sha256').update(fs.readFileSync(targetPath)).digest('hex');
+}
+
+function sha256DirectoryHex(rootPath: string) {
+  const resolvedRoot = path.resolve(rootPath);
+  const entries: Array<{ kind: string; relativePath: string; value: string }> = [];
+  const visit = (entryPath: string) => {
+    const stat = fs.lstatSync(entryPath);
+    const relativePath = path.relative(resolvedRoot, entryPath).split(path.sep).join('/');
+    if (stat.isSymbolicLink()) {
+      entries.push({ kind: 'symlink', relativePath, value: fs.readlinkSync(entryPath) });
+      return;
+    }
+    if (stat.isDirectory()) {
+      for (const child of fs.readdirSync(entryPath)) {
+        visit(path.join(entryPath, child));
+      }
+      return;
+    }
+    entries.push({ kind: 'file', relativePath, value: sha256FileHex(entryPath) });
+  };
+  visit(resolvedRoot);
+  entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath) || left.kind.localeCompare(right.kind));
+  const digest = crypto.createHash('sha256');
+  for (const entry of entries) {
+    digest.update(entry.kind);
+    digest.update('\0');
+    digest.update(entry.relativePath);
+    digest.update('\0');
+    digest.update(entry.value);
+    digest.update('\0');
+  }
+  return digest.digest('hex');
+}
+
+function packagedRuntimeRoot() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime')
+    : path.join(projectRoot, 'dist', 'packaged-runtime');
+}
+
+function readPackagedRuntimeSeed(): PackagedRuntimeSeed {
+  const root = packagedRuntimeRoot();
+  const manifestPath = path.join(root, PACKAGED_RUNTIME_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`内置后端运行时准备失败：缺少 ${manifestPath}`);
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as PackagedRuntimeSeedManifest;
+  const seedPython = path.join(
+    root,
+    manifest.python?.executable || path.join(PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+  );
+  const requirementsPath = path.join(root, manifest.backend?.requirementsPath || PACKAGED_RUNTIME_REQUIREMENTS_FILE);
+  const wheelhousePath = path.join(root, manifest.wheelhouse?.path || PACKAGED_RUNTIME_WHEELHOUSE_DIR);
+  return {
+    root,
+    manifestPath,
+    manifest,
+    seedPython,
+    requirementsPath,
+    wheelhousePath,
+  };
+}
+
+function packagedRuntimeFingerprint(seed: PackagedRuntimeSeed) {
+  const manifest = seed.manifest;
+  return [
+    'packaged',
+    manifest.schemaVersion ?? 'unknown',
+    manifest.platform ?? process.platform,
+    manifest.arch ?? process.arch,
+    manifest.python?.version ?? 'python-unknown',
+    manifest.python?.treeSha256 ?? 'python-hash-missing',
+    manifest.backend?.requirementsSha256 ?? 'requirements-hash-missing',
+    manifest.backend?.uvLockSha256 ?? 'uv-lock-hash-missing',
+    manifest.wheelhouse?.sha256 ?? 'wheelhouse-hash-missing',
+  ].join('|');
+}
+
+function validatePackagedRuntimeSeed(seed: PackagedRuntimeSeed) {
+  if (seed.manifest.platform && seed.manifest.platform !== process.platform) {
+    throw new Error(`内置后端运行时平台不匹配：${seed.manifest.platform} != ${process.platform}`);
+  }
+  if (seed.manifest.arch && seed.manifest.arch !== process.arch) {
+    throw new Error(`内置后端运行时架构不匹配：${seed.manifest.arch} != ${process.arch}`);
+  }
+  if (!isExecutable(seed.seedPython)) {
+    throw new Error(`内置 Python 不可执行：${seed.seedPython}`);
+  }
+  if (!fs.existsSync(seed.requirementsPath)) {
+    throw new Error(`内置依赖清单缺失：${seed.requirementsPath}`);
+  }
+  if (!fs.existsSync(seed.wheelhousePath)) {
+    throw new Error(`内置 wheelhouse 缺失：${seed.wheelhousePath}`);
+  }
+  const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
+  if (!fs.existsSync(seedLibPython)) {
+    throw new Error(`内置 Python 动态库缺失：${seedLibPython}`);
+  }
+  const wheelFiles = fs.readdirSync(seed.wheelhousePath).filter((item) => item.endsWith('.whl'));
+  if (wheelFiles.length === 0) {
+    throw new Error(`内置 wheelhouse 为空：${seed.wheelhousePath}`);
+  }
+  if (seed.manifest.backend?.requirementsSha256) {
+    const actualRequirementsHash = sha256FileHex(seed.requirementsPath);
+    if (actualRequirementsHash !== seed.manifest.backend.requirementsSha256) {
+      throw new Error('内置后端依赖清单 hash 不匹配');
+    }
+  }
+  if (seed.manifest.wheelhouse?.sha256) {
+    const actualWheelhouseHash = sha256DirectoryHex(seed.wheelhousePath);
+    if (actualWheelhouseHash !== seed.manifest.wheelhouse.sha256) {
+      throw new Error('内置 wheelhouse hash 不匹配');
+    }
+  }
+}
+
+function assertRuntimeVenvPathIsSafe(venvPath: string) {
+  const runtimeRoot = path.resolve(app.getPath('userData'), 'runtime');
+  const resolvedVenv = path.resolve(venvPath);
+  if (!resolvedVenv.startsWith(`${runtimeRoot}${path.sep}`)) {
+    throw new Error(`拒绝重建非用户运行时目录：${resolvedVenv}`);
+  }
+}
+
 function evaluateBackendRuntimeWarning(payload: BackendHealthPayload): string | null {
   const schemaVersion = Number(payload.backendSchemaVersion || 0);
   if (schemaVersion > 0 && schemaVersion < REQUIRED_BACKEND_SCHEMA_VERSION) {
@@ -998,7 +1219,68 @@ async function extractPlatformDnaText(targetPath: string) {
   return typeof payload.text === 'string' ? payload.text : '';
 }
 
+async function ensurePackagedBackendRuntime(venvPath: string) {
+  const seed = readPackagedRuntimeSeed();
+  const metadataPath = projectRuntimeMetadataPath('backend', venvPath);
+  const fingerprint = packagedRuntimeFingerprint(seed);
+  const pythonPath = path.join(venvPath, 'bin', 'python');
+  const uvicornPath = path.join(venvPath, 'bin', 'uvicorn');
+  const existingMetadata = readRuntimeSyncMetadata(metadataPath);
+  const forceSync = parseBooleanEnv(process.env.YIYU_FORCE_RUNTIME_SYNC, false);
+  const shouldInstall = forceSync || !isExecutable(pythonPath) || !isExecutable(uvicornPath) || existingMetadata?.fingerprint !== fingerprint;
+  if (!shouldInstall) {
+    return;
+  }
+
+  validatePackagedRuntimeSeed(seed);
+  assertRuntimeVenvPathIsSafe(venvPath);
+  fs.rmSync(venvPath, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(venvPath), { recursive: true });
+  await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
+  const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
+  const venvLibPython = path.join(venvPath, 'lib', 'libpython3.11.dylib');
+  if (fs.existsSync(seedLibPython)) {
+    fs.copyFileSync(seedLibPython, venvLibPython);
+  }
+  await runCommand(
+    path.join(venvPath, 'bin', 'python'),
+    ['-m', 'ensurepip', '--upgrade', '--default-pip'],
+    backendEnv({ VIRTUAL_ENV: venvPath }),
+    'backend:packaged-ensurepip',
+  );
+  await runCommand(
+    path.join(venvPath, 'bin', 'python'),
+    [
+      '-m',
+      'pip',
+      'install',
+      '--no-index',
+      '--find-links',
+      seed.wheelhousePath,
+      '--requirement',
+      seed.requirementsPath,
+    ],
+    backendEnv({ VIRTUAL_ENV: venvPath }),
+    'backend:packaged-wheelhouse',
+  );
+  if (!isExecutable(uvicornPath)) {
+    throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
+  }
+  writeRuntimeSyncMetadata(metadataPath, {
+    fingerprint,
+    syncedAt: new Date().toISOString(),
+    project: 'backend',
+  });
+}
+
 async function ensureProjectRuntime(projectDirName: 'backend' | 'cloud_backend', venvPath: string) {
+  if (app.isPackaged) {
+    if (projectDirName !== 'backend') {
+      throw new Error(`packaged runtime does not include local ${projectDirName}`);
+    }
+    await ensurePackagedBackendRuntime(venvPath);
+    return;
+  }
   if (!uvBinaryPath) {
     throw new Error('missing_uv_binary');
   }
@@ -1034,7 +1316,7 @@ function backendUrl() {
 }
 
 function cloudBackendUrl() {
-  return remoteCloudBackendUrl() || `http://127.0.0.1:${cloudBackendPort}`;
+  return remoteCloudBackendUrl() || (shouldUseBundledLocalCloudBackend() ? `http://127.0.0.1:${cloudBackendPort}` : '');
 }
 
 function rendererUrl() {
@@ -1363,7 +1645,7 @@ function startCloudBackend() {
       cwd: path.join(projectRoot, 'cloud_backend'),
       env: backendEnv({
         VIRTUAL_ENV: cloudBackendRuntimeVenv,
-        ...LOCAL_DEV_CLOUD_SEED_ENV,
+        ...localDevCloudSeedEnv(),
       }),
     },
   );
@@ -1841,7 +2123,10 @@ function buildStartupRepairPage(appInfo: DesktopAppInfo, rebuildRepoPath: string
         }
         status.textContent = '正在从源码仓库重装最新安装包…';
         try {
-          await window.yiyuWorkbench.rebuildAndInstallFromRepo(payload.rebuildRepoPath);
+          const accepted = await window.yiyuWorkbench.rebuildAndInstallFromRepo(payload.rebuildRepoPath);
+          if (!accepted) {
+            status.textContent = '当前仍有工作台编辑或输入未完成，已延后重装。请保存当前内容后再重试。';
+          }
         } catch (error) {
           status.textContent = error instanceof Error ? error.message : String(error);
         }
@@ -2074,7 +2359,11 @@ async function createMainWindow(options: { startupGateInfo?: DesktopAppInfo | nu
   }
 
   if (options.startupGateInfo?.startupGateStatus === 'blocked') {
-    const rebuildRepoPath = await findSuggestedCollabRepoPath(getCollabSuggestedCandidates()).catch(() => null);
+    const rebuildRepoPath = app.isPackaged
+      ? null
+      : await loadInternalCollabGit()
+        .then((collabGit) => collabGit.findSuggestedCollabRepoPath(getCollabSuggestedCandidates()))
+        .catch(() => null);
     await mainWindow.loadURL(startupRepairPageUrl(options.startupGateInfo, rebuildRepoPath));
     if (!mainWindow.isVisible()) {
       mainWindow.show();
@@ -2110,7 +2399,7 @@ appendElectronLaunchLog('INFO', `[app] singleInstanceLock=${gotSingleInstanceLoc
 
 if (!gotSingleInstanceLock) {
   appendElectronLaunchLog('ERROR', '[app] failed to acquire single-instance lock, quitting');
-  app.quit();
+  requestAppQuit('single_instance_lock_failed', 'startup', {});
 }
 
 app.on('second-instance', () => {
@@ -2139,24 +2428,32 @@ app.whenReady().then(async () => {
   backendPort = reuseExistingBackend ? DEFAULT_BACKEND_PORT : await reservePort(DEFAULT_BACKEND_PORT, reservedPorts);
   reservedPorts.add(backendPort);
   const usingRemoteCloudBackend = shouldUseRemoteCloudBackend();
+  const usingLocalCloudBackend = shouldUseBundledLocalCloudBackend();
   const configuredRemoteCloudBackendUrl = remoteCloudBackendUrl();
   let reuseExistingCloudBackend = false;
   if (usingRemoteCloudBackend) {
     logElectronInfo(`[cloud] using remote collaboration backend ${configuredRemoteCloudBackendUrl}`);
-  } else {
+  } else if (usingLocalCloudBackend) {
     reuseExistingCloudBackend = await checkCloudBackendHealthAt(DEFAULT_CLOUD_BACKEND_PORT);
     cloudBackendPort = reuseExistingCloudBackend ? DEFAULT_CLOUD_BACKEND_PORT : await reservePort(DEFAULT_CLOUD_BACKEND_PORT, reservedPorts);
     reservedPorts.add(cloudBackendPort);
+  } else {
+    logElectronInfo('[cloud] no collaboration backend configured; cloud login/sync will stay disabled until settings are configured');
   }
   process.env.YIYU_BACKEND_URL = backendUrl();
-  process.env.YIYU_CLOUD_API_URL = cloudBackendUrl();
+  const configuredCloudUrl = cloudBackendUrl();
+  if (configuredCloudUrl) {
+    process.env.YIYU_CLOUD_API_URL = configuredCloudUrl;
+  } else {
+    delete process.env.YIYU_CLOUD_API_URL;
+  }
   uvBinaryPath = resolveUvBinary();
-  if (!uvBinaryPath) {
+  if (!app.isPackaged && !uvBinaryPath) {
     dialog.showErrorBox(
       '缺少 uv 运行时',
       '启动桌面应用前需要先安装 uv。请先执行 `curl -LsSf https://astral.sh/uv/install.sh | sh`，然后重新打开应用。',
     );
-    app.quit();
+    requestAppQuit('missing_uv_runtime', 'startup', {});
     return;
   }
   const runtimeRoot = path.join(app.getPath('userData'), 'runtime');
@@ -2164,7 +2461,7 @@ app.whenReady().then(async () => {
   cloudBackendRuntimeVenv = path.join(runtimeRoot, 'cloud-backend-venv');
   try {
     await ensureProjectRuntime('backend', backendRuntimeVenv);
-    if (!usingRemoteCloudBackend) {
+    if (usingLocalCloudBackend) {
       await ensureProjectRuntime('cloud_backend', cloudBackendRuntimeVenv);
     }
     await registerRendererProtocol();
@@ -2173,10 +2470,10 @@ app.whenReady().then(async () => {
     await cleanupStaleInstallBundles();
   } catch (error) {
     dialog.showErrorBox('后端运行时准备失败', error instanceof Error ? error.message : String(error));
-    app.quit();
+    requestAppQuit('runtime_prepare_failed', 'startup', { error: error instanceof Error ? error.message : String(error) });
     return;
   }
-  if (!usingRemoteCloudBackend && !reuseExistingCloudBackend) {
+  if (usingLocalCloudBackend && !reuseExistingCloudBackend) {
     startCloudBackend();
   }
   if (!reuseExistingBackend) {
@@ -2199,12 +2496,12 @@ app.whenReady().then(async () => {
         backendHealth = await waitForBackend(30000);
       } catch (secondError) {
         dialog.showErrorBox('本地后端启动失败', secondError instanceof Error ? secondError.message : String(secondError));
-        app.quit();
+        requestAppQuit('backend_start_failed_after_retry', 'startup', { error: secondError instanceof Error ? secondError.message : String(secondError) });
         return;
       }
     } else {
       dialog.showErrorBox('本地后端启动失败', firstError instanceof Error ? firstError.message : String(firstError));
-      app.quit();
+      requestAppQuit('backend_start_failed_reused_backend', 'startup', { error: firstError instanceof Error ? firstError.message : String(firstError) });
       return;
     }
   }
@@ -2214,13 +2511,15 @@ app.whenReady().then(async () => {
     await createMainWindow({ startupGateInfo: desktopAppInfo });
   } catch (error) {
     dialog.showErrorBox('桌面界面启动失败', error instanceof Error ? error.message : String(error));
-    app.quit();
+    requestAppQuit('main_window_create_failed', 'startup', { error: error instanceof Error ? error.message : String(error) });
     return;
   }
   appendElectronLaunchLog('INFO', '[app] main window created successfully');
-  void waitForCloudBackend().catch((error) => {
-    logElectronError(error instanceof Error ? (error.stack || error.message) : String(error));
-  });
+  if (usingLocalCloudBackend || usingRemoteCloudBackend) {
+    void waitForCloudBackend().catch((error) => {
+      logElectronError(error instanceof Error ? (error.stack || error.message) : String(error));
+    });
+  }
   appendElectronLaunchLog('INFO', '[app] startup sequence complete, app should stay alive');
 
   // Periodic backend health watchdog — restart if crashed silently
@@ -2287,17 +2586,17 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', (event) => {
-  appendElectronLaunchLog('INFO', `[app] before-quit fired`);
+  appendElectronLaunchLog('INFO', `[app] before-quit fired quitRequest=${JSON.stringify(lastQuitRequest || { reason: 'unknown_external_or_system' })}`);
   stopBackend();
   stopCloudBackend();
 });
 app.on('will-quit', () => {
-  appendElectronLaunchLog('INFO', '[app] will-quit fired');
+  appendElectronLaunchLog('INFO', `[app] will-quit fired quitRequest=${JSON.stringify(lastQuitRequest || { reason: 'unknown_external_or_system' })}`);
 });
 app.on('window-all-closed', () => {
   appendElectronLaunchLog('INFO', '[app] window-all-closed fired');
   if (process.platform !== 'darwin') {
-    app.quit();
+    requestAppQuit('window_all_closed', 'app_event', {});
   }
 });
 
@@ -2326,12 +2625,13 @@ ipcMain.handle('yiyu-workbench:selectFolder', async () => {
 });
 
 ipcMain.handle('yiyu-workbench:selectCollabRepo', async () => {
+  const collabGit = await loadInternalCollabGit();
   const result = await dialog.showOpenDialog({
     title: '选择源码仓库目录',
     properties: ['openDirectory'],
   });
   if (result.canceled || !result.filePaths[0]) return null;
-  const repoPath = await findSuggestedCollabRepoPath([result.filePaths[0]]);
+  const repoPath = await collabGit.findSuggestedCollabRepoPath([result.filePaths[0]]);
   if (!repoPath) {
     throw new Error('你选中的目录不是 Git 源码仓库，请重新选择。');
   }
@@ -2339,7 +2639,8 @@ ipcMain.handle('yiyu-workbench:selectCollabRepo', async () => {
 });
 
 ipcMain.handle('yiyu-workbench:getCollabRepoStatus', async (_event, repoPath?: string | null) => {
-  return getCollabRepoStatus({
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.getCollabRepoStatus({
     repoPath,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
@@ -2347,7 +2648,8 @@ ipcMain.handle('yiyu-workbench:getCollabRepoStatus', async (_event, repoPath?: s
 });
 
 ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: string) => {
-  return previewPushToMain({
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.previewPushToMain({
     repoPath,
     suggestedCandidates: getCollabSuggestedCandidates(),
     appDbPath: path.join(app.getPath('userData'), 'app.db'),
@@ -2355,11 +2657,13 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
 });
 
 ipcMain.handle('yiyu-workbench:commitAndPushToMain', async (_event, payload: CommitAndPushToMainPayload) => {
-  return commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
 });
 
 ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string, targetCommit?: string | null) => {
-  return previewPullFromMain({
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.previewPullFromMain({
     repoPath,
     targetCommit,
     suggestedCandidates: getCollabSuggestedCandidates(),
@@ -2368,11 +2672,39 @@ ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: st
 });
 
 ipcMain.handle('yiyu-workbench:pullSelectedFromMain', async (_event, payload: PullSelectedFromMainPayload) => {
-  return pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+  const collabGit = await loadInternalCollabGit();
+  return collabGit.pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
+});
+
+ipcMain.handle('yiyu-workbench:setWorkspaceInteractionState', async (_event, payload?: {
+  active?: boolean;
+  source?: string;
+  detail?: string | null;
+}) => {
+  workspaceInteractionState = {
+    active: Boolean(payload?.active),
+    source: String(payload?.source || 'renderer'),
+    detail: payload?.detail ? String(payload.detail) : null,
+    updatedAt: new Date().toISOString(),
+  };
+  appendElectronLaunchLog('INFO', `[workspace-interaction] ${JSON.stringify(workspaceInteractionState)}`);
+  return workspaceInteractionState;
 });
 
 ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPath: string) => {
   const normalizedRepoPath = path.resolve(repoPath);
+  const metadata = {
+    repoPath: normalizedRepoPath,
+    startupGatePageActive: isStartupGatePageActive(),
+  };
+  appendElectronLaunchLog('INFO', `[rebuild-install-request] ${JSON.stringify({
+    ...metadata,
+    workspaceInteractionState,
+  })}`);
+  if (shouldDeferDangerousRestart()) {
+    appendElectronLaunchLog('ERROR', `[rebuild-install-request] deferred because workspace interaction is active ${JSON.stringify(workspaceInteractionState)}`);
+    return false;
+  }
   const rebuildCommand = [
     `cd ${JSON.stringify(normalizedRepoPath)}`,
     `mkdir -p ${JSON.stringify(runtimeLogsDir)}`,
@@ -2388,13 +2720,13 @@ ipcMain.handle('yiyu-workbench:rebuildAndInstallFromRepo', async (_event, repoPa
   });
   child.unref();
   setTimeout(() => {
-    app.quit();
+    requestAppQuit('rebuild_and_install_from_repo', 'ipc:yiyu-workbench:rebuildAndInstallFromRepo', metadata);
   }, 300);
   return true;
 });
 
 ipcMain.handle('yiyu-workbench:quitApp', async () => {
-  setTimeout(() => app.quit(), 50);
+  setTimeout(() => requestAppQuit('manual_quit', 'ipc:yiyu-workbench:quitApp', {}), 50);
   return true;
 });
 

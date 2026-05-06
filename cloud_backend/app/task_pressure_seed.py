@@ -62,22 +62,22 @@ DEPARTMENT_SPECS = {
 }
 
 USER_DIRECTORY = {
-    "庆华": {"user_id": "user_qinghua", "email": "qinghua@yiyu-system.com", "password": "Qinghua123!"},
+    "庆华": {"user_id": "user_qinghua", "email": "qinghua@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "苏妍": {"user_id": "user_sim_suyan", "email": "suyan@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "晨曦": {"user_id": "user_sim_chenxi", "email": "chenxi@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "奕鸣": {"user_id": "user_sim_yiming", "email": "yiming@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
-    "佳乐": {"user_id": "user_jiale", "email": "jiale@yiyu-system.com", "password": "Jiale123!"},
+    "佳乐": {"user_id": "user_jiale", "email": "jiale@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "昊然": {"user_id": "user_sim_haoran", "email": "haoran@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "林越": {"user_id": "user_sim_linyue", "email": "linyue@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "君昊": {"user_id": "user_sim_junhao", "email": "junhao@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "欣宁": {"user_id": "user_sim_xinning", "email": "xinning@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
-    "大周": {"user_id": "user_dazhou", "email": "dazhou@yiyu-system.com", "password": "Dazhou123!"},
+    "大周": {"user_id": "user_dazhou", "email": "dazhou@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "罗茜茜": {"user_id": "user_sim_ruoxi", "email": "ruoxi@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "柏辰": {"user_id": "user_sim_bochen", "email": "bochen@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "舒婷": {"user_id": "user_sim_shuting", "email": "shuting@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "嘉译": {"user_id": "user_sim_jiayi", "email": "jiayi@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
-    "一朔": {"user_id": "user_yishuo", "email": "yishuo@yiyu-system.com", "password": "Yishuo123!"},
-    "嘉宁": {"user_id": "user_jianing", "email": "jianing@yiyu-system.com", "password": "Jianing123!"},
+    "一朔": {"user_id": "user_yishuo", "email": "yishuo@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
+    "嘉宁": {"user_id": "user_jianing", "email": "jianing@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "秋月": {"user_id": "user_sim_qiuyue", "email": "qiuyue@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "泽宇": {"user_id": "user_sim_zeyu", "email": "zeyu@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
     "瑶彤": {"user_id": "user_sim_yaotong", "email": "yaotong@yiyu-system.com", "password": DEFAULT_SEED_PASSWORD},
@@ -234,7 +234,7 @@ def _ensure_task_lists(db: Database, organization_id: str) -> None:
 
 def _upsert_ceo_account(db: Database, organization_id: str, user_id: str, full_name: str) -> None:
     timestamp = datetime.now().replace(microsecond=0).isoformat()
-    password_hash = hash_password("Guyuan123!")
+    password_hash = hash_password(DEFAULT_SEED_PASSWORD)
     exists = db.fetchone("SELECT id FROM employee_accounts WHERE id = ?", (user_id,))
     if exists:
         db.execute(

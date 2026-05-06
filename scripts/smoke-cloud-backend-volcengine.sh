@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${1:-http://101.126.34.232}"
+BASE_URL="${1:-${YIYU_CLOUD_API_URL:-}}"
+if [[ -z "${BASE_URL}" ]]; then
+  echo "Usage: $0 <cloud-api-base-url>" >&2
+  echo "Or set YIYU_CLOUD_API_URL." >&2
+  exit 2
+fi
 
 retry_curl() {
   local path="$1"
@@ -33,6 +38,32 @@ else
   echo "smart-input route missing" >&2
   exit 1
 fi
+
+echo "=== mobile consult P0 contract routes ==="
+for route in \
+  '"/api/v1/mobile/capabilities"' \
+  '"/api/v1/clients/{client_id}/workspace"' \
+  '"/api/v1/clients/{client_id}/strategic-cockpit"' \
+  '"/api/v1/consultation/chat"'
+do
+  if grep -q "${route}" <<<"${OPENAPI_JSON}"; then
+    echo "${route} present"
+  else
+    echo "${route} missing" >&2
+    exit 1
+  fi
+done
+
+echo "=== mobile consult v2 schema ==="
+for field in '"workspaceContext"' '"taskBoardContext"' '"answerMode"' '"contextQuality"' '"missingContext"'
+do
+  if grep -q "${field}" <<<"${OPENAPI_JSON}"; then
+    echo "${field} present"
+  else
+    echo "${field} missing" >&2
+    exit 1
+  fi
+done
 
 echo "=== required env hints ==="
 cat <<'EOF'

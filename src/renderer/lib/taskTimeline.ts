@@ -1,4 +1,10 @@
 import type { Task } from '../../shared/types';
+import {
+  getTaskCalendarPlacement,
+  getTaskExecutionDate,
+  getTaskScheduleRange,
+  taskOverlapsDateWindow,
+} from '../../shared/taskTime';
 
 const TASK_DEFAULT_DUE_TIME = '09:00';
 const DAY_MINUTES = 24 * 60;
@@ -195,25 +201,23 @@ export function formatTaskTimelineLabel(task: Pick<Task, 'startDate' | 'dueDate'
   return `${baseLabel} ${normalizedDueTime}-${formatTaskMinuteOfDay(endMinute)}`.trim();
 }
 
-export function resolveTaskTimelineDateTime(task: Pick<Task, 'dueDate' | 'ddl' | 'createdAt'>) {
+export function resolveTaskTimelineDateTime(task: Pick<Task, 'startDate' | 'dueDate' | 'ddl' | 'createdAt' | 'deadlineAt' | 'scheduledStartAt' | 'scheduledEndAt' | 'durationMinutes' | 'status' | 'id'>) {
+  const canonicalDate = getTaskExecutionDate(task as Task);
+  if (canonicalDate) return canonicalDate;
   if (task.dueDate) {
     const { date, time } = splitTaskDueDateTime(task.dueDate);
     const normalizedDue = date ? `${date}T${resolveTaskDueTimeForDisplay(date, time)}` : task.dueDate;
     const parsedDue = new Date(normalizedDue);
     if (!Number.isNaN(parsedDue.getTime())) return parsedDue;
   }
-  const ddlDate = normalizeDdlToDateTime(task.ddl);
-  if (ddlDate) return ddlDate;
   const createdAt = new Date(task.createdAt);
   return Number.isNaN(createdAt.getTime()) ? null : createdAt;
 }
 
-export function taskDateForCalendar(task: Pick<Task, 'startDate' | 'dueDate' | 'ddl'>) {
-  const explicitStartDate = parseTaskDateValue(task.startDate);
-  if (explicitStartDate) return explicitStartDate;
-  const explicitDate = parseTaskDateValue(task.dueDate);
-  if (explicitDate) return explicitDate;
-  return normalizeDdlToDate(task.ddl);
+export function taskDateForCalendar(task: Pick<Task, 'id' | 'status' | 'startDate' | 'dueDate' | 'durationMinutes' | 'ddl' | 'deadlineAt' | 'scheduledStartAt' | 'scheduledEndAt' | 'completedAt'>) {
+  const placement = getTaskCalendarPlacement(task as Task);
+  if (placement.date) return placement.date;
+  return null;
 }
 
 export type TaskDateTimeRange = {
@@ -223,9 +227,25 @@ export type TaskDateTimeRange = {
 };
 
 export function resolveTaskDateTimeRange(
-  task: Pick<Task, 'startDate' | 'dueDate' | 'durationMinutes' | 'ddl' | 'createdAt'>,
+  task: Pick<Task, 'id' | 'status' | 'startDate' | 'dueDate' | 'durationMinutes' | 'ddl' | 'createdAt' | 'deadlineAt' | 'scheduledStartAt' | 'scheduledEndAt' | 'completedAt'>,
 ): TaskDateTimeRange {
-  const fallbackDate = startOfDayValue(taskDateForCalendar(task));
+  const placement = getTaskCalendarPlacement(task as Task);
+  if (placement.range) {
+    return {
+      hasExplicitTime: true,
+      startDateTime: placement.range.start,
+      endDateTime: placement.range.end,
+    };
+  }
+  if (placement.date) {
+    const dayStart = startOfDayValue(placement.date);
+    return {
+      hasExplicitTime: false,
+      startDateTime: dayStart,
+      endDateTime: addDays(dayStart, 1),
+    };
+  }
+  const fallbackDate = startOfDayValue(parseTaskDateValue(task.createdAt) || new Date());
   const startParts = splitTaskDueDateTime(task.startDate);
   const dueParts = splitTaskDueDateTime(task.dueDate);
   const startDate = parseTaskDateValue(startParts.date || task.startDate) || null;
@@ -301,8 +321,7 @@ export function resolveTaskDateTimeRange(
 }
 
 export function taskOverlapsCalendarWindow(task: Task, startDate: Date, endExclusive: Date) {
-  const range = resolveTaskDateTimeRange(task);
-  return range.endDateTime > startDate && range.startDateTime < endExclusive;
+  return taskOverlapsDateWindow(task, startDate, endExclusive);
 }
 
 export function taskCoversCalendarDate(task: Task, date: Date) {
@@ -311,13 +330,13 @@ export function taskCoversCalendarDate(task: Task, date: Date) {
 }
 
 export function buildTaskDayTimedSegment(task: Task, dayDate: Date) {
-  const range = resolveTaskDateTimeRange(task);
-  if (!range.hasExplicitTime) return null;
+  const range = getTaskScheduleRange(task);
+  if (!range) return null;
   const dayStart = startOfDayValue(dayDate);
   const dayEnd = addDays(dayStart, 1);
-  if (range.endDateTime <= dayStart || range.startDateTime >= dayEnd) return null;
-  const segmentStart = range.startDateTime > dayStart ? range.startDateTime : dayStart;
-  const segmentEnd = range.endDateTime < dayEnd ? range.endDateTime : dayEnd;
+  if (range.end <= dayStart || range.start >= dayEnd) return null;
+  const segmentStart = range.start > dayStart ? range.start : dayStart;
+  const segmentEnd = range.end < dayEnd ? range.end : dayEnd;
   const startMinute = segmentStart.getHours() * 60 + segmentStart.getMinutes();
   const endMinute = segmentEnd.getTime() === dayEnd.getTime()
     ? DAY_MINUTES

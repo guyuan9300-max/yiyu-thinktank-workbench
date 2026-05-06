@@ -25,6 +25,8 @@ def make_client(tmp_path: Path) -> TestClient:
 
 def seed_cloud_session(client: TestClient, *, user_id: str = "user_guyuan") -> None:
     db = client.app.state.app_state.db
+    client.app.state.app_state.cloud_api_url = BASE_URL
+    db.set_setting("cloud_api_url", BASE_URL)
     db.set_setting("cloud_access_token", "token_demo")
     db.set_setting(
         "cloud_session_user",
@@ -49,6 +51,47 @@ def seed_task_list(client: TestClient) -> None:
         VALUES('list-0', '收集箱', '#5B7BFE', 0, 1, 'org')
         """
     )
+
+
+def seed_client(client: TestClient, *, client_id: str = "client_foundation", name: str = "乡村发展基金会") -> None:
+    client.app.state.app_state.db.execute(
+        """
+        INSERT OR REPLACE INTO clients(id, name, alias, domain, type, intro, stage, color, created_at, updated_at)
+        VALUES(?, ?, '', '', 'foundation', '', '', '#5B7BFE', '2026-04-20T09:00:00', '2026-04-20T09:00:00')
+        """,
+        (client_id, name),
+    )
+
+
+def seed_event_line(
+    client: TestClient,
+    *,
+    event_line_id: str = "eline_local_only",
+    name: str = "云南儿童资助研究",
+    client_id: str = "client_foundation",
+    sync_status: str = "local",
+    cloud_id: str | None = None,
+) -> None:
+    client.app.state.app_state.db.execute(
+        """
+        INSERT OR REPLACE INTO event_lines(
+            id, name, kind, status, visibility_scope, primary_client_id, primary_client_name,
+            participant_ids_json, created_at, updated_at, sync_status, cloud_id, pending_sync_action, last_sync_error
+        ) VALUES(?, ?, 'custom', 'active', 'project_public', ?, ?, '[]', '2026-04-20T09:00:00', '2026-04-27T09:00:00', ?, ?, '', '')
+        """,
+        (event_line_id, name, client_id, "乡村发展基金会", sync_status, cloud_id),
+    )
+
+
+class SelectiveInlineThread:
+    def __init__(self, target=None, args=(), kwargs=None, **_options):
+        self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
+
+    def start(self) -> None:
+        if getattr(self.target, "__name__", "") == "_try_cloud_sync_task":
+            self.target(*self.args, **self.kwargs)
 
 
 def seed_task_with_collaborator(
@@ -121,6 +164,183 @@ def test_cloud_event_line_list_upserts_local_shadow(tmp_path: Path, monkeypatch)
     assert row["name"] == "品牌传播平台"
     assert row["primary_client_id"] == "client_foundation"
     assert row["sync_status"] == "synced"
+
+
+def test_event_line_list_returns_local_merged_view_when_cloud_available(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    seed_client(client, name="士平基金会")
+    seed_event_line(client, name="云南儿童资助研究", client_id="client_foundation")
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        if method.upper() == "GET" and url == f"{BASE_URL}/api/v1/event-lines":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "eline_cloud_synced",
+                        "organizationId": "org_1",
+                        "name": "云端项目线",
+                        "kind": "custom",
+                        "status": "active",
+                        "visibilityScope": "project_public",
+                        "createdAt": "2026-04-21T09:00:00",
+                        "updatedAt": "2026-04-27T09:00:00",
+                    }
+                ],
+            )
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    response = client.get("/api/v1/event-lines")
+    assert response.status_code == 200, response.text
+    event_lines = {item["id"]: item for item in response.json()}
+    assert "eline_cloud_synced" in event_lines
+    assert "eline_local_only" in event_lines
+    assert event_lines["eline_local_only"]["primaryClientName"] == "士平基金会"
+    assert event_lines["eline_local_only"]["syncStatus"] == "local"
+
+
+def test_event_line_create_cloud_failure_marks_pending_and_visible(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    seed_client(client, name="士平基金会")
+
+    def unavailable_cloud(method: str, url: str, **kwargs):
+        if method.upper() == "POST" and url == f"{BASE_URL}/api/v1/event-lines":
+            return httpx.Response(503, json={"detail": "cloud unavailable"})
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", unavailable_cloud)
+
+    response = client.post(
+        "/api/v1/event-lines",
+        json={"name": "云南儿童资助研究", "primaryClientId": "client_foundation"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["name"] == "云南儿童资助研究"
+    assert payload["primaryClientName"] == "士平基金会"
+    assert payload["syncStatus"] == "pending"
+    assert payload["pendingSyncAction"] == "create"
+    assert "cloud unavailable" in payload["lastSyncError"]
+
+
+def test_task_cloud_sync_resolves_local_only_event_line_cloud_id_first(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    seed_client(client)
+    seed_task_list(client)
+    seed_event_line(client, event_line_id="eline_local_only", client_id="client_foundation")
+    monkeypatch.setattr(app_main, "Thread", SelectiveInlineThread)
+    requests: list[tuple[str, str, dict]] = []
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        payload = kwargs.get("json") or {}
+        requests.append((method.upper(), url, payload))
+        if method.upper() == "GET" and url == f"{BASE_URL}/api/v1/event-lines/eline_local_only":
+            return httpx.Response(404, json={"detail": "Event line not found"})
+        if method.upper() == "POST" and url == f"{BASE_URL}/api/v1/event-lines":
+            assert payload.get("id") == "eline_local_only"
+            return httpx.Response(
+                200,
+                json={
+                    **payload,
+                    "id": "cloud_eline_local_only",
+                    "organizationId": "org_1",
+                    "createdAt": "2026-04-27T09:00:00",
+                    "updatedAt": "2026-04-27T09:00:00",
+                },
+            )
+        if method.upper() == "PATCH" and url == f"{BASE_URL}/api/v1/event-lines/cloud_eline_local_only":
+            return httpx.Response(
+                200,
+                json={
+                    **payload,
+                    "id": "cloud_eline_local_only",
+                    "organizationId": "org_1",
+                    "createdAt": "2026-04-27T09:00:00",
+                    "updatedAt": "2026-04-27T09:00:01",
+                },
+            )
+        if method.upper() == "POST" and url == f"{BASE_URL}/api/v1/tasks":
+            assert payload.get("eventLineId") == "cloud_eline_local_only"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "cloud_task_saved",
+                    "title": payload.get("title"),
+                    "description": payload.get("description"),
+                    "priority": payload.get("priority") or "normal",
+                    "progressStatus": "todo",
+                    "listId": "list-0",
+                    "listName": "收集箱",
+                    "listColor": "#5B7BFE",
+                    "eventLineId": payload.get("eventLineId"),
+                    "clientId": payload.get("clientId"),
+                    "ownerName": "顾源源",
+                    "sourceType": "manual",
+                    "collaborators": [],
+                    "createdAt": "2026-04-27T09:10:00",
+                    "updatedAt": "2026-04-27T09:10:00",
+                },
+            )
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    response = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "乡村发展基金会传播平台合作协议",
+            "desc": "推进合作协议沟通。",
+            "priority": "high",
+            "listId": "list-0",
+            "clientId": "client_foundation",
+            "eventLineId": "eline_local_only",
+            "sourceType": "manual",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["eventLineId"] == "eline_local_only"
+    assert any(method == "POST" and url.endswith("/api/v1/tasks") and payload.get("eventLineId") == "cloud_eline_local_only" for method, url, payload in requests)
+    event_line_row = client.app.state.app_state.db.fetchone("SELECT cloud_id, sync_status FROM event_lines WHERE id = ?", ("eline_local_only",))
+    assert event_line_row["cloud_id"] == "cloud_eline_local_only"
+    assert event_line_row["sync_status"] == "synced"
+
+
+def test_client_rename_refreshes_event_line_name_and_marks_cloud_update(tmp_path: Path):
+    client = make_client(tmp_path)
+    seed_client(client, name="士平基金会")
+    seed_event_line(
+        client,
+        event_line_id="eline_synced",
+        name="云南儿童资助研究",
+        client_id="client_foundation",
+        sync_status="synced",
+        cloud_id="cloud_eline_synced",
+    )
+
+    response = client.put(
+        "/api/v1/clients/client_foundation",
+        json={
+            "name": "士平公益基金会",
+            "alias": "",
+            "domain": "",
+            "type": "foundation",
+            "intro": "",
+            "stage": "",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    event_lines = client.get("/api/v1/event-lines")
+    assert event_lines.status_code == 200, event_lines.text
+    event_line = next(item for item in event_lines.json() if item["id"] == "eline_synced")
+    assert event_line["primaryClientName"] == "士平公益基金会"
+    assert event_line["syncStatus"] == "pending"
+    assert event_line["pendingSyncAction"] == "update"
 
 
 def test_task_create_self_heals_cloud_only_event_line(tmp_path: Path, monkeypatch):

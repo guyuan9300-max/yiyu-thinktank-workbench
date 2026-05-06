@@ -1,23 +1,23 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Building2, Check, ChevronLeft, Copy, Plus, Save, Users, X } from 'lucide-react';
+import { Building2, Check, ChevronLeft, Copy, FileText, Plus, Save, Trash2, UploadCloud, Users, X } from 'lucide-react';
 
 import type {
   DepartmentOption,
   EmployeeRecord,
   OrgDepartmentSettings,
   OrgEmployeeBindingSettings,
+  OrgIntroDocumentSettings,
   OrgModelSettings,
   OrgQuarterKey,
   OrgRoleTemplateSettings,
-  OrganizationDnaModule,
 } from '../../../shared/types';
 import { buildDepartmentInviteCode } from '../../../shared/departmentInvite';
+import { isAssignableOrganizationEmployee, isLegacyOrganizationPersonName } from '../../lib/organizationEmployeeFilters';
 
-type LinkedSection = 'org_dna' | 'tasks' | 'handbook';
+type LinkedSection = 'tasks' | 'handbook';
 
 type Props = {
   value: OrgModelSettings;
-  organizationDnaModules: OrganizationDnaModule[];
   departmentCatalog: DepartmentOption[];
   employees: EmployeeRecord[];
   canEdit: boolean;
@@ -25,8 +25,20 @@ type Props = {
   activeWeekLabel: string;
   initialAdvancedTab?: string | null;
   onChange: (next: OrgModelSettings) => void;
-  onSave: (next?: OrgModelSettings) => Promise<void> | void;
+  onSave: (next?: OrgModelSettings) => Promise<boolean | void> | boolean | void;
+  getInputDrafts?: () => OrganizationSetupInputDraftState;
+  setInputDrafts?: (next: OrganizationSetupInputDraftState) => void;
+  onUploadIntroDocument?: (title: string) => Promise<OrgIntroDocumentSettings | null>;
   onOpenSection: (section: LinkedSection) => void;
+};
+
+export type OrganizationSetupInputDraftState = {
+  organizationName?: string;
+  organizationLeaderName?: string;
+  departmentLeaderNames?: Record<string, string>;
+  editingNodeId?: string | null;
+  editingField?: 'name' | 'leadName' | null;
+  editingText?: string;
 };
 
 type ActiveView = 'tree' | 'codes';
@@ -38,6 +50,8 @@ type TreeDepartmentNode = {
   name: string;
   type: 'department';
   leadName: string;
+  leaderUserId?: string | null;
+  leaderName?: string | null;
   color: string;
   children: TreePositionNode[];
 };
@@ -83,25 +97,26 @@ function buildEmptyQuarterPlan(): OrgDepartmentSettings['quarterPlan'] {
   };
 }
 
-function emptyBinding(userId: string): OrgEmployeeBindingSettings {
-  return {
-    userId,
-    departmentId: null,
-    primaryRoleId: null,
-    managerUserId: null,
-    isManager: false,
-    projectRoleLabels: [],
-    currentFocus: '',
-    taskEditScope: 'self',
-    canApproveTasks: false,
-    canReassignTasks: false,
-    canChangeDeadline: false,
-    updatedAt: '',
-  };
-}
-
 function tint(hexColor: string, suffix = '12') {
   return `${hexColor}${suffix}`;
+}
+
+function visibleLeaderNameInput(value: string | null | undefined) {
+  const name = (value || '').trim();
+  if (!name || isLegacyOrganizationPersonName(name)) return '';
+  return name;
+}
+
+function isComposingKeyEvent(
+  event: React.KeyboardEvent<HTMLInputElement>,
+  composingRef: React.MutableRefObject<boolean>,
+) {
+  const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean; keyCode?: number };
+  return composingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
+}
+
+function resolveInputDraftText(draftValue: string | undefined, fallbackValue: string) {
+  return typeof draftValue === 'string' ? draftValue : fallbackValue;
 }
 
 function deriveTree(
@@ -117,21 +132,27 @@ function deriveTree(
     id: value.organization.organizationId || 'organization-root',
     name: value.organization.name.trim() || fallbackOrganizationName,
     type: 'org',
-    children: activeDepartments.map((department) => ({
-      id: department.id,
-      name: department.name || '未命名部门',
-      type: 'department',
-      leadName: department.leaderName?.trim() || '待设置',
-      color: department.color || DEPARTMENT_COLORS[0],
-      children: activeRoles
-        .filter((role) => role.departmentId === department.id)
-        .map((role) => ({
-          id: role.id,
-          name: role.name || '未命名岗位',
-          type: 'position',
-          departmentId: department.id,
-        })),
-    })),
+    children: activeDepartments.map((department) => {
+      const rawLeaderName = department.leaderName?.trim() || '';
+      const visibleLeaderName = rawLeaderName && !isLegacyOrganizationPersonName(rawLeaderName) ? rawLeaderName : '';
+      return {
+        id: department.id,
+        name: department.name || '未命名部门',
+        type: 'department',
+        leadName: visibleLeaderName || '待设置',
+        leaderUserId: department.leaderUserId || null,
+        leaderName: visibleLeaderName || null,
+        color: department.color || DEPARTMENT_COLORS[0],
+        children: activeRoles
+          .filter((role) => role.departmentId === department.id)
+          .map((role) => ({
+            id: role.id,
+            name: role.name || '未命名岗位',
+            type: 'position',
+            departmentId: department.id,
+          })),
+      };
+    }),
   };
 }
 
@@ -142,19 +163,29 @@ function computeStats(
   const activeDepartments = value.departments.filter((item) => item.active !== false);
   const activeRoles = value.roles.filter((item) => item.active !== false);
   const activePlans = value.departmentPlans.filter((item) => item.status !== 'closed');
-  const activeEmployees = employees.filter((item) => item.accountStatus !== 'disabled');
-  const boundMembers = value.bindings.filter((item) => item.primaryRoleId).length;
-  const memberCount = Math.max(boundMembers, activeEmployees.filter((item) => item.accountStatus === 'approved' || item.primaryRole === 'admin').length);
+  const activeEmployees = employees.filter(isAssignableOrganizationEmployee);
+  const activeEmployeeIds = new Set(activeEmployees.map((item) => item.id));
+  const boundMemberIds = new Set(value.bindings.filter((item) => item.primaryRoleId && activeEmployeeIds.has(item.userId)).map((item) => item.userId));
+  const manualDepartmentLeaderCount = activeDepartments.filter((department) => {
+    const visibleLeaderName = visibleLeaderNameInput(department.leaderName);
+    return Boolean(visibleLeaderName && !department.leaderUserId);
+  }).length;
+  const memberCount = Math.max(boundMemberIds.size + manualDepartmentLeaderCount, activeEmployees.length);
 
   const completenessByDepartment = activeDepartments.map((department) => {
     const roleCount = activeRoles.filter((role) => role.departmentId === department.id).length;
     const planCount = activePlans.filter((plan) => plan.departmentId === department.id).length;
-    const memberIds = value.bindings.filter((binding) => binding.departmentId === department.id && binding.primaryRoleId).length;
+    const memberBindings = value.bindings.filter((binding) => binding.departmentId === department.id && activeEmployeeIds.has(binding.userId));
+    const visibleLeaderName = department.leaderName?.trim() && !isLegacyOrganizationPersonName(department.leaderName)
+      ? department.leaderName.trim()
+      : '';
+    const hasVisibleLeader = Boolean(visibleLeaderName) || Boolean(department.leaderUserId && activeEmployeeIds.has(department.leaderUserId));
+    const memberCount = countDepartmentMembers(department, memberBindings);
     const missing = [
-      !(department.leaderUserId || department.leaderName?.trim()),
+      !hasVisibleLeader,
       !department.mission.trim(),
       roleCount === 0,
-      memberIds === 0,
+      memberCount === 0,
       planCount === 0,
     ].filter(Boolean).length;
     return clampPercent(((5 - missing) / 5) * 100);
@@ -178,43 +209,240 @@ function departmentColor(index: number, existing?: string | null) {
   return DEPARTMENT_COLORS[index % DEPARTMENT_COLORS.length];
 }
 
-function pickDepartmentLeadRoleId(
-  roles: OrgRoleTemplateSettings[],
+function buildEmptyOrgModel(value: OrgModelSettings): OrgModelSettings {
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    organization: {
+      ...value.organization,
+      name: '',
+      annualGoal: '',
+      annualStrategyYear: String(new Date().getFullYear()),
+      annualStrategy: '',
+      quarterPlans: [],
+      quarterlyFocus: [],
+      leaderUserId: null,
+      leaderName: '',
+      introDocument: null,
+      managementUserIds: [],
+      updatedAt: timestamp,
+    },
+    departments: [],
+    roles: [],
+    bindings: [],
+    reportingLines: [],
+    taskControlRules: [],
+    roleProcessTemplates: [],
+    focusItems: [],
+    departmentPlans: [],
+    updatedAt: timestamp,
+  };
+}
+
+function applyOrganizationNameDraft(value: OrgModelSettings, rawName: string): OrgModelSettings {
+  const nextName = rawName.trim();
+  if (nextName === value.organization.name) {
+    return value;
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    organization: {
+      ...value.organization,
+      name: nextName,
+      updatedAt: timestamp,
+    },
+    updatedAt: timestamp,
+  };
+}
+
+function applyOrganizationLeaderNameDraft(value: OrgModelSettings, rawName: string): OrgModelSettings {
+  const nextName = visibleLeaderNameInput(rawName);
+  const currentName = visibleLeaderNameInput(value.organization.leaderName);
+  if (
+    nextName === currentName
+    && !value.organization.leaderUserId
+    && currentName === (value.organization.leaderName || '').trim()
+  ) {
+    return value;
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    organization: {
+      ...value.organization,
+      leaderUserId: null,
+      leaderName: nextName,
+      managementUserIds: [],
+      updatedAt: timestamp,
+    },
+    updatedAt: timestamp,
+  };
+}
+
+function applyDepartmentLeaderNameDrafts(
+  value: OrgModelSettings,
+  drafts: Record<string, string>,
+): OrgModelSettings {
+  const draftEntries = Object.entries(drafts);
+  const timestamp = new Date().toISOString();
+  let changed = false;
+  const draftByDepartmentId = new Map(draftEntries.map(([departmentId, rawName]) => [departmentId, rawName.trim()]));
+  const departments = value.departments.map((department) => {
+    const hasDraft = draftByDepartmentId.has(department.id);
+    const nextName = visibleLeaderNameInput(hasDraft ? draftByDepartmentId.get(department.id) : department.leaderName);
+    const currentName = visibleLeaderNameInput(department.leaderName);
+    if (
+      nextName === currentName
+      && !department.leaderUserId
+      && currentName === (department.leaderName || '').trim()
+    ) {
+      return department;
+    }
+    changed = true;
+    return {
+      ...department,
+      leaderUserId: null,
+      leaderName: nextName,
+      updatedAt: timestamp,
+    };
+  });
+  if (!changed) {
+    return value;
+  }
+  return {
+    ...value,
+    departments,
+    updatedAt: timestamp,
+  };
+}
+
+function applyDepartmentNameDraft(value: OrgModelSettings, departmentId: string, rawName: string): OrgModelSettings {
+  const nextName = rawName.trim();
+  if (!nextName) return value;
+  const department = value.departments.find((item) => item.id === departmentId);
+  if (!department || department.name === nextName) return value;
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    departments: value.departments.map((item) => (
+      item.id === departmentId ? { ...item, name: nextName, updatedAt: timestamp } : item
+    )),
+    updatedAt: timestamp,
+  };
+}
+
+function applyRoleNameDraft(value: OrgModelSettings, roleId: string, rawName: string): OrgModelSettings {
+  const nextName = rawName.trim();
+  if (!nextName) return value;
+  const role = value.roles.find((item) => item.id === roleId);
+  if (!role || role.name === nextName) return value;
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    roles: value.roles.map((item) => (
+      item.id === roleId ? { ...item, name: nextName, updatedAt: timestamp } : item
+    )),
+    updatedAt: timestamp,
+  };
+}
+
+function introDocumentChanged(nextDocument: OrgIntroDocumentSettings | null | undefined, currentDocument: OrgIntroDocumentSettings | null | undefined) {
+  if (!nextDocument) return false;
+  return nextDocument.contentHash !== currentDocument?.contentHash
+    || nextDocument.fileName !== currentDocument?.fileName
+    || nextDocument.uploadedAt !== currentDocument?.uploadedAt;
+}
+
+function applyOrganizationIntroDocumentDraft(value: OrgModelSettings, document: OrgIntroDocumentSettings): OrgModelSettings {
+  if (!introDocumentChanged(document, value.organization.introDocument)) {
+    return value;
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    organization: {
+      ...value.organization,
+      introDocument: document,
+      updatedAt: timestamp,
+    },
+    updatedAt: timestamp,
+  };
+}
+
+function applyDepartmentIntroDocumentDraft(
+  value: OrgModelSettings,
   departmentId: string,
-  fallbackRoleId?: string | null,
+  document: OrgIntroDocumentSettings,
+): OrgModelSettings {
+  const department = value.departments.find((item) => item.id === departmentId);
+  if (!department || !introDocumentChanged(document, department.introDocument)) {
+    return value;
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    departments: value.departments.map((item) => (
+      item.id === departmentId
+        ? { ...item, introDocument: document, updatedAt: timestamp }
+        : item
+    )),
+    updatedAt: timestamp,
+  };
+}
+
+function countDepartmentMembers(
+  department: OrgDepartmentSettings,
+  bindings: OrgEmployeeBindingSettings[],
 ) {
-  const departmentRoles = roles.filter((role) => role.active !== false && role.departmentId === departmentId);
-  const explicitLead = departmentRoles.find((role) => role.level === 'department_lead');
-  if (explicitLead) return explicitLead.id;
-  const managerRole = departmentRoles.find((role) => role.isManager);
-  if (managerRole) return managerRole.id;
-  if (fallbackRoleId && departmentRoles.some((role) => role.id === fallbackRoleId)) return fallbackRoleId;
-  return fallbackRoleId || null;
+  const userIds = new Set(bindings.map((binding) => binding.userId).filter(Boolean));
+  if (department.leaderUserId) {
+    userIds.add(department.leaderUserId);
+  }
+  const visibleLeaderName = visibleLeaderNameInput(department.leaderName);
+  const manualLeaderCount = !department.leaderUserId && visibleLeaderName ? 1 : 0;
+  return userIds.size + manualLeaderCount;
 }
 
 export function OrganizationSetupCenter({
   value,
-  organizationDnaModules,
   departmentCatalog,
   employees,
   canEdit,
   isSaving = false,
   onChange,
   onSave,
+  getInputDrafts,
+  setInputDrafts,
+  onUploadIntroDocument,
 }: Props) {
-  void organizationDnaModules;
   void departmentCatalog;
 
+  const initialInputDrafts = getInputDrafts?.() || {};
   const [activeView, setActiveView] = useState<ActiveView>('tree');
-  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
-  const [editingField, setEditingField] = useState<EditableField | null>(null);
-  const [editingText, setEditingText] = useState('');
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(initialInputDrafts.editingNodeId || null);
+  const [editingField, setEditingField] = useState<EditableField | null>((initialInputDrafts.editingField as EditableField | null) || null);
+  const [editingText, setEditingText] = useState(initialInputDrafts.editingText || '');
   const [toast, setToast] = useState<string | null>(null);
+  const [organizationNameInput, setOrganizationNameInput] = useState(
+    resolveInputDraftText(initialInputDrafts.organizationName, value.organization.name),
+  );
+  const [organizationLeaderNameInput, setOrganizationLeaderNameInput] = useState(
+    visibleLeaderNameInput(resolveInputDraftText(initialInputDrafts.organizationLeaderName, value.organization.leaderName || '')),
+  );
+  const [departmentLeaderNameInputs, setDepartmentLeaderNameInputs] = useState<Record<string, string>>(
+    initialInputDrafts.departmentLeaderNames || {},
+  );
+  const [pendingOrganizationIntroDocument, setPendingOrganizationIntroDocument] = useState<OrgIntroDocumentSettings | null>(null);
+  const [pendingDepartmentIntroDocuments, setPendingDepartmentIntroDocuments] = useState<Record<string, OrgIntroDocumentSettings>>({});
   const [bulkInviteCopied, setBulkInviteCopied] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
   const [lines, setLines] = useState<LineDefinition[]>([]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bulkInviteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bulkInviteTimerRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const textCompositionRef = useRef(false);
 
   const tree = useMemo(
     () => deriveTree(value, '当前组织'),
@@ -224,32 +452,27 @@ export function OrganizationSetupCenter({
   const activeDepartments = useMemo(() => value.departments.filter((item) => item.active !== false), [value.departments]);
   const activeRoles = useMemo(() => value.roles.filter((item) => item.active !== false), [value.roles]);
   const approvedEmployees = useMemo(
-    () => employees.filter((item) => item.accountStatus === 'approved' || item.primaryRole === 'admin'),
+    () => employees.filter(isAssignableOrganizationEmployee),
     [employees],
   );
+  const approvedEmployeeIds = useMemo(() => new Set(approvedEmployees.map((item) => item.id)), [approvedEmployees]);
   const bindingsByDepartmentId = useMemo(() => {
     const mapping = new Map<string, OrgEmployeeBindingSettings[]>();
     value.bindings.forEach((binding) => {
       if (!binding.departmentId) return;
+      if (!approvedEmployeeIds.has(binding.userId)) return;
       const list = mapping.get(binding.departmentId) || [];
       list.push(binding);
       mapping.set(binding.departmentId, list);
     });
     return mapping;
-  }, [value.bindings]);
+  }, [approvedEmployeeIds, value.bindings]);
 
-  const employeeById = useMemo(() => new Map(employees.map((item) => [item.id, item])), [employees]);
-  const organizationName = value.organization.name.trim() || tree.name || '当前组织';
-  const organizationLeader = value.organization.leaderUserId
-    ? employeeById.get(value.organization.leaderUserId) || null
-    : null;
-  const organizationLeaderTitle = organizationLeader?.jobTitle?.trim() || '负责人';
-  const organizationLeaderSummary = organizationLeader
-    ? `${organizationLeaderTitle} · ${organizationLeader.fullName}`
-    : '待绑定负责人';
+  const organizationName = organizationNameInput.trim() || value.organization.name.trim() || tree.name || '当前组织';
   const bulkInviteText = useMemo(() => {
     const linesOfText = tree.children.map((department, index) => {
       const inviteCode = buildDepartmentInviteCode(department.id, {
+        organizationId: value.organization.organizationId,
         organizationName,
         departmentName: department.name,
         order: index,
@@ -261,7 +484,7 @@ export function OrganizationSetupCenter({
       '大家注册时找到自己部门的邀请码填入即可。',
       ...linesOfText,
     ].join('\n');
-  }, [organizationName, tree.children]);
+  }, [organizationName, tree.children, value.organization.organizationId]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -270,6 +493,129 @@ export function OrganizationSetupCenter({
     }
     toastTimerRef.current = setTimeout(() => setToast(null), 2400);
   }, []);
+
+  const updateInputDrafts = useCallback((updater: (current: OrganizationSetupInputDraftState) => OrganizationSetupInputDraftState) => {
+    const current = getInputDrafts?.() || {};
+    setInputDrafts?.(updater(current));
+  }, [getInputDrafts, setInputDrafts]);
+
+  const clearInputDrafts = useCallback(() => {
+    setInputDrafts?.({});
+  }, [setInputDrafts]);
+
+  const setOrganizationNameDraft = useCallback((nextName: string) => {
+    setOrganizationNameInput(nextName);
+    updateInputDrafts((current) => ({ ...current, organizationName: nextName }));
+  }, [updateInputDrafts]);
+
+  const setOrganizationLeaderNameDraft = useCallback((nextName: string) => {
+    setOrganizationLeaderNameInput(nextName);
+    updateInputDrafts((current) => ({ ...current, organizationLeaderName: nextName }));
+  }, [updateInputDrafts]);
+
+  const clearOrganizationNameDraft = useCallback(() => {
+    updateInputDrafts((current) => {
+      const next = { ...current };
+      delete next.organizationName;
+      return next;
+    });
+  }, [updateInputDrafts]);
+
+  const clearOrganizationLeaderNameDraft = useCallback(() => {
+    updateInputDrafts((current) => {
+      const next = { ...current };
+      delete next.organizationLeaderName;
+      return next;
+    });
+  }, [updateInputDrafts]);
+
+  const setDepartmentLeaderNameDraft = useCallback((departmentId: string, nextName: string) => {
+    setDepartmentLeaderNameInputs((previous) => ({
+      ...previous,
+      [departmentId]: nextName,
+    }));
+    updateInputDrafts((current) => ({
+      ...current,
+      departmentLeaderNames: {
+        ...(current.departmentLeaderNames || {}),
+        [departmentId]: nextName,
+      },
+    }));
+  }, [updateInputDrafts]);
+
+  const clearDepartmentLeaderNameDraft = useCallback((departmentId: string) => {
+    updateInputDrafts((current) => {
+      const departmentLeaderNames = { ...(current.departmentLeaderNames || {}) };
+      delete departmentLeaderNames[departmentId];
+      const next = { ...current };
+      if (Object.keys(departmentLeaderNames).length > 0) {
+        next.departmentLeaderNames = departmentLeaderNames;
+      } else {
+        delete next.departmentLeaderNames;
+      }
+      return next;
+    });
+  }, [updateInputDrafts]);
+
+  const setEditingTextDraft = useCallback((nextText: string) => {
+    setEditingText(nextText);
+    updateInputDrafts((current) => ({ ...current, editingText: nextText }));
+  }, [updateInputDrafts]);
+
+  const clearEditingDraft = useCallback(() => {
+    updateInputDrafts((current) => {
+      const next = { ...current };
+      delete next.editingNodeId;
+      delete next.editingField;
+      delete next.editingText;
+      return next;
+    });
+  }, [updateInputDrafts]);
+
+  const handleTextCompositionStart = useCallback(() => {
+    textCompositionRef.current = true;
+  }, []);
+
+  const handleTextCompositionEnd = useCallback(() => {
+    window.setTimeout(() => {
+      textCompositionRef.current = false;
+    }, 0);
+  }, []);
+
+  useEffect(() => {
+    const draftName = getInputDrafts?.().organizationName;
+    setOrganizationNameInput(resolveInputDraftText(draftName, value.organization.name));
+  }, [getInputDrafts, value.organization.name]);
+
+  useEffect(() => {
+    const draftName = getInputDrafts?.().organizationLeaderName;
+    setOrganizationLeaderNameInput(
+      visibleLeaderNameInput(resolveInputDraftText(draftName, value.organization.leaderName || '')),
+    );
+  }, [getInputDrafts, value.organization.leaderName]);
+
+  useEffect(() => {
+    const activeDepartmentIds = new Set(value.departments.map((department) => department.id));
+    setDepartmentLeaderNameInputs((previous) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      const persistedDrafts = getInputDrafts?.().departmentLeaderNames || {};
+      Object.entries({ ...persistedDrafts, ...previous }).forEach(([departmentId, draft]) => {
+        if (activeDepartmentIds.has(departmentId)) {
+          if (previous[departmentId] !== draft) {
+            changed = true;
+          }
+          next[departmentId] = draft;
+        } else {
+          changed = true;
+        }
+      });
+      if (Object.keys(previous).length !== Object.keys(next).length) {
+        changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, [getInputDrafts, value.departments]);
 
   useEffect(() => () => {
     if (toastTimerRef.current) {
@@ -314,261 +660,136 @@ export function OrganizationSetupCenter({
     });
   }, [onChange, value]);
 
-  const updateOrganization = useCallback((patch: Partial<OrgModelSettings['organization']>) => {
-    onChange({
-      ...value,
-      organization: {
-        ...value.organization,
-        ...patch,
-      },
-    });
-  }, [onChange, value]);
+  const commitOrganizationNameInput = useCallback(() => {
+    const nextValue = applyOrganizationNameDraft(value, organizationNameInput);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setOrganizationNameInput(nextValue.organization.name);
+    clearOrganizationNameDraft();
+    return nextValue;
+  }, [clearOrganizationNameDraft, onChange, organizationNameInput, value]);
 
-  const updateRole = useCallback((roleId: string, patch: Partial<OrgRoleTemplateSettings>) => {
-    onChange({
-      ...value,
-      roles: value.roles.map((item) => (item.id === roleId ? { ...item, ...patch } : item)),
-    });
-  }, [onChange, value]);
+  const commitOrganizationLeaderNameInput = useCallback(() => {
+    const nextValue = applyOrganizationLeaderNameDraft(value, organizationLeaderNameInput);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setOrganizationLeaderNameInput(visibleLeaderNameInput(nextValue.organization.leaderName));
+    clearOrganizationLeaderNameDraft();
+    return nextValue;
+  }, [clearOrganizationLeaderNameDraft, onChange, organizationLeaderNameInput, value]);
 
-  const handleSaveEdit = useCallback(() => {
+  const handleDepartmentLeaderNameChange = useCallback((departmentId: string, nextName: string) => {
+    setDepartmentLeaderNameDraft(departmentId, nextName);
+  }, [setDepartmentLeaderNameDraft]);
+
+  const commitDepartmentLeaderNameInput = useCallback((departmentId: string) => {
+    if (!canEdit) return;
+    const rawDraft = departmentLeaderNameInputs[departmentId];
+    if (rawDraft === undefined) return;
+    const department = value.departments.find((item) => item.id === departmentId);
+    if (!department) return;
+    const nextName = rawDraft.trim();
+      const currentName = visibleLeaderNameInput(department.leaderName);
+      if (nextName !== currentName || department.leaderUserId) {
+      updateDepartment(departmentId, {
+        leaderUserId: null,
+        leaderName: nextName,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    setDepartmentLeaderNameInputs((previous) => {
+      if (!(departmentId in previous)) return previous;
+      const next = { ...previous };
+      delete next[departmentId];
+      return next;
+    });
+    clearDepartmentLeaderNameDraft(departmentId);
+  }, [canEdit, clearDepartmentLeaderNameDraft, departmentLeaderNameInputs, updateDepartment, value.departments]);
+
+  const handleUploadOrganizationIntroDocument = useCallback(async () => {
+    if (!canEdit || !onUploadIntroDocument) return;
+    const document = await onUploadIntroDocument(`${organizationName || '当前组织'}组织介绍`);
+    if (!document) return;
+    setPendingOrganizationIntroDocument(document);
+    showToast('组织介绍已添加，点击右上角对勾保存');
+  }, [canEdit, onUploadIntroDocument, organizationName, showToast]);
+
+  const handleUploadDepartmentIntroDocument = useCallback(async (department: TreeDepartmentNode) => {
+    if (!canEdit || !onUploadIntroDocument) return;
+    const document = await onUploadIntroDocument(`${department.name || '部门'}介绍`);
+    if (!document) return;
+    setPendingDepartmentIntroDocuments((previous) => ({
+      ...previous,
+      [department.id]: document,
+    }));
+    showToast('部门介绍已添加，点击卡片右上角对勾保存');
+  }, [canEdit, onUploadIntroDocument, showToast]);
+
+  const finishEditing = useCallback(() => {
+    setEditingNodeId(null);
+    setEditingField(null);
+    setEditingText('');
+    clearEditingDraft();
+  }, [clearEditingDraft]);
+
+  const applyActiveEditingDraft = useCallback((baseValue: OrgModelSettings, targetNodeId?: string) => {
     const nextValue = editingText.trim();
-    if (!editingNodeId || !editingField) {
-      setEditingNodeId(null);
-      setEditingField(null);
-      return;
+    if (!editingNodeId || !editingField || !nextValue) {
+      return baseValue;
     }
-
-    if (!nextValue) {
-      setEditingNodeId(null);
-      setEditingField(null);
-      return;
+    if (targetNodeId && editingNodeId !== targetNodeId) {
+      return baseValue;
     }
-
     if (editingNodeId === tree.id && editingField === 'name') {
-      updateOrganization({ name: nextValue });
-      setEditingNodeId(null);
-      setEditingField(null);
-      return;
+      return applyOrganizationNameDraft(baseValue, nextValue);
     }
-
     const targetDepartment = activeDepartments.find((item) => item.id === editingNodeId);
     if (targetDepartment) {
       if (editingField === 'name') {
-        updateDepartment(editingNodeId, { name: nextValue });
-      } else {
-        updateDepartment(editingNodeId, { leaderName: nextValue, leaderUserId: null });
+        return applyDepartmentNameDraft(baseValue, editingNodeId, nextValue);
       }
-      setEditingNodeId(null);
-      setEditingField(null);
-      return;
+      return applyDepartmentLeaderNameDrafts(baseValue, { [editingNodeId]: nextValue });
     }
-
     const targetRole = activeRoles.find((item) => item.id === editingNodeId);
     if (targetRole && editingField === 'name') {
-      updateRole(editingNodeId, { name: nextValue });
+      return applyRoleNameDraft(baseValue, editingNodeId, nextValue);
     }
+    return baseValue;
+  }, [activeDepartments, activeRoles, editingField, editingNodeId, editingText, tree.id]);
 
-    setEditingNodeId(null);
-    setEditingField(null);
-  }, [activeDepartments, activeRoles, editingField, editingNodeId, editingText, tree.id, updateDepartment, updateOrganization, updateRole]);
+  const handleSaveEdit = useCallback(() => {
+    const nextValue = applyActiveEditingDraft(value);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    finishEditing();
+  }, [applyActiveEditingDraft, finishEditing, onChange, value]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isComposingKeyEvent(event, textCompositionRef)) return;
     if (event.key === 'Enter') {
       handleSaveEdit();
     }
     if (event.key === 'Escape') {
-      setEditingNodeId(null);
-      setEditingField(null);
+      finishEditing();
     }
-  }, [handleSaveEdit]);
+  }, [finishEditing, handleSaveEdit]);
 
   const startEditing = useCallback((nodeId: string, field: EditableField, currentText: string) => {
     if (!canEdit) return;
+    const nextText = currentText || '';
     setEditingNodeId(nodeId);
     setEditingField(field);
-    setEditingText(currentText || '');
-  }, [canEdit]);
-
-  const handleSelectDepartmentLead = useCallback((departmentId: string, userId: string) => {
-    if (!canEdit) return;
-    if (userId === '__manual__') {
-      const department = activeDepartments.find((item) => item.id === departmentId);
-      startEditing(departmentId, 'leadName', department?.leaderName?.trim() || '');
-      return;
-    }
-    if (!userId) {
-      updateDepartment(departmentId, {
-        leaderUserId: null,
-        leaderName: '',
-      });
-      return;
-    }
-    const employee = employeeById.get(userId);
-    if (!employee) return;
-    const previousLeaderUserId = activeDepartments.find((item) => item.id === departmentId)?.leaderUserId || null;
-    const existingBinding = value.bindings.find((binding) => binding.userId === employee.id) || emptyBinding(employee.id);
-    const nextPrimaryRoleId = pickDepartmentLeadRoleId(value.roles, departmentId, existingBinding.primaryRoleId);
-    const nextBindings = value.bindings
-      .map((binding) => {
-        if (binding.userId === employee.id) {
-          return {
-            ...binding,
-            departmentId,
-            primaryRoleId: nextPrimaryRoleId,
-            isManager: true,
-            managerUserId: value.organization.leaderUserId && value.organization.leaderUserId !== employee.id
-              ? value.organization.leaderUserId
-              : binding.managerUserId || null,
-            taskEditScope: 'department',
-            canApproveTasks: true,
-            canReassignTasks: true,
-            canChangeDeadline: true,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        if (previousLeaderUserId && binding.userId === previousLeaderUserId && previousLeaderUserId !== employee.id && binding.departmentId === departmentId) {
-          return {
-            ...binding,
-            isManager: false,
-            taskEditScope: 'self',
-            canApproveTasks: false,
-            canReassignTasks: false,
-            canChangeDeadline: false,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return binding;
-      });
-    const bindingExists = value.bindings.some((binding) => binding.userId === employee.id);
-    onChange({
-      ...value,
-      departments: value.departments.map((department) => (
-        department.id === departmentId
-          ? {
-              ...department,
-              leaderUserId: employee.id,
-              leaderName: employee.fullName,
-            }
-          : department
-      )),
-      bindings: bindingExists
-        ? nextBindings
-        : [
-            ...nextBindings,
-            {
-              ...existingBinding,
-              departmentId,
-              primaryRoleId: nextPrimaryRoleId,
-              isManager: true,
-              managerUserId: value.organization.leaderUserId && value.organization.leaderUserId !== employee.id
-                ? value.organization.leaderUserId
-                : null,
-              taskEditScope: 'department',
-              canApproveTasks: true,
-              canReassignTasks: true,
-              canChangeDeadline: true,
-              updatedAt: new Date().toISOString(),
-            },
-          ],
-    });
-    setEditingNodeId(null);
-    setEditingField(null);
-  }, [activeDepartments, canEdit, employeeById, onChange, startEditing, value]);
-
-  const handleSelectOrganizationLead = useCallback((userId: string) => {
-    if (!canEdit) return;
-
-    const previousLeaderUserId = value.organization.leaderUserId || null;
-    if (!userId) {
-      onChange({
-        ...value,
-        organization: {
-          ...value.organization,
-          leaderUserId: null,
-          managementUserIds: value.organization.managementUserIds.filter((id) => id !== previousLeaderUserId),
-        },
-        bindings: value.bindings.map((binding) => (
-          previousLeaderUserId && binding.userId === previousLeaderUserId
-            ? {
-                ...binding,
-                isManager: false,
-                taskEditScope: binding.departmentId ? 'department' : 'self',
-                canApproveTasks: false,
-                canReassignTasks: false,
-                canChangeDeadline: false,
-                updatedAt: new Date().toISOString(),
-              }
-            : binding
-        )),
-      });
-      return;
-    }
-
-    const employee = employeeById.get(userId);
-    if (!employee) return;
-
-    const existingBinding = value.bindings.find((binding) => binding.userId === employee.id) || emptyBinding(employee.id);
-    const bindingExists = value.bindings.some((binding) => binding.userId === employee.id);
-    const nextBindings = value.bindings
-      .map((binding) => {
-        if (binding.userId === employee.id) {
-          return {
-            ...binding,
-            isManager: true,
-            managerUserId: null,
-            taskEditScope: 'organization',
-            canApproveTasks: true,
-            canReassignTasks: true,
-            canChangeDeadline: true,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        if (previousLeaderUserId && binding.userId === previousLeaderUserId && previousLeaderUserId !== employee.id) {
-          return {
-            ...binding,
-            isManager: false,
-            taskEditScope: binding.departmentId ? 'department' : 'self',
-            canApproveTasks: false,
-            canReassignTasks: false,
-            canChangeDeadline: false,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        if (binding.userId !== employee.id && binding.isManager && !binding.managerUserId) {
-          return {
-            ...binding,
-            managerUserId: employee.id,
-            updatedAt: new Date().toISOString(),
-          };
-        }
-        return binding;
-      });
-
-    onChange({
-      ...value,
-      organization: {
-        ...value.organization,
-        leaderUserId: employee.id,
-        managementUserIds: Array.from(new Set([...value.organization.managementUserIds.filter((id) => id !== previousLeaderUserId), employee.id])),
-      },
-      bindings: bindingExists
-        ? nextBindings
-        : [
-            ...nextBindings,
-            {
-              ...existingBinding,
-              isManager: true,
-              managerUserId: null,
-              taskEditScope: 'organization',
-              canApproveTasks: true,
-              canReassignTasks: true,
-              canChangeDeadline: true,
-              updatedAt: new Date().toISOString(),
-            },
-          ],
-    });
-  }, [canEdit, employeeById, onChange, value]);
+    setEditingText(nextText);
+    updateInputDrafts((current) => ({
+      ...current,
+      editingNodeId: nodeId,
+      editingField: field,
+      editingText: nextText,
+    }));
+  }, [canEdit, updateInputDrafts]);
 
   const handleAddDepartment = useCallback(() => {
     if (!canEdit) return;
@@ -579,6 +800,7 @@ export function OrganizationSetupCenter({
       color: departmentColor(nextIndex),
       leaderUserId: null,
       leaderName: '',
+      introDocument: null,
       parentDepartmentId: null,
       mission: '',
       businessContext: '',
@@ -678,10 +900,176 @@ export function OrganizationSetupCenter({
     });
   }, [canEdit, onChange, value]);
 
-  const handleSave = useCallback(() => {
-    void onSave(value);
-    showToast('组织结构已保存');
-  }, [onSave, showToast, value]);
+  const handleSaveOrganizationCard = useCallback(async () => {
+    if (!canEdit || isSaving) return;
+    let nextValue = applyOrganizationNameDraft(value, organizationNameInput);
+    nextValue = applyOrganizationLeaderNameDraft(nextValue, organizationLeaderNameInput);
+    if (pendingOrganizationIntroDocument) {
+      nextValue = applyOrganizationIntroDocumentDraft(nextValue, pendingOrganizationIntroDocument);
+    }
+    nextValue = applyActiveEditingDraft(nextValue, tree.id);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setPendingOrganizationIntroDocument(null);
+    setOrganizationNameInput(nextValue.organization.name);
+    setOrganizationLeaderNameInput(visibleLeaderNameInput(nextValue.organization.leaderName));
+    clearOrganizationNameDraft();
+    clearOrganizationLeaderNameDraft();
+    if (editingNodeId === tree.id) {
+      finishEditing();
+    }
+    const saved = await onSave(nextValue);
+    if (saved !== false) {
+      showToast('当前组织卡片已保存');
+    }
+  }, [
+    applyActiveEditingDraft,
+    canEdit,
+    clearOrganizationLeaderNameDraft,
+    clearOrganizationNameDraft,
+    editingNodeId,
+    finishEditing,
+    isSaving,
+    onChange,
+    onSave,
+    organizationLeaderNameInput,
+    organizationNameInput,
+    pendingOrganizationIntroDocument,
+    showToast,
+    tree.id,
+    value,
+  ]);
+
+  const handleSaveDepartmentCard = useCallback((departmentId: string) => {
+    if (!canEdit || isSaving) return;
+    let nextValue = value;
+    if (Object.prototype.hasOwnProperty.call(departmentLeaderNameInputs, departmentId)) {
+      nextValue = applyDepartmentLeaderNameDrafts(nextValue, {
+        [departmentId]: departmentLeaderNameInputs[departmentId],
+      });
+    }
+    if (pendingDepartmentIntroDocuments[departmentId]) {
+      nextValue = applyDepartmentIntroDocumentDraft(nextValue, departmentId, pendingDepartmentIntroDocuments[departmentId]);
+    }
+    nextValue = applyActiveEditingDraft(nextValue, departmentId);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setDepartmentLeaderNameInputs((previous) => {
+      if (!(departmentId in previous)) return previous;
+      const next = { ...previous };
+      delete next[departmentId];
+      return next;
+    });
+    setPendingDepartmentIntroDocuments((previous) => {
+      if (!(departmentId in previous)) return previous;
+      const next = { ...previous };
+      delete next[departmentId];
+      return next;
+    });
+    clearDepartmentLeaderNameDraft(departmentId);
+    if (editingNodeId === departmentId) {
+      finishEditing();
+    }
+    void onSave(nextValue);
+    showToast('部门卡片已保存');
+  }, [
+    applyActiveEditingDraft,
+    canEdit,
+    clearDepartmentLeaderNameDraft,
+    departmentLeaderNameInputs,
+    editingNodeId,
+    finishEditing,
+    isSaving,
+    onChange,
+    onSave,
+    pendingDepartmentIntroDocuments,
+    showToast,
+    value,
+  ]);
+
+  const handleSaveRoleCard = useCallback((roleId: string) => {
+    if (!canEdit || isSaving) return;
+    const nextValue = applyActiveEditingDraft(value, roleId);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    if (editingNodeId === roleId) {
+      finishEditing();
+    }
+    void onSave(nextValue);
+    showToast('岗位卡片已保存');
+  }, [
+    applyActiveEditingDraft,
+    canEdit,
+    editingNodeId,
+    finishEditing,
+    isSaving,
+    onChange,
+    onSave,
+    showToast,
+    value,
+  ]);
+
+  const handleSave = useCallback(async () => {
+    const hasDepartmentLeaderDrafts = Object.keys(departmentLeaderNameInputs).length > 0;
+    let nextValue = applyOrganizationNameDraft(value, organizationNameInput);
+    nextValue = applyOrganizationLeaderNameDraft(nextValue, organizationLeaderNameInput);
+    nextValue = applyDepartmentLeaderNameDrafts(nextValue, departmentLeaderNameInputs);
+    if (pendingOrganizationIntroDocument) {
+      nextValue = applyOrganizationIntroDocumentDraft(nextValue, pendingOrganizationIntroDocument);
+    }
+    Object.entries(pendingDepartmentIntroDocuments).forEach(([departmentId, document]) => {
+      nextValue = applyDepartmentIntroDocumentDraft(nextValue, departmentId, document);
+    });
+    nextValue = applyActiveEditingDraft(nextValue);
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setOrganizationNameInput(nextValue.organization.name);
+    setOrganizationLeaderNameInput(visibleLeaderNameInput(nextValue.organization.leaderName));
+    if (hasDepartmentLeaderDrafts) {
+      setDepartmentLeaderNameInputs({});
+    }
+    setPendingOrganizationIntroDocument(null);
+    setPendingDepartmentIntroDocuments({});
+    clearInputDrafts();
+    finishEditing();
+    const saved = await onSave(nextValue);
+    if (saved !== false) {
+      showToast('组织结构已保存');
+    }
+  }, [applyActiveEditingDraft, clearInputDrafts, departmentLeaderNameInputs, finishEditing, onChange, onSave, organizationLeaderNameInput, organizationNameInput, pendingDepartmentIntroDocuments, pendingOrganizationIntroDocument, showToast, value]);
+
+  const handleOpenResetConfirm = useCallback(() => {
+    if (!canEdit || isSaving) return;
+    setResetConfirmText('');
+    setResetConfirmOpen(true);
+  }, [canEdit, isSaving]);
+
+  const handleResetOrganizationSetup = useCallback(() => {
+    if (!canEdit || isSaving) return;
+    if (resetConfirmText.trim() !== '重新搭建') {
+      showToast('请输入“重新搭建”确认');
+      return;
+    }
+    const nextValue = buildEmptyOrgModel(value);
+    onChange(nextValue);
+    setOrganizationNameInput('');
+    setOrganizationLeaderNameInput('');
+    setDepartmentLeaderNameInputs({});
+    setPendingOrganizationIntroDocument(null);
+    setPendingDepartmentIntroDocuments({});
+    clearInputDrafts();
+    setActiveView('tree');
+    setEditingNodeId(null);
+    setEditingField(null);
+    setResetConfirmOpen(false);
+    setResetConfirmText('');
+    void onSave(nextValue);
+    showToast('组织搭建已清空');
+  }, [canEdit, clearInputDrafts, isSaving, onChange, onSave, resetConfirmText, showToast, value]);
 
   const drawLines = useCallback(() => {
     if (!containerRef.current || activeView !== 'tree') {
@@ -750,11 +1138,80 @@ export function OrganizationSetupCenter({
     };
   }, [drawLines, editingField, editingNodeId]);
 
+  const organizationCardDirty = organizationNameInput.trim() !== value.organization.name
+    || visibleLeaderNameInput(organizationLeaderNameInput) !== visibleLeaderNameInput(value.organization.leaderName)
+    || introDocumentChanged(pendingOrganizationIntroDocument, value.organization.introDocument)
+    || (editingNodeId === tree.id && editingText.trim().length > 0 && editingText.trim() !== tree.name);
+
   return (
     <div className="space-y-6">
       {toast ? (
         <div className="fixed top-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-gray-900/90 px-5 py-2.5 text-[13px] font-medium text-white shadow-lg">
           {toast}
+        </div>
+      ) : null}
+
+      {resetConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/30 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-[440px] rounded-[24px] border border-gray-100 bg-white p-6 shadow-[0_28px_90px_rgba(15,23,42,0.18)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-rose-50 text-rose-500">
+                  <Trash2 size={18} />
+                </div>
+                <h3 className="mt-4 text-[18px] font-bold text-gray-900">删除当前组织搭建</h3>
+                <p className="mt-2 text-[13px] leading-6 text-gray-500">
+                  会清空部门、岗位、负责人、规则、计划和邀请码，保留组织身份与当前账号。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetConfirmOpen(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="mt-5">
+              <label className="text-[12px] font-bold text-gray-500">
+                输入“重新搭建”确认
+              </label>
+              <input
+                autoFocus
+                value={resetConfirmText}
+                onCompositionStart={handleTextCompositionStart}
+                onCompositionEnd={handleTextCompositionEnd}
+                onChange={(event) => setResetConfirmText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (isComposingKeyEvent(event, textCompositionRef)) return;
+                  if (event.key === 'Enter') {
+                    handleResetOrganizationSetup();
+                  }
+                }}
+                className="mt-2 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-[14px] font-medium text-gray-900 outline-none transition focus:border-rose-300 focus:bg-white"
+              />
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setResetConfirmOpen(false)}
+                className="rounded-full border border-gray-200 bg-white px-5 py-2.5 text-[13px] font-bold text-gray-600 transition hover:border-gray-300 hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleResetOrganizationSetup}
+                disabled={isSaving || resetConfirmText.trim() !== '重新搭建'}
+                className="inline-flex items-center gap-2 rounded-full bg-rose-500 px-5 py-2.5 text-[13px] font-bold text-white transition hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 size={14} />
+                确认删除
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -786,15 +1243,26 @@ export function OrganizationSetupCenter({
           </div>
           <div className="flex items-center gap-3">
             {canEdit ? (
-              <button
-                type="button"
-                onClick={handleSave}
-                disabled={isSaving}
-                className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-5 py-3 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Save size={14} />
-                {isSaving ? '保存中' : '保存'}
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleOpenResetConfirm}
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-2 rounded-full border border-rose-100 bg-white px-4 py-3 text-[13px] font-bold text-rose-500 transition hover:border-rose-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Trash2 size={14} />
+                  删除搭建
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-5 py-3 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Save size={14} />
+                  {isSaving ? '保存中' : '保存'}
+                </button>
+              </>
             ) : null}
             {activeView === 'tree' ? (
               <button
@@ -836,74 +1304,127 @@ export function OrganizationSetupCenter({
               <div className="relative z-10 flex items-center gap-12">
                 <div
                   id={`node-${tree.id}`}
-                  className="z-10 flex min-w-[260px] flex-col gap-3 rounded-2xl border-2 border-[#5B7BFE]/30 bg-gradient-to-br from-[#EEF3FF] to-white px-5 py-4 shadow-sm"
+                  className="relative z-10 flex min-w-[260px] flex-col gap-3 rounded-2xl border-2 border-[#5B7BFE]/30 bg-gradient-to-br from-[#EEF3FF] to-white px-5 py-4 pr-12 shadow-sm"
                 >
+                  {canEdit ? (
+                    <CardSaveButton
+                      active={organizationCardDirty}
+                      disabled={isSaving}
+                      label="保存当前组织卡片"
+                      onClick={handleSaveOrganizationCard}
+                    />
+                  ) : null}
                   <div className="flex items-center gap-3">
                     <Building2 className="text-[#5B7BFE]" size={20} />
-                    {editingNodeId === tree.id && editingField === 'name' ? (
+                    {canEdit ? (
                       <input
-                        autoFocus
-                        value={editingText}
-                        onChange={(event) => setEditingText(event.target.value)}
-                        onBlur={handleSaveEdit}
-                        onKeyDown={handleKeyDown}
-                        className="w-full border-b border-[#5B7BFE] bg-transparent text-[16px] font-bold text-gray-900 outline-none"
+                        value={organizationNameInput}
+                        onCompositionStart={handleTextCompositionStart}
+                        onCompositionEnd={handleTextCompositionEnd}
+                        onChange={(event) => setOrganizationNameDraft(event.target.value)}
+                        onBlur={commitOrganizationNameInput}
+                        onKeyDown={(event) => {
+                          if (isComposingKeyEvent(event, textCompositionRef)) return;
+                          if (event.key === 'Enter') {
+                            event.currentTarget.blur();
+                          }
+                          if (event.key === 'Escape') {
+                            setOrganizationNameInput(value.organization.name);
+                            clearOrganizationNameDraft();
+                            event.currentTarget.blur();
+                          }
+                        }}
+                        placeholder="请输入组织名称"
+                        className="w-full min-w-[180px] rounded-xl border border-[#DCE4FF] bg-white/90 px-3 py-2 text-[15px] font-bold text-gray-900 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE] focus:bg-white"
                       />
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => startEditing(tree.id, 'name', tree.name)}
-                        className="text-left text-[16px] font-bold text-gray-900 transition hover:text-[#5B7BFE]"
-                      >
-                        {tree.name}
-                      </button>
+                      <span className="text-[16px] font-bold text-gray-900">
+                        {value.organization.name.trim() || '未命名组织'}
+                      </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2 pl-8">
                     <span className="text-[11px] font-medium text-gray-400">负责人</span>
-                    {approvedEmployees.length > 0 ? (
-                      <select
-                        value={value.organization.leaderUserId || ''}
-                        onChange={(event) => handleSelectOrganizationLead(event.target.value)}
-                        className="min-w-[160px] rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 outline-none transition hover:border-[#5B7BFE]/50 focus:border-[#5B7BFE]"
-                      >
-                        <option value="">待绑定</option>
-                        {approvedEmployees.map((employee) => (
-                          <option key={employee.id} value={employee.id}>
-                            {(employee.jobTitle?.trim() ? `${employee.jobTitle} · ` : '') + employee.fullName}
-                          </option>
-                        ))}
-                      </select>
+                    {canEdit ? (
+                      <input
+                        value={organizationLeaderNameInput}
+                        onCompositionStart={handleTextCompositionStart}
+                        onCompositionEnd={handleTextCompositionEnd}
+                        onChange={(event) => setOrganizationLeaderNameDraft(event.target.value)}
+                        onBlur={commitOrganizationLeaderNameInput}
+                        onKeyDown={(event) => {
+                          if (isComposingKeyEvent(event, textCompositionRef)) return;
+                          if (event.key === 'Enter') {
+                            event.currentTarget.blur();
+                          }
+                          if (event.key === 'Escape') {
+                            setOrganizationLeaderNameInput(visibleLeaderNameInput(value.organization.leaderName));
+                            clearOrganizationLeaderNameDraft();
+                            event.currentTarget.blur();
+                          }
+                        }}
+                        placeholder="请输入负责人姓名"
+                        className="min-w-[160px] rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE]"
+                      />
                     ) : (
                       <span className="rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700">
-                        {organizationLeaderSummary}
+                        {visibleLeaderNameInput(value.organization.leaderName) || '待填写负责人'}
                       </span>
                     )}
                   </div>
-                  {approvedEmployees.length > 0 && organizationLeader ? (
-                    <div className="pl-8 text-[11px] font-medium text-gray-500">
-                      {organizationLeaderSummary}
-                    </div>
-                  ) : null}
-                </div>
+                  <IntroDocumentAction
+                    canEdit={canEdit}
+                    disabled={isSaving || !onUploadIntroDocument}
+                    document={value.organization.introDocument}
+                    label="组织介绍"
+                    onUpload={() => void handleUploadOrganizationIntroDocument()}
+                    pendingDocument={pendingOrganizationIntroDocument}
+                  />
+	                </div>
 
-                <div className="relative flex flex-col gap-6">
-                  {tree.children.map((department, index) => {
-                    const isEditingDepartmentName = editingNodeId === department.id && editingField === 'name';
-                    const isEditingLeadName = editingNodeId === department.id && editingField === 'leadName';
-                    const memberCount = bindingsByDepartmentId.get(department.id)?.length || 0;
+	                <div className="relative flex flex-col gap-6">
+	                  {tree.children.map((department, index) => {
+	                    const isEditingDepartmentName = editingNodeId === department.id && editingField === 'name';
+	                    const departmentSettings = value.departments.find((item) => item.id === department.id);
+	                    const departmentBindings = bindingsByDepartmentId.get(department.id) || [];
+	                    const pendingDepartmentIntroDocument = pendingDepartmentIntroDocuments[department.id] || null;
+	                    const departmentLeaderNameValue = departmentLeaderNameInputs[department.id] ?? department.leaderName ?? '';
+	                    const hasDepartmentLeaderDraft = Object.prototype.hasOwnProperty.call(departmentLeaderNameInputs, department.id);
+	                    const departmentForCount = departmentSettings && hasDepartmentLeaderDraft
+	                      ? { ...departmentSettings, leaderUserId: null, leaderName: departmentLeaderNameValue }
+	                      : departmentSettings;
+	                    const memberCount = departmentForCount
+	                      ? countDepartmentMembers(departmentForCount, departmentBindings)
+	                      : departmentBindings.length;
+	                    const departmentCardDirty = (
+	                      isEditingDepartmentName
+	                      && editingText.trim().length > 0
+	                      && editingText.trim() !== department.name
+	                    ) || (
+	                      hasDepartmentLeaderDraft
+	                      && visibleLeaderNameInput(departmentLeaderNameValue) !== visibleLeaderNameInput(department.leaderName)
+	                    ) || introDocumentChanged(pendingDepartmentIntroDocument, departmentSettings?.introDocument);
                     const inviteCode = buildDepartmentInviteCode(department.id, {
-                      organizationName,
-                      departmentName: department.name,
-                      order: index,
+                      organizationId: value.organization.organizationId,
+	                      organizationName,
+	                      departmentName: department.name,
+	                      order: index,
                     });
                     return (
                       <div key={department.id} className="flex items-center gap-10">
                         <div
                           id={`node-${department.id}`}
-                          className="group relative z-10 flex min-w-[170px] flex-col gap-1.5 rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm transition hover:border-[#5B7BFE]/40"
+                          className="group relative z-10 flex min-w-[170px] flex-col gap-1.5 rounded-2xl border border-gray-200 bg-white px-4 py-3 pr-10 shadow-sm transition hover:border-[#5B7BFE]/40"
                           style={{ boxShadow: `0 12px 28px ${tint(department.color, '16')}` }}
                         >
+                          {canEdit ? (
+                            <CardSaveButton
+                              active={departmentCardDirty}
+                              disabled={isSaving}
+                              label={`保存${department.name}卡片`}
+                              onClick={() => handleSaveDepartmentCard(department.id)}
+                            />
+                          ) : null}
                           {canEdit ? (
                             <button
                               type="button"
@@ -920,7 +1441,9 @@ export function OrganizationSetupCenter({
                               <input
                                 autoFocus
                                 value={editingText}
-                                onChange={(event) => setEditingText(event.target.value)}
+                                onCompositionStart={handleTextCompositionStart}
+                                onCompositionEnd={handleTextCompositionEnd}
+                                onChange={(event) => setEditingTextDraft(event.target.value)}
                                 onBlur={handleSaveEdit}
                                 onKeyDown={handleKeyDown}
                                 className="w-full border-b border-[#5B7BFE] bg-transparent text-[13px] font-bold text-gray-800 outline-none"
@@ -938,49 +1461,30 @@ export function OrganizationSetupCenter({
 
                           <div className="flex items-center gap-1.5 pl-6">
                             <span className="text-[11px] text-gray-400">负责人</span>
-                            {approvedEmployees.length > 0 && !isEditingLeadName ? (
-                              <select
-                                value={department.leaderUserId || (department.leaderName?.trim() ? '__manual__' : '')}
-                                onChange={(event) => handleSelectDepartmentLead(department.id, event.target.value)}
-                                className="min-w-[112px] rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 outline-none transition hover:border-[#5B7BFE]/40 focus:border-[#5B7BFE]/50"
-                              >
-                                <option value="">待绑定</option>
-                                {approvedEmployees.map((employee) => (
-                                  <option key={employee.id} value={employee.id}>
-                                    {employee.fullName}
-                                  </option>
-                                ))}
-                                <option value="__manual__">手动填写</option>
-                              </select>
+                            {canEdit ? (
+                              <input
+                                value={departmentLeaderNameValue}
+                                onCompositionStart={handleTextCompositionStart}
+                                onCompositionEnd={handleTextCompositionEnd}
+                                onChange={(event) => handleDepartmentLeaderNameChange(department.id, event.target.value)}
+                                onBlur={() => commitDepartmentLeaderNameInput(department.id)}
+                                onKeyDown={(event) => {
+                                  if (isComposingKeyEvent(event, textCompositionRef)) return;
+                                  if (event.key === 'Enter') {
+                                    event.currentTarget.blur();
+                                  }
+                                  if (event.key === 'Escape') {
+                                    handleDepartmentLeaderNameChange(department.id, visibleLeaderNameInput(department.leaderName));
+                                    event.currentTarget.blur();
+                                  }
+                                }}
+                                placeholder="姓名"
+                                className="min-w-[88px] rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE]/50"
+                              />
                             ) : (
-                              <>
-                                {isEditingLeadName ? (
-                                  <input
-                                    autoFocus
-                                    value={editingText}
-                                    onChange={(event) => setEditingText(event.target.value)}
-                                    onBlur={handleSaveEdit}
-                                    onKeyDown={handleKeyDown}
-                                    className="w-[84px] border-b border-gray-300 bg-transparent text-[11px] text-gray-600 outline-none focus:border-[#5B7BFE]"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => startEditing(department.id, 'leadName', department.leadName)}
-                                    className="min-w-[40px] text-left text-[11px] text-gray-500 transition hover:text-[#5B7BFE]"
-                                  >
-                                    {department.leadName || '待设置'}
-                                  </button>
-                                )}
-                              </>
+                              <span className="text-[11px] text-gray-500">{department.leadName || '待设置'}</span>
                             )}
                           </div>
-
-                          {approvedEmployees.length > 0 && !department.leaderUserId && department.leaderName?.trim() ? (
-                            <div className="pl-6 text-[11px] font-medium text-gray-500">
-                              手动负责人：{department.leaderName.trim()}
-                            </div>
-                          ) : null}
 
                           <div className="mt-2 flex items-center gap-2 pl-6">
                             <span
@@ -993,17 +1497,39 @@ export function OrganizationSetupCenter({
                               {memberCount} 人
                             </span>
                           </div>
+                          <IntroDocumentAction
+                            canEdit={canEdit}
+                            compact
+                            disabled={isSaving || !onUploadIntroDocument}
+                            document={departmentSettings?.introDocument}
+                            label="部门介绍"
+                            onUpload={() => void handleUploadDepartmentIntroDocument(department)}
+                            pendingDocument={pendingDepartmentIntroDocument}
+                          />
                         </div>
 
                         <div className="relative flex flex-col gap-3">
                           {department.children.map((role) => {
                             const isEditingRoleName = editingNodeId === role.id && editingField === 'name';
+                            const roleCardDirty = isEditingRoleName
+                              && editingText.trim().length > 0
+                              && editingText.trim() !== role.name;
                             return (
                               <div
                                 id={`node-${role.id}`}
                                 key={role.id}
-                                className="group relative z-10 min-w-[120px] rounded-xl border border-gray-100 bg-gray-50/90 px-3 py-2 transition hover:border-gray-200"
+                                className="group relative z-10 min-w-[120px] rounded-xl border border-gray-100 bg-gray-50/90 px-3 py-2 pr-8 transition hover:border-gray-200"
                               >
+                                {canEdit ? (
+                                  <CardSaveButton
+                                    active={roleCardDirty}
+                                    className="right-1.5 top-1.5 h-5 w-5"
+                                    disabled={isSaving}
+                                    iconSize={10}
+                                    label={`保存${role.name}卡片`}
+                                    onClick={() => handleSaveRoleCard(role.id)}
+                                  />
+                                ) : null}
                                 {canEdit ? (
                                   <button
                                     type="button"
@@ -1018,7 +1544,9 @@ export function OrganizationSetupCenter({
                                   <input
                                     autoFocus
                                     value={editingText}
-                                    onChange={(event) => setEditingText(event.target.value)}
+                                    onCompositionStart={handleTextCompositionStart}
+                                    onCompositionEnd={handleTextCompositionEnd}
+                                    onChange={(event) => setEditingTextDraft(event.target.value)}
                                     onBlur={handleSaveEdit}
                                     onKeyDown={handleKeyDown}
                                     className="w-full border-b border-gray-300 bg-transparent text-center text-[12px] font-medium text-gray-700 outline-none focus:border-[#5B7BFE]"
@@ -1071,11 +1599,16 @@ export function OrganizationSetupCenter({
               <div className="mx-auto grid max-w-5xl grid-cols-1 gap-5 md:grid-cols-2">
                 {tree.children.map((department, index) => {
                   const inviteCode = buildDepartmentInviteCode(department.id, {
+                    organizationId: value.organization.organizationId,
                     organizationName,
                     departmentName: department.name,
                     order: index,
                   });
-                  const joinedCount = bindingsByDepartmentId.get(department.id)?.length || 0;
+                  const departmentSettings = value.departments.find((item) => item.id === department.id);
+                  const departmentBindings = bindingsByDepartmentId.get(department.id) || [];
+                  const joinedCount = departmentSettings
+                    ? countDepartmentMembers(departmentSettings, departmentBindings)
+                    : departmentBindings.length;
                   const positions = department.children.map((item) => item.name).join('、') || '暂无岗位';
                   return (
                     <InviteCard
@@ -1106,6 +1639,98 @@ type InviteCardProps = {
   joinedCount: number;
   color: string;
 };
+
+type CardSaveButtonProps = {
+  active: boolean;
+  disabled?: boolean;
+  iconSize?: number;
+  label: string;
+  onClick: () => void;
+  className?: string;
+};
+
+type IntroDocumentActionProps = {
+  canEdit: boolean;
+  compact?: boolean;
+  disabled?: boolean;
+  document?: OrgIntroDocumentSettings | null;
+  label: string;
+  onUpload: () => void;
+  pendingDocument?: OrgIntroDocumentSettings | null;
+};
+
+function IntroDocumentAction({
+  canEdit,
+  compact = false,
+  disabled = false,
+  document,
+  label,
+  onUpload,
+  pendingDocument,
+}: IntroDocumentActionProps) {
+  const activeDocument = pendingDocument || document || null;
+  const hasPendingDocument = Boolean(pendingDocument);
+  const fileName = activeDocument?.fileName?.trim() || '';
+  const buttonText = fileName ? '替换' : '上传';
+  return (
+    <div className={`flex min-w-0 items-center gap-2 ${compact ? 'pl-6 pt-1' : 'pl-8'}`}>
+      <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-bold text-gray-400">
+        <FileText size={compact ? 11 : 12} />
+        {label}
+      </span>
+      {fileName ? (
+        <span
+          title={fileName}
+          className={`min-w-0 truncate rounded-full px-2 py-1 text-[10px] font-bold ${
+            hasPendingDocument ? 'bg-blue-50 text-[#4A63CF]' : 'bg-gray-100 text-gray-500'
+          }`}
+        >
+          {hasPendingDocument ? '待保存 · ' : ''}{fileName}
+        </span>
+      ) : (
+        <span className="text-[10px] font-medium text-gray-300">未上传</span>
+      )}
+      {canEdit ? (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onUpload}
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[#DCE4FF] bg-white px-2 py-1 text-[10px] font-bold text-[#5B7BFE] transition hover:border-[#5B7BFE]/60 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <UploadCloud size={11} />
+          {buttonText}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function CardSaveButton({
+  active,
+  disabled = false,
+  iconSize = 13,
+  label,
+  onClick,
+  className = 'right-3 top-3 h-7 w-7',
+}: CardSaveButtonProps) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className={`absolute inline-flex items-center justify-center rounded-full border shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        active
+          ? 'border-[#5B7BFE] bg-[#5B7BFE] text-white shadow-[0_8px_18px_rgba(91,123,254,0.24)]'
+          : 'border-[#DCE4FF] bg-white text-[#5B7BFE] opacity-75 hover:border-[#5B7BFE]/60 hover:opacity-100'
+      } ${className}`}
+    >
+      <Check size={iconSize} strokeWidth={2.6} />
+    </button>
+  );
+}
 
 function InviteCard({
   departmentName,

@@ -181,10 +181,11 @@ class SystemLogger:
         start_date: str | None = None,
         end_date: str | None = None,
         level: str | None = None,
+        source: str | None = None,
         keyword: str | None = None,
     ) -> str:
         """Export logs as a readable Markdown document."""
-        entries = self.query(start_date=start_date, end_date=end_date, level=level, keyword=keyword, limit=5000)
+        entries = self.query(start_date=start_date, end_date=end_date, level=level, source=source, keyword=keyword, limit=5000)
 
         if not start_date:
             start_date = _today_cst().isoformat()
@@ -198,6 +199,8 @@ class SystemLogger:
         lines.append(f"- 条目数量：{len(entries)}")
         if level:
             lines.append(f"- 级别筛选：{level}")
+        if source:
+            lines.append(f"- 来源筛选：{source}")
         if keyword:
             lines.append(f"- 关键词：{keyword}")
         lines.append(f"- 导出时间：{_now_cst().isoformat()}")

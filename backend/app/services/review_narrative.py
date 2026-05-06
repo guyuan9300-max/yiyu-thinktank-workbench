@@ -204,6 +204,9 @@ WEEKLY_MAINLINE_BANNED_PHRASES = (
     "沉淀为可复用记录",
     "开放风险",
     "判断是否闭环",
+    "整体完成度较高",
+    "明确负责人、交付物和完成时间",
+    "避免只停留在任务完成状态",
 )
 WEEKLY_MAINLINE_ACTION_KEYWORDS = (
     "完成",
@@ -238,13 +241,14 @@ WEEKLY_MAINLINE_SYSTEM_INSTRUCTION = """\
 写作规则：
 - progressText 写 2-4 句，必须说明：做了什么、推进到什么阶段、这件事对业务/交付/合作有什么意义。
 - nextGoalText 写 2-3 句，必须是 action，必须说明：优先做什么、为什么现在做、产出标准是什么。
+- 主线必须围绕项目状态变化写，不要只把任务标题串起来；优先写“从准备到交付”“从功能完成到表达校准”“从名单整理到落地安排”这类阶段变化。
 - 如果需要用户补充资料，必须写清楚“补什么”和“补齐后能带来什么价值”。例如：补材料文字大纲后，可以判断版本是否服务资方决策、客户沟通或内部执行。
 - 如果材料不足，不要假装已经理解材料内容；直接把下一步写成补齐资料、负责人、交付物和完成时间的动作。
 - 不要输出资料来源、读取状态、内部诊断、模型置信度。
 
 禁止输出：
 - 客户DNA、数据中心、附件未读、系统不能假装理解、证据包、内部诊断
-- 继续推进、推进收束、沉淀为可复用记录、开放风险、判断是否闭环
+- 继续推进、推进收束、沉淀为可复用记录、开放风险、判断是否闭环、整体完成度较高、明确负责人、交付物和完成时间、避免只停留在任务完成状态
 - 没有证据支撑的具体功能或动作，例如输入里没有“下载按钮”，就不能写“上线下载按钮”。
 """
 
@@ -516,10 +520,35 @@ def build_weekly_mainline_evidence_pack(
                 data_dir=data_dir,
                 access_context=access_context,
                 week_label=week_label,
+                work_items=items,
+                task_ids=task_ids,
             )
         except Exception as exc:
             logger.warning("Weekly review material pack build failed: %s", exc)
             material_pack = None
+
+    if material_pack and material_pack.get("tasks"):
+        material_tasks = {
+            str(task.get("taskId") or ""): task
+            for task in material_pack.get("tasks") or []
+            if isinstance(task, dict) and str(task.get("taskId") or "")
+        }
+        for record in task_records:
+            material_task = material_tasks.get(str(record.get("taskId") or ""))
+            if not isinstance(material_task, dict):
+                continue
+            for key, material_key in [
+                ("clientId", "clientId"),
+                ("clientName", "clientName"),
+                ("eventLineId", "eventLineId"),
+                ("eventLineName", "eventLineName"),
+                ("taskDescription", "description"),
+            ]:
+                if not record.get(key) and material_task.get(material_key):
+                    record[key] = material_task.get(material_key)
+            for key in ["currentBlocker", "nextAction", "recentDecision", "ownerName", "dueDate"]:
+                if material_task.get(key):
+                    record[key] = material_task.get(key)
 
     attachments: list[dict[str, Any]] = []
     lookup_ids = sorted(task_lookup.keys())
@@ -693,9 +722,39 @@ def build_weekly_mainline_evidence_pack(
                         }
                     )
 
+    background_tasks = [
+        item for item in (material_pack or {}).get("backgroundTasks", [])
+        if isinstance(item, dict)
+    ]
+    background_review_entries = [
+        item for item in (material_pack or {}).get("backgroundReviewEntries", [])
+        if isinstance(item, dict)
+    ]
+    background_documents = [
+        item for item in (material_pack or {}).get("backgroundDocuments", [])
+        if isinstance(item, dict)
+    ]
+    background_event_lines = [
+        item for item in (material_pack or {}).get("backgroundEventLines", [])
+        if isinstance(item, dict)
+    ]
+    structured_mainline_evidence = _weekly_mainline_structured_evidence(
+        tasks=task_records,
+        background_tasks=background_tasks,
+        background_review_entries=background_review_entries,
+        background_documents=background_documents,
+        background_event_lines=background_event_lines,
+        attachments=attachments,
+    )
+
     evidence_pack = {
         "weekLabel": week_label,
         "tasks": task_records,
+        "backgroundTasks": background_tasks,
+        "backgroundReviewEntries": background_review_entries,
+        "backgroundDocuments": background_documents,
+        "backgroundEventLines": background_event_lines,
+        "structuredMainlineEvidence": structured_mainline_evidence,
         "attachments": attachments,
         "dataContext": data_context,
         "evidenceMeta": {
@@ -706,6 +765,7 @@ def build_weekly_mainline_evidence_pack(
             "dataContextCount": len(data_context),
             "materialPackFingerprint": (material_pack or {}).get("packFingerprint", ""),
             "materialPackSourceCounts": (material_pack or {}).get("sourceCounts", {}),
+            "materialPackMissingMeta": (material_pack or {}).get("missingMeta", {}),
         },
         "materialPack": material_pack or {},
     }
@@ -731,6 +791,129 @@ def weekly_mainline_evidence_fingerprint(evidence_pack: dict[str, Any]) -> str:
     import hashlib
 
     return hashlib.sha1(source.encode("utf-8")).hexdigest()
+
+
+def _weekly_mainline_group_key(task: dict[str, Any]) -> tuple[str, str]:
+    event_id = _weekly_mainline_clean(task.get("eventLineId"), limit=80)
+    if event_id:
+        return f"event:{event_id}", _weekly_mainline_clean(task.get("eventLineName"), limit=80) or _weekly_mainline_clean(task.get("title"), limit=80)
+    client_id = _weekly_mainline_clean(task.get("clientId"), limit=80)
+    if client_id:
+        return f"client:{client_id}", _weekly_mainline_clean(task.get("clientName"), limit=80) or _weekly_mainline_clean(task.get("title"), limit=80)
+    return f"title:{_weekly_event_normalize_title(str(task.get('title') or ''))}", _weekly_mainline_clean(task.get("title"), limit=80)
+
+
+def _weekly_mainline_structured_evidence(
+    *,
+    tasks: list[dict[str, Any]],
+    background_tasks: list[dict[str, Any]],
+    background_review_entries: list[dict[str, Any]],
+    background_documents: list[dict[str, Any]],
+    background_event_lines: list[dict[str, Any]],
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        key, title = _weekly_mainline_group_key(task)
+        group = groups.setdefault(
+            key,
+            {
+                "title": title or "本周主线",
+                "currentWeekTasks": [],
+                "previousProgress": [],
+                "currentChange": "",
+                "suspectedBlocker": [],
+                "nextActionCandidates": [],
+                "evidenceGaps": [],
+            },
+        )
+        group["currentWeekTasks"].append(_weekly_mainline_clean(task.get("title"), limit=90))
+        for candidate in [task.get("currentBlocker"), task.get("nextAction"), task.get("recentDecision")]:
+            cleaned = _weekly_mainline_clean(candidate, limit=180)
+            if cleaned and cleaned not in group["nextActionCandidates"] and ("下一步" in cleaned or _weekly_mainline_has_action(cleaned)):
+                group["nextActionCandidates"].append(cleaned)
+            elif cleaned and cleaned not in group["suspectedBlocker"] and ("卡" in cleaned or "阻塞" in cleaned or "风险" in cleaned):
+                group["suspectedBlocker"].append(cleaned)
+
+    for bg_task in background_tasks[:24]:
+        key, _title = _weekly_mainline_group_key(bg_task)
+        if key not in groups:
+            continue
+        progress = _weekly_mainline_clean(
+            "；".join(
+                part for part in [
+                    bg_task.get("title"),
+                    bg_task.get("recentDecision"),
+                    bg_task.get("nextAction"),
+                    bg_task.get("description"),
+                ]
+                if part
+            ),
+            limit=220,
+        )
+        if progress and progress not in groups[key]["previousProgress"]:
+            groups[key]["previousProgress"].append(progress)
+
+    review_by_task = {
+        str(entry.get("taskId") or ""): entry
+        for entry in background_review_entries
+        if isinstance(entry, dict)
+    }
+    background_by_task = {
+        str(task.get("taskId") or ""): _weekly_mainline_group_key(task)[0]
+        for task in background_tasks
+        if isinstance(task, dict)
+    }
+    for task_id, entry in review_by_task.items():
+        key = background_by_task.get(task_id)
+        if not key or key not in groups:
+            continue
+        note = _weekly_mainline_clean(entry.get("note") or entry.get("documentExcerpt"), limit=220)
+        if note and note not in groups[key]["previousProgress"]:
+            groups[key]["previousProgress"].append(note)
+
+    for event_line in background_event_lines:
+        key = f"event:{_weekly_mainline_clean(event_line.get('eventLineId'), limit=80)}"
+        if key not in groups:
+            continue
+        for value in [event_line.get("summary"), event_line.get("recentDecision"), event_line.get("nextStep"), event_line.get("currentBlocker")]:
+            cleaned = _weekly_mainline_clean(value, limit=180)
+            if cleaned and cleaned not in groups[key]["previousProgress"]:
+                groups[key]["previousProgress"].append(cleaned)
+
+    for document in background_documents[:12]:
+        client_id = _weekly_mainline_clean(document.get("clientId"), limit=80)
+        excerpt = _weekly_mainline_clean(document.get("excerpt"), limit=220)
+        if not client_id or not excerpt:
+            continue
+        for key, group in groups.items():
+            if key == f"client:{client_id}" or any(
+                isinstance(task, dict) and _weekly_mainline_clean(task.get("clientId"), limit=80) == client_id and _weekly_mainline_group_key(task)[0] == key
+                for task in tasks
+            ):
+                if excerpt not in group["previousProgress"]:
+                    group["previousProgress"].append(excerpt)
+
+    attachment_task_ids = {str(item.get("canonicalTaskId") or item.get("taskId") or "") for item in attachments if isinstance(item, dict)}
+    for key, group in groups.items():
+        group_tasks = [
+            task for task in tasks
+            if isinstance(task, dict) and _weekly_mainline_group_key(task)[0] == key
+        ]
+        completed = len([task for task in group_tasks if str(task.get("status") or "") == "done"])
+        pending = max(0, len(group_tasks) - completed)
+        group["currentChange"] = f"本周 {len(group_tasks)} 项纳入，{completed} 项完成，{pending} 项未完成。"
+        if not group["previousProgress"]:
+            group["evidenceGaps"].append("缺少前序复盘或背景材料")
+        if not any(str(task.get("taskId") or "") in attachment_task_ids for task in group_tasks):
+            group["evidenceGaps"].append("缺少本周任务附件摘要")
+        group["previousProgress"] = group["previousProgress"][:5]
+        group["suspectedBlocker"] = group["suspectedBlocker"][:3]
+        group["nextActionCandidates"] = group["nextActionCandidates"][:4]
+        group["evidenceGaps"] = group["evidenceGaps"][:3]
+    return list(groups.values())[:8]
 
 
 def _weekly_event_task_text(task: dict[str, Any]) -> str:
@@ -1255,6 +1438,9 @@ def _weekly_mainline_task_prompt_lines(evidence_pack: dict[str, Any]) -> str:
         for label, value in [
             ("任务描述", task.get("taskDescription")),
             ("复盘说明", task.get("reviewNote")),
+            ("任务卡点", task.get("currentBlocker")),
+            ("任务下一步", task.get("nextAction")),
+            ("任务最近决策", task.get("recentDecision")),
             ("复盘进展", structured.get("progress")),
             ("复盘反思", structured.get("reflection")),
             ("下一步", structured.get("nextAction")),
@@ -1270,6 +1456,64 @@ def _weekly_mainline_task_prompt_lines(evidence_pack: dict[str, Any]) -> str:
                 parts.append(f"{label}={cleaned}")
         lines.append("- " + "；".join(parts))
     return "\n".join(lines)
+
+
+def _weekly_mainline_structured_prompt_lines(evidence_pack: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for item in evidence_pack.get("structuredMainlineEvidence") or []:
+        if not isinstance(item, dict):
+            continue
+        parts = [
+            f"主线={_weekly_mainline_clean(item.get('title'), limit=90)}",
+            f"本周任务={_weekly_mainline_clean('、'.join(item.get('currentWeekTasks') or []), limit=180)}",
+            f"本周变化={_weekly_mainline_clean(item.get('currentChange'), limit=120)}",
+        ]
+        for label, key in [
+            ("前序进展", "previousProgress"),
+            ("可能卡点", "suspectedBlocker"),
+            ("下一步候选", "nextActionCandidates"),
+            ("证据缺口", "evidenceGaps"),
+        ]:
+            values = [
+                _weekly_mainline_clean(value, limit=160)
+                for value in (item.get(key) or [])
+                if _weekly_mainline_clean(value, limit=160)
+            ]
+            if values:
+                parts.append(f"{label}={'；'.join(values[:4])}")
+        lines.append("- " + "；".join(part for part in parts if part and not part.endswith("=")))
+    return "\n".join(lines)
+
+
+def _weekly_mainline_background_prompt_lines(evidence_pack: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for task in (evidence_pack.get("backgroundTasks") or [])[:18]:
+        if not isinstance(task, dict):
+            continue
+        title = _weekly_mainline_clean(task.get("title"), limit=90)
+        reason = _weekly_mainline_clean(task.get("relationReason"), limit=40)
+        details = _weekly_mainline_clean(
+            "；".join(
+                value for value in [
+                    task.get("eventLineName"),
+                    task.get("clientName"),
+                    task.get("recentDecision"),
+                    task.get("nextAction"),
+                    task.get("description"),
+                ]
+                if value
+            ),
+            limit=260,
+        )
+        if title:
+            lines.append(f"- {title}（{reason or 'related_history'}）：{details}")
+    for entry in (evidence_pack.get("backgroundReviewEntries") or [])[:8]:
+        if not isinstance(entry, dict):
+            continue
+        note = _weekly_mainline_clean(entry.get("note") or entry.get("documentExcerpt"), limit=260)
+        if note:
+            lines.append(f"- 前序复盘（{_weekly_mainline_clean(entry.get('taskId'), limit=40)}）：{note}")
+    return "\n".join(lines[:24])
 
 
 def _weekly_mainline_attachment_prompt_lines(evidence_pack: dict[str, Any]) -> str:
@@ -1411,14 +1655,20 @@ def build_weekly_mainline_cards_draft(
     week_label: str,
     evidence_pack: dict[str, Any],
 ) -> WeeklyMainlineCardsRecord:
+    meta = evidence_pack.get("evidenceMeta") if isinstance(evidence_pack.get("evidenceMeta"), dict) else {}
+    counts = meta.get("materialPackSourceCounts") if isinstance(meta.get("materialPackSourceCounts"), dict) else {}
+    if int(counts.get("explicitTaskBoundary") or 0) > 0 and int(counts.get("tasks") or 0) == 0:
+        return _weekly_mainline_fallback_result(evidence_pack, "material_pack_empty")
+
     health = ai.get_health()
     if health.provider == "mock" or not health.ready:
         return _weekly_mainline_fallback_result(evidence_pack, "ai_not_ready")
 
+    structured_lines = _weekly_mainline_structured_prompt_lines(evidence_pack)
     task_lines = _weekly_mainline_task_prompt_lines(evidence_pack)
+    background_lines = _weekly_mainline_background_prompt_lines(evidence_pack)
     attachment_lines = _weekly_mainline_attachment_prompt_lines(evidence_pack)
     data_context_lines = _weekly_mainline_data_context_prompt_lines(evidence_pack)
-    meta = evidence_pack.get("evidenceMeta") if isinstance(evidence_pack.get("evidenceMeta"), dict) else {}
     prompt = "\n\n".join(
         part
         for part in [
@@ -1429,12 +1679,15 @@ def build_weekly_mainline_cards_draft(
                 f"任务关联材料数：{meta.get('attachmentCount', 0)}；"
                 f"有文字摘要的材料数：{meta.get('readableAttachmentCount', 0)}"
             ),
+            f"【结构化主线证据】\n{structured_lines}" if structured_lines else "",
             f"【本周任务包】\n{task_lines}" if task_lines else "",
+            f"【前序背景包】\n{background_lines}" if background_lines else "",
             attachment_lines,
             f"【组织与项目背景材料】\n{data_context_lines}" if data_context_lines else "",
             (
                 "【输出要求】\n"
                 "只输出 JSON。不要解释。mainlines 最多 3 条。每条 progressText 2-4 句，nextGoalText 2-3 句。"
+                "本周任务只用于统计，前序背景只用于解释项目从哪里来、当前卡在哪里。"
                 "不要写任何资料来源、读取状态或内部诊断。"
             ),
         ]

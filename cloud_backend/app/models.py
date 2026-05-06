@@ -6,6 +6,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 AccountStatus = Literal["pending", "approved", "rejected", "disabled"]
+MembershipStatus = Literal["none", "pending", "approved", "rejected"]
 PrimaryRole = Literal["admin", "employee"]
 Priority = Literal["low", "normal", "high"]
 TaskProgressStatus = Literal["inbox", "todo", "doing", "done", "rejected"]
@@ -32,9 +33,12 @@ class SessionUser(BaseModel):
     id: str
     organizationId: str
     email: EmailStr
+    phone: str | None = None
     fullName: str
     primaryRole: PrimaryRole
     accountStatus: AccountStatus
+    membershipStatus: MembershipStatus = "approved"
+    membershipRejectedReason: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
     isDepartmentLead: bool = False
@@ -50,8 +54,10 @@ class AuthTokenResponse(BaseModel):
 
 class RegisterPayload(BaseModel):
     email: EmailStr
+    phone: str | None = None
     fullName: str
     password: str = Field(min_length=8)
+    inviteCode: str | None = None
     departmentId: str | None = None
     jobTitle: str | None = None
     managerName: str | None = None
@@ -60,7 +66,8 @@ class RegisterPayload(BaseModel):
 
 
 class LoginPayload(BaseModel):
-    email: EmailStr
+    email: EmailStr | None = None
+    identifier: str | None = None
     password: str
 
 
@@ -72,6 +79,7 @@ class ChangePasswordPayload(BaseModel):
 class UpdateProfilePayload(BaseModel):
     fullName: str | None = Field(default=None, min_length=1)
     email: EmailStr | None = None
+    phone: str | None = None
 
 
 class AdminResetPasswordPayload(BaseModel):
@@ -100,6 +108,20 @@ class OrgMembershipSummaryRecord(BaseModel):
     hasOrganization: bool = False
     organizationId: str | None = None
     organizationName: str | None = None
+    departmentId: str | None = None
+    departmentName: str | None = None
+    membershipStatus: MembershipStatus = "none"
+    membershipSubmittedAt: str | None = None
+    membershipRejectedReason: str | None = None
+    organizationWorkspaceClientId: str | None = None
+
+
+class OrgMembershipApplyPayload(BaseModel):
+    inviteCode: str | None = None
+    departmentId: str | None = None
+    jobTitle: str | None = None
+    managerName: str | None = None
+    currentFocus: str | None = None
 
 
 class OrgFeishuIntegrationAuditRecord(BaseModel):
@@ -204,9 +226,13 @@ class RejectPayload(BaseModel):
 class EmployeeRecord(BaseModel):
     id: str
     email: EmailStr
+    phone: str | None = None
     fullName: str
     primaryRole: PrimaryRole
     accountStatus: AccountStatus
+    membershipStatus: MembershipStatus = "approved"
+    membershipRejectedReason: str | None = None
+    membershipSubmittedAt: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
     jobTitle: str | None = None
@@ -220,10 +246,54 @@ class EmployeeRecord(BaseModel):
     createdAt: str
 
 
+class MaintenanceModeStatus(BaseModel):
+    available: bool
+    active: bool
+    canEnter: bool
+    canManagePermissions: bool
+    organizationId: str | None = None
+    userId: str | None = None
+    reason: str | None = None
+
+
+class MaintenanceMemberPermission(BaseModel):
+    userId: str
+    fullName: str
+    email: str
+    primaryRole: PrimaryRole
+    authorized: bool
+    canManagePermissions: bool
+
+
+class MaintenancePermissionMemberPayload(BaseModel):
+    userId: str
+    authorized: bool
+    canManagePermissions: bool = False
+
+
+class MaintenancePermissionUpdatePayload(BaseModel):
+    members: list[MaintenancePermissionMemberPayload] = Field(default_factory=list)
+
+
+class MaintenanceAuditPayload(BaseModel):
+    action: str
+    detail: dict[str, object] = Field(default_factory=dict)
+    targetUserId: str | None = None
+
+
 class DepartmentOption(BaseModel):
     id: str
     name: str
     color: str
+
+
+class OrgInviteResolveResult(BaseModel):
+    valid: bool
+    organizationId: str | None = None
+    organizationName: str | None = None
+    departmentId: str | None = None
+    departmentName: str | None = None
+    message: str | None = None
 
 
 class OrgProfileRecord(BaseModel):
@@ -235,6 +305,8 @@ class OrgProfileRecord(BaseModel):
     quarterPlans: list["OrgQuarterPlanRecord"] = Field(default_factory=list)
     quarterlyFocus: list[str] = Field(default_factory=list)
     leaderUserId: str | None = None
+    leaderName: str = ""
+    introDocument: "OrgIntroDocumentRecord | None" = None
     managementUserIds: list[str] = Field(default_factory=list)
     updatedAt: str
 
@@ -267,6 +339,7 @@ class OrgDepartmentRecord(BaseModel):
     color: str
     leaderUserId: str | None = None
     leaderName: str = ""
+    introDocument: "OrgIntroDocumentRecord | None" = None
     parentDepartmentId: str | None = None
     mission: str = ""
     businessContext: str = ""
@@ -276,6 +349,17 @@ class OrgDepartmentRecord(BaseModel):
     collaborationDepartmentIds: list[str] = Field(default_factory=list)
     active: bool = True
     updatedAt: str
+
+
+class OrgIntroDocumentRecord(BaseModel):
+    fileName: str = ""
+    fileType: str = ""
+    markdownContent: str = ""
+    normalizedText: str = ""
+    summary: str = ""
+    contentHash: str = ""
+    uploadedBy: str = ""
+    uploadedAt: str = ""
 
 
 class OrgRoleTemplateRecord(BaseModel):
@@ -707,6 +791,7 @@ class ClientSummaryRecord(BaseModel):
     id: str
     name: str
     alias: str | None = None
+    type: str = "client"
 
 
 class TaskListRecord(BaseModel):
@@ -775,6 +860,10 @@ class TaskRecord(BaseModel):
     ownerName: str | None = None
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
     clientId: str | None = None
@@ -851,6 +940,10 @@ class TaskCreatePayload(BaseModel):
     listId: str
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     durationMinutes: int = 60
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] = "COLLAB_SHARED"
     clientId: str | None = None
@@ -877,6 +970,10 @@ class TaskUpdatePayload(BaseModel):
     listId: str | None = None
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     durationMinutes: int | None = None
     scopeMode: Literal["COLLAB_SHARED", "PERSONAL_ONLY"] | None = None
     clientId: str | None = None
@@ -1133,9 +1230,31 @@ class TaskListLibraryResponse(BaseModel):
     lists: list[TaskListRecord]
 
 
+class TaskListDuplicateRepairGroupRecord(BaseModel):
+    organizationId: str | None = None
+    scope: Literal["org", "personal"]
+    name: str
+    canonicalId: str
+    mergedIds: list[str] = Field(default_factory=list)
+    movedTaskCount: int = 0
+    deletedListCount: int = 0
+    skippedIds: list[str] = Field(default_factory=list)
+
+
+class TaskListDuplicateRepairResponse(BaseModel):
+    groups: list[TaskListDuplicateRepairGroupRecord] = Field(default_factory=list)
+    movedTaskCount: int = 0
+    deletedListCount: int = 0
+    skippedListCount: int = 0
+    updatedSettingsCount: int = 0
+    updatedAt: str
+
+
 class OrgAiConfigRecord(BaseModel):
     orgId: str
     aiProvider: str
+    aiProviderLabel: str = ""
+    aiBaseUrl: str = ""
     aiModel: str
     hasApiKey: bool
     configuredBy: str | None = None
@@ -1144,6 +1263,8 @@ class OrgAiConfigRecord(BaseModel):
 
 class OrgAiConfigUpdatePayload(BaseModel):
     aiProvider: str = Field(min_length=1)
+    aiProviderLabel: str = ""
+    aiBaseUrl: str = ""
     aiModel: str = ""
     apiKey: str | None = None
     clearApiKey: bool = False
@@ -1153,6 +1274,8 @@ class OrgAiConfigSecretRecord(BaseModel):
     """Only returned to authenticated org members — contains decrypted key."""
     orgId: str
     aiProvider: str
+    aiProviderLabel: str = ""
+    aiBaseUrl: str = ""
     aiModel: str
     apiKey: str
     updatedAt: str
@@ -1303,6 +1426,10 @@ class WeeklyReviewTaskSnapshotRecord(BaseModel):
     status: Literal["inbox", "todo", "doing", "done", "rejected"]
     startDate: str | None = None
     dueDate: str | None = None
+    deadlineAt: str | None = None
+    scheduledStartAt: str | None = None
+    scheduledEndAt: str | None = None
+    completedAt: str | None = None
     createdAt: str
     completionNote: str | None = None
     ownerId: str | None = None
@@ -1432,6 +1559,8 @@ class HierarchyReportRecord(BaseModel):
 
 
 class ReviewDashboardResponse(BaseModel):
+    weekLabel: str = ""
+    resolvedWeekLabel: str | None = None
     currentReview: WeeklyReviewEntryRecord | None = None
     workItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)
     personalItems: list[WeeklyReviewTaskEntryRecord] = Field(default_factory=list)

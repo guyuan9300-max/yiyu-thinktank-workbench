@@ -105,35 +105,37 @@ export function BrandLogoSettingsCard({
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border border-gray-200 text-[13px] font-bold text-gray-700 disabled:opacity-50"
-              onClick={() => inputRef.current?.click()}
-              disabled={!canManage || pending}
-            >
-              {isPicking ? <RefreshCw size={15} className="animate-spin" /> : <ImagePlus size={15} />}
-              {logoDataUrl ? '替换 PNG' : '上传 PNG'}
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border border-gray-200 text-[13px] font-bold text-gray-700 disabled:opacity-50"
-              onClick={onClearDraft}
-              disabled={!canManage || pending || !logoDataUrl}
-            >
-              <Trash2 size={15} />
-              清空预览
-            </button>
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-[#5B7BFE] text-white text-[13px] font-bold shadow-sm disabled:opacity-50"
-              onClick={() => void onSave()}
-              disabled={!canManage || pending || !hasUnsavedChange}
-            >
-              {busy ? <RefreshCw size={15} className="animate-spin" /> : <Save size={15} />}
-              保存 Logo
-            </button>
-          </div>
+          {canManage && (
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border border-gray-200 text-[13px] font-bold text-gray-700 disabled:opacity-50"
+                onClick={() => inputRef.current?.click()}
+                disabled={pending}
+              >
+                {isPicking ? <RefreshCw size={15} className="animate-spin" /> : <ImagePlus size={15} />}
+                {logoDataUrl ? '替换 PNG' : '上传 PNG'}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white border border-gray-200 text-[13px] font-bold text-gray-700 disabled:opacity-50"
+                onClick={onClearDraft}
+                disabled={pending || !logoDataUrl}
+              >
+                <Trash2 size={15} />
+                清空预览
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-[#5B7BFE] text-white text-[13px] font-bold shadow-sm disabled:opacity-50"
+                onClick={() => void onSave()}
+                disabled={pending || !hasUnsavedChange}
+              >
+                {busy ? <RefreshCw size={15} className="animate-spin" /> : <Save size={15} />}
+                保存 Logo
+              </button>
+            </div>
+          )}
 
           {localError && (
             <div className="rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3 text-[12px] text-rose-700">

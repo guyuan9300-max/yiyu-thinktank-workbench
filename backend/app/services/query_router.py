@@ -4,11 +4,8 @@ import json
 import re
 from typing import Any
 
-import httpx
-
 from app.db import Database
 from app.models import PageContextPackRecord, RetrievalModelSettingsRecord, RouteDecisionRecord
-from app.services.ai import DOUBAO_BASE_URL
 from app.services.embedding_provider import build_embedding_provider
 from app.services.local_semantic_router import route_by_local_semantic
 
@@ -248,21 +245,13 @@ def _safe_json_load(text: str) -> dict[str, Any] | None:
         return None
 
 
-def _invoke_doubao_router_model(
+def _invoke_configured_router_model(
     *,
     ai_service: Any,
     model: str,
     prompt: str,
     base_decision: RouteDecisionRecord,
 ) -> RouteDecisionRecord | None:
-    try:
-        store = ai_service._store_for("doubao")  # type: ignore[attr-defined]
-        api_key = str(store.get_api_key() or "").strip() if store else ""
-    except Exception:
-        api_key = ""
-    if not api_key or not model:
-        return None
-
     router_instruction = (
         "你是检索路由器。只输出 JSON，不要解释。"
         "不能输出最终答案，不能声明已批准判断，不能越过审批边界。"
@@ -273,32 +262,33 @@ def _invoke_doubao_router_model(
         "输出字段必须包含：intent,retrievalMode,dataSources,queryPlan,rerankNeeded,"
         "shouldCreateProposal,confidence,routeReason。"
     )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": router_instruction},
-            {"role": "user", "content": router_prompt},
-        ],
-        "temperature": 0.0,
-        "top_p": 0.5,
-        "max_tokens": 600,
-        "stream": False,
-    }
     try:
-        with httpx.Client(timeout=12.0) as client:
-            response = client.post(
-                f"{DOUBAO_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            response.raise_for_status()
-            result = response.json()
-        message = (
-            result.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
+        target_model = str(model or "").strip()
+        parsed_payload = ai_service._qwen_generate(  # type: ignore[attr-defined]
+            prompt=router_prompt,
+            system_instruction=router_instruction,
+            response_schema={
+                "type": "OBJECT",
+                "properties": {
+                    "intent": {"type": "STRING"},
+                    "retrievalMode": {"type": "STRING"},
+                    "dataSources": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "queryPlan": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "rerankNeeded": {"type": "BOOLEAN"},
+                    "shouldCreateProposal": {"type": "BOOLEAN"},
+                    "confidence": {"type": "NUMBER"},
+                    "routeReason": {"type": "STRING"},
+                },
+            },
+            timeout_seconds=12.0,
+            max_tokens=600,
+            temperature=0.0,
+            top_p=0.5,
+            enable_thinking=False,
+            model_override=target_model or None,
+            task_kind="fast_structured",
         )
-        parsed = _safe_json_load(str(message))
+        parsed = parsed_payload if isinstance(parsed_payload, dict) else _safe_json_load(str(parsed_payload))
         if not isinstance(parsed, dict):
             return None
         confidence = float(parsed.get("confidence", 0.0) or 0.0)
@@ -430,18 +420,18 @@ def route_page_query(
         elif semantic_decision.routerSource == "local_semantic":
             candidate_decision = semantic_decision
 
-    should_try_doubao = (
+    should_try_smart_router = (
         effective_settings.routerProvider == "doubao"
         and router_mode in {"rules", "semantic_plus_llm"}
     )
-    if not should_try_doubao:
+    if not should_try_smart_router:
         return candidate_decision
     if not _should_call_smart_router(prompt=prompt, intent=inferred_intent, context_quality=context_quality):
         return candidate_decision
     if ai_service is None:
         return candidate_decision
 
-    smart_candidate = _invoke_doubao_router_model(
+    smart_candidate = _invoke_configured_router_model(
         ai_service=ai_service,
         model=(effective_settings.routerModel or "").strip(),
         prompt=prompt,

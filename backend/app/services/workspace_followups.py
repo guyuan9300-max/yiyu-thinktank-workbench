@@ -17,7 +17,7 @@ WorkspaceFollowupScenario = Literal[
     "general_consulting",
 ]
 
-WorkspaceFollowupGenerationMode = Literal["consulting", "file_search", "fallback"]
+WorkspaceFollowupGenerationMode = Literal["consulting", "file_search", "fallback", "skipped_system_failure"]
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 import sys
 import time
@@ -43,8 +43,12 @@ def _write_json(output_path: str | None, payload: dict) -> None:
 
 
 def _default_failure_output_path() -> str:
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"/tmp/workspace_chat_smoke_{timestamp}.json"
+
+
+def _utc_now_label() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _ensure_client_id(backend_url: str, client_id: str | None) -> str:
@@ -239,6 +243,20 @@ def _expectation_payload(args: argparse.Namespace) -> dict:
     }
 
 
+def _ai_unconfigured_reason(health: dict) -> str | None:
+    ai = health.get("ai") if isinstance(health.get("ai"), dict) else {}
+    provider = str(ai.get("provider") or "").strip()
+    ready = bool(ai.get("ready"))
+    fingerprint = str(ai.get("fingerprint") or "").strip()
+    if provider == "mock":
+        return "未配置真实大模型，workspace chat 生成 smoke 已按预期跳过。"
+    if not ready:
+        return str(ai.get("detail") or "大模型未配置完成，workspace chat 生成 smoke 已跳过。")
+    if not fingerprint:
+        return "大模型 API Key 未配置，workspace chat 生成 smoke 已跳过。"
+    return None
+
+
 def _validate_result(result: dict, expectations: dict | None = None) -> None:
     expectations = expectations or {}
     payload = result.get("rawPayload") or {}
@@ -306,8 +324,25 @@ def main() -> int:
     args = parser.parse_args()
 
     backend_url = args.backend_url.rstrip("/")
-    client_id = _ensure_client_id(backend_url, args.client_id)
     health = _request_json(f"{backend_url}/api/v1/system/health")
+    ai_unconfigured_reason = _ai_unconfigured_reason(health)
+    if ai_unconfigured_reason:
+        result = {
+            "recordedAt": _utc_now_label(),
+            "clientId": args.client_id,
+            "bundleManifestId": health.get("bundleManifestId"),
+            "buildVersion": health.get("buildVersion"),
+            "ready": True,
+            "readyToOpenWorkbench": True,
+            "mode": args.mode,
+            "chatSmokeSkipped": True,
+            "skipReason": ai_unconfigured_reason,
+            "ai": health.get("ai"),
+        }
+        _write_json(args.output, result)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    client_id = _ensure_client_id(backend_url, args.client_id)
     expectations = _expectation_payload(args)
     results: list[dict] = []
     try:
@@ -324,7 +359,7 @@ def main() -> int:
         raise SystemExit(f"workspace chat request failed: {error.code} {detail}") from error
     except Exception as error:
         debug_payload = {
-            "recordedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "recordedAt": _utc_now_label(),
             "clientId": client_id,
             "bundleManifestId": health.get("bundleManifestId"),
             "buildVersion": health.get("buildVersion"),
@@ -342,7 +377,7 @@ def main() -> int:
         raise
 
     result = {
-        "recordedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "recordedAt": _utc_now_label(),
         "clientId": client_id,
         "bundleManifestId": health.get("bundleManifestId"),
         "buildVersion": health.get("buildVersion"),

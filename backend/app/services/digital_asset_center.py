@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,7 +15,12 @@ from app.models import (
     DigitalAssetDimensionRecord,
     DigitalAssetInsightRecord,
     DigitalAssetMapNodeRecord,
+    DigitalAssetMaterialMaturityRowRecord,
     DigitalAssetMetricRecord,
+    DigitalAssetPulseFunnelItemRecord,
+    DigitalAssetPulseOrganizationRecord,
+    DigitalAssetPulseRecord,
+    DigitalAssetPulseSignalRecord,
     DigitalAssetScoreBreakdownRecord,
     DigitalAssetSourceRefRecord,
     DigitalAssetUnitRecord,
@@ -59,6 +65,44 @@ class AssetMapNode:
     units: tuple[AssetUnit, ...]
     next_deposit: str
     unlocked_value: str
+
+
+@dataclass(frozen=True)
+class AssetProfile:
+    key: str
+    label: str
+    title: str
+    keywords: tuple[str, ...]
+    title_keywords: tuple[str, ...]
+    preferred_nodes: tuple[str, ...]
+    rows: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MaterialRowDefinition:
+    key: str
+    label: str
+    description: str
+    keywords: tuple[str, ...]
+    required_keywords: tuple[str, ...]
+    missing_template: str
+    action_template: str
+    unlocked_value: str
+
+
+@dataclass(frozen=True)
+class ProfileScoreResult:
+    asset_profile_type: str
+    secondary_profile_types: list[str]
+    maturity_score: int
+    deposit_thickness: int
+    score_breakdown: DigitalAssetScoreBreakdownRecord
+    material_rows: list[DigitalAssetMaterialMaturityRowRecord]
+    asset_stage: str
+    next_stage: str
+    growth_mode: str
+    score_rationale: list[str]
+    blockers: list[str]
 
 
 ASSET_DIMENSIONS: tuple[AssetDimension, ...] = (
@@ -341,9 +385,11 @@ ASSET_MAP_NODES: tuple[AssetMapNode, ...] = (
     ),
 )
 
-STAGE_NAMES = ("资料整理期", "组织画像期", "结构计算期", "机制洞察期", "机会生成期")
+STAGE_NAMES = ("资料整理期", "项目画像期", "结构计算期", "机制洞察期", "机会生成期")
 NODE_STAGE_NAMES = ("整理", "画像", "计算", "洞察", "机会")
 CORE_NODE_KEYS = {"organization_identity", "business_portfolio", "strategic_judgment"}
+VERIFICATION_SOURCE_TYPES = {"evidence", "theme", "question", "judgment"}
+SUPPORTING_SOURCE_TYPES = {"memory", "event_line", "meeting", "task", "document_card"}
 NODE_COMPLEXITY_PENALTY: dict[str, int] = {
     "organization_identity": 0,
     "strategic_judgment": 2,
@@ -357,6 +403,326 @@ NODE_COMPLEXITY_PENALTY: dict[str, int] = {
     "outcome_evidence": 10,
     "opportunity_pipeline": 12,
 }
+
+SCORE_METHOD_VERSION = "typed-profile-v2"
+
+
+PROFILE_DEFINITIONS: tuple[AssetProfile, ...] = (
+    AssetProfile(
+        key="strategy_org",
+        label="组织战略陪伴型",
+        title="战略判断型",
+        keywords=("战略", "使命", "愿景", "定位", "治理", "规划", "判断", "决策", "复盘", "价值观", "第二曲线"),
+        title_keywords=("战略", "使命", "愿景", "定位", "规划", "判断", "价值观"),
+        preferred_nodes=("strategic_judgment", "organization_identity", "management_decision", "business_portfolio", "resource_ecosystem"),
+        rows=("strategic_judgment", "organization_identity", "management_decision", "business_portfolio", "resource_ecosystem"),
+    ),
+    AssetProfile(
+        key="public_project",
+        label="公益项目运营型",
+        title="公益项目运营型",
+        keywords=("项目", "活动", "工作坊", "报名", "参与", "教师", "儿童", "学校", "志愿者", "反馈", "成效", "前测", "后测", "结课", "服务对象"),
+        title_keywords=("项目", "活动", "工作坊", "报名", "反馈", "成效", "儿童", "教师"),
+        preferred_nodes=("business_portfolio", "audience_profile", "process_flow", "outcome_evidence", "resource_ecosystem"),
+        rows=("business_portfolio", "audience_profile", "process_flow", "outcome_evidence", "resource_ecosystem"),
+    ),
+    AssetProfile(
+        key="field_research",
+        label="研究报告/田野型",
+        title="研究田野型",
+        keywords=("研究", "报告", "调研", "访谈", "个案", "案例", "社区", "样本", "章节", "评估", "需求调研", "田野", "机构调研"),
+        title_keywords=("研究", "报告", "调研", "访谈", "个案", "案例", "评估"),
+        preferred_nodes=("audience_profile", "outcome_evidence", "business_portfolio", "process_flow", "strategic_judgment"),
+        rows=("research_question", "audience_profile", "field_evidence", "outcome_evidence", "research_conclusion"),
+    ),
+    AssetProfile(
+        key="platform_ecosystem",
+        label="平台/行业生态型",
+        title="平台生态型",
+        keywords=("论坛", "年会", "行业", "生态", "平台", "机构", "工具包", "评估报告", "组委会", "伙伴", "网络", "基金会发展"),
+        title_keywords=("论坛", "年会", "行业", "平台", "生态", "评估报告", "组委会"),
+        preferred_nodes=("resource_ecosystem", "business_portfolio", "strategic_judgment", "outcome_evidence", "data_system"),
+        rows=("platform_position", "ecosystem_network", "event_evaluation", "business_portfolio", "strategic_judgment", "data_system"),
+    ),
+    AssetProfile(
+        key="product_system",
+        label="产品/系统运营型",
+        title="产品系统型",
+        keywords=("产品", "系统", "平台", "功能", "测试", "技术", "工作台", "看板", "版本", "需求", "用户反馈", "自动化", "AI"),
+        title_keywords=("产品", "系统", "功能", "测试", "技术", "工作台", "看板"),
+        preferred_nodes=("data_system", "opportunity_pipeline", "management_decision", "business_portfolio", "audience_profile"),
+        rows=("product_roadmap", "user_feedback", "system_usage", "iteration_record", "business_result"),
+    ),
+    AssetProfile(
+        key="content_ip",
+        label="内容/IP资产型",
+        title="内容资产型",
+        keywords=("文章", "视频", "观点", "内容", "素材", "发布", "B站", "阅读", "播放", "评论", "选题", "写作", "转写", "领导", "本质", "真相", "人生", "执行力", "眼光", "思考"),
+        title_keywords=("文章", "视频", "B站", "内容", "观点", "转写", "领导", "本质", "真相", "人生", "执行力", "眼光"),
+        preferred_nodes=("communication_conversion", "strategic_judgment", "opportunity_pipeline", "audience_profile", "data_system"),
+        rows=("content_inventory", "topic_tags", "publishing_feedback", "audience_response", "viewpoint_validation"),
+    ),
+)
+
+
+MATERIAL_ROW_DEFINITIONS: dict[str, MaterialRowDefinition] = {
+    "strategic_judgment": MaterialRowDefinition(
+        key="strategic_judgment",
+        label="战略判断资料",
+        description="重要判断、判断依据、后续事实和复盘。",
+        keywords=("战略", "判断", "定位", "使命", "愿景", "规划", "目标", "依据", "复盘", "验证"),
+        required_keywords=("判断", "依据", "时间", "结果", "复盘"),
+        missing_template="还缺把重要战略判断和后续事实放在一起复盘的资料，目前只能看到部分判断，不能稳定判断哪些成立、哪些需要调整。",
+        action_template="整理过往战略判断、提出背景、采取动作和后续结果。",
+        unlocked_value="可以形成判断复盘能力，帮助 AI 追踪组织判断质量。",
+    ),
+    "organization_identity": MaterialRowDefinition(
+        key="organization_identity",
+        label="组织身份资料",
+        description="组织定位、当前阶段、业务边界和关键角色。",
+        keywords=("组织", "简介", "使命", "愿景", "定位", "阶段", "角色", "部门", "职责", "边界"),
+        required_keywords=("使命", "定位", "阶段", "业务", "角色"),
+        missing_template="还缺说明组织当前阶段、部门职责、关键角色和协作边界的资料，目前 AI 能知道组织大致在做什么，但不稳定判断谁负责什么。",
+        action_template="整理组织定位、当前阶段、业务范围、关键角色和协作边界。",
+        unlocked_value="可以让 AI 稳定理解组织是谁、处在什么阶段、资料应归到哪些角色或业务上。",
+    ),
+    "management_decision": MaterialRowDefinition(
+        key="management_decision",
+        label="管理决策资料",
+        description="会议、决策、负责人、执行结果和调整。",
+        keywords=("会议", "纪要", "决策", "判断", "执行", "负责人", "复盘", "计划", "任务", "推进"),
+        required_keywords=("会议", "决策", "负责人", "执行", "结果"),
+        missing_template="还缺持续记录会议决策后实际推进情况的资料，目前只能看到部分会议或任务，不能稳定追踪哪些决策真正推进了。",
+        action_template="整理会议决策、负责人、计划动作、实际进展和调整原因。",
+        unlocked_value="可以分析组织决策质量、执行节奏和协作卡点。",
+    ),
+    "business_portfolio": MaterialRowDefinition(
+        key="business_portfolio",
+        label="业务/项目资料",
+        description="重点项目、目标对象、交付内容和年度结果。",
+        keywords=("项目", "业务", "产品", "服务", "活动", "课程", "工作坊", "年会", "交付", "结果", "项目清单"),
+        required_keywords=("项目", "目标", "对象", "交付", "结果"),
+        missing_template="还缺把重点项目放在一起比较的年度结果资料，目前 AI 能知道有哪些项目，但不能稳定判断哪些项目价值更高。",
+        action_template="整理重点项目、当前阶段、服务对象、交付内容、参与反馈和年度结果。",
+        unlocked_value="可以比较不同项目的交付方式和实际价值，指导后续资源投入。",
+    ),
+    "resource_ecosystem": MaterialRowDefinition(
+        key="resource_ecosystem",
+        label="伙伴/资源资料",
+        description="伙伴类型、合作内容、资源贡献和协作变化。",
+        keywords=("伙伴", "合作", "资方", "捐赠", "资源", "协作", "生态", "联盟", "贡献", "关系"),
+        required_keywords=("伙伴", "合作", "资源", "贡献", "状态"),
+        missing_template="还缺持续记录伙伴贡献和协作状态的资料，目前只能看到谁出现过，不能稳定判断谁贡献了什么、合作是否变强。",
+        action_template="整理伙伴类型、合作项目、提供资源、贡献结果和下一步机会。",
+        unlocked_value="可以分析资源网络、伙伴贡献和潜在协作机会。",
+    ),
+    "audience_profile": MaterialRowDefinition(
+        key="audience_profile",
+        label="服务对象资料",
+        description="对象是谁、为什么参与、反馈和变化。",
+        keywords=("服务对象", "对象", "受众", "客户", "用户", "教师", "儿童", "学校", "青少年", "报名", "反馈", "需求"),
+        required_keywords=("对象", "来源", "动机", "需求", "反馈"),
+        missing_template="还缺能持续观察服务对象参与原因、反馈和变化的资料，目前 AI 能看到谁参与过，但不能稳定判断他们为什么来、参与后有什么变化。",
+        action_template="整理参与方类型、参与原因、最关心的问题、参与后的反馈和后续需求。",
+        unlocked_value="可以分析服务对象结构、需求变化和组织吸引力。",
+    ),
+    "process_flow": MaterialRowDefinition(
+        key="process_flow",
+        label="项目过程资料",
+        description="筹备、邀约、报名、参与、反馈、复盘。",
+        keywords=("报名", "申请", "审核", "入群", "签到", "参与", "反馈", "结课", "流程", "复盘", "执行"),
+        required_keywords=("报名", "参与", "反馈", "时间", "复盘"),
+        missing_template="还缺按项目连续记录筹备、邀约、参与、反馈和复盘的资料，目前 AI 能看到流程片段，但不能稳定分析哪里最容易卡住。",
+        action_template="整理项目筹备、邀约、实际参与、交付内容、现场反馈和复盘结论。",
+        unlocked_value="可以分析项目过程中的关键卡点和改进空间。",
+    ),
+    "outcome_evidence": MaterialRowDefinition(
+        key="outcome_evidence",
+        label="成效反馈资料",
+        description="反馈、评估、案例、前后变化和结果证明。",
+        keywords=("成效", "效果", "成果", "反馈", "评估", "满意度", "前测", "后测", "变化", "案例", "影响"),
+        required_keywords=("反馈", "评估", "变化", "案例", "结果"),
+        missing_template="还缺把项目目标、实际反馈和典型案例放在一起的成效资料，目前 AI 能看到一些反馈或案例，但不能稳定判断项目到底产生了什么变化。",
+        action_template="整理项目目标、实际反馈、典型案例、成效证据和复盘结论。",
+        unlocked_value="可以分析项目是否有效、成效来自哪些关键动作。",
+    ),
+    "data_system": MaterialRowDefinition(
+        key="data_system",
+        label="数据/系统资料",
+        description="表单、看板、系统流程、统计指标和使用记录。",
+        keywords=("数据", "表单", "看板", "系统", "平台", "字段", "指标", "统计", "数据库", "自动化", "AI", "xlsx", "excel"),
+        required_keywords=("表单", "指标", "来源", "统计", "使用"),
+        missing_template="还缺说明表单记录什么、统计指标怎么算、看板数据从哪里来的资料，目前 AI 能看到一些数据资料，但不能稳定复用。",
+        action_template="整理表单用途、记录内容、数据来源、统计方式、看板指标和更新频率。",
+        unlocked_value="可以把表单、看板和系统资料变成可查询、可比较、可持续复用的数据资产。",
+    ),
+    "research_question": MaterialRowDefinition(
+        key="research_question",
+        label="研究问题资料",
+        description="研究问题、样本范围、调研目的和分析框架。",
+        keywords=("研究", "问题", "调研", "目的", "样本", "框架", "访谈", "评估"),
+        required_keywords=("研究", "问题", "样本", "框架", "调研"),
+        missing_template="还缺把研究问题、样本来源和分析框架说清楚的资料，目前 AI 能看到报告内容，但不能稳定判断研究边界。",
+        action_template="整理研究问题、调研对象、样本来源、分析框架和使用场景。",
+        unlocked_value="可以让 AI 更稳定地理解研究结论适用于哪些对象和场景。",
+    ),
+    "field_evidence": MaterialRowDefinition(
+        key="field_evidence",
+        label="田野证据资料",
+        description="访谈、个案、观察记录、机构材料和调研原始证据。",
+        keywords=("访谈", "个案", "案例", "观察", "社区", "机构", "调研", "一手", "原始", "记录"),
+        required_keywords=("访谈", "个案", "记录", "对象", "时间"),
+        missing_template="还缺把访谈、个案和调研记录对应到研究结论的资料，目前 AI 能看到素材，但不能稳定判断哪些证据支撑哪些结论。",
+        action_template="整理访谈记录、个案材料、调研时间、对象背景和对应结论。",
+        unlocked_value="可以形成研究证据链，减少报告结论和原始材料脱节。",
+    ),
+    "research_conclusion": MaterialRowDefinition(
+        key="research_conclusion",
+        label="研究结论资料",
+        description="报告结论、证据来源、落地建议和后续验证。",
+        keywords=("结论", "建议", "报告", "发现", "判断", "证据", "验证", "落地"),
+        required_keywords=("结论", "证据", "建议", "落地", "验证"),
+        missing_template="还缺把研究结论和后续落地情况放在一起复盘的资料，目前 AI 能看到结论，但不能稳定判断哪些结论后来被验证。",
+        action_template="整理研究结论、支撑证据、采取动作和后续反馈。",
+        unlocked_value="可以判断研究结论是否真的指导了项目和资源投入。",
+    ),
+    "platform_position": MaterialRowDefinition(
+        key="platform_position",
+        label="平台定位资料",
+        description="平台服务谁、解决什么行业问题、阶段目标是什么。",
+        keywords=("平台", "论坛", "行业", "定位", "服务", "目标", "生态", "基金会发展"),
+        required_keywords=("平台", "行业", "服务", "目标", "定位"),
+        missing_template="还缺说明平台服务对象、行业问题和阶段目标的资料，目前 AI 能看到平台活动，但不能稳定判断平台真正承担什么角色。",
+        action_template="整理平台定位、服务对象、行业问题、阶段目标和核心价值。",
+        unlocked_value="可以让 AI 更稳定地理解平台在行业生态中的位置。",
+    ),
+    "ecosystem_network": MaterialRowDefinition(
+        key="ecosystem_network",
+        label="行业生态资料",
+        description="参与机构、伙伴网络、资源贡献和生态变化。",
+        keywords=("行业", "生态", "机构", "伙伴", "网络", "组委会", "合作", "参与机构", "基金会"),
+        required_keywords=("机构", "伙伴", "参与", "贡献", "变化"),
+        missing_template="还缺参与机构和伙伴贡献的连续记录，目前 AI 能看到部分机构或伙伴，但不能稳定判断生态网络怎么变化。",
+        action_template="整理参与机构、伙伴类型、合作内容、贡献结果和年度变化。",
+        unlocked_value="可以分析行业生态网络的变化和关键伙伴价值。",
+    ),
+    "event_evaluation": MaterialRowDefinition(
+        key="event_evaluation",
+        label="活动/年会评估资料",
+        description="活动目标、参与情况、反馈、年度评估和改进。",
+        keywords=("年会", "论坛", "活动", "评估", "反馈", "参与", "满意度", "改进", "年度"),
+        required_keywords=("年会", "参与", "反馈", "评估", "年度"),
+        missing_template="还缺连续年度的活动评估和参与反馈资料，目前 AI 能看到部分活动结果，但不能稳定比较每一年的变化。",
+        action_template="整理每年活动目标、参与机构、反馈摘要、实际结果和改进方向。",
+        unlocked_value="可以分析平台活动长期影响力和服务对象需求变化。",
+    ),
+    "product_roadmap": MaterialRowDefinition(
+        key="product_roadmap",
+        label="产品路线资料",
+        description="产品方向、功能优先级、版本计划和目标用户。",
+        keywords=("产品", "功能", "路线", "规划", "版本", "需求", "优先级", "用户", "系统"),
+        required_keywords=("产品", "功能", "用户", "版本", "优先级"),
+        missing_template="还缺产品方向、功能优先级和目标用户的连续资料，目前 AI 能看到功能规划，但不能稳定判断哪些功能最该先做。",
+        action_template="整理产品方向、目标用户、功能优先级、版本计划和取舍原因。",
+        unlocked_value="可以帮助 AI 比较产品机会和功能优先级。",
+    ),
+    "user_feedback": MaterialRowDefinition(
+        key="user_feedback",
+        label="用户反馈资料",
+        description="用户痛点、使用反馈、需求变化和满意度。",
+        keywords=("用户", "客户", "反馈", "需求", "痛点", "满意", "使用", "体验", "访谈"),
+        required_keywords=("用户", "反馈", "需求", "使用", "变化"),
+        missing_template="还缺真实用户使用反馈和需求变化资料，目前 AI 能看到产品想法，但不能稳定判断用户真实痛点。",
+        action_template="整理用户类型、使用场景、反馈内容、未满足需求和后续变化。",
+        unlocked_value="可以分析用户真正需要什么，以及功能是否值得继续投入。",
+    ),
+    "system_usage": MaterialRowDefinition(
+        key="system_usage",
+        label="系统使用资料",
+        description="功能使用、问题记录、看板数据和运行效果。",
+        keywords=("系统", "功能", "使用", "看板", "测试", "问题", "运行", "数据", "日志"),
+        required_keywords=("系统", "使用", "问题", "数据", "反馈"),
+        missing_template="还缺系统实际使用和问题反馈资料，目前 AI 能看到系统设计，但不能稳定判断功能是否真的被用起来。",
+        action_template="整理功能使用情况、问题记录、反馈结果、看板数据和改进动作。",
+        unlocked_value="可以分析系统真实使用效果和产品改进方向。",
+    ),
+    "iteration_record": MaterialRowDefinition(
+        key="iteration_record",
+        label="迭代复盘资料",
+        description="版本调整、问题修复、决策原因和实际结果。",
+        keywords=("迭代", "版本", "修复", "测试", "上线", "调整", "复盘", "技术评审", "问题"),
+        required_keywords=("版本", "问题", "调整", "结果", "复盘"),
+        missing_template="还缺每次版本调整后的结果复盘资料，目前 AI 能看到任务或修复记录，但不能稳定判断哪些迭代真正改善了体验。",
+        action_template="整理版本变更、问题原因、调整动作、上线结果和复盘结论。",
+        unlocked_value="可以沉淀产品迭代经验，减少重复试错。",
+    ),
+    "business_result": MaterialRowDefinition(
+        key="business_result",
+        label="业务结果资料",
+        description="客户使用、项目转化、交付结果和资源投入。",
+        keywords=("业务", "客户", "结果", "转化", "交付", "收入", "合作", "反馈", "项目"),
+        required_keywords=("客户", "交付", "反馈", "结果", "投入"),
+        missing_template="还缺不同业务项目的实际结果和客户反馈资料，目前 AI 能看到业务动作，但不能稳定判断哪些业务值得重点投入。",
+        action_template="整理客户类型、交付内容、投入资源、反馈结果和后续合作。",
+        unlocked_value="可以分析业务线价值和资源投入优先级。",
+    ),
+    "content_inventory": MaterialRowDefinition(
+        key="content_inventory",
+        label="内容清单资料",
+        description="文章、视频、主题、发布时间和发布渠道。",
+        keywords=("文章", "视频", "内容", "素材", "发布", "B站", "转写", "选题", "标题"),
+        required_keywords=("文章", "视频", "主题", "发布", "渠道"),
+        missing_template="还缺按主题、发布时间和发布渠道整理的内容清单，目前 AI 能看到原始内容，但不能稳定形成内容资产目录。",
+        action_template="整理内容标题、主题、发布时间、发布渠道和适用场景。",
+        unlocked_value="可以形成内容检索和主题归纳能力。",
+    ),
+    "topic_tags": MaterialRowDefinition(
+        key="topic_tags",
+        label="主题标签资料",
+        description="主题分类、观点标签、目标读者和可复用观点。",
+        keywords=("主题", "标签", "观点", "分类", "读者", "受众", "方法", "框架"),
+        required_keywords=("主题", "标签", "观点", "读者", "分类"),
+        missing_template="还缺给内容做主题和观点标签的资料，目前 AI 能读文章，但不能稳定判断哪些观点可以复用。",
+        action_template="整理主题分类、核心观点、目标读者和可复用表达。",
+        unlocked_value="可以沉淀观点库和内容复用能力。",
+    ),
+    "publishing_feedback": MaterialRowDefinition(
+        key="publishing_feedback",
+        label="发布反馈资料",
+        description="阅读、播放、评论、转发和渠道反馈。",
+        keywords=("阅读", "播放", "评论", "点赞", "转发", "反馈", "渠道", "触达", "数据"),
+        required_keywords=("阅读", "播放", "评论", "渠道", "反馈"),
+        missing_template="还缺内容发布后的阅读、播放和评论反馈资料，目前 AI 能看到内容本身，但不能稳定判断哪些主题更受欢迎。",
+        action_template="整理每篇内容的发布渠道、阅读/播放、评论反馈和后续传播。",
+        unlocked_value="可以分析内容效果，指导后续选题。",
+    ),
+    "audience_response": MaterialRowDefinition(
+        key="audience_response",
+        label="读者反应资料",
+        description="读者是谁、为什么反馈、关注什么问题。",
+        keywords=("读者", "受众", "反馈", "评论", "需求", "问题", "关注", "咨询"),
+        required_keywords=("读者", "反馈", "需求", "问题", "变化"),
+        missing_template="还缺读者画像和反馈整理资料，目前 AI 能看到少量反馈线索，但不能稳定判断内容吸引了谁。",
+        action_template="整理读者类型、反馈内容、关注问题、后续咨询和需求变化。",
+        unlocked_value="可以分析内容受众和潜在服务机会。",
+    ),
+    "viewpoint_validation": MaterialRowDefinition(
+        key="viewpoint_validation",
+        label="观点验证资料",
+        description="观点提出、后续事实、读者反馈和修正。",
+        keywords=("观点", "判断", "验证", "事实", "修正", "复盘", "预测", "后续"),
+        required_keywords=("观点", "判断", "事实", "验证", "修正"),
+        missing_template="还缺文章观点和后续事实、读者反馈之间的复盘资料，目前 AI 能看到观点，但不能稳定判断哪些观点被验证。",
+        action_template="整理核心观点、提出背景、后续事实、读者反馈和修正记录。",
+        unlocked_value="可以沉淀经过验证的观点资产。",
+    ),
+}
+
+PROFILE_BASE_ROW_KEYS = ("organization_identity", "business_portfolio", "management_decision")
+NOISE_SOURCE_PATTERN = re.compile(
+    r"(报销|发票|收据|测试|冒烟|烟测|test_|offline_upload|待补充客户简介|安装态|\.jpe?g$|\.png$|\.gif$)",
+    re.IGNORECASE,
+)
 
 
 SOURCE_TYPE_LABELS: dict[str, str] = {
@@ -530,17 +896,278 @@ OPPORTUNITY_GENERATION_UNIT_KEYS = {
 }
 
 TIME_RE = re.compile(r"(20\d{2}|19\d{2})(?:[-./年](0?[1-9]|1[0-2]))?|(?:第[一二三四五六七八九十\d]+期)|(?:Q[1-4])", re.I)
+INTERNAL_SMOKE_CLIENT_ALIAS = "workspace-smoke"
+INTERNAL_SMOKE_CLIENT_NAME = "安装态冒烟客户"
 
 
 def build_digital_asset_dashboard(db: Database) -> DigitalAssetDashboardRecord:
     clients = []
-    for row in db.fetchall("SELECT id FROM clients ORDER BY updated_at DESC"):
+    for row in db.fetchall(
+        """
+        SELECT id
+        FROM clients
+        WHERE COALESCE(alias, '') != ?
+          AND COALESCE(name, '') != ?
+        ORDER BY updated_at DESC
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    ):
         detail = build_client_digital_assets(db, str(row["id"]))
         clients.append(_summarize_detail(detail))
     return DigitalAssetDashboardRecord(
         generatedAt=_now_iso(),
+        pulse=_build_digital_asset_pulse(db, clients),
         clients=clients,
     )
+
+
+def _build_digital_asset_pulse(
+    db: Database,
+    clients: list[DigitalAssetClientSummaryRecord],
+) -> DigitalAssetPulseRecord:
+    weekly_new_facts = _safe_count(
+        db,
+        """
+        SELECT COUNT(1) AS count
+        FROM memory_facts mf
+        JOIN clients c ON c.id = mf.scope_id
+        WHERE mf.scope_type = 'client'
+          AND COALESCE(c.alias, '') != ?
+          AND COALESCE(c.name, '') != ?
+          AND date(mf.created_at) >= date('now', '-7 days')
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    )
+    weekly_new_documents = _safe_count(
+        db,
+        """
+        SELECT COUNT(1) AS count
+        FROM documents d
+        JOIN clients c ON c.id = d.client_id
+        WHERE COALESCE(c.alias, '') != ?
+          AND COALESCE(c.name, '') != ?
+          AND date(d.created_at) >= date('now', '-7 days')
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    )
+    weekly_new_evidence = _safe_count(
+        db,
+        """
+        SELECT COUNT(1) AS count
+        FROM evidence_cards e
+        JOIN clients c ON c.id = e.client_id
+        WHERE COALESCE(c.alias, '') != ?
+          AND COALESCE(c.name, '') != ?
+          AND date(e.created_at) >= date('now', '-7 days')
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    )
+    weekly_new_judgments = _safe_count(
+        db,
+        """
+        SELECT COUNT(1) AS count
+        FROM judgment_versions j
+        JOIN clients c ON c.id = j.client_id
+        WHERE COALESCE(c.alias, '') != ?
+          AND COALESCE(c.name, '') != ?
+          AND date(j.created_at) >= date('now', '-7 days')
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    )
+    days_accompanied = _digital_asset_days_accompanied(db)
+    funnel = [
+        DigitalAssetPulseFunnelItemRecord(key="documents", label="资料归档", value=_global_count_for_clients(db, "documents", "client_id")),
+        DigitalAssetPulseFunnelItemRecord(key="memoryFacts", label="组织记忆", value=_global_count_for_clients(db, "memory_facts", "scope_id", "scope_type = 'client'")),
+        DigitalAssetPulseFunnelItemRecord(key="eventLines", label="事件线", value=_global_count_for_clients(db, "event_lines", "primary_client_id")),
+        DigitalAssetPulseFunnelItemRecord(key="evidenceCards", label="证据卡", value=_global_count_for_clients(db, "evidence_cards", "client_id")),
+        DigitalAssetPulseFunnelItemRecord(key="judgments", label="判断", value=_global_count_for_clients(db, "judgment_versions", "client_id")),
+    ]
+    active_organizations = _build_pulse_active_organizations(db, clients)
+    learning_highlights = _build_pulse_learning_highlights(active_organizations, clients)
+    asset_alerts = _build_pulse_asset_alerts(clients)
+    if clients:
+        top_names = "、".join(item.name for item in active_organizations[:3]) or "各组织"
+        headline = (
+            f"本周 AI 新增 {weekly_new_facts} 条组织记忆、{weekly_new_documents} 份资料和 "
+            f"{weekly_new_evidence} 张证据卡，主要关注 {top_names}。"
+        )
+    else:
+        headline = "还没有形成组织数字资产脉搏，建议先建立组织空间并沉淀资料。"
+    return DigitalAssetPulseRecord(
+        headline=headline,
+        daysAccompanied=days_accompanied,
+        weeklyNewFacts=weekly_new_facts,
+        weeklyNewDocuments=weekly_new_documents,
+        weeklyNewEvidenceCards=weekly_new_evidence,
+        weeklyNewJudgments=weekly_new_judgments,
+        digestionFunnel=funnel,
+        activeOrganizations=active_organizations,
+        learningHighlights=learning_highlights,
+        assetAlerts=asset_alerts,
+    )
+
+
+def _digital_asset_days_accompanied(db: Database) -> int:
+    row = db.fetchone(
+        """
+        SELECT MIN(created_at) AS val
+        FROM clients
+        WHERE COALESCE(alias, '') != ?
+          AND COALESCE(name, '') != ?
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    )
+    first_client_at = str(row["val"]) if row and row["val"] else None
+    if not first_client_at:
+        return 0
+    try:
+        first = datetime.fromisoformat(first_client_at.replace("Z", "+00:00").split("+")[0])
+        return max(0, (datetime.now() - first).days)
+    except Exception:
+        return 0
+
+
+def _global_count_for_clients(db: Database, table: str, client_column: str, extra_where: str = "1=1") -> int:
+    return _safe_count(
+        db,
+        f"""
+        SELECT COUNT(1) AS count
+        FROM {table} item
+        JOIN clients c ON c.id = item.{client_column}
+        WHERE {extra_where}
+          AND COALESCE(c.alias, '') != ?
+          AND COALESCE(c.name, '') != ?
+        """,
+        (INTERNAL_SMOKE_CLIENT_ALIAS, INTERNAL_SMOKE_CLIENT_NAME),
+    )
+
+
+def _weekly_client_count(db: Database, table: str, client_column: str, client_id: str, extra_where: str = "1=1") -> int:
+    return _safe_count(
+        db,
+        f"""
+        SELECT COUNT(1) AS count
+        FROM {table}
+        WHERE {client_column} = ?
+          AND {extra_where}
+          AND date(created_at) >= date('now', '-7 days')
+        """,
+        (client_id,),
+    )
+
+
+def _build_pulse_active_organizations(
+    db: Database,
+    clients: list[DigitalAssetClientSummaryRecord],
+) -> list[DigitalAssetPulseOrganizationRecord]:
+    scored: list[tuple[float, DigitalAssetPulseOrganizationRecord]] = []
+    for client in clients:
+        weekly_facts = _weekly_client_count(db, "memory_facts", "scope_id", client.id, "scope_type = 'client'")
+        weekly_documents = _weekly_client_count(db, "documents", "client_id", client.id)
+        weekly_evidence = _weekly_client_count(db, "evidence_cards", "client_id", client.id)
+        strongest = sorted(client.materialMaturityRows or [], key=lambda row: row.percent, reverse=True)[:2]
+        strongest_text = "、".join(row.label for row in strongest) or client.assetProfileType
+        activity_score = (
+            weekly_facts * 3
+            + weekly_documents
+            + weekly_evidence * 6
+            + client.maturityScore / 12
+            + client.depositThickness / 20
+        )
+        summary = (
+            f"本周新增 {weekly_facts} 条记忆、{weekly_documents} 份资料、{weekly_evidence} 张证据卡；"
+            f"当前最清晰的是{strongest_text}。"
+        )
+        scored.append((
+            activity_score,
+            DigitalAssetPulseOrganizationRecord(
+                clientId=client.id,
+                name=client.name,
+                assetProfileType=client.assetProfileType,
+                maturityScore=client.maturityScore,
+                depositThickness=client.depositThickness,
+                weeklyNewFacts=weekly_facts,
+                weeklyNewDocuments=weekly_documents,
+                weeklyNewEvidenceCards=weekly_evidence,
+                summary=summary,
+            ),
+        ))
+    return [item for _, item in sorted(scored, key=lambda pair: pair[0], reverse=True)[:5]]
+
+
+def _build_pulse_learning_highlights(
+    active_organizations: list[DigitalAssetPulseOrganizationRecord],
+    clients: list[DigitalAssetClientSummaryRecord],
+) -> list[DigitalAssetPulseSignalRecord]:
+    client_by_id = {client.id: client for client in clients}
+    highlights: list[DigitalAssetPulseSignalRecord] = []
+    for org in active_organizations:
+        client = client_by_id.get(org.clientId)
+        if not client:
+            continue
+        strongest = sorted(client.materialMaturityRows or [], key=lambda row: row.percent, reverse=True)[:2]
+        direction = "、".join(row.label for row in strongest) or org.assetProfileType
+        weekly_total = org.weeklyNewFacts + org.weeklyNewDocuments + org.weeklyNewEvidenceCards
+        if weekly_total <= 0 and len(highlights) >= 1:
+            continue
+        title = f"{org.name}：{direction}更清晰"
+        summary = f"AI 正在围绕{org.assetProfileType}吸收资料，当前成熟度 {org.maturityScore}%。"
+        highlights.append(DigitalAssetPulseSignalRecord(
+            clientId=org.clientId,
+            name=org.name,
+            title=title,
+            summary=summary,
+            assetProfileType=org.assetProfileType,
+            maturityScore=org.maturityScore,
+            severity="info",
+        ))
+        if len(highlights) >= 3:
+            break
+    return highlights
+
+
+def _build_pulse_asset_alerts(clients: list[DigitalAssetClientSummaryRecord]) -> list[DigitalAssetPulseSignalRecord]:
+    alerts: list[tuple[int, DigitalAssetPulseSignalRecord]] = []
+    for client in clients:
+        weakest = sorted(client.materialMaturityRows or [], key=lambda row: row.percent)[0] if client.materialMaturityRows else None
+        weakest_label = weakest.label if weakest else "关键资料"
+        weakest_missing = weakest.missingSummary if weakest else "还缺能说明组织、项目、过程和反馈的资料。"
+        breakdown = client.scoreBreakdown
+        priority = 0
+        title = ""
+        summary = ""
+        severity: str = "warning"
+        if client.depositThickness >= 65 and client.maturityScore < 55:
+            priority = 100 + min(20, client.depositThickness // 5)
+            title = f"{client.name}：资料很多，但还没形成稳定资产"
+            summary = f"资料厚度 {client.depositThickness}%，成熟度 {client.maturityScore}%。建议先补{weakest_label}：{weakest_missing}"
+            severity = "critical"
+        elif breakdown.evidenceChain < 20:
+            priority = 90 + min(20, client.depositThickness // 5)
+            title = f"{client.name}：资料还缺证据化整理"
+            summary = f"AI 能看到资料，但缺少证据卡、主题或判断沉淀。建议先补{weakest_label}：{weakest_missing}"
+        elif breakdown.resultFeedbackLoop < 45:
+            priority = 80 + min(20, client.depositThickness // 5)
+            title = f"{client.name}：还缺结果和反馈复盘"
+            summary = f"AI 能看到动作或资料，但还不够稳定判断哪些动作带来了结果。建议先补{weakest_label}：{weakest_missing}"
+        elif weakest and weakest.percent < 45:
+            priority = 70 + min(20, client.depositThickness // 5)
+            title = f"{client.name}：{weakest_label}偏薄"
+            summary = weakest_missing
+        if priority:
+            alerts.append((
+                priority,
+                DigitalAssetPulseSignalRecord(
+                    clientId=client.id,
+                    name=client.name,
+                    title=title,
+                    summary=_limit_text(summary, 150),
+                    assetProfileType=client.assetProfileType,
+                    maturityScore=client.maturityScore,
+                    severity=severity,  # type: ignore[arg-type]
+                ),
+            ))
+    return [item for _, item in sorted(alerts, key=lambda pair: pair[0], reverse=True)[:3]]
 
 
 def build_client_digital_assets(db: Database, client_id: str) -> DigitalAssetClientDetailRecord:
@@ -548,7 +1175,7 @@ def build_client_digital_assets(db: Database, client_id: str) -> DigitalAssetCli
     if not client_row:
         raise ValueError("Client not found")
 
-    sources = _collect_sources(db, client_id)
+    sources = _filter_profile_sources(_collect_sources(db, client_id))
     metrics = _build_metrics(db, client_id)
     notebook = _read_notebook_snapshot(db, client_id)
     understanding_score = _normalize_score(float(notebook.get("confidence", 0.0)) if notebook else 0.0)
@@ -557,28 +1184,22 @@ def build_client_digital_assets(db: Database, client_id: str) -> DigitalAssetCli
     dimensions = [_build_dimension_record(dimension, sources, metrics) for dimension in ASSET_DIMENSIONS]
     client_name = str(client_row["name"])
     asset_map_nodes = _build_asset_map_nodes(client_name, sources, empty_state)
-    stage_summary = _build_stage_summary(asset_map_nodes, metrics, understanding_score, empty_state)
-    next_best_deposits = _build_next_best_deposits(client_name, asset_map_nodes, empty_state)
+    profile_score = _build_profile_score(client_name, sources, metrics, asset_map_nodes, empty_state)
+    next_best_deposits = _build_typed_next_best_deposits(profile_score, empty_state)
     active_dimensions = [dimension for dimension in dimensions if dimension.scoreBreakdown.deposited > 0]
-    asset_completion_score = _compute_asset_completion_score(dimensions, empty_state=empty_state)
-    if empty_state:
-        asset_completion_score = 0
+    asset_completion_score = profile_score.maturity_score
 
     value_insights = _build_value_insights_from_nodes(asset_map_nodes) or _build_value_insights(dimensions)
     deposit_suggestions = next_best_deposits or _build_deposit_suggestions(dimensions, empty_state)
-    critical_gaps = stage_summary["stageBlockers"] or _build_critical_gaps(dimensions, empty_state)
+    critical_gaps = profile_score.blockers or _build_critical_gaps(dimensions, empty_state)
     next_deposits = [item.title for item in deposit_suggestions[:3]]
     high_value_signals = [item.summary for item in value_insights[:3]]
     strongest_dimensions = [node.label for node in sorted(asset_map_nodes, key=lambda item: (item.stageIndex, item.coverageScore, item.evidenceCount), reverse=True)[:3]]
-    statement = _build_understanding_statement(
+    statement = _build_profile_understanding_statement(
         client_name=client_name,
-        score=int(stage_summary["stageProgress"]),
-        dimensions=active_dimensions,
-        empty_state=empty_state,
+        profile_score=profile_score,
         notebook_intro=str(notebook.get("organizationIntro", "")) if notebook else "",
-        asset_stage=str(stage_summary["assetStage"]),
-        track_title=str(stage_summary["assetTrackTitle"]),
-        blockers=critical_gaps,
+        empty_state=empty_state,
     )
 
     return DigitalAssetClientDetailRecord(
@@ -592,13 +1213,21 @@ def build_client_digital_assets(db: Database, client_id: str) -> DigitalAssetCli
         depositedValueLevel=_level_from_score(_average_breakdown(dimensions, "deposited"), "deposited"),
         nextValueSpace=_next_value_space(deposit_suggestions),
         depositXp=_compute_deposit_xp(metrics),
-        assetStage=str(stage_summary["assetStage"]),
-        assetTrackTitle=str(stage_summary["assetTrackTitle"]),
-        growthMode=str(stage_summary["growthMode"]),  # type: ignore[arg-type]
-        stageProgress=int(stage_summary["stageProgress"]),
-        nextStage=str(stage_summary["nextStage"]),
-        unlockedCapabilities=list(stage_summary["unlockedCapabilities"]),
-        stageBlockers=list(stage_summary["stageBlockers"]),
+        assetProfileType=profile_score.asset_profile_type,
+        secondaryProfileTypes=profile_score.secondary_profile_types,
+        maturityScore=profile_score.maturity_score,
+        depositThickness=profile_score.deposit_thickness,
+        scoreMethodVersion=SCORE_METHOD_VERSION,
+        scoreBreakdown=profile_score.score_breakdown,
+        scoreRationale=profile_score.score_rationale,
+        materialMaturityRows=profile_score.material_rows,
+        assetStage=profile_score.asset_stage,
+        assetTrackTitle=profile_score.asset_profile_type,
+        growthMode=profile_score.growth_mode,  # type: ignore[arg-type]
+        stageProgress=profile_score.maturity_score,
+        nextStage=profile_score.next_stage,
+        unlockedCapabilities=_typed_unlocked_capabilities(profile_score),
+        stageBlockers=profile_score.blockers,
         nextBestDeposits=next_best_deposits,
         assetMapNodes=asset_map_nodes,
         assetDimensionCount=len(asset_map_nodes),
@@ -628,6 +1257,14 @@ def _summarize_detail(detail: DigitalAssetClientDetailRecord) -> DigitalAssetCli
         depositedValueLevel=detail.depositedValueLevel,
         nextValueSpace=detail.nextValueSpace,
         depositXp=detail.depositXp,
+        assetProfileType=detail.assetProfileType,
+        secondaryProfileTypes=detail.secondaryProfileTypes,
+        maturityScore=detail.maturityScore,
+        depositThickness=detail.depositThickness,
+        scoreMethodVersion=detail.scoreMethodVersion,
+        scoreBreakdown=detail.scoreBreakdown,
+        scoreRationale=detail.scoreRationale,
+        materialMaturityRows=detail.materialMaturityRows[:4],
         assetStage=detail.assetStage,
         assetTrackTitle=detail.assetTrackTitle,
         growthMode=detail.growthMode,
@@ -942,6 +1579,9 @@ def _asset_node_maturity_percent(
     ) if matched_sources else 0.0
     if stage_index <= 1:
         source_quality = min(1.0, len(matched_sources) / 4) if matched_sources else 0.0
+    source_depth = _source_depth_score(node_key, matched_sources)
+    source_diversity = _source_type_diversity_score(matched_sources)
+    evidence_chain = _evidence_chain_score(matched_sources)
     unit_quality = (
         ratios.get("required", 0.0) * 0.42
         + ratios.get("advanced", 0.0) * 0.38
@@ -949,13 +1589,70 @@ def _asset_node_maturity_percent(
     )
     stage_floor = (8, 24, 44, 64, 82)[max(0, min(4, stage_index))]
     stage_span = (14, 18, 26, 18, 14)[max(0, min(4, stage_index))]
-    score = stage_floor + stage_span * (unit_quality * 0.72 + source_quality * 0.28)
+    score = stage_floor + stage_span * (
+        unit_quality * 0.60
+        + source_quality * 0.18
+        + source_depth * 0.08
+        + source_diversity * 0.06
+        + evidence_chain * 0.08
+    )
+    if stage_index >= 2:
+        score += evidence_chain * 7 + source_diversity * 3
+        if evidence_chain < 0.15:
+            score -= 3
     if signal_cap <= 2:
         score -= NODE_COMPLEXITY_PENALTY.get(node_key, 6)
     if signal_cap == 3:
         score -= max(0, NODE_COMPLEXITY_PENALTY.get(node_key, 6) // 3)
     cap_by_signal = (22, 46, 76, 90, 98)[max(0, min(4, signal_cap))]
     return max(5, min(cap_by_signal, int(round(score))))
+
+
+def _source_depth_score(node_key: str, sources: list[AssetSource]) -> float:
+    material_sources = [source for source in sources if source.source_type != "notebook"]
+    if not material_sources:
+        return 0.0
+    target = {
+        "organization_identity": 120,
+        "strategic_judgment": 100,
+        "business_portfolio": 140,
+        "audience_profile": 90,
+        "process_flow": 80,
+        "outcome_evidence": 70,
+        "resource_ecosystem": 70,
+        "management_decision": 70,
+        "communication_conversion": 70,
+        "data_system": 55,
+        "opportunity_pipeline": 40,
+    }.get(node_key, 80)
+    return min(1.0, math.log1p(len(material_sources)) / math.log1p(target))
+
+
+def _source_type_diversity_score(sources: list[AssetSource]) -> float:
+    source_types = {source.source_type for source in sources if source.source_type != "notebook"}
+    if not source_types:
+        return 0.0
+    score = 0.0
+    if "document" in source_types:
+        score += 0.24
+    if "document_card" in source_types:
+        score += 0.18
+    if source_types & VERIFICATION_SOURCE_TYPES:
+        score += min(0.30, len(source_types & VERIFICATION_SOURCE_TYPES) * 0.10)
+    if source_types & SUPPORTING_SOURCE_TYPES:
+        score += min(0.28, len(source_types & SUPPORTING_SOURCE_TYPES) * 0.07)
+    return min(1.0, score)
+
+
+def _evidence_chain_score(sources: list[AssetSource]) -> float:
+    if not sources:
+        return 0.0
+    counts = Counter(source.source_type for source in sources)
+    verification_count = sum(counts.get(source_type, 0) for source_type in VERIFICATION_SOURCE_TYPES)
+    supporting_count = sum(counts.get(source_type, 0) for source_type in SUPPORTING_SOURCE_TYPES)
+    verification_depth = min(1.0, math.log1p(verification_count) / math.log1p(18)) if verification_count else 0.0
+    supporting_depth = min(1.0, math.log1p(supporting_count) / math.log1p(24)) if supporting_count else 0.0
+    return min(1.0, verification_depth * 0.72 + supporting_depth * 0.28)
 
 
 def _asset_unit_coverage_score(covered_units: list[DigitalAssetUnitRecord], all_units: tuple[AssetUnit, ...]) -> int:
@@ -1001,6 +1698,637 @@ def _coverage_ratios(covered_units: list[DigitalAssetUnitRecord], all_units: tup
     return ratios
 
 
+def _filter_profile_sources(sources: list[AssetSource]) -> list[AssetSource]:
+    filtered: list[AssetSource] = []
+    seen: set[str] = set()
+    for source in sources:
+        title = _sanitize_public_text(source.title, limit=120)
+        text = _sanitize_public_text(source.text, limit=1400)
+        haystack = f"{title} {text}"
+        if _is_noise_source(title, text):
+            continue
+        if source.source_type in {"document", "document_card"} and len(text) < 16 and not _contains_any(title, ("战略", "项目", "研究", "报告", "年会", "文章", "系统", "反馈")):
+            continue
+        key = _normalize_source_key(title)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        filtered.append(source)
+    return filtered
+
+
+def _is_noise_source(title: str, text: str) -> bool:
+    if NOISE_SOURCE_PATTERN.search(title):
+        return True
+    haystack = f"{title} {text}"
+    if NOISE_SOURCE_PATTERN.search(haystack) and len(text) < 80:
+        return True
+    if title.lower().endswith((".jpeg", ".jpg", ".png", ".gif")) and len(text) < 120:
+        return True
+    return False
+
+
+def _normalize_source_key(title: str) -> str:
+    value = title.lower()
+    value = re.sub(r"\([^)]*\)", "", value)
+    value = re.sub(r"_dup\d*|__dup\d*", "", value)
+    value = re.sub(r"[_-]?\d{8,14}", "", value)
+    value = re.sub(r"\s+", "", value)
+    return value[:120]
+
+
+def _build_profile_score(
+    client_name: str,
+    sources: list[AssetSource],
+    metrics: list[DigitalAssetMetricRecord],
+    nodes: list[DigitalAssetMapNodeRecord],
+    empty_state: bool,
+) -> ProfileScoreResult:
+    if empty_state or not sources:
+        rows = _empty_material_rows(client_name)
+        breakdown = DigitalAssetScoreBreakdownRecord()
+        return ProfileScoreResult(
+            asset_profile_type="组织战略陪伴型",
+            secondary_profile_types=[],
+            maturity_score=0,
+            deposit_thickness=0,
+            score_breakdown=breakdown,
+            material_rows=rows,
+            asset_stage="资料整理期",
+            next_stage="项目画像期",
+            growth_mode="均衡成长",
+            score_rationale=["当前还没有足够资料形成数字资产评分。"],
+            blockers=["还没有足够资料形成数字资产，请先补充组织介绍、项目介绍、流程资料和反馈材料。"],
+        )
+    primary_profile, secondary_profiles, profile_score_map = _infer_asset_profile(sources, metrics)
+    rows = _build_material_maturity_rows(client_name, primary_profile, secondary_profiles, sources)
+    deposit_thickness = _compute_deposit_thickness(metrics, sources)
+    structural = _score_structural_completeness(rows, primary_profile)
+    computability = _score_profile_computability(rows, sources, primary_profile)
+    evidence_chain = _score_profile_evidence_chain(metrics, sources)
+    time_continuity = _score_profile_time_continuity(rows, sources)
+    feedback_loop = _score_profile_feedback_loop(rows, sources, primary_profile)
+    maturity_score = int(round(
+        structural * 0.30
+        + computability * 0.20
+        + evidence_chain * 0.15
+        + time_continuity * 0.15
+        + feedback_loop * 0.20
+    ))
+    stage_index, blockers = _profile_stage_index(
+        maturity_score=maturity_score,
+        computability=computability,
+        evidence_chain=evidence_chain,
+        time_continuity=time_continuity,
+        feedback_loop=feedback_loop,
+        sources=sources,
+        primary_profile=primary_profile,
+    )
+    breakdown = DigitalAssetScoreBreakdownRecord(
+        deposited=deposit_thickness,
+        understood=structural,
+        computable=computability,
+        compounding=time_continuity,
+        structuralCompleteness=structural,
+        evidenceChain=evidence_chain,
+        timeContinuity=time_continuity,
+        resultFeedbackLoop=feedback_loop,
+    )
+    profile_type = primary_profile.label
+    secondary_types = [profile.label for profile in secondary_profiles if profile.label != profile_type][:2]
+    growth_mode = _typed_growth_mode(rows, deposit_thickness, maturity_score, stage_index)
+    rationale = _profile_score_rationale(primary_profile, secondary_profiles, profile_score_map, rows, breakdown, maturity_score)
+    return ProfileScoreResult(
+        asset_profile_type=profile_type,
+        secondary_profile_types=secondary_types,
+        maturity_score=maturity_score,
+        deposit_thickness=deposit_thickness,
+        score_breakdown=breakdown,
+        material_rows=rows,
+        asset_stage=STAGE_NAMES[stage_index],
+        next_stage=STAGE_NAMES[stage_index + 1] if stage_index + 1 < len(STAGE_NAMES) else "已进入最高阶段",
+        growth_mode=growth_mode,
+        score_rationale=rationale,
+        blockers=blockers,
+    )
+
+
+def _empty_material_rows(client_name: str) -> list[DigitalAssetMaterialMaturityRowRecord]:
+    rows: list[DigitalAssetMaterialMaturityRowRecord] = []
+    for key in ("organization_identity", "business_portfolio", "audience_profile"):
+        definition = MATERIAL_ROW_DEFINITIONS[key]
+        rows.append(
+            DigitalAssetMaterialMaturityRowRecord(
+                key=definition.key,
+                label=definition.label,
+                percent=0,
+                level="资料整理期",
+                seenSummary=f"还没有看到足够明确的{_client_label(client_name)}{definition.label}。",
+                missingSummary=definition.missing_template,
+                suggestedAction=definition.action_template,
+                unlockedValue=definition.unlocked_value,
+            )
+        )
+    return rows
+
+
+def _infer_asset_profile(
+    sources: list[AssetSource],
+    metrics: list[DigitalAssetMetricRecord],
+) -> tuple[AssetProfile, list[AssetProfile], dict[str, float]]:
+    score_map: dict[str, float] = {}
+    joined_all = _join_text(*(source.title for source in sources), *(source.text for source in sources)).lower()
+    for profile in PROFILE_DEFINITIONS:
+        score = 0.0
+        matched_sources = 0
+        title_hits = 0
+        for source in sources:
+            source_weight = 0.25 if source.source_type == "notebook" else 1.0
+            title = source.title.lower()
+            text = f"{source.title} {source.text}".lower()
+            source_hits = sum(1 for keyword in profile.keywords if keyword.lower() in text)
+            if source_hits:
+                matched_sources += 1
+                score += min(8, source_hits) * 1.2 * source_weight
+            title_hit_count = sum(1 for keyword in profile.title_keywords if keyword.lower() in title)
+            if title_hit_count:
+                title_hits += title_hit_count
+                score += title_hit_count * 3.0 * source_weight
+        score += min(36, matched_sources * 1.35)
+        score += min(24, title_hits * 1.8)
+        if profile.key == "content_ip" and _metric_value(metrics, "evidenceCards") == 0 and matched_sources >= 3:
+            score += 10
+        if profile.key == "field_research" and ("调研" in joined_all or "个案" in joined_all) and "报告" in joined_all:
+            score += 16
+        if profile.key == "platform_ecosystem" and ("年会" in joined_all or "论坛" in joined_all) and ("行业" in joined_all or "机构" in joined_all):
+            score += 18
+        if profile.key == "product_system" and ("系统" in joined_all or "产品" in joined_all) and ("功能" in joined_all or "测试" in joined_all or "工作台" in joined_all):
+            score += 14
+        score_map[profile.key] = score
+    ranked = sorted(PROFILE_DEFINITIONS, key=lambda profile: score_map.get(profile.key, 0.0), reverse=True)
+    primary = ranked[0]
+    top_score = max(1.0, score_map.get(primary.key, 0.0))
+    by_key = {profile.key: profile for profile in PROFILE_DEFINITIONS}
+    if (
+        score_map.get("field_research", 0.0) >= top_score * 0.60
+        and _contains_any(joined_all, ("研究", "报告", "调研", "个案", "样本"))
+        and primary.key not in {"platform_ecosystem"}
+    ):
+        primary = by_key["field_research"]
+        top_score = max(1.0, score_map.get(primary.key, 0.0))
+    if (
+        score_map.get("strategy_org", 0.0) >= top_score * 0.85
+        and (_metric_value(metrics, "evidenceCards") > 0 or _metric_value(metrics, "judgments") > 0)
+        and primary.key in {"public_project", "product_system"}
+    ):
+        primary = by_key["strategy_org"]
+        top_score = max(1.0, score_map.get(primary.key, 0.0))
+    if (
+        score_map.get("content_ip", 0.0) >= top_score * 0.55
+        and _metric_value(metrics, "evidenceCards") == 0
+        and _metric_value(metrics, "eventLines") == 0
+        and _contains_any(joined_all, ("文章", "视频", "b站", "观点", "领导", "本质", "真相", "人生"))
+    ):
+        primary = by_key["content_ip"]
+        top_score = max(1.0, score_map.get(primary.key, 0.0))
+    if score_map.get(primary.key, 0.0) <= 0:
+        primary = PROFILE_DEFINITIONS[0]
+    secondary: list[AssetProfile] = []
+    primary_score = max(1.0, score_map.get(primary.key, 0.0))
+    for profile in ranked:
+        if profile.key == primary.key:
+            continue
+        score = score_map.get(profile.key, 0.0)
+        if score >= max(18.0, primary_score * 0.52):
+            secondary.append(profile)
+        if len(secondary) >= 2:
+            break
+    return primary, secondary, score_map
+
+
+def _build_material_maturity_rows(
+    client_name: str,
+    primary_profile: AssetProfile,
+    secondary_profiles: list[AssetProfile],
+    sources: list[AssetSource],
+) -> list[DigitalAssetMaterialMaturityRowRecord]:
+    keys: list[str] = []
+    for key in (*primary_profile.rows, *PROFILE_BASE_ROW_KEYS):
+        if key not in keys:
+            keys.append(key)
+    for profile in secondary_profiles:
+        for key in profile.rows[:2]:
+            if key not in keys:
+                keys.append(key)
+    rows = [_build_material_maturity_row(client_name, MATERIAL_ROW_DEFINITIONS[key], sources) for key in keys if key in MATERIAL_ROW_DEFINITIONS]
+    rows.sort(key=lambda row: (_row_sort_bucket(row.key, primary_profile), row.percent), reverse=False)
+    return rows[:8]
+
+
+def _row_sort_bucket(key: str, primary_profile: AssetProfile) -> int:
+    if key in primary_profile.rows:
+        return 0
+    if key in PROFILE_BASE_ROW_KEYS:
+        return 1
+    return 2
+
+
+def _build_material_maturity_row(
+    client_name: str,
+    definition: MaterialRowDefinition,
+    sources: list[AssetSource],
+) -> DigitalAssetMaterialMaturityRowRecord:
+    matched = _match_asset_sources(definition.keywords, sources)
+    text = _join_text(*(source.title for source in matched), *(source.text for source in matched)).lower()
+    required_hits = sum(1 for keyword in definition.required_keywords if keyword.lower() in text)
+    required_ratio = required_hits / max(1, len(definition.required_keywords))
+    source_depth = min(1.0, math.log1p(len(matched)) / math.log1p(24)) if matched else 0.0
+    signal_flags = [_source_signal_flags(source) for source in matched]
+    structured_ratio = _ratio_with_flag(signal_flags, "structured")
+    linked_ratio = _ratio_with_flag(signal_flags, "linked")
+    type_diversity = _source_type_diversity_score(matched)
+    evidence_chain = _evidence_chain_score(matched)
+    continuity = _continuity_score_for_sources(matched)
+    raw = (
+        required_ratio * 42
+        + source_depth * 16
+        + structured_ratio * 15
+        + linked_ratio * 8
+        + type_diversity * 8
+        + evidence_chain * 7
+        + continuity * 4
+    )
+    if not matched:
+        percent = 0
+    else:
+        cap = 92
+        if structured_ratio <= 0 and required_ratio < 0.8:
+            cap = 58
+        if linked_ratio <= 0 and "结果" in definition.required_keywords:
+            cap = min(cap, 74)
+        percent = max(8, min(cap, int(round(raw))))
+    highlights = _source_highlights(matched)
+    return DigitalAssetMaterialMaturityRowRecord(
+        key=definition.key,
+        label=definition.label,
+        percent=percent,
+        level=_stage_label_from_percent(percent),
+        seenSummary=_material_seen_summary(client_name, definition, highlights, percent),
+        missingSummary=_business_missing_summary(definition, percent),
+        suggestedAction=definition.action_template,
+        unlockedValue=definition.unlocked_value,
+        sourceHighlights=highlights,
+    )
+
+
+def _ratio_with_flag(flags: list[dict[str, bool]], key: str) -> float:
+    if not flags:
+        return 0.0
+    return sum(1 for item in flags if item.get(key)) / len(flags)
+
+
+def _continuity_score_for_sources(sources: list[AssetSource]) -> float:
+    text = _join_text(*(source.title for source in sources), *(source.text for source in sources)).lower()
+    buckets = _extract_time_buckets(text)
+    score = 0.0
+    if len(buckets) >= 2:
+        score += 0.30
+    if len(buckets) >= 4:
+        score += 0.25
+    if len(buckets) >= 8:
+        score += 0.20
+    if _contains_any(text, TREND_KEYWORDS):
+        score += 0.20
+    if _contains_any(text, CROSS_PERIOD_KEYWORDS):
+        score += 0.20
+    return min(1.0, score)
+
+
+def _stage_label_from_percent(percent: int) -> str:
+    if percent >= 82:
+        return "机会生成期"
+    if percent >= 68:
+        return "机制洞察期"
+    if percent >= 48:
+        return "结构计算期"
+    if percent >= 25:
+        return "项目画像期"
+    return "资料归档期"
+
+
+def _material_seen_summary(
+    client_name: str,
+    definition: MaterialRowDefinition,
+    highlights: list[str],
+    percent: int,
+) -> str:
+    label = _client_label(client_name)
+    if highlights:
+        return f"已看到{label}的{ '、'.join(highlights[:3]) }等资料，{definition.description}"
+    if percent > 0:
+        return f"已看到少量{label}{definition.label}线索，但来源还不够稳定。"
+    return f"还没有看到足够明确的{label}{definition.label}。"
+
+
+def _business_missing_summary(definition: MaterialRowDefinition, percent: int) -> str:
+    if percent >= 82:
+        return "这类资料已经较完整，下一步可以继续积累跨周期变化和机会线索。"
+    if percent >= 68:
+        return "这类资料已经能支持初步洞察，下一步需要更多连续年份、批次或阶段的变化记录。"
+    return definition.missing_template
+
+
+def _score_structural_completeness(rows: list[DigitalAssetMaterialMaturityRowRecord], primary_profile: AssetProfile) -> int:
+    if not rows:
+        return 0
+    primary_keys = set(primary_profile.rows)
+    weighted = 0.0
+    weight_total = 0.0
+    for row in rows:
+        weight = 1.35 if row.key in primary_keys else 0.35
+        weighted += row.percent * weight
+        weight_total += weight
+    strong_primary = sum(1 for row in rows if row.key in primary_keys and row.percent >= 45)
+    score = weighted / max(1.0, weight_total) + min(12, strong_primary * 3)
+    return max(0, min(100, int(round(score))))
+
+
+def _score_profile_computability(
+    rows: list[DigitalAssetMaterialMaturityRowRecord],
+    sources: list[AssetSource],
+    primary_profile: AssetProfile,
+) -> int:
+    relevant_sources = _profile_relevant_sources(primary_profile, sources)
+    flags = [_source_signal_flags(source) for source in relevant_sources]
+    text = _join_text(*(source.title for source in relevant_sources), *(source.text for source in relevant_sources)).lower()
+    structured = _ratio_with_flag(flags, "structured")
+    field = _ratio_with_flag(flags, "field")
+    time = _ratio_with_flag(flags, "time")
+    object_ratio = _ratio_with_flag(flags, "object")
+    result = _ratio_with_flag(flags, "result")
+    table_bonus = 0.12 if _contains_any(text, ("xlsx", "excel", "表格", "表单", "问卷", "名单", "看板")) else 0.0
+    domain_compute_bonus = 0.0
+    if primary_profile.key == "platform_ecosystem" and _contains_any(text, ("年会", "论坛", "评估", "年度")) and _contains_any(text, ("参与", "反馈", "结果")):
+        domain_compute_bonus = 0.30
+    if primary_profile.key == "field_research" and _contains_any(text, ("调研", "样本", "个案", "报名", "评估")) and _contains_any(text, ("反馈", "变化", "需求", "参与")):
+        domain_compute_bonus = max(domain_compute_bonus, 0.18)
+    if primary_profile.key == "content_ip" and _contains_any(text, ("阅读", "播放", "评论", "发布", "渠道")):
+        domain_compute_bonus = max(domain_compute_bonus, 0.16)
+    row_signal = sum(1 for row in rows if row.percent >= 50) / max(1, len(rows))
+    score = (structured * 36 + field * 18 + time * 13 + object_ratio * 12 + result * 13 + table_bonus * 100 + domain_compute_bonus * 100 + row_signal * 8)
+    if not relevant_sources:
+        return 0
+    cap = 92
+    if field <= 0.05 and domain_compute_bonus <= 0:
+        cap = 48
+    elif structured <= 0.08 and domain_compute_bonus <= 0.16:
+        cap = 64
+    return max(0, min(cap, int(round(score))))
+
+
+def _score_profile_evidence_chain(metrics: list[DigitalAssetMetricRecord], sources: list[AssetSource]) -> int:
+    evidence = _metric_value(metrics, "evidenceCards")
+    themes = _metric_value(metrics, "themeClusters")
+    questions = _metric_value(metrics, "openQuestions")
+    judgments = _metric_value(metrics, "judgments")
+    support = _metric_value(metrics, "memoryFacts") + _metric_value(metrics, "eventLines") + _metric_value(metrics, "meetings") + _metric_value(metrics, "tasks")
+    source_chain = _evidence_chain_score(sources)
+    score = (
+        min(36, evidence * 2.0)
+        + min(20, themes * 5.0)
+        + min(12, questions * 3.0)
+        + min(24, judgments * 6.0)
+        + min(10, support * 0.7)
+        + source_chain * 8
+    )
+    return max(0, min(100, int(round(score))))
+
+
+def _score_profile_time_continuity(rows: list[DigitalAssetMaterialMaturityRowRecord], sources: list[AssetSource]) -> int:
+    text = _join_text(*(source.title for source in sources), *(source.text for source in sources)).lower()
+    buckets = _extract_time_buckets(text)
+    row_score = sum(row.percent for row in rows) / max(1, len(rows))
+    continuity = _continuity_score_for_sources(sources)
+    score = continuity * 66 + min(24, len(buckets) * 4) + (row_score * 0.18)
+    if len(buckets) < 2:
+        score = min(score, 42)
+    return max(0, min(100, int(round(score))))
+
+
+def _score_profile_feedback_loop(
+    rows: list[DigitalAssetMaterialMaturityRowRecord],
+    sources: list[AssetSource],
+    primary_profile: AssetProfile,
+) -> int:
+    relevant_sources = _profile_relevant_sources(primary_profile, sources)
+    flags = [_source_signal_flags(source) for source in relevant_sources]
+    text = _join_text(*(source.title for source in relevant_sources), *(source.text for source in relevant_sources)).lower()
+    process = _ratio_with_flag(flags, "process")
+    result = _ratio_with_flag(flags, "result")
+    decision = _ratio_with_flag(flags, "decision")
+    linked = _ratio_with_flag(flags, "linked")
+    feedback_keywords = 1.0 if _contains_any(text, ("反馈", "评估", "满意度", "复盘", "结果", "成效", "验证", "调整")) else 0.0
+    domain_feedback_bonus = 0.0
+    if primary_profile.key == "platform_ecosystem" and _contains_any(text, ("年会", "论坛", "评估")) and _contains_any(text, ("反馈", "结果", "改进")):
+        domain_feedback_bonus = 0.22
+    if primary_profile.key == "field_research" and _contains_any(text, ("个案", "调研", "评估")) and _contains_any(text, ("反馈", "变化", "需求")):
+        domain_feedback_bonus = max(domain_feedback_bonus, 0.12)
+    row_support = sum(1 for row in rows if row.key in {"outcome_evidence", "event_evaluation", "publishing_feedback", "user_feedback", "business_result"} and row.percent >= 45)
+    score = process * 18 + result * 22 + decision * 15 + linked * 25 + feedback_keywords * 10 + domain_feedback_bonus * 100 + min(10, row_support * 5)
+    if result <= 0.04 and feedback_keywords <= 0:
+        score = min(score, 34)
+    return max(0, min(100, int(round(score))))
+
+
+def _profile_relevant_sources(primary_profile: AssetProfile, sources: list[AssetSource]) -> list[AssetSource]:
+    matched: list[AssetSource] = []
+    for source in sources:
+        text = f"{source.title} {source.text}".lower()
+        if any(keyword.lower() in text for keyword in primary_profile.keywords):
+            matched.append(source)
+    return matched or sources
+
+
+def _compute_deposit_thickness(metrics: list[DigitalAssetMetricRecord], sources: list[AssetSource]) -> int:
+    xp = _compute_deposit_xp(metrics)
+    xp_score = min(78.0, math.log1p(max(0, xp)) / math.log1p(6500) * 78.0)
+    diversity = min(14.0, len({source.source_type for source in sources}) * 2.5)
+    ready_hint = min(8.0, math.log1p(len(sources)) / math.log1p(260) * 8.0)
+    return max(0, min(100, int(round(xp_score + diversity + ready_hint))))
+
+
+def _profile_stage_index(
+    *,
+    maturity_score: int,
+    computability: int,
+    evidence_chain: int,
+    time_continuity: int,
+    feedback_loop: int,
+    sources: list[AssetSource],
+    primary_profile: AssetProfile,
+) -> tuple[int, list[str]]:
+    if maturity_score >= 92:
+        stage_index = 4
+    elif maturity_score >= 86:
+        stage_index = 3
+    elif maturity_score >= 55:
+        stage_index = 2
+    elif maturity_score >= 22:
+        stage_index = 1
+    else:
+        stage_index = 0
+    blockers: list[str] = []
+    if not sources or _profile_signal_strength(primary_profile, sources) < 10:
+        stage_index = min(stage_index, 0)
+        blockers.append("还缺能说明当前资料属于哪类资产路径的基础资料。")
+    if computability < 35:
+        stage_index = min(stage_index, 1)
+        blockers.append("还缺可比较的表格、名单、时间、反馈或结果资料，暂时不能进入更高层的结构分析。")
+    if evidence_chain < 20:
+        stage_index = min(stage_index, 1)
+        blockers.append("还缺证据卡、主题、判断等经过整理的证据沉淀，资料目前主要停留在项目画像层。")
+    elif evidence_chain < 45 or feedback_loop < 45:
+        stage_index = min(stage_index, 2)
+        blockers.append("还缺从原始资料到证据、判断、反馈结果的连续沉淀，暂时不能稳定解释机制。")
+    if time_continuity < 58:
+        stage_index = min(stage_index, 3)
+        blockers.append("还缺跨年度、批次或阶段的连续资料，暂时不能支持更长期的趋势判断。")
+    if not _has_opportunity_signal(sources):
+        stage_index = min(stage_index, 3)
+    if not blockers and stage_index < 4:
+        blockers.append("下一步需要继续沉淀跨周期结果、反馈和机会信号。")
+    return max(0, stage_index), blockers[:4]
+
+
+def _profile_signal_strength(primary_profile: AssetProfile, sources: list[AssetSource]) -> int:
+    count = 0
+    for source in sources:
+        text = f"{source.title} {source.text}".lower()
+        count += sum(1 for keyword in primary_profile.keywords if keyword.lower() in text)
+    return count
+
+
+def _has_opportunity_signal(sources: list[AssetSource]) -> bool:
+    text = _join_text(*(source.title for source in sources), *(source.text for source in sources)).lower()
+    return _contains_any(text, OPPORTUNITY_SIGNAL_KEYWORDS) and _contains_any(text, PREDICTIVE_DATA_KEYWORDS + LINKAGE_KEYWORDS)
+
+
+def _typed_growth_mode(rows: list[DigitalAssetMaterialMaturityRowRecord], deposit_thickness: int, maturity_score: int, stage_index: int) -> str:
+    if deposit_thickness >= 65 and maturity_score < 50:
+        return "结构偏科"
+    strong = [row for row in rows if row.percent >= 68]
+    weak = [row for row in rows if row.percent < 35]
+    if strong and len(weak) >= 2:
+        return "单项突破"
+    if stage_index >= 2 and len([row for row in rows if row.percent >= 48]) >= max(2, len(rows) // 2):
+        return "均衡成长"
+    if deposit_thickness > maturity_score + 25:
+        return "结构偏科"
+    return "均衡成长"
+
+
+def _profile_score_rationale(
+    primary_profile: AssetProfile,
+    secondary_profiles: list[AssetProfile],
+    profile_score_map: dict[str, float],
+    rows: list[DigitalAssetMaterialMaturityRowRecord],
+    breakdown: DigitalAssetScoreBreakdownRecord,
+    maturity_score: int,
+) -> list[str]:
+    strongest = sorted(rows, key=lambda row: row.percent, reverse=True)[:2]
+    weakest = sorted(rows, key=lambda row: row.percent)[:2]
+    secondary = "、".join(profile.label for profile in secondary_profiles[:2])
+    rationale = [
+        f"主路径识别为{primary_profile.label}" + (f"，同时有{secondary}线索。" if secondary else "。"),
+        f"总成熟度 {maturity_score} 分由结构完整度、可计算度、证据链、时间连续性和结果反馈关系加权得到，资料厚度不进入总分。",
+    ]
+    if strongest:
+        rationale.append(f"当前最成熟的资料是{'、'.join(row.label for row in strongest)}。")
+    if weakest:
+        rationale.append(f"下一步最影响升级的是{'、'.join(row.label for row in weakest)}。")
+    if breakdown.computable < 35:
+        rationale.append("可计算资料不足，是当前等级上限的主要原因。")
+    if breakdown.evidenceChain < 45:
+        rationale.append("证据卡、主题、问题或判断沉淀不足，限制了深层分析。")
+    return rationale
+
+
+def _build_typed_next_best_deposits(
+    profile_score: ProfileScoreResult,
+    empty_state: bool,
+) -> list[DigitalAssetDepositSuggestionRecord]:
+    if empty_state:
+        return [
+            DigitalAssetDepositSuggestionRecord(
+                priority="high",
+                dimensionKey="organization_identity",
+                title="先整理组织介绍、重点项目、服务对象、流程和反馈资料",
+                reason="当前还没有足够资料进入项目画像期。",
+                examples=["组织介绍", "重点项目", "服务对象", "项目流程", "反馈材料"],
+                expectedGain=30,
+                analysisValueUnlocked="让 AI 先形成基础组织画像。",
+            )
+        ]
+    rows = sorted(profile_score.material_rows, key=lambda row: (row.percent, 0 if row.key in {"business_portfolio", "audience_profile", "outcome_evidence", "strategic_judgment"} else 1))
+    suggestions: list[DigitalAssetDepositSuggestionRecord] = []
+    for row in rows:
+        if row.percent >= 75:
+            continue
+        priority = "high" if row.percent < 45 else ("medium" if row.percent < 65 else "low")
+        suggestions.append(
+            DigitalAssetDepositSuggestionRecord(
+                priority=priority,  # type: ignore[arg-type]
+                dimensionKey=row.key,
+                title=row.suggestedAction,
+                reason=row.missingSummary,
+                examples=row.sourceHighlights[:4],
+                expectedGain=max(4, min(18, int(round((75 - row.percent) / 5)))),
+                analysisValueUnlocked=row.unlockedValue,
+                suggestedDocumentContent=[],
+                sourceHighlights=row.sourceHighlights,
+            )
+        )
+        if len(suggestions) >= 4:
+            break
+    return suggestions
+
+
+def _typed_unlocked_capabilities(profile_score: ProfileScoreResult) -> list[str]:
+    stage_index = STAGE_NAMES.index(profile_score.asset_stage) if profile_score.asset_stage in STAGE_NAMES else 0
+    capabilities = ["资料归档、检索和基础梳理"]
+    if stage_index >= 1:
+        capabilities.append(f"{profile_score.asset_profile_type}的基础画像理解")
+    if stage_index >= 2:
+        capabilities.append("项目、对象、阶段和反馈的结构化比较")
+    if stage_index >= 3:
+        capabilities.append("关键动作、反馈结果和资源变化之间的机制洞察")
+    if stage_index >= 4:
+        capabilities.append("新产品、新业务、新服务和数字化机会识别")
+    return capabilities
+
+
+def _build_profile_understanding_statement(
+    *,
+    client_name: str,
+    profile_score: ProfileScoreResult,
+    notebook_intro: str,
+    empty_state: bool,
+) -> str:
+    if empty_state:
+        return f"AI 还没有足够资料理解{client_name}，需要先建立组织、项目、对象、流程和反馈的基础材料。"
+    blocker = profile_score.blockers[0] if profile_score.blockers else "下一步需要继续沉淀更连续、更可比较的资料。"
+    strongest = sorted(profile_score.material_rows, key=lambda row: row.percent, reverse=True)[:2]
+    strongest_text = "、".join(row.label for row in strongest) or profile_score.asset_profile_type
+    intro = _sanitize_public_text(notebook_intro, limit=70)
+    intro_text = f" {intro}" if intro else ""
+    return (
+        f"{client_name}当前处于{profile_score.asset_stage} · {profile_score.asset_profile_type}。"
+        f"AI 已能围绕{strongest_text}开展当前层级的整理和分析。"
+        f"限制升级的关键短板是：{blocker}{intro_text}"
+    )
+
+
 def _build_stage_summary(
     nodes: list[DigitalAssetMapNodeRecord],
     metrics: list[DigitalAssetMetricRecord],
@@ -1014,7 +2342,7 @@ def _build_stage_summary(
             "assetTrackTitle": "组织资产型",
             "growthMode": "均衡成长",
             "stageProgress": 0,
-            "nextStage": "组织画像期",
+            "nextStage": "项目画像期",
             "unlockedCapabilities": ["资料归档和基础检索"],
             "stageBlockers": ["还没有足够资料形成组织数字资产，请先补充组织介绍、项目介绍、流程资料和反馈材料。"],
         }
@@ -1099,16 +2427,16 @@ def _track_priority(key: str) -> int:
 def _stage_progress(stage_index: int, nodes: list[DigitalAssetMapNodeRecord], deposit_xp: int) -> int:
     if not nodes:
         return 0
-    if stage_index <= 0:
-        return min(95, max(5, deposit_xp // 20))
-    if stage_index == 1:
-        values = [_level_coverage(node, "advanced") for node in nodes if node.stageIndex >= 1]
-    elif stage_index == 2:
-        values = [_level_coverage(node, "opportunity") for node in nodes if node.stageIndex >= 2]
-    elif stage_index == 3:
-        values = [node.coverageScore for node in nodes if node.stageIndex >= 3]
-    else:
-        values = [node.coverageScore for node in nodes]
+    active_nodes = [node for node in nodes if node.evidenceCount > 0 or node.coveredUnits]
+    if not active_nodes:
+        return 0
+    current_stage_nodes = [node for node in active_nodes if node.stageIndex >= stage_index]
+    if not current_stage_nodes:
+        current_stage_nodes = active_nodes
+    values = [
+        max(0, min(100, int(node.maturityPercent or node.coverageScore or 0)))
+        for node in current_stage_nodes
+    ]
     if not values:
         return 0
     return int(round(sum(values) / len(values)))
@@ -1174,7 +2502,7 @@ def _build_next_best_deposits(
                 priority="high",
                 dimensionKey="organization_identity",
                 title=title,
-                reason=f"当前还没有足够资料进入组织画像期，需要先让 AI 稳定理解{_client_label(client_name)}是谁、做什么、服务谁。",
+                reason=f"当前还没有足够资料进入项目画像期，需要先让 AI 稳定理解{_client_label(client_name)}是谁、做什么、服务谁。",
                 examples=["组织介绍", "重点项目介绍", "项目流程", "反馈材料", "阶段复盘"],
                 expectedGain=30,
                 analysisValueUnlocked="解锁资料整理和组织画像的第一版资产地图。",

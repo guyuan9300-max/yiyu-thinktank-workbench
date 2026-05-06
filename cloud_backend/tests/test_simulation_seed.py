@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 TEST_DATA_DIR = Path(__file__).resolve().parent / "test_cloud_simulation_data"
 os.environ["YIYU_CLOUD_DATA_DIR"] = str(TEST_DATA_DIR)
 os.environ["YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD"] = "Admin123!"
-os.environ["YIYU_CLOUD_QINGHUA_PASSWORD"] = "Qinghua123!"
-os.environ["YIYU_CLOUD_JIANING_PASSWORD"] = "Jianing123!"
-os.environ["YIYU_CLOUD_YISHUO_PASSWORD"] = "Yishuo123!"
+os.environ["YIYU_CLOUD_QINGHUA_PASSWORD"] = "Simulate123!"
+os.environ["YIYU_CLOUD_JIANING_PASSWORD"] = "Simulate123!"
+os.environ["YIYU_CLOUD_YISHUO_PASSWORD"] = "Simulate123!"
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.main import DEFAULT_ORG_ID, create_app  # noqa: E402
@@ -81,7 +81,7 @@ def test_seed_simulated_review_org_populates_week_and_visibility():
 
     qinghua_dashboard = client.get(
         "/api/v1/reviews/dashboard",
-        headers=auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!"),
+        headers=auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!"),
     )
     assert qinghua_dashboard.status_code == 200, qinghua_dashboard.text
     qinghua_payload = qinghua_dashboard.json()
@@ -92,21 +92,21 @@ def test_seed_simulated_review_org_populates_week_and_visibility():
 
     jiale_dashboard = client.get(
         "/api/v1/reviews/dashboard",
-        headers=auth_headers(client, "jiale@yiyu-system.com", "Jiale123!"),
+        headers=auth_headers(client, "jiale@yiyu-system.com", "Simulate123!"),
     )
     assert jiale_dashboard.status_code == 200, jiale_dashboard.text
     assert "84 条任务复盘" in jiale_dashboard.json()["teamReport"]["summary"]
 
     dazhou_dashboard = client.get(
         "/api/v1/reviews/dashboard",
-        headers=auth_headers(client, "dazhou@yiyu-system.com", "Dazhou123!"),
+        headers=auth_headers(client, "dazhou@yiyu-system.com", "Simulate123!"),
     )
     assert dazhou_dashboard.status_code == 200, dazhou_dashboard.text
     assert "84 条任务复盘" in dazhou_dashboard.json()["teamReport"]["summary"]
 
     jianing_dashboard = client.get(
         "/api/v1/reviews/dashboard",
-        headers=auth_headers(client, "jianing@yiyu-system.com", "Jianing123!"),
+        headers=auth_headers(client, "jianing@yiyu-system.com", "Simulate123!"),
     )
     assert jianing_dashboard.status_code == 200, jianing_dashboard.text
     assert "84 条任务复盘" in jianing_dashboard.json()["teamReport"]["summary"]

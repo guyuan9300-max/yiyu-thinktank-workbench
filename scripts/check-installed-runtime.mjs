@@ -11,6 +11,7 @@ import {
   DEFAULT_INSTALL_SMOKE_PATH,
   inspectBackendCapabilities,
   inspectAppBundle as inspectBundle,
+  inspectPackagedRuntimeSeed,
 } from './app-manifest.mjs';
 
 const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -37,6 +38,7 @@ function parseArgs(argv) {
     baseUrl: defaultBaseUrl,
     output: defaultOutput,
     launchTimeoutSeconds: defaultLaunchTimeoutSeconds,
+    forceRelaunch: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const current = argv[index];
@@ -87,6 +89,10 @@ function parseArgs(argv) {
     }
     if (current.startsWith('--launch-timeout-seconds=')) {
       options.launchTimeoutSeconds = Number(current.slice('--launch-timeout-seconds='.length));
+      continue;
+    }
+    if (current === '--force-relaunch') {
+      options.forceRelaunch = true;
       continue;
     }
     throw new Error(`unknown option: ${current}`);
@@ -203,12 +209,18 @@ function payloadFromState(state) {
     sourceBackendCapabilityMatch: state.sourceBackendCapabilityMatch,
     sourceBackendCapabilityMissing: state.sourceBackendCapabilityMissing,
     sourceBackendCapabilityRoot: state.sourceBackendCapabilityRoot,
+    sourceRuntimeSeedMatch: state.sourceRuntimeSeedMatch,
+    sourceRuntimeSeedMissing: state.sourceRuntimeSeedMissing,
+    sourceRuntimeSeedWheelFileCount: state.sourceRuntimeSeedWheelFileCount,
     targetRendererEntry: state.targetRendererEntry,
     targetRendererHash: state.targetRendererHash,
     targetBundleManifestId: state.targetBundleManifestId,
     targetBackendCapabilityMatch: state.targetBackendCapabilityMatch,
     targetBackendCapabilityMissing: state.targetBackendCapabilityMissing,
     targetBackendCapabilityRoot: state.targetBackendCapabilityRoot,
+    targetRuntimeSeedMatch: state.targetRuntimeSeedMatch,
+    targetRuntimeSeedMissing: state.targetRuntimeSeedMissing,
+    targetRuntimeSeedWheelFileCount: state.targetRuntimeSeedWheelFileCount,
     rendererEntryMatch: state.rendererEntryMatch,
     bundleManifestMatch: state.bundleManifestMatch,
     launchAttempted: state.launchAttempted,
@@ -231,6 +243,7 @@ async function main() {
     baseUrl: defaultBaseUrl,
     output: defaultOutput,
     launchTimeoutSeconds: defaultLaunchTimeoutSeconds,
+    forceRelaunch: false,
   };
   const state = {
     targetAppExists: false,
@@ -240,12 +253,18 @@ async function main() {
     sourceBackendCapabilityMatch: false,
     sourceBackendCapabilityMissing: [],
     sourceBackendCapabilityRoot: null,
+    sourceRuntimeSeedMatch: false,
+    sourceRuntimeSeedMissing: [],
+    sourceRuntimeSeedWheelFileCount: 0,
     targetRendererEntry: null,
     targetRendererHash: null,
     targetBundleManifestId: null,
     targetBackendCapabilityMatch: false,
     targetBackendCapabilityMissing: [],
     targetBackendCapabilityRoot: null,
+    targetRuntimeSeedMatch: false,
+    targetRuntimeSeedMissing: [],
+    targetRuntimeSeedWheelFileCount: 0,
     rendererEntryMatch: false,
     bundleManifestMatch: false,
     launchAttempted: false,
@@ -269,6 +288,8 @@ async function main() {
     const targetInfo = inspectBundle(targetApp);
     const sourceCapability = inspectBackendCapabilities(options.sourceApp);
     const targetCapability = inspectBackendCapabilities(targetApp);
+    const sourceRuntimeSeed = inspectPackagedRuntimeSeed(options.sourceApp);
+    const targetRuntimeSeed = inspectPackagedRuntimeSeed(targetApp);
     state.targetAppExists = targetInfo.exists;
     state.sourceRendererEntry = sourceInfo.rendererEntry;
     state.sourceRendererHash = sourceInfo.rendererHash;
@@ -276,12 +297,18 @@ async function main() {
     state.sourceBackendCapabilityMatch = Boolean(sourceCapability.match);
     state.sourceBackendCapabilityMissing = sourceCapability.missingSymbols;
     state.sourceBackendCapabilityRoot = sourceCapability.rootPath;
+    state.sourceRuntimeSeedMatch = Boolean(sourceRuntimeSeed.match);
+    state.sourceRuntimeSeedMissing = sourceRuntimeSeed.missing;
+    state.sourceRuntimeSeedWheelFileCount = sourceRuntimeSeed.wheelFileCount;
     state.targetRendererEntry = targetInfo.rendererEntry;
     state.targetRendererHash = targetInfo.rendererHash;
     state.targetBundleManifestId = targetInfo.bundleManifestId;
     state.targetBackendCapabilityMatch = Boolean(targetCapability.match);
     state.targetBackendCapabilityMissing = targetCapability.missingSymbols;
     state.targetBackendCapabilityRoot = targetCapability.rootPath;
+    state.targetRuntimeSeedMatch = Boolean(targetRuntimeSeed.match);
+    state.targetRuntimeSeedMissing = targetRuntimeSeed.missing;
+    state.targetRuntimeSeedWheelFileCount = targetRuntimeSeed.wheelFileCount;
     state.rendererEntryMatch = Boolean(
       sourceInfo.rendererEntry
         && targetInfo.rendererEntry
@@ -301,6 +328,14 @@ async function main() {
       state.reason = `当前安装包未包含顾问综合链路，请重新打包安装。missing=${state.targetBackendCapabilityMissing.join(', ') || 'unknown'}`;
       return state;
     }
+    if (!state.sourceRuntimeSeedMatch) {
+      state.reason = `本地打包产物缺少内置 runtime seed：${state.sourceRuntimeSeedMissing.join(', ') || 'unknown'}`;
+      return state;
+    }
+    if (!state.targetRuntimeSeedMatch) {
+      state.reason = `当前安装包缺少内置 runtime seed，请重新打包安装。missing=${state.targetRuntimeSeedMissing.join(', ') || 'unknown'}`;
+      return state;
+    }
     if (!state.bundleManifestMatch) {
       state.reason = `bundle manifest 不一致：source=${state.sourceBundleManifestId || 'null'} target=${state.targetBundleManifestId || 'null'}`;
       return state;
@@ -310,27 +345,34 @@ async function main() {
       return state;
     }
 
-    stopInstalledApp();
-    const cleanup = stopExpectedBackendListener(port);
-    if (!cleanup.cleared) {
-      state.reason = cleanup.reason;
-      return state;
-    }
+    const existingPids = findAppPids();
+    if (existingPids.length > 0 && !options.forceRelaunch) {
+      state.launchAttempted = false;
+    } else {
+      if (options.forceRelaunch) {
+        stopInstalledApp();
+      }
+      const cleanup = stopExpectedBackendListener(port);
+      if (!cleanup.cleared) {
+        state.reason = cleanup.reason;
+        return state;
+      }
 
-    state.launchAttempted = true;
-    const openScript = path.join(projectRoot, 'scripts', 'open-installed-app.mjs');
-    const launch = run(
-      process.execPath,
-      [openScript, '--skip-validation', '--tab', 'settings', '--settings-section', 'overview'],
-      { stdio: 'inherit' },
-    );
-    if (launch.error) {
-      state.reason = `open-installed-app.mjs 执行失败：${launch.error.message}`;
-      return state;
-    }
-    if (launch.status !== 0) {
-      state.reason = `open-installed-app.mjs 退出码 ${launch.status}`;
-      return state;
+      state.launchAttempted = true;
+      const openScript = path.join(projectRoot, 'scripts', 'open-installed-app.mjs');
+      const launch = run(
+        process.execPath,
+        [openScript, '--skip-validation'],
+        { stdio: 'inherit' },
+      );
+      if (launch.error) {
+        state.reason = `open-installed-app.mjs 执行失败：${launch.error.message}`;
+        return state;
+      }
+      if (launch.status !== 0) {
+        state.reason = `open-installed-app.mjs 退出码 ${launch.status}`;
+        return state;
+      }
     }
 
     const deadline = Date.now() + options.launchTimeoutSeconds * 1000;

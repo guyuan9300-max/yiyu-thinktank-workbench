@@ -38,6 +38,7 @@ SUPPORTED_SOURCE_TYPES = {
 
 PRIVATE_VISIBILITY_SCOPES = {"self", "private", "personal"}
 PRIVATE_CONTENT_DOMAINS = {"personal", "private"}
+SKIPPED_ORPHAN_CLIENT_STATUS = "skipped_orphan_client"
 
 TEXT_DOC_CONFIG: dict[str, dict[str, str]] = {
     "task": {
@@ -240,6 +241,37 @@ def _task_id_is_private(db: Database, task_id: str) -> bool:
         return False
     row = db.fetchone("SELECT scope_mode FROM tasks WHERE id = ?", (task_id,))
     return _text(_row_get(row, "scope_mode")).upper() == "PERSONAL_ONLY"
+
+
+def _client_exists(db: Database, client_id: str | None) -> bool:
+    client_id = _text(client_id)
+    if not client_id:
+        return False
+    return db.fetchone("SELECT id FROM clients WHERE id = ?", (client_id,)) is not None
+
+
+def _stale_client_id_for_payload(db: Database, payload: DataCenterIngestPayload, *, private: bool) -> str:
+    if private:
+        return ""
+    client_id = _text(payload.clientId)
+    if not client_id or _client_exists(db, client_id):
+        return ""
+    return client_id
+
+
+def _orphan_client_metadata(payload: DataCenterIngestPayload, stale_client_id: str) -> dict[str, Any]:
+    metadata = dict(payload.metadata or {})
+    metadata.update(
+        {
+            "staleClientId": stale_client_id,
+            "sourceType": payload.sourceType,
+            "sourceId": payload.sourceId,
+            "sourceTitle": payload.title,
+            "softIsolated": True,
+            "softIsolationReason": "stale_client_id",
+        }
+    )
+    return metadata
 
 
 def _fact_value(payload: DataCenterIngestPayload) -> str:
@@ -780,10 +812,263 @@ def mark_ingested_source_inactive(
                     enqueue_data_center_lifecycle_for_ingest_event(
                         db,
                         str(row["id"]),
-                        lifecycle_status=lifecycle_status,
-                    )
+                    lifecycle_status=lifecycle_status,
+                )
             except Exception as exc:  # pragma: no cover - sync queue must not block lifecycle changes
                 logger.warning("data center lifecycle sync enqueue failed: %s", exc)
+
+
+def _soft_isolate_ingested_source(
+    db: Database,
+    *,
+    source_type: str,
+    source_id: str,
+    source_entity_type: str = "",
+    source_entity_id: str = "",
+    document_id: str | None = None,
+    lifecycle_status: str = "scope_released",
+) -> None:
+    source_type = _text(source_type)
+    source_id = _text(source_id)
+    source_entity_type = _text(source_entity_type) or source_type
+    source_entity_id = _text(source_entity_id) or source_id
+    if source_entity_type and source_entity_id:
+        _mark_documents_for_source_entity(
+            db,
+            source_entity_type=source_entity_type,
+            source_entity_id=source_entity_id,
+            lifecycle_status=lifecycle_status,
+        )
+    if source_type and source_id:
+        mark_ingested_source_inactive(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            lifecycle_status=lifecycle_status,
+        )
+    document_id = _text(document_id)
+    if document_id:
+        now = _now_iso()
+        db.execute(
+            "UPDATE documents SET lifecycle_status = ?, is_searchable = 0 WHERE id = ?",
+            (lifecycle_status, document_id),
+        )
+        db.execute(
+            "UPDATE v2_documents SET lifecycle_status = ?, is_searchable = 0, updated_at = ? WHERE document_id = ?",
+            (lifecycle_status, now, document_id),
+        )
+
+
+def _skip_orphan_client_ingest(
+    db: Database,
+    payload: DataCenterIngestPayload,
+    *,
+    stale_client_id: str,
+    content_hash: str,
+) -> dict[str, Any]:
+    payload.metadata = _orphan_client_metadata(payload, stale_client_id)
+    payload.lifecycleStatus = "scope_released"
+    _soft_isolate_ingested_source(
+        db,
+        source_type=payload.sourceType,
+        source_id=payload.sourceId,
+        source_entity_type=payload.sourceEntityType or payload.sourceType,
+        source_entity_id=payload.sourceEntityId or payload.sourceId,
+        document_id=payload.documentId,
+        lifecycle_status="scope_released",
+    )
+    error_message = f"stale_client_id:{stale_client_id}"
+    event_id = _upsert_ingest_event(
+        db,
+        payload,
+        content_hash=content_hash,
+        status=SKIPPED_ORPHAN_CLIENT_STATUS,
+        document_id=payload.documentId,
+        error_message=error_message,
+    )
+    return {
+        "ingestEventId": event_id,
+        "status": SKIPPED_ORPHAN_CLIENT_STATUS,
+        "documentId": payload.documentId,
+        "memoryFactCount": 0,
+        "contentHash": content_hash,
+        "errorMessage": error_message,
+    }
+
+
+def _result_is_orphan_client_skip(result: dict[str, Any] | None) -> bool:
+    return isinstance(result, dict) and _text(result.get("status")) == SKIPPED_ORPHAN_CLIENT_STATUS
+
+
+def _orphan_ingest_event_rows(db: Database, *, limit: int | None = None) -> list[Any]:
+    ensure_data_center_ingest_schema(db)
+    limit_clause = ""
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params = (max(1, int(limit)),)
+    return db.fetchall(
+        f"""
+        SELECT e.*
+        FROM data_center_ingest_events e
+        LEFT JOIN clients c ON c.id = e.client_id
+        WHERE COALESCE(e.client_id, '') != ''
+          AND c.id IS NULL
+        ORDER BY e.updated_at DESC, e.created_at DESC
+        {limit_clause}
+        """,
+        params,
+    )
+
+
+def _merge_orphan_ingest_event_metadata(row: Any) -> dict[str, Any]:
+    metadata = from_json(str(_row_get(row, "metadata_json") or "{}"), {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    stale_client_id = _text(_row_get(row, "client_id"))
+    metadata.update(
+        {
+            "staleClientId": stale_client_id,
+            "sourceType": _text(_row_get(row, "source_type")),
+            "sourceId": _text(_row_get(row, "source_id")),
+            "sourceTitle": _text(_row_get(row, "title")),
+            "softIsolated": True,
+            "softIsolationReason": "stale_client_id",
+        }
+    )
+    return metadata
+
+
+def _repair_orphan_ingest_event_row(db: Database, row: Any) -> bool:
+    status = _text(_row_get(row, "status"))
+    if status == SKIPPED_ORPHAN_CLIENT_STATUS:
+        return False
+    stale_client_id = _text(_row_get(row, "client_id"))
+    if not stale_client_id:
+        return False
+    _soft_isolate_ingested_source(
+        db,
+        source_type=_text(_row_get(row, "source_type")),
+        source_id=_text(_row_get(row, "source_id")),
+        source_entity_type=_text(_row_get(row, "source_entity_type")),
+        source_entity_id=_text(_row_get(row, "source_entity_id")),
+        document_id=_text(_row_get(row, "document_id")) or None,
+        lifecycle_status="scope_released",
+    )
+    db.execute(
+        """
+        UPDATE data_center_ingest_events
+        SET status = ?,
+            error_message = ?,
+            lifecycle_status = 'scope_released',
+            metadata_json = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            SKIPPED_ORPHAN_CLIENT_STATUS,
+            f"stale_client_id:{stale_client_id}",
+            to_json(_merge_orphan_ingest_event_metadata(row)),
+            _now_iso(),
+            _text(_row_get(row, "id")),
+        ),
+    )
+    return True
+
+
+def build_orphan_client_ingest_repair_report(
+    db: Database,
+    *,
+    apply: bool = False,
+    sample_limit: int = 20,
+) -> dict[str, Any]:
+    ensure_data_center_ingest_schema(db)
+    sample_limit = max(1, min(int(sample_limit or 20), 200))
+    orphan_task_rows = db.fetchall(
+        """
+        SELECT t.id, t.title, t.client_id, t.status, t.updated_at
+        FROM tasks t
+        LEFT JOIN clients c ON c.id = t.client_id
+        WHERE COALESCE(t.client_id, '') != ''
+          AND c.id IS NULL
+        ORDER BY t.updated_at DESC
+        LIMIT ?
+        """,
+        (sample_limit,),
+    )
+    orphan_event_line_rows = db.fetchall(
+        """
+        SELECT e.id, e.name, e.primary_client_id, e.primary_client_name, e.status, e.updated_at
+        FROM event_lines e
+        LEFT JOIN clients c ON c.id = e.primary_client_id
+        WHERE COALESCE(e.primary_client_id, '') != ''
+          AND c.id IS NULL
+        ORDER BY e.updated_at DESC
+        LIMIT ?
+        """,
+        (sample_limit,),
+    )
+    orphan_ingest_rows = _orphan_ingest_event_rows(db)
+    fk_error_rows = [
+        row
+        for row in orphan_ingest_rows
+        if "FOREIGN KEY" in _text(_row_get(row, "error_message")).upper()
+    ]
+    already_skipped_count = sum(
+        1 for row in orphan_ingest_rows if _text(_row_get(row, "status")) == SKIPPED_ORPHAN_CLIENT_STATUS
+    )
+    repaired_count = 0
+    if apply:
+        for row in orphan_ingest_rows:
+            if _repair_orphan_ingest_event_row(db, row):
+                repaired_count += 1
+        orphan_ingest_rows = _orphan_ingest_event_rows(db)
+        fk_error_rows = [
+            row
+            for row in orphan_ingest_rows
+            if "FOREIGN KEY" in _text(_row_get(row, "error_message")).upper()
+        ]
+        already_skipped_count = sum(
+            1 for row in orphan_ingest_rows if _text(_row_get(row, "status")) == SKIPPED_ORPHAN_CLIENT_STATUS
+        )
+
+    def _rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
+        return [dict(row) for row in rows[:sample_limit]]
+
+    return {
+        "applied": bool(apply),
+        "orphanTaskCount": int(
+            db.scalar(
+                """
+                SELECT COUNT(1)
+                FROM tasks t
+                LEFT JOIN clients c ON c.id = t.client_id
+                WHERE COALESCE(t.client_id, '') != ''
+                  AND c.id IS NULL
+                """
+            )
+            or 0
+        ),
+        "orphanEventLineCount": int(
+            db.scalar(
+                """
+                SELECT COUNT(1)
+                FROM event_lines e
+                LEFT JOIN clients c ON c.id = e.primary_client_id
+                WHERE COALESCE(e.primary_client_id, '') != ''
+                  AND c.id IS NULL
+                """
+            )
+            or 0
+        ),
+        "orphanIngestEventCount": len(orphan_ingest_rows),
+        "fkErrorIngestEventCount": len(fk_error_rows),
+        "alreadySkippedOrphanClientIngestCount": already_skipped_count,
+        "repairedIngestEventCount": repaired_count,
+        "orphanTaskSamples": _rows_to_dicts(orphan_task_rows),
+        "orphanEventLineSamples": _rows_to_dicts(orphan_event_line_rows),
+        "orphanIngestEventSamples": _rows_to_dicts(orphan_ingest_rows[:sample_limit]),
+    }
 
 
 def ingest_user_input(
@@ -816,6 +1101,14 @@ def ingest_user_input(
     content_hash = _payload_hash(loaded)
     private = _is_private(loaded)
     has_content = bool(_text(loaded.bodyText) or loaded.documentId)
+    stale_client_id = _stale_client_id_for_payload(db, loaded, private=private)
+    if has_content and stale_client_id:
+        return _skip_orphan_client_ingest(
+            db,
+            loaded,
+            stale_client_id=stale_client_id,
+            content_hash=content_hash,
+        )
     status = "private_stored" if private else "ready"
     document_id = loaded.documentId
     memory_fact_count = 0
@@ -1026,6 +1319,8 @@ def ingest_task_by_id(db: Database, data_dir: Path | str, task_id: str) -> dict[
         **_task_payload_base(row),
     }
     result = ingest_user_input(db, data_dir, payload)
+    if _result_is_orphan_client_skip(result):
+        return result
     try:
         if not _is_private(_load_payload(payload)):
             record_task_writeback(
@@ -1081,6 +1376,8 @@ def ingest_task_note_by_id(
         "sourceEntityId": task_id,
     }
     result = ingest_user_input(db, data_dir, payload)
+    if _result_is_orphan_client_skip(result):
+        return result
     if row:
         ingest_task_by_id(db, data_dir, task_id)
     return result
@@ -1139,6 +1436,8 @@ def ingest_task_attachment_by_id(
         },
     }
     result = ingest_user_input(db, data_dir, payload)
+    if _result_is_orphan_client_skip(result):
+        return result
     try:
         if payload["clientId"] and not _is_private(_load_payload(payload)):
             record_task_attachment_writeback(
@@ -1211,6 +1510,8 @@ def ingest_meeting_by_id(db: Database, data_dir: Path | str, meeting_id: str) ->
         },
     }
     result = ingest_user_input(db, data_dir, payload)
+    if _result_is_orphan_client_skip(result):
+        return result
     try:
         event_line_rows = db.fetchall(
             """
@@ -1384,6 +1685,45 @@ def ingest_weekly_review_by_id(
     except Exception as exc:  # pragma: no cover - compatibility writeback should not block ingest
         logger.warning("legacy weekly review writeback failed after DataCenterIngest: %s", exc)
     return result
+
+
+def backfill_weekly_review_ingest(
+    db: Database,
+    data_dir: Path | str,
+    *,
+    week_label: str | None = None,
+    review_id: str | None = None,
+    limit: int | None = None,
+) -> dict[str, int]:
+    where: list[str] = []
+    params: list[object] = []
+    if review_id:
+        where.append("id = ?")
+        params.append(review_id)
+    if week_label:
+        where.append("week_label = ?")
+        params.append(week_label)
+    sql = "SELECT id FROM weekly_reviews"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated_at DESC"
+    if limit is not None and limit > 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = db.fetchall(sql, tuple(params))
+    succeeded = 0
+    failed = 0
+    for row in rows:
+        try:
+            result = ingest_weekly_review_by_id(db, data_dir, _text(_row_get(row, "id")))
+            if result is None:
+                failed += 1
+            else:
+                succeeded += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning("weekly review ingest backfill failed: %s", exc)
+    return {"scanned": len(rows), "succeeded": succeeded, "failed": failed}
 
 
 def _render_event_line_body(row: Any) -> str:

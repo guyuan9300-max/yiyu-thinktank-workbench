@@ -248,8 +248,8 @@ def build_digital_asset_narrative_context(
         {
             "moduleKey": str(row.get("module_key") or ""),
             "title": str(row.get("title") or ""),
-            "summary": _trim(row.get("summary"), 420),
-            "text": _trim(row.get("normalized_text"), 520),
+            "summary": _trim(row.get("summary"), 900),
+            "text": _trim(row.get("normalized_text"), 3600),
             "updatedAt": str(row.get("updated_at") or ""),
         }
         for row in _safe_rows(
@@ -393,6 +393,17 @@ def build_digital_asset_narrative_context(
     )
     organization_notebook = notebook[0] if notebook else {}
     digital_asset_summary = {
+        "scoreMethodVersion": detail.scoreMethodVersion,
+        "assetProfileType": detail.assetProfileType,
+        "secondaryProfileTypes": detail.secondaryProfileTypes,
+        "maturityScore": detail.maturityScore,
+        "depositThickness": detail.depositThickness,
+        "scoreBreakdown": detail.scoreBreakdown.model_dump(mode="json") if hasattr(detail.scoreBreakdown, "model_dump") else {},
+        "scoreRationale": detail.scoreRationale,
+        "materialMaturityRows": [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else {}
+            for item in detail.materialMaturityRows[:8]
+        ],
         "assetStage": detail.assetStage,
         "assetTrackTitle": detail.assetTrackTitle,
         "assetCompletionScore": detail.assetCompletionScore,
@@ -588,6 +599,7 @@ def refresh_digital_asset_narrative(db: Database, ai_service: object, client_id:
         "你是益语智库的客户资料分析顾问。请基于真实数据中心资料生成数字资产中心详情页文案。"
         "用普通人能听懂的话，不要堆术语；少用底座、资产、补齐、验证表、赋能、闭环。"
         "必须区分：资料已经显示、可以初步判断、现在还不能确定。"
+        "类型、等级、成熟度和五项评分已经由后端确定性规则算出，你只能解释这些结果，不能重新打分或改写等级。"
         "不能编造数字、百分比、准确率、降本比例、未给出的时间节点。"
         "不要把公益项目写成商业增长案例。不要使用“长期来看”。"
     )

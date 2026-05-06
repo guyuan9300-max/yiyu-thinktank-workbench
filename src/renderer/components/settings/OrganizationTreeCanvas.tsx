@@ -28,6 +28,7 @@ import type {
   OrgRoleTemplateSettings,
   OrgTaskControlRuleSettings,
 } from '../../../shared/types';
+import { isAssignableOrganizationEmployee, isLegacyOrganizationPersonName } from '../../lib/organizationEmployeeFilters';
 
 type Props = {
   value: OrgModelSettings;
@@ -151,19 +152,22 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
   const [dragHint, setDragHint] = useState<string | null>(null);
   const [memberDraftUserId, setMemberDraftUserId] = useState('');
 
-  const employeeById = useMemo(() => new Map(employees.map((item) => [item.id, item])), [employees]);
+  const activeEmployees = useMemo(
+    () => employees.filter(isAssignableOrganizationEmployee),
+    [employees],
+  );
+  const employeeById = useMemo(() => new Map(activeEmployees.map((item) => [item.id, item])), [activeEmployees]);
   const roleById = useMemo(() => new Map(value.roles.map((item) => [item.id, item])), [value.roles]);
   const bindingByUserId = useMemo(() => new Map(value.bindings.map((item) => [item.userId, item])), [value.bindings]);
   const activeDepartments = useMemo(() => value.departments.filter((item) => item.active !== false), [value.departments]);
   const activeRoles = useMemo(() => value.roles.filter((item) => item.active !== false), [value.roles]);
-  const activeEmployees = useMemo(
-    () => employees.filter((item) => item.accountStatus !== 'disabled'),
-    [employees],
-  );
   const activePlans = useMemo(
     () => value.departmentPlans.filter((item) => item.status !== 'closed'),
     [value.departmentPlans],
   );
+  const selectedOrganizationLeaderId = value.organization.leaderUserId && employeeById.has(value.organization.leaderUserId)
+    ? value.organization.leaderUserId
+    : '';
 
   const departmentOptions = useMemo(() => {
     if (activeDepartments.length > 0) {
@@ -216,9 +220,13 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
       const memberIds = value.bindings
         .filter((binding) => binding.departmentId === department.id && employeeById.has(binding.userId))
         .map((binding) => binding.userId);
+      const visibleLeaderName = department.leaderName?.trim() && !isLegacyOrganizationPersonName(department.leaderName)
+        ? department.leaderName.trim()
+        : '';
+      const hasVisibleLeader = Boolean(visibleLeaderName) || Boolean(department.leaderUserId && employeeById.has(department.leaderUserId));
       const planCount = activePlans.filter((plan) => plan.departmentId === department.id).length;
       const missing: string[] = [];
-      if (!(department.leaderUserId || department.leaderName?.trim())) missing.push('待绑定负责人');
+      if (!hasVisibleLeader) missing.push('待绑定负责人');
       if (!department.mission.trim()) missing.push('待补部门使命');
       if (roleIds.length === 0) missing.push('待补岗位模板');
       if (memberIds.length === 0) missing.push('待补成员归属');
@@ -232,8 +240,10 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
         completeness,
         missing,
         ownerName:
-          department.leaderName?.trim() ||
-          (department.leaderUserId ? employeeById.get(department.leaderUserId)?.fullName || '已绑定负责人' : '待绑定'),
+          visibleLeaderName ||
+          (department.leaderUserId && employeeById.has(department.leaderUserId)
+            ? employeeById.get(department.leaderUserId)?.fullName || '已绑定负责人'
+            : '待绑定'),
         relatedProjects: relatedProjectsByDepartment.get(department.id) || [],
         statusLabel: department.active === false ? '停用' : completeness >= 80 ? '稳定' : completeness >= 55 ? '搭建中' : '待补全',
       });
@@ -591,7 +601,7 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
           {[
             { label: '部门', value: `${activeDepartments.length}` },
             { label: '岗位', value: `${activeRoles.length}` },
-            { label: '成员', value: `${value.bindings.filter((item) => item.primaryRoleId).length}` },
+            { label: '成员', value: `${value.bindings.filter((item) => item.primaryRoleId && employeeById.has(item.userId)).length}` },
             { label: '计划数', value: `${activePlans.length}` },
             { label: '完整度', value: `${overallCompleteness}%` },
             { label: '缺口', value: `${activeDepartments.reduce((sum, department) => sum + (departmentMetaMap.get(department.id)?.missing.length || 0), 0)}` },
@@ -776,10 +786,10 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                       })
                     }
                   />
-                  <label className="space-y-2">
-                    <span className="text-[12px] font-bold text-gray-700">组织负责人</span>
-                    <select
-                      value={value.organization.leaderUserId || ''}
+	                  <label className="space-y-2">
+	                    <span className="text-[12px] font-bold text-gray-700">组织负责人</span>
+	                    <select
+	                      value={selectedOrganizationLeaderId}
                       onChange={(event) =>
                         onChange({
                           ...value,
@@ -808,7 +818,7 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                     helper="组织根节点主要负责承接名称、目标和负责人。部门以下结构会继续细化岗位、成员、流程与计划。"
                     items={[
                       value.organization.name.trim() ? '组织名称已补齐' : '待补组织名称',
-                      value.organization.leaderUserId ? '负责人已绑定' : '待绑定负责人',
+	                      selectedOrganizationLeaderId ? '负责人已绑定' : '待绑定负责人',
                       value.organization.annualGoal.trim() || value.organization.quarterlyFocus.length > 0 ? '目标语境已补齐' : '待补年度目标 / 季度重点',
                     ]}
                   />
@@ -830,10 +840,10 @@ export function OrganizationTreeCanvas({ value, departmentCatalog, employees, ca
                     placeholder="部门名称"
                     onChange={(next) => updateDepartment(selectedDepartmentMeta.node.id, { name: next })}
                   />
-                  <label className="space-y-2">
-                    <span className="text-[12px] font-bold text-gray-700">负责人</span>
-                    <select
-                      value={selectedDepartmentMeta.node.leaderUserId || ''}
+	                  <label className="space-y-2">
+	                    <span className="text-[12px] font-bold text-gray-700">负责人</span>
+	                    <select
+	                      value={selectedDepartmentMeta.node.leaderUserId && employeeById.has(selectedDepartmentMeta.node.leaderUserId) ? selectedDepartmentMeta.node.leaderUserId : ''}
                       onChange={(event) =>
                         updateDepartment(selectedDepartmentMeta.node.id, {
                           leaderUserId: event.target.value || null,

@@ -12,6 +12,7 @@ import {
 import type { Task } from '../../../shared/types';
 import { formatMonthTitle } from '../../../shared/calendar';
 import { getChinaCalendarMarkers, type ChinaCalendarMarker } from '../../../shared/china-calendar';
+import { getTaskCalendarPlacement } from '../../../shared/taskTime';
 import {
   assignTimedTaskLanes,
   buildTaskDayTimedSegment,
@@ -124,6 +125,8 @@ function combineDateAndTime(date: Date, minuteOfDay: number) {
 }
 
 function hasTaskExplicitTime(task: Pick<Task, 'startDate' | 'dueDate'>) {
+  const placement = getTaskCalendarPlacement(task as Task);
+  if (placement.kind === 'scheduled' || placement.kind === 'savingDraft') return true;
   const startParts = splitTaskDueDateTime(task.startDate);
   const dueParts = splitTaskDueDateTime(task.dueDate);
   return Boolean(normalizeTaskTimeInput(startParts.time) || normalizeTaskTimeInput(dueParts.time));
@@ -397,7 +400,11 @@ export function TaskCalendarView({
   const today = useMemo(() => new Date(), []);
   const taskDateForCalendar = resolveTaskCalendarDate;
   const visibleTasks = useMemo(
-    () => tasks.filter((task) => task.status !== 'rejected'),
+    () => tasks.filter((task) => {
+      if (task.status === 'rejected') return false;
+      const placement = getTaskCalendarPlacement(task);
+      return placement.kind !== 'none' && Boolean(placement.date);
+    }),
     [tasks],
   );
   const activeMonthDate = useMemo(() => new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1), [calendarDate]);
@@ -689,6 +696,8 @@ export function TaskCalendarView({
     const nextDueDate = formatDateInputValue(cellDate);
     const currentTaskDate = taskDateForCalendar(task);
     if (
+      currentTaskDate
+      &&
       currentTaskDate.getFullYear() === cellDate.getFullYear()
       && currentTaskDate.getMonth() === cellDate.getMonth()
       && currentTaskDate.getDate() === cellDate.getDate()
@@ -1229,6 +1238,10 @@ export function TaskCalendarView({
                                     }}
                                     onClick={(event) => {
                                       event.stopPropagation();
+                                      if (isTaskLocalDraft) {
+                                        onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                        return;
+                                      }
                                       void onToggleTaskStatus(task.id);
                                     }}
                                     title={task.status === 'done' ? '取消完成' : '标记完成'}
@@ -1567,6 +1580,10 @@ export function TaskCalendarView({
                                       }}
                                       onClick={(event) => {
                                         event.stopPropagation();
+                                        if (isTaskLocalDraft) {
+                                          onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                          return;
+                                        }
                                         void onToggleTaskStatus(task.id);
                                       }}
                                       title={task.status === 'done' ? '取消完成' : '标记完成'}

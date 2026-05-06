@@ -47,6 +47,42 @@ def _classify_parse_failure(error_text: str) -> str:
     return "unknown"
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_selected_evidence_count(
+    retrieval_summary: dict[str, Any],
+    evidence_json: list[Any],
+) -> tuple[int, str]:
+    selected_count = _positive_int(retrieval_summary.get("selectedEvidenceCount"))
+    if selected_count is not None:
+        return selected_count, "selectedEvidenceCount"
+
+    kernel_count = _positive_int(retrieval_summary.get("kernelSelectedEvidenceCount"))
+    if kernel_count is not None:
+        return kernel_count, "kernelSelectedEvidenceCount"
+
+    answer_material_summary = retrieval_summary.get("answerMaterialSummary")
+    if isinstance(answer_material_summary, dict):
+        material_count = _positive_int(answer_material_summary.get("evidenceHighlightCount"))
+        if material_count is not None:
+            return material_count, "answerMaterialSummary.evidenceHighlightCount"
+
+    answer_used_evidence_ids = retrieval_summary.get("answerUsedEvidenceIds")
+    if isinstance(answer_used_evidence_ids, list) and len(answer_used_evidence_ids) > 0:
+        return len(answer_used_evidence_ids), "answerUsedEvidenceIds"
+
+    if evidence_json:
+        return len(evidence_json), "evidence_json"
+
+    return 0, "none"
+
+
 def build_workspace_chat_diagnostics(
     db: Database,
     *,
@@ -91,6 +127,8 @@ def build_workspace_chat_diagnostics(
     short_excerpt_count = 0
     raw_chunk_hit_values: list[int] = []
     zero_evidence_count = 0
+    selected_evidence_count_total = 0
+    selected_evidence_count_sources: dict[str, int] = {}
     low_coverage_count = 0
 
     approved_count = 0
@@ -120,6 +158,9 @@ def build_workspace_chat_diagnostics(
                 llm_ms_values.append(llm_ms)
 
         retrieval_summary = from_json(str(row["retrieval_summary_json"] or "{}"), {})
+        evidence_json = from_json(str(row["evidence_json"] or "[]"), [])
+        if not isinstance(evidence_json, list):
+            evidence_json = []
         if isinstance(retrieval_summary, dict):
             intent = str(retrieval_summary.get("answerIntent") or "general")
             intent_distribution[intent] = intent_distribution.get(intent, 0) + 1
@@ -158,7 +199,15 @@ def build_workspace_chat_diagnostics(
                     kernel_stage_counts[stage_key] = kernel_stage_counts.get(stage_key, 0) + 1
 
             raw_chunk_hit_values.append(int(retrieval_summary.get("rawChunkHitCount") or 0))
-            if int(retrieval_summary.get("selectedEvidenceCount") or 0) <= 0:
+            selected_evidence_count, selected_evidence_source = _resolve_selected_evidence_count(
+                retrieval_summary,
+                evidence_json,
+            )
+            selected_evidence_count_total += selected_evidence_count
+            selected_evidence_count_sources[selected_evidence_source] = (
+                selected_evidence_count_sources.get(selected_evidence_source, 0) + 1
+            )
+            if selected_evidence_count <= 0:
                 zero_evidence_count += 1
             coverage = float(retrieval_summary.get("coverage") or 0.0)
             if 0 < coverage < 0.3:
@@ -172,11 +221,8 @@ def build_workspace_chat_diagnostics(
             if str(retrieval_summary.get("pageContextQuality") or "").strip():
                 context_quality = str(retrieval_summary.get("pageContextQuality"))
 
-        evidence_json = from_json(str(row["evidence_json"] or "[]"), [])
         if isinstance(evidence_json, list):
             evidence_total += len(evidence_json)
-            if len(evidence_json) == 0:
-                zero_evidence_count += 1
             for item in evidence_json:
                 if not isinstance(item, dict):
                     continue
@@ -291,6 +337,8 @@ def build_workspace_chat_diagnostics(
                 "avgRawChunkHitCount": avg_raw_chunk_hits,
                 "zeroEvidenceCount": zero_evidence_count,
                 "lowCoverageCount": low_coverage_count,
+                "selectedEvidenceCountTotal": selected_evidence_count_total,
+                "selectedEvidenceCountSources": selected_evidence_count_sources,
             },
         },
         "evidenceQuality": {

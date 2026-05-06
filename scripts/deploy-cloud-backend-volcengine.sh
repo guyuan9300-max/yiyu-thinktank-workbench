@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET="${1:-root@101.126.34.232}"
+TARGET="${1:-${YIYU_CLOUD_DEPLOY_TARGET:-}}"
 REMOTE_DIR="${2:-/opt/yiyu/cloud-backend}"
 SERVICE_NAME="${3:-yiyu-cloud-backend.service}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SSH_OPTS=(-o StrictHostKeyChecking=no)
+
+if [[ -z "${TARGET}" ]]; then
+  echo "Usage: $0 <ssh-target> [remote-dir] [service-name]" >&2
+  echo "Or set YIYU_CLOUD_DEPLOY_TARGET." >&2
+  exit 2
+fi
 
 if [[ -n "${YIYU_VOLCENGINE_SSH_KEY:-}" ]]; then
   SSH_OPTS+=(-i "${YIYU_VOLCENGINE_SSH_KEY}")
@@ -55,4 +61,4 @@ systemctl --no-pager --full status "${SERVICE_NAME}" | sed -n '1,20p'
 REMOTE
 
 echo "==> Smoke check"
-"${REPO_ROOT}/scripts/smoke-cloud-backend-volcengine.sh"
+"${REPO_ROOT}/scripts/smoke-cloud-backend-volcengine.sh" "${YIYU_CLOUD_API_URL:-}"

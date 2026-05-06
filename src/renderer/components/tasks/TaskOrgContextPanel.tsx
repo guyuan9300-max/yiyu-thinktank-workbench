@@ -422,7 +422,7 @@ function readinessTone(readiness?: BackgroundReadiness | null) {
 }
 
 function buildPreviewInsights(preview: TaskContextPreview, compact: boolean, viewerRole?: EmployeeRole | null) {
-  const isManagerView = viewerRole === 'admin' || viewerRole === 'department_lead';
+  const isManagerView = viewerRole === 'admin';
   const judgment = preview.judgment;
   const limit = compact ? 34 : 60;
   const happened = compactInsightText(judgment.whatHappened, limit);

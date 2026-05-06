@@ -1212,9 +1212,10 @@ def ingest_meeting_growth_candidate(
         week_label=_week_label_from_timestamp(timestamp),
         raw_text=raw_text,
         context=context,
-        dedupe_key=f"meeting-publish:{meeting.id}",
+        dedupe_key=f"meeting-publish:{user_id}:{meeting.id}",
         created_at=timestamp,
     )
+    reset_signal_growth_outputs(db, signal_id)
     preferred = ["collab", "risk", "exec", "write"]
     if client_id:
         preferred.append("insight")
@@ -1281,9 +1282,10 @@ def ingest_strategic_growth_candidate(
         week_label=_week_label_from_timestamp(timestamp),
         raw_text=raw_text,
         context=context,
-        dedupe_key=f"{source_type}:{source_id}",
+        dedupe_key=f"{source_type}:{user_id}:{source_id}",
         created_at=timestamp,
     )
+    reset_signal_growth_outputs(db, signal_id)
     for ability_key, level, confidence, reason in _infer_general_hits(raw_text, source_type=source_type, preferred=["analyze", "collab", "exec", "write"]):
         _insert_evidence_and_xp(
             db,
@@ -1592,8 +1594,18 @@ def reset_review_growth(db: Database, review_id: str) -> None:
     evidence_rows = db.fetchall("SELECT id FROM growth_evidence_records WHERE review_id = ?", (review_id,))
     if evidence_rows:
         db.executemany("DELETE FROM xp_ledger WHERE evidence_id = ?", [(str(row["id"]),) for row in evidence_rows])
+        db.executemany("DELETE FROM growth_validation_events WHERE evidence_id = ?", [(str(row["id"]),) for row in evidence_rows])
     db.execute("DELETE FROM growth_evidence_records WHERE review_id = ?", (review_id,))
     db.execute("DELETE FROM growth_signal_events WHERE review_id = ?", (review_id,))
+
+
+def reset_signal_growth_outputs(db: Database, signal_id: str) -> None:
+    evidence_rows = db.fetchall("SELECT id FROM growth_evidence_records WHERE signal_id = ?", (signal_id,))
+    if evidence_rows:
+        evidence_ids = [(str(row["id"]),) for row in evidence_rows]
+        db.executemany("DELETE FROM xp_ledger WHERE evidence_id = ?", evidence_ids)
+        db.executemany("DELETE FROM growth_validation_events WHERE evidence_id = ?", evidence_ids)
+    db.execute("DELETE FROM growth_evidence_records WHERE signal_id = ?", (signal_id,))
 
 
 def _task_is_personal_only(task: TaskRecord) -> bool:

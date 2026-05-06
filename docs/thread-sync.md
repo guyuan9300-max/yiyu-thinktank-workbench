@@ -1112,7 +1112,7 @@
 - 当前状态：
   - 云端后端不再使用源码内固定 JWT secret，改成“环境变量优先，否则每实例本地持久化随机 secret”
   - 云端默认 seed 账号不再接受源码内默认口令，改成“环境变量显式提供，或首次启动本地生成 bootstrap 凭据文件”
-  - 登录页已移除 `admin@yiyu-system.com / Admin123!` 这类固定账号提示
+  - 登录页已移除固定账号提示
   - 本地后端已从 `allow_origins=["*"]` 收口为本地 renderer origin 白名单，并新增跨站浏览器请求拦截
   - 已新增安全回归测试，覆盖“默认源码口令失效”和“恶意 Origin 访问 localhost API 被拒绝”
 - 是否需要主线程配合：当前不需要
@@ -7053,12 +7053,12 @@
 - 文档定位是内部现状说明，不写未来规划当成现状，不回避未接通和边界问题。
 
 - 2026-03-29：修复任务附件上传后保存失败。根因是 `upload_task_attachment` 在云端任务附件回读链中，`_sync_task_attachment_scope` 只查附件表原始列，但 `build_task_attachment()` 硬读 `document_excerpt`，导致附件已归档但接口返回 500。已补联表与字段容错，并为任务弹窗补附件上传百分比、当前文件名和“任务已保存但附件失败”的拆分提示。
-- 2026-03-29：火山云协作后端已部署上线。实际采用 `venv + systemd + nginx + Let's Encrypt`，没有走 Docker/Caddy，因为目标 ECS 到 Docker Hub 拉镜像超时。云端协作库已通过 SQLite `.backup` 一致性快照从本机 `YiyuThinkTankCloud/cloud.db` 导入；导入时额外清理了服务器残留的 `cloud.db-wal / cloud.db-shm`，避免空 WAL 覆盖真实数据。当前云端健康检查返回 `employeeCount=8`、`taskCount=91`。注意：`sslip.io` 域名虽然证书签发成功，但外部访问会被火山云 `webblock` 拦截，因此当前**真实可用**公网入口改为 [http://101.126.34.232](http://101.126.34.232)。
-- 2026-03-29：桌面端协作流量已默认切到火山云。`src/main/main.ts` 新增打包版远端协作后端默认值 `http://101.126.34.232`，桌面本地 `backend` 继续保留在 `127.0.0.1:47829`，但 `cloud_backend` 默认不再本地拉起；本地后端通过环境变量 `YIYU_CLOUD_API_URL=http://101.126.34.232` 访问线上协作服务。已验证安装包启动日志出现 `[cloud] using remote collaboration backend http://101.126.34.232`，且运行中的本地后端进程环境与 `/api/v1/tasks` 聚合结果均确认桌面端已吃到线上协作数据。
-- 2026-03-30：继续推进火山云协作后端的正式入口。尝试了两条免费 HTTPS 路线：`101.126.34.232.sslip.io` 虽能签出证书，但公网访问会被火山云 `webblock` 拦截；`101-126-34-232.nip.io` 的 HTTP 访问本身正常，但无论 `HTTP-01` 还是 `TLS-ALPN-01`，Let's Encrypt 校验都返回 `Connection reset by peer`，因此当前无法把默认入口切到免费 HTTPS 域名。结论先收口为：**手机端和桌面端继续统一走 `http://101.126.34.232`，正式 HTTPS 需要自有域名再推进。**
+- 2026-03-29：火山云协作后端已部署上线。实际采用 `venv + systemd + nginx + Let's Encrypt`，没有走 Docker/Caddy，因为目标 ECS 到 Docker Hub 拉镜像超时。云端协作库已通过 SQLite `.backup` 一致性快照从本机 `YiyuThinkTankCloud/cloud.db` 导入；导入时额外清理了服务器残留的 `cloud.db-wal / cloud.db-shm`，避免空 WAL 覆盖真实数据。当前云端健康检查返回 `employeeCount=8`、`taskCount=91`。注意：`sslip.io` 域名虽然证书签发成功，但外部访问会被火山云 `webblock` 拦截，因此当前**真实可用**公网入口改为 [http://203.0.113.10](http://203.0.113.10)。
+- 2026-03-29：历史版本曾把桌面端协作流量默认切到示例云端。当前版本已取消源码内置云端入口，桌面端必须在设置页显式配置自己的云端服务地址后才会连接云端。
+- 2026-03-30：历史版本曾继续推进示例云端 HTTPS 入口。当前版本不再维护“默认入口”概念，手机端和桌面端都由用户显式配置云端服务地址。
 - 2026-03-30：把火山云协作后端发布链收成了仓库脚本。新增 `cloud_backend/requirements.deploy.txt`、`scripts/deploy-cloud-backend-volcengine.sh`、`scripts/smoke-cloud-backend-volcengine.sh`；本地 now 可以一键把 `cloud_backend/app`、`pyproject.toml`、`uv.lock` 和依赖清单同步到 `/opt/yiyu/cloud-backend`，刷新远端 `.venv`，重启 `yiyu-cloud-backend.service`，最后自动做 `/health` smoke check。对应说明已补到 `deploy/volcengine/cloud-backend/README.md`。
-- 2026-03-30：正式域名 HTTPS 已打通。通过阿里云 DNS 只新增了子域名 `api.yiyu.love -> 101.126.34.232`，没有改动根域名 `yiyu.love` 和 `www` 的现有站点解析；随后在火山云 ECS 上为 `api.yiyu.love` 增加了 nginx 80/443 server block，使用 `acme.sh + Let's Encrypt` 申请并安装证书，当前公网健康检查已通过：[https://api.yiyu.love/health](https://api.yiyu.love/health)。
-- 2026-03-30：双端默认入口已开始收口到正式子域名。`src/main/main.ts` 新增打包版远端协作默认值 `https://api.yiyu.love`，`mobile/lib/api.ts` 和手机端设置页默认示例地址也改成了 `https://api.yiyu.love`；`scripts/smoke-cloud-backend-volcengine.sh` 默认健康检查地址同步切到了正式 HTTPS 子域名。
+- 2026-03-30：正式域名 HTTPS 已打通。通过阿里云 DNS 只新增了子域名 `api.example.com -> 203.0.113.10`，没有改动根域名 `example.com` 和 `www` 的现有站点解析；随后在火山云 ECS 上为 `api.example.com` 增加了 nginx 80/443 server block，使用 `acme.sh + Let's Encrypt` 申请并安装证书，当前公网健康检查已通过：[https://api.example.com/health](https://api.example.com/health)。
+- 2026-03-30：历史版本曾尝试把双端默认入口收口到正式子域名。当前版本已改为设置页/登录页显式配置，不再在源码里预置任何云端地址。
 - 2026-04-03：彻查“打开的是旧版本且没有数据”的根因。发现真正被拉起的是 `yiyu-thinktank-workbench-main-sync/dist/mac-arm64/益语智库自用平台.app` 这份旧构建，而 `~/Applications/益语智库自用平台.app` 当时只是约 40M 的残包，缺少 `Contents/Frameworks`，根本不能启动。已修复 `scripts/install-mac-app.mjs`：安装后强制校验 `Info.plist`、`PkgInfo`、`Frameworks`、`Electron Framework.framework` 和 Helper 数量，杜绝残包被误判为安装成功；随后重新把完整 308M 安装包复制到 `~/Applications/益语智库自用平台.app` 并验签通过。为防止旧 Dock/旧快捷方式继续打开旧构建，已将 `yiyu-thinktank-workbench-main-sync/dist/mac-arm64/益语智库自用平台.app` 移走并替换为指向 `~/Applications/益语智库自用平台.app` 的软链接。重新启动后确认当前实际运行路径已变成 `~/Applications/益语智库自用平台.app`。
 - 2026-04-03 11:18 事件线页紧急回退：撤销“云端专用 source-status + 自定义下拉”这轮改动，恢复为旧版事件线加载与项目按钮筛选。原因是 `/api/v1/event-lines/source-status` 在安装版运行时稳定返回 500，前端又把事件线列表绑定到该接口，导致整页事件线消失。当前已确认正确安装版 `/Users/guyuanyuan/Applications/益语智库自用平台.app` 重新启动后 `/api/v1/event-lines` 返回 21 条事件线，前端资源为 `index-Bb0VknL-.js`。
 - 2026-04-04：按新的极简壳重写“组织与权限 / 组织搭建中心”页面。旧的大型组织搭建流程、角色接力、流程模板和高级说明全部从主界面移除，前台只保留两层视图：`组织架构` 与 `邀请码管理`。顶部统计继续沿用旧画布的统计口径：部门数、岗位数、成员数、计划数、完整度。树视图支持组织名展示、部门新增/删除、部门名称与负责人内联编辑、岗位新增/删除与岗位名称编辑；邀请码视图支持部门邀请码展示、分享文案复制和岗位摘要显示。数据仍写回原有 `orgModelDraft`，并保留显式保存按钮把草稿持久化到后端。当前未接回旧版的组织 DNA、季度计划、汇报线、流程模板、任务控制规则等深层面板，这些后续再按新壳逐步接回。

@@ -11,13 +11,13 @@ from fastapi.testclient import TestClient
 TEST_DATA_DIR = Path(__file__).resolve().parent / "test_cloud_data"
 os.environ["YIYU_CLOUD_DATA_DIR"] = str(TEST_DATA_DIR)
 os.environ["YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD"] = "Admin123!"
-os.environ["YIYU_CLOUD_QINGHUA_PASSWORD"] = "Qinghua123!"
-os.environ["YIYU_CLOUD_JIANING_PASSWORD"] = "Jianing123!"
-os.environ["YIYU_CLOUD_YISHUO_PASSWORD"] = "Yishuo123!"
+os.environ["YIYU_CLOUD_QINGHUA_PASSWORD"] = "Simulate123!"
+os.environ["YIYU_CLOUD_JIANING_PASSWORD"] = "Simulate123!"
+os.environ["YIYU_CLOUD_YISHUO_PASSWORD"] = "Simulate123!"
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app import main as cloud_main  # noqa: E402
-from app.main import create_app, now_iso  # noqa: E402
+from app.main import DEFAULT_ORG_ID, _department_invite_code, create_app, now_iso  # noqa: E402
 
 
 def setup_function():
@@ -47,11 +47,80 @@ def auth_headers(client: TestClient, email: str = "admin@yiyu-system.com", passw
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
 
 
+def seed_registration_departments(app) -> None:
+    db = app.state.app_state.db
+    timestamp = now_iso()
+    db.execute("UPDATE organizations SET name = ?, updated_at = ? WHERE id = ?", ("益语智库", timestamp, DEFAULT_ORG_ID))
+    db.execute(
+        """
+        INSERT OR IGNORE INTO employee_accounts(
+            id, organization_id, email, full_name, password_hash, primary_role, account_status,
+            membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
+        ) VALUES('user_guyuan', ?, 'guyuan@example.com', '顾源源', 'unused', 'admin', 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
+        """,
+        (DEFAULT_ORG_ID, timestamp, timestamp, timestamp),
+    )
+    db.execute(
+        """
+        INSERT OR IGNORE INTO employee_accounts(
+            id, organization_id, email, full_name, password_hash, primary_role, account_status,
+            membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
+        ) VALUES('user_qinghua', ?, 'qinghua@example.com', '庆华', 'unused', 'employee', 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
+        """,
+        (DEFAULT_ORG_ID, timestamp, timestamp, timestamp),
+    )
+    db.execute(
+        """
+        INSERT OR IGNORE INTO employee_accounts(
+            id, organization_id, email, full_name, password_hash, primary_role, account_status,
+            membership_status, approved_at, approved_by, recent_mentions_json, created_at, updated_at
+        ) VALUES('user_jianing', ?, 'jianing@example.com', '佳乐', 'unused', 'employee', 'approved', 'approved', ?, 'user_admin', '[]', ?, ?)
+        """,
+        (DEFAULT_ORG_ID, timestamp, timestamp, timestamp),
+    )
+    for department_id, name, color in [
+        ("dept_consult_strategy", "咨询策略部", "#5B7BFE"),
+        ("dept_tech_development", "科技发展部", "#F59E0B"),
+        ("dept_info_data", "信息数据部", "#10B981"),
+        ("dept_customer_service", "客户服务部", "#14B8A6"),
+    ]:
+        db.execute(
+            """
+            INSERT OR REPLACE INTO org_departments(id, organization_id, name, color, active, updated_at)
+            VALUES(?, ?, ?, ?, 1, ?)
+            """,
+            (department_id, DEFAULT_ORG_ID, name, color, timestamp),
+        )
+    for role_id, department_id, name, sort_order in [
+        ("role_cs_member", "dept_customer_service", "客户推进", 1),
+        ("role_info_member", "dept_info_data", "信息分析", 1),
+    ]:
+        db.execute(
+            """
+            INSERT OR REPLACE INTO org_role_templates(
+                id, organization_id, department_id, name, level, is_manager,
+                responsibilities_json, should_avoid_json, collaboration_role_ids_json,
+                task_edit_scope, can_approve_tasks, can_reassign_tasks, can_change_deadline,
+                sort_order, active, updated_at
+            ) VALUES(?, ?, ?, ?, 'employee', 0, '[]', '[]', '[]', 'self', 0, 0, 0, ?, 1, ?)
+            """,
+            (role_id, DEFAULT_ORG_ID, department_id, name, sort_order, timestamp),
+        )
+
+
 def test_register_approve_login_and_collaboration_flow():
     app = create_app()
+    seed_registration_departments(app)
     client = TestClient(app)
+    customer_service_invite = _department_invite_code(
+        "dept_customer_service",
+        organization_id=DEFAULT_ORG_ID,
+        organization_name="益语智库",
+        department_name="客户服务部",
+        order=3,
+    )
 
-    department_options = client.get("/api/v1/auth/department-options")
+    department_options = client.get("/api/v1/auth/department-options", params={"inviteCode": customer_service_invite})
     assert department_options.status_code == 200, department_options.text
     assert any(item["id"] == "dept_consult_strategy" for item in department_options.json())
 
@@ -61,6 +130,7 @@ def test_register_approve_login_and_collaboration_flow():
             "email": "new-user@yiyu-system.com",
             "fullName": "新成员",
             "password": "Password123!",
+            "inviteCode": f"客户服务部：邀请码 {customer_service_invite}",
             "departmentId": "dept_customer_service",
             "jobTitle": "客户成功专员",
             "managerName": "顾源源",
@@ -71,7 +141,12 @@ def test_register_approve_login_and_collaboration_flow():
     assert register.status_code == 200, register.text
 
     pending_login = client.post("/api/v1/auth/login", json={"email": "new-user@yiyu-system.com", "password": "Password123!"})
-    assert pending_login.status_code == 403
+    assert pending_login.status_code == 200, pending_login.text
+    assert pending_login.json()["user"]["membershipStatus"] == "pending"
+    pending_headers = {"Authorization": f"Bearer {pending_login.json()['accessToken']}"}
+    blocked_tasks = client.get("/api/v1/tasks", headers=pending_headers)
+    assert blocked_tasks.status_code == 403
+    assert "组织身份尚未确认" in blocked_tasks.text
 
     admin_headers = auth_headers(client)
     employees = client.get("/api/v1/admin/employees", headers=admin_headers)
@@ -168,7 +243,7 @@ def test_register_approve_login_and_collaboration_flow():
     assert updated.json()["projectModuleId"] == "module_strategy_review"
     assert updated.json()["projectFlowId"] == "flow_risk_review"
 
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     accepted = client.post(
         f"/api/v1/tasks/{body['id']}/collaborators/user_qinghua/accept",
         headers=qinghua_headers,
@@ -187,7 +262,7 @@ def test_register_approve_login_and_collaboration_flow():
     assert collaborator_update.json()["title"] == "【测试】协作者已调整标题"
     assert collaborator_update.json()["ownerId"] == "user_qinghua"
 
-    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
     returned = client.post(
         f"/api/v1/tasks/{body['id']}/collaborators/user_jianing/return",
         json={"reason": "当前优先级冲突，需要重新排期"},
@@ -207,7 +282,7 @@ def test_mention_candidates_fill_recent_gap_with_other_approved_employees():
     app = create_app()
     client = TestClient(app)
 
-    headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
     response = client.get("/api/v1/employees/mention-candidates", headers=headers)
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -222,8 +297,8 @@ def test_collaborator_can_update_task_content_and_owner():
     app = create_app()
     client = TestClient(app)
 
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
-    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
+    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
 
     created = client.post(
         "/api/v1/tasks",
@@ -678,7 +753,7 @@ def test_personal_growth_content_is_self_only_and_excluded_from_team_report():
     client = TestClient(app)
 
     week_label = "2026-W11"
-    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
     submitted = client.post(
         "/api/v1/reviews/weekly",
         json={
@@ -701,10 +776,11 @@ def test_personal_growth_content_is_self_only_and_excluded_from_team_report():
     assert dashboard["personalGrowthCard"]["summary"].startswith("我最近有些焦虑")
     assert dashboard["workSignalCard"]["contentDomain"] == "work"
 
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     team_dashboard = client.get("/api/v1/reviews/dashboard", headers=qinghua_headers)
     assert team_dashboard.status_code == 200, team_dashboard.text
     payload = team_dashboard.json()
+    assert payload["weekLabel"] == week_label
     assert payload["teamReport"] is not None
     assert payload["teamReport"]["sourcePolicy"]["excludedDomains"] == ["personal", "private", "self_only"]
     serialized = str(payload["teamReport"])
@@ -828,7 +904,7 @@ def test_review_history_lists_previous_weeks_and_dashboard_can_switch_by_weeklab
     app = create_app()
     client = TestClient(app)
 
-    headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
 
     first = client.post(
         "/api/v1/reviews/weekly",
@@ -860,7 +936,14 @@ def test_review_history_lists_previous_weeks_and_dashboard_can_switch_by_weeklab
     dashboard = client.get("/api/v1/reviews/dashboard?weekLabel=2026-W11", headers=headers)
     assert dashboard.status_code == 200, dashboard.text
     dashboard_payload = dashboard.json()
+    assert dashboard_payload["weekLabel"] == "2026-W11"
     assert dashboard_payload["currentReview"]["weekLabel"] == "2026-W11"
+
+    next_dashboard = client.get("/api/v1/reviews/dashboard?weekLabel=2026-W12", headers=headers)
+    assert next_dashboard.status_code == 200, next_dashboard.text
+    next_payload = next_dashboard.json()
+    assert next_payload["weekLabel"] == "2026-W12"
+    assert next_payload["currentReview"]["weekLabel"] == "2026-W12"
     assert dashboard_payload["currentReview"]["workFreeNote"] == "W11 工作复盘"
 
 
@@ -963,7 +1046,7 @@ def test_task_org_link_and_department_control_permissions():
     app = create_app()
     client = TestClient(app)
 
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     create = client.post(
         "/api/v1/tasks",
         json={
@@ -993,7 +1076,7 @@ def test_task_org_link_and_department_control_permissions():
     assert str(link_row["role_template_id"]) == "role_cs_lead"
     assert str(link_row["control_rule_id"]) == "rule_department_key"
 
-    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    jianing_headers = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
     denied = client.patch(
         f"/api/v1/tasks/{task_id}",
         json={"dueDate": "2026-03-21T18:00"},
@@ -1061,7 +1144,7 @@ def test_task_plan_link_and_support_request_flow():
     saved = client.post('/api/v1/settings/org-model/profile', json=profile, headers=admin_headers)
     assert saved.status_code == 200, saved.text
 
-    yishuo_headers = auth_headers(client, "yishuo@yiyu-system.com", "Yishuo123!")
+    yishuo_headers = auth_headers(client, "yishuo@yiyu-system.com", "Simulate123!")
     create = client.post(
         "/api/v1/tasks",
         json={
@@ -1184,7 +1267,7 @@ def test_task_review_approve_and_return_follow_org_permissions():
     client = TestClient(app)
     db = app.state.app_state.db
 
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     admin_headers = auth_headers(client)
 
     register = client.post(
@@ -1290,7 +1373,7 @@ def test_org_model_backfill_restores_missing_task_links_for_existing_tasks():
     app = create_app()
     client = TestClient(app)
 
-    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
+    qinghua_headers = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
     created = client.post(
         "/api/v1/tasks",
         json={

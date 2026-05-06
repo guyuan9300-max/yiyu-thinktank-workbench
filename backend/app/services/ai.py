@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -13,17 +14,72 @@ from app.db import Database
 from app.models import AiStructuredResponse
 
 
-DEFAULT_PROVIDER = "doubao"
+DEFAULT_PROVIDER = "openai_compatible"
+OPENAI_COMPATIBLE_PROVIDER = "openai_compatible"
+MOCK_PROVIDER = "mock"
+QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
+DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+DEFAULT_OPENAI_COMPATIBLE_LABEL = "豆包 Seed 2.0 Pro"
+DEFAULT_OPENAI_COMPATIBLE_BASE_URL = DOUBAO_BASE_URL
 DEFAULT_MODELS = {
     "mock": "mock-summarizer",
+    "openai_compatible": "doubao-seed-2-0-pro-260215",
     "qwen": "qwen3.5-plus",
     "doubao": "doubao-seed-2-0-pro-260215",
 }
 DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
-QWEN_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
-DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-PROVIDER_LABELS = {"qwen": "Qwen 3.5", "doubao": "豆包 Seed 2.0 Pro", "mock": "Mock"}
+PROVIDER_LABELS = {
+    "qwen": "Qwen 3.5",
+    "doubao": "豆包 Seed 2.0 Pro",
+    "openai_compatible": DEFAULT_OPENAI_COMPATIBLE_LABEL,
+    "mock": "Mock",
+}
+LEGACY_PROVIDER_PRESETS = {
+    "qwen": {
+        "label": "Qwen 3.5",
+        "base_url": QWEN_BASE_URL,
+        "model": DEFAULT_MODELS["qwen"],
+    },
+    "doubao": {
+        "label": DEFAULT_OPENAI_COMPATIBLE_LABEL,
+        "base_url": DOUBAO_BASE_URL,
+        "model": DEFAULT_MODELS["doubao"],
+    },
+}
 HTTP_TIMEOUT_GRACE_SECONDS = 15.0
+LOCAL_OPENAI_COMPATIBLE_HOSTS = {"localhost", "127.0.0.1", "::1"}
+ADVANCED_AI_ROUTING_SETTING = "settings.advanced_ai_routing_enabled"
+AI_MODEL_MODE_SETTING = "settings.ai_model_mode"
+AI_MODEL_PROFILES_SETTING = "settings.ai_model_profiles"
+AI_MODEL_MODES = {"auto", "online_first", "local_first", "local_only"}
+AI_MODEL_PROFILE_KEYS = ("online_primary", "local_text_deep", "local_vision_ocr", "local_fast")
+AI_MODEL_PROFILE_SECRET_PREFIX = "ai_profile:"
+AI_MODEL_PROFILE_CAPABILITIES = {
+    "online_primary": "online_primary",
+    "local_text_deep": "deep_analysis",
+    "local_vision_ocr": "vision_ocr",
+    "local_fast": "fast_structured",
+}
+AI_TASK_KINDS = {"default", "deep_analysis", "vision_ocr", "fast_structured"}
+
+
+def llm_display_label(provider: str | None, model: str | None = None, provider_label: str | None = None) -> str:
+    provider_value = str(provider or "").strip()
+    model_value = str(model or "").strip()
+    configured_label = str(provider_label or "").strip()
+    if provider_value == "mock":
+        return PROVIDER_LABELS["mock"]
+    if configured_label:
+        return configured_label
+    if provider_value == OPENAI_COMPATIBLE_PROVIDER:
+        return model_value or PROVIDER_LABELS[OPENAI_COMPATIBLE_PROVIDER]
+    if provider_value == "doubao" and (not model_value or model_value == DEFAULT_MODELS["doubao"]):
+        return PROVIDER_LABELS["doubao"]
+    if provider_value == "qwen" and (not model_value or model_value == DEFAULT_MODELS["qwen"]):
+        return PROVIDER_LABELS["qwen"]
+    if model_value:
+        return model_value
+    return PROVIDER_LABELS.get(provider_value, provider_value or "AI")
 
 
 def classify_llm_error_kind(detail: str | None) -> str:
@@ -52,11 +108,15 @@ def classify_llm_error_kind(detail: str | None) -> str:
 @dataclass
 class AiHealth:
     provider: str
+    provider_label: str
+    base_url: str
     model: str
     ready: bool
     detail: str
     credential_source: str
     fingerprint: str | None = None
+    profile_key: str = "unified"
+    mode: str = "auto"
 
 
 class AiInvocationError(RuntimeError):
@@ -78,74 +138,535 @@ class ChatGenerationProfile:
     fallback_enable_thinking: bool
 
 
+@dataclass(frozen=True)
+class AiResolvedProfile:
+    profile_key: str
+    provider: str
+    provider_label: str
+    base_url: str
+    model: str
+    api_key: str
+    credential_source: str
+    fingerprint: str | None
+    capability: str
+    is_local: bool
+
+
 class AiService:
     def __init__(self, db: Database, secret_stores: dict[str, object]):
         self.db = db
         self.secret_stores = secret_stores
-        provider = self.db.get_setting("ai_provider", DEFAULT_PROVIDER)
+        self._last_model_snapshot: dict[str, str] = {}
+        self._initialize_settings()
+
+    def _initialize_settings(self) -> None:
+        provider = self.db.get_setting("ai_provider", "").strip()
+        if provider in LEGACY_PROVIDER_PRESETS:
+            self._migrate_legacy_provider(provider)
+            return
         if provider not in DEFAULT_MODELS:
             provider = DEFAULT_PROVIDER
         self.db.set_setting("ai_provider", provider)
-        self.db.set_setting("ai_model", self.db.get_setting("ai_model", DEFAULT_MODELS[provider]) or DEFAULT_MODELS[provider])
+        if not self.db.get_setting("ai_model", ""):
+            self.db.set_setting("ai_model", DEFAULT_MODELS.get(provider, DEFAULT_MODEL))
+        if provider == OPENAI_COMPATIBLE_PROVIDER:
+            self.db.set_setting(
+                "ai_provider_label",
+                self.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL,
+            )
+            self.db.set_setting(
+                "ai_base_url",
+                self.db.get_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL) or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+            )
+
+    def _migrate_legacy_provider(self, legacy_provider: str) -> None:
+        preset = LEGACY_PROVIDER_PRESETS[legacy_provider]
+        self.db.set_setting("ai_provider", OPENAI_COMPATIBLE_PROVIDER)
+        self.db.set_setting("ai_provider_label", self.db.get_setting("ai_provider_label", str(preset["label"])) or str(preset["label"]))
+        self.db.set_setting("ai_base_url", self.db.get_setting("ai_base_url", str(preset["base_url"])) or str(preset["base_url"]))
+        self.db.set_setting("ai_model", self.db.get_setting("ai_model", str(preset["model"])) or str(preset["model"]))
+        self._copy_legacy_api_key(legacy_provider)
+
+    def _copy_legacy_api_key(self, legacy_provider: str) -> None:
+        target_store = self._store_for(OPENAI_COMPATIBLE_PROVIDER)
+        legacy_store = self._store_for(legacy_provider)
+        if not target_store or not legacy_store:
+            return
+        try:
+            if str(target_store.get_api_key() or "").strip():
+                return
+            legacy_key = str(legacy_store.get_api_key() or "").strip()
+            if legacy_key:
+                target_store.set_api_key(legacy_key)
+        except Exception:
+            return
+
+    @staticmethod
+    def _normalize_bool(value: object, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if not text:
+            return default
+        return text in {"1", "true", "yes", "on", "enabled"}
+
+    @staticmethod
+    def _normalize_model_mode(value: object | None) -> str:
+        mode = str(value or "auto").strip()
+        return mode if mode in AI_MODEL_MODES else "auto"
+
+    @staticmethod
+    def _profile_store_key(profile_key: str) -> str:
+        return f"{AI_MODEL_PROFILE_SECRET_PREFIX}{profile_key}"
+
+    def advanced_ai_routing_enabled(self) -> bool:
+        return self._normalize_bool(self.db.get_setting(ADVANCED_AI_ROUTING_SETTING, "0"), False)
+
+    def current_ai_model_mode(self) -> str:
+        return self._normalize_model_mode(self.db.get_setting(AI_MODEL_MODE_SETTING, "auto"))
+
+    def _read_profile_settings(self) -> dict[str, dict[str, object]]:
+        raw = self.db.get_setting(AI_MODEL_PROFILES_SETTING, "")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {
+            str(key): dict(value)
+            for key, value in parsed.items()
+            if str(key) in AI_MODEL_PROFILE_KEYS and isinstance(value, dict)
+        }
+
+    def _normalize_profile_config(self, profile_key: str, payload: dict[str, object] | None) -> dict[str, object]:
+        profile = dict(payload or {})
+        provider = str(profile.get("provider") or OPENAI_COMPATIBLE_PROVIDER).strip()
+        provider = OPENAI_COMPATIBLE_PROVIDER if provider in LEGACY_PROVIDER_PRESETS else provider
+        if provider not in DEFAULT_MODELS:
+            provider = OPENAI_COMPATIBLE_PROVIDER
+        base_url = self._normalize_base_url(str(profile.get("baseUrl") or profile.get("base_url") or ""))
+        model = str(profile.get("model") or "").strip()
+        provider_label = str(profile.get("providerLabel") or profile.get("provider_label") or "").strip()
+        capability = str(profile.get("capability") or AI_MODEL_PROFILE_CAPABILITIES.get(profile_key, "deep_analysis")).strip()
+        if capability not in {"online_primary", "deep_analysis", "vision_ocr", "fast_structured"}:
+            capability = AI_MODEL_PROFILE_CAPABILITIES.get(profile_key, "deep_analysis")
+        return {
+            "enabled": self._normalize_bool(profile.get("enabled"), False),
+            "provider": provider,
+            "providerLabel": provider_label,
+            "baseUrl": base_url,
+            "model": model,
+            "capability": capability,
+            "isLocal": self._is_local_base_url(base_url),
+        }
+
+    def current_ai_model_profiles(self) -> dict[str, dict[str, object]]:
+        settings = self._read_profile_settings()
+        return {
+            key: self._normalize_profile_config(key, settings.get(key))
+            for key in AI_MODEL_PROFILE_KEYS
+        }
+
+    def configure_advanced_ai(
+        self,
+        *,
+        advanced_enabled: bool | None = None,
+        model_mode: str | None = None,
+        profiles: dict[str, object] | None = None,
+        profile_api_keys: dict[str, str] | None = None,
+        clear_profile_api_keys: list[str] | None = None,
+    ) -> None:
+        if advanced_enabled is not None:
+            self.db.set_setting(ADVANCED_AI_ROUTING_SETTING, "1" if bool(advanced_enabled) else "0")
+        if model_mode is not None:
+            self.db.set_setting(AI_MODEL_MODE_SETTING, self._normalize_model_mode(model_mode))
+        if profiles is not None:
+            current = self.current_ai_model_profiles()
+            for key, value in profiles.items():
+                profile_key = str(key)
+                if profile_key not in AI_MODEL_PROFILE_KEYS or not isinstance(value, dict):
+                    continue
+                current[profile_key] = self._normalize_profile_config(profile_key, value)
+            self.db.set_setting(AI_MODEL_PROFILES_SETTING, json.dumps(current, ensure_ascii=False))
+        for key in clear_profile_api_keys or []:
+            store = self._store_for(self._profile_store_key(str(key)))
+            if store:
+                store.delete_api_key()
+        for key, value in (profile_api_keys or {}).items():
+            profile_key = str(key)
+            if profile_key not in AI_MODEL_PROFILE_KEYS:
+                continue
+            clean_key = str(value or "").strip()
+            if not clean_key:
+                continue
+            store = self._store_for(self._profile_store_key(profile_key))
+            if store:
+                store.set_api_key(clean_key)
+
+    def configure_cloud_online_profile(
+        self,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+        provider_label: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        profile = {
+            "enabled": True,
+            "provider": provider or OPENAI_COMPATIBLE_PROVIDER,
+            "providerLabel": provider_label or "线上主模型",
+            "baseUrl": base_url or "",
+            "model": model or "",
+            "capability": "online_primary",
+        }
+        self.configure_advanced_ai(
+            profiles={"online_primary": profile},
+            profile_api_keys={"online_primary": api_key} if api_key else None,
+        )
 
     def current_provider(self) -> str:
         provider = self.db.get_setting("ai_provider", DEFAULT_PROVIDER)
         return provider if provider in DEFAULT_MODELS else DEFAULT_PROVIDER
 
+    def current_provider_label(self) -> str:
+        provider = self.current_provider()
+        if provider == OPENAI_COMPATIBLE_PROVIDER:
+            return self.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL
+        return PROVIDER_LABELS.get(provider, provider or "AI")
+
+    def current_base_url(self) -> str:
+        provider = self.current_provider()
+        if provider == OPENAI_COMPATIBLE_PROVIDER:
+            return self._normalize_base_url(self.db.get_setting("ai_base_url", ""))
+        if provider in LEGACY_PROVIDER_PRESETS:
+            return str(LEGACY_PROVIDER_PRESETS[provider]["base_url"])
+        return ""
+
     def current_model(self) -> str:
         model = self.db.get_setting("ai_model", "")
         return model or DEFAULT_MODELS[self.current_provider()]
 
-    def configure(self, provider: str | None, model: str | None, api_key: str | None, clear_api_key: bool) -> None:
+    def current_model_label(self) -> str:
+        return llm_display_label(self.current_provider(), self.current_model(), self.current_provider_label())
+
+    def model_label(self, provider: str | None = None, model: str | None = None) -> str:
         target_provider = provider or self.current_provider()
+        target_model = model or (
+            self.current_model() if target_provider == self.current_provider() else DEFAULT_MODELS.get(target_provider, DEFAULT_MODEL)
+        )
+        configured_label = self.current_provider_label() if target_provider == self.current_provider() else None
+        return llm_display_label(target_provider, target_model, configured_label)
+
+    @staticmethod
+    def _normalize_base_url(value: str | None) -> str:
+        return str(value or "").strip().rstrip("/")
+
+    @classmethod
+    def _is_local_base_url(cls, value: str | None) -> bool:
+        base_url = cls._normalize_base_url(value)
+        if not base_url:
+            return False
+        candidate = base_url if "://" in base_url else f"http://{base_url}"
+        try:
+            parsed = urlparse(candidate)
+        except Exception:
+            return False
+        return str(parsed.hostname or "").strip().lower() in LOCAL_OPENAI_COMPATIBLE_HOSTS
+
+    @staticmethod
+    def _build_openai_compatible_headers(api_key: str | None) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        clean_key = str(api_key or "").strip()
+        if clean_key:
+            headers["Authorization"] = f"Bearer {clean_key}"
+        return headers
+
+    def configure(
+        self,
+        provider: str | None,
+        model: str | None,
+        api_key: str | None,
+        clear_api_key: bool,
+        *,
+        provider_label: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        raw_provider = (provider or self.current_provider()).strip()
+        target_provider = OPENAI_COMPATIBLE_PROVIDER if raw_provider in LEGACY_PROVIDER_PRESETS else raw_provider
         if target_provider not in DEFAULT_MODELS:
             target_provider = DEFAULT_PROVIDER
         if provider:
             self.db.set_setting("ai_provider", target_provider)
             if not model:
                 self.db.set_setting("ai_model", DEFAULT_MODELS[target_provider])
-        if model:
-            self.db.set_setting("ai_model", model)
+        if model is not None:
+            self.db.set_setting("ai_model", model.strip())
+        if target_provider == OPENAI_COMPATIBLE_PROVIDER:
+            if raw_provider in LEGACY_PROVIDER_PRESETS:
+                preset = LEGACY_PROVIDER_PRESETS[raw_provider]
+                if provider_label is None:
+                    provider_label = str(preset["label"])
+                if base_url is None:
+                    base_url = str(preset["base_url"])
+            if provider_label is not None:
+                self.db.set_setting("ai_provider_label", provider_label.strip())
+            elif provider:
+                self.db.set_setting(
+                    "ai_provider_label",
+                    self.db.get_setting("ai_provider_label", DEFAULT_OPENAI_COMPATIBLE_LABEL) or DEFAULT_OPENAI_COMPATIBLE_LABEL,
+                )
+            if base_url is not None:
+                self.db.set_setting("ai_base_url", self._normalize_base_url(base_url))
+            elif provider:
+                self.db.set_setting(
+                    "ai_base_url",
+                    self.db.get_setting("ai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL) or DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+                )
         store = self._store_for(target_provider)
         if clear_api_key and store:
             store.delete_api_key()
         if api_key and store:
             store.set_api_key(api_key)
 
-    def get_health(self) -> AiHealth:
+    def _unified_profile(self) -> AiResolvedProfile:
         provider = self.current_provider()
         model = self.current_model()
-        if provider == "mock":
+        provider_label = self.current_provider_label()
+        base_url = self.current_base_url()
+        store = self._store_for(provider)
+        api_key = store.get_api_key() if store else ""
+        return AiResolvedProfile(
+            profile_key="unified",
+            provider=provider,
+            provider_label=provider_label,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            credential_source=store.get_source_label() if store else "unavailable",
+            fingerprint=store.get_api_key_fingerprint() if store else None,
+            capability="default",
+            is_local=self._is_local_base_url(base_url),
+        )
+
+    def _profile_from_config(self, profile_key: str, profile: dict[str, object]) -> AiResolvedProfile | None:
+        normalized = self._normalize_profile_config(profile_key, profile)
+        if not bool(normalized.get("enabled")):
+            return None
+        provider = str(normalized.get("provider") or OPENAI_COMPATIBLE_PROVIDER)
+        base_url = str(normalized.get("baseUrl") or "")
+        model = str(normalized.get("model") or "")
+        provider_label = str(normalized.get("providerLabel") or "")
+        store = self._store_for(self._profile_store_key(profile_key))
+        api_key = store.get_api_key() if store else ""
+        return AiResolvedProfile(
+            profile_key=profile_key,
+            provider=provider,
+            provider_label=provider_label,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            credential_source=store.get_source_label() if store else "unavailable",
+            fingerprint=store.get_api_key_fingerprint() if store else None,
+            capability=str(normalized.get("capability") or AI_MODEL_PROFILE_CAPABILITIES.get(profile_key, "default")),
+            is_local=bool(normalized.get("isLocal")) or self._is_local_base_url(base_url),
+        )
+
+    def _profile_is_usable(self, profile: AiResolvedProfile) -> bool:
+        if profile.provider == MOCK_PROVIDER:
+            return True
+        if not profile.base_url or not profile.model:
+            return False
+        if profile.api_key:
+            return True
+        return profile.is_local
+
+    def _profile_to_health(self, profile: AiResolvedProfile) -> AiHealth:
+        label = llm_display_label(profile.provider, profile.model, profile.provider_label)
+        if profile.provider == MOCK_PROVIDER:
             return AiHealth(
-                provider=provider,
-                model=DEFAULT_MODELS["mock"],
+                provider=profile.provider,
+                provider_label=profile.provider_label or PROVIDER_LABELS["mock"],
+                base_url="",
+                model=profile.model or DEFAULT_MODELS["mock"],
                 ready=True,
-                detail="当前使用本地 mock 推演器，可稳定支撑桌面端流程联调。",
+                detail="本地 Mock 模式可用于流程联调，不调用真实模型。",
                 credential_source="local",
                 fingerprint=None,
+                profile_key=profile.profile_key,
+                mode=self.current_ai_model_mode(),
             )
-        store = self._store_for(provider)
-        source = store.get_source_label() if store else "unavailable"
-        fingerprint = store.get_api_key_fingerprint() if store else None
-        api_key = store.get_api_key() if store else ""
-        label = PROVIDER_LABELS.get(provider, provider)
-        if not api_key:
-            return AiHealth(
+        if not profile.base_url:
+            detail = f"{label} 接口地址 Base URL 未配置，无法调用兼容接口。"
+            ready = False
+        elif not profile.model:
+            detail = f"{label} 模型名未配置，无法调用兼容接口。"
+            ready = False
+        elif not profile.api_key and not profile.is_local:
+            detail = f"{label} API Key 未配置，无法调用兼容接口。"
+            ready = False
+        elif not profile.api_key:
+            detail = f"{label} 本地接口已配置，可用于结构化问答与分析。"
+            ready = True
+        else:
+            detail = f"{label} 凭证已配置，可用于结构化问答与分析。"
+            ready = True
+        return AiHealth(
+            provider=profile.provider,
+            provider_label=profile.provider_label,
+            base_url=profile.base_url,
+            model=profile.model,
+            ready=ready,
+            detail=detail,
+            credential_source=("local" if profile.is_local and not profile.api_key else profile.credential_source),
+            fingerprint=profile.fingerprint,
+            profile_key=profile.profile_key,
+            mode=self.current_ai_model_mode(),
+        )
+
+    def _ordered_profile_keys_for_task(self, task_kind: str) -> list[str]:
+        mode = self.current_ai_model_mode()
+        if mode == "auto":
+            mode = "online_first"
+        online_then_local = ["online_primary", "local_text_deep"]
+        local_then_online = ["local_text_deep", "online_primary"]
+        if task_kind == "vision_ocr":
+            return ["local_vision_ocr", "local_text_deep", "online_primary"]
+        if task_kind == "fast_structured":
+            base = local_then_online if mode in {"local_first", "local_only"} else online_then_local
+            return ["local_fast"] + base
+        if task_kind == "deep_analysis":
+            return local_then_online if mode in {"local_first", "local_only"} else online_then_local
+        return local_then_online if mode in {"local_first", "local_only"} else online_then_local
+
+    def _resolve_llm_candidates(
+        self,
+        *,
+        task_kind: str = "default",
+        provider_override: str | None = None,
+        model_override: str | None = None,
+    ) -> list[AiResolvedProfile]:
+        normalized_task = task_kind if task_kind in AI_TASK_KINDS else "default"
+        if provider_override is not None or model_override is not None:
+            profile = self._unified_profile()
+            requested_provider = provider_override or profile.provider
+            provider = OPENAI_COMPATIBLE_PROVIDER if requested_provider in LEGACY_PROVIDER_PRESETS else requested_provider
+            if provider not in DEFAULT_MODELS:
+                provider = profile.provider
+            model = model_override or (profile.model if provider == profile.provider else DEFAULT_MODELS.get(provider, DEFAULT_MODEL))
+            if provider == profile.provider:
+                base_url = profile.base_url
+                provider_label = profile.provider_label
+                api_key = profile.api_key
+                source = profile.credential_source
+                fingerprint = profile.fingerprint
+            else:
+                preset = LEGACY_PROVIDER_PRESETS.get(requested_provider or "")
+                base_url = str(preset["base_url"]) if preset else ""
+                provider_label = str(preset["label"]) if preset else llm_display_label(provider, model)
+                store = self._store_for(provider)
+                api_key = store.get_api_key() if store else ""
+                source = store.get_source_label() if store else "unavailable"
+                fingerprint = store.get_api_key_fingerprint() if store else None
+            resolved = AiResolvedProfile(
+                profile_key="override",
                 provider=provider,
+                provider_label=provider_label,
+                base_url=self._normalize_base_url(base_url),
                 model=model,
-                ready=False,
-                detail=f"{label} 未配置 API Key，当前只能切回 mock。",
+                api_key=api_key,
                 credential_source=source,
                 fingerprint=fingerprint,
+                capability=normalized_task,
+                is_local=self._is_local_base_url(base_url),
             )
-        return AiHealth(
-            provider=provider,
-            model=model,
-            ready=True,
-            detail=f"{label} 凭证已配置，可用于结构化问答与分析。",
-            credential_source=source,
-            fingerprint=fingerprint,
-        )
+            if self.current_ai_model_mode() == "local_only" and not resolved.is_local and resolved.provider != MOCK_PROVIDER:
+                return []
+            return [resolved]
+        mode = self.current_ai_model_mode()
+        if not self.advanced_ai_routing_enabled():
+            return [self._unified_profile()]
+        settings = self.current_ai_model_profiles()
+        candidates: list[AiResolvedProfile] = []
+        seen: set[str] = set()
+        for key in self._ordered_profile_keys_for_task(normalized_task):
+            if key in seen:
+                continue
+            seen.add(key)
+            profile = self._profile_from_config(key, settings.get(key, {}))
+            if profile is None:
+                continue
+            if mode == "local_only" and not profile.is_local:
+                continue
+            candidates.append(profile)
+        unified = self._unified_profile()
+        if mode != "local_only" or unified.is_local or unified.provider == MOCK_PROVIDER:
+            candidates.append(unified)
+        return candidates
+
+    def get_health(self, *, task_kind: str = "default") -> AiHealth:
+        candidates = self._resolve_llm_candidates(task_kind=task_kind)
+        if not candidates:
+            unified = self._unified_profile()
+            return AiHealth(
+                provider=unified.provider,
+                provider_label=unified.provider_label,
+                base_url=unified.base_url,
+                model=unified.model,
+                ready=False,
+                detail="仅本地模式已启用，但没有可用的本地模型 profile。",
+                credential_source=unified.credential_source,
+                fingerprint=unified.fingerprint,
+                profile_key="unavailable",
+                mode=self.current_ai_model_mode(),
+            )
+        profile = next((item for item in candidates if self._profile_is_usable(item)), candidates[0])
+        return self._profile_to_health(profile)
+
+    def _health_for_task(self, task_kind: str) -> AiHealth:
+        try:
+            return self.get_health(task_kind=task_kind)
+        except TypeError:
+            # Some focused tests monkeypatch get_health() with a zero-arg stub.
+            return self.get_health()
+
+    def get_profile_health_map(self) -> dict[str, AiHealth]:
+        profiles = {"unified": self._unified_profile()}
+        for key, value in self.current_ai_model_profiles().items():
+            profile = self._profile_from_config(key, value)
+            if profile is not None:
+                profiles[key] = profile
+        return {key: self._profile_to_health(profile) for key, profile in profiles.items()}
+
+    def resolved_model_snapshot(self, *, task_kind: str = "default") -> dict[str, str]:
+        health = self._health_for_task(task_kind)
+        return {
+            "profileKey": health.profile_key,
+            "provider": health.provider,
+            "model": health.model,
+            "modelLabel": llm_display_label(health.provider, health.model, health.provider_label),
+            "mode": health.mode,
+        }
+
+    def _record_resolved_profile(self, profile: AiResolvedProfile) -> None:
+        self._last_model_snapshot = {
+            "profileKey": profile.profile_key,
+            "provider": profile.provider,
+            "model": profile.model,
+            "modelLabel": llm_display_label(profile.provider, profile.model, profile.provider_label),
+            "mode": self.current_ai_model_mode(),
+        }
+
+    def last_model_snapshot(self) -> dict[str, str]:
+        return dict(self._last_model_snapshot)
+
+    def reset_last_model_snapshot(self) -> None:
+        self._last_model_snapshot = {}
 
     def test_connection(self) -> AiHealth:
         health = self.get_health()
@@ -158,11 +679,15 @@ class AiService:
         )
         return AiHealth(
             provider=health.provider,
+            provider_label=health.provider_label,
+            base_url=health.base_url,
             model=health.model,
             ready=True,
-            detail=f"{PROVIDER_LABELS.get(health.provider, health.provider)} 联通测试成功。",
+            detail=f"{llm_display_label(health.provider, health.model, health.provider_label)} 联通测试成功。",
             credential_source=health.credential_source,
             fingerprint=health.fingerprint,
+            profile_key=health.profile_key,
+            mode=health.mode,
         )
 
     def healthcheck(
@@ -172,31 +697,53 @@ class AiService:
         model: str | None = None,
         prompt: str | None = None,
     ) -> dict[str, object]:
-        target_provider = provider or self.current_provider()
+        requested_provider = provider or self.current_provider()
+        target_provider = OPENAI_COMPATIBLE_PROVIDER if requested_provider in LEGACY_PROVIDER_PRESETS else requested_provider
         if target_provider not in DEFAULT_MODELS:
             target_provider = self.current_provider()
         target_model = model or (
             self.current_model() if target_provider == self.current_provider() else DEFAULT_MODELS[target_provider]
+        )
+        target_label = self.current_provider_label() if target_provider == self.current_provider() else (
+            str(LEGACY_PROVIDER_PRESETS[requested_provider]["label"]) if requested_provider in LEGACY_PROVIDER_PRESETS else None
         )
         start = perf_counter()
         if target_provider == "mock":
             return {
                 "provider": target_provider,
                 "model": target_model,
+                "providerLabel": PROVIDER_LABELS["mock"],
+                "baseUrl": "",
                 "success": True,
                 "latencyMs": 0,
                 "error": None,
                 "errorKind": None,
             }
-        store = self._store_for(target_provider)
-        api_key = store.get_api_key() if store else ""
-        if not api_key:
+        target_base_url = self.current_base_url() if target_provider == self.current_provider() else (
+            str(LEGACY_PROVIDER_PRESETS[requested_provider]["base_url"]) if requested_provider in LEGACY_PROVIDER_PRESETS else ""
+        )
+        if not target_base_url:
             return {
                 "provider": target_provider,
                 "model": target_model,
+                "providerLabel": target_label or llm_display_label(target_provider, target_model),
+                "baseUrl": target_base_url,
                 "success": False,
                 "latencyMs": 0,
-                "error": f"{PROVIDER_LABELS.get(target_provider, target_provider)} API Key 未配置。",
+                "error": f"{llm_display_label(target_provider, target_model, target_label)} 接口地址 Base URL 未配置。",
+                "errorKind": "config_error",
+            }
+        store = self._store_for(target_provider)
+        api_key = store.get_api_key() if store else ""
+        if not api_key and not self._is_local_base_url(target_base_url):
+            return {
+                "provider": target_provider,
+                "model": target_model,
+                "providerLabel": target_label or llm_display_label(target_provider, target_model),
+                "baseUrl": target_base_url,
+                "success": False,
+                "latencyMs": 0,
+                "error": f"{llm_display_label(target_provider, target_model, target_label)} API Key 未配置。",
                 "errorKind": "auth_error",
             }
         try:
@@ -215,6 +762,8 @@ class AiService:
             return {
                 "provider": target_provider,
                 "model": target_model,
+                "providerLabel": target_label or llm_display_label(target_provider, target_model),
+                "baseUrl": target_base_url,
                 "success": True,
                 "latencyMs": int(round((perf_counter() - start) * 1000)),
                 "error": None,
@@ -225,6 +774,8 @@ class AiService:
             return {
                 "provider": target_provider,
                 "model": target_model,
+                "providerLabel": target_label or llm_display_label(target_provider, target_model),
+                "baseUrl": target_base_url,
                 "success": False,
                 "latencyMs": int(round((perf_counter() - start) * 1000)),
                 "error": detail,
@@ -239,7 +790,7 @@ class AiService:
         prompt: str | None = None,
     ) -> dict[str, object]:
         ordered_providers: list[str] = []
-        for item in (providers or [self.current_provider(), "doubao", "qwen"]):
+        for item in (providers or [self.current_provider()]):
             provider_name = str(item or "").strip()
             if provider_name in DEFAULT_MODELS and provider_name not in ordered_providers:
                 ordered_providers.append(provider_name)
@@ -257,13 +808,13 @@ class AiService:
 
     def generate_structured(self, prompt: str, system_instruction: str, context_summary: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             return self._qwen_generate_structured_with_retry(prompt, system_instruction, context_summary)
         return self._mock_generate(prompt, context_summary)
 
     def generate_general_fallback(self, prompt: str, note: str = "", *, subject_name: str = "") -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             try:
                 return self._qwen_generate_general_fallback(prompt, note, subject_name=subject_name)
             except Exception:
@@ -288,7 +839,7 @@ class AiService:
     ) -> AiStructuredResponse:
         health = self.get_health()
         compact_context = self._compact_context_summary(state_context_summary, max_chars=2600)
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             if on_partial is not None:
                 opening = "正在优先整理客户状态池，先生成一版边界清晰的结构化状态回答。"
                 on_partial(
@@ -370,8 +921,8 @@ class AiService:
         *,
         on_partial: Callable[[dict[str, Any]], None] | None = None,
     ) -> AiStructuredResponse:
-        health = self.get_health()
-        if health.provider in ("qwen", "doubao") and health.ready:
+        health = self._health_for_task("deep_analysis")
+        if health.provider != "mock" and health.ready:
             provider = health.provider
             chat_profile = self._build_chat_generation_profile(context_summary)
             if on_partial is not None:
@@ -434,8 +985,8 @@ class AiService:
         max_tokens: int = 5200,
         enable_thinking: bool = True,
     ) -> AiStructuredResponse:
-        health = self.get_health()
-        if health.provider in ("qwen", "doubao") and health.ready:
+        health = self._health_for_task("deep_analysis")
+        if health.provider != "mock" and health.ready:
             if on_partial is not None:
                 opening = "模型正在直接阅读原始文档资料包并生成回答。"
                 on_partial(
@@ -470,6 +1021,7 @@ class AiService:
                     temperature=0.5,
                     top_p=0.97,
                     enable_thinking=enable_thinking,
+                    task_kind="deep_analysis",
                 )
                 return self._structured_from_plain_answer(str(text))
             except Exception as error:
@@ -546,7 +1098,7 @@ class AiService:
             "少讲空泛趋势，少做宏大评论，不要写成长文分析。"
             "不要输出 JSON 或 Markdown 代码块。"
         )
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             try:
                 text = self._qwen_generate(
                     prompt=f"用户问题：{prompt}\n\n当前情报背景：\n{compact_context}",
@@ -571,7 +1123,7 @@ class AiService:
                         )
                         if part
                     )
-                    raise AiInvocationError("qwen", detail) from rescue_error
+                    raise AiInvocationError(health.provider, detail) from rescue_error
         return self._mock_generate(prompt, compact_context or context_summary)
 
     def generate_template_field_value(
@@ -601,7 +1153,7 @@ class AiService:
             f"可参考材料：\n{context_summary.strip()}\n\n"
             "请直接给出这个字段应填写的内容。"
         )
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             try:
                 text = self._qwen_generate(
                     prompt=prompt,
@@ -638,7 +1190,7 @@ class AiService:
                     return self._clean_template_field_value(str(text), field_type=field_type)
                 except Exception as second_error:
                     raise AiInvocationError(
-                        "qwen",
+                        health.provider,
                         "；".join(
                             part
                             for part in (
@@ -697,7 +1249,7 @@ class AiService:
             "请分别填写以下字段，并返回 JSON 对象：\n\n"
             + "\n\n".join(prompt_blocks)
         )
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             try:
                 payload = self._qwen_generate(
                     prompt=prompt,
@@ -710,7 +1262,7 @@ class AiService:
                     enable_thinking=False,
                 )
             except Exception as error:
-                raise AiInvocationError("qwen", self._format_provider_error(error)) from error
+                raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
             if isinstance(payload, dict):
                 return {
                     label: self._clean_template_field_value(
@@ -761,9 +1313,9 @@ class AiService:
                     {
                         "stageLabel": "正在直接生成长文回答",
                         "progress": 62.0,
-                        "content": "千问正在基于完整材料直接生成长文回答。",
+                        "content": f"{self.current_model_label()}正在基于完整材料直接生成长文回答。",
                         "structured": {
-                            "content": "千问正在基于完整材料直接生成长文回答。",
+                            "content": f"{self.current_model_label()}正在基于完整材料直接生成长文回答。",
                             "judgment": "",
                             "analysis": "",
                             "actions": "",
@@ -780,6 +1332,7 @@ class AiService:
                 temperature=0.48,
                 top_p=0.96,
                 enable_thinking=enable_thinking,
+                task_kind="deep_analysis",
             )
             return self._structured_from_plain_answer(str(text))
         except Exception as error:
@@ -859,7 +1412,7 @@ class AiService:
         except Exception as error:
             errors.append(f"开场判断失败：{self._format_provider_error(error)}")
         if not opener_text:
-            raise AiInvocationError("qwen", "；".join(errors) or "分阶段生成未返回开场判断")
+            raise AiInvocationError(self.current_provider(), "；".join(errors) or "分阶段生成未返回开场判断")
 
         extracted_title = self._extract_segment_field(opener_text, ("标题", "题目"))
         title = re.sub(r"\s+", " ", extracted_title or "").strip()[:24]
@@ -957,7 +1510,7 @@ class AiService:
             errors.append(f"建议动作失败：{self._format_provider_error(error)}")
 
         if not analysis_text and not actions_text:
-            raise AiInvocationError("qwen", "；".join(errors) or "分阶段生成只返回了开场判断")
+            raise AiInvocationError(self.current_provider(), "；".join(errors) or "分阶段生成只返回了开场判断")
 
         assembled_parts = [title, judgment]
         if analysis_text:
@@ -970,26 +1523,26 @@ class AiService:
 
     def generate_compact_grounded_fallback(self, prompt: str, note: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             try:
                 return self._qwen_generate_compact_grounded_fallback(prompt, note)
             except Exception as error:
-                raise AiInvocationError("qwen", self._format_provider_error(error)) from error
+                raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
         return self._mock_generate(prompt, note or "基于已命中资料的紧凑综述。")
 
     def generate_brief_grounded_rescue(self, prompt: str, note: str) -> AiStructuredResponse:
         health = self.get_health()
-        if health.provider in ("qwen", "doubao") and health.ready:
+        if health.provider != "mock" and health.ready:
             try:
                 return self._qwen_generate_brief_grounded_rescue(prompt, note)
             except Exception as error:
-                raise AiInvocationError("qwen", self._format_provider_error(error)) from error
+                raise AiInvocationError(health.provider, self._format_provider_error(error)) from error
         return self._mock_generate(prompt, note or "基于已命中资料的一版简短保守回答。")
 
     def suggest_short_title(self, prompt: str) -> str:
         health = self.get_health()
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt=f"请将以下追踪规则提炼为 3 到 6 个字的中文标签，只返回标签本身：{prompt}",
                     system_instruction="你是中文编辑，擅长压缩标题。",
@@ -1026,7 +1579,7 @@ class AiService:
             f"时间范围：{time_range}\n"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     query_prompt,
                     "你是检索词生成助手。只返回 JSON。",
@@ -1093,7 +1646,7 @@ class AiService:
             f"候选结果：\n{joined_entries}"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     screening_prompt,
                     "你是资讯情报筛选助手。只返回 JSON。",
@@ -1143,7 +1696,7 @@ class AiService:
             f"原始摘要：{cleaned_summary}\n"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是资讯翻译编辑助手。只返回 JSON。",
@@ -1226,7 +1779,7 @@ class AiService:
             f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:4200]}"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是资讯研判助手。只返回 JSON。",
@@ -1329,7 +1882,7 @@ class AiService:
         )
 
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是组织经验萃取助手。只返回 JSON。",
@@ -1349,76 +1902,85 @@ class AiService:
         # Fallback: use task_title as-is
         return {"quote": "", "sourceLabel": ""}
 
-    def generate_experience_story(
+    def generate_task_context_brief(
         self,
         *,
         material_pack: dict[str, object],
-        context: dict[str, object] | None = None,
-    ) -> dict[str, str]:
-        """Generate a short experience story from a verified primary material pack.
-
-        This is intentionally separate from `distill_growth_insight_quote`: the output
-        should preserve a concrete scene and action, not compress the material into a
-        quotable slogan.
-        """
+    ) -> dict[str, object]:
+        """Generate an assistant-style project context reminder for a task."""
         health = self.get_health()
         schema = {
             "type": "OBJECT",
             "properties": {
-                "title": {"type": "STRING"},
-                "story": {"type": "STRING"},
-                "growthValue": {"type": "STRING"},
-                "organizationValue": {"type": "STRING"},
-                "factRiskNote": {"type": "STRING"},
+                "shouldDisplay": {"type": "BOOLEAN"},
+                "brief": {"type": "STRING"},
+                "usedProjectSignals": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "materialBoundary": {"type": "STRING"},
+                "qualityFlags": {"type": "ARRAY", "items": {"type": "STRING"}},
             },
         }
-        raw_material = json.dumps(
-            {
-                "materialPack": material_pack,
-                "context": context or {},
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
-        if len(raw_material) > 11000:
-            raw_material = raw_material[:11000]
-
+        raw_material = json.dumps(material_pack, ensure_ascii=False, sort_keys=True, default=str)
+        if len(raw_material) > 18000:
+            raw_material = raw_material[:18000]
         prompt = (
-            "你是一位很会讲真实工作故事的组织成长教练。请只根据下面的真实材料，写一条可以进入组织经验墙的经验故事。\n\n"
+            "请基于项目级三层材料包生成一条「任务前情提要」。\n\n"
+            "产品目标：用户点开一个执行了一段时间的任务时，系统像一位可靠助理，帮助他恢复判断现场："
+            "这件事从哪里来，前面哪些项目材料会影响现在，接下来最容易漏掉什么判断、边界或动作。\n\n"
+            "三层材料：\n"
+            "A 当前任务：任务说明、阻塞、下一步、近期决策、任务笔记、任务附件。\n"
+            "B 同事件线：前后任务、活动、会议、附件、事件线记录。\n"
+            "C 同客户/项目：同客户任务链、复盘、数据中心全文片段。\n\n"
             "写作要求：\n"
-            "1. story 用 120 到 220 个中文字符，像一个有经验的人在复盘后讲给同事听的小故事。\n"
-            "2. 必须包含具体处境、关键行动或选择，以及能被个人成长或组织发展复用的判断。\n"
-            "3. 不要写成流水账、标签清单、咨询报告、管理口号或制度说明。\n"
-            "4. 不要出现「启示：」「经验：」「故事：」「结论：」这类显式标签，直接讲内容。\n"
-            "5. 不要编造材料里没有的人名、时间、数字、承诺和因果。\n"
-            "6. 如果材料只是系统总结、AI 摘要或证据不足，factRiskNote 要明确提醒，story 也要克制。\n"
-            "7. title 用 12 到 26 个中文字符，像一条可收藏的小故事标题。\n"
-            "8. growthValue 写这条故事对个人成长的价值；organizationValue 写对组织沉淀的价值。\n\n"
-            f"真实材料包：\n{raw_material}"
+            "1. brief 120-190 个中文字符，直接成段，不要标题。\n"
+            "2. 不要写「本任务为」「截止时间」「过往 N 项记录」，不要复述系统字段。\n"
+            "3. 必须吸收项目级材料，而不只是当前任务碎片；要体现为什么这件事现在这样做。\n"
+            "4. 必须点出下一步最容易遗漏的判断、边界或动作。\n"
+            "5. 不虚构材料里没有的人名、数字、承诺、结果和因果。\n"
+            "6. 材料不足时 shouldDisplay=false，brief 留空，并在 qualityFlags 说明原因。\n"
+            "7. usedProjectSignals 列出真正用到的 3-5 条项目信号；materialBoundary 简述材料边界。\n\n"
+            f"材料包：\n{raw_material}"
         )
-
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
-                    "你是组织经验故事生成助手。只返回 JSON。",
+                    "你是益语智库的项目级任务前情提要助手。只返回 JSON。",
                     schema,
-                    timeout_seconds=25.0,
-                    max_tokens=700,
-                    temperature=0.65,
+                    timeout_seconds=35.0,
+                    max_tokens=900,
+                    temperature=0.38,
+                    top_p=0.88,
+                    enable_thinking=False,
                 )
                 if isinstance(result, dict):
                     return {
-                        "title": str(result.get("title") or "").strip(),
-                        "story": str(result.get("story") or "").strip(),
-                        "growthValue": str(result.get("growthValue") or "").strip(),
-                        "organizationValue": str(result.get("organizationValue") or "").strip(),
-                        "factRiskNote": str(result.get("factRiskNote") or "").strip(),
+                        "shouldDisplay": bool(result.get("shouldDisplay", True)),
+                        "brief": str(result.get("brief") or "").strip(),
+                        "usedProjectSignals": [
+                            str(item).strip()
+                            for item in (result.get("usedProjectSignals") or [])
+                            if str(item).strip()
+                        ][:6]
+                        if isinstance(result.get("usedProjectSignals"), list)
+                        else [],
+                        "materialBoundary": str(result.get("materialBoundary") or "").strip(),
+                        "qualityFlags": [
+                            str(item).strip()
+                            for item in (result.get("qualityFlags") or [])
+                            if str(item).strip()
+                        ]
+                        if isinstance(result.get("qualityFlags"), list)
+                        else [],
                     }
         except Exception:
             pass
-        return {}
+        return {
+            "shouldDisplay": False,
+            "brief": "",
+            "usedProjectSignals": [],
+            "materialBoundary": "后台模型不可用，未生成任务前情提要。",
+            "qualityFlags": ["generation_failed"],
+        }
 
     def build_topic_task_plan(
         self,
@@ -1485,7 +2047,7 @@ class AiService:
             f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:3600]}"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是项目执行拆解助手。只返回 JSON。",
@@ -1530,7 +2092,7 @@ class AiService:
             f"所属模块：{module}\n"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt=prompt,
                     system_instruction="你是任务标签编辑助手。只返回 JSON。",
@@ -2618,8 +3180,8 @@ class AiService:
             },
         }
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
-                result = self._qwen_generate(prompt, "你是知识底座加工助手。只返回 JSON。", schema, timeout_seconds=25.0)
+            if health.provider != "mock" and health.ready:
+                result = self._qwen_generate(prompt, "你是知识底座加工助手。只返回 JSON。", schema, timeout_seconds=25.0, task_kind="fast_structured")
                 if isinstance(result, dict):
                     return result
         except Exception:
@@ -2635,10 +3197,9 @@ class AiService:
         page_number: int | None = None,
         source_kind: str = "视觉资料",
     ) -> str:
-        health = self.get_health()
+        health = self._health_for_task("vision_ocr")
         if not health.ready or not image_base64:
             return ""
-        base_url, api_key, model = self._resolve_llm_config()
         system_instruction = (
             "你是文档 OCR 和版面还原助手。"
             "你的任务是把视觉资料截图转成 clean markdown 原文。"
@@ -2654,60 +3215,65 @@ class AiService:
             "删除页码、装饰线、明显水印和重复页眉页脚。"
             "只输出 markdown 正文。"
         )
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_instruction},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
-                        },
-                    ],
-                },
-            ],
-            "temperature": 0.05,
-            "top_p": 0.8,
-            "max_tokens": 2500,
-            "stream": False,
-        }
-
-        def _do_request():
-            with httpx.Client(timeout=self._build_http_timeout(45.0)) as _client:
-                _resp = _client.post(
-                    f"{base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-                _resp.raise_for_status()
-                return _resp.json()
-
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(_do_request)
-        try:
-            result = future.result(timeout=60.0)
-        except FutureTimeout:
-            future.cancel()
-            return ""
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-        text = (
-            result.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
-        cleaned = str(text or "").strip()
-        cleaned = re.sub(r"^```(?:markdown|md)?\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-        return cleaned
+        for profile in self._resolve_llm_candidates(task_kind="vision_ocr"):
+            if not self._profile_is_usable(profile):
+                continue
+            payload = {
+                "model": profile.model,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
+                            },
+                        ],
+                    },
+                ],
+                "temperature": 0.05,
+                "top_p": 0.8,
+                "max_tokens": 2500,
+                "stream": False,
+            }
+
+            def _do_request() -> dict:
+                with httpx.Client(timeout=self._build_http_timeout(45.0)) as _client:
+                    _resp = _client.post(
+                        f"{profile.base_url}/chat/completions",
+                        headers=self._build_openai_compatible_headers(profile.api_key),
+                        json=payload,
+                    )
+                    _resp.raise_for_status()
+                    return _resp.json()
+
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(_do_request)
+            try:
+                result = future.result(timeout=60.0)
+            except FutureTimeout:
+                future.cancel()
+                continue
+            except Exception:
+                continue
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+            text = (
+                result.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            cleaned = str(text or "").strip()
+            cleaned = re.sub(r"^```(?:markdown|md)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+            if cleaned:
+                self._record_resolved_profile(profile)
+                return cleaned
+        return ""
 
     def generate_pdf_page_markdown(
         self,
@@ -2755,7 +3321,7 @@ class AiService:
             },
         }
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(prompt, "你是战略陪伴记忆整理助手。只返回 JSON。", schema, timeout_seconds=25.0)
                 if isinstance(result, dict):
                     return result
@@ -2872,7 +3438,7 @@ class AiService:
             "请直接输出检索摘要文本，不要包裹引号或其他格式。"
         )
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是知识检索优化助手。只输出检索摘要文本，不要加任何前缀或解释。",
@@ -2953,7 +3519,7 @@ class AiService:
             },
         }
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是客户知识架构师。只返回 JSON。",
@@ -3003,7 +3569,7 @@ class AiService:
             },
         }
         try:
-            if health.provider in ("qwen", "doubao") and health.ready:
+            if health.provider != "mock" and health.ready:
                 result = self._qwen_generate(
                     prompt,
                     "你是客户知识整理专家。只返回 JSON。",
@@ -3262,7 +3828,7 @@ class AiService:
             max_tokens=max_tokens,
         )
         if not isinstance(payload, dict):
-            raise RuntimeError("Qwen 返回了非结构化数据。")
+            raise RuntimeError(f"{self.current_model_label()}返回了非结构化数据。")
         return self._structured_from_payload(payload)
 
     def _structured_schema(self) -> dict[str, object]:
@@ -3298,25 +3864,29 @@ class AiService:
     def _resolve_llm_config(
         self,
         *,
+        task_kind: str = "default",
         provider_override: str | None = None,
         model_override: str | None = None,
     ) -> tuple[str, str, str]:
-        """Returns (base_url, api_key, model) for the current provider."""
-        provider = provider_override or self.current_provider()
-        model = model_override or (
-            self.current_model() if provider == self.current_provider() else DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
+        """Returns (base_url, api_key, model) for the configured OpenAI-compatible endpoint."""
+        candidates = self._resolve_llm_candidates(
+            task_kind=task_kind,
+            provider_override=provider_override,
+            model_override=model_override,
         )
-        if provider == "doubao":
-            store = self._store_for("doubao")
-            api_key = store.get_api_key() if store else ""
-            if not api_key:
-                raise RuntimeError("豆包 API Key 未配置。")
-            return DOUBAO_BASE_URL, api_key, model
-        store = self._store_for("qwen")
-        api_key = store.get_api_key() if store else ""
-        if not api_key:
-            raise RuntimeError("Qwen API Key 未配置。")
-        return QWEN_BASE_URL, api_key, model
+        if not candidates:
+            raise RuntimeError("仅本地模式已启用，但没有可用的本地模型 profile。")
+        profile = next((item for item in candidates if self._profile_is_usable(item)), candidates[0])
+        display_label = llm_display_label(profile.provider, profile.model, profile.provider_label)
+        if profile.provider == MOCK_PROVIDER:
+            raise RuntimeError("本地 Mock 模式不调用外部模型接口。")
+        if not profile.base_url:
+            raise RuntimeError(f"{display_label} 接口地址 Base URL 未配置。")
+        if not profile.model:
+            raise RuntimeError(f"{display_label} 模型名未配置。")
+        if not profile.api_key and not profile.is_local:
+            raise RuntimeError(f"{display_label} API Key 未配置。")
+        return profile.base_url, profile.api_key, profile.model
 
     def _qwen_generate(
         self,
@@ -3331,11 +3901,11 @@ class AiService:
         enable_thinking: bool = False,
         provider_override: str | None = None,
         model_override: str | None = None,
+        task_kind: str = "default",
     ) -> object:
-        base_url, api_key, model = self._resolve_llm_config(
-            provider_override=provider_override,
-            model_override=model_override,
-        )
+        effective_task_kind = task_kind
+        if effective_task_kind == "default" and response_schema is not None and int(max_tokens or 0) <= 2200:
+            effective_task_kind = "fast_structured"
         user_prompt = prompt
         if response_schema:
             user_prompt = (
@@ -3344,53 +3914,68 @@ class AiService:
                 f"{json.dumps(response_schema, ensure_ascii=False)}\n\n"
                 f"{prompt}"
             )
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_instruction or "你是系统助手。"},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        if enable_thinking:
-            payload["enable_thinking"] = True
-        def _do_request():
-            with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as _client:
-                _resp = _client.post(
-                    f"{base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-                _resp.raise_for_status()
-                return _resp.json()
-        # 硬超时：用线程池确保不会永久挂死
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-        hard_limit = timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(_do_request)
-        try:
-            result = future.result(timeout=hard_limit)
-        except FutureTimeout:
-            future.cancel()
-            raise RuntimeError(f"AI 调用硬超时（{hard_limit:.0f}秒），服务可能不可用")
-        finally:
-            # 不要在超时后等待工作线程自然结束，否则外层调用会被 shutdown(wait=True)
-            # 卡死，自动填表 run 会永久停在 running。
-            pool.shutdown(wait=False, cancel_futures=True)
-        text = (
-            result.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
+
+        candidates = self._resolve_llm_candidates(
+            task_kind=effective_task_kind,
+            provider_override=provider_override,
+            model_override=model_override,
         )
-        if response_schema:
-            return self._load_relaxed_json(text)
-        return text
+        errors: list[str] = []
+        hard_limit = timeout_seconds + HTTP_TIMEOUT_GRACE_SECONDS
+        for profile in candidates:
+            display_label = llm_display_label(profile.provider, profile.model, profile.provider_label)
+            if not self._profile_is_usable(profile):
+                errors.append(f"{display_label} 配置不可用：{self._profile_to_health(profile).detail}")
+                continue
+            payload = {
+                "model": profile.model,
+                "messages": [
+                    {"role": "system", "content": system_instruction or "你是系统助手。"},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+            if enable_thinking:
+                payload["enable_thinking"] = True
+
+            def _do_request() -> dict:
+                with httpx.Client(timeout=self._build_http_timeout(timeout_seconds)) as _client:
+                    _resp = _client.post(
+                        f"{profile.base_url}/chat/completions",
+                        headers=self._build_openai_compatible_headers(profile.api_key),
+                        json=payload,
+                    )
+                    _resp.raise_for_status()
+                    return _resp.json()
+
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(_do_request)
+            try:
+                result = future.result(timeout=hard_limit)
+                text = (
+                    result.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                self._record_resolved_profile(profile)
+                if response_schema:
+                    return self._load_relaxed_json(text)
+                return text
+            except FutureTimeout:
+                future.cancel()
+                errors.append(f"{display_label} 硬超时（{hard_limit:.0f}秒）")
+            except Exception as error:
+                detail = self._format_provider_error(error) if hasattr(self, "_format_provider_error") else str(error)
+                errors.append(f"{display_label} 调用失败：{detail}")
+            finally:
+                # 不要在超时后等待工作线程自然结束，否则外层调用会被 shutdown(wait=True)
+                # 卡死，自动填表 run 会永久停在 running。
+                pool.shutdown(wait=False, cancel_futures=True)
+        raise RuntimeError("；".join(errors) or "没有可用的大模型配置。")
 
     def _qwen_generate_structured_with_retry(
         self,
@@ -3429,8 +4014,8 @@ class AiService:
             if second_error is not None:
                 detail_parts.append(f"缩上下文重试后仍失败：{self._format_provider_error(second_error)}")
             detail_parts.append(f"文本结构化降级仍失败：{self._format_provider_error(third_error)}")
-            raise AiInvocationError("qwen", "；".join(part for part in detail_parts if part)) from third_error
-        raise AiInvocationError("qwen", self._format_provider_error(first_error)) from first_error
+            raise AiInvocationError(self.current_provider(), "；".join(part for part in detail_parts if part)) from third_error
+        raise AiInvocationError(self.current_provider(), self._format_provider_error(first_error)) from first_error
 
     def _qwen_generate_general_fallback(self, prompt: str, note: str, *, subject_name: str = "") -> AiStructuredResponse:
         text = self._qwen_generate(

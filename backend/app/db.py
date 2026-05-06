@@ -74,6 +74,14 @@ class Database:
                     path TEXT NOT NULL,
                     file_count INTEGER NOT NULL DEFAULT 0,
                     last_scanned_at TEXT,
+                    folder_kind TEXT NOT NULL DEFAULT 'business',
+                    source_type TEXT NOT NULL DEFAULT 'legacy',
+                    is_system INTEGER NOT NULL DEFAULT 0,
+                    is_hidden INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 100,
+                    created_by_rule TEXT NOT NULL DEFAULT '',
+                    suggested INTEGER NOT NULL DEFAULT 0,
+                    confidence REAL NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
                 );
@@ -732,6 +740,28 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_client_template_fill_runs_client ON client_template_fill_runs(client_id, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS workspace_link_import_runs (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    source_platform TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    title TEXT,
+                    status TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    progress REAL NOT NULL DEFAULT 0,
+                    document_id TEXT,
+                    document_path TEXT,
+                    media_cache_status TEXT NOT NULL DEFAULT 'not_downloaded',
+                    error TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_workspace_link_import_runs_client
+                    ON workspace_link_import_runs(client_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS file_reclass_events (
                     id TEXT PRIMARY KEY,
                     knowledge_document_id TEXT NOT NULL,
@@ -923,6 +953,59 @@ class Database:
                     updated_by TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS organization_dna_v2_items (
+                    id TEXT PRIMARY KEY,
+                    module_kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content_markdown TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    evidence_level TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_label TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    source_created_at TEXT,
+                    last_seen_at TEXT NOT NULL,
+                    valid_until TEXT,
+                    confidence_score INTEGER NOT NULL DEFAULT 60,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_org_dna_v2_items_kind_status
+                    ON organization_dna_v2_items(module_kind, status, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_org_dna_v2_items_source
+                    ON organization_dna_v2_items(source_type, source_id);
+
+                CREATE TABLE IF NOT EXISTS organization_dna_refresh_runs (
+                    id TEXT PRIMARY KEY,
+                    job_type TEXT NOT NULL DEFAULT 'organization_dna_refresh',
+                    status TEXT NOT NULL,
+                    trigger_source TEXT NOT NULL DEFAULT 'manual',
+                    total_items INTEGER NOT NULL DEFAULT 0,
+                    processed_items INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS organization_dna_refresh_events (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES organization_dna_refresh_runs(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_org_dna_refresh_events_run
+                    ON organization_dna_refresh_events(run_id, created_at ASC);
+
                 CREATE TABLE IF NOT EXISTS client_dna_documents (
                     client_id TEXT NOT NULL,
                     module_key TEXT NOT NULL,
@@ -968,6 +1051,20 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_thread_memory_packs (
+                    client_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    context_pack_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(client_id, thread_id),
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_thread_memory_packs_thread
+                ON chat_thread_memory_packs(thread_id);
 
                 -- ══ 同步表（任务/事件线/复盘 — 走云端） ══
 
@@ -1055,6 +1152,11 @@ class Database:
                     owner_name TEXT NOT NULL,
                     progress_status TEXT NOT NULL DEFAULT 'todo',
                     ddl TEXT NOT NULL,
+                    deadline_at TEXT,
+                    scheduled_start_at TEXT,
+                    scheduled_end_at TEXT,
+                    completed_at TEXT,
+                    start_date TEXT,
                     due_date TEXT,
                     duration_minutes INTEGER NOT NULL DEFAULT 60,
                     scope_mode TEXT NOT NULL DEFAULT 'COLLAB_SHARED',
@@ -1528,6 +1630,27 @@ class Database:
                     PRIMARY KEY (source_task_id, action_key, adopted_by_user_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS task_context_brief_snapshots (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    client_id TEXT,
+                    event_line_id TEXT,
+                    brief TEXT NOT NULL DEFAULT '',
+                    should_display INTEGER NOT NULL DEFAULT 0,
+                    material_pack_hash TEXT NOT NULL DEFAULT '',
+                    used_project_signals_json TEXT NOT NULL DEFAULT '[]',
+                    material_boundary TEXT NOT NULL DEFAULT '',
+                    quality_flags_json TEXT NOT NULL DEFAULT '[]',
+                    generation_model TEXT NOT NULL DEFAULT '',
+                    generation_prompt_version TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_context_brief_task_hash
+                    ON task_context_brief_snapshots(task_id, material_pack_hash, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_context_brief_client_updated
+                    ON task_context_brief_snapshots(client_id, updated_at DESC);
+
                 CREATE TABLE IF NOT EXISTS agent_weekly_plan_overrides (
                     id TEXT PRIMARY KEY,
                     week_label TEXT NOT NULL,
@@ -1646,44 +1769,6 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL
                 );
-
-                CREATE TABLE IF NOT EXISTS experience_story_drafts (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL DEFAULT '',
-                    story TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'candidate',
-                    source_type TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    source_title TEXT NOT NULL DEFAULT '',
-                    client_id TEXT,
-                    event_line_id TEXT,
-                    task_id TEXT,
-                    meeting_id TEXT,
-                    handbook_entry_id TEXT,
-                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
-                    material_pack_json TEXT NOT NULL DEFAULT '{}',
-                    growth_value TEXT NOT NULL DEFAULT '',
-                    organization_value TEXT NOT NULL DEFAULT '',
-                    quality_score_json TEXT NOT NULL DEFAULT '{}',
-                    fact_risk_note TEXT NOT NULL DEFAULT '',
-                    generation_model TEXT NOT NULL DEFAULT '',
-                    generation_prompt_version TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    approved_at TEXT,
-                    approved_by TEXT,
-                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE SET NULL,
-                    FOREIGN KEY(event_line_id) REFERENCES event_lines(id) ON DELETE SET NULL,
-                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
-                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE SET NULL,
-                    FOREIGN KEY(handbook_entry_id) REFERENCES handbook_entries(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_experience_story_drafts_status
-                    ON experience_story_drafts(status, updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_experience_story_drafts_source
-                    ON experience_story_drafts(source_type, source_id);
-                CREATE INDEX IF NOT EXISTS idx_experience_story_drafts_client
-                    ON experience_story_drafts(client_id, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS growth_ability_profiles (
                     id TEXT PRIMARY KEY,
@@ -1943,6 +2028,14 @@ class Database:
                 """
             )
             self._ensure_column("documents", "original_source_path", "TEXT")
+            self._ensure_column("client_folders", "folder_kind", "TEXT NOT NULL DEFAULT 'business'")
+            self._ensure_column("client_folders", "source_type", "TEXT NOT NULL DEFAULT 'legacy'")
+            self._ensure_column("client_folders", "is_system", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("client_folders", "is_hidden", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("client_folders", "sort_order", "INTEGER NOT NULL DEFAULT 100")
+            self._ensure_column("client_folders", "created_by_rule", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("client_folders", "suggested", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("client_folders", "confidence", "REAL NOT NULL DEFAULT 0")
             self._ensure_column("knowledge_documents", "import_source_path", "TEXT")
             self._ensure_column("knowledge_documents", "current_human_path", "TEXT")
             self._ensure_column("knowledge_documents", "human_folder_category", "TEXT")
@@ -2068,6 +2161,10 @@ class Database:
             self._ensure_column("project_modules", "template_tasks_json", "TEXT")
             self._ensure_column("tasks", "project_module_id", "TEXT")
             self._ensure_column("tasks", "project_flow_id", "TEXT")
+            self._ensure_column("tasks", "deadline_at", "TEXT")
+            self._ensure_column("tasks", "scheduled_start_at", "TEXT")
+            self._ensure_column("tasks", "scheduled_end_at", "TEXT")
+            self._ensure_column("tasks", "completed_at", "TEXT")
             self._ensure_column("tasks", "start_date", "TEXT")
             self._ensure_column("tasks", "due_date", "TEXT")
             self._ensure_column("tasks", "duration_minutes", "INTEGER NOT NULL DEFAULT 60")
@@ -2085,6 +2182,50 @@ class Database:
             self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET deadline_at = due_date
+                WHERE deadline_at IS NULL
+                  AND due_date IS NOT NULL
+                  AND due_date != ''
+                  AND (start_date IS NULL OR start_date = '')
+                  AND due_date GLOB '????-??-??'
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET scheduled_start_at = COALESCE(NULLIF(start_date, ''), due_date)
+                WHERE scheduled_start_at IS NULL
+                  AND (
+                    (start_date IS NOT NULL AND start_date != '')
+                    OR due_date LIKE '%T%'
+                    OR due_date GLOB '????-??-?? ??:??*'
+                  )
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET scheduled_end_at = due_date
+                WHERE scheduled_end_at IS NULL
+                  AND start_date IS NOT NULL
+                  AND start_date != ''
+                  AND due_date IS NOT NULL
+                  AND due_date != ''
+                  AND due_date != start_date
+                  AND (due_date LIKE '%T%' OR due_date GLOB '????-??-?? ??:??*')
+                """
+            )
+            self.conn.execute(
+                """
+                UPDATE tasks
+                SET completed_at = COALESCE(NULLIF(updated_at, ''), datetime('now'))
+                WHERE completed_at IS NULL
+                  AND (status = 'done' OR progress_status = 'done')
+                """
+            )
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_collaborators (

@@ -231,7 +231,52 @@ def _contains_all(text: str, keywords: list[str]) -> bool:
     return all(keyword in text for keyword in keywords)
 
 
-def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
+def _normalize_actor(value: object | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _actor_name_matches(value: object | None, user_name: str) -> bool:
+    normalized_value = _normalize_actor(value)
+    return bool(normalized_value and normalized_value == _normalize_actor(user_name))
+
+
+def _actor_id_matches(value: object | None, user_id: str) -> bool:
+    normalized_value = str(value or "").strip()
+    return bool(normalized_value and normalized_value == str(user_id or "").strip())
+
+
+def _row_belongs_to_user(
+    row: Any,
+    *,
+    user_id: str,
+    user_name: str,
+    id_fields: tuple[str, ...] = (),
+    name_fields: tuple[str, ...] = (),
+) -> bool:
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+    for field in id_fields:
+        if field in keys and _actor_id_matches(row[field], user_id):
+            return True
+    for field in name_fields:
+        if field in keys and _actor_name_matches(row[field], user_name):
+            return True
+    return False
+
+
+def _json_actor_belongs_to_user(detail: dict[str, Any], *, user_id: str, user_name: str) -> bool:
+    for key in ("ownerId", "owner_id", "creatorId", "creator_id", "actorId", "actor_id", "userId", "user_id"):
+        if _actor_id_matches(detail.get(key), user_id):
+            return True
+    for key in ("ownerName", "owner_name", "actorName", "actor_name", "userName", "user_name", "createdBy"):
+        if _actor_name_matches(detail.get(key), user_name):
+            return True
+    collaborator_ids = detail.get("collaboratorIds") or detail.get("collaborator_ids") or []
+    if isinstance(collaborator_ids, list) and str(user_id or "").strip() in {str(item or "").strip() for item in collaborator_ids}:
+        return True
+    return False
+
+
+def _collect_work_events(db: Database, *, user_id: str, user_name: str) -> list[WorkEvent]:
     events: list[WorkEvent] = []
 
     meeting_rows = db.fetchall(
@@ -240,7 +285,13 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
             m.*,
             (SELECT COUNT(*) FROM decisions d WHERE d.meeting_id = m.id) AS decision_count,
             (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id) AS action_count,
-            (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owner_name) != '') AS owner_count,
+            (
+                SELECT COUNT(*)
+                FROM action_items a
+                WHERE a.meeting_id = m.id
+                  AND TRIM(a.owner_name) != ''
+                  AND LOWER(TRIM(a.owner_name)) = LOWER(TRIM(?))
+            ) AS owner_count,
             (SELECT COUNT(*) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.due_date) != '') AS due_count,
             (SELECT COUNT(DISTINCT a.owner_name) FROM action_items a WHERE a.meeting_id = m.id AND TRIM(a.owner_name) != '') AS owner_distinct_count,
             (
@@ -249,14 +300,27 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
                 WHERE t.source_type = 'meeting'
                   AND t.source_id = m.id
                   AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                  AND (
+                    t.owner_id = ?
+                    OR t.creator_id = ?
+                    OR LOWER(TRIM(COALESCE(t.owner_name, ''))) = LOWER(TRIM(?))
+                    OR EXISTS (
+                        SELECT 1
+                        FROM task_collaborators tc
+                        WHERE tc.task_id = t.id AND tc.user_id = ?
+                    )
+                  )
             ) AS linked_task_count,
             (SELECT COUNT(*) FROM risks r WHERE r.meeting_id = m.id) AS risk_count,
             (SELECT COUNT(*) FROM ambiguities am WHERE am.meeting_id = m.id AND COALESCE(am.status, '') != 'ignored') AS ambiguity_count
         FROM meetings m
         ORDER BY m.updated_at DESC
-        """
+        """,
+        (user_name, user_id, user_id, user_name, user_id),
     )
     for row in meeting_rows:
+        if int(row["owner_count"] or 0) <= 0 and int(row["linked_task_count"] or 0) <= 0:
+            continue
         occurred_at = str(row["updated_at"] or row["created_at"])
         title = str(row["title"] or "未命名会议")
         notes = str(row["notes"] or "")
@@ -290,8 +354,10 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
                we.id AS entry_id, we.task_id, we.note, we.structured_note_json, we.task_snapshot_json
         FROM weekly_reviews wr
         LEFT JOIN weekly_review_task_entries we ON we.review_id = wr.id
+        WHERE wr.operator_id = ? OR wr.user_id = ?
         ORDER BY wr.updated_at DESC, we.reviewed_at DESC
-        """
+        """,
+        (user_id, user_id),
     )
     reviews_by_id: dict[str, dict[str, Any]] = {}
     for row in review_rows:
@@ -424,7 +490,15 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
                     )
                 )
 
-    handbook_rows = db.fetchall("SELECT * FROM handbook_entries ORDER BY created_at DESC")
+    handbook_rows = db.fetchall(
+        """
+        SELECT *
+        FROM handbook_entries
+        WHERE author_user_id = ? OR LOWER(TRIM(COALESCE(author_user_name, ''))) = LOWER(TRIM(?))
+        ORDER BY created_at DESC
+        """,
+        (user_id, user_name),
+    )
     for row in handbook_rows:
         title = str(row["title"] or "经验沉淀")
         summary = str(row["summary"] or "")
@@ -443,15 +517,6 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
         if any(keyword in text for keyword in ("分享", "培训", "讲解", "课程")):
             events.append(WorkEvent(f"handbook_share_{row['id']}", "handbook", "learning.knowledge_share", "handbook_entry", str(row["id"]), occurred_at, title, payload))
 
-    analysis_rows = db.fetchall("SELECT * FROM analysis_runs ORDER BY created_at DESC")
-    for row in analysis_rows:
-        title = str(row["title"] or "分析产出")
-        occurred_at = str(row["created_at"])
-        payload = {"status": str(row["status"] or ""), "summary": "分析工作台"}
-        events.append(WorkEvent(f"analysis_dashboard_{row['id']}", "analysis", "analysis.dashboard_updated", "analysis_run", str(row["id"]), occurred_at, title, payload))
-        if any(keyword in title for keyword in ("方案", "报价", "提案")):
-            events.append(WorkEvent(f"analysis_proposal_{row['id']}", "analysis", "analysis.proposal_advanced", "analysis_run", str(row["id"]), occurred_at, title, payload))
-
     validation_rows = db.fetchall(
         """
         SELECT
@@ -463,8 +528,10 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
             e.metadata_json
         FROM growth_validation_events v
         INNER JOIN growth_evidence_records e ON e.id = v.evidence_id
+        WHERE v.user_id = ?
         ORDER BY v.created_at DESC
-        """
+        """,
+        (user_id,),
     )
     for row in validation_rows:
         metadata = from_json(row["metadata_json"], {})
@@ -488,8 +555,19 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
         SELECT *
         FROM tasks
         WHERE COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+          AND (
+            owner_id = ?
+            OR creator_id = ?
+            OR LOWER(TRIM(COALESCE(owner_name, ''))) = LOWER(TRIM(?))
+            OR EXISTS (
+                SELECT 1
+                FROM task_collaborators tc
+                WHERE tc.task_id = tasks.id AND tc.user_id = ?
+            )
+          )
         ORDER BY updated_at DESC
-        """
+        """,
+        (user_id, user_id, user_name, user_id),
     )
     for row in task_rows:
         title = str(row["title"] or "任务")
@@ -531,7 +609,7 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
 
     logs = db.fetchall(
         """
-        SELECT id, action, entity_type, entity_id, detail_json, created_at
+        SELECT id, actor_name, action, entity_type, entity_id, detail_json, created_at
         FROM activity_logs
         ORDER BY created_at DESC
         """
@@ -543,6 +621,8 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
         entity_id = str(row["entity_id"] or "")
         detail = from_json(row["detail_json"], {})
         created_at = str(row["created_at"])
+        if not (_actor_name_matches(row["actor_name"], user_name) or _json_actor_belongs_to_user(detail, user_id=user_id, user_name=user_name)):
+            continue
         if action == "task.create" and entity_type == "task":
             create_times[entity_id] = created_at
         if action == "task.confirm" and entity_type == "task":
@@ -671,16 +751,16 @@ def _collect_work_events(db: Database, *, user_name: str) -> list[WorkEvent]:
         if action == "document.template_fill":
             events.append(WorkEvent(f"template_used_{row['id']}", "task", "task.template_used", "document", entity_id, created_at, str(detail.get("title") or "模板使用"), {"summary": "模板使用"}))
 
-    candidate_rows = db.fetchall("SELECT * FROM topic_candidates ORDER BY updated_at DESC")
-    for row in candidate_rows:
-        title = str(row["title"] or "情报候选")
-        occurred_at = str(row["updated_at"] or row["created_at"])
-        status = str(row["status"] or "")
-        payload = {"status": status, "summary": "情报候选"}
-        events.append(WorkEvent(f"topic_candidate_{row['id']}", "topic", "improvement.proposal_submitted", "topic_candidate", str(row["id"]), occurred_at, title, payload))
-
     # 事件线活动 → crm.followup_completed + crm.opportunity_stage
-    eline_rows = db.fetchall("SELECT * FROM event_line_activities ORDER BY happened_at DESC")
+    eline_rows = db.fetchall(
+        """
+        SELECT *
+        FROM event_line_activities
+        WHERE actor_id = ? OR LOWER(TRIM(COALESCE(actor_name, ''))) = LOWER(TRIM(?))
+        ORDER BY happened_at DESC
+        """,
+        (user_id, user_name),
+    )
     for row in eline_rows:
         title = str(row["title"] or "事件线活动")
         occurred_at = str(row["happened_at"] or row["created_at"])
@@ -1101,7 +1181,7 @@ def _sync_badge_unlocks(db: Database, *, user_id: str, user_name: str, badges: l
 
 
 def build_badge_board(db: Database, *, user_id: str, user_name: str, auto_sync: bool = True) -> BadgeBoardResponse:
-    events = _collect_work_events(db, user_name=user_name)
+    events = _collect_work_events(db, user_id=user_id, user_name=user_name)
     unlock_map = _fetch_unlock_map(db, user_id)
     badges = [_build_badge_progress(definition, events, unlock_map) for definition in _badge_definitions()]
     if auto_sync:

@@ -115,7 +115,6 @@ def _humanize_action(action: str) -> str:
         "review.create": "提交周复盘",
         "meeting.publish": "发布会议任务",
         "meeting.resolve": "整理会议结论",
-        "settings.review_governance.update": "调整复盘治理",
         "settings.tasks.update": "调整任务设置",
     }
     return mapping.get(action, action.replace(".", " / "))

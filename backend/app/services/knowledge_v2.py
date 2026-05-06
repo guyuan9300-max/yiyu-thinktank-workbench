@@ -57,9 +57,19 @@ _AUXILIARY_KNOWLEDGE_JOB_TYPES = ("generate_client_dna_candidates",)
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".csv"}
 ARCHIVE_XML_EXTENSIONS = {".pptx", ".xlsx"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-LEGACY_FIXED_CATEGORIES = ["财务与筹款", "品牌与传播", "项目与业务", "组织与战略", "其他资料", "战略陪伴"]
+ONLINE_TRANSCRIPT_CATEGORY = "线上转写"
+SYSTEM_FOLDER_CATEGORIES = ["收件箱", ONLINE_TRANSCRIPT_CATEGORY, "待处理", "归档"]
+LEGACY_FIXED_CATEGORIES = [
+    "财务与筹款",
+    "品牌与传播",
+    "项目与业务",
+    "组织与战略",
+    "其他资料",
+    ONLINE_TRANSCRIPT_CATEGORY,
+    "战略陪伴",
+]
 HUMAN_VISIBLE_CATEGORIES = LEGACY_FIXED_CATEGORIES  # kept for backward compat; new clients use dynamic folders
-EVIDENCE_CATEGORIES = LEGACY_FIXED_CATEGORIES[:-1]
+EVIDENCE_CATEGORIES = [category for category in [*LEGACY_FIXED_CATEGORIES, *SYSTEM_FOLDER_CATEGORIES] if category != "战略陪伴"]
 DEFAULT_INBOX_LABEL = "收件箱"
 WORKSPACE_BACKFILL_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx", ".json", ".csv", *IMAGE_EXTENSIONS}
 QUERY_STOPWORDS = {
@@ -600,7 +610,7 @@ def ensure_client_folder_rows(db: Database, data_dir: Path, client_id: str) -> N
     timestamp = now_iso()
     workspace_root = data_dir / "client_workspace" / client_id
     workspace_root.mkdir(parents=True, exist_ok=True)
-    for label in HUMAN_VISIBLE_CATEGORIES:
+    for index, label in enumerate(SYSTEM_FOLDER_CATEGORIES):
         path = workspace_root / label
         path.mkdir(parents=True, exist_ok=True)
         existing = db.fetchone(
@@ -609,16 +619,25 @@ def ensure_client_folder_rows(db: Database, data_dir: Path, client_id: str) -> N
         )
         if existing:
             db.execute(
-                "UPDATE client_folders SET path = ?, last_scanned_at = ? WHERE id = ?",
-                (str(path), timestamp, str(existing["id"])),
+                """
+                UPDATE client_folders
+                SET path = ?, last_scanned_at = ?, folder_kind = 'system', source_type = 'system',
+                    is_system = 1, is_hidden = 0, sort_order = ?
+                WHERE id = ?
+                """,
+                (str(path), timestamp, index * 10, str(existing["id"])),
             )
         else:
             db.execute(
                 """
-                INSERT INTO client_folders(id, client_id, label, path, file_count, last_scanned_at, created_at)
-                VALUES(?, ?, ?, ?, 0, ?, ?)
+                INSERT INTO client_folders(
+                    id, client_id, label, path, file_count, last_scanned_at,
+                    folder_kind, source_type, is_system, is_hidden, sort_order, created_by_rule,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, 0, ?, 'system', 'system', 1, 0, ?, 'system_default', ?)
                 """,
-                (new_id("fld"), client_id, label, str(path), timestamp, timestamp),
+                (new_id("fld"), client_id, label, str(path), timestamp, index * 10, timestamp),
             )
 
 
@@ -1478,6 +1497,7 @@ def _sync_legacy_knowledge_document(
     kind: str,
     primary_category: str,
     secondary_category: str,
+    human_folder_category: str | None = None,
     confidence: float,
     parse_status: str,
     content_hash: str,
@@ -1492,7 +1512,7 @@ def _sync_legacy_knowledge_document(
     original_path = str(original_source_path)
     import_source_path = str(original_source_path)
     current_human_path = str(managed_path)
-    human_folder_category = primary_category
+    display_folder_category = human_folder_category or primary_category
     reclassified_at = created_at
     reclass_reason = f"{V2_PIPELINE_VERSION} 同步的兼容知识文档记录"
     reclass_confidence = confidence
@@ -1521,7 +1541,7 @@ def _sync_legacy_knowledge_document(
                 original_path,
                 import_source_path,
                 current_human_path,
-                human_folder_category,
+                display_folder_category,
                 reclassified_at,
                 reclass_reason,
                 reclass_confidence,
@@ -1560,7 +1580,7 @@ def _sync_legacy_knowledge_document(
                 original_path,
                 import_source_path,
                 current_human_path,
-                human_folder_category,
+                display_folder_category,
                 reclassified_at,
                 reclass_reason,
                 reclass_confidence,
@@ -1590,7 +1610,7 @@ def _sync_legacy_knowledge_document(
             knowledge_document_id,
             original_path,
             current_human_path,
-            primary_category,
+            display_folder_category,
         ),
     )
     if not existing_reclass:
@@ -1600,7 +1620,7 @@ def _sync_legacy_knowledge_document(
             from_path=original_path,
             to_path=current_human_path,
             from_category=None,
-            to_category=primary_category,
+            to_category=display_folder_category,
             reason=reclass_reason,
             confidence=reclass_confidence,
             created_at=created_at,
@@ -1614,23 +1634,19 @@ def _folder_counts(db: Database, client_id: str) -> dict[str, int]:
         SELECT
             CASE
                 WHEN material_layer = 'background' THEN '战略陪伴'
-                ELSE COALESCE(visible_category, '其他资料')
+                ELSE COALESCE(NULLIF(visible_category, ''), ?)
             END AS category,
             COUNT(1) AS count
         FROM v2_documents
         WHERE client_id = ?
           AND parse_status IN ('ready', 'partial_ready')
-          AND (
-            material_layer = 'background'
-            OR (material_layer = 'evidence' AND COALESCE(visible_category, '其他资料') IN (?, ?, ?, ?, ?))
-          )
         GROUP BY
             CASE
                 WHEN material_layer = 'background' THEN '战略陪伴'
-                ELSE COALESCE(visible_category, '其他资料')
+                ELSE COALESCE(NULLIF(visible_category, ''), ?)
             END
         """,
-        (client_id, *EVIDENCE_CATEGORIES),
+        (DEFAULT_INBOX_LABEL, client_id, DEFAULT_INBOX_LABEL),
     )
     return {str(row["category"]): int(row["count"]) for row in rows}
 
@@ -1638,7 +1654,9 @@ def _folder_counts(db: Database, client_id: str) -> dict[str, int]:
 def refresh_client_folder_counts(db: Database, client_id: str) -> None:
     counts = _folder_counts(db, client_id)
     timestamp = now_iso()
-    for category in HUMAN_VISIBLE_CATEGORIES:
+    rows = db.fetchall("SELECT label FROM client_folders WHERE client_id = ?", (client_id,))
+    for row in rows:
+        category = str(row["label"])
         db.execute(
             "UPDATE client_folders SET file_count = ?, last_scanned_at = ? WHERE client_id = ? AND label = ?",
             (counts.get(category, 0), timestamp, client_id, category),
@@ -1689,7 +1707,12 @@ def ingest_document_knowledge(
         secondary_category,
         confidence,
     )
-    managed_path = _copy_into_workspace(data_dir, client_id, source_path, primary_category, document_id)
+    existing_target_folder = db.fetchone(
+        "SELECT id FROM client_folders WHERE client_id = ? AND label = ? AND is_hidden = 0",
+        (client_id, primary_category),
+    )
+    display_category = primary_category if existing_target_folder and confidence >= 0.78 else "待处理"
+    managed_path = _copy_into_workspace(data_dir, client_id, source_path, display_category, document_id)
     compat_card_path = _write_compat_card_markdown(
         data_dir,
         client_id,
@@ -1739,6 +1762,7 @@ def ingest_document_knowledge(
         kind=kind,
         primary_category=primary_category,
         secondary_category=secondary_category,
+        human_folder_category=display_category,
         confidence=confidence,
         parse_status=parse_status,
         content_hash=content_hash,
@@ -1757,7 +1781,7 @@ def ingest_document_knowledge(
         safe_filename(title),
         kind,
         material_layer,
-        primary_category,
+        display_category,
         secondary_category,
         parse_status,
         parse_error,
@@ -2716,10 +2740,10 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
     main_job_placeholders = ",".join("?" for _ in MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
     job_filter = f"client_id = ? AND job_type IN ({main_job_placeholders})"
     job_params = (client_id, *MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
-    document_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer = 'evidence'", (client_id,)) or 0)
+    document_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript')", (client_id,)) or 0)
     v2_background_docs = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer = 'background'", (client_id,)) or 0)
-    section_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_sections WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer = 'evidence')", (client_id,)) or 0)
-    chunk_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_chunks WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer = 'evidence')", (client_id,)) or 0)
+    section_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_sections WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript'))", (client_id,)) or 0)
+    chunk_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_chunks WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript'))", (client_id,)) or 0)
     failed_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND parse_status NOT IN ('ready', 'partial_ready')", (client_id,)) or 0)
     review_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND classification_confidence < 0.62", (client_id,)) or 0)
     dna_background_docs = int(db.scalar("SELECT COUNT(1) AS count FROM client_dna_documents WHERE client_id = ?", (client_id,)) or 0)
@@ -2816,7 +2840,7 @@ def fetch_document_cards(
         SELECT vd.*, d.created_at AS document_created_at, d.excerpt AS legacy_excerpt
         FROM v2_documents vd
         JOIN documents d ON d.id = vd.document_id
-        WHERE vd.client_id = ? AND vd.material_layer = 'evidence'
+        WHERE vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript')
           AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file'
           AND {access.sql}
         ORDER BY vd.updated_at DESC
@@ -3100,6 +3124,9 @@ def classify_source_availability_for_row(row: Any) -> dict[str, str | bool | Non
     markdown_content = str(_row_value(row, "markdown_content") or "")
     preview_text = str(_row_value(row, "preview_text") or "")
     doc_index_text = str(_row_value(row, "doc_index_text") or "")
+    origin_type = _clean_path_value(_row_value(row, "origin_type"))
+    material_layer = _clean_path_value(_row_value(row, "material_layer"))
+    is_online_transcript = origin_type == "video_transcript" or material_layer == "external_media_transcript"
     machine_text_available = has_effective_machine_text(markdown_content, preview_text, doc_index_text)
 
     if canonical_kind == "raw_file":
@@ -3116,6 +3143,14 @@ def classify_source_availability_for_row(row: Any) -> dict[str, str | bool | Non
             original_path_raw if _is_markdown_path(original_path_raw) else "",
             original_source_path if _is_markdown_path(original_source_path) else "",
         )
+        if is_online_transcript:
+            markdown_candidates = (
+                managed_path if _is_markdown_path(managed_path) else "",
+                document_path if _is_markdown_path(document_path) else "",
+                original_path_raw if _is_markdown_path(original_path_raw) else "",
+                original_source_path if _is_markdown_path(original_source_path) else "",
+                markdown_path,
+            )
         original_path = _first_existing_path(*original_candidates, allow_markdown=False)
         machine_markdown_path = _first_existing_path(*markdown_candidates, allow_markdown=True)
         machine_readable_available = bool(machine_markdown_path or machine_text_available)
@@ -3263,12 +3298,14 @@ def retrieve_knowledge_bundle(
     client_id: str,
     prompt: str,
     access_context: DataCenterAccessContext | dict[str, Any] | None = None,
+    priority_document_ids: list[str] | None = None,
 ) -> RetrievalBundle:
     del data_dir
     query_style = _query_style(prompt)
     query_terms = tokenize(prompt)
     if not query_terms and prompt.strip():
         query_terms = [prompt.strip().lower()]
+    priority_ids = {str(item).strip() for item in (priority_document_ids or []) if str(item).strip()}
     access = build_document_access_where("vd", "d", access_context)
     rows = db.fetchall(
         f"""
@@ -3276,7 +3313,7 @@ def retrieve_knowledge_bundle(
         FROM v2_documents vd
         JOIN documents d ON d.id = vd.document_id
         WHERE vd.client_id = ?
-          AND vd.material_layer = 'evidence'
+          AND vd.material_layer IN ('evidence', 'external_media_transcript')
           AND vd.parse_status IN ('ready', 'partial_ready')
           AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1
           AND COALESCE(vd.lifecycle_status, d.lifecycle_status, 'active') = 'active'
@@ -3341,6 +3378,16 @@ def retrieve_knowledge_bundle(
         if str(openable_paths.get("sourceAvailability") or "") == SOURCE_AVAILABILITY_INVALID:
             continue
         score, matched = _score_document_row(query_terms, prompt, row)
+        is_priority_document = bool(
+            priority_ids
+            and (
+                str(row["document_id"] or "").strip() in priority_ids
+                or str(row["id"] or "").strip() in priority_ids
+            )
+        )
+        if is_priority_document:
+            score += 50.0
+            matched = list(dict.fromkeys([*matched, "working_document"]))
         canonical_kind = _canonical_kind_for_row(row)
         if query_style == "intro" and canonical_kind == "raw_file":
             intro_support_text = "\n".join(
@@ -3376,6 +3423,7 @@ def retrieve_knowledge_bundle(
             "openOriginalDisabledReason": openable_paths.get("openOriginalDisabledReason"),
             "familyId": family_id,
             "canonicalKind": canonical_kind,
+            "isPriorityWorkingDocument": is_priority_document,
         }
         scored_docs.append(doc_payload)
         bucket = family_pool.setdefault(
@@ -3392,9 +3440,10 @@ def retrieve_knowledge_bundle(
         bucket["bestScore"] = max(float(bucket["bestScore"]), float(score))
         bucket["matchedTerms"].update(matched)
         bucket["canonicalKinds"].add(canonical_kind)
+        bucket["isPriorityWorkingDocument"] = bool(bucket.get("isPriorityWorkingDocument")) or is_priority_document
 
     families = list(family_pool.values())
-    families.sort(key=lambda item: float(item["bestScore"]), reverse=True)
+    families.sort(key=lambda item: (1 if item.get("isPriorityWorkingDocument") else 0, float(item["bestScore"])), reverse=True)
     if not families:
         return RetrievalBundle(
             citations=[],
@@ -3410,6 +3459,8 @@ def retrieve_knowledge_bundle(
                 "selectedCanonicalKinds": [],
                 "softwareMaterialIncluded": False,
                 "backgroundTrail": [],
+                "workingDocumentIds": sorted(priority_ids),
+                "workingDocumentHitCount": 0,
             },
             context_text="",
             matched_terms=[],
@@ -3417,10 +3468,15 @@ def retrieve_knowledge_bundle(
         )
 
     selected_pass1: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    for family in [item for item in families if item.get("isPriorityWorkingDocument")]:
+        selected_pass1.append(family)
+        selected_ids.add(str(family["familyId"]))
+        if len(selected_pass1) >= 8:
+            break
     if query_style == "intro":
         raw_families = [item for item in families if "raw_file" in item["canonicalKinds"]]
         preferred_raw_families = [item for item in raw_families if _is_intro_primary_family(item)]
-        selected_ids: set[str] = set()
         for bucket_name in ("institution", "project", "strategy", "source"):
             candidates = [
                 item
@@ -3457,8 +3513,9 @@ def retrieve_knowledge_bundle(
     elif query_style == "meeting":
         meeting_families = [item for item in families if "meeting_doc" in item["canonicalKinds"]]
         raw_families = [item for item in families if "raw_file" in item["canonicalKinds"]]
-        selected_ids: set[str] = set()
         for family in meeting_families[:4]:
+            if str(family["familyId"]) in selected_ids:
+                continue
             selected_pass1.append(family)
             selected_ids.add(str(family["familyId"]))
         for family in raw_families:
@@ -3479,14 +3536,17 @@ def retrieve_knowledge_bundle(
     else:
         raw_candidate = next((item for item in families if "raw_file" in item["canonicalKinds"]), None)
         software_candidate = next((item for item in families if any(_is_software_kind(kind) for kind in item["canonicalKinds"])), None)
-        if raw_candidate is not None:
+        if raw_candidate is not None and str(raw_candidate["familyId"]) not in selected_ids:
             selected_pass1.append(raw_candidate)
-        if software_candidate is not None and software_candidate is not raw_candidate:
+            selected_ids.add(str(raw_candidate["familyId"]))
+        if software_candidate is not None and software_candidate is not raw_candidate and str(software_candidate["familyId"]) not in selected_ids:
             selected_pass1.append(software_candidate)
+            selected_ids.add(str(software_candidate["familyId"]))
         for family in families:
-            if family in selected_pass1:
+            if str(family["familyId"]) in selected_ids:
                 continue
             selected_pass1.append(family)
+            selected_ids.add(str(family["familyId"]))
             if len(selected_pass1) >= 8:
                 break
     selected_terms = {term for family in selected_pass1 for term in family["matchedTerms"]}
@@ -3664,6 +3724,8 @@ def retrieve_knowledge_bundle(
         "selectedCanonicalKinds": selected_canonical_kinds,
         "softwareMaterialIncluded": any(_is_software_kind(kind) for kind in selected_canonical_kinds),
         "backgroundTrail": background_trail[:12],
+        "workingDocumentIds": sorted(priority_ids),
+        "workingDocumentHitCount": sum(1 for item in citations if str(item.knowledge_document_id or "").strip() in priority_ids),
     }
     return RetrievalBundle(
         citations=citations,

@@ -59,7 +59,9 @@ PRIMARY_CATEGORIES = [
     "组织与战略",
     "其他资料",
 ]
-HUMAN_VISIBLE_CATEGORIES = [*PRIMARY_CATEGORIES, "战略陪伴"]
+ONLINE_TRANSCRIPT_CATEGORY = "线上转写"
+SYSTEM_FOLDER_CATEGORIES = ["收件箱", ONLINE_TRANSCRIPT_CATEGORY, "待处理", "归档"]
+HUMAN_VISIBLE_CATEGORIES = [*PRIMARY_CATEGORIES, ONLINE_TRANSCRIPT_CATEGORY, "战略陪伴"]
 CATEGORY_KEYWORDS = {
     "财务与筹款": ["预算", "财务", "筹款", "捐赠", "基金", "募资", "现金流", "报表", "赞助"],
     "品牌与传播": ["传播", "品牌", "媒体", "公关", "公众号", "内容", "活动传播", "campaign", "社媒"],
@@ -1696,8 +1698,12 @@ def get_vector_runtime_status(
     embedding_status = embedding_backend_status(data_dir)
     if settings.embeddingProvider == "doubao" and ai_service is not None:
         try:
-            store = ai_service._store_for("doubao")  # type: ignore[attr-defined]
-            has_key = bool(store and str(store.get_api_key() or "").strip())
+            store = ai_service._store_for("openai_compatible")  # type: ignore[attr-defined]
+            legacy_store = ai_service._store_for("doubao")  # type: ignore[attr-defined]
+            has_key = bool(
+                (store and str(store.get_api_key() or "").strip())
+                or (legacy_store and str(legacy_store.get_api_key() or "").strip())
+            )
         except Exception:
             has_key = False
         if not has_key:
@@ -1844,7 +1850,7 @@ def ensure_client_workspace(data_dir: Path, client_id: str) -> dict[str, Path]:
     root = human_workspace_root(data_dir, client_id)
     root.mkdir(parents=True, exist_ok=True)
     folders: dict[str, Path] = {}
-    for label in HUMAN_VISIBLE_CATEGORIES:
+    for label in SYSTEM_FOLDER_CATEGORIES:
         folder = root / label
         folder.mkdir(parents=True, exist_ok=True)
         folders[label] = folder
@@ -1865,7 +1871,10 @@ def desired_human_file_path(
     current_path: Path | None = None,
 ) -> Path:
     folders = ensure_client_workspace(data_dir, client_id)
-    target_dir = folders.get(category) or folders["其他资料"]
+    target_dir = folders.get(category)
+    if target_dir is None:
+        target_dir = human_workspace_root(data_dir, client_id) / safe_filename(category or "待处理")
+        target_dir.mkdir(parents=True, exist_ok=True)
     source_name = filename or (current_path.name if current_path else "document")
     safe_name = safe_filename(source_name)
     stem = Path(safe_name).stem or doc_uid

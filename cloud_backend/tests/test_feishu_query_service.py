@@ -17,9 +17,9 @@ def make_client(tmp_path, monkeypatch) -> TestClient:
     data_dir = tmp_path / "cloud-data"
     monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
     monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
-    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Qinghua123!")
-    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Jianing123!")
-    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Yishuo123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
     return TestClient(create_app())
 
 
@@ -393,8 +393,8 @@ def test_weekly_review_and_event_line_queries_return_personal_summaries(tmp_path
 def test_model_parse_can_filter_tasks_by_collaboration_partner(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     headers, admin_user = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
-    _, qinghua_user = auth_headers(client, "qinghua@yiyu-system.com", "Qinghua123!")
-    _, jianing_user = auth_headers(client, "jianing@yiyu-system.com", "Jianing123!")
+    _, qinghua_user = auth_headers(client, "qinghua@yiyu-system.com", "Simulate123!")
+    _, jianing_user = auth_headers(client, "jianing@yiyu-system.com", "Simulate123!")
     organization_id = save_org_feishu_integration(client, headers, monkeypatch)
     disable_outbound_feishu(monkeypatch, client)
     seed_delivery_target(client, organization_id, admin_user["id"], "ou_admin")

@@ -6,7 +6,6 @@ import { spawnSync } from 'node:child_process';
 
 export const APP_NAME = '益语智库自用平台 V2.0.app';
 export const APP_DISPLAY_NAME = '益语智库自用平台 V2.0';
-export const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
 export const VERSION_MANIFEST_RELATIVE_PATH = path.join('dist', 'version-manifest.json');
 export const BANNED_RENDERER_COPY = [
   '已基于命中的资料生成简版可用回答',
@@ -32,8 +31,50 @@ export const DEFAULT_RUNTIME_EVIDENCE_DIR = path.join(
 export const DEFAULT_INSTALL_RECEIPT_PATH = path.join(DEFAULT_RUNTIME_EVIDENCE_DIR, 'install-receipt.json');
 export const DEFAULT_INSTALL_SMOKE_PATH = path.join(DEFAULT_RUNTIME_EVIDENCE_DIR, 'install-smoke.json');
 export const DEFAULT_WORKSPACE_CHAT_SMOKE_PATH = path.join(DEFAULT_RUNTIME_EVIDENCE_DIR, 'workspace-chat-smoke.json');
+export const PACKAGED_RUNTIME_RELATIVE_PATH = path.join('Contents', 'Resources', 'runtime');
+export const RUNTIME_SEED_MANIFEST_FILE = 'runtime-seed-manifest.json';
+export const RUNTIME_BACKEND_REQUIREMENTS_FILE = 'backend-requirements.txt';
+export const RUNTIME_PYTHON_SEED_DIR = 'python-seed';
+export const RUNTIME_WHEELHOUSE_DIR = 'wheelhouse';
 
 const HASH_EXTENSIONS = new Set(['.py', '.toml', '.json', '.yaml', '.yml', '.lock']);
+const PACKAGED_APP_CONTENT_ROOT = path.join('Contents', 'Resources', 'app');
+const PACKAGED_CONTENT_VIOLATION_LIMIT = 80;
+
+const PACKAGED_CONTENT_VIOLATION_RULES = [
+  {
+    test: (relativePath) => relativePath === 'backend/output' || relativePath.startsWith('backend/output/'),
+    reason: 'backend output artifact',
+  },
+  {
+    test: (relativePath) => relativePath === 'cloud_backend/output' || relativePath.startsWith('cloud_backend/output/'),
+    reason: 'cloud backend output artifact',
+  },
+  {
+    test: (relativePath) => /(^|\/)__pycache__(\/|$)/.test(relativePath),
+    reason: 'python bytecode cache directory',
+  },
+  {
+    test: (relativePath) => /(^|\/)(\.pytest_cache|\.mypy_cache|\.ruff_cache)(\/|$)/.test(relativePath),
+    reason: 'tool cache directory',
+  },
+  {
+    test: (relativePath) => /(^|\/)\.env(\..*)?$/.test(relativePath),
+    reason: 'environment file',
+  },
+  {
+    test: (relativePath) => /\.(db|sqlite|sqlite3)(-(wal|shm))?$/i.test(relativePath),
+    reason: 'local database file',
+  },
+  {
+    test: (relativePath) => /\.(pyc|pyo|cstemp)$/i.test(relativePath),
+    reason: 'runtime cache file',
+  },
+  {
+    test: (relativePath) => /(^|\/)\.DS_Store$/i.test(relativePath),
+    reason: 'macOS metadata file',
+  },
+];
 
 function stableSerialize(value) {
   if (Array.isArray(value)) {
@@ -101,6 +142,49 @@ export function readAppManifest(appPath) {
 
 export function sha256File(targetPath) {
   return sha256Buffer(fs.readFileSync(targetPath));
+}
+
+export function sha256Directory(rootPath) {
+  const resolvedRoot = path.resolve(rootPath);
+  if (!fs.existsSync(resolvedRoot)) {
+    return 'missing';
+  }
+  const digest = createHash('sha256');
+  const entries = [];
+  const visit = (entryPath) => {
+    const stat = fs.lstatSync(entryPath);
+    const relativePath = path.relative(resolvedRoot, entryPath).split(path.sep).join('/');
+    if (stat.isSymbolicLink()) {
+      entries.push({
+        kind: 'symlink',
+        path: relativePath,
+        target: fs.readlinkSync(entryPath),
+      });
+      return;
+    }
+    if (stat.isDirectory()) {
+      for (const child of fs.readdirSync(entryPath)) {
+        visit(path.join(entryPath, child));
+      }
+      return;
+    }
+    entries.push({
+      kind: 'file',
+      path: relativePath,
+      hash: sha256File(entryPath),
+    });
+  };
+  visit(resolvedRoot);
+  entries.sort((left, right) => left.path.localeCompare(right.path) || left.kind.localeCompare(right.kind));
+  for (const entry of entries) {
+    digest.update(entry.kind);
+    digest.update('\0');
+    digest.update(entry.path);
+    digest.update('\0');
+    digest.update(entry.hash || entry.target || '');
+    digest.update('\0');
+  }
+  return digest.digest('hex');
 }
 
 export function computeBackendSourceHash(rootPath) {
@@ -300,6 +384,83 @@ export function inspectBackendCapabilities(appPath, symbols = REQUIRED_BACKEND_C
   return inspectBackendCapabilityDirectory(backendAppPath, symbols);
 }
 
+export function resolveAppPackagedRuntimeRoot(appPath) {
+  return path.join(path.resolve(appPath), PACKAGED_RUNTIME_RELATIVE_PATH);
+}
+
+export function readPackagedRuntimeSeedManifest(runtimeRoot) {
+  const manifestPath = path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE);
+  if (!fs.existsSync(manifestPath)) {
+    return null;
+  }
+  return readJsonFile(manifestPath);
+}
+
+function listWheelFiles(wheelhousePath) {
+  if (!fs.existsSync(wheelhousePath)) {
+    return [];
+  }
+  return fs.readdirSync(wheelhousePath)
+    .filter((item) => item.toLowerCase().endsWith('.whl'))
+    .sort();
+}
+
+export function inspectPackagedRuntimeSeed(appPath) {
+  const runtimeRoot = resolveAppPackagedRuntimeRoot(appPath);
+  const manifest = readPackagedRuntimeSeedManifest(runtimeRoot);
+  const requirementsPath = path.join(runtimeRoot, manifest?.backend?.requirementsPath || RUNTIME_BACKEND_REQUIREMENTS_FILE);
+  const pythonExecutable = path.join(
+    runtimeRoot,
+    manifest?.python?.executable || path.join(RUNTIME_PYTHON_SEED_DIR, 'bin', 'python3.11'),
+  );
+  const pythonLib = path.join(runtimeRoot, RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
+  const wheelhousePath = path.join(runtimeRoot, manifest?.wheelhouse?.path || RUNTIME_WHEELHOUSE_DIR);
+  const wheelFiles = listWheelFiles(wheelhousePath);
+  const requirementsSha256 = fs.existsSync(requirementsPath) ? sha256File(requirementsPath) : null;
+  const wheelhouseSha256 = fs.existsSync(wheelhousePath) ? sha256Directory(wheelhousePath) : null;
+  const missing = [];
+  if (!fs.existsSync(runtimeRoot)) missing.push(`missing runtime root: ${runtimeRoot}`);
+  if (!manifest) missing.push(`missing ${RUNTIME_SEED_MANIFEST_FILE}`);
+  if (!fs.existsSync(pythonExecutable)) missing.push(`missing python seed executable: ${pythonExecutable}`);
+  if (!fs.existsSync(pythonLib)) missing.push(`missing python seed libpython: ${pythonLib}`);
+  if (!fs.existsSync(requirementsPath)) missing.push(`missing ${RUNTIME_BACKEND_REQUIREMENTS_FILE}`);
+  if (wheelFiles.length === 0) missing.push(`empty ${RUNTIME_WHEELHOUSE_DIR}`);
+  const requirementsHashMatch = Boolean(
+    manifest?.backend?.requirementsSha256
+      && requirementsSha256
+      && manifest.backend.requirementsSha256 === requirementsSha256,
+  );
+  const wheelhouseHashMatch = Boolean(
+    manifest?.wheelhouse?.sha256
+      && wheelhouseSha256
+      && manifest.wheelhouse.sha256 === wheelhouseSha256,
+  );
+  if (manifest && !requirementsHashMatch) {
+    missing.push('backend requirements hash mismatch');
+  }
+  if (manifest && !wheelhouseHashMatch) {
+    missing.push('wheelhouse hash mismatch');
+  }
+  return {
+    runtimeRoot,
+    manifestPath: path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE),
+    exists: fs.existsSync(runtimeRoot),
+    manifest,
+    pythonExecutable,
+    pythonLib,
+    pythonExecutableExists: fs.existsSync(pythonExecutable),
+    requirementsPath,
+    requirementsSha256,
+    requirementsHashMatch,
+    wheelhousePath,
+    wheelFileCount: wheelFiles.length,
+    wheelhouseSha256,
+    wheelhouseHashMatch,
+    missing,
+    match: missing.length === 0,
+  };
+}
+
 export function findBannedRendererCopyViolations(appPath) {
   const manifest = readAppManifest(appPath);
   if (!manifest?.rendererEntry) {
@@ -320,6 +481,43 @@ export function findBannedRendererCopyViolations(appPath) {
   }
   const text = fs.readFileSync(rendererPath, 'utf8');
   return BANNED_RENDERER_COPY.filter((phrase) => text.includes(phrase));
+}
+
+export function findPackagedContentViolations(appPath) {
+  const appRoot = path.join(path.resolve(appPath), PACKAGED_APP_CONTENT_ROOT);
+  const violations = [];
+  if (!fs.existsSync(appRoot)) {
+    return [`missing packaged app content root: ${appRoot}`];
+  }
+
+  const visit = (entryPath) => {
+    if (violations.length >= PACKAGED_CONTENT_VIOLATION_LIMIT) {
+      return;
+    }
+    const stat = fs.lstatSync(entryPath);
+    const relativePath = path.relative(appRoot, entryPath).split(path.sep).join('/');
+    for (const rule of PACKAGED_CONTENT_VIOLATION_RULES) {
+      if (rule.test(relativePath)) {
+        violations.push(`${relativePath} (${rule.reason})`);
+        if (stat.isDirectory()) {
+          return;
+        }
+        break;
+      }
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      return;
+    }
+    for (const child of fs.readdirSync(entryPath)) {
+      visit(path.join(entryPath, child));
+      if (violations.length >= PACKAGED_CONTENT_VIOLATION_LIMIT) {
+        return;
+      }
+    }
+  };
+
+  visit(appRoot);
+  return violations;
 }
 
 export function readEvidenceJson(targetPath) {

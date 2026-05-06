@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Bot, CheckCircle2, Phone, RefreshCw, ShieldAlert, Users } from 'lucide-react';
+import { Bot, CheckCircle2, Phone, RefreshCw, Users } from 'lucide-react';
 
 import type {
   FeishuDeliveryProfile,
@@ -22,8 +22,6 @@ type Props = {
   onSaveIntegration: (payload: OrgFeishuIntegrationPayload) => Promise<void>;
   onSaveRememberedInputs: (payload: LocalInputMemoryFeishuIntegration) => Promise<void>;
   onSaveDeliveryProfile: (payload: FeishuDeliveryProfilePayload) => Promise<void>;
-  onOpenOrganizationSetup: () => void;
-  onOpenCloudAuth: () => void;
 };
 
 function statusTone(status: 'idle' | 'success' | 'failed') {
@@ -61,8 +59,6 @@ export function FeishuOrgIntegrationPanel({
   onSaveIntegration,
   onSaveRememberedInputs,
   onSaveDeliveryProfile,
-  onOpenOrganizationSetup,
-  onOpenCloudAuth,
 }: Props) {
   const [appId, setAppId] = useState(integration.appId || rememberedInputs.appId || '');
   const [appSecret, setAppSecret] = useState(rememberedInputs.appSecret || '');
@@ -88,8 +84,9 @@ export function FeishuOrgIntegrationPanel({
     appId.trim() !== (integration.appId || '')
     || Boolean(appSecret.trim());
   const canConfigureIntegration = sessionMode === 'cloud' && membership.hasOrganization;
+  const canConfigureDeliveryProfile = sessionMode === 'cloud' && membership.hasOrganization && integration.enabled;
   const canSaveIntegration = canConfigureIntegration && integrationChanges && !saveBusy;
-  const canSaveDeliveryProfile = sessionMode === 'cloud' && mobile.trim() !== (deliveryProfile.mobile || '') && !savePhoneBusy;
+  const canSaveDeliveryProfile = canConfigureDeliveryProfile && mobile.trim() !== (deliveryProfile.mobile || '') && !savePhoneBusy;
 
   const integrationHelper = useMemo(() => {
     if (sessionMode !== 'cloud') {
@@ -124,11 +121,13 @@ export function FeishuOrgIntegrationPanel({
       appSecret: appSecret.trim() || undefined,
     };
     await onSaveIntegration(payload);
-    await onSaveRememberedInputs({
-      rememberInputs: rememberLocalInputs,
-      appId: payload.appId || '',
-      appSecret: payload.appSecret || '',
-    });
+	    await onSaveRememberedInputs({
+	      rememberInputs: rememberLocalInputs,
+	      appId: payload.appId || '',
+	      callbackMode: payload.callbackMode || 'cloud_relay',
+	      customCallbackUrl: payload.customCallbackUrl || '',
+	      appSecret: payload.appSecret || '',
+	    });
     if (!rememberLocalInputs) {
       setAppSecret('');
     }
@@ -156,32 +155,34 @@ export function FeishuOrgIntegrationPanel({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <input
-            value={appId}
-            onChange={(event) => setAppId(event.target.value)}
-            placeholder="飞书 App ID"
-            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none disabled:text-gray-400 disabled:bg-gray-100"
-            disabled={!canConfigureIntegration}
-          />
-          <input
-            type="password"
-            value={appSecret}
-            onChange={(event) => setAppSecret(event.target.value)}
-            placeholder={integration.hasAppSecret ? '已保存组织密钥；如需更新请重新输入' : '飞书 App Secret'}
-            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none disabled:text-gray-400 disabled:bg-gray-100"
-            disabled={!canConfigureIntegration}
-          />
-        </div>
+        {canConfigureIntegration && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <input
+                value={appId}
+                onChange={(event) => setAppId(event.target.value)}
+                placeholder="飞书 App ID"
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none disabled:text-gray-400 disabled:bg-gray-100"
+              />
+              <input
+                type="password"
+                value={appSecret}
+                onChange={(event) => setAppSecret(event.target.value)}
+                placeholder={integration.hasAppSecret ? '已保存组织密钥；如需更新请重新输入' : '飞书 App Secret'}
+                className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none disabled:text-gray-400 disabled:bg-gray-100"
+              />
+            </div>
 
-        <label className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
-          <input
-            type="checkbox"
-            checked={rememberLocalInputs}
-            onChange={(event) => setRememberLocalInputs(event.target.checked)}
-          />
-          在本机记住 App ID / App Secret
-        </label>
+            <label className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
+              <input
+                type="checkbox"
+                checked={rememberLocalInputs}
+                onChange={(event) => setRememberLocalInputs(event.target.checked)}
+              />
+              在本机记住 App ID / App Secret
+            </label>
+          </>
+        )}
 
         <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
           <p className="text-[12px] font-bold text-slate-900">
@@ -195,31 +196,19 @@ export function FeishuOrgIntegrationPanel({
           ) : null}
         </div>
 
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              if (sessionMode !== 'cloud') {
-                onOpenCloudAuth();
-                return;
-              }
-              if (!membership.hasOrganization) {
-                onOpenOrganizationSetup();
-                return;
-              }
-              void handleSaveIntegration();
-            }}
-            disabled={sessionMode === 'cloud' && membership.hasOrganization ? !canSaveIntegration : false}
-            className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[13px] font-bold text-white bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {saveBusy ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-            {sessionMode !== 'cloud'
-              ? '连接云端'
-              : membership.hasOrganization
-                ? '验证并保存组织飞书接入'
-                : '加入 / 创建组织'}
-          </button>
-        </div>
+        {canConfigureIntegration && (
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void handleSaveIntegration()}
+              disabled={!canSaveIntegration}
+              className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[13px] font-bold text-white bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saveBusy ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+              验证并保存组织飞书接入
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm space-y-5">
@@ -238,13 +227,14 @@ export function FeishuOrgIntegrationPanel({
           </div>
         </div>
 
-        <input
-          value={mobile}
-          onChange={(event) => setMobile(event.target.value)}
-          placeholder="飞书账号对应手机号"
-          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none disabled:text-gray-400 disabled:bg-gray-100"
-          disabled={sessionMode !== 'cloud'}
-        />
+        {canConfigureDeliveryProfile && (
+          <input
+            value={mobile}
+            onChange={(event) => setMobile(event.target.value)}
+            placeholder="飞书账号对应手机号"
+            className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3 text-[13px] font-medium outline-none"
+          />
+        )}
 
         <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
           <p className="text-[12px] font-bold text-slate-900 flex items-center gap-2">
@@ -263,40 +253,19 @@ export function FeishuOrgIntegrationPanel({
           ) : null}
         </div>
 
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              if (sessionMode !== 'cloud') {
-                onOpenCloudAuth();
-                return;
-              }
-              if (!membership.hasOrganization) {
-                onOpenOrganizationSetup();
-                return;
-              }
-              if (!integration.enabled) {
-                return;
-              }
-              void handleSaveDeliveryProfile();
-            }}
-            disabled={
-              sessionMode === 'cloud'
-                ? !membership.hasOrganization || !integration.enabled || !canSaveDeliveryProfile
-                : false
-            }
-            className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[13px] font-bold text-white bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {savePhoneBusy ? <RefreshCw size={16} className="animate-spin" /> : <ShieldAlert size={16} />}
-            {sessionMode !== 'cloud'
-              ? '连接云端'
-              : !membership.hasOrganization
-                ? '加入 / 创建组织'
-                : !integration.enabled
-                  ? '先完成组织飞书接入'
-                  : (deliveryProfile.mobile ? '更新飞书手机号' : '保存飞书手机号')}
-          </button>
-        </div>
+        {canConfigureDeliveryProfile && (
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void handleSaveDeliveryProfile()}
+              disabled={!canSaveDeliveryProfile}
+              className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[13px] font-bold text-white bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {savePhoneBusy ? <RefreshCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+              {deliveryProfile.mobile ? '更新飞书手机号' : '保存飞书手机号'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
