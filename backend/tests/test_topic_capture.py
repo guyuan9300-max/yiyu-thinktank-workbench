@@ -5,7 +5,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.services import topic_capture
-from app.services.topic_capture import TopicSearchHit, _candidate_queries, _expand_topic_queries, _extract_prompt_queries, _keyword_tokens, fetch_topic_candidates_from_web
+from app.services.topic_capture import TopicSearchHit, _candidate_queries, _expand_topic_queries, _extract_prompt_queries, _keyword_tokens, _parse_bing_html_hits, fetch_topic_candidates_from_web
 from app.services.topic_source_fetcher import PreferredSourceHit
 
 
@@ -158,6 +158,25 @@ def test_fetch_topic_candidates_filters_out_expired_hits(monkeypatch):
 
     assert len(hits) == 1
     assert hits[0].title == "时间范围内的新新闻"
+
+
+def test_parse_bing_html_hits_extracts_public_search_results():
+    html = """
+    <ol id="b_results">
+      <li class="b_algo">
+        <h2><a href="https://foundation.example.org/grants/2026">公益资助计划开放申请</a></h2>
+        <div class="b_caption"><p>面向公益组织数字化项目提供资助，申报截止 2026-05-31。</p></div>
+      </li>
+    </ol>
+    """
+
+    hits = _parse_bing_html_hits(html, provider="bing_web_html", query="公益数字化 资助计划")
+
+    assert len(hits) == 1
+    assert hits[0].title == "公益资助计划开放申请"
+    assert hits[0].summary == "面向公益组织数字化项目提供资助，申报截止 2026-05-31。"
+    assert hits[0].source == "foundation.example.org"
+    assert hits[0].query == "公益数字化 资助计划"
 
 
 def test_fetch_topic_candidates_includes_preferred_source_hits(monkeypatch):

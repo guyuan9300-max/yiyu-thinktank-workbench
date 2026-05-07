@@ -342,6 +342,8 @@ from app.models import (
     TaskTagRecord,
     TaskUpdatePayload,
     TitleSuggestionResponse,
+    IntelligenceProfileMutationPayload,
+    IntelligenceProfileRecord,
     TopicRadarAssistPayload,
     TopicRadarAssistResponse,
     TopicRadarPreferredSourceRecord,
@@ -869,6 +871,7 @@ REMEMBERED_AI_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-ai-input"
 REMEMBERED_FEISHU_INPUT_SERVICE = "com.yiyu.self-workbench.remembered-feishu-input"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 THREAD_SYNC_DOC_PATH = PROJECT_ROOT / "docs" / "thread-sync.md"
+INTELLIGENCE_DEMO_SYNC_PATH = PROJECT_ROOT / ".yiyu-sync" / "intelligence-demo.json"
 SUPPORTED_IMPORT_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx"}
 LEGACY_IMPORT_EXTENSIONS = {".json", ".csv"}
 DEMO_CLIENT_IDS = ("client_cffc", "client_star")
@@ -41150,7 +41153,135 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return response
         return save_weekly_review_locally(payload)
 
+    synced_intelligence_demo_hash: str | None = None
+    sync_intelligence_demo_column_cache: dict[str, set[str]] = {}
+    sync_intelligence_demo_tables = (
+        "topic_radars",
+        "intelligence_profiles",
+        "topic_candidates",
+        "topic_candidate_insights",
+    )
+
+    def quote_sql_identifier(identifier: str) -> str:
+        return f'"{identifier.replace(chr(34), chr(34) + chr(34))}"'
+
+    def sync_intelligence_demo_table_columns(table_name: str) -> set[str]:
+        if table_name not in sync_intelligence_demo_tables:
+            return set()
+        cached = sync_intelligence_demo_column_cache.get(table_name)
+        if cached is not None:
+            return cached
+        try:
+            rows = state.db.fetchall(f"PRAGMA table_info({table_name})")
+        except sqlite3.Error:
+            rows = []
+        columns = {str(row["name"]) for row in rows if str(row["name"] or "").strip()}
+        sync_intelligence_demo_column_cache[table_name] = columns
+        return columns
+
+    def import_sync_intelligence_demo() -> None:
+        nonlocal synced_intelligence_demo_hash
+        if not INTELLIGENCE_DEMO_SYNC_PATH.exists():
+            return
+        try:
+            raw_text = INTELLIGENCE_DEMO_SYNC_PATH.read_text(encoding="utf-8")
+            digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+            if synced_intelligence_demo_hash == digest:
+                return
+            payload = json.loads(raw_text)
+            if not isinstance(payload, dict) or payload.get("kind") != "yiyu-intelligence-demo-sync":
+                return
+            tables = payload.get("tables")
+            if not isinstance(tables, dict):
+                return
+
+            rows_by_table: dict[str, list[dict[str, object]]] = {}
+            for table_name in sync_intelligence_demo_tables:
+                allowed_columns = sync_intelligence_demo_table_columns(table_name)
+                if not allowed_columns:
+                    continue
+                raw_rows = tables.get(table_name)
+                if not isinstance(raw_rows, list):
+                    continue
+                filtered_rows: list[dict[str, object]] = []
+                for raw_row in raw_rows:
+                    if not isinstance(raw_row, dict) or not str(raw_row.get("id") or "").strip():
+                        continue
+                    row = {key: value for key, value in raw_row.items() if key in allowed_columns}
+                    if "id" in row:
+                        filtered_rows.append(row)
+                if filtered_rows:
+                    rows_by_table[table_name] = filtered_rows
+
+            if not rows_by_table:
+                synced_intelligence_demo_hash = digest
+                return
+
+            def apply_rows(conn: sqlite3.Connection) -> None:
+                for table_name in sync_intelligence_demo_tables:
+                    for row in rows_by_table.get(table_name, []):
+                        if table_name == "intelligence_profiles":
+                            scope_type = str(row.get("scope_type") or "")
+                            scope_id = str(row.get("scope_id") or "")
+                            if scope_type and scope_id:
+                                existing = conn.execute(
+                                    "SELECT id FROM intelligence_profiles WHERE scope_type = ? AND scope_id = ? LIMIT 1",
+                                    (scope_type, scope_id),
+                                ).fetchone()
+                                if existing and str(existing["id"]) != str(row["id"]):
+                                    row["id"] = str(existing["id"])
+                        if table_name == "topic_candidate_insights":
+                            candidate_id = str(row.get("candidate_id") or "")
+                            if candidate_id:
+                                existing = conn.execute(
+                                    "SELECT id FROM topic_candidate_insights WHERE candidate_id = ? LIMIT 1",
+                                    (candidate_id,),
+                                ).fetchone()
+                                if existing and str(existing["id"]) != str(row["id"]):
+                                    row["id"] = str(existing["id"])
+
+                        columns = [column for column in row.keys() if column in sync_intelligence_demo_table_columns(table_name)]
+                        if "id" not in columns:
+                            continue
+                        placeholders = ", ".join("?" for _ in columns)
+                        column_sql = ", ".join(quote_sql_identifier(column) for column in columns)
+                        update_columns = [column for column in columns if column != "id"]
+                        update_sql = ", ".join(
+                            f"{quote_sql_identifier(column)} = excluded.{quote_sql_identifier(column)}"
+                            for column in update_columns
+                        )
+                        conflict_sql = f" DO UPDATE SET {update_sql}" if update_sql else " DO NOTHING"
+                        conn.execute(
+                            f"""
+                            INSERT INTO {quote_sql_identifier(table_name)} ({column_sql})
+                            VALUES ({placeholders})
+                            ON CONFLICT(id){conflict_sql}
+                            """,
+                            tuple(row[column] for column in columns),
+                        )
+
+            state.db.run_in_transaction(apply_rows)
+            synced_intelligence_demo_hash = digest
+        except Exception as exc:
+            logger.warning("failed to import intelligence demo sync: %s", exc)
+
     def build_topic_candidate(row) -> TopicCandidateRecord:
+        deep_analysis = from_json(row["deep_analysis_json"], {}) if "deep_analysis_json" in row.keys() else {}
+        if not isinstance(deep_analysis, dict):
+            deep_analysis = {}
+        if topic_advisor_memo_looks_invalid(str(deep_analysis.get("advisorMemo") or "")):
+            deep_analysis = {}
+        if not deep_analysis:
+            insight_row = state.db.fetchone("SELECT * FROM topic_candidate_insights WHERE candidate_id = ?", (str(row["id"]),))
+            if insight_row:
+                action_plan = _parse_json_list(insight_row["practical_uses_json"])
+                advisor_memo = str(insight_row["advisor_memo"] or "") if "advisor_memo" in insight_row.keys() else ""
+                deep_analysis = {
+                    "advisorMemo": advisor_memo,
+                    "intelligenceBrief": str(insight_row["overview"] or ""),
+                    "advisorAssessment": str(insight_row["editorial_note"] or ""),
+                    "actionPlan": action_plan,
+                }
         return TopicCandidateRecord(
             id=str(row["id"]),
             radarId=str(row["radar_id"]),
@@ -41164,8 +41295,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             status=str(row["status"]),  # type: ignore[arg-type]
             insightStatus=str(row["insight_status"] or "pending"),  # type: ignore[arg-type]
             insightUpdatedAt=str(row["insight_updated_at"]) if row["insight_updated_at"] else None,
+            deepAnalysis=deep_analysis,
             createdAt=str(row["created_at"]),
         )
+
+    def topic_advisor_memo_looks_invalid(memo: str) -> bool:
+        text = str(memo or "").strip()
+        if not text:
+            return False
+        if len(text) < 450:
+            return True
+        if not all(label in text for label in ("情报速览", "情报研判", "行动建议")):
+            return True
+        return bool(re.search(r"一、这篇内容主要讲什么|文章里最值得抓住的观点|它对团队的实际价值|大模型安全|风险治理前置|coreInfo|opportunityOrRisk", text))
 
     def build_topic_candidate_insight(row) -> TopicCandidateInsightRecord:
         return TopicCandidateInsightRecord(
@@ -41176,6 +41318,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             practicalUses=_parse_json_list(row["practical_uses_json"]),
             editorialNote=str(row["editorial_note"] or ""),
             discussionPrompts=_parse_json_list(row["discussion_prompts_json"]),
+            advisorMemo=str(row["advisor_memo"] or "") if "advisor_memo" in row.keys() else "",
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -41252,6 +41395,71 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             createdAt=str(row["created_at"]),
         )
 
+    def build_intelligence_profile(row) -> IntelligenceProfileRecord:
+        radar_title = ""
+        radar_id = str(row["radar_id"] or row["source_radar_id"] or "") if "radar_id" in row.keys() else ""
+        if radar_id:
+            radar_row = state.db.fetchone("SELECT title FROM topic_radars WHERE id = ?", (radar_id,))
+            radar_title = str(radar_row["title"] or "") if radar_row else ""
+        work_context = _parse_json_list(row["work_context_json"]) if "work_context_json" in row.keys() else []
+        priority_needs = _parse_json_list(row["priority_needs_json"]) if "priority_needs_json" in row.keys() else []
+        target_beneficiaries = _parse_json_list(row["target_beneficiaries_json"]) if "target_beneficiaries_json" in row.keys() else []
+        regions = _parse_json_list(row["regions_json"]) if "regions_json" in row.keys() else []
+        opportunity_types = _parse_json_list(row["opportunity_types_json"]) if "opportunity_types_json" in row.keys() else []
+        material_gaps = _parse_json_list(row["material_gaps_json"]) if "material_gaps_json" in row.keys() else []
+        grounding_facts = _parse_json_list(row["grounding_facts_json"]) if "grounding_facts_json" in row.keys() else []
+        admin_summary = str(row["admin_summary_override"] or "") if "admin_summary_override" in row.keys() else ""
+        summary = str(row["summary"] or "")
+        readiness = "ready" if any([summary.strip(), work_context, priority_needs, target_beneficiaries, regions, opportunity_types, grounding_facts]) else "waiting_material"
+        material_summary = [line for line in [
+            f"工作语境：{' / '.join(work_context[:3])}" if work_context else "",
+            f"当前需求：{' / '.join(priority_needs[:3])}" if priority_needs else "",
+            f"服务对象：{' / '.join(target_beneficiaries[:3])}" if target_beneficiaries else "",
+        ] if line]
+        return IntelligenceProfileRecord(
+            id=str(row["id"]),
+            title=str(row["title"] or radar_title or "未命名情报画像"),
+            radarId=radar_id or None,
+            radarTitle=radar_title or None,
+            profileKind=str(row["profile_kind"] or "auto") if "profile_kind" in row.keys() else "auto",
+            scopeType=str(row["scope_type"] or "") or None,
+            scopeId=str(row["scope_id"] or "") or None,
+            clientId=str(row["client_id"] or "") or None,
+            projectModuleId=str(row["project_module_id"] or "") or None,
+            status=str(row["status"] or "pending"),
+            profileReadiness=readiness,
+            summary=summary,
+            effectiveSummary=admin_summary or summary,
+            adminSummaryOverride=admin_summary or None,
+            adminFocus=_parse_json_list(row["admin_focus_json"]) if "admin_focus_json" in row.keys() else [],
+            adminExcludeTerms=_parse_json_list(row["admin_exclude_terms_json"]) if "admin_exclude_terms_json" in row.keys() else [],
+            adminPriorityUrls=_parse_json_list(row["admin_priority_urls_json"]) if "admin_priority_urls_json" in row.keys() else [],
+            adminProfileRefreshEnabled=bool(row["admin_profile_refresh_enabled"]) if "admin_profile_refresh_enabled" in row.keys() else False,
+            adminProfileRefreshFrequency=str(row["admin_profile_refresh_frequency"] or "manual") if "admin_profile_refresh_frequency" in row.keys() else "manual",
+            adminPushEnabled=bool(row["admin_push_enabled"]) if "admin_push_enabled" in row.keys() else False,
+            adminPushFrequency=str(row["admin_push_frequency"] or "manual") if "admin_push_frequency" in row.keys() else "manual",
+            materialSummary=material_summary,
+            workContext=work_context,
+            priorityNeeds=priority_needs,
+            targetBeneficiaries=target_beneficiaries,
+            regions=regions,
+            opportunityTypes=opportunity_types,
+            materialGaps=material_gaps,
+            groundingFacts=grounding_facts,
+            backgroundEnrichments=[],
+            lastFetch=None,
+            deletedAt=str(row["deleted_at"]) if "deleted_at" in row.keys() and row["deleted_at"] else None,
+            createdAt=str(row["created_at"]) if "created_at" in row.keys() and row["created_at"] else None,
+            updatedAt=str(row["updated_at"]) if "updated_at" in row.keys() and row["updated_at"] else None,
+        )
+
+    def fetch_intelligence_profiles() -> list[IntelligenceProfileRecord]:
+        try:
+            rows = state.db.fetchall("SELECT * FROM intelligence_profiles WHERE COALESCE(deleted_at, '') = '' ORDER BY updated_at DESC, created_at DESC")
+        except Exception:
+            return []
+        return [build_intelligence_profile(row) for row in rows]
+
     def fetch_topic_candidates() -> list[TopicCandidateRecord]:
         return [
             build_topic_candidate(row)
@@ -41268,6 +41476,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         editorial_note: str,
         discussion_prompts: list[str],
         source_excerpt: str,
+        advisor_memo: str = "",
+        deep_analysis: dict[str, object] | None = None,
     ) -> TopicCandidateInsightRecord:
         existing = state.db.fetchone("SELECT * FROM topic_candidate_insights WHERE candidate_id = ?", (candidate_id,))
         timestamp = now_iso()
@@ -41275,7 +41485,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 UPDATE topic_candidate_insights
-                SET overview = ?, key_points_json = ?, recommendation_reasons_json = ?, practical_uses_json = ?, editorial_note = ?, discussion_prompts_json = ?, source_excerpt = ?, updated_at = ?
+                SET overview = ?, key_points_json = ?, recommendation_reasons_json = ?, practical_uses_json = ?, editorial_note = ?, discussion_prompts_json = ?, advisor_memo = ?, source_excerpt = ?, updated_at = ?
                 WHERE candidate_id = ?
                 """,
                 (
@@ -41285,6 +41495,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     to_json(practical_uses),
                     editorial_note,
                     to_json(discussion_prompts),
+                    advisor_memo,
                     source_excerpt,
                     timestamp,
                     candidate_id,
@@ -41294,8 +41505,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.execute(
                 """
                 INSERT INTO topic_candidate_insights(
-                    id, candidate_id, overview, key_points_json, recommendation_reasons_json, practical_uses_json, editorial_note, discussion_prompts_json, source_excerpt, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, candidate_id, overview, key_points_json, recommendation_reasons_json, practical_uses_json, editorial_note, discussion_prompts_json, advisor_memo, source_excerpt, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id("insight"),
@@ -41306,10 +41517,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     to_json(practical_uses),
                     editorial_note,
                     to_json(discussion_prompts),
+                    advisor_memo,
                     source_excerpt,
                     timestamp,
                     timestamp,
                 ),
+            )
+        if deep_analysis:
+            state.db.execute(
+                "UPDATE topic_candidates SET deep_analysis_json = ?, updated_at = ? WHERE id = ?",
+                (to_json(deep_analysis), timestamp, candidate_id),
             )
         row = state.db.fetchone("SELECT * FROM topic_candidate_insights WHERE candidate_id = ?", (candidate_id,))
         assert row is not None
@@ -41333,8 +41550,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         editorial_note = str(cached_row["editorial_note"] or "").strip()
         discussion_prompts = _parse_json_list(cached_row["discussion_prompts_json"])
         source_excerpt = str(cached_row["source_excerpt"] or "").strip()
+        advisor_memo = str(cached_row["advisor_memo"] or "").strip() if "advisor_memo" in cached_row.keys() else ""
 
-        if not overview or not key_points or not reasons or not uses or not editorial_note or not discussion_prompts:
+        if not overview or not key_points or not reasons or not uses or not editorial_note or not discussion_prompts or not advisor_memo:
+            return True
+        if topic_advisor_memo_looks_invalid(advisor_memo):
             return True
         if candidate_row["source_url"] and not source_excerpt:
             return True
@@ -41380,6 +41600,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             practical_uses=[str(item) for item in insight_payload.get("practicalUses", []) if str(item).strip()] if isinstance(insight_payload.get("practicalUses"), list) else [],
             editorial_note=str(insight_payload.get("editorialNote") or "").strip(),
             discussion_prompts=[str(item) for item in insight_payload.get("discussionPrompts", []) if str(item).strip()] if isinstance(insight_payload.get("discussionPrompts"), list) else [],
+            advisor_memo=str(insight_payload.get("advisorMemo") or "").strip(),
+            deep_analysis=insight_payload.get("deepAnalysis") if isinstance(insight_payload.get("deepAnalysis"), dict) else None,
             source_excerpt=source_content,
         )
         update_topic_candidate_insight_state(str(candidate_row["id"]), "ready")
@@ -41400,6 +41622,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         recommendation_reasons = insight.recommendationReasons if insight else []
         editorial_note = insight.editorialNote.strip() if insight else ""
         overview = insight.overview.strip() if insight else ""
+        advisor_memo = insight.advisorMemo.strip() if insight and getattr(insight, "advisorMemo", "") else ""
 
         blocks = [
             f"当前情报标题：{str(candidate_row['title'])}",
@@ -41418,19 +41641,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 str(candidate_row["summary"] or "").strip() or "暂无摘要。",
             ]
         )
-        if overview:
-            blocks.extend(["", "大周对文章本身的概述：", overview])
-        if recommendation_reasons:
-            blocks.extend(["", "为什么这篇内容值得看："])
-            blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(recommendation_reasons[:4]))
-        if key_points:
-            blocks.extend(["", "核心观点："])
-            blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(key_points[:6]))
-        if editorial_note:
-            blocks.extend(["", "大周前哨判断：", editorial_note])
-        if writing_angles:
-            blocks.extend(["", "可继续展开成文的角度："])
-            blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(writing_angles[:4]))
+        if advisor_memo:
+            blocks.extend(["", "当前顾问 memo：", advisor_memo])
+        else:
+            if overview:
+                blocks.extend(["", "情报速览：", overview])
+            if editorial_note:
+                blocks.extend(["", "情报研判：", editorial_note])
+            if writing_angles:
+                blocks.extend(["", "行动建议："])
+                blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(writing_angles[:4]))
+            if recommendation_reasons:
+                blocks.extend(["", "推荐依据："])
+                blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(recommendation_reasons[:4]))
+            if key_points:
+                blocks.extend(["", "原始要点："])
+                blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(key_points[:6]))
         if discussion_prompts:
             blocks.extend(["", "原本建议继续追问的问题："])
             blocks.extend(f"{index + 1}. {item}" for index, item in enumerate(discussion_prompts[:4]))
@@ -41703,8 +41929,77 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/topics", response_model=TopicsResponse)
     def list_topics() -> TopicsResponse:
+        import_sync_intelligence_demo()
         radars = [build_topic_radar(row) for row in state.db.fetchall("SELECT * FROM topic_radars ORDER BY created_at ASC")]
-        return TopicsResponse(radars=radars, candidates=fetch_topic_candidates())
+        return TopicsResponse(radars=radars, candidates=fetch_topic_candidates(), intelligenceProfiles=fetch_intelligence_profiles())
+
+    @app.get("/api/v1/intelligence/profiles", response_model=list[IntelligenceProfileRecord])
+    def list_intelligence_profiles() -> list[IntelligenceProfileRecord]:
+        import_sync_intelligence_demo()
+        return fetch_intelligence_profiles()
+
+    @app.post("/api/v1/intelligence/profiles/run-due")
+    def run_due_intelligence_profiles() -> dict[str, object]:
+        return {"triggeredCount": 0, "results": [], "refreshedCount": 0, "fetchedCount": 0}
+
+    @app.patch("/api/v1/intelligence/profiles/{profile_id}", response_model=IntelligenceProfileRecord)
+    def update_intelligence_profile(profile_id: str, payload: IntelligenceProfileMutationPayload) -> IntelligenceProfileRecord:
+        row = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        updates: list[str] = []
+        params: list[object] = []
+        if payload.title is not None:
+            updates.append("title = ?")
+            params.append(payload.title.strip())
+        if payload.summary is not None:
+            updates.append("admin_summary_override = ?")
+            params.append(payload.summary.strip())
+        if payload.focus is not None:
+            updates.append("admin_focus_json = ?")
+            params.append(to_json([item.strip() for item in payload.focus if item.strip()]))
+        if payload.excludeTerms is not None:
+            updates.append("admin_exclude_terms_json = ?")
+            params.append(to_json([item.strip() for item in payload.excludeTerms if item.strip()]))
+        if payload.priorityUrls is not None:
+            updates.append("admin_priority_urls_json = ?")
+            params.append(to_json([item.strip() for item in payload.priorityUrls if item.strip()]))
+        if payload.profileRefreshEnabled is not None:
+            updates.append("admin_profile_refresh_enabled = ?")
+            params.append(1 if payload.profileRefreshEnabled else 0)
+        if payload.profileRefreshFrequency is not None:
+            updates.append("admin_profile_refresh_frequency = ?")
+            params.append(payload.profileRefreshFrequency)
+        if payload.pushEnabled is not None:
+            updates.append("admin_push_enabled = ?")
+            params.append(1 if payload.pushEnabled else 0)
+        if payload.pushFrequency is not None:
+            updates.append("admin_push_frequency = ?")
+            params.append(payload.pushFrequency)
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(profile_id)
+        state.db.execute(f"UPDATE intelligence_profiles SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        updated = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
+        assert updated is not None
+        return build_intelligence_profile(updated)
+
+    @app.post("/api/v1/intelligence/profiles/{profile_id}/refresh", response_model=IntelligenceProfileRecord)
+    def refresh_intelligence_profile(profile_id: str) -> IntelligenceProfileRecord:
+        row = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        state.db.execute("UPDATE intelligence_profiles SET status = ?, updated_at = ? WHERE id = ?", ("ready", now_iso(), profile_id))
+        updated = state.db.fetchone("SELECT * FROM intelligence_profiles WHERE id = ?", (profile_id,))
+        assert updated is not None
+        return build_intelligence_profile(updated)
+
+    @app.post("/api/v1/intelligence/profiles/{profile_id}/trial-run")
+    def trial_run_intelligence_profile(profile_id: str) -> dict[str, object]:
+        row = state.db.fetchone("SELECT id FROM intelligence_profiles WHERE id = ?", (profile_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        return {"createdCount": 0, "failureReason": "当前没有新的可精选公开情报"}
 
     @app.post("/api/v1/topics/radars", response_model=TopicRadarRecord)
     def create_radar(payload: TopicRadarPayload) -> TopicRadarRecord:
@@ -41852,11 +42147,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             history=payload.history,
         )
         system_instruction = (
-            "你是资讯情报站里的大周。"
-            "你现在只围绕当前这篇情报继续回答问题。"
-            "回答时优先基于这篇新闻本身、大周已有的解析和原文摘录，不要脱离当前材料泛泛而谈。"
-            "你可以做更高层的判断，但不要编造当前材料里没有出现过的具体事实、数据、人名或时间。"
-            "如果用户的问题已经超出当前材料，就直接说明材料还不够，并指出下一步该补什么信息。"
+            "你是资讯情报站里的资深顾问。"
+            "你现在只围绕当前这篇情报和已有顾问 memo 回答用户追问。"
+            "必须先识别用户到底在问成本、风险、匹配度、申报路径、负责人、材料准备还是其他问题，然后只回答这个问题。"
+            "不要整段复述卡片已有分析；必要时只引用一句最关键依据。"
+            "可以做顾问式综合判断，但要区分事实、推断和待核验。"
+            "如果材料不够，就明确说不足以判断哪些事项，并给出最小核验动作。"
             "请用中文直接回答，不要解释系统过程，不要输出 JSON。"
         )
         try:
@@ -41960,6 +42256,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     tags=item.tags,
                     sourceType="topic_candidate",
                     sourceId=candidate_id,
+                    eventLineId=item.eventLineId,
                 ),
                 status="inbox",
             )

@@ -6061,6 +6061,18 @@ class TopicCandidateRecord(BaseModel):
     status: TopicCandidateStatus
     insightStatus: TopicCandidateInsightStatus = "pending"
     insightUpdatedAt: str | None = None
+    deepAnalysis: dict[str, object] = Field(default_factory=dict)
+    convertedTaskId: str | None = None
+    contentKind: str | None = None
+    whyRecommended: str | None = None
+    relevanceReason: str | None = None
+    suggestedAction: str | None = None
+    recommendationBasis: list[str] = Field(default_factory=list)
+    groundingFactRefs: list[str] = Field(default_factory=list)
+    scopeType: str | None = None
+    scopeId: str | None = None
+    clientId: str | None = None
+    projectModuleId: str | None = None
     createdAt: str
 
 
@@ -6079,8 +6091,74 @@ class TopicCandidateInsightRecord(BaseModel):
     practicalUses: list[str] = Field(default_factory=list)
     editorialNote: str = ""
     discussionPrompts: list[str] = Field(default_factory=list)
+    advisorMemo: str = ""
     createdAt: str
     updatedAt: str
+
+
+class IntelligenceProfileBackgroundEnrichmentRecord(BaseModel):
+    id: str | None = None
+    title: str
+    sourceUrl: str | None = None
+    status: str | None = None
+
+
+class IntelligenceProfileFetchSummaryRecord(BaseModel):
+    status: str | None = None
+    failureReason: str | None = None
+    completedAt: str | None = None
+    createdCount: int = 0
+    weakSignalCount: int = 0
+    backgroundEnrichmentCount: int = 0
+
+
+class IntelligenceProfileRecord(BaseModel):
+    id: str
+    title: str
+    radarId: str | None = None
+    radarTitle: str | None = None
+    profileKind: str = "auto"
+    scopeType: str | None = None
+    scopeId: str | None = None
+    clientId: str | None = None
+    projectModuleId: str | None = None
+    status: str | None = None
+    profileReadiness: str | None = None
+    summary: str = ""
+    effectiveSummary: str | None = None
+    adminSummaryOverride: str | None = None
+    adminFocus: list[str] = Field(default_factory=list)
+    adminExcludeTerms: list[str] = Field(default_factory=list)
+    adminPriorityUrls: list[str] = Field(default_factory=list)
+    adminProfileRefreshEnabled: bool = False
+    adminProfileRefreshFrequency: str = "manual"
+    adminPushEnabled: bool = False
+    adminPushFrequency: str = "manual"
+    materialSummary: list[str] = Field(default_factory=list)
+    workContext: list[str] = Field(default_factory=list)
+    priorityNeeds: list[str] = Field(default_factory=list)
+    targetBeneficiaries: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(default_factory=list)
+    opportunityTypes: list[str] = Field(default_factory=list)
+    materialGaps: list[str] = Field(default_factory=list)
+    groundingFacts: list[str] = Field(default_factory=list)
+    backgroundEnrichments: list[IntelligenceProfileBackgroundEnrichmentRecord] = Field(default_factory=list)
+    lastFetch: IntelligenceProfileFetchSummaryRecord | None = None
+    deletedAt: str | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+
+
+class IntelligenceProfileMutationPayload(BaseModel):
+    title: str | None = None
+    summary: str | None = None
+    focus: list[str] | None = None
+    excludeTerms: list[str] | None = None
+    priorityUrls: list[str] | None = None
+    profileRefreshEnabled: bool | None = None
+    profileRefreshFrequency: str | None = None
+    pushEnabled: bool | None = None
+    pushFrequency: str | None = None
 
 
 class TopicCandidateChatMessageRecord(BaseModel):
@@ -6105,6 +6183,7 @@ class TopicCandidateChatResponse(BaseModel):
 class TopicsResponse(BaseModel):
     radars: list[TopicRadarRecord]
     candidates: list[TopicCandidateRecord]
+    intelligenceProfiles: list[IntelligenceProfileRecord] = Field(default_factory=list)
 
 
 class TopicCaptureRunRecord(BaseModel):
@@ -6154,8 +6233,14 @@ class TopicTaskDraftPayload(BaseModel):
     ownerName: str = ""
     collaboratorIds: list[str] = Field(default_factory=list)
     tagIds: list[str] = Field(default_factory=list)
+    eventLineId: str | None = None
     tags: list[str] = Field(default_factory=list)
     note: str = ""
+    ownerRecipient: dict[str, object] | None = None
+    collaboratorRecipients: list[dict[str, object]] = Field(default_factory=list)
+    actorId: str | None = None
+    actorName: str | None = None
+    autoShare: bool = False
 
 
 class TopicTaskPromotionPayload(BaseModel):

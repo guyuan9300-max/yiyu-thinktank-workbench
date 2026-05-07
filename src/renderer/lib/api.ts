@@ -99,6 +99,7 @@ import type {
   KnowledgeSearchResult,
   KnowledgeStatus,
   LegacyScanReport,
+  IntelligenceProfile,
   LinkMaterialImportRun,
   MaintenanceMemberPermission,
   MaintenanceModeStatus,
@@ -266,6 +267,36 @@ export type {
   StrategicThoughtStatePayload,
   StrategicThoughtsResponse,
 } from '../../shared/types';
+
+export type OrganizationDnaV2Kind = 'stable_dna' | 'evolving_dna' | 'gap_dna' | 'risk_dna';
+
+export type OrganizationDnaV2Item = {
+  id: string;
+  moduleKind: OrganizationDnaV2Kind;
+  title: string;
+  summary?: string;
+  detail?: string;
+  status?: 'confirmed' | 'candidate' | 'stale' | 'deprecated' | string;
+  confidenceScore?: number;
+  sourceType?: string;
+  sourceId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type OrganizationDnaV2Snapshot = {
+  generatedAt?: string;
+  stableItems: OrganizationDnaV2Item[];
+  evolvingItems: OrganizationDnaV2Item[];
+  gapItems: OrganizationDnaV2Item[];
+  riskItems: OrganizationDnaV2Item[];
+  itemCounts?: Record<string, number>;
+  confirmedCount?: number;
+  candidateCount?: number;
+  staleCount?: number;
+  latestRun?: unknown;
+  updatedAt?: string | null;
+};
 
 function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
   const backendBaseUrl = 'http://127.0.0.1:47829';
@@ -2969,7 +3000,7 @@ export async function createWeeklyReviewDraft(payload: WeeklyReviewPayload) {
 }
 
 export async function getTopics() {
-  return request<{ radars: TopicRadar[]; candidates: TopicCandidate[] }>('/api/v1/topics');
+  return request<{ radars: TopicRadar[]; candidates: TopicCandidate[]; intelligenceProfiles?: IntelligenceProfile[] }>('/api/v1/topics');
 }
 
 export async function captureTopicRadars() {
@@ -3092,6 +3123,36 @@ export async function shareIntelligenceItem(
   },
 ) {
   return { candidateId, ...payload, shared: true };
+}
+
+export async function runDueIntelligenceProfiles(_options?: { limit?: number }) {
+  try {
+    return await request<{ triggeredCount?: number; refreshedCount?: number; fetchedCount?: number; results?: unknown[] }>('/api/v1/intelligence/profiles/run-due', {
+      method: 'POST',
+    });
+  } catch {
+    return { triggeredCount: 0, refreshedCount: 0, fetchedCount: 0, results: [] };
+  }
+}
+
+export async function refreshIntelligenceProfile(id: string, payload?: Record<string, unknown>) {
+  return request<unknown>(`/api/v1/intelligence/profiles/${id}/refresh`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function trialRunIntelligenceProfile(id: string) {
+  return request<{ createdCount: number; failureReason?: string; error?: string }>(`/api/v1/intelligence/profiles/${id}/trial-run`, {
+    method: 'POST',
+  });
+}
+
+export async function updateIntelligenceProfile(id: string, payload: unknown) {
+  return request<unknown>(`/api/v1/intelligence/profiles/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getAnalysisTools() {

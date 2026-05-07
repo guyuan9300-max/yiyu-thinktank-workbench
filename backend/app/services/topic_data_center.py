@@ -64,21 +64,19 @@ def build_topic_page_context_pack(
         sourceUrl=str(row["source_url"]) if row["source_url"] else None,
         publishedAt=str(row["published_at"]) if row["published_at"] else None,
         confidence=0.72 if str(row["status"] or "") in {"tracking", "promoted"} else 0.58,
-        relatedClientIds=[],
+        relatedClientIds=[str(row["client_id"])] if "client_id" in row.keys() and row["client_id"] else [],
     )
 
     card_docs = list_external_evidence_cards(
         db,
-        related_scope_type="topic",
-        related_scope_id=topic_id,
+        topic_candidate_id=topic_id,
         status="accepted",
         limit=20,
     )
     if not card_docs:
         card_docs = list_external_evidence_cards(
             db,
-            related_scope_type="topic",
-            related_scope_id=topic_id,
+            topic_candidate_id=topic_id,
             status="candidate",
             limit=20,
         )
@@ -93,6 +91,7 @@ def build_topic_page_context_pack(
             "publishedAt": card.publishedAt,
             "confidence": card.confidence,
             "status": card.status,
+            "verificationLabel": "已核验外部证据" if card.status == "accepted" else "未核验外部证据",
             "sourceTier": card.sourceTier,
         }
         for card in card_docs
@@ -107,14 +106,15 @@ def build_topic_page_context_pack(
                 "sourceUrl": external.sourceUrl,
                 "publishedAt": external.publishedAt,
                 "confidence": external.confidence,
+                "verificationLabel": "未核验外部证据",
             }
         ]
 
     pack = PageContextPackRecord(
         page="topic_radar",
-        scopeType="topic",
-        scopeId=topic_id,
-        clientId=None,
+        scopeType=str(row["scope_type"] or "topic") if "scope_type" in row.keys() else "topic",
+        scopeId=str(row["scope_id"] or topic_id) if "scope_id" in row.keys() else topic_id,
+        clientId=str(row["client_id"]) if "client_id" in row.keys() and row["client_id"] else None,
         intent=intent.intent,
         officialJudgments=[],
         candidateJudgments=[],
@@ -145,7 +145,7 @@ def build_topic_page_context_pack(
             "candidateStatus": str(row["status"] or ""),
         },
         missingContext=[],
-        boundaryNotes=["topic_radar 当前只接入 external evidence candidate，不做联网抓取执行。"],
+        boundaryNotes=["未核验外部证据可以作为候选线索引用，但必须保留核验提示；已标记不采用的证据不进入活跃检索。"],
         sourceSummary={"topicCandidateCount": 1},
         retrievalPlan={
             "strategy": "topic_candidate_lite",

@@ -45,6 +45,7 @@
       "!build/main/collabGit.js.map",
       "dist/renderer/**/*",
       "dist/version-manifest.json",
+      ".yiyu-sync/**/*",
       "backend/**/*",
       "!backend/.venv{,/**}",
       "!backend/tests{,/**}",

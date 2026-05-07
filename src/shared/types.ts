@@ -4499,6 +4499,75 @@ export interface TopicRadar {
   createdAt: string;
 }
 
+export interface IntelligenceProfileBackgroundEnrichment {
+  id?: string;
+  title: string;
+  sourceUrl?: string | null;
+  status?: string | null;
+}
+
+export interface IntelligenceProfileFetchSummary {
+  status?: string | null;
+  failureReason?: string | null;
+  completedAt?: string | null;
+  createdCount?: number;
+  weakSignalCount?: number;
+  backgroundEnrichmentCount?: number;
+}
+
+export interface IntelligenceProfile {
+  id: string;
+  title: string;
+  radarId?: string | null;
+  radarTitle?: string | null;
+  profileKind?: 'auto' | 'custom';
+  scopeType?: 'organization' | 'client' | 'project_module' | string | null;
+  scopeId?: string | null;
+  clientId?: string | null;
+  projectModuleId?: string | null;
+  status?: string | null;
+  profileReadiness?: string | null;
+  summary: string;
+  effectiveSummary?: string | null;
+  adminSummaryOverride?: string | null;
+  adminFocus: string[];
+  adminExcludeTerms: string[];
+  adminPriorityUrls: string[];
+  adminProfileRefreshEnabled: boolean;
+  adminProfileRefreshFrequency: 'manual' | 'daily' | 'weekly' | 'workday' | string;
+  adminPushEnabled: boolean;
+  adminPushFrequency: 'manual' | 'daily' | 'weekly' | 'workday' | string;
+  materialCount?: number;
+  materialSummary: string[];
+  workContext: string[];
+  priorityNeeds: string[];
+  targetBeneficiaries: string[];
+  regions: string[];
+  opportunityTypes: string[];
+  materialGaps: string[];
+  groundingFacts: string[];
+  backgroundEnrichments: IntelligenceProfileBackgroundEnrichment[];
+  lastFetch?: IntelligenceProfileFetchSummary | null;
+  nextProfileRefreshAt?: string | null;
+  nextIntelligenceFetchAt?: string | null;
+  lastAutomationResult?: string | null;
+  deletedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface IntelligenceProfileMutationPayload {
+  title?: string;
+  summary?: string;
+  focus?: string[];
+  excludeTerms?: string[];
+  priorityUrls?: string[];
+  profileRefreshEnabled?: boolean;
+  profileRefreshFrequency?: string;
+  pushEnabled?: boolean;
+  pushFrequency?: string;
+}
+
 export interface TopicRadarPreferredSource {
   url: string;
   label: string;
@@ -4515,8 +4584,22 @@ export interface TopicCandidate {
   captureMethod: string;
   capturedBy?: string | null;
   status: TopicCandidateStatus;
+  evidenceStatus?: 'none' | 'candidate' | 'accepted' | 'rejected' | string | null;
+  primaryBadge?: string | null;
   insightStatus: TopicCandidateInsightStatus;
   insightUpdatedAt?: string | null;
+  deepAnalysis?: Record<string, unknown>;
+  convertedTaskId?: string | null;
+  contentKind?: string | null;
+  whyRecommended?: string | null;
+  relevanceReason?: string | null;
+  suggestedAction?: string | null;
+  recommendationBasis?: string[];
+  groundingFactRefs?: string[];
+  scopeType?: string | null;
+  scopeId?: string | null;
+  clientId?: string | null;
+  projectModuleId?: string | null;
   createdAt: string;
 }
 
@@ -4528,6 +4611,7 @@ export interface TopicCandidateInsight {
   practicalUses: string[];
   editorialNote: string;
   discussionPrompts: string[];
+  advisorMemo?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -4598,13 +4682,21 @@ export interface TopicTaskPromotionDraft {
   ownerName: string;
   collaboratorIds: string[];
   tagIds?: string[];
+  eventLineId?: string | null;
   tags: string[];
   note: string;
+  ownerRecipient?: { userId: string; fullName: string; email?: string | null } | null;
+  collaboratorRecipients?: { userId: string; fullName: string; email?: string | null }[];
+  actorId?: string | null;
+  actorName?: string | null;
+  autoShare?: boolean;
 }
 
 export interface TopicTaskPromotionResult {
   tasks: Task[];
   createdCount: number;
+  flowbackResults?: string[];
+  warnings?: string[];
 }
 
 export interface AnalysisTemplate {

@@ -1720,6 +1720,62 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_topic_candidate_seen_radar_title_source_key
                     ON topic_candidate_seen(radar_id, title_source_key);
 
+                CREATE TABLE IF NOT EXISTS intelligence_profiles (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    org_id TEXT NOT NULL DEFAULT 'local_org',
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    radar_id TEXT,
+                    title TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    opportunity_hypotheses_json TEXT NOT NULL DEFAULT '[]',
+                    monitor_signals_json TEXT NOT NULL DEFAULT '[]',
+                    search_intents_json TEXT NOT NULL DEFAULT '[]',
+                    source_strategies_json TEXT NOT NULL DEFAULT '[]',
+                    exclude_terms_json TEXT NOT NULL DEFAULT '[]',
+                    feedback_summary_json TEXT NOT NULL DEFAULT '{}',
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    generator TEXT NOT NULL DEFAULT 'rule',
+                    error TEXT NOT NULL DEFAULT '',
+                    last_generated_at TEXT,
+                    last_trial_run_at TEXT,
+                    last_trial_run_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    profile_kind TEXT NOT NULL DEFAULT 'auto',
+                    admin_summary_override TEXT NOT NULL DEFAULT '',
+                    admin_focus_json TEXT NOT NULL DEFAULT '[]',
+                    admin_exclude_terms_json TEXT NOT NULL DEFAULT '[]',
+                    admin_priority_urls_json TEXT NOT NULL DEFAULT '[]',
+                    admin_push_enabled INTEGER NOT NULL DEFAULT 0,
+                    admin_push_frequency TEXT NOT NULL DEFAULT 'manual',
+                    admin_push_time TEXT,
+                    admin_push_weekday INTEGER,
+                    source_radar_id TEXT,
+                    deleted_at TEXT,
+                    admin_profile_refresh_enabled INTEGER NOT NULL DEFAULT 0,
+                    admin_profile_refresh_frequency TEXT NOT NULL DEFAULT 'manual',
+                    admin_profile_refresh_time TEXT,
+                    admin_profile_refresh_weekday INTEGER,
+                    work_context_json TEXT NOT NULL DEFAULT '[]',
+                    priority_needs_json TEXT NOT NULL DEFAULT '[]',
+                    target_beneficiaries_json TEXT NOT NULL DEFAULT '[]',
+                    regions_json TEXT NOT NULL DEFAULT '[]',
+                    opportunity_types_json TEXT NOT NULL DEFAULT '[]',
+                    material_gaps_json TEXT NOT NULL DEFAULT '[]',
+                    grounding_facts_json TEXT NOT NULL DEFAULT '[]',
+                    UNIQUE(scope_type, scope_id),
+                    FOREIGN KEY(radar_id) REFERENCES topic_radars(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_profiles_scope
+                    ON intelligence_profiles(scope_type, scope_id);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_profiles_radar
+                    ON intelligence_profiles(radar_id);
+
                 CREATE TABLE IF NOT EXISTS analysis_templates (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
@@ -2105,6 +2161,30 @@ class Database:
             self._ensure_column("topic_radars", "preferred_sources_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("topic_candidate_insights", "editorial_note", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("topic_candidate_insights", "discussion_prompts_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("topic_candidate_insights", "advisor_memo", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("topic_candidates", "deep_analysis_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("intelligence_profiles", "profile_kind", "TEXT NOT NULL DEFAULT 'auto'")
+            self._ensure_column("intelligence_profiles", "admin_summary_override", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("intelligence_profiles", "admin_focus_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "admin_exclude_terms_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "admin_priority_urls_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "admin_push_enabled", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("intelligence_profiles", "admin_push_frequency", "TEXT NOT NULL DEFAULT 'manual'")
+            self._ensure_column("intelligence_profiles", "admin_push_time", "TEXT")
+            self._ensure_column("intelligence_profiles", "admin_push_weekday", "INTEGER")
+            self._ensure_column("intelligence_profiles", "source_radar_id", "TEXT")
+            self._ensure_column("intelligence_profiles", "deleted_at", "TEXT")
+            self._ensure_column("intelligence_profiles", "admin_profile_refresh_enabled", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("intelligence_profiles", "admin_profile_refresh_frequency", "TEXT NOT NULL DEFAULT 'manual'")
+            self._ensure_column("intelligence_profiles", "admin_profile_refresh_time", "TEXT")
+            self._ensure_column("intelligence_profiles", "admin_profile_refresh_weekday", "INTEGER")
+            self._ensure_column("intelligence_profiles", "work_context_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "priority_needs_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "target_beneficiaries_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "regions_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "opportunity_types_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "material_gaps_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_profiles", "grounding_facts_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("task_tags", "scope", "TEXT NOT NULL DEFAULT 'org'")
             self._ensure_column("task_tags", "color", "TEXT NOT NULL DEFAULT '#5B7BFE'")
             self._ensure_column("task_tags", "owner_operator_id", "TEXT NOT NULL DEFAULT ''")
@@ -2761,7 +2841,7 @@ class Database:
             )
             self.conn.execute(
                 """
-                INSERT INTO topic_candidate_seen(
+                INSERT OR IGNORE INTO topic_candidate_seen(
                     id, radar_id, source_url_key, title_source_key, source_url, title, source, created_at, deleted_at
                 )
                 SELECT

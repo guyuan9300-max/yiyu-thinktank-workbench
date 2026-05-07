@@ -12,7 +12,7 @@ from app.services.data_center_access import normalize_department_ids
 PRIVATE_VISIBILITY_SCOPES = {"self", "private", "personal"}
 PRIVATE_CONTENT_DOMAINS = {"personal", "private"}
 INACTIVE_LIFECYCLE_STATUSES = {"deleted", "superseded", "scope_released", "inactive"}
-SYNC_EXCLUDED_INGEST_STATUSES = {"skipped_empty", "error", "private_stored"}
+SYNC_EXCLUDED_INGEST_STATUSES = {"skipped_empty", "skipped_missing_client", "error", "private_stored"}
 
 
 def _now_iso() -> str:

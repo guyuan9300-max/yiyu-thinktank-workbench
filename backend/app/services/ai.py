@@ -1092,10 +1092,11 @@ class AiService:
         compact_context = self._compact_context_summary(context_summary, max_chars=8000)
         quick_instruction = (
             f"{system_instruction}\n"
-            "请先直接回答用户最关心的问题，再展开解释。"
-            "根据问题复杂度自由决定回答长度。"
-            "优先讲清楚：它解决什么问题、对谁有用、为什么值得关心、落地会卡在哪。"
-            "少讲空泛趋势，少做宏大评论，不要写成长文分析。"
+            "请只回答用户这一次问的问题，不要复述情报卡片已有内容。"
+            "如果用户问成本，就拆时间成本、材料成本、合作沟通成本、机会成本和最小核验动作；如果问风险、匹配度、路径、负责人或材料准备，也按问题本身展开。"
+            "回答结构可以自然使用：结论、拆解、缺口、下一步；但不要机械套模板。"
+            "材料不足时要明确说“不足以判断什么”，同时给出最小核验动作。"
+            "语言要像资深顾问在给同事判断，不要像系统摘要。"
             "不要输出 JSON 或 Markdown 代码块。"
         )
         if health.provider != "mock" and health.ready:
@@ -1734,71 +1735,64 @@ class AiService:
         organization_context: str = "",
     ) -> dict[str, object]:
         health = self.get_health()
-        schema = {
-            "type": "OBJECT",
-            "properties": {
-                "overview": {"type": "STRING"},
-                "keyPoints": {
-                    "type": "ARRAY",
-                    "items": {"type": "STRING"},
-                },
-                "recommendationReasons": {
-                    "type": "ARRAY",
-                    "items": {"type": "STRING"},
-                },
-                "practicalUses": {
-                    "type": "ARRAY",
-                    "items": {"type": "STRING"},
-                },
-                "editorialNote": {"type": "STRING"},
-                "discussionPrompts": {
-                    "type": "ARRAY",
-                    "items": {"type": "STRING"},
-                },
-            },
-        }
         prompt = (
-            "请把下面这条资讯候选整理成适合内部团队阅读的中文解析。"
-            "输出要求：\n"
-            "1. overview 用 140 到 220 字中文，聚焦“文章本身在讲什么”，必须讲清楚文章主线、它明确提出的关键观点，以及文中出现的事实或案例线索；不要把你的评论混进这一段。\n"
-            "2. keyPoints 返回 3 到 5 条，每条都是清晰完整的一句话，提炼文章作者真正表达的核心观点、方法、信号或判断，不要泛泛复述主题。\n"
-            "3. recommendationReasons 返回 2 到 4 条，直接说明这东西到底解决什么问题、对谁有用、能省哪一步、能创造什么具体价值。少写空泛大词，少写“值得关注”“可以参考”。\n"
-            "4. editorialNote 用 180 到 320 字中文，写成“大周自己的判断”，但口气要像一个懂产品的人在给同事讲这东西到底有什么用。先讲清楚它解决什么问题，再讲它创造什么价值，最后点出真正值得继续看的地方或局限。语气口语化、直接，不要写成新闻评论、官方口径或行业社论；少用“这反映出”“结构性变化”“专业能力民主化”这种宏大套话。\n"
-            "4a. 如果材料是 GitHub 开源项目、产品 demo、工具发布或技术案例，优先回答 4 个问题：它到底替谁省事、具体省掉哪一步、为什么这一步值钱、什么情况下才真的能用。不要先从行业趋势和组织变革讲起。\n"
-            "5. practicalUses 返回 2 到 4 条，改写成“可直接展开成文的角度”。每条都应该像文章切口、评论角度或分享主题，而不是待办动作。\n"
-            "6. discussionPrompts 返回 2 到 4 条，写成值得继续追问的问题句，优先从产品价值、用户场景、落地门槛、替代关系和真实使用条件继续追问。\n"
-            "7. 只根据现有材料输出，不要编造文章里没有出现过的事实；如果材料有限，可以做克制推断，但要避免装作已经证实。\n"
-            "8. 即使原文是英文，overview、keyPoints、recommendationReasons、editorialNote、practicalUses、discussionPrompts 也必须全部输出中文。\n"
-            "9. 优先提炼文章里的关键事实、方法变化、商业机会、行业门槛、组织能力要求或资源线索；不要只写“值得关注”“可以参考”这种空话。\n"
+            "请直接写成一份给公益组织顾问团队看的情报 memo，不要返回 JSON，不要解释系统过程。\n\n"
+            "必须使用三个固定标题：\n"
+            "【情报速览】\n"
+            "【情报研判】\n"
+            "【行动建议】\n\n"
+            "写作要求：\n"
+            "1. 总体篇幅要丰满，约 900 到 1500 个中文字符；不要把每节压成一两句话。\n"
+            "2. 情报速览负责讲清外部信息本身，尽量保留关键事实密度：发布主体、时间窗口、支持方向、金额/条件/地域、申报主体、可疑或待核验点。\n"
+            "3. 情报研判要像资深顾问的判断：结合给定组织/客户/项目背景，分析机会、风险、成本、边界。可以做推断，但必须区分事实、推断、待核验。\n"
+            "4. 行动建议要具体到下一步能做什么：先核验什么、准备哪些材料、谁适合初筛、什么条件下止损或转为合作线索。\n"
+            "5. 每一节都先写一行 **结论：**。情报研判后续必须包含 **机会：**、**风险：**、**成本：**、**边界：**。行动建议后续必须包含 **先核验：**、**先找人：**、**先备料：**、**止损条件：**。\n"
+            "6. 情报速览至少展开 4 行事实或待核验点；情报研判至少展开 4 行判断；行动建议至少展开 4 行动作。\n"
+            "7. 语言要像人写给同事的顾问 memo，不要写“建议关注/建议跟进/高度相关”这类空话；也不要把内部字段名、命中规则、画像标签写给用户看。\n"
+            "8. 如果材料不足，就直接说不足以判断哪些关键事项，同时给出最小核验动作。\n"
+            "9. 不要为了显得完整而编造金额、日期、主体资格、伙伴关系；不确定的内容写入待核验。\n\n"
+            "风格参考：\n"
+            "【情报研判】\n"
+            "**结论：**这条线索的价值，不是“马上申报”，而是可能提供一个把既有服务能力转成本地联合方案的入口。\n"
+            "**机会：**如果议题方向与客户已有服务积累贴合，可以包装成课程、督导、学校/社区服务经验的联合方案。\n"
+            "**风险：**如果存在本地注册、驻点队伍或执行主体限制，独立申报竞争力会偏弱。\n"
+            "**成本：**真正投入前，要先确认本地伙伴、材料量、专职人员和资金额度是否值得。\n"
+            "**边界：**这类线索应先作为本地合作入口评估，不要直接上升为完整申报任务。\n\n"
             f"候选标题：{candidate_title}\n"
             f"候选摘要：{candidate_summary}\n"
             f"来源：{source}\n"
             f"发布时间：{published_at or '未知'}\n"
-            f"原文链接：{source_url or '无'}\n"
-            f"组织 DNA：{organization_context[:1400] or '未提供'}\n"
-            f"原文摘录：{(source_content or '未抓到原文全文，只有标题和摘要。')[:4200]}"
+            f"原文链接：{source_url or '无'}\n\n"
+            f"组织/客户/项目背景：\n{organization_context[:2400] or '未提供。若背景不足，请明确说明判断边界。'}\n\n"
+            f"原文摘录：\n{(source_content or '未抓到原文全文，只有标题和摘要。')[:5200]}"
         )
         try:
             if health.provider != "mock" and health.ready:
-                result = self._qwen_generate(
+                memo = str(self._qwen_generate(
                     prompt,
-                    "你是资讯研判助手。只返回 JSON。",
-                    schema,
-                    timeout_seconds=28.0,
-                    max_tokens=1800,
-                )
-                if isinstance(result, dict):
-                    normalized = self._normalize_topic_candidate_insight_payload(result)
-                    if normalized["keyPoints"]:
-                        return self._localize_topic_insight_payload(
-                            normalized,
-                            candidate_title=candidate_title,
-                            candidate_summary=candidate_summary,
-                            source=source,
-                            published_at=published_at,
-                            source_url=source_url,
-                            source_content=source_content,
-                        )
+                    (
+                        "你是益语智库的资深公益战略顾问。"
+                        "你面对的是内部顾问团队和公益组织负责人，目标是把外部公开信息转化成可判断、可行动的顾问 memo。"
+                        "不要输出 JSON，不要写系统字段，不要把材料机械拼接。"
+                    ),
+                    None,
+                    timeout_seconds=36.0,
+                    max_tokens=2400,
+                    temperature=0.62,
+                    top_p=0.95,
+                )).strip()
+                if self._topic_advisor_memo_has_consultant_depth(memo):
+                    payload = self._advisor_memo_to_topic_insight_payload(
+                        memo,
+                        candidate_title=candidate_title,
+                        candidate_summary=candidate_summary,
+                        source=source,
+                        published_at=published_at,
+                        source_url=source_url,
+                        source_content=source_content,
+                    )
+                    if payload.get("overview") and payload.get("editorialNote") and payload.get("practicalUses"):
+                        return payload
         except Exception:
             pass
         fallback = self._fallback_topic_candidate_insight(
@@ -1809,7 +1803,7 @@ class AiService:
             source_url=source_url,
             source_content=source_content,
         )
-        return self._localize_topic_insight_payload(
+        localized = self._localize_topic_insight_payload(
             fallback,
             candidate_title=candidate_title,
             candidate_summary=candidate_summary,
@@ -1818,6 +1812,189 @@ class AiService:
             source_url=source_url,
             source_content=source_content,
         )
+        memo = self._fallback_topic_advisor_memo(
+            candidate_title=candidate_title,
+            candidate_summary=candidate_summary,
+            source=source,
+            published_at=published_at,
+            source_url=source_url,
+            source_content=source_content,
+            localized=localized,
+            organization_context=organization_context,
+        )
+        return self._advisor_memo_to_topic_insight_payload(
+            memo,
+            candidate_title=candidate_title,
+            candidate_summary=candidate_summary,
+            source=source,
+            published_at=published_at,
+            source_url=source_url,
+            source_content=source_content,
+        )
+
+    def _advisor_memo_to_topic_insight_payload(
+        self,
+        memo: str,
+        *,
+        candidate_title: str,
+        candidate_summary: str,
+        source: str,
+        published_at: str | None,
+        source_url: str | None,
+        source_content: str,
+    ) -> dict[str, object]:
+        sections = self._extract_topic_advisor_memo_sections(memo)
+        overview = sections.get("情报速览") or candidate_summary or candidate_title
+        assessment = sections.get("情报研判") or "这条线索需要结合当前客户/项目语境继续判断；现有材料还不足以形成稳定研判。"
+        action = sections.get("行动建议") or "先核验来源原文、时间窗口、主体条件和资源投入，再决定是否转为任务。"
+        key_points = self._split_memo_points(overview, max_items=5) or [overview[:180]]
+        reasons = self._split_memo_points(assessment, max_items=5) or [assessment[:180]]
+        uses = self._split_memo_points(action, max_items=6) or [action[:180]]
+        return {
+            "overview": overview.strip(),
+            "keyPoints": key_points,
+            "recommendationReasons": reasons,
+            "practicalUses": uses,
+            "editorialNote": assessment.strip(),
+            "discussionPrompts": [
+                "这个机会的硬条件和成本是否值得进入正式初筛？",
+                "如果转任务，负责人第一步应该核验什么？",
+                "它与当前客户或项目近期工作重点的关系是什么？",
+            ],
+            "advisorMemo": memo.strip(),
+            "deepAnalysis": {
+                "advisorMemo": memo.strip(),
+                "intelligenceBrief": overview.strip(),
+                "advisorAssessment": assessment.strip(),
+                "actionPlan": uses,
+            },
+        }
+
+    def _extract_topic_advisor_memo_sections(self, memo: str) -> dict[str, str]:
+        text = str(memo or "").strip()
+        labels = ("情报速览", "情报研判", "行动建议")
+        sections: dict[str, str] = {}
+        for index, label in enumerate(labels):
+            next_labels = labels[index + 1 :]
+            next_pattern_parts: list[str] = []
+            for item in next_labels:
+                next_pattern_parts.extend([
+                    rf"【{re.escape(item)}】",
+                    rf"{re.escape(item)}[:：]",
+                    rf"^\s*{re.escape(item)}\s*$",
+                ])
+            pattern = rf"(?:【{re.escape(label)}】|{re.escape(label)}[:：]|^\s*{re.escape(label)}\s*$)\s*([\s\S]+?)"
+            if next_pattern_parts:
+                pattern += rf"(?=\n\s*(?:{'|'.join(next_pattern_parts)})|\Z)"
+            else:
+                pattern += r"\Z"
+            match = re.search(pattern, text, flags=re.MULTILINE)
+            if match:
+                sections[label] = match.group(1).strip()
+        if not sections and text:
+            sections["情报速览"] = text
+        return sections
+
+    def _topic_advisor_memo_has_consultant_depth(self, memo: str) -> bool:
+        text = str(memo or "").strip()
+        if len(text) < 450:
+            return False
+        if re.search(r"一、这篇内容主要讲什么|文章里最值得抓住的观点|它对团队的实际价值|大模型安全|风险治理前置|coreInfo|opportunityOrRisk", text):
+            return False
+        sections = self._extract_topic_advisor_memo_sections(text)
+        if not all(sections.get(label, "").strip() for label in ("情报速览", "情报研判", "行动建议")):
+            return False
+        for label, section in sections.items():
+            lines = [line.strip() for line in section.splitlines() if line.strip()]
+            if len(lines) < 3:
+                return False
+            if "结论" not in section[:120]:
+                return False
+        assessment = sections.get("情报研判", "")
+        action = sections.get("行动建议", "")
+        if not all(label in assessment for label in ("机会", "风险", "成本", "边界")):
+            return False
+        return all(label in action for label in ("先核验", "先找人", "先备料", "止损"))
+
+    def _split_memo_points(self, text: str, *, max_items: int) -> list[str]:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return []
+        lines = [line.strip(" \t-•") for line in cleaned.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            return lines[:max_items]
+        parts = re.split(r"(?<=[。！？；])\s*", cleaned)
+        return [part.strip() for part in parts if part.strip()][:max_items]
+
+    def _fallback_topic_advisor_memo(
+        self,
+        *,
+        candidate_title: str,
+        candidate_summary: str,
+        source: str,
+        published_at: str | None,
+        source_url: str | None,
+        source_content: str,
+        localized: dict[str, object],
+        organization_context: str = "",
+    ) -> str:
+        overview = str(localized.get("overview") or candidate_summary or candidate_title).strip()
+        context_text = f"{organization_context}\n{candidate_title}\n{candidate_summary}\n{source_content}"
+        target_name = "相关客户/项目"
+        if "日慈" in context_text:
+            target_name = "日慈"
+        elif "基金会" in context_text:
+            target_name = "目标基金会"
+        funding_like = bool(re.search(r"公益创投|申报|资助|征集|项目申报|资金|扶持|补助", context_text))
+        youth_mental = bool(re.search(r"青少年|未成年人|儿童|心理", context_text))
+        if funding_like:
+            assessment = (
+                f"**结论：**这条线索对{target_name}的价值，不是“马上投入申报”，而是先判断它能不能成为一个本地联合方案入口。\n"
+                f"**机会：**如果议题方向与{target_name}已有服务积累贴合，可以把课程、督导、学校/社区服务经验包装成本地合作方案。\n"
+                "**风险：**当前最需要防的是主体资格、地域注册、驻点执行和本地伙伴要求；这些条件不清楚时，独立推进容易误判。\n"
+                "**成本：**正式申报前要先估算材料准备量、协调成本、人员驻点和资金规模，否则可能挤占现有项目精力。\n"
+                "**边界：**这不是泛泛的行业机会，而是一个有地域和时间窗口的政策入口；应先做硬条件初筛，再决定是否升级为任务。"
+            )
+            action_text = (
+                "**结论：**先用 1-2 天做硬条件初筛；只有主体、伙伴、资金额度和材料成本都过线，才转成正式任务。\n"
+                "**先核验：**核对正式通知里的申报主体、联合申报规则、截止时间、材料清单、资助额度和执行地域。\n"
+                "**先找人：**如果允许联合申报，先筛 2-3 家本地社会组织、学校、社区或服务平台，确认谁具备资质和场景。\n"
+                f"**先备料：**{target_name}只需先准备一页初筛材料：服务对象、过往案例、课程/督导能力、可落地服务包、预算大纲。\n"
+                "**止损条件：**如果本地伙伴找不到、资助额度不足以覆盖协调成本，或材料要求明显超出当前承载，就不进入正式申报。"
+            )
+        else:
+            assessment = (
+                f"**结论：**这条线索暂时只能作为顾问初筛材料，价值取决于它能否和{target_name}的当前任务、对象或地域形成真实连接。\n"
+                "**机会：**如果它能补足客户正在推进的服务、合作、传播或政策判断，就可以转成小范围核验任务。\n"
+                "**风险：**如果只有主题相似、缺少主体条件和落地场景，就容易变成泛泛信息，消耗团队注意力。\n"
+                "**成本：**当前只适合低成本核验，不适合直接组织完整方案、会议或材料生产。\n"
+                "**边界：**先把事实、推断和待核验项分开；只有行动入口清楚后，再进入任务系统。"
+            )
+            action_text = (
+                "**结论：**先核验事实和匹配条件，再决定是否转任务。\n"
+                "**先核验：**确认来源原文、发布日期、主体、对象、地域、时间窗口和可执行条件。\n"
+                "**先找人：**找到内部最接近该议题的负责人或项目同事，问清它是否对应当前真实需求。\n"
+                "**先备料：**整理一页材料，列出已知事实、可能价值、待核验问题和下一步判断口径。\n"
+                "**止损条件：**如果无法指向具体机会、风险、合作或政策窗口，就只归档为弱线索。"
+            )
+        fact_lines = [
+            f"**结论：**{overview or candidate_title}",
+            f"来源为{source or '公开来源'}，发布时间为{published_at or '未知'}；需要以原文链接和正式附件为准。",
+        ]
+        if youth_mental:
+            fact_lines.append("已知内容涉及儿童、未成年人或青少年心理相关方向，和公益服务项目设计可能存在连接。")
+        if source_content and source_content.strip():
+            fact_lines.append(str(source_content).strip().splitlines()[0][:180])
+        fact_lines.append("仍需核验：资助金额、主体限制、联合申报规则、截止日期、评审细则和落地要求。")
+        return (
+            "【情报速览】\n"
+            f"{chr(10).join(fact_lines)}\n\n"
+            "【情报研判】\n"
+            f"{assessment}\n\n"
+            "【行动建议】\n"
+            f"{action_text}\n\n"
+            f"参考来源：{source}；发布时间：{published_at or '未知'}；链接：{source_url or '无'}。"
+        ).strip()
 
     # ── Growth insight quote distillation ────────────────────────────────
     def distill_growth_insight_quote(

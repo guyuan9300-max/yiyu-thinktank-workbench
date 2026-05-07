@@ -14,6 +14,7 @@ import app.main as app_main
 from app.main import create_app
 from app.models import AiStructuredResponse
 from app.services.ai import AiInvocationError
+from app.services.data_center_ingest import ingest_task_by_id
 from app.services.knowledge_base import CitationMatch, RetrievalBundle
 from app.services.topic_capture import TopicSearchHit
 from app.services.topic_source_fetcher import PreferredSourceHit, SourceConfigFetchResult
@@ -2204,8 +2205,9 @@ def test_topics_task_plan_and_batch_promote(tmp_path: Path, monkeypatch):
     assert plan.status_code == 200
     plan_payload = plan.json()
     assert plan_payload["candidateId"] == candidate_id
-    assert len(plan_payload["tasks"]) >= 3
+    assert len(plan_payload["tasks"]) >= 1
     assert any(task["dueDate"] == "2026-03-17" for task in plan_payload["tasks"])
+    assert "情报原文回链" in plan_payload["tasks"][0]["note"]
 
     promoted = client.post(
         f"/api/v1/topics/candidates/{candidate_id}/promote-tasks",
@@ -2251,6 +2253,69 @@ def test_topics_task_plan_and_batch_promote(tmp_path: Path, monkeypatch):
     topics = client.get("/api/v1/topics")
     candidate = next(item for item in topics.json()["candidates"] if item["id"] == candidate_id)
     assert candidate["status"] == "promoted"
+
+
+def test_topics_promote_tasks_auto_shares_and_admin_diagnostics(tmp_path: Path):
+    client = make_client(tmp_path)
+
+    radar = client.post(
+        "/api/v1/topics/radars",
+        json={"title": "合作机会", "prompt": "关注适合公益组织的合作机会。", "timeRange": "7_days"},
+    )
+    assert radar.status_code == 200
+    candidate = client.post(
+        "/api/v1/topics/candidates",
+        json={
+            "radarId": radar.json()["id"],
+            "title": "基金会开放能力建设合作",
+            "summary": "某基金会开放能力建设合作申请，适合公益组织判断是否跟进。",
+            "source": "基金会官网",
+        },
+    )
+    assert candidate.status_code == 200
+    candidate_id = candidate.json()["id"]
+
+    promoted = client.post(
+        f"/api/v1/topics/candidates/{candidate_id}/promote-tasks",
+        json={
+            "tasks": [
+                {
+                    "title": "判断是否申请能力建设合作",
+                    "desc": "核验合作条件。",
+                    "priority": "normal",
+                    "listId": "list-0",
+                    "ownerId": "user_member",
+                    "ownerName": "项目成员",
+                    "ownerRecipient": {"userId": "user_member", "fullName": "项目成员", "email": "member@example.org"},
+                    "collaboratorIds": ["user_collab"],
+                    "collaboratorRecipients": [{"userId": "user_collab", "fullName": "协作者", "email": "collab@example.org"}],
+                    "tags": ["情报跟进"],
+                    "note": "情报原文入口会随任务保留。",
+                    "actorId": "user_admin",
+                    "actorName": "管理员",
+                    "autoShare": True,
+                }
+            ]
+        },
+    )
+    assert promoted.status_code == 200, promoted.text
+    payload = promoted.json()
+    assert payload["createdCount"] == 1
+    assert payload["autoShareCreatedCount"] == 2
+    assert payload["intelligencePermalink"].endswith(candidate_id)
+    assert "情报任务回链已写入" in payload["flowbackResults"]
+
+    member_topics = client.get("/api/v1/topics?userId=user_member&userEmail=member@example.org&userName=项目成员")
+    assert member_topics.status_code == 200
+    member_candidate = next(item for item in member_topics.json()["candidates"] if item["id"] == candidate_id)
+    assert member_candidate["viewerSharedToMe"] is True
+
+    diagnostics = client.get("/api/v1/intelligence/admin/diagnostics")
+    assert diagnostics.status_code == 200, diagnostics.text
+    diag_payload = diagnostics.json()
+    assert diag_payload["summary"]["candidateCount"] >= 1
+    assert diag_payload["adoptionMetrics"]["promotedCount"] >= 1
+    assert diag_payload["toolHealth"]
 
 
 def test_topic_candidate_insight_extracts_points_reasons_and_practical_uses(tmp_path: Path, monkeypatch):
@@ -2346,6 +2411,55 @@ def test_topic_candidate_generates_deep_analysis_on_demand(tmp_path: Path):
     assert "coreInfo" in json.loads(refreshed["deep_analysis_json"])
 
 
+def test_topic_candidate_async_insight_prepare_returns_cached_status(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    radar = client.post(
+        "/api/v1/topics/radars",
+        json={"title": "政策机会", "prompt": "关注公益政策机会。", "timeRange": "7_days"},
+    )
+    assert radar.status_code == 200
+    created = client.post(
+        "/api/v1/topics/candidates",
+        json={
+            "radarId": radar.json()["id"],
+            "title": "地方发布公益支持政策",
+            "summary": "政策支持公益组织能力建设，并要求在公开期限内申报。",
+            "source": "政府官网",
+            "sourceUrl": "https://example.org/policy",
+        },
+    )
+    assert created.status_code == 200
+    candidate_id = created.json()["id"]
+
+    monkeypatch.setattr(app_main, "fetch_topic_source_excerpt", lambda url: "政策正文摘录：公益组织能力建设，公开申报，截止日期明确。")
+
+    def fake_insight_builder(**kwargs):
+        return {
+            "overview": "这是一条关于公益组织能力建设支持政策的深度分析，材料包含申报对象、政策方向、公开期限和后续核验要点，适合先作为候选证据进入组织判断。",
+            "keyPoints": ["政策对象为公益组织", "需要核验申报期限", "适合转成后续跟进任务"],
+            "recommendationReasons": ["命中组织关注的政策支持方向", "与能力建设和资源协作相关"],
+            "practicalUses": ["核验政策条件", "判断是否适合申报"],
+            "editorialNote": "建议打开原文核对申报主体、截止时间和材料要求，再决定是否进入正式申请准备。",
+            "discussionPrompts": ["申报条件是什么？", "需要哪些材料？"],
+            "_generationSource": "test",
+        }
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_topic_candidate_insight", fake_insight_builder)
+    prepared = client.post(f"/api/v1/topics/candidates/{candidate_id}/insights/prepare")
+    assert prepared.status_code == 200, prepared.text
+    prepared_payload = prepared.json()
+    assert prepared_payload["status"] == "ready"
+    assert prepared_payload["cached"] is True
+    assert prepared_payload["insight"]["candidateId"] == candidate_id
+    assert prepared_payload["insight"]["cacheKey"]
+
+    status = client.get(f"/api/v1/topics/candidates/{candidate_id}/insights/status")
+    assert status.status_code == 200
+    assert status.json()["status"] == "ready"
+    assert status.json()["insight"]["metadata"]["sourceChars"] > 0
+
+
 def test_topic_candidate_chat_uses_candidate_context(tmp_path: Path, monkeypatch):
     client = make_client(tmp_path)
 
@@ -2412,8 +2526,42 @@ def test_topic_candidate_chat_uses_candidate_context(tmp_path: Path, monkeypatch
     assert captured["prompt"] == "这件事对咨询团队的服务结构意味着什么？"
     assert "当前情报标题：OpenAI 用真实客户案例展示 AI 落地效果" in captured["context_summary"]
     assert "候选摘要：" in captured["context_summary"]
+    assert "结论、拆解、缺口、下一步" in captured["system_instruction"]
+    assert "不允许整段复述卡片内容" in captured["system_instruction"]
     assert "已发生的对话：" in captured["context_summary"]
     assert "用户：我已经看完了这篇新闻。" in captured["context_summary"]
+
+
+def test_topic_candidate_chat_fallback_answers_cost_question(tmp_path: Path):
+    client = make_client(tmp_path)
+    context = """
+当前情报标题：南沙区公益创投出现青少年心理健康服务平台搭建方向
+来源：广州市民政局
+
+候选摘要：
+广州公益创投把青少年心理健康服务列为支持方向，最高资助资金为 50 万元。
+
+情报判断：
+这条线索与日慈的儿童青少年心理健康方向有关，但正式申报主体、联合申报规则和材料清单仍需核验。
+
+已知限制：
+1. 申报主体未知
+2. 截止时间未知
+3. 合作方条件未知
+""".strip()
+    answer = client.app.state.app_state.ai._fallback_topic_candidate_chat_answer(
+        "评估一下这个公益创投的成本",
+        context,
+    )
+    assert "结论：" in answer
+    assert "拆解：" in answer
+    assert "缺口：" in answer
+    assert "下一步：" in answer
+    assert "时间成本" in answer
+    assert "材料成本" in answer
+    assert "合作沟通成本" in answer
+    assert "机会成本" in answer
+    assert "主体" in answer and "截止时间" in answer
 
 
 def test_topic_candidate_insight_refreshes_stale_editorial_tone(tmp_path: Path, monkeypatch):
@@ -3048,6 +3196,7 @@ def test_intelligence_capture_test_runs_single_radar(tmp_path: Path, monkeypatch
     assert [item["status"] for item in refreshed_radar_one["lastFetch"]["statusLog"]] == [
         "queued",
         "running",
+        "running",
         "fetch_success",
         "parsing",
         "parse_success",
@@ -3061,6 +3210,601 @@ def test_intelligence_capture_test_runs_single_radar(tmp_path: Path, monkeypatch
     assert candidate_item is not None
     assert candidate_item["status"] == "promoted"
     assert candidate_item["candidate_id"] == topics.json()["candidates"][0]["id"]
+
+
+def test_intelligence_profiles_bootstrap_system_radars_and_capture_with_search_intents(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    def fake_profile(**kwargs):
+        return {
+            "title": "公益数字化顾问画像",
+            "summary": "关注公益组织数字化项目可能获得的资助、合作和政策窗口。",
+            "opportunityHypotheses": ["公益数字化项目可能匹配专项资助。"],
+            "monitorSignals": ["基金会资助公告", "社会组织数字化政策"],
+            "searchIntents": [
+                {
+                    "direction": "resource_collaboration",
+                    "query": "公益数字化 资助 机会",
+                    "why": "用于寻找直接可跟进的资助和合作线索。",
+                    "mustHaveTerms": ["公益数字化"],
+                    "optionalTerms": ["资助", "基金会"],
+                    "excludeTerms": ["招聘"],
+                    "sourceTypes": ["grant", "web"],
+                }
+            ],
+            "sourceStrategies": ["基金会公告", "政策通知"],
+            "excludeTerms": ["招聘"],
+            "confidence": 0.82,
+        }
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", fake_profile)
+
+    bootstrap = client.post("/api/v1/intelligence/profiles/bootstrap", json={"allowAi": True, "autoTrial": False})
+    assert bootstrap.status_code == 200
+    payload = bootstrap.json()
+    assert payload["organizationCount"] == 1
+    assert payload["profiles"][0]["status"] == "ready"
+    assert payload["profiles"][0]["generator"] == "ai"
+    assert payload["profiles"][0]["searchIntents"][0]["query"] == "公益数字化 资助 机会"
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    auto_radar = topics.json()["radars"][0]
+    assert auto_radar["systemManaged"] is True
+    assert auto_radar["profileId"] == payload["profiles"][0]["id"]
+    assert auto_radar["fetchEnabled"] is True
+    assert auto_radar["pushFrequency"] == "weekly"
+    assert auto_radar["searchPlan"]["searchIntents"][0]["query"] == "公益数字化 资助 机会"
+
+    seen_search_intents: list[list[dict]] = []
+
+    def fake_fetch(*args, **kwargs):
+        seen_search_intents.append(kwargs.get("search_intents") or [])
+        return [
+            TopicSearchHit(
+                title="公益数字化专项资助开放申请",
+                summary="基金会开放公益数字化能力建设项目资助申请。",
+                source="测试资助站",
+                source_url="https://example.org/grant-digital",
+                published_at="2026-04-30T09:00:00+08:00",
+                provider="bing_web_html",
+                query="公益数字化 资助 机会",
+                direction="resource_collaboration",
+            )
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+    trial = client.post(f"/api/v1/intelligence/profiles/{payload['profiles'][0]['id']}/trial-run")
+    assert trial.status_code == 200
+    assert trial.json()["createdCount"] == 1
+    assert seen_search_intents[0][0]["query"] == "公益数字化 资助 机会"
+
+    refreshed_topics = client.get("/api/v1/topics")
+    assert refreshed_topics.status_code == 200
+    candidate = refreshed_topics.json()["candidates"][0]
+    assert candidate["scopeType"] == "organization"
+    assert candidate["primaryDirection"] == "resource_collaboration"
+    assert candidate["evidenceStatus"] == "candidate"
+    assert "公益数字化 资助 机会" in candidate["whyRecommended"]
+    assert candidate["matchStrength"] > 0
+    assert candidate["credibilityScore"] > 0
+    assert candidate["confidenceScore"] > 0
+    assert candidate["matchedIntent"]["query"] == "公益数字化 资助 机会"
+    refreshed_radar = refreshed_topics.json()["radars"][0]
+    assert refreshed_radar["lastFetch"]["sourceDiagnostics"]
+    assert refreshed_radar["lastFetch"]["failureType"] == ""
+    profile = client.get("/api/v1/intelligence/profiles").json()[0]
+    assert profile["lastTrialRunId"] == trial.json()["fetchJobId"]
+
+
+def test_intelligence_profile_waits_for_material_then_refreshes(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", lambda **kwargs: {})
+
+    created = client.post(
+        "/api/v1/clients",
+        json={"name": "空资料客户", "alias": "", "domain": "", "type": "", "intro": "", "stage": ""},
+    )
+    assert created.status_code == 200
+    client_id = created.json()["id"]
+
+    profile = next(
+        item
+        for item in client.get("/api/v1/intelligence/profiles").json()
+        if item["scopeType"] == "client" and item["scopeId"] == client_id
+    )
+    assert profile["status"] == "pending"
+    assert profile["profileReadiness"] == "waiting_material"
+    assert profile["materialCount"] == 0
+    assert profile["adminPushFrequency"] == "weekly"
+    assert profile["adminProfileRefreshFrequency"] == "weekly"
+
+    blocked_trial = client.post(f"/api/v1/intelligence/profiles/{profile['id']}/trial-run")
+    assert blocked_trial.status_code == 400
+
+    now = "2026-05-06T10:00:00"
+    client.app.state.app_state.db.execute(
+        """
+        INSERT INTO memory_facts(
+            id, scope_type, scope_id, fact_key, fact_value, source_type, source_id,
+            confidence, freshness, created_at, updated_at
+        ) VALUES(?, 'client', ?, 'public_context', '该客户关注儿童心理健康、公益资助和机构合作。', 'manual', 'test', 0.8, 0.9, ?, ?)
+        """,
+        ("fact_material_1", client_id, now, now),
+    )
+    refreshed = client.post(f"/api/v1/intelligence/profiles/{profile['id']}/refresh", json={"allowAi": False, "autoTrial": False})
+    assert refreshed.status_code == 200
+    refreshed_payload = refreshed.json()
+    assert refreshed_payload["profileReadiness"] == "ready"
+    assert refreshed_payload["status"] == "fallback"
+    assert refreshed_payload["materialCount"] >= 1
+
+
+def test_intelligence_profile_outputs_work_context_and_background_enrichment_is_not_topic(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", lambda **kwargs: {})
+
+    created = client.post(
+        "/api/v1/clients",
+        json={
+            "name": "广东省日慈公益基金会",
+            "alias": "日慈基金会",
+            "domain": "儿童青少年心理健康",
+            "type": "战略陪伴客户",
+            "intro": "广东公益基金会，关注儿童青少年心理健康、社区服务、资助与伙伴协作。",
+            "stage": "战略陪伴",
+        },
+    )
+    assert created.status_code == 200
+    client_id = created.json()["id"]
+    now = "2026-05-06T11:00:00"
+    db = client.app.state.app_state.db
+    db.execute(
+        """
+        INSERT INTO memory_facts(
+            id, scope_type, scope_id, fact_key, fact_value, source_type, source_id,
+            confidence, freshness, created_at, updated_at
+        ) VALUES(?, 'client', ?, '客户公开身份', '广东省日慈公益基金会是关注儿童青少年心理健康、社区服务和公益资助合作的基金会。', 'manual', 'test', 0.86, 0.9, ?, ?)
+        """,
+        ("fact_rici_profile_material", client_id, now, now),
+    )
+
+    profile = next(
+        item
+        for item in client.get("/api/v1/intelligence/profiles").json()
+        if item["scopeType"] == "client" and item["scopeId"] == client_id
+    )
+    refreshed = client.post(f"/api/v1/intelligence/profiles/{profile['id']}/refresh", json={"allowAi": False, "autoTrial": False})
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["profileReadiness"] == "ready"
+    assert "战略陪伴客户" in payload["workContext"]
+    assert "儿童" in payload["targetBeneficiaries"] or "青少年" in payload["targetBeneficiaries"]
+    assert "广东" in payload["regions"]
+    assert "资助机会" in payload["opportunityTypes"] or "合作方" in payload["opportunityTypes"]
+    assert payload["groundingFacts"]
+
+    def fake_fetch(*args, **kwargs):
+        return [
+            TopicSearchHit(
+                title="广东省日慈公益基金会机构简介",
+                summary="广东省日慈公益基金会机构介绍、业务范围、公开联系方式和项目背景资料。",
+                source="日慈基金会官网",
+                source_url="https://www.ricifoundation.com/Home/About/index.html",
+                published_at="2026-05-01T09:00:00+08:00",
+                provider="preferred_source",
+                query="广东省日慈公益基金会 机构简介",
+            )
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+    trial = client.post(f"/api/v1/intelligence/profiles/{payload['id']}/trial-run")
+    assert trial.status_code == 200, trial.text
+    assert trial.json()["createdCount"] == 0
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    assert topics.json()["candidates"] == []
+    item = db.fetchone("SELECT * FROM topic_candidate_items WHERE radar_id = ?", (payload["radarId"],))
+    assert item is not None
+    assert item["status"] == "background_enrichment"
+    assert item["content_kind"] == "background_enrichment"
+    assert item["memory_fact_id"]
+    fact = db.fetchone("SELECT * FROM memory_facts WHERE id = ?", (item["memory_fact_id"],))
+    assert fact is not None
+    assert fact["source_type"] == "external_background_enrichment"
+
+    updated_profile = next(
+        item
+        for item in client.get("/api/v1/intelligence/profiles").json()
+        if item["id"] == payload["id"]
+    )
+    assert updated_profile["backgroundEnrichments"]
+    assert "机构简介" in updated_profile["backgroundEnrichments"][0]["title"]
+
+    old_background = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": payload["radarId"],
+            "title": "广东省日慈公益基金会机构简介",
+            "summary": "机构介绍、登记业务范围、官网公开联系方式。",
+            "source": "日慈基金会官网",
+            "sourceUrl": "https://www.ricifoundation.com/Home/About/index.html",
+        },
+    )
+    assert old_background.status_code == 200, old_background.text
+    assert db.fetchone("SELECT * FROM topic_candidates WHERE id = ?", (old_background.json()["id"],)) is not None
+    assert client.get("/api/v1/topics").json()["candidates"] == []
+
+
+def test_intelligence_capture_filters_weak_signals_and_keeps_selected_advisor_item(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", lambda **kwargs: {})
+
+    created = client.post(
+        "/api/v1/clients",
+        json={
+            "name": "广东省日慈公益基金会",
+            "alias": "日慈基金会",
+            "domain": "儿童青少年心理健康",
+            "type": "战略陪伴客户",
+            "intro": "广东公益基金会，当前优先关注儿童青少年心理健康服务的资助机会、合作方和政策窗口。",
+            "stage": "战略陪伴",
+        },
+    )
+    assert created.status_code == 200
+    client_id = created.json()["id"]
+    db = client.app.state.app_state.db
+    now = "2026-05-06T12:00:00"
+    db.execute(
+        """
+        INSERT INTO memory_facts(
+            id, scope_type, scope_id, fact_key, fact_value, source_type, source_id,
+            confidence, freshness, created_at, updated_at
+        ) VALUES(?, 'client', ?, '情报优先方向', '日慈当前优先寻找广东地区儿童青少年心理健康服务相关的资助机会、合作方和政策窗口。', 'user_context', 'test', 0.9, 0.9, ?, ?)
+        """,
+        ("fact_rici_need", client_id, now, now),
+    )
+    profile = next(
+        item
+        for item in client.get("/api/v1/intelligence/profiles").json()
+        if item["scopeType"] == "client" and item["scopeId"] == client_id
+    )
+    refreshed = client.post(f"/api/v1/intelligence/profiles/{profile['id']}/refresh", json={"allowAi": False, "autoTrial": False})
+    assert refreshed.status_code == 200
+
+    def weak_fetch(*args, **kwargs):
+        return [
+            TopicSearchHit(
+                title="我国经济运行总体平稳，服务业发展韧性增强",
+                summary="宏观经济会议强调服务业和消费恢复，未涉及日慈、儿童心理健康、资助申报或合作窗口。",
+                source="行业新闻聚合",
+                source_url="https://www.chinadevelopmentbrief.org.cn/news/general-service-economy",
+                published_at="2026-05-01T09:00:00+08:00",
+                provider="bing_web_html",
+                query="广东省日慈公益基金会 资助 合作",
+            )
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", weak_fetch)
+    weak_trial = client.post(f"/api/v1/intelligence/profiles/{refreshed.json()['id']}/trial-run")
+    assert weak_trial.status_code == 200, weak_trial.text
+    assert weak_trial.json()["createdCount"] == 0
+    assert client.get("/api/v1/topics").json()["candidates"] == []
+    weak_item = db.fetchone("SELECT * FROM topic_candidate_items WHERE radar_id = ?", (refreshed.json()["radarId"],))
+    assert weak_item is not None
+    assert weak_item["status"] == "weak_signal"
+    weak_job = db.fetchone("SELECT * FROM topic_fetch_jobs WHERE id = ?", (weak_trial.json()["fetchJobId"],))
+    assert weak_job["weak_signal_count"] == 1
+    assert "没有达到推荐门槛" in weak_job["failure_reason"]
+
+    def selected_fetch(*args, **kwargs):
+        return [
+            TopicSearchHit(
+                title="广东儿童青少年心理健康公益项目资助申报通知",
+                summary="广东省公益基金会发布项目支持通知，面向儿童青少年心理健康服务开放资助申报，要求在月底前提交方案。",
+                source="广东省民政厅",
+                source_url="https://www.gd.gov.cn/zwgk/notice/mental-health-grant",
+                published_at="2026-05-02T09:00:00+08:00",
+                provider="bing_web_html",
+                query="广东 儿童青少年心理健康 资助 申报",
+                direction="resource_collaboration",
+            )
+        ]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", selected_fetch)
+    selected_trial = client.post(f"/api/v1/intelligence/profiles/{refreshed.json()['id']}/trial-run")
+    assert selected_trial.status_code == 200, selected_trial.text
+    assert selected_trial.json()["createdCount"] == 1
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    candidate = topics.json()["candidates"][0]
+    assert candidate["contentKind"] == "advisor_intelligence"
+    assert candidate["recommendationBasis"]
+    assert any("画像" in item or "底座事实" in item for item in candidate["recommendationBasis"])
+    assert "资助" in candidate["whyRecommended"] or "申报" in candidate["whyRecommended"]
+    selected_job = db.fetchone("SELECT * FROM topic_fetch_jobs WHERE id = ?", (selected_trial.json()["fetchJobId"],))
+    assert selected_job["created_count"] == 1
+    assert selected_job["weak_signal_count"] == 0
+
+
+def test_topic_candidate_insight_uses_advisor_context_and_refreshes_when_facts_change(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", lambda **kwargs: {})
+
+    created = client.post(
+        "/api/v1/clients",
+        json={
+            "name": "广东省日慈公益基金会",
+            "alias": "日慈基金会",
+            "domain": "儿童青少年心理健康",
+            "type": "战略陪伴客户",
+            "intro": "广东公益基金会，当前希望围绕儿童青少年心理健康寻找资助机会、合作方和政策窗口。",
+            "stage": "战略陪伴",
+        },
+    )
+    assert created.status_code == 200
+    client_id = created.json()["id"]
+    db = client.app.state.app_state.db
+    now = "2026-05-07T10:00:00"
+    db.execute(
+        """
+        INSERT INTO memory_facts(
+            id, scope_type, scope_id, fact_key, fact_value, source_type, source_id,
+            confidence, freshness, created_at, updated_at
+        ) VALUES(?, 'client', ?, '近期情报需求', '日慈近期优先判断广东地区儿童青少年心理健康服务的资助机会，尤其关注能否联合学校、社区或本地社会组织申报。', 'user_context', 'test', 0.92, 0.9, ?, ?)
+        """,
+        ("fact_rici_advisor_need", client_id, now, now),
+    )
+    profile = next(
+        item
+        for item in client.get("/api/v1/intelligence/profiles").json()
+        if item["scopeType"] == "client" and item["scopeId"] == client_id
+    )
+    refreshed = client.post(f"/api/v1/intelligence/profiles/{profile['id']}/refresh", json={"allowAi": False, "autoTrial": False})
+    assert refreshed.status_code == 200
+
+    task = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "整理日慈可申报项目清单",
+            "priority": "high",
+            "listId": "list-0",
+            "clientId": client_id,
+        },
+    )
+    assert task.status_code == 200, task.text
+    db.execute(
+        """
+        UPDATE tasks
+        SET next_action = ?, recent_decision = ?, current_blocker = ?
+        WHERE id = ?
+        """,
+        (
+            "先核验申报主体、合作方式和材料清单。",
+            "不急着完整申报，先用一页纸判断机会匹配度。",
+            "缺正式申报通知和预算区间。",
+            task.json()["id"],
+        ),
+    )
+
+    created_candidate = client.post(
+        "/api/v1/topics/candidates",
+        json={
+            "radarId": refreshed.json()["radarId"],
+            "title": "南沙区公益创投出现青少年心理健康服务平台搭建方向",
+            "summary": "广州南沙公益创投把青少年心理健康服务列为需求，最高资助资金为50万元。",
+            "source": "广州市民政局",
+            "sourceUrl": "https://www.gz.gov.cn/nansha/public-welfare",
+        },
+    )
+    assert created_candidate.status_code == 200, created_candidate.text
+    candidate_id = created_candidate.json()["id"]
+    db.execute("DELETE FROM topic_candidate_insights WHERE candidate_id = ?", (candidate_id,))
+    db.execute("UPDATE topic_candidates SET insight_status = 'pending' WHERE id = ?", (candidate_id,))
+    monkeypatch.setattr(
+        app_main,
+        "fetch_topic_source_excerpt",
+        lambda url: "广州市南沙区公益创投项目征集青少年心理健康服务平台搭建方向，最高资助资金50万元，鼓励社会组织联动学校、社区开展服务。",
+    )
+
+    captured_contexts: list[dict[str, object]] = []
+
+    def fake_insight_builder(**kwargs):
+        advisor_context = kwargs.get("advisor_context") if isinstance(kwargs.get("advisor_context"), dict) else {}
+        captured_contexts.append(advisor_context)
+        facts = advisor_context.get("groundingFacts") if isinstance(advisor_context.get("groundingFacts"), list) else []
+        return {
+            "overview": "情报速览：广州市南沙区公益创投正在征集青少年心理健康服务平台搭建方向，公开材料提到最高资助资金50万元，并鼓励社会组织联动学校、社区开展服务，仍需核验正式申报主体、截止时间和材料清单。",
+            "keyPoints": ["南沙公益创投主题包含青少年心理健康服务", "最高资助资金为50万元", "来源材料显示需要核验正式申报条件"],
+            "recommendationReasons": [str(item) for item in facts[:3]] or ["命中日慈近期资助机会判断需求"],
+            "practicalUses": ["先核验申报主体、截止时间、地域限制和联合申报要求。", "准备日慈儿童青少年心理健康服务案例、一页纸项目说明和预算框架。", "若要求南沙本地执行主体，优先寻找学校、社区或本地社会组织作为合作方；若不接受联合申报则止损。"],
+            "editorialNote": "情报研判：这条线索的价值不在于“又有一个公益创投”，而在于它同时命中日慈当前的儿童青少年心理健康服务方向、广东地域和资助合作窗口。结合近期任务里“先核验主体、合作方式和材料清单”的判断，它更适合作为快速初筛机会，而不是直接进入完整申报。真正要先确认的是南沙本地执行主体、联合申报是否可行、截止时间和预算口径；这些条件成立时，日慈可以用现有服务案例和教师/青少年心理支持清单转成一页纸方案。",
+            "discussionPrompts": ["这条机会适合日慈独立申报还是联合申报？", "如果转任务，负责人先核验哪三个条件？"],
+            "_generationSource": "test",
+        }
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_topic_candidate_insight", fake_insight_builder)
+    insight = client.post(f"/api/v1/topics/candidates/{candidate_id}/insights")
+    assert insight.status_code == 200, insight.text
+    payload = insight.json()
+    assert "情报速览" in payload["overview"]
+    assert "情报研判" in payload["editorialNote"]
+    assert any("申报主体" in item for item in payload["practicalUses"])
+    assert "材料" in "\n".join([*payload["practicalUses"], payload["editorialNote"]])
+    assert captured_contexts
+    context_text = str(captured_contexts[-1].get("contextText") or "")
+    assert "儿童青少年心理健康" in context_text
+    assert "整理日慈可申报项目清单" in context_text
+    assert "先核验申报主体" in context_text
+    deep = json.loads(db.fetchone("SELECT deep_analysis_json FROM topic_candidates WHERE id = ?", (candidate_id,))["deep_analysis_json"])
+    assert deep["intelligenceBrief"] == payload["overview"]
+    assert deep["advisorAssessment"] == payload["editorialNote"]
+    assert "groundingFacts" in deep and deep["groundingFacts"]
+    assert "knownLimitations" in deep and any("截止时间" in item for item in deep["knownLimitations"])
+
+    db.execute(
+        """
+        INSERT INTO memory_facts(
+            id, scope_type, scope_id, fact_key, fact_value, source_type, source_id,
+            confidence, freshness, created_at, updated_at
+        ) VALUES(?, 'client', ?, '申报预算准备', '日慈目前需要补一版青少年心理健康服务预算框架，才能快速判断50万元以内项目是否值得申报。', 'user_context', 'test', 0.9, 0.9, ?, ?)
+        """,
+        ("fact_rici_budget_need", client_id, "2026-05-07T10:10:00", "2026-05-07T10:10:00"),
+    )
+    refreshed_again = client.post(f"/api/v1/topics/candidates/{candidate_id}/insights")
+    assert refreshed_again.status_code == 200
+    assert len(captured_contexts) == 2
+    assert "预算框架" in str(captured_contexts[-1].get("contextText") or "")
+
+
+def test_intelligence_capture_explains_no_new_items(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    monkeypatch.setenv("YIYU_TOPIC_ENABLE_BUILTIN_SOURCES_IN_TESTS", "1")
+
+    radar = client.post(
+        "/api/v1/intelligence/radars",
+        json={"title": "可解释空结果雷达", "prompt": "关注公益数字化资助机会", "timeRange": "3_days"},
+    )
+    assert radar.status_code == 200
+    radar_id = radar.json()["id"]
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", lambda *args, **kwargs: [])
+
+    capture = client.post(f"/api/v1/intelligence/radars/{radar_id}/capture-test")
+    assert capture.status_code == 200, capture.text
+    assert capture.json()["createdCount"] == 0
+
+    refreshed = client.get("/api/v1/topics")
+    last_fetch = next(item for item in refreshed.json()["radars"] if item["id"] == radar_id)["lastFetch"]
+    assert last_fetch["failureType"] in {"no_new_items", "no_match"}
+    assert last_fetch["failureReason"]
+    assert any(item["sourceType"] == "system_source_pack" for item in last_fetch["sourceDiagnostics"])
+
+
+def test_intelligence_profiles_cover_clients_projects_and_feedback_updates_checksum(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", lambda **kwargs: {})
+
+    client_id = create_test_client_record(client, "阳光公益")
+    module = client.post(
+        f"/api/v1/clients/{client_id}/project-modules",
+        json={
+            "name": "青少年心理支持",
+            "goal": "为学校和社区提供心理支持项目",
+            "description": "关注青少年心理健康服务和教师赋能。",
+            "deliverables": ["服务方案", "培训材料"],
+            "keywords": ["青少年心理健康", "教师赋能"],
+        },
+    )
+    assert module.status_code == 200
+    module_id = module.json()["id"]
+
+    bootstrap = client.post("/api/v1/intelligence/profiles/bootstrap", json={"allowAi": False, "autoTrial": False})
+    assert bootstrap.status_code == 200
+    profiles = client.get("/api/v1/intelligence/profiles")
+    assert profiles.status_code == 200
+    scope_pairs = {(item["scopeType"], item["scopeId"]) for item in profiles.json()}
+    assert ("organization", "local_org") in scope_pairs
+    assert ("client", client_id) in scope_pairs
+    assert ("project_module", module_id) in scope_pairs
+
+    project_profile = next(item for item in profiles.json() if item["scopeType"] == "project_module")
+    original_hash = project_profile["inputHash"]
+    radar_id = project_profile["radarId"]
+    item = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": radar_id,
+            "title": "心理健康服务资助计划发布",
+            "summary": "计划支持社区青少年心理健康服务。",
+            "source": "资助公告",
+            "sourceUrl": "https://example.org/mental-health-grant",
+            "primaryDirection": "resource_collaboration",
+        },
+    )
+    assert item.status_code == 200
+    assert item.json()["externalEvidenceCardId"]
+
+    accepted = client.post(f"/api/v1/external-evidence-cards/{item.json()['externalEvidenceCardId']}/accept", json={"reviewNote": "项目高度相关"})
+    assert accepted.status_code == 200
+
+    refreshed = client.post(f"/api/v1/intelligence/profiles/{project_profile['id']}/refresh", json={"allowAi": False, "autoTrial": False})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["inputHash"] != original_hash
+    assert "心理健康服务资助计划发布" in refreshed.json()["feedbackSummary"]["accepted"]
+
+
+def test_intelligence_profiles_admin_overrides_custom_profile_and_trial_run(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+
+    monkeypatch.setattr(client.app.state.app_state.ai, "build_intelligence_profile", lambda **kwargs: {})
+    bootstrap = client.post("/api/v1/intelligence/profiles/bootstrap", json={"allowAi": False, "autoTrial": False})
+    assert bootstrap.status_code == 200
+
+    profiles = client.get("/api/v1/intelligence/profiles")
+    assert profiles.status_code == 200
+    auto_profile = next(item for item in profiles.json() if item["profileKind"] == "auto" and item["scopeType"] == "organization")
+
+    patched = client.patch(
+        f"/api/v1/intelligence/profiles/{auto_profile['id']}",
+        json={
+            "title": "组织机会画像",
+            "summary": "管理员校准：优先寻找广东公益资助机会。",
+            "focus": ["广东公益资助", "儿童心理健康合作"],
+            "excludeTerms": ["纯商业广告"],
+            "priorityUrls": ["https://example.org/grants"],
+            "pushEnabled": True,
+            "pushFrequency": "weekly",
+            "pushTime": "10:30",
+            "pushWeekday": 3,
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["adminSummaryOverride"] == "管理员校准：优先寻找广东公益资助机会。"
+    assert patched.json()["effectiveSummary"] == "管理员校准：优先寻找广东公益资助机会。"
+    assert patched.json()["adminFocus"] == ["广东公益资助", "儿童心理健康合作"]
+
+    refreshed = client.post(f"/api/v1/intelligence/profiles/{auto_profile['id']}/refresh", json={"allowAi": False, "autoTrial": False})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["adminSummaryOverride"] == "管理员校准：优先寻找广东公益资助机会。"
+    assert refreshed.json()["effectiveSummary"] == "管理员校准：优先寻找广东公益资助机会。"
+
+    captured_calls: list[dict[str, object]] = []
+
+    def fake_fetch(*args, **kwargs):
+        captured_calls.append(dict(kwargs))
+        return []
+
+    monkeypatch.setattr(app_main, "fetch_topic_candidates_from_web", fake_fetch)
+    trial = client.post(f"/api/v1/intelligence/profiles/{auto_profile['id']}/trial-run")
+    assert trial.status_code == 200, trial.text
+    assert any("管理员校准：优先寻找广东公益资助机会。" in str(call["radar_prompt"]) for call in captured_calls)
+    assert any("广东公益资助" in str(call["radar_prompt"]) for call in captured_calls)
+    assert any(call["preferred_source_urls"] == ["https://example.org/grants"] for call in captured_calls)
+
+    created = client.post(
+        "/api/v1/intelligence/profiles",
+        json={
+            "title": "自定义资助画像",
+            "summary": "关注小额资助和能力建设机会。",
+            "focus": ["小额资助", "能力建设"],
+            "priorityUrls": ["https://example.com/custom-grants"],
+        },
+    )
+    assert created.status_code == 200, created.text
+    custom_profile = created.json()
+    assert custom_profile["profileKind"] == "custom"
+    assert custom_profile["radarId"]
+
+    delete_auto = client.delete(f"/api/v1/intelligence/profiles/{auto_profile['id']}")
+    assert delete_auto.status_code == 400
+
+    deleted = client.delete(f"/api/v1/intelligence/profiles/{custom_profile['id']}")
+    assert deleted.status_code == 200
+    remaining = client.get("/api/v1/intelligence/profiles")
+    assert custom_profile["id"] not in {item["id"] for item in remaining.json()}
 
 
 def test_intelligence_capture_deduplicates_by_content_hash_and_similar_title(tmp_path: Path, monkeypatch):
@@ -3161,6 +3905,162 @@ def test_intelligence_item_light_analysis_classifies_direction_and_action_fields
     assert payload["summary"]
     assert "儿童心理健康" in payload["relevanceReason"]
     assert payload["suggestedAction"]
+
+
+def test_intelligence_scope_radars_ingest_candidate_evidence_and_review(tmp_path: Path):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    client_id = create_test_client_record(client, name="候选证据客户")
+    module = client.post(
+        f"/api/v1/clients/{client_id}/project-modules",
+        json={
+            "name": "资助机会扫描",
+            "goal": "找到适合申请的公开资助计划",
+            "description": "关注公益数字化、儿童发展和能力建设类机会",
+            "keywords": ["公益数字化", "儿童发展"],
+            "deliverables": ["资助机会清单"],
+        },
+    )
+    assert module.status_code == 200
+    module_id = module.json()["id"]
+
+    bootstrap = client.post("/api/v1/intelligence/radars/bootstrap")
+    assert bootstrap.status_code == 200, bootstrap.text
+    bootstrap_payload = bootstrap.json()
+    assert bootstrap_payload["organizationCount"] == 1
+    assert bootstrap_payload["clientCount"] >= 1
+    assert bootstrap_payload["projectModuleCount"] >= 1
+    assert all(radar["scopeType"] != "event_line" for radar in bootstrap_payload["radars"])
+
+    topics = client.get("/api/v1/topics")
+    assert topics.status_code == 200
+    project_radar = next(
+        radar
+        for radar in topics.json()["radars"]
+        if radar["scopeType"] == "project_module" and radar["scopeId"] == module_id
+    )
+    assert project_radar["fetchEnabled"] is False
+    assert project_radar["pushFrequency"] == "manual"
+    assert project_radar["autoGenerated"] is True
+
+    created = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": project_radar["id"],
+            "title": "某基金会发布公益数字化资助计划",
+            "summary": "资助计划支持公益组织建设数字化服务能力，适合结合项目目标评估是否申请。",
+            "source": "基金会官网",
+            "sourceUrl": "https://example.org/grant",
+            "publishedAt": "2026-04-30T09:00:00",
+            "primaryDirection": "resource_collaboration",
+            "primaryBadge": "follow_up",
+            "relevanceReason": "与项目模块的资助机会扫描目标直接相关。",
+            "suggestedAction": "核验申报条件，并判断是否转成申请准备任务。",
+        },
+    )
+    assert created.status_code == 200, created.text
+    item = created.json()
+    assert item["scopeType"] == "project_module"
+    assert item["scopeId"] == module_id
+    assert item["clientId"] == client_id
+    assert item["projectModuleId"] == module_id
+    assert item["evidenceStatus"] == "candidate"
+    assert item["externalEvidenceCardId"]
+    assert item["dataCenterIngestEventId"]
+
+    card_row = db.fetchone("SELECT * FROM external_evidence_cards WHERE topic_candidate_id = ?", (item["id"],))
+    assert card_row is not None
+    assert card_row["related_scope_type"] == "project_module"
+    assert card_row["related_scope_id"] == module_id
+    assert card_row["client_id"] == client_id
+    assert card_row["project_module_id"] == module_id
+
+    ingest_row = db.fetchone(
+        "SELECT * FROM data_center_ingest_events WHERE source_type = 'external_intelligence' AND source_id = ?",
+        (item["id"],),
+    )
+    assert ingest_row is not None
+    assert ingest_row["client_id"] == client_id
+    assert ingest_row["project_module_id"] == module_id
+    assert ingest_row["lifecycle_status"] == "active"
+
+    memory_fact = db.fetchone(
+        "SELECT * FROM memory_facts WHERE source_type = 'external_intelligence' AND scope_type = 'project_module' AND scope_id = ?",
+        (module_id,),
+    )
+    assert memory_fact is not None
+
+    evidence_cards = client.get(f"/api/v1/external-evidence-cards?topicCandidateId={item['id']}")
+    assert evidence_cards.status_code == 200
+    assert evidence_cards.json()[0]["topicCandidateId"] == item["id"]
+
+    accepted = client.post(
+        f"/api/v1/external-evidence-cards/{item['externalEvidenceCardId']}/accept",
+        json={"reviewNote": "来源为官网，先通过。"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    accepted_row = db.fetchone("SELECT evidence_status FROM topic_candidates WHERE id = ?", (item["id"],))
+    assert accepted_row["evidence_status"] == "accepted"
+
+    second = client.post(
+        "/api/v1/intelligence/items",
+        json={
+            "radarId": project_radar["id"],
+            "title": "疑似过期的资助线索",
+            "summary": "该线索时间较早，可能已经不再开放申请。",
+            "source": "转载网站",
+            "sourceUrl": "https://example.org/expired-grant",
+            "primaryDirection": "resource_collaboration",
+        },
+    )
+    assert second.status_code == 200
+    second_item = second.json()
+    rejected = client.post(
+        f"/api/v1/external-evidence-cards/{second_item['externalEvidenceCardId']}/reject",
+        json={"reviewNote": "信息过期，不采用。"},
+    )
+    assert rejected.status_code == 200, rejected.text
+    rejected_row = db.fetchone("SELECT evidence_status FROM topic_candidates WHERE id = ?", (second_item["id"],))
+    assert rejected_row["evidence_status"] == "rejected"
+    rejected_ingest = db.fetchone(
+        "SELECT lifecycle_status FROM data_center_ingest_events WHERE source_type = 'external_intelligence' AND source_id = ?",
+        (second_item["id"],),
+    )
+    assert rejected_ingest["lifecycle_status"] == "rejected"
+
+
+def test_data_center_ingest_skips_task_with_missing_client(tmp_path: Path):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    db.execute(
+        """
+        INSERT INTO tasks(
+            id, title, description, status, priority, list_id, client_id, event_line_id,
+            ddl, due_date, duration_minutes, owner_name, source_type, source_id,
+            tags_json, tag_ids_json, created_at, updated_at
+        ) VALUES(
+            'task_orphan_client', '孤儿客户任务', '这个任务引用的客户已经不存在。',
+            'todo', 'medium', 'list-0', 'client_missing_for_ingest', NULL,
+            '本周', NULL, 60, '顾源源', 'manual', NULL, '[]', '[]',
+            '2026-05-06T10:00:00', '2026-05-06T10:00:00'
+        )
+        """
+    )
+
+    result = ingest_task_by_id(db, client.app.state.app_state.data_dir, "task_orphan_client")
+
+    assert result is not None
+    assert result["status"] == "skipped_missing_client"
+    assert "client_missing_for_ingest" in result["errorMessage"]
+    event_row = db.fetchone(
+        "SELECT status, error_message, document_id FROM data_center_ingest_events WHERE source_type = 'task' AND source_id = ?",
+        ("task_orphan_client",),
+    )
+    assert event_row is not None
+    assert event_row["status"] == "skipped_missing_client"
+    assert event_row["document_id"] is None
+    assert db.scalar("SELECT COUNT(1) FROM documents WHERE origin_id = ?", ("task_orphan_client",)) == 0
 
 
 def test_intelligence_demo_seed_creates_end_to_end_sample_data(tmp_path: Path):
@@ -6764,9 +7664,13 @@ def test_org_dna_context_is_injected_into_topics_and_analysis(tmp_path: Path, mo
     )
     assert topics_settings.status_code == 200
 
-    refreshed = client.post(f"/api/v1/topics/candidates/{candidate_id}/task-plan")
+    refreshed = client.post(f"/api/v1/topics/candidates/{candidate_id}/insights")
     assert refreshed.status_code == 200
     assert "公益咨询市场中的 AI 落地" in captured.get("organization_context", "")
+
+    task_plan = client.post(f"/api/v1/topics/candidates/{candidate_id}/task-plan")
+    assert task_plan.status_code == 200
+    assert "情报原文回链" in task_plan.json()["tasks"][0]["note"]
 
     analysis = client.post(
         "/api/v1/analysis-tools/runs",
