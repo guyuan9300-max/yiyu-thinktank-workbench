@@ -118,6 +118,7 @@ import type {
   LinkMaterialCookieBrowser,
   LinkMaterialImportRun,
   LocalInputMemory,
+  MaintenanceModeStatus,
   MentionCandidate,
   Operator,
   OrgMembershipSummary,
@@ -321,6 +322,7 @@ import {
   getTopics,
   getTopicsSettings,
   getCollabRepoStatus,
+  getMaintenanceModeStatus,
   getSourceIntegrity,
   generateClientDnaCandidates,
   createFundraisingManualDna,
@@ -333,6 +335,7 @@ import {
   ingestMeeting,
   logout,
   getProposals,
+  enterMaintenanceMode,
   processPendingConsultationKnowledgeRequests,
   previewPullFromMain,
   previewPushToMain,
@@ -344,6 +347,7 @@ import {
   rebuildAndInstallFromRepo,
   rejectProposal,
   resolveSupportRequest,
+  exitMaintenanceMode,
   returnTaskReview,
   rebuildClientKnowledge,
   setWorkspaceInteractionState,
@@ -5476,6 +5480,10 @@ export default function App() {
   const [collabCommitMessage, setCollabCommitMessage] = useState('');
   const [collabDialogError, setCollabDialogError] = useState<string | null>(null);
   const collabAutoSwitchTargetRef = useRef<string | null>(null);
+  const [maintenanceModeStatus, setMaintenanceModeStatus] = useState<MaintenanceModeStatus | null>(null);
+  const [maintenanceModeError, setMaintenanceModeError] = useState<string | null>(null);
+  const [isMaintenanceModeLoading, setIsMaintenanceModeLoading] = useState(false);
+  const [maintenanceModeBusyAction, setMaintenanceModeBusyAction] = useState<'enter' | 'exit' | null>(null);
   const [taskViewMode, setTaskViewMode] = useState<TaskViewMode>('calendar');
   const taskViewportRef = useRef<HTMLDivElement | null>(null);
   const reviewViewportRef = useRef<HTMLDivElement | null>(null);
@@ -5516,6 +5524,8 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [desktopAppInfo, setDesktopAppInfo] = useState<DesktopAppInfo | null>(null);
   const canUseCollabSync = Boolean(desktopAppInfo && desktopAppInfo.platform !== 'browser');
+  const isMaintenanceModeActive = Boolean(maintenanceModeStatus?.active);
+  const canShowCollabSync = canUseCollabSync && isMaintenanceModeActive;
   const [workspaceThreadPreference, setWorkspaceThreadPreference] = useState<WorkspaceThreadPreference>(
     initialNavigationStateRef.current.workspaceThreadPreference,
   );
@@ -6136,6 +6146,63 @@ export default function App() {
     };
   }, []);
 
+  async function refreshMaintenanceModeStatus(options: { silent?: boolean } = {}) {
+    setIsMaintenanceModeLoading(true);
+    setMaintenanceModeError(null);
+    try {
+      const status = await getMaintenanceModeStatus();
+      setMaintenanceModeStatus(status);
+      return status;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '维护模式状态加载失败';
+      setMaintenanceModeStatus(null);
+      setMaintenanceModeError(message);
+      if (!options.silent) {
+        flash('error', message);
+      }
+      return null;
+    } finally {
+      setIsMaintenanceModeLoading(false);
+    }
+  }
+
+  async function handleEnterMaintenanceMode() {
+    setMaintenanceModeBusyAction('enter');
+    setMaintenanceModeError(null);
+    try {
+      const status = await enterMaintenanceMode();
+      setMaintenanceModeStatus(status);
+      flash('success', '左下角推送同步已打开。');
+      await refreshCollabStatus(collabRepoPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '维护模式打开失败';
+      setMaintenanceModeError(message);
+      flash('error', message);
+    } finally {
+      setMaintenanceModeBusyAction(null);
+    }
+  }
+
+  async function handleExitMaintenanceMode() {
+    setMaintenanceModeBusyAction('exit');
+    setMaintenanceModeError(null);
+    try {
+      const status = await exitMaintenanceMode();
+      setMaintenanceModeStatus(status);
+      setCollabDialogState(null);
+      setCollabSelectedPaths([]);
+      setCollabCommitMessage('');
+      setCollabDialogError(null);
+      flash('success', '左下角推送同步已关闭。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '维护模式关闭失败';
+      setMaintenanceModeError(message);
+      flash('error', message);
+    } finally {
+      setMaintenanceModeBusyAction(null);
+    }
+  }
+
   async function refreshCollabStatus(nextRepoPath = collabRepoPath) {
     if (!canUseCollabSync) {
       return null;
@@ -6179,6 +6246,11 @@ export default function App() {
   async function ensureCollabRepoForAction() {
     if (!canUseCollabSync) {
       flash('error', '协作同步仅在桌面版可用，请在 Electron 应用中打开。');
+      return null;
+    }
+    if (!isMaintenanceModeActive) {
+      flash('error', '请先在系统日志中打开左下角推送同步。');
+      void refreshMaintenanceModeStatus({ silent: true });
       return null;
     }
     if (collabStatus?.isConfigured && collabStatus.isValid && !collabStatus.isMainBranch && collabStatus.suggestedRepoPath) {
@@ -6240,6 +6312,11 @@ export default function App() {
 
   async function handleSelectPullCommit(targetCommit: string | null) {
     if (!canUseCollabSync) return;
+    if (!isMaintenanceModeActive) {
+      setCollabDialogError('请先在系统日志中打开左下角推送同步。');
+      void refreshMaintenanceModeStatus({ silent: true });
+      return;
+    }
     const repoPath = collabRepoPath || collabStatus?.repoPath;
     if (!repoPath || collabBusyAction === 'pull') return;
     setCollabBusyAction('pull');
@@ -6285,6 +6362,11 @@ export default function App() {
   async function handleConfirmCollabAction() {
     if (!canUseCollabSync) return;
     if (!collabDialogState) return;
+    if (!isMaintenanceModeActive) {
+      setCollabDialogError('请先在系统日志中打开左下角推送同步。');
+      void refreshMaintenanceModeStatus({ silent: true });
+      return;
+    }
     const repoPath = collabRepoPath || collabStatus?.repoPath;
     if (!repoPath) {
       setCollabDialogError('还没有绑定源码目录。');
@@ -7412,6 +7494,10 @@ export default function App() {
 
   useEffect(() => {
     if (canUseCollabSync) return;
+    setMaintenanceModeStatus(null);
+    setMaintenanceModeError(null);
+    setIsMaintenanceModeLoading(false);
+    setMaintenanceModeBusyAction(null);
     setCollabStatus(null);
     setIsCollabStatusLoading(false);
     setCollabBusyAction(null);
@@ -7420,6 +7506,20 @@ export default function App() {
     setCollabCommitMessage('');
     setCollabDialogError(null);
   }, [canUseCollabSync]);
+
+  useEffect(() => {
+    if (!canUseCollabSync) return;
+    void refreshMaintenanceModeStatus({ silent: true });
+  }, [canUseCollabSync]);
+
+  useEffect(() => {
+    if (canShowCollabSync) return;
+    setCollabBusyAction(null);
+    setCollabDialogState(null);
+    setCollabSelectedPaths([]);
+    setCollabCommitMessage('');
+    setCollabDialogError(null);
+  }, [canShowCollabSync]);
 
   useEffect(() => {
     if (!canUseCollabSync) return;
@@ -7439,12 +7539,12 @@ export default function App() {
   }, [canUseCollabSync, collabRepoPath]);
 
   useEffect(() => {
-    if (!canUseCollabSync) return;
+    if (!canShowCollabSync) return;
     void refreshCollabStatus(collabRepoPath);
-  }, [canUseCollabSync, collabRepoPath]);
+  }, [canShowCollabSync, collabRepoPath]);
 
   useEffect(() => {
-    if (!canUseCollabSync) return;
+    if (!canShowCollabSync) return;
     const suggestedRepoPath = normalizeInitialCollabRepoPath(collabStatus?.suggestedRepoPath || null);
     if (!suggestedRepoPath) return;
     const normalizedCurrentRepoPath = normalizeInitialCollabRepoPath(collabRepoPath);
@@ -7460,7 +7560,7 @@ export default function App() {
     if (switchingFrom && switchingFrom !== suggestedRepoPath) {
       flash('info', '协作源码目录已切换到 main 基线仓库。');
     }
-  }, [canUseCollabSync, collabRepoPath, collabStatus]);
+  }, [canShowCollabSync, collabRepoPath, collabStatus]);
 
   useEffect(() => {
     if (activeTab !== 'topics_management') return undefined;
@@ -22846,7 +22946,21 @@ export default function App() {
             <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
               <h2 className="text-[16px] font-bold text-gray-900 mb-1">系统运行日志</h2>
               <p className="text-[12px] text-gray-500 mb-5">记录 API 请求、后台任务、桌面界面错误和运行异常；设置首页的“操作记录”只展示业务操作。</p>
-              <SystemLogPanel />
+              <SystemLogPanel
+                maintenanceModeStatus={maintenanceModeStatus}
+                maintenanceModeError={maintenanceModeError}
+                maintenanceModeLoading={isMaintenanceModeLoading}
+                maintenanceModeBusyAction={maintenanceModeBusyAction}
+                onRefreshMaintenanceMode={() => {
+                  void refreshMaintenanceModeStatus();
+                }}
+                onEnterMaintenanceMode={() => {
+                  void handleEnterMaintenanceMode();
+                }}
+                onExitMaintenanceMode={() => {
+                  void handleExitMaintenanceMode();
+                }}
+              />
             </div>
           );
         default:
@@ -23284,7 +23398,7 @@ export default function App() {
             })}
           </nav>
 
-          {canUseCollabSync && InternalCollabSyncCard && (
+          {canShowCollabSync && InternalCollabSyncCard && (
             <div className={`px-3 pb-3 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-4'} hidden md:block`}>
               <React.Suspense fallback={null}>
                 <InternalCollabSyncCard
@@ -23360,7 +23474,7 @@ export default function App() {
         {viewMap[activeTab]}
       </main>
       {renderClientEditorModal()}
-      {canUseCollabSync && InternalCollabPreviewDialog && (
+      {canShowCollabSync && InternalCollabPreviewDialog && (
         <React.Suspense fallback={null}>
           <InternalCollabPreviewDialog
             open={Boolean(collabDialogState)}

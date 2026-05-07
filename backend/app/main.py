@@ -41760,6 +41760,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             createdAt=str(row["created_at"]),
         )
 
+    @app.delete("/api/v1/topics/radars/{radar_id}")
+    def delete_radar(radar_id: str) -> dict[str, bool]:
+        row = state.db.fetchone("SELECT * FROM topic_radars WHERE id = ?", (radar_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Radar not found")
+        state.db.execute("DELETE FROM topic_radars WHERE id = ?", (radar_id,))
+        log_activity("topic.radar.delete", "topic_radar", radar_id, {"title": str(row["title"])})
+        return {"deleted": True}
+
+    @app.post("/api/v1/topics/radars/{radar_id}/capture", response_model=TopicCaptureRunRecord)
+    def capture_single_topic_radar(radar_id: str) -> TopicCaptureRunRecord:
+        row = state.db.fetchone("SELECT * FROM topic_radars WHERE id = ?", (radar_id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="Radar not found")
+        return capture_topic_radar_internal(row)
+
     @app.post("/api/v1/topics/radars/generate-title", response_model=TitleSuggestionResponse)
     def generate_radar_title(payload: TopicTitlePayload) -> TitleSuggestionResponse:
         return TitleSuggestionResponse(title=state.ai.suggest_short_title(payload.prompt))

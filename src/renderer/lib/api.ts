@@ -2978,6 +2978,20 @@ export async function captureTopicRadars() {
   });
 }
 
+export async function captureIntelligenceRadarTest(id: string) {
+  return request<{
+    radarId: string;
+    radarTitle: string;
+    query: string;
+    fetchedCount: number;
+    createdCount: number;
+    skippedCount: number;
+    candidates: TopicCandidate[];
+  }>(`/api/v1/topics/radars/${id}/capture`, {
+    method: 'POST',
+  });
+}
+
 export async function createRadar(payload: TopicRadarPayload) {
   return request<TopicRadar>('/api/v1/topics/radars', {
     method: 'POST',
@@ -2990,6 +3004,10 @@ export async function updateRadar(id: string, payload: TopicRadarPayload) {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+}
+
+export async function deleteRadar(id: string) {
+  return request<{ deleted: boolean }>(`/api/v1/topics/radars/${id}`, { method: 'DELETE' });
 }
 
 export async function suggestRadarTitle(prompt: string) {
@@ -3050,6 +3068,30 @@ export async function promoteCandidateTasks(id: string, tasks: TopicTaskPromotio
 
 export async function deleteCandidate(id: string) {
   return request<{ deleted: boolean }>(`/api/v1/topics/candidates/${id}`, { method: 'DELETE' });
+}
+
+export async function favoriteIntelligenceItem(
+  candidateId: string,
+  payload: { userId: string; note?: string; tags?: string[] },
+) {
+  return { candidateId, ...payload, saved: true };
+}
+
+export async function unfavoriteIntelligenceItem(candidateId: string, userId: string) {
+  return { candidateId, userId, saved: false };
+}
+
+export async function shareIntelligenceItem(
+  candidateId: string,
+  payload: {
+    sharedBy: string;
+    sharedByName?: string;
+    sharedTo: string[];
+    sharedToRecipients?: Array<{ userId: string; fullName?: string; email?: string | null }>;
+    reason?: string;
+  },
+) {
+  return { candidateId, ...payload, shared: true };
 }
 
 export async function getAnalysisTools() {

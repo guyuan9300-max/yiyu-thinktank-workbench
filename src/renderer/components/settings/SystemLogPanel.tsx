@@ -8,12 +8,15 @@ import {
   Filter,
   Info,
   Loader2,
+  Power,
   RefreshCw,
   Search,
   Send,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 import { getSystemLogs, exportSystemLogs, type SystemLogEntry, type SystemLogsResponse } from '../../lib/api';
+import type { MaintenanceModeStatus } from '../../../shared/types';
 import { formatDateInputValue } from '../../../shared/taskTime';
 
 const LEVEL_OPTIONS = ['', 'ERROR', 'WARN', 'INFO', 'DEBUG'] as const;
@@ -38,7 +41,34 @@ function formatTs(ts: string) {
   return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-export function SystemLogPanel() {
+type SystemLogPanelProps = {
+  maintenanceModeStatus: MaintenanceModeStatus | null;
+  maintenanceModeError: string | null;
+  maintenanceModeLoading: boolean;
+  maintenanceModeBusyAction: 'enter' | 'exit' | null;
+  onRefreshMaintenanceMode: () => void;
+  onEnterMaintenanceMode: () => void;
+  onExitMaintenanceMode: () => void;
+};
+
+function maintenanceStatusLabel(status: MaintenanceModeStatus | null, error: string | null) {
+  if (error) return error;
+  if (!status) return '状态未加载';
+  if (status.active) return '左下角推送同步已打开';
+  if (!status.available) return status.reason || '维护模式不可用';
+  if (!status.canEnter) return status.reason || '当前账号没有维护权限';
+  return '左下角推送同步已关闭';
+}
+
+export function SystemLogPanel({
+  maintenanceModeStatus,
+  maintenanceModeError,
+  maintenanceModeLoading,
+  maintenanceModeBusyAction,
+  onRefreshMaintenanceMode,
+  onEnterMaintenanceMode,
+  onExitMaintenanceMode,
+}: SystemLogPanelProps) {
   const [logs, setLogs] = useState<SystemLogEntry[]>([]);
   const [dates, setDates] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -124,12 +154,59 @@ export function SystemLogPanel() {
 
   const errorCount = logs.filter((l) => l.level === 'ERROR').length;
   const warnCount = logs.filter((l) => l.level === 'WARN').length;
+  const canEnterMaintenanceMode = Boolean(
+    maintenanceModeStatus?.available
+    && maintenanceModeStatus.canEnter
+    && !maintenanceModeStatus.active
+  );
+  const canExitMaintenanceMode = Boolean(maintenanceModeStatus?.active);
 
   return (
     <div className="space-y-5">
       <div>
         <h2 className="text-[16px] font-bold text-slate-900">系统运行日志</h2>
         <p className="mt-1 text-[12px] text-slate-500">运行日志用于排查 API、后台任务和桌面界面错误；操作记录在设置首页单独展示。</p>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl ${
+            maintenanceModeStatus?.active ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-500'
+          }`}>
+            {maintenanceModeStatus?.active ? <ShieldCheck size={18} /> : <Power size={18} />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-bold text-slate-900">软件维护模式</p>
+            <p className="mt-1 text-[12px] text-slate-500">{maintenanceStatusLabel(maintenanceModeStatus, maintenanceModeError)}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onRefreshMaintenanceMode}
+            disabled={maintenanceModeLoading || maintenanceModeBusyAction !== null}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={maintenanceModeLoading ? 'animate-spin' : ''} />
+            刷新
+          </button>
+          <button
+            type="button"
+            onClick={onEnterMaintenanceMode}
+            disabled={!canEnterMaintenanceMode || maintenanceModeLoading || maintenanceModeBusyAction !== null}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#335CFE] px-3 py-2 text-[12px] font-bold text-white hover:bg-[#2C50E0] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {maintenanceModeBusyAction === 'enter' ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+            打开左下角推送同步
+          </button>
+          <button
+            type="button"
+            onClick={onExitMaintenanceMode}
+            disabled={!canExitMaintenanceMode || maintenanceModeLoading || maintenanceModeBusyAction !== null}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {maintenanceModeBusyAction === 'exit' ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+            关闭左下角推送同步
+          </button>
+        </div>
       </div>
       {/* Stats bar */}
       <div className="flex items-center gap-3 flex-wrap">

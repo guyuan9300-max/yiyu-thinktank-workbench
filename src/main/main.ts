@@ -1315,6 +1315,53 @@ function backendUrl() {
   return `http://127.0.0.1:${backendPort}`;
 }
 
+type MaintenanceModeGuardStatus = {
+  active?: boolean;
+  reason?: string | null;
+};
+
+function requestBackendJson<T>(pathName: string, timeoutMs = 6000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`${backendUrl()}${pathName}`, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        let payload: unknown = null;
+        if (body.trim()) {
+          try {
+            payload = JSON.parse(body);
+          } catch {
+            reject(new Error(body.slice(0, 240) || `HTTP ${res.statusCode || 500}`));
+            return;
+          }
+        }
+        if ((res.statusCode || 500) >= 400) {
+          const detail = payload && typeof payload === 'object' && 'detail' in payload
+            ? String((payload as { detail?: unknown }).detail || '')
+            : '';
+          reject(new Error(detail || `HTTP ${res.statusCode || 500}`));
+          return;
+        }
+        resolve(payload as T);
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('本地服务响应超时，请稍后重试。'));
+    });
+    req.on('error', reject);
+  });
+}
+
+async function requireActiveMaintenanceMode(actionLabel: string) {
+  const status = await requestBackendJson<MaintenanceModeGuardStatus>('/api/v1/maintenance-mode/status');
+  if (!status.active) {
+    throw new Error(status.reason || `请先在系统日志中打开左下角推送同步，再${actionLabel}。`);
+  }
+}
+
 function cloudBackendUrl() {
   return remoteCloudBackendUrl() || (shouldUseBundledLocalCloudBackend() ? `http://127.0.0.1:${cloudBackendPort}` : '');
 }
@@ -2648,6 +2695,7 @@ ipcMain.handle('yiyu-workbench:getCollabRepoStatus', async (_event, repoPath?: s
 });
 
 ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: string) => {
+  await requireActiveMaintenanceMode('预览推送修改');
   const collabGit = await loadInternalCollabGit();
   return collabGit.previewPushToMain({
     repoPath,
@@ -2657,11 +2705,13 @@ ipcMain.handle('yiyu-workbench:previewPushToMain', async (_event, repoPath: stri
 });
 
 ipcMain.handle('yiyu-workbench:commitAndPushToMain', async (_event, payload: CommitAndPushToMainPayload) => {
+  await requireActiveMaintenanceMode('提交并推送修改');
   const collabGit = await loadInternalCollabGit();
   return collabGit.commitAndPushToMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
 });
 
 ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: string, targetCommit?: string | null) => {
+  await requireActiveMaintenanceMode('预览 main 修改');
   const collabGit = await loadInternalCollabGit();
   return collabGit.previewPullFromMain({
     repoPath,
@@ -2672,6 +2722,7 @@ ipcMain.handle('yiyu-workbench:previewPullFromMain', async (_event, repoPath: st
 });
 
 ipcMain.handle('yiyu-workbench:pullSelectedFromMain', async (_event, payload: PullSelectedFromMainPayload) => {
+  await requireActiveMaintenanceMode('同步 main 修改');
   const collabGit = await loadInternalCollabGit();
   return collabGit.pullSelectedFromMain(payload, getCollabSuggestedCandidates(), path.join(app.getPath('userData'), 'app.db'));
 });
