@@ -1862,41 +1862,24 @@ def test_feishu_bot_connect_and_send_test_message(tmp_path: Path, monkeypatch):
     }
 
 
-def test_system_admin_settings_accept_and_clear_brand_logo(tmp_path: Path):
+def test_system_admin_settings_ignores_legacy_brand_logo_payload(tmp_path: Path):
     client = make_client(tmp_path)
-    png_data_url = (
-        "data:image/png;base64,"
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
-    )
 
     saved = client.post(
         "/api/v1/settings/system-admin",
-        json={"brandLogoDataUrl": png_data_url},
+        json={
+            "allowBusinessSettingsForEmployees": False,
+            "brandLogoDataUrl": "legacy-inline-logo-payload",
+        },
     )
     assert saved.status_code == 200
-    assert saved.json()["brandLogoDataUrl"] == png_data_url
+    assert saved.json()["allowBusinessSettingsForEmployees"] is False
+    assert "brandLogoDataUrl" not in saved.json()
 
     fetched = client.get("/api/v1/settings/system-admin")
     assert fetched.status_code == 200
-    assert fetched.json()["brandLogoDataUrl"] == png_data_url
-
-    cleared = client.post(
-        "/api/v1/settings/system-admin",
-        json={"brandLogoDataUrl": ""},
-    )
-    assert cleared.status_code == 200
-    assert cleared.json()["brandLogoDataUrl"] is None
-
-
-def test_system_admin_settings_reject_non_png_brand_logo(tmp_path: Path):
-    client = make_client(tmp_path)
-
-    response = client.post(
-        "/api/v1/settings/system-admin",
-        json={"brandLogoDataUrl": "data:image/jpeg;base64,abcd"},
-    )
-    assert response.status_code == 400
-    assert "只支持 PNG" in response.text
+    assert fetched.json()["allowBusinessSettingsForEmployees"] is False
+    assert "brandLogoDataUrl" not in fetched.json()
 
 
 def test_feishu_events_url_verification_returns_challenge(tmp_path: Path, monkeypatch):

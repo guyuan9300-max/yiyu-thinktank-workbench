@@ -1780,20 +1780,11 @@
   - `src/renderer/App.tsx`
   - `src/renderer/components/settings/BrandLogoSettingsCard.tsx`
 - 当前状态：
-  - 已完成“系统设置支持上传 PNG 作为左上角 logo”的第一轮
-  - 左上角品牌位已从内联 SVG 改成“优先读取系统设置中的 PNG logo，缺失时回退默认图标”
-  - 系统设置总览新增品牌 Logo 卡片，支持：
-    - 上传 PNG
-    - 前端压缩到不超过 `256px`
-    - 预览
-    - 清空预览
-    - 保存后即时生效
-  - 后端 `system_admin` 设置记录已新增 `brandLogoDataUrl`，并对非 PNG data URL 与超大内容做了校验
-  - 已额外避免把 base64 logo 直接写进活动日志，日志里只保留脱敏标记
+  - 品牌 Logo 上传方案已下线，左上角品牌位固定回退内置图标
+  - 系统设置与协作同步不再保存图片内联文本
 - 是否需要主线程配合：不需要
 - 风险点：
-  - 当前存储方案是 `data URL -> settings.system_admin`，适合小型品牌图标；如果后续要支持更大的品牌资产，建议再切到应用数据目录文件存储
-  - 本轮只支持 PNG，不支持 SVG/JPG/WebP
+  - 如果后续恢复品牌资产，应使用应用数据目录文件存储，并在协作预览中只传路径或摘要
 - 验证结果：
   - `uv run pytest tests/test_api_smoke.py -k "brand_logo or system_admin_settings or employee_can_edit_business_settings_but_not_sensitive_settings"` 通过
   - `npm run build:renderer` 通过

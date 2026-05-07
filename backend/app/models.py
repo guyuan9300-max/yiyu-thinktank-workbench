@@ -2140,7 +2140,6 @@ class SystemAdminSettingsRecord(BaseModel):
     protectEmployeeAdmin: bool = True
     protectAiAndCloud: bool = True
     protectCloudSecurity: bool = True
-    brandLogoDataUrl: str | None = None
     updatedAt: str
 
 
@@ -2149,7 +2148,6 @@ class SystemAdminSettingsPayload(BaseModel):
     protectEmployeeAdmin: bool | None = None
     protectAiAndCloud: bool | None = None
     protectCloudSecurity: bool | None = None
-    brandLogoDataUrl: str | None = None
 
 
 class AnalysisWorkerCounterSnapshotRecord(BaseModel):

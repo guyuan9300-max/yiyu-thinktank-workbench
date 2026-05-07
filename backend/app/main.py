@@ -4538,16 +4538,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             }
         )
 
-    def _normalize_brand_logo_data_url(value: str | None) -> str | None:
-        normalized = (value or "").strip()
-        if not normalized:
-            return None
-        if not normalized.startswith("data:image/png;base64,"):
-            raise HTTPException(status_code=400, detail="品牌 Logo 目前只支持 PNG data URL")
-        if len(normalized) > 1_500_000:
-            raise HTTPException(status_code=400, detail="品牌 Logo 过大，请换更小的 PNG")
-        return normalized
-
     def _normalize_feishu_user_binding_callback_url(value: str | None) -> str:
         normalized = (value or "").strip()
         if not normalized:
@@ -30267,16 +30257,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         current = get_system_admin_settings()
         next_payload = current.model_dump()
         updates = payload.model_dump(exclude_none=True)
-        if "brandLogoDataUrl" in updates:
-            updates["brandLogoDataUrl"] = _normalize_brand_logo_data_url(updates.get("brandLogoDataUrl"))
         next_payload.update(updates)
         next_payload["updatedAt"] = now_iso()
         next_record = SystemAdminSettingsRecord(**next_payload)
         _save_json_settings_record("settings.system_admin", next_record)
-        logged_updates = dict(updates)
-        if "brandLogoDataUrl" in logged_updates:
-            logged_updates["brandLogoDataUrl"] = "[PNG data URL omitted]" if logged_updates["brandLogoDataUrl"] else None
-        log_activity("settings.system_admin.update", "settings", "system_admin", logged_updates)
+        log_activity("settings.system_admin.update", "settings", "system_admin", updates)
         return next_record
 
     @app.get("/api/v1/settings/main-chain-stability", response_model=MainChainStabilitySettingsRecord)

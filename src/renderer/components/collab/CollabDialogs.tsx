@@ -209,39 +209,6 @@ export function CollabPreviewDialog({
                         </ActionButton>
                       </div>
 
-                      {(effect.beforeImageDataUrl || effect.afterImageDataUrl) && (
-                        <div className="mt-4 grid gap-3 md:grid-cols-2">
-                          <div className="rounded-2xl border border-gray-100 bg-gray-50 p-3">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-gray-400">
-                              {effect.beforeLabel || '变更前'}
-                            </p>
-                            {effect.beforeImageDataUrl ? (
-                              <img
-                                src={effect.beforeImageDataUrl}
-                                alt={effect.beforeLabel || '变更前'}
-                                className="mt-3 h-24 w-24 rounded-2xl border border-gray-200 bg-white object-cover"
-                              />
-                            ) : (
-                              <p className="mt-3 text-[12px] text-gray-400">当前还没有这张图或尚未设置。</p>
-                            )}
-                          </div>
-                          <div className="rounded-2xl border border-gray-100 bg-gray-50 p-3">
-                            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-gray-400">
-                              {effect.afterLabel || '变更后'}
-                            </p>
-                            {effect.afterImageDataUrl ? (
-                              <img
-                                src={effect.afterImageDataUrl}
-                                alt={effect.afterLabel || '变更后'}
-                                className="mt-3 h-24 w-24 rounded-2xl border border-gray-200 bg-white object-cover"
-                              />
-                            ) : (
-                              <p className="mt-3 text-[12px] text-gray-400">这次不会带来新的图片效果。</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
                       {effect.details.length > 0 && (
                         <div className="mt-4 space-y-2">
                           {effect.details.map((detail) => (

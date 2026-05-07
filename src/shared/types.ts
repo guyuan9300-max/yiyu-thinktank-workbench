@@ -4344,7 +4344,6 @@ export interface SystemAdminSettings {
   protectEmployeeAdmin: boolean;
   protectAiAndCloud: boolean;
   protectCloudSecurity: boolean;
-  brandLogoDataUrl?: string | null;
   updatedAt: string;
 }
 
@@ -6112,7 +6111,6 @@ export interface SystemAdminSettingsPayload {
   protectEmployeeAdmin?: boolean;
   protectAiAndCloud?: boolean;
   protectCloudSecurity?: boolean;
-  brandLogoDataUrl?: string | null;
 }
 
 export interface FeishuBotSettingsPayload {
@@ -6336,8 +6334,6 @@ export interface CollabEffectPreview {
   relatedPaths: string[];
   beforeLabel?: string | null;
   afterLabel?: string | null;
-  beforeImageDataUrl?: string | null;
-  afterImageDataUrl?: string | null;
 }
 
 export interface CollabRepoStatus {

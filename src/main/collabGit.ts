@@ -100,8 +100,6 @@ type EffectDraft = {
   relatedPaths: Set<string>;
   beforeLabel?: string | null;
   afterLabel?: string | null;
-  beforeImageDataUrl?: string | null;
-  afterImageDataUrl?: string | null;
 };
 
 const GROUP_LABELS: Record<CollabChangeGroupKey, string> = {
@@ -135,14 +133,12 @@ const SHARED_SETTINGS_TARGETS: SharedSettingsTarget[] = [
       protectEmployeeAdmin: true,
       protectAiAndCloud: true,
       protectCloudSecurity: true,
-      brandLogoDataUrl: null,
       updatedAt: new Date().toISOString(),
     }),
   },
 ];
 
 const SHARED_SETTING_LABELS: Record<string, string> = {
-  brandLogoDataUrl: '左上角品牌头像',
   allowBusinessSettingsForEmployees: '员工业务设置权限',
   allowOrgDnaForEmployees: '员工组织 DNA 权限',
   protectEmployeeAdmin: '员工管理保护',
@@ -259,12 +255,19 @@ function writeSharedSettingRecord(appDbPath: string, settingKey: string, value: 
   }
 }
 
+function stripUnsupportedSharedSettings(record: Record<string, unknown>) {
+  const safeRecord = { ...record };
+  delete safeRecord.brandLogoDataUrl;
+  delete safeRecord.brandLogoDataUrlOmitted;
+  return safeRecord;
+}
+
 async function exportSharedSettingsToRepo(repoPath: string, appDbPath?: string | null) {
   if (!appDbPath) return;
   const stat = await fs.promises.stat(appDbPath).catch(() => null);
   if (!stat?.isFile()) return;
   for (const target of SHARED_SETTINGS_TARGETS) {
-    const nextRecord = readSharedSettingRecord(appDbPath, target.settingKey, target.defaultValue);
+    const nextRecord = stripUnsupportedSharedSettings(readSharedSettingRecord(appDbPath, target.settingKey, target.defaultValue));
     const targetPath = path.join(repoPath, target.repoRelativePath);
     const nextContent = formatSyncedJson(nextRecord);
     const currentContent = await fs.promises.readFile(targetPath, 'utf8').catch(() => null);
@@ -296,7 +299,7 @@ async function importSelectedSharedSettingsFromRepo(repoPath: string, appDbPath:
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(`${target.repoRelativePath} 内容格式不正确，无法同步到本机设置。`);
     }
-    writeSharedSettingRecord(appDbPath, target.settingKey, parsed as Record<string, unknown>);
+    writeSharedSettingRecord(appDbPath, target.settingKey, stripUnsupportedSharedSettings(parsed as Record<string, unknown>));
   }
 }
 
@@ -350,8 +353,6 @@ function finalizeEffectDrafts(drafts: EffectDraft[]): CollabEffectPreview[] {
       relatedPaths: Array.from(draft.relatedPaths),
       beforeLabel: draft.beforeLabel ?? null,
       afterLabel: draft.afterLabel ?? null,
-      beforeImageDataUrl: draft.beforeImageDataUrl ?? null,
-      afterImageDataUrl: draft.afterImageDataUrl ?? null,
     }))
     .filter((draft) => draft.relatedPaths.length > 0);
 }
@@ -765,33 +766,27 @@ async function buildSharedSettingsEffect(
   const matchedFiles = files.filter((file) => file.path === target.repoRelativePath);
   if (!matchedFiles.length) return null;
   const beforeRevision = mode === 'push' ? 'origin/main' : 'HEAD';
-  const beforeRecord = parseSharedSettingsContent(await readGitObject(context, beforeRevision, target.repoRelativePath)) || target.defaultValue();
+  const beforeRecord = stripUnsupportedSharedSettings(parseSharedSettingsContent(await readGitObject(context, beforeRevision, target.repoRelativePath)) || target.defaultValue());
   const afterRecord = mode === 'push'
-    ? (parseSharedSettingsContent(await readWorkingTreeText(context, target.repoRelativePath)) || target.defaultValue())
-    : (parseSharedSettingsContent(await readGitObject(context, 'origin/main', target.repoRelativePath)) || target.defaultValue());
+    ? stripUnsupportedSharedSettings(parseSharedSettingsContent(await readWorkingTreeText(context, target.repoRelativePath)) || target.defaultValue())
+    : stripUnsupportedSharedSettings(parseSharedSettingsContent(await readGitObject(context, 'origin/main', target.repoRelativePath)) || target.defaultValue());
   const changedKeys = Array.from(new Set([
     ...Object.keys(beforeRecord),
     ...Object.keys(afterRecord),
   ])).filter((settingKey) => !areJsonValuesEqual(beforeRecord[settingKey], afterRecord[settingKey]));
   if (!changedKeys.length) return null;
   const changedLabels = changedKeys.slice(0, 4).map(labelSharedSettingKey);
-  const brandChanged = !areJsonValuesEqual(beforeRecord.brandLogoDataUrl, afterRecord.brandLogoDataUrl);
-  const summary = brandChanged
-    ? '同步后，左上角品牌头像会跟着变化，团队两边看到的品牌展示会更一致。'
-    : '同步后，系统级共享设置会变化，并影响这台机器对品牌或保护规则的理解。';
   const draft = createEffectDraft(
     'shared-settings-system-admin',
-    brandChanged ? '系统品牌头像和共享设置会变化' : '系统级共享设置会变化',
-    summary,
-    brandChanged ? 'visible' : 'mixed',
-    brandChanged ? '界面可见' : '共享设置',
+    '系统级共享设置会变化',
+    '同步后，系统级共享设置会变化，并影响这台机器对保护规则的理解。',
+    'mixed',
+    '共享设置',
     matchedFiles.map((file) => file.path),
     changedLabels.map((label) => `${label} 会更新`),
   );
   draft.beforeLabel = mode === 'push' ? 'main 当前效果' : '你本地当前效果';
   draft.afterLabel = mode === 'push' ? '推送到 main 后' : '从 main 同步后';
-  draft.beforeImageDataUrl = typeof beforeRecord.brandLogoDataUrl === 'string' ? beforeRecord.brandLogoDataUrl : null;
-  draft.afterImageDataUrl = typeof afterRecord.brandLogoDataUrl === 'string' ? afterRecord.brandLogoDataUrl : null;
   return draft;
 }
 

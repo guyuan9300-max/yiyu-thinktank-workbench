@@ -439,7 +439,7 @@ import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, cr
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
-import { BrandLogoMark, BrandLogoSettingsCard } from './components/settings/BrandLogoSettingsCard';
+import { BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
@@ -1320,7 +1320,6 @@ const DEFAULT_SYSTEM_ADMIN_SETTINGS: SystemAdminSettings = {
   protectEmployeeAdmin: true,
   protectAiAndCloud: true,
   protectCloudSecurity: true,
-  brandLogoDataUrl: null,
   updatedAt: '',
 };
 
@@ -4956,59 +4955,6 @@ function createEmptyReviewForm(weekLabel = currentWeekLabel()): ReviewFormState 
   };
 }
 
-const MAX_BRAND_LOGO_UPLOAD_BYTES = 3 * 1024 * 1024;
-const BRAND_LOGO_MAX_EDGE = 256;
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error('PNG 读取失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function loadImageFromUrl(url: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('PNG 解码失败'));
-    image.src = url;
-  });
-}
-
-async function normalizeBrandLogoFile(file: File) {
-  if (file.type !== 'image/png') {
-    throw new Error('当前只支持上传 PNG');
-  }
-  if (file.size > MAX_BRAND_LOGO_UPLOAD_BYTES) {
-    throw new Error('PNG 过大，请控制在 3MB 以内');
-  }
-  const sourceUrl = await readFileAsDataUrl(file);
-  const image = await loadImageFromUrl(sourceUrl);
-  const longestEdge = Math.max(image.naturalWidth || image.width || 0, image.naturalHeight || image.height || 0);
-  if (!longestEdge) {
-    throw new Error('PNG 尺寸无效');
-  }
-  const scale = Math.min(1, BRAND_LOGO_MAX_EDGE / longestEdge);
-  const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
-  const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d');
-  if (!context) {
-    throw new Error('当前环境不支持图片处理');
-  }
-  context.clearRect(0, 0, width, height);
-  context.drawImage(image, 0, 0, width, height);
-  const normalized = canvas.toDataURL('image/png');
-  if (normalized.length > 1_500_000) {
-    throw new Error('PNG 过大，请换更简单的图标');
-  }
-  return normalized;
-}
-
 function selectFolderBridge() {
   if (window.__YIYU_TEST_DIALOGS__?.selectFolder) return window.__YIYU_TEST_DIALOGS__.selectFolder();
   return window.yiyuWorkbench.selectFolder();
@@ -5848,7 +5794,6 @@ export default function App() {
   const [isSavingOrgModel, setIsSavingOrgModel] = useState(false);
   const [isOrgModelDraftDirty, setIsOrgModelDraftDirty] = useState(false);
   const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
-  const [isSavingBrandLogo, setIsSavingBrandLogo] = useState(false);
   const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
     fullName: currentSessionUser?.fullName || '',
     email: currentSessionUser?.email || '',
@@ -21557,7 +21502,6 @@ export default function App() {
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageSensitiveSettings = isLocalSession || currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
-    const hasBrandLogoDraftChange = (systemAdminDraft.brandLogoDataUrl || null) !== (systemAdminSettingsState.brandLogoDataUrl || null);
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
@@ -21906,28 +21850,6 @@ export default function App() {
         flash('success', '系统权限规则已保存');
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
-      }
-    };
-
-    const handlePickBrandLogo = async (file: File) => {
-      const normalized = await normalizeBrandLogoFile(file);
-      setSystemAdminDraft((prev) => ({ ...prev, brandLogoDataUrl: normalized }));
-    };
-
-    const handleSaveBrandLogo = async () => {
-      setIsSavingBrandLogo(true);
-      try {
-        const next = await updateSystemAdminSettings({
-          brandLogoDataUrl: systemAdminDraft.brandLogoDataUrl || '',
-        });
-        setSystemAdminSettingsState(next);
-        setSystemAdminDraft(next);
-        await loadLogsBlock();
-        flash('success', next.brandLogoDataUrl ? '品牌 Logo 已保存' : '品牌 Logo 已清空');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '品牌 Logo 保存失败');
-      } finally {
-        setIsSavingBrandLogo(false);
       }
     };
 
@@ -22564,16 +22486,6 @@ export default function App() {
           onSaveIntegration={handleSaveOrgFeishuIntegration}
           onSaveRememberedInputs={handleSaveFeishuInputMemory}
           onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
-        />
-
-        <BrandLogoSettingsCard
-          logoDataUrl={systemAdminDraft.brandLogoDataUrl || null}
-          canManage={canManageSensitiveSettings}
-          busy={isSavingBrandLogo}
-          hasUnsavedChange={hasBrandLogoDraftChange}
-          onPickLogo={handlePickBrandLogo}
-          onClearDraft={() => setSystemAdminDraft((prev) => ({ ...prev, brandLogoDataUrl: null }))}
-          onSave={handleSaveBrandLogo}
         />
 
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
@@ -23296,7 +23208,7 @@ export default function App() {
 
         <div className="flex flex-col items-center gap-5 z-10" style={{ animation: 'splash-breathe 3s ease-in-out infinite' }}>
           <div className="w-20 h-20 rounded-2xl bg-white/95 shadow-lg flex items-center justify-center backdrop-blur-sm">
-            <BrandLogoMark logoDataUrl={systemAdminSettingsState?.brandLogoDataUrl || null} className="w-14 h-14" />
+            <BrandLogoMark className="w-14 h-14" />
           </div>
           <div className="text-center">
             <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>
@@ -23356,7 +23268,7 @@ export default function App() {
       >
         <div className={`px-4 py-6 md:py-7 ${isSidebarCollapsed ? 'md:px-3' : 'md:px-6'}`}>
           <div className={`flex items-center gap-3 md:gap-4 justify-center ${isSidebarCollapsed ? 'md:justify-center' : 'md:justify-start'}`}>
-            <BrandLogoMark logoDataUrl={systemAdminSettingsState.brandLogoDataUrl || null} className={`w-8 h-8 ${isSidebarCollapsed ? 'md:w-10 md:h-10' : 'md:w-11 md:h-11'}`} />
+            <BrandLogoMark className={`w-8 h-8 ${isSidebarCollapsed ? 'md:w-10 md:h-10' : 'md:w-11 md:h-11'}`} />
             <span className={`font-bold text-[18px] md:text-[20px] text-gray-900 tracking-tight ${isSidebarCollapsed ? 'hidden' : 'hidden md:block'}`}>益语智库</span>
           </div>
           <div className={`mt-3 hidden md:flex ${isSidebarCollapsed ? 'justify-center' : 'justify-start pl-[2px]'}`}>
