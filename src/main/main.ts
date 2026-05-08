@@ -24,6 +24,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_BACKEND_PORT = 47829;
 const DEFAULT_CLOUD_BACKEND_PORT = 47830;
+const DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL = 'http://101.126.34.232';
 const projectRoot = path.resolve(__dirname, '../..');
 const isDev = !app.isPackaged && Boolean(process.env.VITE_DEV_SERVER_URL);
 const REQUIRED_BACKEND_FEATURES = ['knowledge.vectorize-answer', 'knowledge.reclass-events', 'chat.general-answer', 'chat.async-status'];
@@ -133,10 +134,14 @@ function localDevCloudSeedEnv() {
 }
 
 function remoteCloudBackendUrl() {
-  return (
+  const configuredUrl = (
     normalizeHttpUrl(process.env.YIYU_REMOTE_CLOUD_API_URL)
     || normalizeHttpUrl(process.env.YIYU_PACKAGED_REMOTE_CLOUD_API_URL)
   );
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+  return app.isPackaged ? DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL : null;
 }
 
 function shouldUseRemoteCloudBackend() {

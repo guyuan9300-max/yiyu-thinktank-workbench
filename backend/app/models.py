@@ -2137,6 +2137,7 @@ class HandbookSettingsPayload(BaseModel):
 
 class SystemAdminSettingsRecord(BaseModel):
     allowBusinessSettingsForEmployees: bool = True
+    allowOrgDnaForEmployees: bool = True
     protectEmployeeAdmin: bool = True
     protectAiAndCloud: bool = True
     protectCloudSecurity: bool = True
@@ -2145,6 +2146,7 @@ class SystemAdminSettingsRecord(BaseModel):
 
 class SystemAdminSettingsPayload(BaseModel):
     allowBusinessSettingsForEmployees: bool | None = None
+    allowOrgDnaForEmployees: bool | None = None
     protectEmployeeAdmin: bool | None = None
     protectAiAndCloud: bool | None = None
     protectCloudSecurity: bool | None = None

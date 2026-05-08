@@ -120,6 +120,7 @@ import type {
   LinkMaterialImportRun,
   LocalInputMemory,
   MaintenanceModeStatus,
+  MainChainStabilitySettings,
   MentionCandidate,
   Operator,
   OrgMembershipSummary,
@@ -440,7 +441,7 @@ import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, cr
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
-import { BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
+import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
@@ -23229,7 +23230,7 @@ export default function App() {
 
         <div className="flex flex-col items-center gap-5 z-10" style={{ animation: 'splash-breathe 3s ease-in-out infinite' }}>
           <div className="w-20 h-20 rounded-2xl bg-white/95 shadow-lg flex items-center justify-center backdrop-blur-sm">
-            <BrandLogoMark className="w-14 h-14" />
+            <AppLogoMark className="w-14 h-14" />
           </div>
           <div className="text-center">
             <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>

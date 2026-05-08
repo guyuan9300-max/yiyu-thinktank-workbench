@@ -107,7 +107,8 @@
 | Apple 公证 | notarization 凭据 | 未准备 |
 | 下载域名 | 稳定 HTTPS 下载域名 | 未准备 |
 | 构建机 | 一台稳定可用的 macOS 构建机或 macOS CI | 未准备 |
-| 图标资源 | `icon.icns` | 未准备 |
+| 图标资源 | `icon.icns` | 已准备 |
+| Hardened Runtime | `entitlements.mac.plist` 与 `entitlements.mac.inherit.plist` | 已准备 |
 | 更新源目录 | `stable / beta` 两套目录 | 未准备 |
 
 ## 当前实施顺序

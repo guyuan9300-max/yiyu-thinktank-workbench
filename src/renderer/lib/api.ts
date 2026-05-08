@@ -268,36 +268,6 @@ export type {
   StrategicThoughtsResponse,
 } from '../../shared/types';
 
-export type OrganizationDnaV2Kind = 'stable_dna' | 'evolving_dna' | 'gap_dna' | 'risk_dna';
-
-export type OrganizationDnaV2Item = {
-  id: string;
-  moduleKind: OrganizationDnaV2Kind;
-  title: string;
-  summary?: string;
-  detail?: string;
-  status?: 'confirmed' | 'candidate' | 'stale' | 'deprecated' | string;
-  confidenceScore?: number;
-  sourceType?: string;
-  sourceId?: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-export type OrganizationDnaV2Snapshot = {
-  generatedAt?: string;
-  stableItems: OrganizationDnaV2Item[];
-  evolvingItems: OrganizationDnaV2Item[];
-  gapItems: OrganizationDnaV2Item[];
-  riskItems: OrganizationDnaV2Item[];
-  itemCounts?: Record<string, number>;
-  confirmedCount?: number;
-  candidateCount?: number;
-  staleCount?: number;
-  latestRun?: unknown;
-  updatedAt?: string | null;
-};
-
 function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
   const backendBaseUrl = 'http://127.0.0.1:47829';
   const notAvailable = async (action: string) => {

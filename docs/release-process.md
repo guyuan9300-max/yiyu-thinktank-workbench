@@ -40,8 +40,13 @@
 - `Developer ID Application` 证书可用。
 - notarization 凭据可用。
 - `build-resources/icon.icns` 已准备。
+- `build-resources/entitlements.mac.plist` 与 `build-resources/entitlements.mac.inherit.plist` 已准备。
 - 下载域名与对象存储可访问。
 - 本机若只是做功能自测，请改用 `npm run dist:mac-local`，不要拿它替代正式官网发布包。
+
+签名、公证和申请材料详见：
+
+- `docs/developer-id-signing-notarization.md`
 
 ### 版本信息
 

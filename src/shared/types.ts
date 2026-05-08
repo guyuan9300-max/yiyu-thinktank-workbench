@@ -4341,6 +4341,7 @@ export interface HandbookSettings {
 
 export interface SystemAdminSettings {
   allowBusinessSettingsForEmployees: boolean;
+  allowOrgDnaForEmployees: boolean;
   protectEmployeeAdmin: boolean;
   protectAiAndCloud: boolean;
   protectCloudSecurity: boolean;
@@ -6200,6 +6201,7 @@ export interface HandbookSettingsPayload {
 
 export interface SystemAdminSettingsPayload {
   allowBusinessSettingsForEmployees?: boolean;
+  allowOrgDnaForEmployees?: boolean;
   protectEmployeeAdmin?: boolean;
   protectAiAndCloud?: boolean;
   protectCloudSecurity?: boolean;

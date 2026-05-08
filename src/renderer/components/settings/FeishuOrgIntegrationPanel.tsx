@@ -22,6 +22,8 @@ type Props = {
   onSaveIntegration: (payload: OrgFeishuIntegrationPayload) => Promise<void>;
   onSaveRememberedInputs: (payload: LocalInputMemoryFeishuIntegration) => Promise<void>;
   onSaveDeliveryProfile: (payload: FeishuDeliveryProfilePayload) => Promise<void>;
+  onOpenOrganizationSetup?: () => void;
+  onOpenCloudAuth?: () => void;
 };
 
 function statusTone(status: 'idle' | 'success' | 'failed') {
