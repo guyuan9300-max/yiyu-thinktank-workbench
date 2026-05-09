@@ -114,11 +114,13 @@ import type {
   HealthResponse,
   HierarchyReport,
   ImportRecord,
+  IntelligenceProfile,
   KnowledgeSearchResult,
   LinkMaterialCookieBrowser,
   LinkMaterialImportRun,
   LocalInputMemory,
   MaintenanceModeStatus,
+  MainChainStabilitySettings,
   MentionCandidate,
   Operator,
   OrgMembershipSummary,
@@ -439,7 +441,7 @@ import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, cr
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
 import { GrowthCenterView } from './components/handbook/GrowthCenterView';
-import { BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
+import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
@@ -1317,9 +1319,22 @@ const DEFAULT_HANDBOOK_SETTINGS: HandbookSettings = {
 
 const DEFAULT_SYSTEM_ADMIN_SETTINGS: SystemAdminSettings = {
   allowBusinessSettingsForEmployees: true,
+  allowOrgDnaForEmployees: true,
   protectEmployeeAdmin: true,
   protectAiAndCloud: true,
   protectCloudSecurity: true,
+  updatedAt: '',
+};
+
+const DEFAULT_MAIN_CHAIN_STABILITY_SETTINGS: MainChainStabilitySettings = {
+  latestJudgmentsShadowOff: false,
+  backfillPaused: false,
+  workerCounters: {
+    claimCounts: {},
+    lockContention: {},
+    backfillThrottle: {},
+  },
+  lastCanaryObservation: null,
   updatedAt: '',
 };
 
@@ -5643,6 +5658,7 @@ export default function App() {
   const [reviewDirtyTaskIds, setReviewDirtyTaskIds] = useState<string[]>([]);
   const [radars, setRadars] = useState<TopicRadar[]>([]);
   const [candidates, setCandidates] = useState<TopicCandidate[]>([]);
+  const [intelligenceProfiles, setIntelligenceProfiles] = useState<IntelligenceProfile[]>([]);
   const [handbookEntries, setHandbookEntries] = useState<HandbookEntry[]>([]);
   const taskEvidenceTask = useMemo(
     () => (evidenceTaskId ? tasks.find((item) => item.id === evidenceTaskId) || null : null),
@@ -6881,6 +6897,7 @@ export default function App() {
     const response = await getTopics();
     setRadars(response.radars);
     setCandidates(response.candidates);
+    setIntelligenceProfiles(response.intelligenceProfiles || []);
     return response;
   }
 
@@ -7049,6 +7066,7 @@ export default function App() {
         setReviewDashboard(null);
         setRadars([]);
         setCandidates([]);
+        setIntelligenceProfiles([]);
         setHandbookEntries([]);
         setLogs([]);
         setEmployeeReviews([]);
@@ -8321,7 +8339,7 @@ export default function App() {
       tasks,
       workspace,
       workspaceSelectedMeetingId,
-		    } = tasksViewBridgeRef.current as TasksViewBridgeState;
+    } = tasksViewBridgeRef.current as TasksViewBridgeState;
     const buildDefaultCollaborators = (): MentionCandidate[] => {
       if (!effectiveTaskSettings.autoAssignSelf || !currentSessionUser) return [];
       return [{
@@ -21502,6 +21520,7 @@ export default function App() {
     const canManageTaskTag = (tag: TaskTag) => (tag.scope === 'self' ? tag.ownerUserId === currentSessionUser?.id : currentSessionUser?.primaryRole === 'admin');
     const canManageSensitiveSettings = isLocalSession || currentSessionUser?.primaryRole === 'admin';
     const canEditBusinessSettings = canManageSensitiveSettings || systemAdminSettingsState.allowBusinessSettingsForEmployees;
+    const canEditOrgDna = canManageSensitiveSettings || systemAdminSettingsState.allowOrgDnaForEmployees;
     const resetTagManager = () => {
       setEditingTagId(null);
       setTagManageDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
@@ -22486,6 +22505,8 @@ export default function App() {
           onSaveIntegration={handleSaveOrgFeishuIntegration}
           onSaveRememberedInputs={handleSaveFeishuInputMemory}
           onSaveDeliveryProfile={handleSaveFeishuDeliveryProfile}
+          onOpenOrganizationSetup={() => setSettingsSection('system_admin')}
+          onOpenCloudAuth={() => openCloudAuthModal('login')}
         />
 
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm">
@@ -23065,6 +23086,7 @@ export default function App() {
     topics_management: (
       <TopicsManagementView
         radars={radars}
+        intelligenceProfiles={intelligenceProfiles}
         candidates={candidates}
         tasks={sharedTasks}
         activeTaskLists={activeTaskLists}
@@ -23208,7 +23230,7 @@ export default function App() {
 
         <div className="flex flex-col items-center gap-5 z-10" style={{ animation: 'splash-breathe 3s ease-in-out infinite' }}>
           <div className="w-20 h-20 rounded-2xl bg-white/95 shadow-lg flex items-center justify-center backdrop-blur-sm">
-            <BrandLogoMark className="w-14 h-14" />
+            <AppLogoMark className="w-14 h-14" />
           </div>
           <div className="text-center">
             <h1 className="text-[28px] font-bold text-white tracking-wide" style={{ textShadow: '0 2px 12px rgba(0,0,0,.15)' }}>益语智库</h1>

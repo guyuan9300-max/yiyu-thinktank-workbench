@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -22,6 +23,7 @@ SEARCH_HEADERS = {
 GOOGLE_NEWS_TEMPLATE = "https://news.google.com/rss/search?q={query}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
 BING_NEWS_TEMPLATE = "https://www.bing.com/news/search?q={query}&format=RSS&setlang=zh-cn"
 BING_WEB_TEMPLATE = "https://www.bing.com/search?q={query}&format=rss&setlang=zh-cn"
+BING_WEB_HTML_TEMPLATE = "https://cn.bing.com/search?q={query}&setlang=zh-cn&cc=CN"
 JINA_READER_TEMPLATE = "https://r.jina.ai/http://{target}"
 
 STOP_PHRASES = (
@@ -136,6 +138,7 @@ class TopicSearchHit:
     published_at: str | None
     provider: str
     query: str
+    direction: str = ""
 
 
 def fetch_topic_candidates_from_web(
@@ -145,20 +148,28 @@ def fetch_topic_candidates_from_web(
     radar_prompt: str,
     time_range: str,
     preferred_source_urls: list[str] | None = None,
+    search_intents: list[dict[str, object]] | None = None,
     max_items: int = 5,
+    search_fallback_enabled: bool = True,
+    ai_query_suggestions_enabled: bool = True,
 ) -> list[TopicSearchHit]:
-    query_suggestions = ai.suggest_topic_search_queries(
-        title=radar_title,
-        prompt=radar_prompt,
-        time_range=time_range,
-    )
+    intent_queries: list[str] = []
+    intent_direction_by_query: dict[str, str] = {}
+    for intent in search_intents or []:
+        query_text = str(intent.get("query") or "").strip()
+        if not query_text:
+            continue
+        direction = str(intent.get("direction") or "").strip()
+        intent_queries.append(query_text)
+        if direction:
+            intent_direction_by_query[_normalize_query_key(query_text)] = direction
     queries = _candidate_queries(
         title=radar_title,
         prompt=radar_prompt,
         queries=[
+            *intent_queries,
             *_extract_prompt_queries(radar_prompt),
             *_expand_topic_queries(radar_title, radar_prompt),
-            *query_suggestions,
         ],
     )
     relevance_tokens = _keyword_tokens(f"{radar_title} {radar_prompt}")
@@ -182,8 +193,37 @@ def fetch_topic_candidates_from_web(
                 published_at=preferred_hit.published_at,
                 provider=preferred_hit.provider,
                 query=f"preferred:{preferred_hit.source}",
+                direction="",
             )
         )
+
+    if not search_fallback_enabled:
+        hits = _filter_hits_by_time_range(hits, time_range)
+        if relevance_tokens:
+            filtered_hits = [hit for hit in hits if _score_hit(hit, relevance_tokens) > 0]
+            if filtered_hits:
+                hits = filtered_hits
+        ranked = _fallback_rank_hits(radar_title, radar_prompt, hits, max_items=shortlist_limit) or hits[:shortlist_limit]
+        return ranked
+
+    if ai_query_suggestions_enabled:
+        try:
+            query_suggestions = ai.suggest_topic_search_queries(
+                title=radar_title,
+                prompt=radar_prompt,
+                time_range=time_range,
+            )
+        except Exception:
+            query_suggestions = []
+        if query_suggestions:
+            queries = _candidate_queries(
+                title=radar_title,
+                prompt=radar_prompt,
+                queries=[
+                    *query_suggestions,
+                    *queries,
+                ],
+            )
 
     with httpx.Client(timeout=httpx.Timeout(8.0, connect=4.0), headers=SEARCH_HEADERS, follow_redirects=True) as client:
         if len(hits) < raw_hit_limit:
@@ -194,7 +234,15 @@ def fetch_topic_candidates_from_web(
                         response.raise_for_status()
                     except Exception:
                         continue
-                    for hit in _parse_rss_hits(response.text, provider=provider, query=effective_query):
+                    parsed_hits = (
+                        _parse_bing_html_hits(response.text, provider=provider, query=effective_query)
+                        if provider == "bing_web_html"
+                        else _parse_rss_hits(response.text, provider=provider, query=effective_query)
+                    )
+                    for hit in parsed_hits:
+                        direction = intent_direction_by_query.get(_normalize_query_key(effective_query), "")
+                        if direction:
+                            hit = _with_topic_hit_direction(hit, direction)
                         dedupe_key = _dedupe_key(hit)
                         if dedupe_key in seen_keys:
                             continue
@@ -212,6 +260,9 @@ def fetch_topic_candidates_from_web(
                     response = client.get(BING_WEB_TEMPLATE.format(query=quote(fallback_query)))
                     response.raise_for_status()
                     for hit in _parse_rss_hits(response.text, provider="bing_web", query=fallback_query):
+                        direction = intent_direction_by_query.get(_normalize_query_key(fallback_query), "")
+                        if direction:
+                            hit = _with_topic_hit_direction(hit, direction)
                         dedupe_key = _dedupe_key(hit)
                         if dedupe_key in seen_keys:
                             continue
@@ -235,23 +286,26 @@ def fetch_topic_candidates_from_web(
     if not hits:
         return []
 
-    shortlisted = ai.shortlist_topic_search_hits(
-        title=radar_title,
-        prompt=radar_prompt,
-        hits=[
-            {
-                "title": hit.title,
-                "summary": hit.summary,
-                "source": hit.source,
-                "url": hit.source_url,
-                "publishedAt": hit.published_at or "",
-                "provider": hit.provider,
-                "query": hit.query,
-            }
-            for hit in hits
-        ],
-        max_items=shortlist_limit,
-    )
+    try:
+        shortlisted = ai.shortlist_topic_search_hits(
+            title=radar_title,
+            prompt=radar_prompt,
+            hits=[
+                {
+                    "title": hit.title,
+                    "summary": hit.summary,
+                    "source": hit.source,
+                    "url": hit.source_url,
+                    "publishedAt": hit.published_at or "",
+                    "provider": hit.provider,
+                    "query": hit.query,
+                }
+                for hit in hits
+            ],
+            max_items=shortlist_limit,
+        )
+    except Exception:
+        shortlisted = []
 
     selected: list[TopicSearchHit] = []
     selected_keys: set[str] = set()
@@ -287,15 +341,17 @@ def fetch_topic_candidates_from_web(
                 published_at=hit.published_at,
                 provider=hit.provider,
                 query=hit.query,
+                direction=hit.direction,
             )
         selected.append(hit)
 
     if selected:
         return _ensure_hits_in_chinese(ai, selected[:shortlist_limit], radar_title=radar_title, radar_prompt=radar_prompt)
 
+    fallback_hits = _fallback_rank_hits(radar_title, radar_prompt, hits, max_items=shortlist_limit)
     return _ensure_hits_in_chinese(
         ai,
-        _fallback_rank_hits(radar_title, radar_prompt, hits, max_items=shortlist_limit),
+        fallback_hits or hits[:shortlist_limit],
         radar_title=radar_title,
         radar_prompt=radar_prompt,
     )
@@ -373,17 +429,30 @@ def _preferred_source_domains(preferred_source_urls: list[str] | None) -> list[s
     return domains
 
 
+def _domain_label(url: str) -> str:
+    parsed = urlparse((url or "").strip())
+    domain = parsed.netloc.lower().replace("www.", "")
+    return domain or "公开网页"
+
+
 def _build_search_urls(*, query: str, time_range: str, preferred_source_urls: list[str] | None = None) -> list[tuple[str, str, str]]:
     window = _time_window_token(time_range)
     scoped_query = f"{query} when:{window}" if window else query
     urls: list[tuple[str, str, str]] = []
+    news_rss_fallback_enabled = str(os.getenv("YIYU_TOPIC_NEWS_RSS_FALLBACK", "")).strip().lower() in {"1", "true", "yes", "on"}
     for domain in _preferred_source_domains(preferred_source_urls)[:4]:
         site_query = f"site:{domain} {query}"
         scoped_site_query = f"{site_query} when:{window}" if window else site_query
-        urls.append((f"google_news:{domain}", GOOGLE_NEWS_TEMPLATE.format(query=quote(scoped_site_query)), site_query))
-        urls.append((f"bing_news:{domain}", BING_NEWS_TEMPLATE.format(query=quote(site_query)), site_query))
-    urls.append(("google_news", GOOGLE_NEWS_TEMPLATE.format(query=quote(scoped_query)), query))
-    urls.append(("bing_news", BING_NEWS_TEMPLATE.format(query=quote(query)), query))
+        urls.append((f"bing_web_html:{domain}", BING_WEB_HTML_TEMPLATE.format(query=quote(site_query)), site_query))
+        urls.append((f"bing_web:{domain}", BING_WEB_TEMPLATE.format(query=quote(site_query)), site_query))
+        if news_rss_fallback_enabled:
+            urls.append((f"google_news:{domain}", GOOGLE_NEWS_TEMPLATE.format(query=quote(scoped_site_query)), site_query))
+            urls.append((f"bing_news:{domain}", BING_NEWS_TEMPLATE.format(query=quote(site_query)), site_query))
+    urls.append(("bing_web_html", BING_WEB_HTML_TEMPLATE.format(query=quote(query)), query))
+    urls.append(("bing_web", BING_WEB_TEMPLATE.format(query=quote(query)), query))
+    if news_rss_fallback_enabled:
+        urls.append(("google_news", GOOGLE_NEWS_TEMPLATE.format(query=quote(scoped_query)), query))
+        urls.append(("bing_news", BING_NEWS_TEMPLATE.format(query=quote(query)), query))
     return urls
 
 
@@ -428,9 +497,71 @@ def _parse_rss_hits(xml_text: str, *, provider: str, query: str) -> list[TopicSe
                 published_at=published_at,
                 provider=provider,
                 query=query,
+                direction="",
             )
         )
     return hits
+
+
+def _parse_bing_html_hits(html_text: str, *, provider: str, query: str) -> list[TopicSearchHit]:
+    hits: list[TopicSearchHit] = []
+    text = html_text or ""
+    blocks = re.findall(r'<li[^>]+class=["\'][^"\']*\bb_algo\b[^"\']*["\'][^>]*>(.*?)</li>', text, flags=re.I | re.S)
+    if not blocks:
+        blocks = re.findall(r'<h2[^>]*>\s*<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>\s*</h2>(.*?)(?=<h2|</ol>|</body>)', text, flags=re.I | re.S)
+        normalized_blocks = []
+        for url, title_html, tail in blocks[:12]:
+            normalized_blocks.append(f'<a href="{url}">{title_html}</a>{tail}')
+        blocks = normalized_blocks
+
+    for block in blocks[:12]:
+        link_match = re.search(r'<h2[^>]*>\s*<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', block, flags=re.I | re.S)
+        if not link_match:
+            link_match = re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', block, flags=re.I | re.S)
+        if not link_match:
+            continue
+        link = unescape(link_match.group(1)).strip()
+        title = _clean_text(link_match.group(2))
+        if not title or not link.startswith(("http://", "https://")):
+            continue
+        snippet = ""
+        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, flags=re.I | re.S)
+        if snippet_match:
+            snippet = _clean_text(snippet_match.group(1))
+        if not snippet:
+            snippet = title
+        source = _domain_label(link) or "公开网页"
+        published_at = _extract_search_result_date(block)
+        hits.append(
+            TopicSearchHit(
+                title=title[:120],
+                summary=snippet[:180],
+                source=source[:80],
+                source_url=link,
+                published_at=published_at,
+                provider=provider,
+                query=query,
+                direction="",
+            )
+        )
+    return hits
+
+
+def _extract_search_result_date(block: str) -> str | None:
+    cleaned = _clean_text(block)
+    for pattern in (
+        r"([12]\d{3})[年/-](\d{1,2})[月/-](\d{1,2})日?",
+        r"([12]\d{3})\.(\d{1,2})\.(\d{1,2})",
+    ):
+        match = re.search(pattern, cleaned)
+        if not match:
+            continue
+        year, month, day = match.groups()
+        try:
+            return datetime(int(year), int(month), int(day)).astimezone().replace(microsecond=0).isoformat()
+        except Exception:
+            continue
+    return None
 
 
 def _find_child_text(item: ET.Element, tag: str) -> str:
@@ -507,6 +638,9 @@ def _filter_hits_by_time_range(hits: list[TopicSearchHit], time_range: str) -> l
     recent_hits: list[TopicSearchHit] = []
     undated_hits: list[TopicSearchHit] = []
     for hit in hits:
+        if str(hit.provider or "").startswith("preferred_source") or hit.provider in {"rsshub", "easyspider", "trendradar"}:
+            recent_hits.append(hit)
+            continue
         published_at = _parse_iso_datetime(hit.published_at)
         if published_at is None:
             undated_hits.append(hit)
@@ -688,12 +822,15 @@ def _ensure_hits_in_chinese(
 ) -> list[TopicSearchHit]:
     normalized: list[TopicSearchHit] = []
     for hit in hits:
-        localized = ai.localize_topic_hit(
-            title=hit.title,
-            summary=hit.summary,
-            radar_title=radar_title,
-            radar_prompt=radar_prompt,
-        )
+        try:
+            localized = ai.localize_topic_hit(
+                title=hit.title,
+                summary=hit.summary,
+                radar_title=radar_title,
+                radar_prompt=radar_prompt,
+            )
+        except Exception:
+            localized = {"title": hit.title, "summary": hit.summary}
         normalized.append(
             TopicSearchHit(
                 title=str(localized.get("title") or hit.title)[:120],
@@ -703,9 +840,27 @@ def _ensure_hits_in_chinese(
                 published_at=hit.published_at,
                 provider=hit.provider,
                 query=hit.query,
+                direction=hit.direction,
             )
         )
     return normalized
+
+
+def _normalize_query_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _with_topic_hit_direction(hit: TopicSearchHit, direction: str) -> TopicSearchHit:
+    return TopicSearchHit(
+        title=hit.title,
+        summary=hit.summary,
+        source=hit.source,
+        source_url=hit.source_url,
+        published_at=hit.published_at,
+        provider=hit.provider,
+        query=hit.query,
+        direction=direction,
+    )
 
 
 def _keyword_tokens(text: str) -> list[str]:

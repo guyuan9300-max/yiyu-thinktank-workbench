@@ -6,57 +6,27 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILD_RESOURCES = PROJECT_ROOT / "build-resources"
 ICONSET_DIR = BUILD_RESOURCES / "icon.iconset"
 ICON_PATH = BUILD_RESOURCES / "icon.icns"
+SOURCE_ICON_PATH = BUILD_RESOURCES / "app-logo-ai.png"
 BASE_SIZE = 1024
 
 
-def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    candidates = [
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf",
-    ]
-    for candidate in candidates:
-        font_path = Path(candidate)
-        if font_path.exists():
-            try:
-                return ImageFont.truetype(str(font_path), size=size)
-            except OSError:
-                continue
-    return ImageFont.load_default()
-
-
 def build_base_icon() -> Image.Image:
-    image = Image.new("RGBA", (BASE_SIZE, BASE_SIZE), "#F4F7FF")
-    draw = ImageDraw.Draw(image)
-
-    shadow = Image.new("RGBA", (BASE_SIZE, BASE_SIZE), (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow)
-    shadow_draw.rounded_rectangle((132, 132, 892, 892), radius=210, fill=(31, 64, 173, 70))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(36))
-    image.alpha_composite(shadow)
-
-    draw.rounded_rectangle((112, 112, 912, 912), radius=210, fill="#5B7BFE")
-    draw.rounded_rectangle((170, 170, 854, 854), radius=170, outline=(255, 255, 255, 48), width=6)
-    draw.ellipse((744, 178, 848, 282), fill="#F9FBFF")
-    draw.rounded_rectangle((214, 724, 358, 772), radius=24, fill=(255, 255, 255, 64))
-
-    font = load_font(420)
-    text = "益"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    text_x = (BASE_SIZE - text_width) / 2 - bbox[0]
-    text_y = (BASE_SIZE - text_height) / 2 - bbox[1] - 10
-    draw.text((text_x, text_y), text, font=font, fill="#FFFFFF")
-    return image
+    if not SOURCE_ICON_PATH.exists():
+        raise FileNotFoundError(f"missing source icon: {SOURCE_ICON_PATH}")
+    image = Image.open(SOURCE_ICON_PATH).convert("RGBA")
+    image.thumbnail((BASE_SIZE, BASE_SIZE), Image.LANCZOS)
+    canvas = Image.new("RGBA", (BASE_SIZE, BASE_SIZE), (255, 255, 255, 0))
+    x = (BASE_SIZE - image.width) // 2
+    y = (BASE_SIZE - image.height) // 2
+    canvas.alpha_composite(image, (x, y))
+    return canvas
 
 
 def write_iconset(image: Image.Image) -> None:

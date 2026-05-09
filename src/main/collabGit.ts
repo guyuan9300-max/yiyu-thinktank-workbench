@@ -803,6 +803,21 @@ async function buildEffectPreviews(
   for (const file of files) {
     const normalized = file.path.replace(/\\/g, '/');
     if (normalized === '.yiyu-sync/settings.system_admin.json') continue;
+    if (normalized === '.yiyu-sync/intelligence-demo.json') {
+      addEffectDetail(
+        effectMap,
+        createEffectDraft(
+          'shared-intelligence-demo',
+          '资讯情报站讨论样例会同步',
+          '同步后，同事的资讯情报站会导入日慈画像和南沙公益创投情报，用于本轮模块对齐。',
+          'visible',
+          '共享样例',
+          [file.path],
+        ),
+        '包含 5 个情报画像、1 条南沙公益创投情报和完整顾问 memo。',
+      );
+      continue;
+    }
     if (file.groupKey === 'renderer') {
       const effect = summarizeRendererEffect(normalized);
       addEffectDetail(

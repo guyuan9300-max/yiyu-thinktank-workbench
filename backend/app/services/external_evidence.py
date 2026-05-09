@@ -45,6 +45,10 @@ def ensure_external_evidence_schema(db: Database) -> None:
             reviewed_at TEXT,
             review_note TEXT NOT NULL DEFAULT '',
             linked_proposal_ids_json TEXT NOT NULL DEFAULT '[]',
+            topic_candidate_id TEXT,
+            client_id TEXT,
+            project_module_id TEXT,
+            data_center_ingest_event_id TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -60,6 +64,16 @@ def ensure_external_evidence_schema(db: Database) -> None:
     db.ensure_column("external_evidence_cards", "reviewed_at", "TEXT")
     db.ensure_column("external_evidence_cards", "review_note", "TEXT NOT NULL DEFAULT ''")
     db.ensure_column("external_evidence_cards", "linked_proposal_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+    db.ensure_column("external_evidence_cards", "topic_candidate_id", "TEXT")
+    db.ensure_column("external_evidence_cards", "client_id", "TEXT")
+    db.ensure_column("external_evidence_cards", "project_module_id", "TEXT")
+    db.ensure_column("external_evidence_cards", "data_center_ingest_event_id", "TEXT")
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_external_evidence_topic_candidate
+        ON external_evidence_cards(topic_candidate_id, created_at DESC)
+        """
+    )
 
 
 def _row_to_record(row) -> ExternalEvidenceCardRecord:
@@ -85,6 +99,10 @@ def _row_to_record(row) -> ExternalEvidenceCardRecord:
             for item in from_json(str(row["linked_proposal_ids_json"] or "[]"), [])
             if str(item).strip()
         ],
+        topicCandidateId=str(row["topic_candidate_id"]) if "topic_candidate_id" in row.keys() and row["topic_candidate_id"] else None,
+        clientId=str(row["client_id"]) if "client_id" in row.keys() and row["client_id"] else None,
+        projectModuleId=str(row["project_module_id"]) if "project_module_id" in row.keys() and row["project_module_id"] else None,
+        dataCenterIngestEventId=str(row["data_center_ingest_event_id"]) if "data_center_ingest_event_id" in row.keys() and row["data_center_ingest_event_id"] else None,
         createdAt=str(row["created_at"]),
         updatedAt=str(row["updated_at"]),
     )
@@ -95,6 +113,7 @@ def list_external_evidence_cards(
     *,
     related_scope_type: str | None = None,
     related_scope_id: str | None = None,
+    topic_candidate_id: str | None = None,
     status: str | None = None,
     limit: int = 120,
 ) -> list[ExternalEvidenceCardRecord]:
@@ -107,6 +126,9 @@ def list_external_evidence_cards(
     if related_scope_id:
         where.append("related_scope_id = ?")
         params.append(related_scope_id)
+    if topic_candidate_id:
+        where.append("topic_candidate_id = ?")
+        params.append(topic_candidate_id)
     if status:
         where.append("status = ?")
         params.append(status)
@@ -141,16 +163,32 @@ def create_external_evidence_card_from_topic_candidate(
         source_url = f"topic-candidate://{topic_candidate_id}"
     source_domain = _domain(source_url)
     source_tier = "trusted_media" if source_domain else "unknown"
+    scope_type = str(topic_row["scope_type"] or "").strip() if "scope_type" in topic_row.keys() else ""
+    scope_id = str(topic_row["scope_id"] or "").strip() if "scope_id" in topic_row.keys() else ""
+    client_id = str(topic_row["client_id"] or "").strip() if "client_id" in topic_row.keys() and topic_row["client_id"] else ""
+    project_module_id = (
+        str(topic_row["project_module_id"] or "").strip()
+        if "project_module_id" in topic_row.keys() and topic_row["project_module_id"]
+        else ""
+    )
+    data_center_ingest_event_id = (
+        str(topic_row["data_center_ingest_event_id"] or "").strip()
+        if "data_center_ingest_event_id" in topic_row.keys() and topic_row["data_center_ingest_event_id"]
+        else ""
+    )
+    if not scope_type or not scope_id:
+        scope_type = "topic"
+        scope_id = topic_candidate_id
 
     existing = db.fetchone(
         """
         SELECT *
         FROM external_evidence_cards
-        WHERE related_scope_type = 'topic' AND related_scope_id = ? AND source_url = ?
+        WHERE topic_candidate_id = ?
         ORDER BY created_at DESC
         LIMIT 1
         """,
-        (topic_candidate_id, source_url),
+        (topic_candidate_id,),
     )
     if existing:
         return _row_to_record(existing)
@@ -164,9 +202,10 @@ def create_external_evidence_card_from_topic_candidate(
         INSERT INTO external_evidence_cards(
             id, source_url, source_domain, source_tier, title, published_at,
             fact_excerpt, summary, tags_json, related_scope_type, related_scope_id,
-            confidence, status, created_at, updated_at
+            confidence, status, topic_candidate_id, client_id, project_module_id,
+            data_center_ingest_event_id, created_at, updated_at
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic', ?, ?, 'candidate', ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?)
         """,
         (
             card_id,
@@ -178,8 +217,13 @@ def create_external_evidence_card_from_topic_candidate(
             excerpt,
             summary,
             to_json(["topic_candidate", str(topic_row["status"] or "unknown")]),
-            topic_candidate_id,
+            scope_type,
+            scope_id,
             0.68 if str(topic_row["status"] or "").lower() in {"tracking", "promoted"} else 0.55,
+            topic_candidate_id,
+            client_id or None,
+            project_module_id or None,
+            data_center_ingest_event_id or None,
             now,
             now,
         ),

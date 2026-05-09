@@ -2,9 +2,11 @@
 
 这个目录用于桌面版正式打包资源。
 
-当前必须补齐：
+当前正式官网分发包需要：
 
 - `icon.icns`
+- `entitlements.mac.plist`
+- `entitlements.mac.inherit.plist`
 
 生成方式：
 
@@ -16,4 +18,6 @@
 - 分发品牌素材
 - 需要配套的签名 / 公证资源说明文档
 
-当前目录先保留在仓库中，避免打包配置继续指向一个不存在的目录。
+签名与公证交接说明见：
+
+- `docs/developer-id-signing-notarization.md`
