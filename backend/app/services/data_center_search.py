@@ -43,6 +43,41 @@ def _workspace_chat_requires_reading_pack_v2(
     return True
 
 
+def _dict_value(item: dict[str, object], *keys: str) -> object | None:
+    for key in keys:
+        if key in item and item.get(key) is not None:
+            return item.get(key)
+    return None
+
+
+def _string_value(item: dict[str, object], *keys: str) -> str | None:
+    value = _dict_value(item, *keys)
+    text = str(value or "").strip()
+    return text or None
+
+
+def _float_value(item: dict[str, object], *keys: str) -> float | None:
+    value = _dict_value(item, *keys)
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _list_value(item: dict[str, object], *keys: str) -> list[str]:
+    value = _dict_value(item, *keys)
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for entry in value:
+        text = str(entry or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
 def _to_evidence_item(index: int, item: dict[str, object], *, prefix: str, source_type: str, stage: str) -> EvidenceItem:
     return EvidenceItem(
         id=f"{prefix}_{index}",
@@ -63,6 +98,16 @@ def _to_evidence_item(index: int, item: dict[str, object], *, prefix: str, sourc
             item.get("machineReadableAvailable") is not None or item.get("machine_readable_available") is not None
         ) else None,
         openOriginalDisabledReason=str(item.get("openOriginalDisabledReason") or item.get("open_original_disabled_reason") or "") or None,
+        displayPath=_string_value(item, "displayPath", "display_path"),
+        virtualOptimizedPath=_string_value(item, "virtualOptimizedPath", "virtual_optimized_path"),
+        pathOptimizationStatus=_string_value(item, "pathOptimizationStatus", "path_optimization_status"),
+        pathOptimizationConfidence=_float_value(item, "pathOptimizationConfidence", "path_optimization_confidence"),
+        purpose=_string_value(item, "purpose"),
+        audience=_string_value(item, "audience"),
+        projectContext=_string_value(item, "projectContext", "project_context"),
+        keyTopics=_list_value(item, "keyTopics", "key_topics"),
+        goodQuestions=_list_value(item, "goodQuestions", "good_questions"),
+        riskNotes=_string_value(item, "riskNotes", "risk_notes"),
         score=float(item.get("score") or 0.0) if item.get("score") is not None else None,
         sectionLabel=str(item.get("sectionLabel") or "") or None,
         retrievalStage=str(item.get("sourceStage") or stage),
@@ -90,6 +135,16 @@ def _citation_to_evidence_item(index: int, item: CitationMatch) -> EvidenceItem:
         originalAvailable=item.original_available,
         machineReadableAvailable=item.machine_readable_available,
         openOriginalDisabledReason=str(item.open_original_disabled_reason or "") or None,
+        displayPath=str(item.display_path or "") or None,
+        virtualOptimizedPath=str(item.virtual_optimized_path or "") or None,
+        pathOptimizationStatus=str(item.path_optimization_status or "") or None,
+        pathOptimizationConfidence=item.path_optimization_confidence,
+        purpose=str(item.purpose or "") or None,
+        audience=str(item.audience or "") or None,
+        projectContext=str(item.project_context or "") or None,
+        keyTopics=list(item.key_topics or []),
+        goodQuestions=list(item.good_questions or []),
+        riskNotes=str(item.risk_notes or "") or None,
         score=float(item.score or 0.0),
         sectionLabel=str(item.section_label or "") or None,
         retrievalStage=str(item.source_stage or "raw_chunk"),

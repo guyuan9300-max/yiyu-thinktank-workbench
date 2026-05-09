@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import logging
 import re
@@ -1279,6 +1280,22 @@ def _weekly_event_candidate_prompt_lines(cards: list[WeeklyEventReviewCardRecord
 
 def _weekly_event_expected_task_sets(cards: list[WeeklyEventReviewCardRecord]) -> list[tuple[str, ...]]:
     return sorted(tuple(sorted(card.taskIds)) for card in cards)
+
+
+def weekly_event_review_cards_cover_task_ids(
+    cards: WeeklyEventReviewCardsRecord | None,
+    expected_task_ids: Iterable[str],
+) -> bool:
+    expected_ids = {str(task_id).strip() for task_id in expected_task_ids if str(task_id).strip()}
+    if not expected_ids or cards is None or not cards.cards:
+        return False
+    seen_ids: list[str] = []
+    for card in cards.cards:
+        card_ids = [str(task_id).strip() for task_id in (card.taskIds or []) if str(task_id).strip()]
+        if not card_ids:
+            return False
+        seen_ids.extend(card_ids)
+    return set(seen_ids) == expected_ids and len(seen_ids) == len(set(seen_ids))
 
 
 def _coerce_weekly_event_review_cards(

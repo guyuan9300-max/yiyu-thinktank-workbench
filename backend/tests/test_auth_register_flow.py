@@ -23,6 +23,8 @@ def make_client(tmp_path: Path) -> TestClient:
 def test_register_restores_cloud_session_immediately(tmp_path: Path, monkeypatch):
     client = make_client(tmp_path)
     db = client.app.state.app_state.db
+    client.app.state.app_state.cloud_api_url = "http://127.0.0.1:47830"
+    db.set_setting("cloud_api_url", "http://127.0.0.1:47830")
     cloud_payload = {
         "accessToken": "cloud-access-token",
         "refreshToken": "cloud-refresh-token",
@@ -43,10 +45,6 @@ def test_register_restores_cloud_session_immediately(tmp_path: Path, monkeypatch
                 "email": "personal@example.com",
                 "fullName": "个人用户",
                 "password": "Password123!",
-                "departmentId": None,
-                "jobTitle": None,
-                "managerName": None,
-                "currentFocus": None,
                 "isDepartmentLead": False,
             }
             return httpx.Response(200, json=cloud_payload)

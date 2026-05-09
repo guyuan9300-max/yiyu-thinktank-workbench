@@ -30,6 +30,22 @@ def seed_registration_departments(app) -> None:
         )
 
 
+def login_headers(client: TestClient, email: str, password: str) -> dict[str, str]:
+    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['accessToken']}"}
+
+
+def customer_service_invite() -> str:
+    return _department_invite_code(
+        "dept_customer_service",
+        organization_id=DEFAULT_ORG_ID,
+        organization_name="益语智库",
+        department_name="客户服务部",
+        order=3,
+    )
+
+
 def test_register_returns_tokens_and_allows_immediate_login(tmp_path, monkeypatch):
     data_dir = tmp_path / "cloud-data"
     monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
@@ -140,3 +156,110 @@ def test_legacy_pending_account_can_login_without_manual_approval(tmp_path, monk
     assert row["account_status"] == "pending"
     assert row["membership_status"] == "pending"
     assert not row["approved_at"]
+
+
+def test_valid_invite_registration_syncs_org_ai_config_and_space_profile(tmp_path, monkeypatch):
+    data_dir = tmp_path / "cloud-data"
+    monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
+
+    app = create_app()
+    seed_registration_departments(app)
+    client = TestClient(app)
+    admin_headers = login_headers(client, "admin@yiyu-system.com", "Admin123!")
+
+    configured = client.post(
+        "/api/v1/settings/org-ai-config",
+        json={
+            "aiProvider": "openai-compatible",
+            "aiProviderLabel": "云端统一大模型",
+            "aiBaseUrl": "https://models.example.com/v1",
+            "aiModel": "yiyu-cloud-model",
+            "apiKey": "sk-shared-cloud",
+        },
+        headers=admin_headers,
+    )
+    assert configured.status_code == 200, configured.text
+
+    register = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "invited-member@example.com",
+            "fullName": "受邀同事",
+            "phone": "13900139000",
+            "password": "Password123!",
+            "inviteCode": customer_service_invite(),
+            "jobTitle": "客户经理",
+        },
+    )
+    assert register.status_code == 200, register.text
+    payload = register.json()
+    assert payload["user"]["accountStatus"] == "approved"
+    assert payload["user"]["membershipStatus"] == "approved"
+    assert payload["user"]["organizationId"] == DEFAULT_ORG_ID
+    assert payload["user"]["departmentId"] == "dept_customer_service"
+    member_headers = {"Authorization": f"Bearer {payload['accessToken']}"}
+
+    membership = client.get("/api/v1/me/org-membership", headers=member_headers)
+    assert membership.status_code == 200, membership.text
+    assert membership.json()["hasOrganization"] is True
+    assert membership.json()["membershipStatus"] == "approved"
+    assert membership.json()["organizationWorkspaceClientId"]
+
+    ai_secret = client.get("/api/v1/settings/org-ai-config/secret", headers=member_headers)
+    assert ai_secret.status_code == 200, ai_secret.text
+    assert ai_secret.json()["aiProvider"] == "openai-compatible"
+    assert ai_secret.json()["aiModel"] == "yiyu-cloud-model"
+    assert ai_secret.json()["apiKey"] == "sk-shared-cloud"
+
+    org_profile = client.get("/api/v1/settings/org-model/profile", headers=member_headers)
+    assert org_profile.status_code == 200, org_profile.text
+    assert org_profile.json()["organization"]["organizationId"] == DEFAULT_ORG_ID
+    assert any(item["id"] == "dept_customer_service" for item in org_profile.json()["departments"])
+
+
+def test_existing_cloud_account_apply_valid_invite_unlocks_member_resources(tmp_path, monkeypatch):
+    data_dir = tmp_path / "cloud-data"
+    monkeypatch.setenv("YIYU_CLOUD_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("YIYU_CLOUD_BOOTSTRAP_ADMIN_PASSWORD", "Admin123!")
+    monkeypatch.setenv("YIYU_CLOUD_QINGHUA_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_JIANING_PASSWORD", "Simulate123!")
+    monkeypatch.setenv("YIYU_CLOUD_YISHUO_PASSWORD", "Simulate123!")
+
+    app = create_app()
+    seed_registration_departments(app)
+    client = TestClient(app)
+
+    register = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "existing-invited-member@example.com",
+            "fullName": "已有云账号同事",
+            "password": "Password123!",
+        },
+    )
+    assert register.status_code == 200, register.text
+    member_headers = {"Authorization": f"Bearer {register.json()['accessToken']}"}
+    blocked_profile = client.get("/api/v1/settings/org-model/profile", headers=member_headers)
+    assert blocked_profile.status_code == 403
+
+    applied = client.post(
+        "/api/v1/me/org-membership/apply",
+        json={
+            "inviteCode": customer_service_invite(),
+            "jobTitle": "客户成功",
+        },
+        headers=member_headers,
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["hasOrganization"] is True
+    assert applied.json()["membershipStatus"] == "approved"
+    assert applied.json()["organizationId"] == DEFAULT_ORG_ID
+    assert applied.json()["departmentId"] == "dept_customer_service"
+
+    org_profile = client.get("/api/v1/settings/org-model/profile", headers=member_headers)
+    assert org_profile.status_code == 200, org_profile.text
+    assert org_profile.json()["organization"]["organizationId"] == DEFAULT_ORG_ID

@@ -20,13 +20,7 @@ def make_client(tmp_path, monkeypatch) -> TestClient:
     return TestClient(create_app())
 
 
-def auth_headers(client: TestClient, email: str, password: str) -> dict[str, str]:
-    response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
-    assert response.status_code == 200, response.text
-    return {"Authorization": f"Bearer {response.json()['accessToken']}"}
-
-
-def test_personal_register_can_upgrade_to_shared_org_and_invite_member(tmp_path, monkeypatch):
+def test_cloud_registration_without_organization_name_uses_default_name(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
 
     register = client.post(
@@ -40,72 +34,75 @@ def test_personal_register_can_upgrade_to_shared_org_and_invite_member(tmp_path,
     assert register.status_code == 200, register.text
     owner_headers = {"Authorization": f"Bearer {register.json()['accessToken']}"}
 
-    membership = client.get("/api/v1/account/membership", headers=owner_headers)
+    membership = client.get("/api/v1/me/org-membership", headers=owner_headers)
     assert membership.status_code == 200, membership.text
-    assert membership.json()["isPersonalWorkspace"] is True
+    assert membership.json()["organizationName"] == "本地优先拥有者 的组织"
+    assert membership.json()["membershipStatus"] == "none"
+    assert membership.json()["hasOrganization"] is False
 
-    created_org = client.post("/api/v1/orgs", json={"name": "益语测试组织"}, headers=owner_headers)
-    assert created_org.status_code == 200, created_org.text
-    assert created_org.json()["organizationName"] == "益语测试组织"
-    assert created_org.json()["isPersonalWorkspace"] is False
+    blocked_tasks = client.get("/api/v1/tasks", headers=owner_headers)
+    assert blocked_tasks.status_code == 403
+    assert "组织身份尚未确认" in blocked_tasks.text
 
-    invitation = client.post(
-        "/api/v1/org-invitations",
-        json={"roleName": "研究员", "expiresInDays": 7, "maxUses": 1},
-        headers=owner_headers,
-    )
-    assert invitation.status_code == 200, invitation.text
-    invite_code = invitation.json()["code"]
 
-    joiner = client.post(
+def test_cloud_registration_uses_local_organization_name(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    response = client.post(
         "/api/v1/auth/register",
         json={
-            "email": "joiner@example.com",
-            "fullName": "加入成员",
+            "email": "local-org-name@example.com",
+            "fullName": "本机身份用户",
+            "password": "Password123!",
+            "organizationName": "本机初始化组织",
+        },
+    )
+    assert response.status_code == 200, response.text
+    headers = {"Authorization": f"Bearer {response.json()['accessToken']}"}
+
+    membership = client.get("/api/v1/me/org-membership", headers=headers)
+    assert membership.status_code == 200, membership.text
+    assert membership.json()["organizationName"] == "本机初始化组织"
+    assert membership.json()["membershipStatus"] == "none"
+    assert membership.json()["hasOrganization"] is False
+
+
+def test_cloud_registration_conflicting_email_returns_binding_guidance(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    first = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "existing-cloud@example.com",
+            "fullName": "已有云账号",
             "password": "Password123!",
         },
     )
-    assert joiner.status_code == 200, joiner.text
-    joiner_headers = {"Authorization": f"Bearer {joiner.json()['accessToken']}"}
+    assert first.status_code == 200, first.text
 
-    redeemed = client.post("/api/v1/org-invitations/redeem", json={"code": invite_code}, headers=joiner_headers)
-    assert redeemed.status_code == 200, redeemed.text
-    assert redeemed.json()["organizationName"] == "益语测试组织"
-    assert redeemed.json()["jobTitle"] == "研究员"
-    assert redeemed.json()["isPersonalWorkspace"] is False
+    conflict = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "existing-cloud@example.com",
+            "fullName": "重复云账号",
+            "password": "Password123!",
+        },
+    )
+    assert conflict.status_code == 409
+    assert "登录已有云账号绑定" in conflict.text
 
 
-def test_import_local_structured_data_creates_lists_tasks_and_tags(tmp_path, monkeypatch):
+def test_cloud_registration_invalid_invite_returns_clear_error(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
-    owner_headers = auth_headers(client, "admin@yiyu-system.com", "Admin123!")
 
     response = client.post(
-        "/api/v1/sync/import-local",
+        "/api/v1/auth/register",
         json={
-            "taskLists": [
-                {"localId": "list-local-1", "name": "本地导入清单", "color": "#123456", "scope": "org"},
-            ],
-            "tasks": [
-                {
-                    "localId": "task-local-1",
-                    "title": "导入后的结构化任务",
-                    "description": "只同步结构化记录",
-                    "priority": "high",
-                    "listLocalId": "list-local-1",
-                    "tags": ["同步", "组织"],
-                }
-            ],
+            "email": "invalid-invite@example.com",
+            "fullName": "无效邀请码用户",
+            "password": "Password123!",
+            "inviteCode": "not-a-real-invite",
         },
-        headers=owner_headers,
     )
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["importedListCount"] == 1
-    assert payload["importedTaskCount"] == 1
-    assert payload["importedTagCount"] >= 1
-
-    tasks = client.get("/api/v1/tasks", headers=owner_headers)
-    assert tasks.status_code == 200, tasks.text
-    imported_task = next(item for item in tasks.json()["tasks"] if item["sourceType"] == "local_import")
-    assert imported_task["title"] == "导入后的结构化任务"
-    assert "同步" in [tag["name"] for tag in imported_task["tags"]]
+    assert response.status_code == 400
+    assert "邀请码无效" in response.text

@@ -7,7 +7,7 @@ import re
 import shutil
 import zipfile
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -188,6 +188,16 @@ class CitationMatch:
     original_available: bool | None = None
     machine_readable_available: bool | None = None
     open_original_disabled_reason: str | None = None
+    display_path: str | None = None
+    virtual_optimized_path: str | None = None
+    path_optimization_status: str | None = None
+    path_optimization_confidence: float | None = None
+    purpose: str | None = None
+    audience: str | None = None
+    project_context: str | None = None
+    key_topics: list[str] = field(default_factory=list)
+    good_questions: list[str] = field(default_factory=list)
+    risk_notes: str | None = None
 
 
 @dataclass
@@ -550,6 +560,16 @@ def serialize_retrieval_bundle(bundle: RetrievalBundle) -> dict[str, Any]:
                 "original_available": item.original_available,
                 "machine_readable_available": item.machine_readable_available,
                 "open_original_disabled_reason": item.open_original_disabled_reason,
+                "display_path": item.display_path,
+                "virtual_optimized_path": item.virtual_optimized_path,
+                "path_optimization_status": item.path_optimization_status,
+                "path_optimization_confidence": item.path_optimization_confidence,
+                "purpose": item.purpose,
+                "audience": item.audience,
+                "project_context": item.project_context,
+                "key_topics": item.key_topics,
+                "good_questions": item.good_questions,
+                "risk_notes": item.risk_notes,
             }
             for item in bundle.citations
         ],
@@ -587,6 +607,16 @@ def deserialize_retrieval_bundle(payload: dict[str, Any]) -> RetrievalBundle:
                 original_available=bool(item.get("original_available")) if item.get("original_available") is not None else None,
                 machine_readable_available=bool(item.get("machine_readable_available")) if item.get("machine_readable_available") is not None else None,
                 open_original_disabled_reason=str(item["open_original_disabled_reason"]) if item.get("open_original_disabled_reason") else None,
+                display_path=str(item["display_path"]) if item.get("display_path") else None,
+                virtual_optimized_path=str(item["virtual_optimized_path"]) if item.get("virtual_optimized_path") else None,
+                path_optimization_status=str(item["path_optimization_status"]) if item.get("path_optimization_status") else None,
+                path_optimization_confidence=float(item.get("path_optimization_confidence")) if item.get("path_optimization_confidence") is not None else None,
+                purpose=str(item["purpose"]) if item.get("purpose") else None,
+                audience=str(item["audience"]) if item.get("audience") else None,
+                project_context=str(item["project_context"]) if item.get("project_context") else None,
+                key_topics=[str(term) for term in item.get("key_topics", []) if str(term).strip()],
+                good_questions=[str(term) for term in item.get("good_questions", []) if str(term).strip()],
+                risk_notes=str(item["risk_notes"]) if item.get("risk_notes") else None,
             )
         )
     retrieval_summary = payload.get("retrieval_summary", {})
@@ -2837,9 +2867,43 @@ def fetch_document_cards(
     access = build_document_access_where("vd", "d", access_context)
     rows = db.fetchall(
         f"""
-        SELECT vd.*, d.created_at AS document_created_at, d.excerpt AS legacy_excerpt
+        SELECT vd.*, d.created_at AS document_created_at, d.excerpt AS legacy_excerpt,
+               dc.purpose AS card_purpose,
+               dc.audience AS card_audience,
+               dc.project_context AS card_project_context,
+               dc.key_topics_json AS card_key_topics_json,
+               dc.good_questions_json AS card_good_questions_json,
+               dc.risk_notes AS card_risk_notes,
+               dc.generated_model AS card_generated_model,
+               dc.input_hash AS card_input_hash,
+               dc.prompt_version AS card_prompt_version,
+               dc.updated_at AS card_updated_at,
+               dc.summary_200 AS card_summary_200,
+               dc.one_line_summary AS card_one_line_summary,
+               dc.keywords_json AS card_keywords_json,
+               dc.tags_json AS card_tags_json,
+               dpo.virtual_path AS path_virtual_path,
+               dpo.classification_tags_json AS path_category_tags_json,
+               dpo.client_id AS path_recommended_client_id,
+               dpo.recommended_owner AS path_recommended_client_name,
+               '' AS path_recommended_project_id,
+               dpo.recommended_project AS path_recommended_project_name,
+               dpo.virtual_path AS path_recommended_folder_label,
+               dpo.confidence AS path_optimization_confidence,
+               dpo.apply_status AS path_optimization_status,
+               dpo.reason AS path_optimization_reasoning,
+               dpo.updated_at AS path_optimization_updated_at
         FROM v2_documents vd
         JOIN documents d ON d.id = vd.document_id
+        LEFT JOIN knowledge_documents kd ON kd.document_id = vd.document_id AND kd.client_id = vd.client_id
+        LEFT JOIN document_cards dc ON dc.knowledge_document_id = kd.id
+        LEFT JOIN document_path_optimizations dpo ON dpo.id = (
+            SELECT dpo2.id
+            FROM document_path_optimizations dpo2
+            WHERE dpo2.knowledge_document_id = kd.id
+            ORDER BY dpo2.updated_at DESC
+            LIMIT 1
+        )
         WHERE vd.client_id = ? AND vd.material_layer IN ('evidence', 'external_media_transcript')
           AND COALESCE(vd.canonical_kind, 'raw_file') = 'raw_file'
           AND {access.sql}
@@ -2855,6 +2919,47 @@ def fetch_document_cards(
             if data_dir is not None
             else None
         )
+        card_meta = _card_metadata_for_row(row)
+        physical_source_path = str(row["managed_path"] or "")
+        display_path = str(card_meta.get("displayPath") or physical_source_path)
+        summary_text = str(card_meta.get("cardSummary") or row["preview_text"] or row["legacy_excerpt"] or "")
+        short_summary = str(card_meta.get("oneLineSummary") or row["preview_text"] or row["legacy_excerpt"] or "")
+        visible_category = str(row["visible_category"] or "")
+        logical_category = (
+            str(card_meta.get("recommendedFolderLabel") or visible_category)
+            if card_meta.get("virtualOptimizedPath")
+            else visible_category
+        )
+        classification_reason = (
+            f"32B 本地模型建议归入 {logical_category}，真实文件路径保持不变。"
+            if card_meta.get("virtualOptimizedPath")
+            else f"V2 根据文件标题与正文关键词归入 {visible_category}"
+        )
+        query_hints = _unique_texts(
+            card_meta.get("cardKeywords"),
+            card_meta.get("keyTopics"),
+            tokenize(str(row["doc_index_text"] or "")),
+        )[:10]
+        keywords = _unique_texts(
+            card_meta.get("cardKeywords"),
+            card_meta.get("keyTopics"),
+            tokenize(str(row["preview_text"] or "")),
+        )[:10]
+        tags = _unique_texts(
+            card_meta.get("cardTags"),
+            card_meta.get("virtualCategoryTags"),
+            [logical_category, str(row["kind"]), V2_PIPELINE_VERSION],
+        )[:10]
+        retrieval_summary = "\n".join(
+            str(part)
+            for part in [
+                card_meta.get("purpose"),
+                card_meta.get("audience"),
+                card_meta.get("projectContext"),
+                summary_text,
+            ]
+            if str(part or "").strip()
+        )
         cards.append(
             {
                 "id": str(row["id"]).replace("v2doc_", "dock_"),
@@ -2864,26 +2969,26 @@ def fetch_document_cards(
                 "title": str(row["file_name"]),
                 "originalPath": str(row["original_path"]),
                 "importSourcePath": str(row["original_path"]),
-                "currentHumanPath": str(row["managed_path"]),
-                "humanFolderCategory": str(row["visible_category"]),
-                "sourcePath": str(row["managed_path"]),
-                "logicalCategory": str(row["visible_category"]),
+                "currentHumanPath": display_path,
+                "humanFolderCategory": logical_category,
+                "sourcePath": display_path,
+                "logicalCategory": logical_category,
                 "logicalSubcategory": str(row["secondary_category"]),
-                "classificationReason": f"V2 根据文件标题与正文关键词归入 {row['visible_category']}",
-                "normalizedPath": str(row["managed_path"]),
+                "classificationReason": classification_reason,
+                "normalizedPath": display_path,
                 "surrogateMdPath": compat_md_path,
                 "kind": str(row["kind"]),
-                "primaryCategory": str(row["visible_category"]),
+                "primaryCategory": logical_category,
                 "secondaryCategory": str(row["secondary_category"]),
-                "shortSummary": str(row["preview_text"] or row["legacy_excerpt"] or ""),
-                "summary": str(row["preview_text"] or row["legacy_excerpt"] or ""),
-                "retrievalSummary": str(row["preview_text"] or row["legacy_excerpt"] or ""),
+                "shortSummary": short_summary,
+                "summary": summary_text,
+                "retrievalSummary": retrieval_summary,
                 "documentRole": "原始证据",
-                "queryHints": tokenize(str(row["doc_index_text"] or ""))[:8],
+                "queryHints": query_hints,
                 "distinctFindings": [],
                 "coreQuestions": [],
-                "keywords": tokenize(str(row["preview_text"] or ""))[:8],
-                "tags": [str(row["visible_category"]), str(row["kind"]), V2_PIPELINE_VERSION],
+                "keywords": keywords,
+                "tags": tags,
                 "entities": [],
                 "dateRange": None,
                 "classificationConfidence": float(row["classification_confidence"] or 0.0),
@@ -2896,6 +3001,17 @@ def fetch_document_cards(
                 "chunkCount": int(row["chunk_count"] or 0),
                 "createdAt": str(row["imported_at"] or row["document_created_at"]),
                 "updatedAt": str(row["updated_at"]),
+                "purpose": card_meta.get("purpose") or None,
+                "audience": card_meta.get("audience") or None,
+                "projectContext": card_meta.get("projectContext") or None,
+                "keyTopics": card_meta.get("keyTopics") or [],
+                "goodQuestions": card_meta.get("goodQuestions") or [],
+                "riskNotes": card_meta.get("riskNotes") or None,
+                "displayPath": card_meta.get("displayPath"),
+                "virtualOptimizedPath": card_meta.get("virtualOptimizedPath"),
+                "pathOptimizationStatus": card_meta.get("pathOptimizationStatus"),
+                "pathOptimizationConfidence": card_meta.get("pathOptimizationConfidence"),
+                "generatedModel": card_meta.get("generatedModel") or None,
             }
         )
     return cards
@@ -2941,6 +3057,99 @@ def _row_value(row: Any, key: str) -> Any:
         if isinstance(row, dict):
             return row.get(key)
         return getattr(row, key, None)
+
+
+def _json_text_list(value: Any) -> list[str]:
+    raw = from_json(value, []) if isinstance(value, str) else value
+    if not isinstance(raw, list):
+        return []
+    result: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _unique_texts(*groups: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        values = group if isinstance(group, (list, tuple, set)) else [group]
+        for item in values:
+            text = str(item or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
+    return result
+
+
+def _text_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _card_metadata_for_row(row: Any) -> dict[str, Any]:
+    key_topics = _json_text_list(_row_value(row, "card_key_topics_json"))
+    good_questions = _json_text_list(_row_value(row, "card_good_questions_json"))
+    keywords = _json_text_list(_row_value(row, "card_keywords_json"))
+    tags = _json_text_list(_row_value(row, "card_tags_json"))
+    category_tags = _json_text_list(_row_value(row, "path_category_tags_json"))
+    status = _text_value(_row_value(row, "path_optimization_status"))
+    raw_virtual_path = _text_value(_row_value(row, "path_virtual_path"))
+    virtual_path = raw_virtual_path if status == "applied" else ""
+    return {
+        "purpose": _text_value(_row_value(row, "card_purpose")),
+        "audience": _text_value(_row_value(row, "card_audience")),
+        "projectContext": _text_value(_row_value(row, "card_project_context")),
+        "keyTopics": key_topics,
+        "goodQuestions": good_questions,
+        "riskNotes": _text_value(_row_value(row, "card_risk_notes")),
+        "cardSummary": _text_value(_row_value(row, "card_summary_200")),
+        "oneLineSummary": _text_value(_row_value(row, "card_one_line_summary")),
+        "cardKeywords": keywords,
+        "cardTags": tags,
+        "generatedModel": _text_value(_row_value(row, "card_generated_model")),
+        "displayPath": virtual_path or None,
+        "virtualOptimizedPath": virtual_path or None,
+        "pathOptimizationStatus": status or None,
+        "pathOptimizationConfidence": _float_or_none(_row_value(row, "path_optimization_confidence")),
+        "virtualCategoryTags": category_tags,
+        "recommendedClientId": _text_value(_row_value(row, "path_recommended_client_id")) or None,
+        "recommendedClientName": _text_value(_row_value(row, "path_recommended_client_name")) or None,
+        "recommendedProjectId": _text_value(_row_value(row, "path_recommended_project_id")) or None,
+        "recommendedProjectName": _text_value(_row_value(row, "path_recommended_project_name")) or None,
+        "recommendedFolderLabel": _text_value(_row_value(row, "path_recommended_folder_label")) or None,
+        "pathOptimizationReasoning": _text_value(_row_value(row, "path_optimization_reasoning")) or None,
+    }
+
+
+def _card_support_text_for_row(row: Any) -> str:
+    meta = _card_metadata_for_row(row)
+    parts = [
+        meta.get("purpose"),
+        meta.get("audience"),
+        meta.get("projectContext"),
+        meta.get("cardSummary"),
+        meta.get("oneLineSummary"),
+        meta.get("riskNotes"),
+        " ".join(meta.get("keyTopics") or []),
+        " ".join(meta.get("goodQuestions") or []),
+        " ".join(meta.get("cardKeywords") or []),
+        " ".join(meta.get("virtualCategoryTags") or []),
+        meta.get("virtualOptimizedPath"),
+        meta.get("recommendedFolderLabel"),
+        meta.get("pathOptimizationReasoning"),
+    ]
+    return "\n".join(str(part) for part in parts if str(part or "").strip())
 
 
 def _clean_path_value(value: Any) -> str:
@@ -3276,6 +3485,7 @@ def _score_document_row(query_terms: list[str], prompt: str, row: Any) -> tuple[
     index_text = str(row["doc_index_text"] or "")
     category = str(row["visible_category"] or "其他资料")
     canonical_kind = _canonical_kind_for_row(row)
+    card_support = _card_support_text_for_row(row)
     score, matched = _score_by_terms(
         query_terms,
         title.lower(),
@@ -3283,10 +3493,14 @@ def _score_document_row(query_terms: list[str], prompt: str, row: Any) -> tuple[
         preview.lower(),
         category.lower(),
         canonical_kind.lower(),
+        card_support.lower(),
         title_weight=2.6,
     )
     if category and category in prompt:
         score += 0.5
+    virtual_category = str(_card_metadata_for_row(row).get("recommendedFolderLabel") or "")
+    if virtual_category and virtual_category in prompt:
+        score += 0.45
     if canonical_kind in prompt:
         score += 0.35
     return score, matched
@@ -3309,9 +3523,43 @@ def retrieve_knowledge_bundle(
     access = build_document_access_where("vd", "d", access_context)
     rows = db.fetchall(
         f"""
-        SELECT vd.*, d.title AS document_title, d.path AS document_path, d.original_source_path AS original_source_path
+        SELECT vd.*, d.title AS document_title, d.path AS document_path, d.original_source_path AS original_source_path,
+               dc.purpose AS card_purpose,
+               dc.audience AS card_audience,
+               dc.project_context AS card_project_context,
+               dc.key_topics_json AS card_key_topics_json,
+               dc.good_questions_json AS card_good_questions_json,
+               dc.risk_notes AS card_risk_notes,
+               dc.generated_model AS card_generated_model,
+               dc.input_hash AS card_input_hash,
+               dc.prompt_version AS card_prompt_version,
+               dc.updated_at AS card_updated_at,
+               dc.summary_200 AS card_summary_200,
+               dc.one_line_summary AS card_one_line_summary,
+               dc.keywords_json AS card_keywords_json,
+               dc.tags_json AS card_tags_json,
+               dpo.virtual_path AS path_virtual_path,
+               dpo.classification_tags_json AS path_category_tags_json,
+               dpo.client_id AS path_recommended_client_id,
+               dpo.recommended_owner AS path_recommended_client_name,
+               '' AS path_recommended_project_id,
+               dpo.recommended_project AS path_recommended_project_name,
+               dpo.virtual_path AS path_recommended_folder_label,
+               dpo.confidence AS path_optimization_confidence,
+               dpo.apply_status AS path_optimization_status,
+               dpo.reason AS path_optimization_reasoning,
+               dpo.updated_at AS path_optimization_updated_at
         FROM v2_documents vd
         JOIN documents d ON d.id = vd.document_id
+        LEFT JOIN knowledge_documents kd ON kd.document_id = vd.document_id AND kd.client_id = vd.client_id
+        LEFT JOIN document_cards dc ON dc.knowledge_document_id = kd.id
+        LEFT JOIN document_path_optimizations dpo ON dpo.id = (
+            SELECT dpo2.id
+            FROM document_path_optimizations dpo2
+            WHERE dpo2.knowledge_document_id = kd.id
+            ORDER BY dpo2.updated_at DESC
+            LIMIT 1
+        )
         WHERE vd.client_id = ?
           AND vd.material_layer IN ('evidence', 'external_media_transcript')
           AND vd.parse_status IN ('ready', 'partial_ready')
@@ -3377,6 +3625,8 @@ def retrieve_knowledge_bundle(
         openable_paths = _openable_paths_for_row(row)
         if str(openable_paths.get("sourceAvailability") or "") == SOURCE_AVAILABILITY_INVALID:
             continue
+        card_meta = _card_metadata_for_row(row)
+        display_path = str(card_meta.get("displayPath") or openable_paths.get("path") or "")
         score, matched = _score_document_row(query_terms, prompt, row)
         is_priority_document = bool(
             priority_ids
@@ -3395,6 +3645,7 @@ def retrieve_knowledge_bundle(
                     str(row["file_name"] or row["document_title"] or ""),
                     str(row["visible_category"] or ""),
                     str(row["secondary_category"] or ""),
+                    _card_support_text_for_row(row),
                     str(row["preview_text"] or ""),
                     str(row["doc_index_text"] or ""),
                 ]
@@ -3413,6 +3664,16 @@ def retrieve_knowledge_bundle(
             "matchedTerms": matched,
             "title": str(row["file_name"] or row["document_title"] or "资料"),
             "path": str(openable_paths.get("path") or ""),
+            "displayPath": display_path,
+            "virtualOptimizedPath": card_meta.get("virtualOptimizedPath"),
+            "pathOptimizationStatus": card_meta.get("pathOptimizationStatus"),
+            "pathOptimizationConfidence": card_meta.get("pathOptimizationConfidence"),
+            "purpose": card_meta.get("purpose"),
+            "audience": card_meta.get("audience"),
+            "projectContext": card_meta.get("projectContext"),
+            "keyTopics": card_meta.get("keyTopics") or [],
+            "goodQuestions": card_meta.get("goodQuestions") or [],
+            "riskNotes": card_meta.get("riskNotes"),
             "originalPath": openable_paths.get("originalPath"),
             "managedPath": openable_paths.get("managedPath"),
             "markdownPath": openable_paths.get("markdownPath"),
@@ -3641,6 +3902,16 @@ def retrieve_knowledge_bundle(
                     original_available=bool(doc.get("originalAvailable")),
                     machine_readable_available=bool(doc.get("machineReadableAvailable")),
                     open_original_disabled_reason=str(doc.get("openOriginalDisabledReason") or "") or None,
+                    display_path=str(doc.get("displayPath") or "") or None,
+                    virtual_optimized_path=str(doc.get("virtualOptimizedPath") or "") or None,
+                    path_optimization_status=str(doc.get("pathOptimizationStatus") or "") or None,
+                    path_optimization_confidence=doc.get("pathOptimizationConfidence"),
+                    purpose=str(doc.get("purpose") or "") or None,
+                    audience=str(doc.get("audience") or "") or None,
+                    project_context=str(doc.get("projectContext") or "") or None,
+                    key_topics=[str(item) for item in doc.get("keyTopics") or [] if str(item).strip()],
+                    good_questions=[str(item) for item in doc.get("goodQuestions") or [] if str(item).strip()],
+                    risk_notes=str(doc.get("riskNotes") or "") or None,
                     document_family_id=str(row["document_family_id"] or doc["familyId"]),
                     canonical_kind=_canonical_kind_for_row(row),
                     origin_type=str(row["origin_type"] or ""),
@@ -3662,6 +3933,16 @@ def retrieve_knowledge_bundle(
                 "originalAvailable": bool(doc.get("originalAvailable")),
                 "machineReadableAvailable": bool(doc.get("machineReadableAvailable")),
                 "openOriginalDisabledReason": str(doc.get("openOriginalDisabledReason") or ""),
+                "displayPath": str(doc.get("displayPath") or ""),
+                "virtualOptimizedPath": str(doc.get("virtualOptimizedPath") or ""),
+                "pathOptimizationStatus": str(doc.get("pathOptimizationStatus") or ""),
+                "pathOptimizationConfidence": doc.get("pathOptimizationConfidence"),
+                "purpose": str(doc.get("purpose") or ""),
+                "audience": str(doc.get("audience") or ""),
+                "projectContext": str(doc.get("projectContext") or ""),
+                "keyTopics": doc.get("keyTopics") or [],
+                "goodQuestions": doc.get("goodQuestions") or [],
+                "riskNotes": str(doc.get("riskNotes") or ""),
                 "excerpt": str(row["preview_text"] or "")[:180],
                 "documentFamilyId": str(row["document_family_id"] or doc["familyId"]),
                 "canonicalKind": _canonical_kind_for_row(row),
@@ -3697,6 +3978,16 @@ def retrieve_knowledge_bundle(
             original_available=item.original_available,
             machine_readable_available=item.machine_readable_available,
             open_original_disabled_reason=item.open_original_disabled_reason,
+            display_path=item.display_path,
+            virtual_optimized_path=item.virtual_optimized_path,
+            path_optimization_status=item.path_optimization_status,
+            path_optimization_confidence=item.path_optimization_confidence,
+            purpose=item.purpose,
+            audience=item.audience,
+            project_context=item.project_context,
+            key_topics=item.key_topics,
+            good_questions=item.good_questions,
+            risk_notes=item.risk_notes,
             document_family_id=item.document_family_id,
             canonical_kind=item.canonical_kind,
             origin_type=item.origin_type,
@@ -3710,8 +4001,24 @@ def retrieve_knowledge_bundle(
         label = citation.title
         if citation.section_label:
             label = f"{label} / {citation.section_label}"
+        card_context_parts = []
+        if citation.purpose:
+            card_context_parts.append(f"用途：{citation.purpose}")
+        if citation.audience:
+            card_context_parts.append(f"服务对象：{citation.audience}")
+        if citation.project_context:
+            card_context_parts.append(f"项目语境：{citation.project_context}")
+        if citation.key_topics:
+            card_context_parts.append(f"主题：{'、'.join(citation.key_topics[:6])}")
+        if citation.good_questions:
+            card_context_parts.append(f"适合回答：{'、'.join(citation.good_questions[:3])}")
+        if citation.risk_notes:
+            card_context_parts.append(f"风险提示：{citation.risk_notes}")
+        card_context = "；".join(card_context_parts)
+        card_context_line = f"名片：{card_context}\n" if card_context else ""
         context_lines.append(
-            f"[证据{index}] {label}\n命中要点：{'、'.join(citation.matched_terms) or '无'}\n原文：{citation.excerpt}"
+            f"[证据{index}] {label}\n命中要点：{'、'.join(citation.matched_terms) or '无'}\n"
+            f"{card_context_line}原文：{citation.excerpt}"
         )
     retrieval_summary = {
         "docHitCount": len(families),

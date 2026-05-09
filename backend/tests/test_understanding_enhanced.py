@@ -20,6 +20,9 @@ from app.models import (
 from app.services.understanding_builder import build_understanding_enhanced, build_understanding_basic
 
 
+FORBIDDEN_BRIEF_FRAGMENTS = ["这是一条", "状态的工作任务", "系统尚未看到"]
+
+
 def _make_snapshot(**overrides) -> WeeklyReviewTaskSnapshotRecord:
     defaults = {
         "title": "和冯梅老师沟通CFFC的战略说明迭代",
@@ -65,6 +68,16 @@ def _make_org_dna() -> list[OrganizationDnaModuleRecord]:
     ]
 
 
+def _assert_human_brief_quality(text: str) -> None:
+    assert text, "humanBrief must not be empty"
+    assert 45 <= len(text) <= 220
+    assert any(token in text for token in ("建议", "先", "下一步", "补齐", "拆出", "决定"))
+    for fragment in FORBIDDEN_BRIEF_FRAGMENTS:
+        assert fragment not in text
+    assert "与客户" not in text
+    assert not ("这不是" in text and "而是" in text)
+
+
 class TestEnhancedMode:
 
     def test_no_enhancement_falls_back_to_basic(self):
@@ -74,6 +87,7 @@ class TestEnhancedMode:
         )
         # 没有增强项时应该降级
         assert result.mode in ("basic", "enhanced")
+        _assert_human_brief_quality(result.humanBrief)
         assert result.whatIsThis
         assert result.whyItMatters
 
@@ -88,6 +102,7 @@ class TestEnhancedMode:
             event_line_summary="益语与CFFC的数字化战略合作",
         )
         assert result.mode == "enhanced"
+        _assert_human_brief_quality(result.humanBrief)
         assert result.whatIsThis
         # enhanced 源中应该有事件线
         source_types = {s.sourceType for s in result.sourceBreakdown}
@@ -133,6 +148,7 @@ class TestEnhancedMode:
         assert result.whyItMatters
         assert result.progressNow
         assert result.unknowns
+        _assert_human_brief_quality(result.humanBrief)
 
     def test_source_breakdown_includes_enhancement_items(self):
         entry = _make_entry()
@@ -143,11 +159,13 @@ class TestEnhancedMode:
             event_line_name="线",
             meetings=[{"title": "会", "summary": "内容"}],
             support_requests=[{"title": "求", "summary": "帮助", "status": "open"}],
+            knowledge_summaries=[{"title": "资料", "summary": "已确认客户希望先看到章节框架"}],
         )
         source_types = {s.sourceType for s in result.sourceBreakdown}
         assert "event_line_memory" in source_types
         assert "meeting" in source_types
         assert "support_request" in source_types
+        assert "knowledge_base" in source_types
 
 
 if __name__ == "__main__":

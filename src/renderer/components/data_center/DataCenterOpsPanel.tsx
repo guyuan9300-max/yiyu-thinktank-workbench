@@ -28,6 +28,8 @@ const ACTION_TONE: Partial<Record<WorkspaceDataCenterReadinessActionType, string
   rebuild_client_knowledge: '重建知识库',
   regenerate_document_cards: '重建资料卡',
   internet_enrichment: '补全互联网资料',
+  enqueue_local_model_optimization: '加入后台优化队列',
+  retry_local_model_optimization: '重试本地优化',
 };
 
 function percent(numerator: number, denominator: number): number {
@@ -142,6 +144,36 @@ export function DataCenterOpsPanel({ clientId, onRefreshWorkspace, flash }: Data
     ].filter((item) => item.count > 0);
   }, [readiness]);
 
+  const localOptimization = readiness?.jobs.localOptimization;
+  const localQueued = localOptimization?.queuedTasks || 0;
+  const localRunning = localOptimization?.runningTasks || 0;
+  const localFailed = localOptimization?.failedTasks || 0;
+  const localPendingCards = localOptimization?.pendingDocumentCards || 0;
+  const localPendingPaths = localOptimization?.pendingPathOptimizations || 0;
+  const canEnqueueLocalOptimization = Boolean(localOptimization?.enabled) && (localPendingCards > 0 || localPendingPaths > 0);
+  const enqueueLocalOptimizationFix: WorkspaceDataCenterReadinessFix | null = canEnqueueLocalOptimization
+    ? {
+        id: 'enqueue_local_model_optimization',
+        label: '生成文件名片与虚拟路径',
+        actionType: 'enqueue_local_model_optimization',
+        severity: 'info',
+        reason: `还有 ${localPendingCards} 份资料缺少名片，${localPendingPaths} 份资料缺少虚拟路径建议。`,
+        targetIds: [],
+        estimatedImpact: '后台队列会在设定时间段内调用本地模型处理，不改变真实文件路径。',
+      }
+    : null;
+  const retryLocalOptimizationFix: WorkspaceDataCenterReadinessFix | null = localFailed > 0
+    ? {
+        id: 'retry_local_model_optimization',
+        label: '重试失败的本地优化任务',
+        actionType: 'retry_local_model_optimization',
+        severity: 'warning',
+        reason: `${localFailed} 个后台优化任务失败，可重新放回队列。`,
+        targetIds: [],
+        estimatedImpact: '失败任务会重新进入待处理状态，下一次运行窗口继续执行。',
+      }
+    : null;
+
   const runAction = async (fix: WorkspaceDataCenterReadinessFix) => {
     if (!clientId) return;
     setRunningAction(fix.id);
@@ -238,6 +270,52 @@ export function DataCenterOpsPanel({ clientId, onRefreshWorkspace, flash }: Data
                   {item.label} {item.count}
                 </span>
               ))}
+            </div>
+          )}
+
+          {localOptimization && (
+            <div className="mt-3 rounded-2xl border border-indigo-100 bg-indigo-50/70 px-3 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-black text-indigo-900">后台数据优化</p>
+                  <p className="mt-1 text-[11px] font-semibold leading-5 text-indigo-800">
+                    {localOptimization.enabled
+                      ? localOptimization.paused
+                        ? '已暂停'
+                        : localOptimization.inWindow
+                          ? '运行窗口内'
+                          : `等待 ${localOptimization.nextWindowLabel || '下次运行窗口'}`
+                      : '未启用'}
+                    {' · '}
+                    队列 {localQueued} · 运行中 {localRunning} · 失败 {localFailed}
+                  </p>
+                  <p className="mt-1 text-[11px] font-medium leading-5 text-indigo-700">
+                    待生成名片 {localPendingCards} · 待生成虚拟路径 {localPendingPaths} · 待确认路径 {localOptimization.pendingPathConfirmations}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {enqueueLocalOptimizationFix && (
+                    <button
+                      type="button"
+                      className="rounded-full bg-indigo-600 px-3 py-1.5 text-[11px] font-black text-white shadow-sm disabled:opacity-60"
+                      onClick={() => void runAction(enqueueLocalOptimizationFix)}
+                      disabled={Boolean(runningAction)}
+                    >
+                      {runningAction === enqueueLocalOptimizationFix.id ? '提交中…' : '加入队列'}
+                    </button>
+                  )}
+                  {retryLocalOptimizationFix && (
+                    <button
+                      type="button"
+                      className="rounded-full border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-black text-amber-700 disabled:opacity-60"
+                      onClick={() => void runAction(retryLocalOptimizationFix)}
+                      disabled={Boolean(runningAction)}
+                    >
+                      {runningAction === retryLocalOptimizationFix.id ? '提交中…' : '重试失败'}
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 

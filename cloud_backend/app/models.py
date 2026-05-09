@@ -57,6 +57,7 @@ class RegisterPayload(BaseModel):
     phone: str | None = None
     fullName: str
     password: str = Field(min_length=8)
+    organizationName: str | None = None
     inviteCode: str | None = None
     departmentId: str | None = None
     jobTitle: str | None = None

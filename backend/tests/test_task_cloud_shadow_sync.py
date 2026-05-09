@@ -202,6 +202,81 @@ def test_event_line_list_returns_local_merged_view_when_cloud_available(tmp_path
     assert event_lines["eline_local_only"]["syncStatus"] == "local"
 
 
+def test_delete_event_line_uses_cloud_id_and_blocks_cloud_resurrection(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    seed_cloud_session(client)
+    seed_client(client, name="日慈基金会")
+    seed_event_line(
+        client,
+        event_line_id="eline_local_shadow",
+        name="日慈基金会跟笑雨老师核对她的教师项目进度。",
+        client_id="client_foundation",
+        sync_status="synced",
+        cloud_id="cloud_eline_shadow",
+    )
+    requests: list[tuple[str, str]] = []
+
+    def fake_cloud_request(method: str, url: str, **kwargs):
+        method = method.upper()
+        requests.append((method, url))
+        if method == "DELETE" and url == f"{BASE_URL}/api/v1/event-lines/cloud_eline_shadow":
+            return httpx.Response(405, json={"detail": "DELETE not supported"})
+        if method == "PATCH" and url == f"{BASE_URL}/api/v1/event-lines/cloud_eline_shadow":
+            payload = kwargs.get("json") or {}
+            assert payload.get("status") == "archived"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "cloud_eline_shadow",
+                    "organizationId": "org_1",
+                    "name": "日慈基金会跟笑雨老师核对她的教师项目进度。",
+                    "kind": "custom",
+                    "status": "archived",
+                    "primaryClientId": "client_foundation",
+                    "primaryClientName": "日慈基金会",
+                    "createdAt": "2026-03-24T12:35:18",
+                    "updatedAt": "2026-03-24T12:37:54",
+                },
+            )
+        if method == "GET" and url == f"{BASE_URL}/api/v1/event-lines":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "cloud_eline_shadow",
+                        "organizationId": "org_1",
+                        "name": "日慈基金会跟笑雨老师核对她的教师项目进度。",
+                        "kind": "custom",
+                        "status": "archived",
+                        "primaryClientId": "client_foundation",
+                        "primaryClientName": "日慈基金会",
+                        "createdAt": "2026-03-24T12:35:18",
+                        "updatedAt": "2026-03-24T12:37:54",
+                    }
+                ],
+            )
+        raise AssertionError(f"Unexpected cloud request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_cloud_request)
+
+    response = client.delete("/api/v1/event-lines/eline_local_shadow")
+    assert response.status_code == 200, response.text
+    assert ("DELETE", f"{BASE_URL}/api/v1/event-lines/cloud_eline_shadow") in requests
+    assert ("PATCH", f"{BASE_URL}/api/v1/event-lines/cloud_eline_shadow") in requests
+
+    db = client.app.state.app_state.db
+    assert db.fetchone("SELECT id FROM event_lines WHERE id = ?", ("eline_local_shadow",)) is None
+    list_response = client.get("/api/v1/event-lines")
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()}
+    assert "eline_local_shadow" not in ids
+    assert "cloud_eline_shadow" not in ids
+    assert db.fetchone(
+        "SELECT cloud_id FROM event_line_delete_tombstones WHERE cloud_id = ?",
+        ("cloud_eline_shadow",),
+    ) is not None
+
+
 def test_event_line_create_cloud_failure_marks_pending_and_visible(tmp_path: Path, monkeypatch):
     client = make_client(tmp_path)
     seed_cloud_session(client)

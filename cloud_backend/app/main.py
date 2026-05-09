@@ -614,14 +614,20 @@ def _resolve_department_from_invite(
     return None
 
 
-def _create_registration_organization(state: AppState, full_name: str, timestamp: str) -> tuple[str, str]:
+def _create_registration_organization(
+    state: AppState,
+    full_name: str,
+    timestamp: str,
+    organization_name: str | None = None,
+) -> tuple[str, str]:
     organization_id = new_id("org")
+    explicit_organization_name = (organization_name or "").strip()
     owner_name = (full_name or "").strip()
-    organization_name = f"{owner_name} 的组织" if owner_name else "未命名组织"
+    display_name = explicit_organization_name or (f"{owner_name} 的组织" if owner_name else "未命名组织")
     slug = f"org-{_base36_seed(organization_id, 36 ** 8).lower()}"
     state.db.execute(
         "INSERT INTO organizations(id, name, slug, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
-        (organization_id, organization_name, slug, timestamp, timestamp),
+        (organization_id, display_name, slug, timestamp, timestamp),
     )
     state.db.execute(
         """
@@ -632,7 +638,7 @@ def _create_registration_organization(state: AppState, full_name: str, timestamp
         """,
         (organization_id, str(datetime.now().year), timestamp),
     )
-    return organization_id, organization_name
+    return organization_id, display_name
 
 
 def _row_user(row) -> SessionUser:
@@ -8804,7 +8810,7 @@ def create_app() -> FastAPI:
     def register(payload: RegisterPayload) -> AuthTokenResponse:
         existing = state.db.fetchone("SELECT id FROM employee_accounts WHERE email = ?", (payload.email.lower(),))
         if existing:
-            raise HTTPException(status_code=409, detail="Email already registered")
+            raise HTTPException(status_code=409, detail="邮箱已存在，请登录已有云账号绑定。")
         normalized_phone = _normalize_account_phone(payload.phone)
         if normalized_phone:
             existing_phone = state.db.fetchone("SELECT id FROM employee_accounts WHERE phone_number = ?", (normalized_phone,))
@@ -8827,12 +8833,18 @@ def create_app() -> FastAPI:
         manager_name = payload.managerName.strip() if payload.managerName else None
         current_focus = payload.currentFocus.strip() if payload.currentFocus else ""
         requested_membership = bool(department or job_title or manager_name or current_focus)
-        account_status = "pending" if requested_membership else "approved"
-        membership_status = "pending" if requested_membership else "none"
+        has_verified_invite = invite_department is not None
+        account_status = "approved" if has_verified_invite or not requested_membership else "pending"
+        membership_status = "approved" if has_verified_invite else "pending" if requested_membership else "none"
         timestamp = now_iso()
         user_id = new_id("emp")
         if not target_organization_id:
-            target_organization_id, _ = _create_registration_organization(state, payload.fullName, timestamp)
+            target_organization_id, _ = _create_registration_organization(
+                state,
+                payload.fullName,
+                timestamp,
+                payload.organizationName,
+            )
         state.db.execute(
             """
             INSERT INTO employee_accounts(
@@ -8852,7 +8864,7 @@ def create_app() -> FastAPI:
                 account_status,
                 membership_status,
                 timestamp if requested_membership else None,
-                timestamp if not requested_membership else None,
+                timestamp if account_status == "approved" else None,
                 timestamp,
                 department.id if department else None,
                 department.name if department else None,
@@ -9187,6 +9199,9 @@ def create_app() -> FastAPI:
         if (payload.departmentId or payload.inviteCode) and not department:
             raise HTTPException(status_code=400, detail="请选择有效的部门")
         timestamp = now_iso()
+        has_verified_invite = invite_department is not None
+        next_account_status = "approved" if has_verified_invite else "pending"
+        next_membership_status = "approved" if has_verified_invite else "pending"
         state.db.execute(
             """
             UPDATE employee_accounts
@@ -9196,10 +9211,12 @@ def create_app() -> FastAPI:
                    job_title = ?,
                    manager_name = ?,
                    current_focus = ?,
-                   account_status = 'pending',
-                   membership_status = 'pending',
+                   account_status = ?,
+                   membership_status = ?,
                    membership_submitted_at = ?,
                    membership_rejected_reason = NULL,
+                   approved_at = ?,
+                   approved_by = NULL,
                    rejected_reason = NULL,
                    disabled_at = NULL,
                    updated_at = ?
@@ -9212,7 +9229,10 @@ def create_app() -> FastAPI:
                 (payload.jobTitle or "").strip() or None,
                 (payload.managerName or "").strip() or None,
                 (payload.currentFocus or "").strip(),
+                next_account_status,
+                next_membership_status,
                 timestamp,
+                timestamp if has_verified_invite else None,
                 timestamp,
                 current_user.id,
             ),
@@ -9225,6 +9245,7 @@ def create_app() -> FastAPI:
             detail={
                 "departmentId": department.id if department else None,
                 "inviteCode": (payload.inviteCode or "").strip(),
+                "membershipStatus": next_membership_status,
             },
         )
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
@@ -9800,7 +9821,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/settings/org-model/profile", response_model=OrgModelProfileRecord)
     def get_org_model_profile(
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization)),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> OrgModelProfileRecord:
         return _get_org_model_profile(state, current_user.organizationId)
 
