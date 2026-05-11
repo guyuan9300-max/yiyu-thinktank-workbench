@@ -171,10 +171,23 @@ class HealthResponse(BaseModel):
     linkMaterialDiagnostics: dict[str, object] = Field(default_factory=dict)
 
 
+class LastCloudAiSyncStatusRecord(BaseModel):
+    state: Literal["never", "synced", "failed", "skipped"] = "never"
+    at: str | None = None
+    reason: str | None = None
+    provider: str | None = None
+    providerLabel: str | None = None
+    model: str | None = None
+    baseUrl: str | None = None
+    hasApiKey: bool = False
+    fingerprint: str | None = None
+
+
 class SettingsResponse(BaseModel):
     settings: AppSettingsResponse
     operators: list[OperatorRecord]
     health: HealthResponse
+    lastCloudAiSyncStatus: LastCloudAiSyncStatusRecord = Field(default_factory=LastCloudAiSyncStatusRecord)
 
 
 class SessionUserRecord(BaseModel):

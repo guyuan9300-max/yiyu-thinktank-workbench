@@ -272,6 +272,7 @@ from app.models import (
     WeeklyOverviewRefreshStatusRecord,
     RiskItem,
     RunComparison,
+    LastCloudAiSyncStatusRecord,
     SessionUserRecord,
     SettingsResponse,
     SystemAdminSettingsPayload,
@@ -3964,7 +3965,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             for row in state.db.fetchall("SELECT * FROM operators ORDER BY created_at")
         ]
-        return SettingsResponse(settings=settings, operators=operators, health=build_health())
+        return SettingsResponse(
+            settings=settings,
+            operators=operators,
+            health=build_health(),
+            lastCloudAiSyncStatus=LastCloudAiSyncStatusRecord(**_cloud_ai_sync_status),
+        )
 
     def _has_persisted_cloud_session() -> bool:
         return bool(state.db.get_setting("cloud_access_token", "") or state.db.get_setting("cloud_refresh_token", ""))
@@ -6934,6 +6940,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         user = SessionUserRecord(**user_payload)
         set_cloud_session(token, user, persist=persist_session)
         set_cloud_refresh_token(next_refresh_token, persist=persist_session)
+        Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-refresh").start()
         return user
 
     # Circuit breaker: if cloud was unreachable, skip retries for 60s
@@ -24944,11 +24951,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         engine = _get_heal_engine()
         return {"records": engine.get_heal_log(limit)}
 
+    _cloud_ai_sync_status: dict[str, object] = {"state": "never"}
+
     def _sync_org_ai_config_from_cloud() -> None:
-        """Pull org-level AI config from cloud and apply locally (background, non-blocking)."""
+        """Pull org-level AI config from cloud and apply locally (background, non-blocking).
+
+        Writes non-sensitive diagnostics into _cloud_ai_sync_status so settings
+        response can surface why cloud sync did/didn't take effect. Never logs
+        or stores the raw API key — only hasApiKey + fingerprint (from state.ai).
+        """
         try:
             secret_payload = cloud_request("GET", "/api/v1/settings/org-ai-config/secret")
             if not isinstance(secret_payload, dict):
+                _cloud_ai_sync_status.clear()
+                _cloud_ai_sync_status.update({
+                    "state": "failed",
+                    "at": now_iso(),
+                    "reason": "云端响应非 JSON 对象",
+                })
+                logger.warning("[cloud-ai-sync] pull failed: non-dict payload")
                 return
             provider = str(secret_payload.get("aiProvider", "")).strip()
             provider_label = str(secret_payload.get("aiProviderLabel", "")).strip()
@@ -24956,6 +24977,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             model = str(secret_payload.get("aiModel", "")).strip()
             api_key = str(secret_payload.get("apiKey", "")).strip()
             if not provider or provider == "mock":
+                _cloud_ai_sync_status.clear()
+                _cloud_ai_sync_status.update({
+                    "state": "skipped",
+                    "at": now_iso(),
+                    "reason": "云端组织 AI 配置为空或为 mock，未覆盖本机",
+                    "provider": provider or None,
+                    "providerLabel": provider_label or None,
+                    "model": model or None,
+                    "baseUrl": base_url or None,
+                    "hasApiKey": bool(api_key),
+                })
+                logger.info(
+                    "[cloud-ai-sync] skipped: provider=%s hasApiKey=%s",
+                    provider or "<empty>",
+                    bool(api_key),
+                )
                 return
             if state.ai.advanced_ai_routing_enabled():
                 state.ai.configure_cloud_online_profile(
@@ -24974,8 +25011,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     provider_label=provider_label or None,
                     base_url=base_url or None,
                 )
-        except Exception:
-            pass  # 云端不可用时保留本地配置
+            applied_fingerprint = state.ai.get_health().fingerprint
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "synced",
+                "at": now_iso(),
+                "reason": None,
+                "provider": provider,
+                "providerLabel": provider_label or None,
+                "model": model or None,
+                "baseUrl": base_url or None,
+                "hasApiKey": bool(api_key),
+                "fingerprint": applied_fingerprint or None,
+            })
+            logger.info(
+                "[cloud-ai-sync] synced: provider=%s model=%s baseUrl=%s hasApiKey=%s fingerprint=%s",
+                provider,
+                model or "<empty>",
+                base_url or "<empty>",
+                bool(api_key),
+                applied_fingerprint or "<none>",
+            )
+        except Exception as exc:
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "failed",
+                "at": now_iso(),
+                "reason": str(exc)[:200] or exc.__class__.__name__,
+            })
+            logger.warning("[cloud-ai-sync] pull failed: %s", exc)
 
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
@@ -25346,6 +25410,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_refresh_token(refresh_token, persist=True)
         _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.register", "session", user.id, {"email": user.email})
+        Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-register").start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.post("/api/v1/auth/login", response_model=AuthStateResponse)
@@ -25368,6 +25433,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         set_cloud_refresh_token(refresh_token, persist=payload.rememberMe)
         _ensure_local_organization_workspace_from_cloud_membership()
         log_activity("auth.login", "session", user.id, {"email": user.email})
+        Thread(target=_sync_org_ai_config_from_cloud, daemon=True, name="cloud-ai-sync-login").start()
         return AuthStateResponse(authenticated=True, user=user)
 
     @app.post("/api/v1/auth/change-password")
