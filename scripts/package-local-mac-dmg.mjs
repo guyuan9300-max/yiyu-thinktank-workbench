@@ -48,8 +48,6 @@ if (!inputAppPath || !fs.existsSync(inputAppPath) || !inputAppPath.endsWith('.ap
   fail(`App bundle not found: ${inputAppPath || appCandidates.join(', ')}`);
 }
 
-run(process.execPath, [path.join(projectRoot, 'scripts', 'verify-packaged-app.mjs'), inputAppPath]);
-
 fs.mkdirSync(path.dirname(outputDmgPath), { recursive: true });
 if (fs.existsSync(outputDmgPath)) {
   fs.rmSync(outputDmgPath, { force: true });
@@ -59,6 +57,8 @@ const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'yiyu-local-dmg-'));
 try {
   const stagedAppPath = path.join(stagingRoot, APP_NAME);
   run('ditto', [inputAppPath, stagedAppPath]);
+  run(process.execPath, [path.join(projectRoot, 'scripts', 'stabilize-mac-app.mjs'), stagedAppPath]);
+  run(process.execPath, [path.join(projectRoot, 'scripts', 'verify-packaged-app.mjs'), stagedAppPath]);
   fs.symlinkSync('/Applications', path.join(stagingRoot, 'Applications'));
 
   run('hdiutil', [
