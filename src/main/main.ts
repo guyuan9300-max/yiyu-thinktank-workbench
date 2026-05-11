@@ -946,6 +946,8 @@ function resolveUvBinary() {
 
 function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   const env = { ...process.env, ...extraEnv };
+  delete env.PYTHONHOME;
+  delete env.PYTHONPATH;
   const pathEntries = new Set<string>((env.PATH ?? '').split(path.delimiter).filter(Boolean));
   if (uvBinaryPath) {
     pathEntries.add(path.dirname(uvBinaryPath));
@@ -962,7 +964,25 @@ function backendEnv(extraEnv: NodeJS.ProcessEnv = {}) {
   }
   env.YIYU_WORKBENCH_DATA_DIR = fixedUserDataPath;
   env.PYTHONDONTWRITEBYTECODE = '1';
+  env.PYTHONNOUSERSITE = '1';
   env.PYTHONPYCACHEPREFIX = path.join(fixedUserDataPath, 'runtime', 'pycache');
+  // Packaged runtime ships its own python-build-standalone interpreter that has
+  // /install baked in as its build-time prefix. When self-relocation is disrupted
+  // (codesign re-signing, non-ASCII install paths, App Translocation), Python
+  // falls back to /install and crashes during init_fs_encoding because the
+  // standard library is unreachable. Explicitly anchor PYTHONHOME at the bundled
+  // seed root so stdlib loads deterministically regardless of binary state.
+  if (app.isPackaged) {
+    const seedRoot = path.join(packagedRuntimeRoot(), PACKAGED_RUNTIME_PYTHON_SEED_DIR);
+    if (fs.existsSync(path.join(seedRoot, 'lib', 'python3.11', 'encodings', '__init__.py'))) {
+      env.PYTHONHOME = seedRoot;
+      // PYTHONHOME overrides venv discovery via pyvenv.cfg, so when running
+      // inside a venv we must add its site-packages back explicitly.
+      if (env.VIRTUAL_ENV) {
+        env.PYTHONPATH = path.join(env.VIRTUAL_ENV, 'lib', 'python3.11', 'site-packages');
+      }
+    }
+  }
   return env;
 }
 
@@ -989,6 +1009,31 @@ async function runCommand(command: string, args: string[], env: NodeJS.ProcessEn
       reject(new Error(`${label} exited with code ${code ?? 'unknown'}`));
     });
   });
+}
+
+async function assertPythonRuntimeUsable(pythonPath: string, label: string, env: NodeJS.ProcessEnv) {
+  // Do NOT use -I (isolated mode): it bypasses PYTHONHOME and pyvenv.cfg,
+  // which means the smoke test would only pass when the bare binary can
+  // self-relocate. python-build-standalone after ad-hoc codesign or with
+  // non-ASCII install paths cannot do that, so we'd reject a runtime that
+  // is in fact perfectly usable under our real spawn env. Mirror the real
+  // backend env instead and rely on `env` carrying PYTHONHOME/PYTHONPATH.
+  await runCommand(
+    pythonPath,
+    [
+      '-c',
+      [
+        'import encodings',
+        'import sys',
+        'print("executable=" + sys.executable)',
+        'print("prefix=" + sys.prefix)',
+        'print("base_prefix=" + sys.base_prefix)',
+        'print("encodings=" + str(getattr(encodings, "__file__", "")))',
+      ].join('; '),
+    ],
+    env,
+    label,
+  );
 }
 
 async function runJsonCommand(command: string, args: string[], env: NodeJS.ProcessEnv, label: string) {
@@ -1133,6 +1178,7 @@ function packagedRuntimeFingerprint(seed: PackagedRuntimeSeed) {
   const manifest = seed.manifest;
   return [
     'packaged',
+    seed.root,
     manifest.schemaVersion ?? 'unknown',
     manifest.platform ?? process.platform,
     manifest.arch ?? process.arch,
@@ -1159,6 +1205,17 @@ function validatePackagedRuntimeSeed(seed: PackagedRuntimeSeed) {
   }
   if (!fs.existsSync(seed.wheelhousePath)) {
     throw new Error(`内置 wheelhouse 缺失：${seed.wheelhousePath}`);
+  }
+  const seedEncodings = path.join(
+    seed.root,
+    PACKAGED_RUNTIME_PYTHON_SEED_DIR,
+    'lib',
+    'python3.11',
+    'encodings',
+    '__init__.py',
+  );
+  if (!fs.existsSync(seedEncodings)) {
+    throw new Error(`内置 Python 标准库缺失：${seedEncodings}`);
   }
   const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
   if (!fs.existsSync(seedLibPython)) {
@@ -1232,15 +1289,27 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   const uvicornPath = path.join(venvPath, 'bin', 'uvicorn');
   const existingMetadata = readRuntimeSyncMetadata(metadataPath);
   const forceSync = parseBooleanEnv(process.env.YIYU_FORCE_RUNTIME_SYNC, false);
-  const shouldInstall = forceSync || !isExecutable(pythonPath) || !isExecutable(uvicornPath) || existingMetadata?.fingerprint !== fingerprint;
+  let shouldInstall = forceSync || !isExecutable(pythonPath) || !isExecutable(uvicornPath) || existingMetadata?.fingerprint !== fingerprint;
   if (!shouldInstall) {
-    return;
+    try {
+      await assertPythonRuntimeUsable(
+        pythonPath,
+        'backend:packaged-existing-python-smoke',
+        backendEnv({ VIRTUAL_ENV: venvPath }),
+      );
+      return;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logElectronError(`[backend:packaged-runtime] existing runtime self-check failed; rebuilding: ${detail}`);
+      shouldInstall = true;
+    }
   }
 
   validatePackagedRuntimeSeed(seed);
   assertRuntimeVenvPathIsSafe(venvPath);
   fs.rmSync(venvPath, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(venvPath), { recursive: true });
+  await assertPythonRuntimeUsable(seed.seedPython, 'backend:packaged-seed-python-smoke', backendEnv());
   await runCommand(seed.seedPython, ['-m', 'venv', '--without-pip', '--copies', venvPath], backendEnv(), 'backend:packaged-venv');
   const seedLibPython = path.join(seed.root, PACKAGED_RUNTIME_PYTHON_SEED_DIR, 'lib', 'libpython3.11.dylib');
   const venvLibPython = path.join(venvPath, 'lib', 'libpython3.11.dylib');
@@ -1268,6 +1337,7 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
     backendEnv({ VIRTUAL_ENV: venvPath }),
     'backend:packaged-wheelhouse',
   );
+  await assertPythonRuntimeUsable(pythonPath, 'backend:packaged-python-smoke', backendEnv({ VIRTUAL_ENV: venvPath }));
   if (!isExecutable(uvicornPath)) {
     throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
   }
