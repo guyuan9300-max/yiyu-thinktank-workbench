@@ -14,6 +14,7 @@ import type {
   AnalysisTemplate,
   AppSettings,
   AdminResetPasswordPayload,
+  LastCloudAiSyncStatus,
   AuthLoginPayload,
   AuthRegisterPayload,
   ChangePasswordPayload,
@@ -1018,7 +1019,11 @@ export async function adminResetPassword(employeeId: string, payload: AdminReset
 }
 
 export async function getSettings() {
-  return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse }>('/api/v1/settings');
+  return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse; lastCloudAiSyncStatus: LastCloudAiSyncStatus }>('/api/v1/settings');
+}
+
+export async function syncOrgAiConfigToCloud() {
+  return request<LastCloudAiSyncStatus>('/api/v1/settings/org-ai-config/sync-to-cloud', { method: 'POST' });
 }
 
 export async function getMaintenanceModeStatus() {
@@ -1045,7 +1050,7 @@ export async function updateMaintenanceModeMembers(payload: MaintenancePermissio
 }
 
 export async function updateSettings(payload: SettingsPayload) {
-  return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse }>('/api/v1/settings', {
+  return request<{ settings: AppSettings; operators: Operator[]; health: HealthResponse; lastCloudAiSyncStatus: LastCloudAiSyncStatus }>('/api/v1/settings', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

@@ -172,7 +172,7 @@ class HealthResponse(BaseModel):
 
 
 class LastCloudAiSyncStatusRecord(BaseModel):
-    state: Literal["never", "synced", "failed", "skipped"] = "never"
+    state: Literal["never", "synced", "uploaded", "failed", "skipped"] = "never"
     at: str | None = None
     reason: str | None = None
     provider: str | None = None

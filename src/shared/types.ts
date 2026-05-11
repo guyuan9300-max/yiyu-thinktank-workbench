@@ -515,6 +515,18 @@ export interface HealthAiState {
   mode?: AiModelMode;
 }
 
+export interface LastCloudAiSyncStatus {
+  state: 'never' | 'synced' | 'uploaded' | 'failed' | 'skipped';
+  at?: string | null;
+  reason?: string | null;
+  provider?: string | null;
+  providerLabel?: string | null;
+  model?: string | null;
+  baseUrl?: string | null;
+  hasApiKey: boolean;
+  fingerprint?: string | null;
+}
+
 export interface HealthResponse {
   backend: 'online';
   appName: string;

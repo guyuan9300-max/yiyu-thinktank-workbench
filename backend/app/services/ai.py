@@ -355,6 +355,18 @@ class AiService:
     def current_model_label(self) -> str:
         return llm_display_label(self.current_provider(), self.current_model(), self.current_provider_label())
 
+    def export_current_api_key(self) -> str:
+        """Return the active API key for the current provider.
+
+        Intended for trusted local callers that need to forward the key to a
+        cloud sync endpoint (e.g. admin pushing org AI config). Must never be
+        returned through a public HTTP response or logged.
+        """
+        store = self._store_for(self.current_provider())
+        if not store:
+            return ""
+        return str(store.get_api_key() or "").strip()
+
     def model_label(self, provider: str | None = None, model: str | None = None) -> str:
         target_provider = provider or self.current_provider()
         target_model = model or (

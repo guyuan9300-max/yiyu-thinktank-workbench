@@ -25041,6 +25041,107 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             })
             logger.warning("[cloud-ai-sync] pull failed: %s", exc)
 
+    def _push_current_ai_config_to_cloud() -> dict[str, object]:
+        """Push the locally-configured AI (incl. Keychain API key) to the cloud org config.
+
+        Returns a status dict describing the outcome. Updates _cloud_ai_sync_status
+        in the same shape used by the pull path so the settings response can surface
+        a uniform diagnostic regardless of sync direction. Never logs the raw key.
+        """
+        provider = state.ai.current_provider()
+        provider_label = state.ai.current_provider_label()
+        base_url = state.ai.current_base_url()
+        model = state.ai.current_model()
+        if not provider or provider == "mock":
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "skipped",
+                "at": now_iso(),
+                "reason": "本机当前 provider 为空或为 mock，未上传",
+                "provider": provider or None,
+                "providerLabel": provider_label or None,
+                "model": model or None,
+                "baseUrl": base_url or None,
+                "hasApiKey": False,
+            })
+            logger.info("[cloud-ai-sync] push skipped: provider=%s", provider or "<empty>")
+            return dict(_cloud_ai_sync_status)
+        api_key = state.ai.export_current_api_key()
+        if not api_key:
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "skipped",
+                "at": now_iso(),
+                "reason": "本机 Keychain 内未配置 API Key，未上传",
+                "provider": provider,
+                "providerLabel": provider_label or None,
+                "model": model or None,
+                "baseUrl": base_url or None,
+                "hasApiKey": False,
+            })
+            logger.info("[cloud-ai-sync] push skipped: no api_key in keychain for provider=%s", provider)
+            return dict(_cloud_ai_sync_status)
+        local_fingerprint = state.ai.get_health().fingerprint
+        try:
+            response = cloud_request(
+                "POST",
+                "/api/v1/settings/org-ai-config",
+                json_body={
+                    "aiProvider": provider,
+                    "aiProviderLabel": provider_label or "",
+                    "aiBaseUrl": base_url or "",
+                    "aiModel": model or "",
+                    "apiKey": api_key,
+                    "clearApiKey": False,
+                },
+            )
+            if not isinstance(response, dict):
+                raise RuntimeError("云端响应非 JSON 对象")
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "uploaded",
+                "at": now_iso(),
+                "reason": None,
+                "provider": provider,
+                "providerLabel": provider_label or None,
+                "model": model or None,
+                "baseUrl": base_url or None,
+                "hasApiKey": True,
+                "fingerprint": local_fingerprint or None,
+            })
+            logger.info(
+                "[cloud-ai-sync] pushed: provider=%s model=%s baseUrl=%s fingerprint=%s",
+                provider,
+                model or "<empty>",
+                base_url or "<empty>",
+                local_fingerprint or "<none>",
+            )
+        except HTTPException as exc:
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "failed",
+                "at": now_iso(),
+                "reason": f"HTTP {exc.status_code}: {str(exc.detail)[:200]}",
+                "provider": provider,
+                "model": model or None,
+                "hasApiKey": True,
+                "fingerprint": local_fingerprint or None,
+            })
+            logger.warning("[cloud-ai-sync] push failed: HTTP %s: %s", exc.status_code, exc.detail)
+        except Exception as exc:
+            _cloud_ai_sync_status.clear()
+            _cloud_ai_sync_status.update({
+                "state": "failed",
+                "at": now_iso(),
+                "reason": str(exc)[:200] or exc.__class__.__name__,
+                "provider": provider,
+                "model": model or None,
+                "hasApiKey": True,
+                "fingerprint": local_fingerprint or None,
+            })
+            logger.warning("[cloud-ai-sync] push failed: %s", exc)
+        return dict(_cloud_ai_sync_status)
+
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
         def _local_session_user() -> SessionUserRecord:
@@ -25166,12 +25267,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not identifier:
             raise HTTPException(status_code=400, detail="请先填写邮箱或手机号，再决定是否记住账号和密码。")
         previous_account = next((account for account in existing_accounts if (account.identifier or account.email).strip().lower() == identifier), None)
-        full_name = (payload.fullName or "").strip() or (previous_account.fullName if previous_account else "")
+        payload_email = payload.email.strip().lower()
+        cached_user = get_cached_session_user()
+        cached_email = (cached_user.email or "").strip().lower() if cached_user else ""
+        cached_phone = (cached_user.phone or "").strip().lower() if cached_user and cached_user.phone else ""
+        cached_identifiers = {value for value in (cached_email, cached_phone) if value}
+        use_cached_identity = bool(cached_user and (identifier in cached_identifiers or payload_email in cached_identifiers))
+        if use_cached_identity:
+            full_name = cached_user.fullName.strip() or (previous_account.fullName if previous_account else "")
+            account_email = cached_email or payload_email or identifier
+        else:
+            full_name = (payload.fullName or "").strip() or (previous_account.fullName if previous_account else "")
+            account_email = payload_email or identifier
         password = (payload.password or "").strip()
         if password:
             _remembered_cloud_auth_store(identifier).set_api_key(password)
         updated_account = RememberedCloudAuthAccount(
-            email=payload.email.strip().lower() or identifier,
+            email=account_email,
             identifier=identifier,
             fullName=full_name,
             updatedAt=now_iso(),
@@ -30154,7 +30266,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 key for key in safe_payload.get("clearAiModelProfileApiKeys", []) if str(key).strip()
             ]
         log_activity("settings.update", "settings", "app", safe_payload)
+        # admin 双写：若当前会话是组织管理员，把刚刚保存的本机 AI 配置 fire-and-forget 上传到云端组织 AI 配置。
+        # 失败不影响本机保存（异步执行）；状态写入 _cloud_ai_sync_status，前端通过 settings 响应感知。
+        if current_session_is_admin():
+            should_push = (
+                (payload.apiKey is not None and str(payload.apiKey).strip())
+                or (payload.aiProvider and str(payload.aiProvider).strip() and payload.aiProvider != "mock")
+            )
+            if should_push:
+                # inline 调用（非 fire-and-forget）：push 内部已 try/except 不会抛出，
+                # 最多耗时 ~3s（cloud_request timeout）。这样 build_settings_response()
+                # 返回的 lastCloudAiSyncStatus 就是这次 push 的最新结果，前端无需 poll。
+                _push_current_ai_config_to_cloud()
         return build_settings_response()
+
+    @app.post("/api/v1/settings/org-ai-config/sync-to-cloud", response_model=LastCloudAiSyncStatusRecord)
+    def sync_current_ai_to_cloud() -> LastCloudAiSyncStatusRecord:
+        """Admin-only: push the locally-configured AI (incl. Keychain key) to the cloud org config.
+
+        Used when the local machine already has a valid API key in Keychain but the
+        cloud org_ai_config is empty. Returns the resulting sync status (also surfaced
+        via settings response's lastCloudAiSyncStatus on subsequent reads).
+        """
+        if not current_session_is_admin():
+            raise HTTPException(status_code=403, detail="仅组织管理员可上传组织 AI 配置到云端。")
+        result = _push_current_ai_config_to_cloud()
+        return LastCloudAiSyncStatusRecord(**result)
 
     @app.get("/api/v1/settings/tasks", response_model=TaskSettingsRecord)
     def get_task_settings() -> TaskSettingsRecord:

@@ -382,6 +382,7 @@ import {
   updateProjectFlow,
   updateProjectModule,
   updateSettings,
+  syncOrgAiConfigToCloud,
   updateClientDnaDocument,
   updateHandbookSettings,
   updateOrgModelProfile,
@@ -21744,7 +21745,7 @@ export default function App() {
           if (value) acc[profileKey] = value;
           return acc;
         }, {} as Partial<Record<AiModelProfileKey, string>>);
-        await updateSettings({
+        const updateResponse = await updateSettings({
           cloudApiUrl: cloudApiUrlFromHost(draft.cloudApiUrl),
           aiProvider: providerForSave,
           aiProviderLabel: providerLabelForSave,
@@ -21770,9 +21771,44 @@ export default function App() {
           aiModelProfileApiKeys: {},
         }));
         const remoteMissingApiKey = providerForSave !== 'mock' && !isLocalAiBaseUrl(baseUrlForSave) && !apiKeyForSave;
-        flash('success', remoteMissingApiKey ? 'AI 与云端设置已保存；远程接口还缺 API Key，当前不会启用正式回答' : 'AI 与云端设置已保存');
+        const cloudSync = updateResponse.lastCloudAiSyncStatus;
+        const isAdmin = currentSessionUser?.primaryRole === 'admin';
+        let cloudSyncHint = '';
+        if (isAdmin && cloudSync) {
+          if (cloudSync.state === 'uploaded') {
+            cloudSyncHint = '；已同步到云端组织 AI 配置';
+          } else if (cloudSync.state === 'failed') {
+            cloudSyncHint = `；云端同步失败：${cloudSync.reason || '未知原因'}`;
+          } else if (cloudSync.state === 'skipped') {
+            cloudSyncHint = '；本机条件不满足，未上传到云端';
+          }
+        }
+        const baseMessage = remoteMissingApiKey
+          ? 'AI 与云端设置已保存（仅本机）；远程接口还缺 API Key，当前不会启用正式回答'
+          : (isAdmin && cloudSync && cloudSync.state === 'uploaded'
+              ? 'AI 与云端设置已保存'
+              : 'AI 与云端设置已保存（仅本机）');
+        flash(cloudSync && cloudSync.state === 'failed' ? 'error' : 'success', `${baseMessage}${cloudSyncHint}`);
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '保存失败');
+      }
+    };
+
+    const handleSyncAiToCloud = async () => {
+      try {
+        const result = await syncOrgAiConfigToCloud();
+        await loadSettingsBlock();
+        if (result.state === 'uploaded') {
+          flash('success', `本机 AI 配置已上传到云端组织${result.fingerprint ? `（指纹 ${result.fingerprint}）` : ''}`);
+        } else if (result.state === 'skipped') {
+          flash('error', result.reason || '本机条件不满足，未上传');
+        } else if (result.state === 'failed') {
+          flash('error', `云端同步失败：${result.reason || '未知原因'}`);
+        } else {
+          flash('success', '同步请求已发送');
+        }
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '同步失败');
       }
     };
 
@@ -22298,6 +22334,11 @@ export default function App() {
                 {canManageSensitiveSettings && (
                   <Button primary onClick={() => void handleSaveAiSettings()}>
                     <Bot size={16} /> 保存 AI 与云端
+                  </Button>
+                )}
+                {currentSessionUser?.primaryRole === 'admin' && (
+                  <Button onClick={() => void handleSyncAiToCloud()}>
+                    <UploadCloud size={16} /> 把本机 AI 配置上传到云端组织
                   </Button>
                 )}
               </div>
