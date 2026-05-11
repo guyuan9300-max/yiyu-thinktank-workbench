@@ -38,3 +38,7 @@ tmp*.js
 tmp*.log
 external/tmp-*/
 external/*.tar.gz
+
+# Test outputs - never commit (filtered out 2026-05-12)
+backend/output/
+output/
