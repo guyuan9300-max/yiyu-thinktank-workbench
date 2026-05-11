@@ -774,6 +774,11 @@ from app.services.data_center_ingest import (
     purge_private_task_ingest_events,
 )
 from app.services.data_center_access import DataCenterAccessContext
+from app.services.local_model_optimizer import (
+    enqueue_local_model_optimization_tasks,
+    get_local_model_optimization_stats,
+    retry_failed_local_model_optimization_tasks,
+)
 from app.services.internet_crawler import run_internet_enrichment
 from app.services.memory_foundation import (
     answer_clarification_record,
@@ -33505,6 +33510,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             runningKnowledgeJobs=running_knowledge_jobs,
             failedKnowledgeJobs=failed_knowledge_jobs,
             latestJobEvents=latest_job_events,
+            localOptimization=get_local_model_optimization_stats(state.db, client_id=client_id),
         )
         return WorkspaceDataCenterReadinessRecord(
             clientId=client_id,
@@ -33633,6 +33639,64 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     event_id=refresh_event.id,
                     job_id=result.jobId,
                 )
+                return result
+            if action_type == "enqueue_local_model_optimization":
+                enqueue_result = enqueue_local_model_optimization_tasks(
+                    state.db,
+                    client_id=client_id,
+                    document_ids=payload.targetIds or None,
+                )
+                created_count = int(enqueue_result.get("created") or 0)
+                attempted_count = int(enqueue_result.get("attempted") or 0)
+                result = WorkspaceDataCenterReadinessActionResultRecord(
+                    actionType=action_type,
+                    status="queued" if created_count > 0 else "completed",
+                    jobId=None,
+                    refreshEventId=refresh_event.id,
+                    affectedCount=created_count,
+                    message=(
+                        f"本地模型优化已入队：新增 {created_count} 个任务，检查 {attempted_count} 个候选项。"
+                        if created_count > 0
+                        else "当前没有新的本地模型优化任务需要加入队列。"
+                    ),
+                    errors=[],
+                )
+                if created_count > 0:
+                    mark_workspace_context_refresh_event_status(
+                        state.db,
+                        event_id=refresh_event.id,
+                        status="queued",
+                    )
+                else:
+                    mark_workspace_context_refresh_event_completed(state.db, event_id=refresh_event.id)
+                return result
+            if action_type == "retry_local_model_optimization":
+                affected_count = retry_failed_local_model_optimization_tasks(
+                    state.db,
+                    client_id=client_id,
+                    task_ids=payload.targetIds or None,
+                )
+                result = WorkspaceDataCenterReadinessActionResultRecord(
+                    actionType=action_type,
+                    status="queued" if affected_count > 0 else "completed",
+                    jobId=None,
+                    refreshEventId=refresh_event.id,
+                    affectedCount=affected_count,
+                    message=(
+                        f"本地模型优化失败任务已重新排队：{affected_count} 个。"
+                        if affected_count > 0
+                        else "当前没有可重试的本地模型优化失败任务。"
+                    ),
+                    errors=[],
+                )
+                if affected_count > 0:
+                    mark_workspace_context_refresh_event_status(
+                        state.db,
+                        event_id=refresh_event.id,
+                        status="queued",
+                    )
+                else:
+                    mark_workspace_context_refresh_event_completed(state.db, event_id=refresh_event.id)
                 return result
             if action_type == "internet_enrichment":
                 client_summary = build_client_summary(client_id)

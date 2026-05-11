@@ -3880,10 +3880,32 @@ class WorkspaceDataCenterReadinessRecentJobRecord(BaseModel):
     updatedAt: str
 
 
+class WorkspaceDataCenterLocalOptimizationStatusRecord(BaseModel):
+    enabled: bool = False
+    paused: bool = False
+    inWindow: bool = False
+    nextWindowLabel: str | None = None
+    modelProfileId: str = ""
+    modelName: str = ""
+    concurrency: int = 1
+    queueTotal: int = 0
+    queuedTasks: int = 0
+    runningTasks: int = 0
+    completedTasks: int = 0
+    failedTasks: int = 0
+    pendingDocumentCards: int = 0
+    pendingPathOptimizations: int = 0
+    appliedPathOptimizations: int = 0
+    pendingPathConfirmations: int = 0
+    lastCompletedAt: str | None = None
+    lastError: str | None = None
+
+
 class WorkspaceDataCenterReadinessJobsRecord(BaseModel):
     runningKnowledgeJobs: int = 0
     failedKnowledgeJobs: int = 0
     latestJobEvents: list[WorkspaceDataCenterReadinessJobEventRecord] = Field(default_factory=list)
+    localOptimization: WorkspaceDataCenterLocalOptimizationStatusRecord | None = None
 
 
 class WorkspaceDataCenterReadinessFixRecord(BaseModel):
@@ -3900,6 +3922,8 @@ class WorkspaceDataCenterReadinessFixRecord(BaseModel):
         "cleanup_invalid_documents",
         "rebind_original_file",
         "auto_repair_documents",
+        "enqueue_local_model_optimization",
+        "retry_local_model_optimization",
         "internet_enrichment",
     ]
     severity: Literal["info", "warning", "critical"] = "info"
@@ -3931,6 +3955,8 @@ class WorkspaceDataCenterReadinessActionPayloadRecord(BaseModel):
         "cleanup_invalid_documents",
         "rebind_original_file",
         "auto_repair_documents",
+        "enqueue_local_model_optimization",
+        "retry_local_model_optimization",
         "internet_enrichment",
     ]
     targetIds: list[str] = Field(default_factory=list)

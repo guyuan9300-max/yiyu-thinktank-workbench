@@ -1965,6 +1965,8 @@ export type WorkspaceDataCenterReadinessActionType =
   | 'cleanup_invalid_documents'
   | 'rebind_original_file'
   | 'auto_repair_documents'
+  | 'enqueue_local_model_optimization'
+  | 'retry_local_model_optimization'
   | 'internet_enrichment';
 
 export interface WorkspaceDocumentProcessingStatus {
@@ -2050,10 +2052,32 @@ export interface WorkspaceDataCenterReadinessJobEvent {
   createdAt: string;
 }
 
+export interface WorkspaceDataCenterLocalOptimizationStatus {
+  enabled: boolean;
+  paused: boolean;
+  inWindow: boolean;
+  nextWindowLabel?: string | null;
+  modelProfileId: string;
+  modelName: string;
+  concurrency: number;
+  queueTotal: number;
+  queuedTasks: number;
+  runningTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  pendingDocumentCards: number;
+  pendingPathOptimizations: number;
+  appliedPathOptimizations: number;
+  pendingPathConfirmations: number;
+  lastCompletedAt?: string | null;
+  lastError?: string | null;
+}
+
 export interface WorkspaceDataCenterReadinessJobs {
   runningKnowledgeJobs: number;
   failedKnowledgeJobs: number;
   latestJobEvents: WorkspaceDataCenterReadinessJobEvent[];
+  localOptimization?: WorkspaceDataCenterLocalOptimizationStatus | null;
 }
 
 export interface WorkspaceDataCenterReadinessFix {
@@ -3752,6 +3776,7 @@ export interface UnderstandingSnapshotV1 {
   mode: UnderstandingMode;
   coverage: number;
   confidence: number;
+  humanBrief?: string | null;
   whatIsThis: string;
   whyItMatters: string;
   progressNow: string;
