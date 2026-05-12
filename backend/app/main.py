@@ -356,6 +356,16 @@ from app.models import (
     LocalAsrTestTranscriptionPayload,
     LocalAsrTestTranscriptionResponse,
     LocalAsrTranscriptionSegmentRecord,
+    OllamaDeleteModelPayload,
+    OllamaDeleteModelResponse,
+    OllamaHealthResponse,
+    OllamaInstalledModelRecord,
+    OllamaPullCancelResponse,
+    OllamaPullPayload,
+    OllamaPullStartResponse,
+    OllamaPullStatusResponse,
+    OllamaRecommendedModelRecord,
+    OllamaRecommendedModelsResponse,
     ObjectStorageSettingsPayload,
     ObjectStorageSettingsRecord,
     ObjectStorageTestResult,
@@ -30916,6 +30926,83 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 success=False,
                 errorMessage=f"{exc.__class__.__name__}：{exc}",
             )
+
+    # === P0-②：Ollama 本地 LLM 管理 API ===
+
+    @app.get("/api/v1/ollama/health", response_model=OllamaHealthResponse)
+    def get_ollama_health() -> OllamaHealthResponse:
+        from app.services.ollama_manager.health import check_health
+        h = check_health()
+        return OllamaHealthResponse(
+            running=h.running,
+            baseUrl=h.base_url,
+            installedModels=[
+                OllamaInstalledModelRecord(
+                    name=m.name,
+                    sizeBytes=m.size_bytes,
+                    digest=m.digest,
+                    modifiedAt=m.modified_at,
+                )
+                for m in h.installed_models
+            ],
+            error=h.error,
+            version=h.version,
+        )
+
+    @app.get("/api/v1/ollama/recommended-models", response_model=OllamaRecommendedModelsResponse)
+    def get_ollama_recommended(capability: str) -> OllamaRecommendedModelsResponse:
+        from app.services.ollama_manager.recommended import get_recommended
+        models = get_recommended(capability)
+        return OllamaRecommendedModelsResponse(
+            capability=capability,
+            models=[
+                OllamaRecommendedModelRecord(
+                    name=m.name,
+                    sizeGb=m.size_gb,
+                    description=m.description,
+                    default=m.default,
+                )
+                for m in models
+            ],
+        )
+
+    @app.post("/api/v1/ollama/pull", response_model=OllamaPullStartResponse)
+    def start_ollama_pull(payload: OllamaPullPayload) -> OllamaPullStartResponse:
+        from app.services.ollama_manager import OLLAMA_DEFAULT_BASE_URL
+        from app.services.ollama_manager.pull import get_pull_manager
+        manager = get_pull_manager()
+        base_url = (payload.baseUrl or "").strip() or OLLAMA_DEFAULT_BASE_URL
+        started, message = manager.start_pull(payload.modelName, base_url=base_url)
+        return OllamaPullStartResponse(started=started, message=message)
+
+    @app.get("/api/v1/ollama/pull/status", response_model=OllamaPullStatusResponse)
+    def get_ollama_pull_status() -> OllamaPullStatusResponse:
+        from app.services.ollama_manager.pull import get_pull_manager
+        p = get_pull_manager().status()
+        return OllamaPullStatusResponse(
+            inProgress=p.in_progress,
+            modelName=p.model_name,
+            status=p.status,
+            bytesDownloaded=p.bytes_downloaded,
+            bytesTotal=p.bytes_total,
+            elapsedSeconds=p.elapsed_seconds,
+            completed=p.completed,
+            error=p.error,
+        )
+
+    @app.post("/api/v1/ollama/pull/cancel", response_model=OllamaPullCancelResponse)
+    def cancel_ollama_pull() -> OllamaPullCancelResponse:
+        from app.services.ollama_manager.pull import get_pull_manager
+        return OllamaPullCancelResponse(cancelled=get_pull_manager().cancel())
+
+    @app.post("/api/v1/ollama/delete", response_model=OllamaDeleteModelResponse)
+    def delete_ollama_model_endpoint(payload: OllamaDeleteModelPayload) -> OllamaDeleteModelResponse:
+        ensure_business_settings_editable()
+        from app.services.ollama_manager import OLLAMA_DEFAULT_BASE_URL
+        from app.services.ollama_manager.pull import delete_model
+        base_url = (payload.baseUrl or "").strip() or OLLAMA_DEFAULT_BASE_URL
+        success, message = delete_model(payload.modelName, base_url=base_url)
+        return OllamaDeleteModelResponse(success=success, message=message)
 
     @app.get("/api/v1/settings/org-dna", response_model=OrganizationDnaResponse)
     def get_organization_dna() -> OrganizationDnaResponse:

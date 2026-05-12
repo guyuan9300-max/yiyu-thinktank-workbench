@@ -6776,6 +6776,60 @@ export interface LocalAsrTestTranscriptionResponse {
   errorMessage?: string | null;
 }
 
+// === P0-②：Ollama 本地 LLM 管理 ===
+
+export interface OllamaInstalledModel {
+  name: string;
+  sizeBytes: number;
+  digest: string;
+  modifiedAt: string;
+}
+
+export interface OllamaHealthResponse {
+  running: boolean;
+  baseUrl: string;
+  installedModels: OllamaInstalledModel[];
+  error?: string | null;
+  version?: string | null;
+}
+
+export interface OllamaRecommendedModel {
+  name: string;
+  sizeGb: number;
+  description: string;
+  default: boolean;
+}
+
+export interface OllamaRecommendedModelsResponse {
+  capability: string;
+  models: OllamaRecommendedModel[];
+}
+
+export interface OllamaPullStartResponse {
+  started: boolean;
+  message: string;
+}
+
+export interface OllamaPullStatusResponse {
+  inProgress: boolean;
+  modelName: string;
+  status: string;
+  bytesDownloaded: number;
+  bytesTotal: number;
+  elapsedSeconds: number;
+  completed: boolean;
+  error?: string | null;
+}
+
+export interface OllamaPullCancelResponse {
+  cancelled: boolean;
+}
+
+export interface OllamaDeleteModelResponse {
+  success: boolean;
+  message: string;
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // 报告生成器（与 backend/app/models.py R0.5 模型一一对应；
 // 因后端 Pydantic 用 snake_case 字段、未加 alias_generator，前端类型保持 snake_case）

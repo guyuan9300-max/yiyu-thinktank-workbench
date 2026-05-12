@@ -7867,3 +7867,67 @@ class LocalAsrTestTranscriptionResponse(BaseModel):
     language: str = ""
     segments: list[LocalAsrTranscriptionSegmentRecord] = Field(default_factory=list)
     errorMessage: str | None = None
+
+
+# === P0-②：Ollama 本地 LLM 管理 ===
+
+class OllamaInstalledModelRecord(BaseModel):
+    name: str
+    sizeBytes: int = 0
+    digest: str = ""
+    modifiedAt: str = ""
+
+
+class OllamaHealthResponse(BaseModel):
+    running: bool
+    baseUrl: str
+    installedModels: list[OllamaInstalledModelRecord] = Field(default_factory=list)
+    error: str | None = None
+    version: str | None = None
+
+
+class OllamaRecommendedModelRecord(BaseModel):
+    name: str
+    sizeGb: float
+    description: str
+    default: bool = False
+
+
+class OllamaRecommendedModelsResponse(BaseModel):
+    capability: str
+    models: list[OllamaRecommendedModelRecord] = Field(default_factory=list)
+
+
+class OllamaPullPayload(BaseModel):
+    modelName: str
+    baseUrl: str | None = None
+
+
+class OllamaPullStartResponse(BaseModel):
+    started: bool
+    message: str = ""
+
+
+class OllamaPullStatusResponse(BaseModel):
+    inProgress: bool
+    modelName: str
+    status: str
+    bytesDownloaded: int
+    bytesTotal: int
+    elapsedSeconds: float
+    completed: bool
+    error: str | None = None
+
+
+class OllamaPullCancelResponse(BaseModel):
+    cancelled: bool
+
+
+class OllamaDeleteModelPayload(BaseModel):
+    modelName: str
+    baseUrl: str | None = None
+
+
+class OllamaDeleteModelResponse(BaseModel):
+    success: bool
+    message: str = ""

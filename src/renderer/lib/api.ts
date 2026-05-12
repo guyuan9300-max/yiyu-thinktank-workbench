@@ -194,6 +194,12 @@ import type {
   LocalAsrDownloadStartResponse,
   LocalAsrModelStatus,
   LocalAsrTestTranscriptionResponse,
+  OllamaDeleteModelResponse,
+  OllamaHealthResponse,
+  OllamaPullCancelResponse,
+  OllamaPullStartResponse,
+  OllamaPullStatusResponse,
+  OllamaRecommendedModelsResponse,
   ObjectStorageSettings,
   ObjectStorageSettingsPayload,
   ObjectStorageTestResult,
@@ -1151,6 +1157,40 @@ export async function transcribeTestLocalAsr(audioPath: string) {
   return request<LocalAsrTestTranscriptionResponse>('/api/v1/local-asr/transcribe-test', {
     method: 'POST',
     body: JSON.stringify({ audioPath }),
+  });
+}
+
+// === P0-②：Ollama 管理 ===
+
+export async function getOllamaHealth() {
+  return request<OllamaHealthResponse>('/api/v1/ollama/health');
+}
+
+export async function getOllamaRecommendedModels(capability: string) {
+  return request<OllamaRecommendedModelsResponse>(
+    `/api/v1/ollama/recommended-models?capability=${encodeURIComponent(capability)}`,
+  );
+}
+
+export async function startOllamaPull(modelName: string, baseUrl?: string) {
+  return request<OllamaPullStartResponse>('/api/v1/ollama/pull', {
+    method: 'POST',
+    body: JSON.stringify({ modelName, baseUrl: baseUrl ?? null }),
+  });
+}
+
+export async function getOllamaPullStatus() {
+  return request<OllamaPullStatusResponse>('/api/v1/ollama/pull/status');
+}
+
+export async function cancelOllamaPull() {
+  return request<OllamaPullCancelResponse>('/api/v1/ollama/pull/cancel', { method: 'POST' });
+}
+
+export async function deleteOllamaModel(modelName: string, baseUrl?: string) {
+  return request<OllamaDeleteModelResponse>('/api/v1/ollama/delete', {
+    method: 'POST',
+    body: JSON.stringify({ modelName, baseUrl: baseUrl ?? null }),
   });
 }
 

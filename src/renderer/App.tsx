@@ -470,6 +470,7 @@ import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegr
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
 import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
+import { OllamaQuickPullPanel } from './components/settings/OllamaQuickPullPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
@@ -23312,6 +23313,17 @@ export default function App() {
                             启用
                           </label>
                         </div>
+                        {/* 一键拉 Ollama 模型（input-breadth P0-② 新增） */}
+                        <OllamaQuickPullPanel
+                          capability={profile.capability}
+                          canEdit={canManageSensitiveSettings}
+                          onModelReady={(modelName) => updateAiModelProfile(profileKey, {
+                            enabled: true,
+                            model: modelName,
+                            baseUrl: 'http://127.0.0.1:11434/v1',
+                            providerLabel: profile.providerLabel || '本地 Ollama',
+                          })}
+                        />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                           <input
                             value={profile.providerLabel}
