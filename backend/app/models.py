@@ -7447,6 +7447,9 @@ class UnderstandingSnapshotV1Record(BaseModel):
     knownFacts: list[str] = Field(default_factory=list)
     optionalAdvice: UnderstandingOptionalAdviceRecord | None = None
     sourceBreakdown: list[UnderstandingSourceBreakdownRecord] = Field(default_factory=list)
+    # 修复：commit 0582bd7 引入 humanBrief 概念但只加到了别的 Record 上，
+    # V1Record 同步缺失导致多处测试失败。补上向后兼容字段。
+    humanBrief: str | None = None
 
 
 # ── Phase 1: 客户战略画像 + 合作关系 + 事件线周历史 ──

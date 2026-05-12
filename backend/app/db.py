@@ -2201,6 +2201,16 @@ class Database:
             self._ensure_column("imports", "duplicate_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("imports", "unsupported_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("imports", "version_upgrade_count", "INTEGER NOT NULL DEFAULT 0")
+            # 修复：document_cards 缺 9 个列（多处 SELECT 引用但 schema 未建）
+            self._ensure_column("document_cards", "purpose", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("document_cards", "audience", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("document_cards", "project_context", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("document_cards", "key_topics_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("document_cards", "good_questions_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("document_cards", "risk_notes", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("document_cards", "generated_model", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("document_cards", "input_hash", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("document_cards", "prompt_version", "TEXT NOT NULL DEFAULT ''")
             # 迭代 4：chunk 语义分类。fact / judgment / opinion / action /
             # question / conclusion / background / unclassified
             self._ensure_column("v2_chunks", "semantic_type", "TEXT NOT NULL DEFAULT 'unclassified'")
@@ -2308,6 +2318,35 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_entity_merge_log_client
                     ON entity_merge_log(client_id, created_at DESC);
+
+                -- 修复：补建 document_path_optimizations 表
+                -- 代码里多处 SELECT/INSERT 引用此表，但 schema 一直没建。
+                -- 是 local_model_optimizer 在用的"路径优化"功能，按 INSERT
+                -- 语句的列序还原 schema。表为空时所有 LEFT JOIN 都返回
+                -- NULL，等同于"功能未启用"，不影响主流程。
+                CREATE TABLE IF NOT EXISTS document_path_optimizations (
+                    id TEXT PRIMARY KEY,
+                    knowledge_document_id TEXT NOT NULL UNIQUE,
+                    client_id TEXT NOT NULL DEFAULT '',
+                    virtual_path TEXT NOT NULL DEFAULT '',
+                    classification_tags_json TEXT NOT NULL DEFAULT '[]',
+                    recommended_owner TEXT NOT NULL DEFAULT '',
+                    recommended_project TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    reason TEXT NOT NULL DEFAULT '',
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    apply_status TEXT NOT NULL DEFAULT 'pending_confirmation',
+                    generated_model TEXT NOT NULL DEFAULT '',
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    prompt_version TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(knowledge_document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_document_path_optimizations_client
+                    ON document_path_optimizations(client_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_document_path_optimizations_kd
+                    ON document_path_optimizations(knowledge_document_id);
 
                 -- 迭代 7：客户私有术语库
                 -- term: 原始术语；normalized_term: 归一化（用于 dedup + 查找）
