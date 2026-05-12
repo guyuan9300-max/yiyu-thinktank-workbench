@@ -512,6 +512,11 @@ from app.models import (
     EvidenceQualityAnnotationLabelPayloadRecord,
     ExternalEvidenceCardRecord,
     normalize_retrieval_stage,
+    # report-gen (R0.5): 报告生成器数据契约
+    ReportBlueprint,
+    ReportRunSummary,
+    DraftBlueprintRequest,
+    DraftSectionsRequest,
 )
 from app.services.ai import (
     AiInvocationError,
@@ -44286,6 +44291,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if updated is None:
             raise HTTPException(status_code=404, detail="成长练习推荐不存在或已失效")
         return GrowthRecommendationActionResponse(recommendation=updated, task=None)
+
+    # ───────────────────────────────────────────────────────────────────────
+    # 报告生成器（report-gen）· R0.5 API skeleton
+    # 对应执行计划：docs/报告生成器-Claude-Code执行计划-2026-05-12.md
+    # 4 个 endpoint 全部先返回 501 占位，R1/R2/R3 阶段会逐个填充实现：
+    #   R1 → draft_blueprint  (LLM A 主理人推导骨架)
+    #   R2 → draft_sections   (LLM B 起草员并行填章节 + 信息图)
+    #   R3 → render_report    (docx/pdf 渲染)
+    #   全程 → get_report_run  (查询进度)
+    # ───────────────────────────────────────────────────────────────────────
+
+    @app.post("/api/v1/reports/draft-blueprint", response_model=ReportBlueprint)
+    def report_draft_blueprint(payload: DraftBlueprintRequest) -> ReportBlueprint:
+        """阶段一：基于事件线 / 客户报告期推导报告骨架。
+
+        入参：event_line_id 或 (client_id, period_start, period_end, intent_hint)
+        出参：ReportBlueprint（含 open_questions_for_human 供前端确认）
+        """
+        raise HTTPException(
+            status_code=501,
+            detail="R1 阶段实现：report_context_builder + report_blueprint_drafter 未就绪",
+        )
+
+    @app.post("/api/v1/reports/{report_run_id}/draft-sections", response_model=ReportRunSummary)
+    def report_draft_sections(
+        report_run_id: str,
+        payload: DraftSectionsRequest,
+    ) -> ReportRunSummary:
+        """阶段二：填充章节内容（并行）。
+
+        幂等：单章节级幂等，重跑指定 section_indices 用最新版替换。
+        """
+        raise HTTPException(
+            status_code=501,
+            detail="R2 阶段实现：section_drafter + materialize_charts 未就绪",
+        )
+
+    @app.post("/api/v1/reports/{report_run_id}/render", response_model=ReportRunSummary)
+    def report_render(
+        report_run_id: str,
+        format: Literal["docx", "pdf", "md"] = Query(default="docx"),
+    ) -> ReportRunSummary:
+        """阶段三：渲染并落盘 docx / pdf / md。"""
+        raise HTTPException(
+            status_code=501,
+            detail="R3 阶段实现：report_docx_renderer 未就绪",
+        )
+
+    @app.get("/api/v1/reports/{report_run_id}", response_model=ReportRunSummary)
+    def get_report_run(report_run_id: str) -> ReportRunSummary:
+        """查询报告生成任务进度（含每章节状态）。"""
+        row = state.db.fetchone(
+            "SELECT * FROM report_runs WHERE id = ?", (report_run_id,),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="报告任务不存在")
+        # R0.5 阶段：只读 metadata；blueprint / sections_status 后续阶段会真填
+        blueprint = None
+        if row["blueprint_json"]:
+            try:
+                blueprint = ReportBlueprint.model_validate_json(row["blueprint_json"])
+            except Exception:
+                blueprint = None
+        section_rows = state.db.fetchall(
+            "SELECT status FROM report_section_runs WHERE report_run_id = ? ORDER BY section_idx",
+            (report_run_id,),
+        )
+        return ReportRunSummary(
+            id=str(row["id"]),
+            client_id=str(row["client_id"]),
+            event_line_id=row["event_line_id"],
+            period_start=row["period_start"],
+            period_end=row["period_end"],
+            intent_hint=row["intent_hint"],
+            status=str(row["status"]),  # type: ignore[arg-type]
+            blueprint=blueprint,
+            sections_status=[str(r["status"]) for r in section_rows],  # type: ignore[misc]
+            output_files={
+                k: v for k, v in {
+                    "docx": row["docx_path"],
+                    "pdf": row["pdf_path"],
+                    "md": row["md_path"],
+                }.items() if v
+            },
+            total_llm_tokens=int(row["total_llm_tokens"] or 0),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     return app
 

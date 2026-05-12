@@ -3089,6 +3089,70 @@ class Database:
                 VALUES (1, '', '{}', '', '{}', 0, '')
                 """
             )
+            # ───────────────────────────────────────────────────────────────
+            # 报告生成器（report-gen）· 状态机表
+            # 对应执行计划：docs/报告生成器-Claude-Code执行计划-2026-05-12.md
+            # report_runs: 一次报告生成任务的整体状态（含 blueprint + artifact）
+            # report_section_runs: 每个章节的填充状态（支持单章节重跑/幂等）
+            # ───────────────────────────────────────────────────────────────
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_runs (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    event_line_id TEXT,
+                    period_start TEXT,
+                    period_end TEXT,
+                    intent_hint TEXT,
+                    audience_hint TEXT,
+                    tone_hint TEXT,
+                    status TEXT NOT NULL DEFAULT 'blueprint_pending',
+                    -- 状态机:
+                    --   blueprint_pending → blueprint_confirmed → drafting
+                    --   → rendered → published
+                    --   任一阶段失败 → failed
+                    blueprint_json TEXT,
+                    artifact_json TEXT,
+                    docx_path TEXT,
+                    pdf_path TEXT,
+                    md_path TEXT,
+                    total_llm_tokens INTEGER NOT NULL DEFAULT 0,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_report_runs_client
+                ON report_runs(client_id, created_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_report_runs_event_line
+                ON report_runs(event_line_id, created_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_section_runs (
+                    id TEXT PRIMARY KEY,
+                    report_run_id TEXT NOT NULL REFERENCES report_runs(id) ON DELETE CASCADE,
+                    section_idx INTEGER NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    content_json TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    -- 章节级状态: pending | drafting | done | failed
+                    error_message TEXT,
+                    llm_tokens INTEGER NOT NULL DEFAULT 0,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    UNIQUE(report_run_id, section_idx)
+                );
+                """
+            )
             self.conn.execute(
                 "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
             )

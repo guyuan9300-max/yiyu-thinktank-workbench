@@ -7520,6 +7520,191 @@ class NarrativeAnalysisRecord(BaseModel):
     confidenceLevel: Literal["low", "medium", "high"] = "low"
 
 
+# =============================================================================
+# 报告生成器（report-gen）· 数据契约
+# =============================================================================
+# 对应执行计划：docs/报告生成器-Claude-Code执行计划-2026-05-12.md
+# 三阶段：阶段一(推导骨架) → 阶段二(分批填充) → 阶段三(排版导出)
+# 三角色：A 主理人(决定骨架) / B 起草员(写章节) / C 润色员(风格统一)
+# 模型选型：3 角色全部使用豆包 Seed 2.0 Pro（灰度测试主力）
+# =============================================================================
+
+
+ReportChartKind = Literal[
+    "pie",                 # 饼图（占比类，commit 类型/资料分类/时间分配）
+    "progress_bar_h",      # 横向进度条（前后对比/完成度，可带目标线）
+    "timeline",            # 时间线（大事记/里程碑，带状态徽章）
+    "grouped_bar",         # 分组柱状图（多周期/多对象对比）
+    "risk_bubble",         # 风险矩阵气泡（影响 × 概率，气泡大小为权重）
+    "table_only",          # 不画图，仅渲染表格
+    "callout_only",        # 不画图，仅渲染引用块
+]
+
+
+class ChartHint(BaseModel):
+    """章节内信息图建议（阶段一 LLM A 决定，阶段二渲染时取数生成 PNG）。"""
+
+    kind: ReportChartKind
+    title: str
+    caption: str | None = None
+    # 自然语言描述数据从哪取，如 "git log Q1 commit 类型计数"
+    # 阶段二 section_drafter 会解析此字段定位数据
+    data_source_hint: str
+
+
+class SectionPlan(BaseModel):
+    """单个章节计划（阶段一产物，章节标题不固定文案，由 LLM A 决定）。"""
+
+    level: int = Field(default=1, ge=1, le=2)  # 1=H1（一级章节）2=H2（subsection）
+    title: str
+    goal: str  # 这一章要解决什么、读者读完知道什么（≤60 字）
+    # 数据源自然语言列举：confirmedJudgments / events / tasks / documents / git_log 等
+    data_sources: list[str] = Field(default_factory=list)
+    chart_hints: list[ChartHint] = Field(default_factory=list)
+    citation_budget: int = Field(default=5, ge=0)  # 期望引用数（短章 2-3 / 深度章 5-8）
+    estimated_words: int = Field(default=300, ge=50, le=2000)  # 预估字数
+
+
+class ReportBlueprint(BaseModel):
+    """阶段一产出的完整报告骨架（LLM A 主理人决定）。"""
+
+    title: str  # 报告主标题，要具体（避免"XX 报告"这种笼统标题）
+    subtitle: str | None = None
+    # LLM 给的报告类型标签——自由文本不枚举（如"战略陪伴季报"/"产品复盘"/"募款汇报"）
+    report_kind: str
+    audience: str  # 受众："客户决策层" / "集团内部决策层" / "公众" 等
+    tone: str      # 语气："专业冷静" / "诚恳坦率" / "鼓舞性" / "数据驱动" 等
+    period_start: str  # ISO 日期
+    period_end: str
+    sections: list[SectionPlan] = Field(default_factory=list)  # 3-9 个为宜（含附录）
+
+    # 元数据
+    inferred_theme: str  # LLM 总结这条事件线的主题（1-2 句）
+    confidence: float = Field(default=0.8, ge=0, le=1)  # 骨架置信度
+    open_questions_for_human: list[str] = Field(default_factory=list)
+
+    # 数据来源元信息
+    event_line_id: str | None = None
+    client_id: str
+    generated_at: str  # ISO 时间戳
+
+
+# -------- 阶段二产物 --------
+
+
+ReportCitationType = Literal[
+    "judgment",   # 已确认判断
+    "event",      # 事件线 entry
+    "task",       # 任务
+    "document",   # 文档 / 附件
+    "metric",     # 数据指标
+    "commit",     # git commit (用于产品复盘类报告)
+]
+
+
+class CitationRef(BaseModel):
+    """正文内引用的源数据条目（CitationRef.id 用作章节末尾"数据源"标注）。"""
+
+    type: ReportCitationType
+    id: str  # 数据库 ID 或 commit hash
+    label: str  # 短标签（如 "20fde25" 或 "客户A 战略目标 #3"）
+    excerpt: str | None = None  # 可选的引用原文
+
+
+class GeneratedChart(BaseModel):
+    """已生成的信息图（PNG bytes 用 base64 编码方便 JSON 传输）。"""
+
+    hint: ChartHint
+    png_bytes_base64: str
+    width_cm: float = 14.5
+
+
+class SectionContent(BaseModel):
+    """单章节填充结果（阶段二每章产物）。"""
+
+    plan: SectionPlan
+    markdown: str  # 章节正文 Markdown（不含章标题，标题由 plan.title 渲染时给）
+    citations: list[CitationRef] = Field(default_factory=list)
+    charts: list[GeneratedChart] = Field(default_factory=list)
+    data_source_annotation: str = ""  # 章节末尾"数据源"标注内容
+    confidence: float = Field(default=0.7, ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)  # 起草中遇到的告警
+
+
+# -------- 阶段三产物 --------
+
+
+class ReportArtifact(BaseModel):
+    """完整生成的报告（阶段三最终产物，写入数据库 + 文件系统）。"""
+
+    blueprint: ReportBlueprint
+    sections: list[SectionContent] = Field(default_factory=list)
+    # 输出文件路径字典：{"docx": "/path/...", "pdf": "/path/...", "md": "/path/..."}
+    output_files: dict[str, str] = Field(default_factory=dict)
+    generated_at: str
+    total_llm_tokens: int = 0
+    total_cost_usd: float = 0.0
+
+
+# -------- API 请求/响应模型 --------
+
+
+class DraftBlueprintRequest(BaseModel):
+    """POST /api/v1/reports/draft-blueprint 入参。"""
+
+    # 二选一：直接给事件线 id；或给 (client_id, 报告期) 系统聚合
+    event_line_id: str | None = None
+    client_id: str | None = None
+    period_start: str | None = None
+    period_end: str | None = None
+
+    # 用户给的报告意图提示（影响骨架）
+    intent_hint: str | None = None
+
+    # 受众/语气偏好（可选，让 LLM 优先采纳）
+    audience_hint: str | None = None
+    tone_hint: str | None = None
+
+
+class DraftSectionsRequest(BaseModel):
+    """POST /api/v1/reports/{report_run_id}/draft-sections 入参。"""
+
+    # 章节索引数组（不填则全部）。支持只重跑指定章节
+    section_indices: list[int] | None = None
+    # 并行 worker 数（默认 4，触 LLM rate limit 时降）
+    max_workers: int = Field(default=4, ge=1, le=8)
+
+
+ReportRunStatus = Literal[
+    "blueprint_pending",     # 刚创建，骨架还没拉出来
+    "blueprint_confirmed",   # 骨架确认完，等填章节
+    "drafting",              # 填章节中
+    "rendered",              # 已渲染到文件
+    "published",             # 已通知 + 归档
+    "failed",                # 任一阶段失败
+]
+
+
+class ReportRunSummary(BaseModel):
+    """GET /api/v1/reports/{report_run_id} 出参。"""
+
+    id: str
+    client_id: str
+    event_line_id: str | None
+    period_start: str | None
+    period_end: str | None
+    intent_hint: str | None
+    status: ReportRunStatus
+    blueprint: ReportBlueprint | None
+    sections_status: list[Literal["pending", "drafting", "done", "failed"]] = Field(
+        default_factory=list,
+    )
+    output_files: dict[str, str] = Field(default_factory=dict)
+    total_llm_tokens: int = 0
+    created_at: str
+    updated_at: str
+
+
 # === 输入广度线程（input-breadth）：语音识别模型配置 ===
 
 SpeechProvider = Literal["volcano", "openai_whisper", "aliyun_tongyi", "xunfei"]

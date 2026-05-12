@@ -36,9 +36,9 @@
 
 | 迭代 | 范围 | 预计工作量 | 状态 |
 |---|---|---|---|
-| **R0.0** | 搬沙箱 3 份原型 + 写本文档 + .gitignore | 15 调用 | 🔄 进行中 |
-| **R0.5** | Pydantic 数据契约（Blueprint/SectionPlan/ChartHint）+ 2 张 DB 表 + 1 个空 API skeleton | 30 调用 | 待开始 |
-| **R1** | report_context_builder + report_blueprint_drafter（LLM A）+ `POST /reports/draft-blueprint` + 验收 | 50 调用 | 待开始 |
+| **R0.0** | 搬沙箱 3 份原型 + 写本文档 + .gitignore | 15 调用 | ✅ 完成 |
+| **R0.5** | Pydantic 数据契约（10 个模型）+ 2 张 DB 表 + 4 个空 API skeleton + 27 个测试 | 30 调用 | ✅ 完成 |
+| **R1** | report_context_builder + report_blueprint_drafter（LLM A）+ `POST /reports/draft-blueprint` + 验收 | 50 调用 | 🔄 待开始 |
 | **R2** | section_drafter（LLM B）+ materialize_charts + 并行调度 + `POST /reports/{id}/draft-sections` | 50 调用 | 待开始 |
 | **R3** | report_docx_renderer（基于沙箱 helper）+ markdown 解析 + LibreOffice → PDF（可选）+ `POST /reports/{id}/render` | 40 调用 | 待开始 |
 | **R4** | UI 入口（客户工作台"生成报告"按钮 + 进度页 + 主理人审阅 + 报告列表）—— **早期挂入，不等 R3** | 60 调用 | 待开始 |
@@ -109,6 +109,82 @@ docs/lu*.tmp
 
 ---
 
+## R0.5 · 已完成动作（2026-05-12）
+
+### 1. Pydantic 数据契约（`backend/app/models.py`，+185 行）
+
+10 个模型 / 类型别名：
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `ReportChartKind` | Literal | 7 种图：pie/progress_bar_h/timeline/grouped_bar/risk_bubble/table_only/callout_only |
+| `ChartHint` | BaseModel | LLM A 在 blueprint 里给 LLM B 的图意图（kind / title / caption / data_source_hint） |
+| `SectionPlan` | BaseModel | 章节计划（level / title / goal / data_sources / chart_hints / citation_budget / estimated_words） |
+| `ReportBlueprint` | BaseModel | LLM A 产出（title / subtitle / report_kind / audience / tone / period / sections / inferred_theme / confidence / open_questions_for_human） |
+| `ReportCitationType` | Literal | 6 种引用：judgment/event/task/document/metric/commit |
+| `CitationRef` | BaseModel | 引用条目（type / ref_id / display） |
+| `GeneratedChart` | BaseModel | 真实渲染产物（kind / title / image_base64 / data_summary） |
+| `SectionContent` | BaseModel | LLM B 产出（markdown / citations / charts / word_count） |
+| `ReportArtifact` | BaseModel | 阶段产物聚合（blueprint + sections） |
+| `DraftBlueprintRequest` / `DraftSectionsRequest` / `ReportRunStatus` / `ReportRunSummary` | 多个 | API 入参/状态/摘要 |
+
+### 2. DB 表（`backend/app/db.py`，+64 行）
+
+```sql
+CREATE TABLE report_runs (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    event_line_id TEXT,
+    period_start TEXT, period_end TEXT,
+    intent_hint TEXT, audience_hint TEXT, tone_hint TEXT,
+    status TEXT NOT NULL DEFAULT 'blueprint_pending',  -- 6 状态枚举
+    blueprint_json TEXT,                                -- R1 之后填
+    artifact_json TEXT,                                 -- R2 之后填
+    docx_path TEXT, pdf_path TEXT, md_path TEXT,
+    total_llm_tokens INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_report_runs_client ON report_runs(client_id, created_at DESC);
+CREATE INDEX idx_report_runs_event_line ON report_runs(event_line_id, created_at DESC);
+
+CREATE TABLE report_section_runs (
+    id TEXT PRIMARY KEY,
+    report_run_id TEXT NOT NULL REFERENCES report_runs(id) ON DELETE CASCADE,
+    section_idx INTEGER NOT NULL,
+    plan_json TEXT NOT NULL,
+    content_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    llm_tokens INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT, finished_at TEXT,
+    UNIQUE(report_run_id, section_idx)
+);
+```
+
+### 3. API 空骨架（`backend/app/main.py`，+93 行）
+
+| 端点 | 方法 | 行为 |
+|---|---|---|
+| `/api/v1/reports/draft-blueprint` | POST | 返回 501（R1 实现） |
+| `/api/v1/reports/{id}/draft-sections` | POST | 返回 501（R2 实现） |
+| `/api/v1/reports/{id}/render` | POST | 返回 501（R3 实现） |
+| `/api/v1/reports/{id}` | GET | **已实现** —— 读 `report_runs` + 聚合 `report_section_runs` 状态返回 `ReportRunSummary` |
+
+### 4. 单测（`backend/tests/test_report_models.py`，+426 行）
+
+27 个测试覆盖：
+- 所有 10 个模型的字段约束（必填 / 默认值 / Literal 枚举 / `ge`/`le` 边界）
+- JSON 序列化往返
+- `confidence` ∈ [0,1]、`estimated_words` ∈ [50,2000]、`citation_budget` ≥ 0、`level` ∈ {1,2}
+- 测试结果：`27 passed`
+
+### 5. 选择性 stage
+
+由于 main.py 同时有用户在改的 dirty hunk（line 30127 附近），用 `git add -p` + `printf "y\nn\ny\n"` 只 stage 了我的 hunk 1 (import) + hunk 3 (endpoints)，保留用户 hunk 2 不 stage。`git status` 显示 main.py 为 `MM` 状态（既有 staged 又有 unstaged），正常。
+
+---
+
 ## 下次 checkpoint
 
-R0.0 完成后立即 commit → 报告给用户 → 等 "继续 R0.5" 进入数据契约阶段。
+R0.5 完成 → commit → 报告给用户 → 等 "继续 R1" 进入 LLM A 实现阶段。
