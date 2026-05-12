@@ -141,6 +141,9 @@ from app.models import (
     GlossaryEntryRecord,
     GlossaryListResponseRecord,
     GlossaryUpdatePayload,
+    StructuredTableDetailRecord,
+    StructuredTableListResponseRecord,
+    StructuredTableSummaryRecord,
     ExportAnswerPayload,
     FactContradictionListResponseRecord,
     FactContradictionRecord,
@@ -32816,6 +32819,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
             raise HTTPException(status_code=404, detail="not found")
         return {"status": "ok"}
+
+    @app.get(
+        "/api/v1/clients/{client_id}/structured-tables",
+        response_model=StructuredTableListResponseRecord,
+    )
+    def get_client_structured_tables(
+        client_id: str,
+        role: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> StructuredTableListResponseRecord:
+        """Phase 1：列出客户的所有结构化表格（xlsx 解析产物）。"""
+        from app.services.structured_table_store import list_tables
+
+        build_client_summary(client_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
+        tables, total = list_tables(
+            state.db.conn,
+            client_id=client_id,
+            semantic_role=role or None,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        return StructuredTableListResponseRecord(
+            tables=[
+                StructuredTableSummaryRecord(
+                    id=t.id,
+                    clientId=t.client_id,
+                    v2DocumentId=t.v2_document_id,
+                    sheetName=t.sheet_name,
+                    sheetIndex=t.sheet_index,
+                    headers=t.headers,
+                    columnTypes=t.column_types,
+                    rowCount=t.row_count,
+                    columnCount=t.column_count,
+                    semanticRole=t.semantic_role,  # type: ignore[arg-type]
+                    semanticConfidence=t.semantic_confidence,
+                    parseNotes=t.parse_notes,
+                    createdAt=t.created_at,
+                )
+                for t in tables
+            ],
+            total=total,
+        )
+
+    @app.get(
+        "/api/v1/structured-tables/{table_id}",
+        response_model=StructuredTableDetailRecord,
+    )
+    def get_structured_table_detail(table_id: str) -> StructuredTableDetailRecord:
+        """Phase 1：单表详情（含 rows）。"""
+        from app.services.structured_table_store import get_table
+
+        t = get_table(state.db.conn, table_id=table_id)
+        if not t:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="table not found")
+        return StructuredTableDetailRecord(
+            id=t.id,
+            clientId=t.client_id,
+            v2DocumentId=t.v2_document_id,
+            sheetName=t.sheet_name,
+            sheetIndex=t.sheet_index,
+            headers=t.headers,
+            columnTypes=t.column_types,
+            rows=t.rows,
+            rowCount=t.row_count,
+            columnCount=t.column_count,
+            semanticRole=t.semantic_role,  # type: ignore[arg-type]
+            semanticConfidence=t.semantic_confidence,
+            parseNotes=t.parse_notes,
+            createdAt=t.created_at,
+        )
 
     @app.get(
         "/api/v1/clients/{client_id}/entity-merge-candidates",

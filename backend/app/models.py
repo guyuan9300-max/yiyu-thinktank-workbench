@@ -3793,6 +3793,43 @@ class GlossaryUpdatePayload(BaseModel):
     category: str | None = None
 
 
+class StructuredTableSummaryRecord(BaseModel):
+    """Phase 1：列表用，不含 rows。"""
+
+    id: str
+    clientId: str
+    v2DocumentId: str
+    sheetName: str
+    sheetIndex: int
+    headers: list[str] = Field(default_factory=list)
+    columnTypes: dict[str, str] = Field(default_factory=dict)
+    rowCount: int = 0
+    columnCount: int = 0
+    semanticRole: Literal[
+        "budget",
+        "beneficiary_list",
+        "donation_record",
+        "kpi",
+        "schedule",
+        "project_value",
+        "unknown",
+    ] = "unknown"
+    semanticConfidence: float = 0.0
+    parseNotes: list[str] = Field(default_factory=list)
+    createdAt: str
+
+
+class StructuredTableDetailRecord(StructuredTableSummaryRecord):
+    """Phase 1：详情，含完整行数据。"""
+
+    rows: list[dict] = Field(default_factory=list)
+
+
+class StructuredTableListResponseRecord(BaseModel):
+    tables: list[StructuredTableSummaryRecord] = Field(default_factory=list)
+    total: int = 0
+
+
 class RelationshipTripleRecord(BaseModel):
     """迭代 5：关系三元组。"""
 

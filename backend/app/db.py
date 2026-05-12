@@ -2393,6 +2393,33 @@ class Database:
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_client_glossary_client_term
                     ON client_glossary(client_id, normalized_term);
+
+                -- Phase 1：结构化表格（xlsx 每个 sheet 一行）
+                -- 用作 RAG 检索 + 计算查询的"一等公民"
+                CREATE TABLE IF NOT EXISTS structured_tables (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    v2_document_id TEXT NOT NULL,
+                    knowledge_document_id TEXT,
+                    sheet_name TEXT NOT NULL,
+                    sheet_index INTEGER NOT NULL DEFAULT 0,
+                    headers_json TEXT NOT NULL DEFAULT '[]',
+                    column_types_json TEXT NOT NULL DEFAULT '{}',
+                    rows_json TEXT NOT NULL DEFAULT '[]',
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    column_count INTEGER NOT NULL DEFAULT 0,
+                    semantic_role TEXT NOT NULL DEFAULT 'unknown',
+                    semantic_confidence REAL NOT NULL DEFAULT 0.0,
+                    parse_notes_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(v2_document_id) REFERENCES v2_documents(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_structured_tables_doc_sheet
+                    ON structured_tables(v2_document_id, sheet_name);
+                CREATE INDEX IF NOT EXISTS idx_structured_tables_client_role
+                    ON structured_tables(client_id, semantic_role);
                 """
             )
             self._ensure_column("v2_documents", "markdown_path", "TEXT")

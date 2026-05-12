@@ -232,6 +232,10 @@ class ExtractedDocument:
     text: str
     sections: list[dict[str, str]]
     metadata: ExtractionMetadata
+    # Phase 1：xlsx 走 structured parser 时，把 ParsedSheet 列表带回来，
+    # 让 ingest_document_knowledge 顺手写到 structured_tables。pptx 不会用
+    # 这个字段（slide 数据已经在 sections 里）。
+    structured_sheets: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -1374,6 +1378,7 @@ def extract_document_with_metadata(
                         cleaned,
                         cleaned_sections,
                         ExtractionMetadata(parse_status="ready"),
+                        structured_sheets=list(parsed_sheets),
                     )
             elif suffix == ".pptx":
                 parsed_slides = parse_pptx_structured(path)
@@ -2096,6 +2101,27 @@ def ingest_document_knowledge(
         """,
         (section_count, chunk_count, now_iso(), v2_document_id),
     )
+    # Phase 1：把 xlsx 的 ParsedSheet 写到 structured_tables 表
+    if extracted.structured_sheets:
+        try:
+            from app.services.structured_table_store import upsert_table_from_parsed_sheet
+
+            for sheet_index, parsed_sheet in enumerate(extracted.structured_sheets):
+                upsert_table_from_parsed_sheet(
+                    db.conn,
+                    client_id=client_id,
+                    v2_document_id=v2_document_id,
+                    knowledge_document_id=None,  # 这一步 knowledge_documents 行还没建
+                    sheet_index=sheet_index,
+                    parsed=parsed_sheet,
+                    now=created_at,
+                )
+        except Exception:
+            logger.exception(
+                "structured_tables upsert failed for %s (doc=%s)",
+                title,
+                document_id,
+            )
     refresh_client_folder_counts(db, client_id)
 
     # --- 即时写入 master_index，让文档上传后立即可被检索 ---
