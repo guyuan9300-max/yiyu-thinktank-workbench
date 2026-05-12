@@ -151,6 +151,9 @@ import type {
   TaskContextPreview,
   TaskSmartBrief,
   TaskList,
+  SpeechModelSettings,
+  SpeechModelSettingsPayload,
+  SpeechModelTestResult,
   TaskMutationPayload,
   TaskProjectContext,
   TaskSettings,
@@ -323,6 +326,9 @@ import {
   getTaskSmartBrief,
   getTaskSmartBriefsBatch,
   getTaskSettings,
+  getSpeechModelSettings,
+  updateSpeechModelSettings,
+  testSpeechModelSettings,
   getTopics,
   getTopicsSettings,
   getCollabRepoStatus,
@@ -453,6 +459,7 @@ import { ContradictionAlertPanel } from './components/client_workspace/Contradic
 import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
+import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
@@ -5852,6 +5859,9 @@ export default function App() {
   const [orgModelDraft, setOrgModelDraft] = useState(orgModelState);
   const [isSavingOrgModel, setIsSavingOrgModel] = useState(false);
   const [isOrgModelDraftDirty, setIsOrgModelDraftDirty] = useState(false);
+  // 语音识别模型配置（input-breadth 线程 I1a 新增）
+  const [speechModelSettingsState, setSpeechModelSettingsState] = useState<SpeechModelSettings | null>(null);
+  const [isSavingSpeechModelSettings, setIsSavingSpeechModelSettings] = useState(false);
   const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
   const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
     fullName: currentSessionUser?.fullName || '',
@@ -6506,9 +6516,22 @@ export default function App() {
     return response;
   }
 
+  async function loadSpeechModelSettingsBlock() {
+    try {
+      const response = await getSpeechModelSettings();
+      setSpeechModelSettingsState(response);
+    } catch (error) {
+      // 不阻断 overview 加载，仅静默；用户保存时再校验
+      console.warn('[speech-model] load failed', error);
+    }
+  }
+
   async function loadSettingsSectionBlock(section: SettingsSectionKey, force = false) {
     if (!force && settingsSectionLoaded[section]) return;
     switch (section) {
+      case 'overview':
+        await loadSpeechModelSettingsBlock();
+        break;
       case 'tasks':
         await loadTaskSettingsBlock();
         break;
@@ -22242,6 +22265,24 @@ export default function App() {
       }
     };
 
+    // 语音识别模型配置 handlers（input-breadth 线程 I1a 新增）
+    const handleSaveSpeechModelSettings = async (payload: SpeechModelSettingsPayload) => {
+      setIsSavingSpeechModelSettings(true);
+      try {
+        const next = await updateSpeechModelSettings(payload);
+        setSpeechModelSettingsState(next);
+        flash('success', '语音识别模型配置已保存（仅本机）');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '保存失败');
+      } finally {
+        setIsSavingSpeechModelSettings(false);
+      }
+    };
+
+    const handleTestSpeechModelSettings = async (payload: SpeechModelSettingsPayload): Promise<SpeechModelTestResult> => {
+      return testSpeechModelSettings(payload);
+    };
+
     const handleSyncAiToCloud = async () => {
       try {
         const result = await syncOrgAiConfigToCloud();
@@ -22766,7 +22807,7 @@ export default function App() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="text-[16px] font-bold text-gray-900">AI 与云端</h2>
+                    <h2 className="text-[16px] font-bold text-gray-900">语言模型 · 用于文字分析</h2>
                     <label className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-[12px] font-bold text-[#335CFF]">
                       <input
                         type="checkbox"
@@ -22777,7 +22818,9 @@ export default function App() {
                       开启高级模型分工
                     </label>
                   </div>
-                  <p className="text-[12px] text-gray-500 mt-1">本机模式可先完成首次接入配置；连接云端后，只有管理员可写。</p>
+                  <p className="text-[12px] text-gray-500 mt-1">
+                    用于客户工作台问答、报告生成、洞察分析等文字分析场景。本机模式可先完成首次接入；连接云端后，只有管理员可写。
+                  </p>
                 </div>
                 {canManageSensitiveSettings && (
                   <Button primary onClick={() => void handleSaveAiSettings()}>
@@ -22970,6 +23013,14 @@ export default function App() {
             </label>
             {!canManageSensitiveSettings && <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">当前云端账号只能查看 AI 与云端状态，不能修改密钥和模型配置。</p>}
           </div>
+
+        <SpeechModelSettingsCard
+          settings={speechModelSettingsState}
+          canEdit={canManageSensitiveSettings}
+          isSaving={isSavingSpeechModelSettings}
+          onSave={handleSaveSpeechModelSettings}
+          onTest={handleTestSpeechModelSettings}
+        />
 
         <AccountIdentityCard />
 

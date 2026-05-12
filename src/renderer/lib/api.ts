@@ -190,6 +190,9 @@ import type {
   TaskTagSuggestionPayload,
   TaskMutationPayload,
   TaskListMutationPayload,
+  SpeechModelSettings,
+  SpeechModelSettingsPayload,
+  SpeechModelTestResult,
   TaskList,
   TaskSettings,
   TaskSettingsPayload,
@@ -1071,6 +1074,26 @@ export async function getTaskSettings() {
 
 export async function updateTaskSettings(payload: TaskSettingsPayload) {
   return request<TaskSettings>('/api/v1/settings/tasks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+// === 输入广度线程：语音识别模型配置 ===
+
+export async function getSpeechModelSettings() {
+  return request<SpeechModelSettings>('/api/v1/settings/speech-model');
+}
+
+export async function updateSpeechModelSettings(payload: SpeechModelSettingsPayload) {
+  return request<SpeechModelSettings>('/api/v1/settings/speech-model', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testSpeechModelSettings(payload: SpeechModelSettingsPayload) {
+  return request<SpeechModelTestResult>('/api/v1/settings/speech-model/test', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

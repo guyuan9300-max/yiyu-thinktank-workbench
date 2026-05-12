@@ -344,6 +344,9 @@ from app.models import (
     TaskPayload,
     TaskRecord,
     TaskRejectPayload,
+    SpeechModelSettingsPayload,
+    SpeechModelSettingsRecord,
+    SpeechModelTestResult,
     TaskSettingsPayload,
     TaskSettingsRecord,
     TaskViewDefinitionRecord,
@@ -30653,6 +30656,59 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         log_activity("settings.tasks.update", "settings", operator_id, payload.model_dump(exclude_none=True))
         return _get_local_task_settings(operator_id)
+
+    # === 输入广度线程（input-breadth）：语音识别模型配置 API ===
+
+    @app.get("/api/v1/settings/speech-model", response_model=SpeechModelSettingsRecord)
+    def get_speech_model_settings_endpoint() -> SpeechModelSettingsRecord:
+        from app.services.speech_recognition.settings_store import get_speech_model_settings
+        return get_speech_model_settings(state.db)
+
+    @app.put("/api/v1/settings/speech-model", response_model=SpeechModelSettingsRecord)
+    def update_speech_model_settings_endpoint(
+        payload: SpeechModelSettingsPayload,
+    ) -> SpeechModelSettingsRecord:
+        ensure_business_settings_editable()
+        from app.services.speech_recognition.settings_store import save_speech_model_settings
+        provider_name = (payload.provider or "").strip()
+        if not provider_name:
+            raise HTTPException(status_code=400, detail="请选择语音识别服务商")
+        next_record = save_speech_model_settings(state.db, payload, now_iso=now_iso())
+        log_activity(
+            "settings.speech_model.update",
+            "settings",
+            "speech_model",
+            {"provider": provider_name, "modelId": payload.modelId, "enabled": payload.enabled},
+        )
+        return next_record
+
+    @app.post("/api/v1/settings/speech-model/test", response_model=SpeechModelTestResult)
+    def test_speech_model_settings_endpoint(
+        payload: SpeechModelSettingsPayload,
+    ) -> SpeechModelTestResult:
+        """测试连接：用 provider 提交一段静音音频，验证 ak/sk 是否可用。不写库。"""
+        from app.services.speech_recognition.registry import get_provider
+        provider_name = (payload.provider or "").strip()
+        if not provider_name:
+            return SpeechModelTestResult(success=False, message="请先选择服务商再测试连接")
+        provider = get_provider(provider_name)
+        if provider is None:
+            return SpeechModelTestResult(
+                success=False,
+                message=f"暂未支持该服务商（{provider_name}），请选其他选项或等待后续支持",
+            )
+        result = provider.test_connection(
+            credentials=dict(payload.credentials or {}),
+            model_id=payload.modelId,
+            extra_config=dict(payload.extraConfig or {}),
+            timeout_seconds=30.0,
+        )
+        return SpeechModelTestResult(
+            success=result.success,
+            message=result.message,
+            detail=result.detail,
+            latencyMs=result.latency_ms,
+        )
 
     @app.get("/api/v1/settings/org-dna", response_model=OrganizationDnaResponse)
     def get_organization_dna() -> OrganizationDnaResponse:

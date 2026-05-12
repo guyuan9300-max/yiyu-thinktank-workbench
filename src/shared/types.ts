@@ -6674,6 +6674,34 @@ export interface CollabActionResult {
   commitMessage?: string | null;
 }
 
+// === 输入广度线程：语音识别模型配置 ===
+
+export type SpeechProvider = 'volcano' | 'openai_whisper' | 'aliyun_tongyi' | 'xunfei';
+
+export interface SpeechModelSettings {
+  provider: string;
+  credentials: Record<string, string>;
+  modelId: string;
+  extraConfig: Record<string, string>;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface SpeechModelSettingsPayload {
+  provider: string;
+  credentials: Record<string, string>;
+  modelId: string;
+  extraConfig: Record<string, string>;
+  enabled: boolean;
+}
+
+export interface SpeechModelTestResult {
+  success: boolean;
+  message: string;
+  detail?: string | null;
+  latencyMs?: number | null;
+}
+
 declare global {
   interface Window {
     __YIYU_TEST_DIALOGS__?: {

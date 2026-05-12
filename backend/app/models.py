@@ -7518,3 +7518,33 @@ class NarrativeAnalysisRecord(BaseModel):
     managementAdvice: str | None = None
     contextLayersUsed: list[str] = Field(default_factory=list)
     confidenceLevel: Literal["low", "medium", "high"] = "low"
+
+
+# === 输入广度线程（input-breadth）：语音识别模型配置 ===
+
+SpeechProvider = Literal["volcano", "openai_whisper", "aliyun_tongyi", "xunfei"]
+
+
+class SpeechModelSettingsRecord(BaseModel):
+    """单 org 级语音识别模型配置。Provider 抽象，credentials/extra 用 JSON 灵活承载。"""
+    provider: str = ""
+    credentials: dict[str, str] = Field(default_factory=dict)
+    modelId: str = ""
+    extraConfig: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = False
+    updatedAt: str = ""
+
+
+class SpeechModelSettingsPayload(BaseModel):
+    provider: str
+    credentials: dict[str, str] = Field(default_factory=dict)
+    modelId: str = ""
+    extraConfig: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = False
+
+
+class SpeechModelTestResult(BaseModel):
+    success: bool
+    message: str = ""
+    detail: str | None = None
+    latencyMs: float | None = None

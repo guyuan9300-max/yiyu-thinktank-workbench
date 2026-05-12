@@ -3068,6 +3068,27 @@ class Database:
                 );
                 """
             )
+            # === 输入广度线程（input-breadth）新增 ===
+            # 语音识别模型配置：单行 org 级，provider + JSON credentials + JSON extra_config
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS speech_model_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    provider TEXT NOT NULL DEFAULT '',
+                    credentials_json TEXT NOT NULL DEFAULT '{}',
+                    model_id TEXT NOT NULL DEFAULT '',
+                    extra_config_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO speech_model_settings(id, provider, credentials_json, model_id, extra_config_json, enabled, updated_at)
+                VALUES (1, '', '{}', '', '{}', 0, '')
+                """
+            )
             self.conn.execute(
                 "UPDATE task_lists SET is_default = CASE WHEN id = 'list-0' THEN 1 ELSE COALESCE(is_default, 0) END WHERE is_default IS NULL OR is_default = ''"
             )
