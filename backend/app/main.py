@@ -44302,17 +44302,125 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     #   全程 → get_report_run  (查询进度)
     # ───────────────────────────────────────────────────────────────────────
 
-    @app.post("/api/v1/reports/draft-blueprint", response_model=ReportBlueprint)
-    def report_draft_blueprint(payload: DraftBlueprintRequest) -> ReportBlueprint:
-        """阶段一：基于事件线 / 客户报告期推导报告骨架。
+    @app.post("/api/v1/reports/draft-blueprint", response_model=ReportRunSummary)
+    def report_draft_blueprint(payload: DraftBlueprintRequest) -> ReportRunSummary:
+        """阶段一：基于事件线 / 客户报告期推导报告骨架（LLM 角色 A · 主理人）。
 
         入参：event_line_id 或 (client_id, period_start, period_end, intent_hint)
-        出参：ReportBlueprint（含 open_questions_for_human 供前端确认）
+        出参：ReportRunSummary（含 run_id + blueprint，前端拿到后给主理人审阅，
+              通过后用 run_id 调下一步 /draft-sections）
         """
-        raise HTTPException(
-            status_code=501,
-            detail="R1 阶段实现：report_context_builder + report_blueprint_drafter 未就绪",
+        from app.services.report_blueprint_drafter import (
+            BlueprintDraftError,
+            draft_report_blueprint as _draft_blueprint_via_llm,
         )
+        from app.services.report_context_builder import (
+            build_report_prompt_context,
+        )
+
+        event_line_id = (payload.event_line_id or "").strip() or None
+        client_id = (payload.client_id or "").strip() or None
+        period_start = (payload.period_start or "").strip()
+        period_end = (payload.period_end or "").strip()
+        intent_hint = (payload.intent_hint or "").strip()
+        audience_hint = (payload.audience_hint or "").strip()
+        tone_hint = (payload.tone_hint or "").strip()
+
+        if not client_id and event_line_id:
+            el_row = state.db.fetchone(
+                "SELECT primary_client_id FROM event_lines WHERE id = ?",
+                (event_line_id,),
+            )
+            if el_row and el_row["primary_client_id"]:
+                client_id = str(el_row["primary_client_id"]).strip() or None
+            if not client_id:
+                task_row = state.db.fetchone(
+                    """
+                    SELECT client_id FROM tasks
+                    WHERE event_line_id = ? AND COALESCE(client_id, '') != ''
+                    ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (event_line_id,),
+                )
+                if task_row and task_row["client_id"]:
+                    client_id = str(task_row["client_id"]).strip() or None
+
+        if not client_id:
+            raise HTTPException(
+                status_code=400,
+                detail="client_id 未给定，且无法从事件线/任务反查到客户",
+            )
+
+        try:
+            context = build_report_prompt_context(
+                state.db,
+                client_id=client_id,
+                event_line_id=event_line_id,
+                period_start=period_start,
+                period_end=period_end,
+                intent_hint=intent_hint,
+                audience_hint=audience_hint,
+                tone_hint=tone_hint,
+            )
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+
+        now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        run_id = str(uuid4())
+        state.db.execute(
+            """
+            INSERT INTO report_runs (
+                id, client_id, event_line_id, period_start, period_end,
+                intent_hint, audience_hint, tone_hint, status,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'blueprint_pending', ?, ?)
+            """,
+            (
+                run_id,
+                client_id,
+                event_line_id,
+                period_start or None,
+                period_end or None,
+                intent_hint or None,
+                audience_hint or None,
+                tone_hint or None,
+                now_iso,
+                now_iso,
+            ),
+        )
+
+        try:
+            blueprint = _draft_blueprint_via_llm(state.ai, context=context)
+        except BlueprintDraftError as exc:
+            failed_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            state.db.execute(
+                "UPDATE report_runs SET status='failed', error_message=?, "
+                "updated_at=? WHERE id=?",
+                (str(exc)[:500], failed_at, run_id),
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"草拟报告骨架失败：{exc}",
+            )
+
+        blueprint_json = blueprint.model_dump_json()
+        finished_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        state.db.execute(
+            "UPDATE report_runs SET blueprint_json=?, status='blueprint_pending', "
+            "updated_at=? WHERE id=?",
+            (blueprint_json, finished_at, run_id),
+        )
+        for idx, section in enumerate(blueprint.sections):
+            state.db.execute(
+                """
+                INSERT INTO report_section_runs
+                    (id, report_run_id, section_idx, plan_json, status)
+                VALUES (?, ?, ?, ?, 'pending')
+                """,
+                (str(uuid4()), run_id, idx, section.model_dump_json()),
+            )
+
+        return get_report_run(run_id)
 
     @app.post("/api/v1/reports/{report_run_id}/draft-sections", response_model=ReportRunSummary)
     def report_draft_sections(

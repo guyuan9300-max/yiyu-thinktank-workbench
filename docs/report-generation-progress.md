@@ -38,7 +38,7 @@
 |---|---|---|---|
 | **R0.0** | 搬沙箱 3 份原型 + 写本文档 + .gitignore | 15 调用 | ✅ 完成 |
 | **R0.5** | Pydantic 数据契约（10 个模型）+ 2 张 DB 表 + 4 个空 API skeleton + 27 个测试 | 30 调用 | ✅ 完成 |
-| **R1** | report_context_builder + report_blueprint_drafter（LLM A）+ `POST /reports/draft-blueprint` + 验收 | 50 调用 | 🔄 待开始 |
+| **R1** | report_context_builder + report_blueprint_drafter（LLM A · 豆包）+ 切实现 `POST /reports/draft-blueprint` + 51 个测试 + 真机验收 | 50 调用 | ✅ 完成 |
 | **R2** | section_drafter（LLM B）+ materialize_charts + 并行调度 + `POST /reports/{id}/draft-sections` | 50 调用 | 待开始 |
 | **R3** | report_docx_renderer（基于沙箱 helper）+ markdown 解析 + LibreOffice → PDF（可选）+ `POST /reports/{id}/render` | 40 调用 | 待开始 |
 | **R4** | UI 入口（客户工作台"生成报告"按钮 + 进度页 + 主理人审阅 + 报告列表）—— **早期挂入，不等 R3** | 60 调用 | 待开始 |
@@ -185,6 +185,74 @@ CREATE TABLE report_section_runs (
 
 ---
 
+## R1 · 已完成动作（2026-05-12）
+
+### 1. `backend/app/services/report_context_builder.py`（+460 行，新）
+
+- `ReportPromptContext` frozen dataclass：摘要化后的 prompt 上下文
+- `build_report_prompt_context(db, client_id, event_line_id=None, period_start, period_end, intent/audience/tone_hint, max_entries=30, activity_summary_chars=240)`
+- 拉数据源：`clients` + `event_lines` + `event_line_activities`（按 period 过滤、按时间升序、超 max_entries 保留最近 N 条 + truncated flag）+ `organization_notebook_snapshots` + `event_line_memory_snapshots`
+- 提供 `render_for_prompt()` 把所有素材渲染为 markdown 块，供 LLM A 直接读
+- sqlite3.Row 用 `_row_value()` 兜底（避免 .get() 不支持的问题）
+
+### 2. `backend/app/services/report_blueprint_drafter.py`（+340 行，新）
+
+- `draft_report_blueprint(ai, *, context, max_retries=3, timeout_seconds=60, max_tokens=3200) → ReportBlueprint`
+- 调 `ai._qwen_generate(response_schema=...)` → 豆包 Seed 2.0 Pro JSON 模式
+- 失败重试：第 2/3 次在 prompt 里附"上次失败原因"做矫正
+- `_normalize_blueprint_payload()` 补齐缺失字段、修正越界（confidence 钳到 [0,1]、estimated_words 钳到 [50,2000]、丢弃非法 chart_kind、超 7 节截断、空 sections 走 fallback）
+- 失败到底 → 抛 `BlueprintDraftError`
+
+### 3. `backend/app/main.py` · POST `/api/v1/reports/draft-blueprint`
+
+- 把 R0.5 的 501 stub 切实现
+- response_model 从 `ReportBlueprint` 改为 `ReportRunSummary`（前端拿到 run_id 才能下一步）
+- 当 `client_id` 缺失时，从 `event_lines.primary_client_id` → `tasks.client_id` 链式反查
+- 工作流：insert report_runs（status='blueprint_pending'）→ context_builder → drafter → 写 blueprint_json → 插 N 个 report_section_runs（status='pending'）→ 调 `get_report_run(run_id)` 返回
+
+### 4. 测试
+
+| 文件 | 测试数 | 内容 |
+|---|---|---|
+| `tests/test_report_context_builder.py` | 10 | 客户/事件线读取、period 过滤、长 summary 截断、entries 截断、组织笔记本 JSON 解析、render_for_prompt 包含必要 section、各 raise 路径 |
+| `tests/test_report_blueprint_drafter.py` | 14 | happy path、retry on non-dict / exception、全部 retry 失败、_normalize_blueprint_payload 各种边界（confidence/words 钳位、非法 chart_kind 丢弃、>7 sections 截断、空 sections 走 fallback、注入 client_id/event_line_id/generated_at） |
+| 合计与 R0.5 | **51** | 全 pass，pyproject.toml 加 markers 后 0 warning |
+
+### 5. 真实事件线端到端验收
+
+- 选用：`eline_b4120fda2c` "日慈战略陪伴"（24 条 activities，对应沙箱样例报告主题）
+- 调 `POST /reports/draft-blueprint`，hint = "给日慈基金会的 Q1 战略陪伴报告，对外可呈交"
+- 豆包返回耗时 ≈ 30s
+- 产出 blueprint：
+  - title: 日慈基金会2026年第一季度战略陪伴报告
+  - subtitle: 教师项目优化及中长期战略落地支持进展
+  - report_kind: 季度战略陪伴报告
+  - inferred_theme: Q1战略陪伴成果复盘、教师项目设计缺口诊断及后续陪伴路径规划
+  - 4 节：Q1整体进展复盘 / 教师项目设计现状诊断 / Q2工作规划 / 中长期战略适配建议
+  - 含 4 张 chart_hints：timeline、progress_bar_h、callout_only ×2、table_only
+  - confidence=0.8，open_questions_for_human 3 条（笑雨老师方案、2026-2028 战略优先级、AI 资料梳理服务启动）
+- GET `/reports/{run_id}` 读回 ✓，blueprint_pending 状态、4 个 section_runs 都建好
+
+### 6. 修订记录
+
+- **R0.5 修订**：`POST /reports/draft-blueprint` 的 `response_model` 从 `ReportBlueprint` 改为 `ReportRunSummary`。这样前端可以直接拿 run_id 进 R2，不需要从 blueprint 里挖。
+
+### 7. 已知风险更新
+
+| 风险 | 状态 |
+|---|---|
+| 豆包 structured JSON 输出不稳定 | ✅ 单次成功（30s 内）；retry 机制就位但未触发；继续观察 |
+| 大事件线（>50 entries）prompt 超长 | ✅ context_builder 内置 max_entries=30 截断；日慈 24 条未触 |
+
+---
+
 ## 下次 checkpoint
 
-R0.5 完成 → commit → 报告给用户 → 等 "继续 R1" 进入 LLM A 实现阶段。
+R1 完成 → commit → 报告给用户 → 等 "继续 R2" 进入 LLM B 章节起草员 + materialize_charts 阶段。
+
+**R2 范围预告：**
+- 新增 `backend/app/services/report_section_drafter.py`（LLM B · 豆包，按 SectionPlan 起草 markdown + 列引用）
+- 新增 `backend/app/services/report_chart_materializer.py`（接 chart_hints → 调 chart_generator 生成 PNG）
+- 新增 `backend/app/services/report_section_scheduler.py`（并行调度 max_workers=4）
+- 切实现 `POST /reports/{id}/draft-sections`
+- 更新章节状态机：pending → drafting → done/failed
