@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import type { FactContradiction } from '../../../shared/types';
 import { getClientContradictions, reviewContradiction } from '../../lib/api';
@@ -40,26 +40,80 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-function FileMetaLine({
-  fileName,
-  importedAt,
-  sizeBytes,
-}: {
+// 把 path 当作 group key——两份资料相同 path 视作同一对
+function pairKey(item: FactContradiction): string {
+  const a = item.docAOriginalPath || item.docAFileName || item.factAId;
+  const b = item.docBOriginalPath || item.docBFileName || item.factBId;
+  // 让 (A,B) 和 (B,A) 归为一组
+  return [a, b].sort().join('|||');
+}
+
+interface DocSide {
   fileName: string | null | undefined;
   importedAt: string | null | undefined;
   sizeBytes: number | null | undefined;
-}) {
+  path: string | null | undefined;
+}
+
+interface PairGroup {
+  key: string;
+  docA: DocSide;
+  docB: DocSide;
+  items: FactContradiction[];
+  severity: 'low' | 'medium' | 'high';
+}
+
+function highestSeverity(items: FactContradiction[]): 'low' | 'medium' | 'high' {
+  if (items.some((it) => it.severity === 'high')) return 'high';
+  if (items.some((it) => it.severity === 'medium')) return 'medium';
+  return 'low';
+}
+
+function groupByPair(items: FactContradiction[]): PairGroup[] {
+  const map = new Map<string, FactContradiction[]>();
+  for (const it of items) {
+    const key = pairKey(it);
+    const list = map.get(key) ?? [];
+    list.push(it);
+    map.set(key, list);
+  }
+  const groups: PairGroup[] = [];
+  for (const [key, list] of map) {
+    const head = list[0];
+    groups.push({
+      key,
+      docA: {
+        fileName: head.docAFileName,
+        importedAt: head.docAImportedAt,
+        sizeBytes: head.docASizeBytes,
+        path: head.docAOriginalPath,
+      },
+      docB: {
+        fileName: head.docBFileName,
+        importedAt: head.docBImportedAt,
+        sizeBytes: head.docBSizeBytes,
+        path: head.docBOriginalPath,
+      },
+      items: list,
+      severity: highestSeverity(list),
+    });
+  }
+  return groups;
+}
+
+function DocBadge({ side, label }: { side: DocSide; label: string }) {
   const parts: string[] = [];
-  if (importedAt) parts.push(`导入于 ${formatRelative(importedAt)}`);
-  const sizeLabel = formatBytes(sizeBytes);
+  if (side.importedAt) parts.push(`导入于 ${formatRelative(side.importedAt)}`);
+  const sizeLabel = formatBytes(side.sizeBytes);
   if (sizeLabel) parts.push(sizeLabel);
   return (
-    <div className="space-y-0.5">
-      <p className="truncate text-[10px] font-bold text-slate-600" title={fileName || ''}>
-        📄 {fileName || '未知文件'}
+    <div className="rounded-xl bg-white/90 px-2.5 py-2 ring-1 ring-slate-200">
+      <p className="text-[9px] font-bold text-slate-400">{label}</p>
+      <p className="mt-0.5 truncate text-[11px] font-bold text-slate-700" title={side.fileName || ''}>
+        📄 {side.fileName || '未知文件'}
       </p>
       {parts.length > 0 && (
-        <p className="text-[9px] font-semibold text-slate-400">{parts.join(' · ')}</p>
+        <p className="mt-0.5 text-[9px] font-semibold text-slate-400">{parts.join(' · ')}</p>
       )}
     </div>
   );
@@ -70,6 +124,7 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const [expandedDetail, setExpandedDetail] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -79,7 +134,7 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
     }
     setLoading(true);
     setError(null);
-    getClientContradictions(clientId, { status: 'pending', limit: 50 })
+    getClientContradictions(clientId, { status: 'pending', limit: 100 })
       .then((result) => {
         if (cancelled) return;
         setItems(result.contradictions);
@@ -97,116 +152,197 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
     };
   }, [clientId, refreshKey, reload]);
 
-  const handleAccept = async (id: string, factId: string) => {
+  const groups = useMemo(() => groupByPair(items), [items]);
+
+  const handleAcceptSide = async (group: PairGroup, side: 'a' | 'b') => {
     try {
-      await reviewContradiction(id, { reviewStatus: 'resolved', acceptedFactId: factId });
-      setReload((value) => value + 1);
+      // 对该 pair 里所有 contradictions 批量 resolve
+      await Promise.all(
+        group.items.map((item) =>
+          reviewContradiction(item.id, {
+            reviewStatus: 'resolved',
+            acceptedFactId: side === 'a' ? item.factAId : item.factBId,
+            resolutionNote: `整份资料以 ${side === 'a' ? '左侧' : '右侧'} 为数据口径`,
+          }),
+        ),
+      );
+      setReload((v) => v + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     }
   };
 
-  const handleKeepBoth = async (id: string) => {
+  const handleKeepBothGroup = async (group: PairGroup) => {
     try {
-      await reviewContradiction(id, {
-        reviewStatus: 'dismissed',
-        resolutionNote: '两份都保留（不是矛盾）',
+      await Promise.all(
+        group.items.map((item) =>
+          reviewContradiction(item.id, {
+            reviewStatus: 'dismissed',
+            resolutionNote: '两份口径都保留（不视为矛盾）',
+          }),
+        ),
+      );
+      setReload((v) => v + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '操作失败');
+    }
+  };
+
+  const handleAcceptPerField = async (item: FactContradiction, side: 'a' | 'b') => {
+    try {
+      await reviewContradiction(item.id, {
+        reviewStatus: 'resolved',
+        acceptedFactId: side === 'a' ? item.factAId : item.factBId,
+        resolutionNote: `逐项判定 · 选 ${side === 'a' ? '左' : '右'}`,
       });
-      setReload((value) => value + 1);
+      setReload((v) => v + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     }
   };
 
   if (!clientId) return null;
-  if (!loading && items.length === 0 && !error) return null;
+  if (!loading && groups.length === 0 && !error) return null;
 
   return (
     <div className="space-y-3 rounded-3xl border border-rose-100 bg-white p-4">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-black text-rose-700">⚠ 矛盾告警 · 同一客户的不同资料有冲突信息</p>
-        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
-          {items.length} 待处理
-        </span>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[12px] font-black text-rose-700">⚠ 矛盾告警 · 两份资料对同一口径给出了不同的数值</p>
+          <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
+            {groups.length} 组 / {items.length} 个口径
+          </span>
+        </div>
+        <p className="text-[10px] font-semibold leading-4 text-slate-500">
+          💡 你选的是<strong className="text-slate-700">数据口径</strong>，不是删文档——文档本身始终保留。
+          你的选择只影响 AI 未来回答时**用哪一份数值**做判断。
+        </p>
       </div>
 
       {error && <p className="text-[11px] font-semibold text-rose-600">{error}</p>}
 
       <div className="space-y-3">
-        {items.map((item) => (
-          <div
-            key={item.id}
-            className={`rounded-2xl border px-3 py-2.5 ${SEVERITY_TONE[item.severity] || SEVERITY_TONE.medium}`}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <p className="text-[12px] font-bold text-slate-800">
-                {item.subjectText} · {item.attribute}
-              </p>
-              <span className="shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
-                严重度 {SEVERITY_LABEL[item.severity] || '中'} · 检出 {formatRelative(item.detectedAt)}
-              </span>
-            </div>
+        {groups.map((group) => {
+          const expanded = Boolean(expandedDetail[group.key]);
+          return (
+            <div
+              key={group.key}
+              className={`rounded-2xl border px-3 py-2.5 ${SEVERITY_TONE[group.severity] || SEVERITY_TONE.medium}`}
+            >
+              {/* 两份文档的标识 */}
+              <div className="grid grid-cols-2 gap-2">
+                <DocBadge side={group.docA} label="资料 A" />
+                <DocBadge side={group.docB} label="资料 B" />
+              </div>
 
-            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] leading-5">
-              {/* 左侧 · 资料 A */}
-              <div className="rounded-xl bg-white/90 px-2.5 py-2 ring-1 ring-slate-200">
-                <FileMetaLine
-                  fileName={item.docAFileName}
-                  importedAt={item.docAImportedAt}
-                  sizeBytes={item.docASizeBytes}
-                />
-                <p className="mt-1.5 text-[13px] font-black text-slate-800">{item.valueA}</p>
-                {item.evidenceA && (
-                  <p className="mt-1 line-clamp-2 text-[10px] font-medium text-slate-500" title={item.evidenceA}>
-                    "{item.evidenceA.trim()}"
-                  </p>
-                )}
+              {/* 摘要：多少个口径冲突 */}
+              <div className="mt-2 flex items-center justify-between">
+                <p className="text-[11px] font-bold text-slate-700">
+                  这两份资料在 <span className="text-rose-700">{group.items.length}</span> 个口径上有差异
+                  <span className="ml-1 text-[10px] font-bold text-slate-500">
+                    （严重度 {SEVERITY_LABEL[group.severity]}）
+                  </span>
+                </p>
+              </div>
+
+              {/* 口径列表预览 */}
+              <ul className="mt-2 space-y-1">
+                {group.items.slice(0, expanded ? group.items.length : 3).map((it) => (
+                  <li
+                    key={it.id}
+                    className="flex items-center justify-between gap-2 rounded-lg bg-white/70 px-2 py-1.5 text-[11px]"
+                  >
+                    <span className="min-w-0 truncate font-bold text-slate-700">
+                      {it.subjectText} · {it.attribute}
+                    </span>
+                    <span className="shrink-0 font-semibold text-slate-500">
+                      <span className="text-emerald-700">{it.valueA}</span>
+                      <span className="mx-1 text-slate-400">↔</span>
+                      <span className="text-sky-700">{it.valueB}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              {group.items.length > 3 && (
                 <button
                   type="button"
-                  className="mt-2 w-full rounded-lg bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
-                  onClick={() => handleAccept(item.id, item.factAId)}
-                  title="采用此版本，自动归档另一份；未来 AI 不再用旧值回答"
+                  className="mt-1 text-[10px] font-bold text-slate-500 hover:text-slate-700"
+                  onClick={() =>
+                    setExpandedDetail((m) => ({ ...m, [group.key]: !m[group.key] }))
+                  }
                 >
-                  ✓ 采用此版本
+                  {expanded ? '收起' : `查看全部 ${group.items.length} 个口径`}
+                </button>
+              )}
+
+              {/* 整份判定 · 主操作 */}
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg bg-emerald-100 px-2 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-200"
+                  onClick={() => void handleAcceptSide(group, 'a')}
+                  title="把这份资料里全部 N 个数值都设为数据中心当前真值；另一份对应数值进入归档"
+                >
+                  以 A 为准 ({group.items.length})
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-emerald-100 px-2 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-200"
+                  onClick={() => void handleAcceptSide(group, 'b')}
+                  title="把这份资料里全部 N 个数值都设为数据中心当前真值；另一份对应数值进入归档"
+                >
+                  以 B 为准 ({group.items.length})
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-slate-100 px-2 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-200"
+                  onClick={() => void handleKeepBothGroup(group)}
+                  title="两份口径都保留（视为合理并存，AI 回答时会同时引用两份）"
+                >
+                  两份都保留
                 </button>
               </div>
 
-              {/* 右侧 · 资料 B */}
-              <div className="rounded-xl bg-white/90 px-2.5 py-2 ring-1 ring-slate-200">
-                <FileMetaLine
-                  fileName={item.docBFileName}
-                  importedAt={item.docBImportedAt}
-                  sizeBytes={item.docBSizeBytes}
-                />
-                <p className="mt-1.5 text-[13px] font-black text-slate-800">{item.valueB}</p>
-                {item.evidenceB && (
-                  <p className="mt-1 line-clamp-2 text-[10px] font-medium text-slate-500" title={item.evidenceB}>
-                    "{item.evidenceB.trim()}"
-                  </p>
-                )}
-                <button
-                  type="button"
-                  className="mt-2 w-full rounded-lg bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
-                  onClick={() => handleAccept(item.id, item.factBId)}
-                  title="采用此版本，自动归档另一份；未来 AI 不再用旧值回答"
-                >
-                  ✓ 采用此版本
-                </button>
-              </div>
+              {/* 逐项判定 · 次要操作（折叠） */}
+              {group.items.length > 1 && (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-[10px] font-bold text-slate-500 hover:text-slate-700">
+                    分别判定每个口径…
+                  </summary>
+                  <div className="mt-2 space-y-1.5">
+                    {group.items.map((it) => (
+                      <div
+                        key={`detail-${it.id}`}
+                        className="rounded-lg bg-white/60 px-2 py-1.5"
+                      >
+                        <p className="text-[10px] font-bold text-slate-600">
+                          {it.subjectText} · {it.attribute}
+                        </p>
+                        <div className="mt-1 flex gap-2">
+                          <button
+                            type="button"
+                            className="flex-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100"
+                            onClick={() => void handleAcceptPerField(it, 'a')}
+                          >
+                            A: {it.valueA}
+                          </button>
+                          <button
+                            type="button"
+                            className="flex-1 rounded-md bg-sky-50 px-2 py-1 text-[10px] font-bold text-sky-700 hover:bg-sky-100"
+                            onClick={() => void handleAcceptPerField(it, 'b')}
+                          >
+                            B: {it.valueB}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
-
-            <div className="mt-2 flex justify-end">
-              <button
-                type="button"
-                className="rounded-lg bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600 hover:bg-slate-200"
-                onClick={() => handleKeepBoth(item.id)}
-                title="两份都不是错的，只是不同时点/不同场景的描述，保持两份都活跃"
-              >
-                两份都保留（不是矛盾）
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
