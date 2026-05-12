@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import logging
 from io import BytesIO
 import re
 import shutil
@@ -24,6 +25,8 @@ from app.services.data_center_access import (
 )
 from app.services.knowledge_base import append_file_reclass_event, get_vector_runtime_status
 from app.services.workspace_relation_docs import materialize_workspace_relation_documents
+
+logger = logging.getLogger(__name__)
 
 try:
     from pypdf import PdfReader
@@ -1921,6 +1924,28 @@ def ingest_document_knowledge(
                     ),
                 )
                 chunk_count += 1
+                # 迭代 2：规则层实体抽取（不阻塞、不调用 LLM）。
+                # 失败只记日志不打断入库——下次 backfill 会补上。
+                try:
+                    from app.services.entity_extractor import extract_entities_from_chunk
+                    from app.services.entity_store import persist_chunk_entities
+
+                    extracted = extract_entities_from_chunk(chunk["content"])
+                    if extracted:
+                        persist_chunk_entities(
+                            db.conn,
+                            client_id=client_id,
+                            v2_document_id=v2_document_id,
+                            v2_chunk_id=chunk_id,
+                            extracted=extracted,
+                            now=created_at,
+                        )
+                except Exception:
+                    logger.exception(
+                        "entity extraction failed for chunk %s (doc=%s)",
+                        chunk_id,
+                        document_id,
+                    )
 
     db.execute(
         """

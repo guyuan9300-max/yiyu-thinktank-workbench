@@ -1733,6 +1733,35 @@ export interface ActionSuggestion {
   targetRefs: ProposalTargetRef[];
 }
 
+export type EntityType =
+  | 'person'
+  | 'company'
+  | 'project'
+  | 'product'
+  | 'competitor'
+  | 'amount'
+  | 'date';
+
+export interface Entity {
+  id: string;
+  clientId: string;
+  entityType: EntityType;
+  normalizedName: string;
+  displayName: string;
+  aliases: string[];
+  attributes: Record<string, string>;
+  mentionCount: number;
+  confidence: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  status: 'active' | 'merged' | 'deleted';
+}
+
+export interface EntityListResponse {
+  entities: Entity[];
+  total: number;
+}
+
 export interface DataCenterSearchHit {
   title: string;
   excerpt: string;

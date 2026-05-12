@@ -2081,8 +2081,59 @@ class Database:
                     document_role,
                     tokenize = 'unicode61'
                 );
+
+                -- 迭代 2：跨文档实体抽取
+                -- entities = 客户范围内归一化后的实体（person / company / project / product /
+                -- competitor / amount / date）；同 (client_id, entity_type, normalized_name) 唯一
+                CREATE TABLE IF NOT EXISTS entities (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    attributes_json TEXT NOT NULL DEFAULT '{}',
+                    mention_count INTEGER NOT NULL DEFAULT 0,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_client_type_name
+                    ON entities(client_id, entity_type, normalized_name);
+                CREATE INDEX IF NOT EXISTS idx_entities_client_status
+                    ON entities(client_id, status);
+                CREATE INDEX IF NOT EXISTS idx_entities_last_seen
+                    ON entities(client_id, last_seen_at DESC);
+
+                -- entity_mentions = 每条实体在某 chunk / 文档里的具体出现
+                CREATE TABLE IF NOT EXISTS entity_mentions (
+                    id TEXT PRIMARY KEY,
+                    entity_id TEXT NOT NULL,
+                    v2_document_id TEXT NOT NULL,
+                    v2_chunk_id TEXT,
+                    mention_text TEXT NOT NULL,
+                    position_start INTEGER,
+                    position_end INTEGER,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+                    FOREIGN KEY(v2_document_id) REFERENCES v2_documents(id) ON DELETE CASCADE,
+                    FOREIGN KEY(v2_chunk_id) REFERENCES v2_chunks(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity
+                    ON entity_mentions(entity_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_entity_mentions_chunk
+                    ON entity_mentions(v2_chunk_id);
+                CREATE INDEX IF NOT EXISTS idx_entity_mentions_doc
+                    ON entity_mentions(v2_document_id);
                 """
             )
+            # 迭代 2：v2_chunks 追加 entity_ids_json 字段（JSON 数组）
+            self._ensure_column("v2_chunks", "entity_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("documents", "original_source_path", "TEXT")
             self._ensure_column("client_folders", "folder_kind", "TEXT NOT NULL DEFAULT 'business'")
             self._ensure_column("client_folders", "source_type", "TEXT NOT NULL DEFAULT 'legacy'")

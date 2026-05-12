@@ -219,6 +219,8 @@ import type {
   JudgmentConfirmPayload,
   JudgmentVersion,
   ConflictGroup,
+  Entity,
+  EntityListResponse,
   OpenQuestion,
   OrgWritingNorm,
   OrgFeishuIntegration,
@@ -1477,6 +1479,32 @@ export async function getClientRuntimeRunLogs(clientId: string) {
   return request<RuntimeRunLog[]>(`/api/v1/clients/${clientId}/runtime-run-logs`);
 }
 
+export async function getClientEntities(
+  clientId: string,
+  options: {
+    type?:
+      | 'person'
+      | 'company'
+      | 'project'
+      | 'product'
+      | 'competitor'
+      | 'amount'
+      | 'date';
+    q?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<EntityListResponse> {
+  const params = new URLSearchParams();
+  if (options.type) params.set('type', options.type);
+  if (options.q) params.set('q', options.q);
+  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
+  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
+  const suffix = params.toString();
+  const url = `/api/v1/clients/${clientId}/entities${suffix ? `?${suffix}` : ''}`;
+  return request<EntityListResponse>(url);
+}
+
 export async function getAnalysisMigrationMetrics() {
   return request<AnalysisMigrationMetrics>('/api/v1/runtime/analysis-migration-metrics');
 }
@@ -2207,6 +2235,13 @@ export async function getClientMessage(clientId: string, messageId: string) {
 
 export async function getClientChatThread(clientId: string, threadId: string) {
   return request<ChatThreadDetailResponse>(`/api/v1/clients/${clientId}/workspace/chat/threads/${threadId}`);
+}
+
+export async function deleteClientChatMessagePair(clientId: string, messageId: string) {
+  return request<{ clientId: string; threadId: string; deletedIds: string[]; threadDeleted: boolean }>(
+    `/api/v1/clients/${clientId}/workspace/chat/messages/${messageId}`,
+    { method: 'DELETE' },
+  );
 }
 
 export async function getClientAnalysisRun(clientId: string, runId: string) {

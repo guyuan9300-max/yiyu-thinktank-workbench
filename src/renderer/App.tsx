@@ -445,6 +445,7 @@ import { GrowthCenterView } from './components/handbook/GrowthCenterView';
 import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSettingsCard';
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
+import { EntityListPanel } from './components/client_workspace/EntityListPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
@@ -19930,6 +19931,7 @@ export default function App() {
                           void refreshWorkspace(currentClientId);
                         }}
                       />
+                      {currentClientId && <EntityListPanel clientId={currentClientId} />}
                     </>
                   );
                 })()}

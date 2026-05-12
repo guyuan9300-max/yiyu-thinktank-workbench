@@ -3675,6 +3675,43 @@ class LlmProviderProbeResultRecord(BaseModel):
     results: list[LlmHealthcheckRecord] = Field(default_factory=list)
 
 
+class EntityRecord(BaseModel):
+    """迭代 2：跨文档实体（person / company / project / product / competitor /
+    amount / date）。
+
+    所有实体按 client_id 隔离。同 (client_id, entity_type, normalized_name)
+    在 DB 层是 UNIQUE，二次入库只增 mention_count。
+    """
+
+    id: str
+    clientId: str
+    entityType: Literal[
+        "person",
+        "company",
+        "project",
+        "product",
+        "competitor",
+        "amount",
+        "date",
+    ]
+    normalizedName: str
+    displayName: str
+    aliases: list[str] = Field(default_factory=list)
+    attributes: dict[str, str] = Field(default_factory=dict)
+    mentionCount: int = 0
+    confidence: float = 0.0
+    firstSeenAt: str
+    lastSeenAt: str
+    status: Literal["active", "merged", "deleted"] = "active"
+
+
+class EntityListResponseRecord(BaseModel):
+    """GET /api/v1/clients/{id}/entities 响应。"""
+
+    entities: list[EntityRecord] = Field(default_factory=list)
+    total: int = 0
+
+
 class DataCenterSearchHitRecord(BaseModel):
     title: str
     excerpt: str

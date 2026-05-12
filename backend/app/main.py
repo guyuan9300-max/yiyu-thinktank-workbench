@@ -130,6 +130,8 @@ from app.models import (
     DnaDeltaCreatePayload,
     DnaDeltaRecord,
     DocumentReadingPreviewRecord,
+    EntityListResponseRecord,
+    EntityRecord,
     EvidenceItem,
     ExportAnswerPayload,
     JudgmentConfirmPayload,
@@ -32232,6 +32234,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def get_client_runtime_run_logs(client_id: str) -> list[RuntimeRunLogRecord]:
         build_client_summary(client_id)
         return list_runtime_run_logs(state.db, client_id)
+
+    @app.get("/api/v1/clients/{client_id}/entities", response_model=EntityListResponseRecord)
+    def get_client_entities(
+        client_id: str,
+        type: str | None = None,
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> EntityListResponseRecord:
+        """迭代 2：查询客户范围内的实体（按 type 过滤，可名称模糊搜索）。"""
+        from app.services.entity_store import list_entities as list_entities_db
+
+        build_client_summary(client_id)
+        # 安全：limit 上限 200，避免大查询
+        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
+        rows, total = list_entities_db(
+            state.db.conn,
+            client_id=client_id,
+            entity_type=type or None,
+            name_query=q or None,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        return EntityListResponseRecord(
+            entities=[
+                EntityRecord(
+                    id=row.id,
+                    clientId=row.client_id,
+                    entityType=row.entity_type,  # type: ignore[arg-type]
+                    normalizedName=row.normalized_name,
+                    displayName=row.display_name,
+                    aliases=row.aliases,
+                    attributes={k: str(v) for k, v in row.attributes.items()},
+                    mentionCount=row.mention_count,
+                    confidence=row.confidence,
+                    firstSeenAt=row.first_seen_at,
+                    lastSeenAt=row.last_seen_at,
+                    status=row.status,  # type: ignore[arg-type]
+                )
+                for row in rows
+            ],
+            total=total,
+        )
 
     @app.get("/api/v1/runtime/analysis-migration-metrics", response_model=AnalysisMigrationMetricsRecord)
     def get_analysis_migration_metrics_endpoint() -> AnalysisMigrationMetricsRecord:
