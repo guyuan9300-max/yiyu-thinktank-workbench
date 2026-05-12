@@ -3748,6 +3748,18 @@ class DataCenterSearchHitRecord(BaseModel):
     versionChainId: str | None = None
     lifecycleStatus: Literal["current", "superseded", "deleted"] | None = None
     chainTotalVersions: int | None = None
+    # 迭代 4：chunk 语义类型聚合到 doc 级（最多/置信度最高的代表性类型）
+    semanticType: Literal[
+        "fact",
+        "judgment",
+        "opinion",
+        "action",
+        "question",
+        "conclusion",
+        "background",
+        "unclassified",
+    ] | None = None
+    semanticConfidence: float | None = None
 
 
 class DataCenterSearchResultRecord(BaseModel):

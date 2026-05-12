@@ -101,6 +101,38 @@ function FreshnessBadge({ display }: { display: FreshnessDisplay }) {
   );
 }
 
+interface SemanticMeta {
+  label: string;
+  tone: string;
+  icon: string;
+}
+
+const SEMANTIC_META: Record<string, SemanticMeta> = {
+  fact: { label: '事实', tone: 'border-emerald-100 bg-emerald-50 text-emerald-700', icon: '✓' },
+  judgment: { label: '判断', tone: 'border-violet-100 bg-violet-50 text-violet-700', icon: '💭' },
+  opinion: { label: '观点', tone: 'border-slate-100 bg-slate-50 text-slate-600', icon: '💡' },
+  action: { label: '行动', tone: 'border-sky-100 bg-sky-50 text-sky-700', icon: '→' },
+  question: { label: '提问', tone: 'border-amber-100 bg-amber-50 text-amber-700', icon: '?' },
+  conclusion: { label: '结论', tone: 'border-rose-100 bg-rose-50 text-rose-700', icon: '⊕' },
+  background: { label: '背景', tone: 'border-gray-100 bg-gray-50 text-gray-500', icon: 'i' },
+};
+
+function SemanticBadge({ hit }: { hit: DataCenterSearchHit }) {
+  const semanticType = hit.semanticType;
+  if (!semanticType || semanticType === 'unclassified') return null;
+  const meta = SEMANTIC_META[semanticType];
+  if (!meta) return null;
+  const conf = typeof hit.semanticConfidence === 'number' ? Math.round(hit.semanticConfidence * 100) : null;
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${meta.tone}`}
+      title={conf !== null ? `${meta.label}（置信度 ${conf}%）` : meta.label}
+    >
+      {meta.icon} {meta.label}
+    </span>
+  );
+}
+
 function VersionBadge({ hit }: { hit: DataCenterSearchHit }) {
   const versionNumber = typeof hit.versionNumber === 'number' ? hit.versionNumber : null;
   const chainTotal = typeof hit.chainTotalVersions === 'number' ? hit.chainTotalVersions : 1;
@@ -193,6 +225,7 @@ function SearchGroupCard({
             )}
             {freshnessDisplay && <FreshnessBadge display={freshnessDisplay} />}
             <VersionBadge hit={hit} />
+            <SemanticBadge hit={hit} />
           </div>
           <p className="mt-2 text-[13px] font-bold leading-snug text-slate-900 line-clamp-2">{titleForHit(hit)}</p>
           {sourceLineForHit(hit) && <p className="mt-1 text-[11px] font-semibold text-slate-400">{sourceLineForHit(hit)}</p>}

@@ -2201,6 +2201,14 @@ class Database:
             self._ensure_column("imports", "duplicate_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("imports", "unsupported_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("imports", "version_upgrade_count", "INTEGER NOT NULL DEFAULT 0")
+            # 迭代 4：chunk 语义分类。fact / judgment / opinion / action /
+            # question / conclusion / background / unclassified
+            self._ensure_column("v2_chunks", "semantic_type", "TEXT NOT NULL DEFAULT 'unclassified'")
+            self._ensure_column("v2_chunks", "semantic_confidence", "REAL NOT NULL DEFAULT 0.0")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_v2_chunks_semantic_type "
+                "ON v2_chunks(v2_document_id, semantic_type)"
+            )
             self._ensure_column("v2_documents", "markdown_path", "TEXT")
             self._ensure_column("v2_documents", "markdown_content", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("answer_runs", "retrieval_mode", "TEXT NOT NULL DEFAULT 'legacy'")

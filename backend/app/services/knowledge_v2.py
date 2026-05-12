@@ -1961,6 +1961,21 @@ def ingest_document_knowledge(
                         chunk_id,
                         document_id,
                     )
+                # 迭代 4：chunk 语义分类（规则层，不阻塞）
+                try:
+                    from app.services.semantic_classifier import classify_chunk_semantic
+
+                    semantic = classify_chunk_semantic(chunk["content"])
+                    db.execute(
+                        "UPDATE v2_chunks SET semantic_type = ?, semantic_confidence = ? WHERE id = ?",
+                        (semantic.semantic_type, semantic.confidence, chunk_id),
+                    )
+                except Exception:
+                    logger.exception(
+                        "semantic classification failed for chunk %s (doc=%s)",
+                        chunk_id,
+                        document_id,
+                    )
 
     db.execute(
         """

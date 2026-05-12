@@ -524,7 +524,11 @@ from app.services.answer_layer import (
     should_include_answer_boundary,
     should_include_answer_next_actions,
 )
-from app.services.data_center_kernel import resolve_data_center_kernel, set_version_info_lookup
+from app.services.data_center_kernel import (
+    resolve_data_center_kernel,
+    set_semantic_info_lookup,
+    set_version_info_lookup,
+)
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
     build_consultant_synthesis_material_pack,
@@ -2615,6 +2619,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         }
 
     set_version_info_lookup(_lookup_version_info_for_kernel)
+
+    # 迭代 4：把"代表性语义类型"查找注入 data_center_kernel。
+    # 每份文档的 chunks 可能跨多种语义类型，这里取"出现次数最多、置信度
+    # 最高"的那一档作为 doc 级代表，给前端引证面板的类型徽章用。
+    def _lookup_semantic_info_for_kernel(document_id: str) -> dict[str, object]:
+        row = state.db.fetchone(
+            """
+            SELECT vc.semantic_type AS semantic_type,
+                   AVG(vc.semantic_confidence) AS avg_conf,
+                   COUNT(1) AS hit_count
+            FROM v2_chunks vc
+            JOIN v2_documents vd ON vd.id = vc.v2_document_id
+            WHERE vd.document_id = ?
+              AND vc.semantic_type IS NOT NULL
+              AND vc.semantic_type != 'unclassified'
+            GROUP BY vc.semantic_type
+            ORDER BY hit_count DESC, avg_conf DESC
+            LIMIT 1
+            """,
+            (document_id,),
+        )
+        if not row or not row["semantic_type"]:
+            return {}
+        return {
+            "semanticType": str(row["semantic_type"]),
+            "semanticConfidence": float(row["avg_conf"] or 0.0),
+        }
+
+    set_semantic_info_lookup(_lookup_semantic_info_for_kernel)
 
     def _safe_data_center_ingest(label: str, callback) -> None:
         try:

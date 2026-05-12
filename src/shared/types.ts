@@ -1793,6 +1793,17 @@ export interface DataCenterSearchHit {
   versionChainId?: string | null;
   lifecycleStatus?: 'current' | 'superseded' | 'deleted' | null;
   chainTotalVersions?: number | null;
+  semanticType?:
+    | 'fact'
+    | 'judgment'
+    | 'opinion'
+    | 'action'
+    | 'question'
+    | 'conclusion'
+    | 'background'
+    | 'unclassified'
+    | null;
+  semanticConfidence?: number | null;
 }
 
 export interface DataCenterSearchResult {

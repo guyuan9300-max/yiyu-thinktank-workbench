@@ -225,6 +225,7 @@ def _to_search_hit(
         createdAt=item.createdAt,
         docType=item.docType,
         **_lookup_version_info(item.documentId),
+        **_lookup_semantic_info(item.documentId),
     )
 
 
@@ -245,6 +246,26 @@ def _lookup_version_info(document_id: str | None) -> dict[str, object]:
         return {}
     try:
         result = _version_info_lookup(document_id)
+        return result or {}
+    except Exception:
+        return {}
+
+
+# 迭代 4：chunk 语义类型聚合到 doc 级的注入点
+_semantic_info_lookup: Any = None
+
+
+def set_semantic_info_lookup(fn: Any) -> None:
+    """由 main.py 注入：按 documentId 返回 (semanticType, semanticConfidence)。"""
+    global _semantic_info_lookup
+    _semantic_info_lookup = fn
+
+
+def _lookup_semantic_info(document_id: str | None) -> dict[str, object]:
+    if not document_id or _semantic_info_lookup is None:
+        return {}
+    try:
+        result = _semantic_info_lookup(document_id)
         return result or {}
     except Exception:
         return {}
