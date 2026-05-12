@@ -6733,6 +6733,49 @@ export interface ObjectStorageTestResult {
   latencyMs?: number | null;
 }
 
+// === I1b-2：本地 ASR（SenseVoice via sherpa-onnx）===
+
+export interface LocalAsrModelStatus {
+  modelName: string;
+  installed: boolean;
+  modelDir: string;
+  sizeBytes: number;
+  downloadInProgress: boolean;
+  downloadBytesDownloaded: number;
+  downloadBytesTotal: number;
+  downloadCurrentFile: string;
+  downloadCompleted: boolean;
+  downloadError?: string | null;
+  downloadElapsedSeconds: number;
+}
+
+export interface LocalAsrDownloadStartResponse {
+  started: boolean;
+  message: string;
+}
+
+export interface LocalAsrDownloadCancelResponse {
+  cancelled: boolean;
+}
+
+export interface LocalAsrTranscriptionSegment {
+  startMs: number;
+  endMs: number;
+  text: string;
+  emotion?: string | null;
+  event?: string | null;
+}
+
+export interface LocalAsrTestTranscriptionResponse {
+  success: boolean;
+  text: string;
+  durationMs: number;
+  elapsedMs: number;
+  language: string;
+  segments: LocalAsrTranscriptionSegment[];
+  errorMessage?: string | null;
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // 报告生成器（与 backend/app/models.py R0.5 模型一一对应；
 // 因后端 Pydantic 用 snake_case 字段、未加 alias_generator，前端类型保持 snake_case）

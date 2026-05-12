@@ -349,6 +349,13 @@ from app.models import (
     TaskPayload,
     TaskRecord,
     TaskRejectPayload,
+    LocalAsrDownloadCancelResponse,
+    LocalAsrDownloadStartPayload,
+    LocalAsrDownloadStartResponse,
+    LocalAsrModelStatusResponse,
+    LocalAsrTestTranscriptionPayload,
+    LocalAsrTestTranscriptionResponse,
+    LocalAsrTranscriptionSegmentRecord,
     ObjectStorageSettingsPayload,
     ObjectStorageSettingsRecord,
     ObjectStorageTestResult,
@@ -4975,11 +4982,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if session_user is None:
             return [ReviewPerspectiveOptionRecord(key="mine", label="我的视角")]
         if viewer_role == "admin":
-            return [
+            options: list[ReviewPerspectiveOptionRecord] = [
                 ReviewPerspectiveOptionRecord(key="organization", label="组织视角"),
-                ReviewPerspectiveOptionRecord(key="department", label="部门视角"),
-                ReviewPerspectiveOptionRecord(key="mine", label="我的视角"),
             ]
+            # Expand one "department" option per department so admin can switch via dropdown.
+            for dept in (governance.departments if governance is not None else []):
+                options.append(
+                    ReviewPerspectiveOptionRecord(
+                        key="department",
+                        label=f"部门视角 · {dept.name}" if dept.name else "部门视角",
+                        departmentId=dept.id,
+                        departmentName=dept.name,
+                    )
+                )
+            options.append(ReviewPerspectiveOptionRecord(key="mine", label="我的视角"))
+            return options
         lead_department = _review_department_for_session_user(session_user, governance) if governance is not None else None
         if viewer_role == "department_lead" and lead_department is not None:
             return [
@@ -30805,6 +30822,100 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             detail=result.detail,
             latencyMs=result.latency_ms,
         )
+
+    # === I1b-2：本地 ASR (SenseVoice via sherpa-onnx) ===
+
+    @app.get("/api/v1/local-asr/model/status", response_model=LocalAsrModelStatusResponse)
+    def get_local_asr_model_status() -> LocalAsrModelStatusResponse:
+        """模型当前状态：是否安装 + 下载进度 + 大小 + 路径"""
+        from app.services.local_asr.model_paths import (
+            DEFAULT_MODEL_NAME,
+            get_model_dir,
+            is_model_ready,
+            total_size_bytes,
+        )
+        from app.services.local_asr.model_downloader import get_download_manager
+
+        model_dir = get_model_dir(DEFAULT_MODEL_NAME)
+        installed = is_model_ready(DEFAULT_MODEL_NAME)
+        size = total_size_bytes(DEFAULT_MODEL_NAME)
+        progress = get_download_manager().status()
+        return LocalAsrModelStatusResponse(
+            modelName=DEFAULT_MODEL_NAME,
+            installed=installed,
+            modelDir=str(model_dir),
+            sizeBytes=size,
+            downloadInProgress=progress.in_progress,
+            downloadBytesDownloaded=progress.bytes_downloaded,
+            downloadBytesTotal=progress.bytes_total,
+            downloadCurrentFile=progress.current_file,
+            downloadCompleted=progress.completed,
+            downloadError=progress.error_message,
+            downloadElapsedSeconds=progress.elapsed_seconds,
+        )
+
+    @app.post("/api/v1/local-asr/model/download", response_model=LocalAsrDownloadStartResponse)
+    def start_local_asr_model_download(
+        payload: LocalAsrDownloadStartPayload | None = None,
+    ) -> LocalAsrDownloadStartResponse:
+        """异步启动下载。返回是否成功开始 + 消息。前端轮询 status 取进度。"""
+        from app.services.local_asr.model_downloader import get_download_manager
+        from app.services.local_asr.model_paths import DEFAULT_MODEL_NAME
+
+        prefer_mirror = True if payload is None else bool(payload.preferMirror)
+        manager = get_download_manager()
+        started, message = manager.start_download(
+            model_name=DEFAULT_MODEL_NAME,
+            prefer_mirror=prefer_mirror,
+        )
+        return LocalAsrDownloadStartResponse(started=started, message=message)
+
+    @app.post("/api/v1/local-asr/model/cancel", response_model=LocalAsrDownloadCancelResponse)
+    def cancel_local_asr_model_download() -> LocalAsrDownloadCancelResponse:
+        """请求取消下载。返回是否真的设置了取消标志（仅在下载中时返回 true）。"""
+        from app.services.local_asr.model_downloader import get_download_manager
+
+        cancelled = get_download_manager().cancel()
+        return LocalAsrDownloadCancelResponse(cancelled=cancelled)
+
+    @app.post("/api/v1/local-asr/transcribe-test", response_model=LocalAsrTestTranscriptionResponse)
+    def transcribe_test_local_asr(payload: LocalAsrTestTranscriptionPayload) -> LocalAsrTestTranscriptionResponse:
+        """测试转写：给一个本地音频文件路径，跑 SenseVoice 推理返回文本 + 耗时。
+
+        I1b-2 的 UI 验证用：用户配置完模型后能在系统设置里测一段已有音频。
+        I1b-3 才会做用户上传录音的完整 ingest 链路。
+        """
+        from app.services.local_asr.sense_voice_provider import transcribe_local_audio
+
+        try:
+            result = transcribe_local_audio(payload.audioPath)
+            return LocalAsrTestTranscriptionResponse(
+                success=True,
+                text=result.text,
+                durationMs=result.duration_ms,
+                elapsedMs=result.elapsed_ms,
+                language=result.language,
+                segments=[
+                    LocalAsrTranscriptionSegmentRecord(
+                        startMs=seg.start_ms,
+                        endMs=seg.end_ms,
+                        text=seg.text,
+                        emotion=seg.emotion,
+                        event=seg.event,
+                    )
+                    for seg in result.segments
+                ],
+            )
+        except FileNotFoundError as exc:
+            return LocalAsrTestTranscriptionResponse(
+                success=False,
+                errorMessage=str(exc),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return LocalAsrTestTranscriptionResponse(
+                success=False,
+                errorMessage=f"{exc.__class__.__name__}：{exc}",
+            )
 
     @app.get("/api/v1/settings/org-dna", response_model=OrganizationDnaResponse)
     def get_organization_dna() -> OrganizationDnaResponse:

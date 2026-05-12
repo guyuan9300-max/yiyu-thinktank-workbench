@@ -7816,3 +7816,54 @@ class ObjectStorageTestResult(BaseModel):
     message: str = ""
     detail: str | None = None
     latencyMs: float | None = None
+
+
+# === I1b-2：本地 ASR (SenseVoice via sherpa-onnx) ===
+
+class LocalAsrModelStatusResponse(BaseModel):
+    modelName: str
+    installed: bool
+    modelDir: str
+    sizeBytes: int = 0
+    downloadInProgress: bool = False
+    downloadBytesDownloaded: int = 0
+    downloadBytesTotal: int = 0
+    downloadCurrentFile: str = ""
+    downloadCompleted: bool = False
+    downloadError: str | None = None
+    downloadElapsedSeconds: float = 0.0
+
+
+class LocalAsrDownloadStartPayload(BaseModel):
+    preferMirror: bool = True
+
+
+class LocalAsrDownloadStartResponse(BaseModel):
+    started: bool
+    message: str = ""
+
+
+class LocalAsrDownloadCancelResponse(BaseModel):
+    cancelled: bool
+
+
+class LocalAsrTestTranscriptionPayload(BaseModel):
+    audioPath: str
+
+
+class LocalAsrTranscriptionSegmentRecord(BaseModel):
+    startMs: int
+    endMs: int
+    text: str
+    emotion: str | None = None
+    event: str | None = None
+
+
+class LocalAsrTestTranscriptionResponse(BaseModel):
+    success: bool
+    text: str = ""
+    durationMs: int = 0
+    elapsedMs: float = 0.0
+    language: str = ""
+    segments: list[LocalAsrTranscriptionSegmentRecord] = Field(default_factory=list)
+    errorMessage: str | None = None

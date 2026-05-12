@@ -53,6 +53,19 @@ export interface SpeechProviderDescriptor {
 
 export const SPEECH_MODEL_PROVIDERS: SpeechProviderDescriptor[] = [
   {
+    id: 'local_sensevoice',
+    label: '本地 · SenseVoice（达摩院 · 推荐 ⭐）',
+    supported: true,
+    description:
+      '阿里达摩院 SenseVoice-Small（约 240MB 模型，按需下载）。完全本地推理，音频不出本机，无需对象存储。' +
+      '中文场景准确率优于火山豆包标准版；M 系列 Mac 上 1 小时录音约 20-40 秒转完。',
+    credentialFields: [],
+    models: [
+      { id: 'sense-voice-small', label: 'SenseVoice-Small (int8 量化版)', description: '约 240MB · sherpa-onnx 后端 · 支持中英日韩粤五语' },
+    ],
+    extraFields: [],
+  },
+  {
     id: 'volcano',
     label: '火山引擎（豆包大模型录音文件识别）',
     supported: true,

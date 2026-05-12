@@ -10,6 +10,7 @@ import {
   SPEECH_MODEL_PROVIDERS,
   findSpeechProvider,
 } from '../../../shared/speechModelProviders';
+import { LocalAsrModelPanel } from './LocalAsrModelPanel';
 
 interface SpeechModelSettingsCardProps {
   settings: SpeechModelSettings | null;
@@ -176,7 +177,13 @@ export function SpeechModelSettingsCard({
         )}
       </div>
 
-      {descriptor && (
+      {descriptor && descriptor.id === 'local_sensevoice' && (
+        <div className="border-t border-gray-100 pt-4">
+          <LocalAsrModelPanel canEdit={canEdit} />
+        </div>
+      )}
+
+      {descriptor && descriptor.credentialFields.length > 0 && (
         <>
           <div className="space-y-3 border-t border-gray-100 pt-4">
             <p className="text-[12px] font-bold text-gray-700">鉴权凭证</p>

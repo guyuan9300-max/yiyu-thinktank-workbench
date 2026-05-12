@@ -190,6 +190,10 @@ import type {
   TaskTagSuggestionPayload,
   TaskMutationPayload,
   TaskListMutationPayload,
+  LocalAsrDownloadCancelResponse,
+  LocalAsrDownloadStartResponse,
+  LocalAsrModelStatus,
+  LocalAsrTestTranscriptionResponse,
   ObjectStorageSettings,
   ObjectStorageSettingsPayload,
   ObjectStorageTestResult,
@@ -1121,6 +1125,32 @@ export async function testObjectStorageSettings(payload: ObjectStorageSettingsPa
   return request<ObjectStorageTestResult>('/api/v1/settings/object-storage/test', {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+// === I1b-2：本地 ASR ===
+
+export async function getLocalAsrModelStatus() {
+  return request<LocalAsrModelStatus>('/api/v1/local-asr/model/status');
+}
+
+export async function startLocalAsrModelDownload(preferMirror = true) {
+  return request<LocalAsrDownloadStartResponse>('/api/v1/local-asr/model/download', {
+    method: 'POST',
+    body: JSON.stringify({ preferMirror }),
+  });
+}
+
+export async function cancelLocalAsrModelDownload() {
+  return request<LocalAsrDownloadCancelResponse>('/api/v1/local-asr/model/cancel', {
+    method: 'POST',
+  });
+}
+
+export async function transcribeTestLocalAsr(audioPath: string) {
+  return request<LocalAsrTestTranscriptionResponse>('/api/v1/local-asr/transcribe-test', {
+    method: 'POST',
+    body: JSON.stringify({ audioPath }),
   });
 }
 
