@@ -2348,6 +2348,34 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_document_path_optimizations_kd
                     ON document_path_optimizations(knowledge_document_id);
 
+                -- 修复：补建 local_model_tasks 表（local_model_optimizer 用）
+                CREATE TABLE IF NOT EXISTS local_model_tasks (
+                    id TEXT PRIMARY KEY,
+                    task_type TEXT NOT NULL,
+                    client_id TEXT NOT NULL DEFAULT '',
+                    knowledge_document_id TEXT NOT NULL DEFAULT '',
+                    model_profile_id TEXT NOT NULL DEFAULT '',
+                    model_name TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    last_error TEXT,
+                    locked_by TEXT,
+                    locked_at TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(task_type, knowledge_document_id, input_hash)
+                );
+                CREATE INDEX IF NOT EXISTS idx_local_model_tasks_status
+                    ON local_model_tasks(status, priority DESC, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_local_model_tasks_client
+                    ON local_model_tasks(client_id, status);
+
                 -- 迭代 7：客户私有术语库
                 -- term: 原始术语；normalized_term: 归一化（用于 dedup + 查找）
                 -- definition: 术语含义解释；aliases: 别名列表（用于检索时召回）
@@ -3087,6 +3115,26 @@ class Database:
                 """
                 INSERT OR IGNORE INTO speech_model_settings(id, provider, credentials_json, model_id, extra_config_json, enabled, updated_at)
                 VALUES (1, '', '{}', '', '{}', 0, '')
+                """
+            )
+            # 对象存储配置（I1b-1）：单行 org 级，承载音频文件中转所需的桶/凭证
+            # 用 JSON 字段灵活承载，未来扩展阿里 OSS / AWS S3 等只需新建 provider 不动 schema
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS object_storage_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    provider TEXT NOT NULL DEFAULT '',
+                    credentials_json TEXT NOT NULL DEFAULT '{}',
+                    extra_config_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO object_storage_settings(id, provider, credentials_json, extra_config_json, enabled, updated_at)
+                VALUES (1, '', '{}', '{}', 0, '')
                 """
             )
             # ───────────────────────────────────────────────────────────────
