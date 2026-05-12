@@ -24,6 +24,83 @@ function supportClass(level: FileSearchDisplayGroup['supportLevel']): string {
   return 'bg-gray-50 text-gray-500 border-gray-100';
 }
 
+interface FreshnessDisplay {
+  ageLabel: string;
+  scoreLabel: string;
+  toneClass: string;
+  title: string;
+}
+
+function formatAgeLabel(createdAt: string): string | null {
+  const parsed = new Date(createdAt);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const now = Date.now();
+  const diffMs = now - parsed.getTime();
+  if (diffMs < 0) return '刚刚';
+  const day = 24 * 60 * 60 * 1000;
+  const days = diffMs / day;
+  if (days < 1) return '今天';
+  if (days < 7) return `${Math.floor(days)} 天前`;
+  if (days < 30) return `${Math.floor(days / 7)} 周前`;
+  if (days < 365) return `${Math.floor(days / 30)} 个月前`;
+  const years = days / 365;
+  if (years < 10) {
+    return `${years.toFixed(1)} 年前`;
+  }
+  return `${Math.floor(years)} 年前`;
+}
+
+function freshnessTone(score: number): { toneClass: string; descriptor: string } {
+  if (score >= 0.8) return { toneClass: 'border-emerald-100 bg-emerald-50 text-emerald-700', descriptor: '新鲜' };
+  if (score >= 0.5) return { toneClass: 'border-sky-100 bg-sky-50 text-sky-700', descriptor: '尚新' };
+  if (score >= 0.25) return { toneClass: 'border-amber-100 bg-amber-50 text-amber-700', descriptor: '已衰减' };
+  return { toneClass: 'border-rose-100 bg-rose-50 text-rose-700', descriptor: '过期' };
+}
+
+function describeDocType(docType: string | null | undefined): string {
+  if (!docType) return '默认半衰期 90 天';
+  const map: Record<string, string> = {
+    news: '新闻类 · 半衰期 30 天',
+    client_judgment: '客户判断 · 半衰期 90 天',
+    meeting_minutes: '会议纪要 · 半衰期 90 天',
+    meeting_note: '会议笔记 · 半衰期 90 天',
+    meeting_decision: '会议决议 · 半衰期 90 天',
+    evidence_artifact: '证据材料 · 半衰期 180 天',
+    strategy_doc: '战略文档 · 半衰期 180 天',
+    policy_doc: '政策文档 · 半衰期 365 天',
+    background: '背景资料 · 不衰减',
+    default: '默认半衰期 90 天',
+  };
+  return map[docType] ?? `类型 ${docType}`;
+}
+
+function buildFreshnessDisplay(hit: DataCenterSearchHit): FreshnessDisplay | null {
+  const score = typeof hit.freshnessScore === 'number' ? hit.freshnessScore : null;
+  const ageLabel = hit.createdAt ? formatAgeLabel(hit.createdAt) : null;
+  if (score === null && !ageLabel) return null;
+  const safeScore = score === null ? 0.5 : score;
+  const { toneClass, descriptor } = freshnessTone(safeScore);
+  const scoreLabel = score === null ? '时间未知' : `鲜度 ${Math.round(safeScore * 100)}%`;
+  const title = `${descriptor} · ${describeDocType(hit.docType)}${ageLabel ? ` · ${ageLabel}` : ''}`;
+  return {
+    ageLabel: ageLabel ?? '时间未知',
+    scoreLabel,
+    toneClass,
+    title,
+  };
+}
+
+function FreshnessBadge({ display }: { display: FreshnessDisplay }) {
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${display.toneClass}`}
+      title={display.title}
+    >
+      {display.ageLabel} · {display.scoreLabel}
+    </span>
+  );
+}
+
 function titleForHit(hit: DataCenterSearchHit): string {
   return hit.title || '未命名资料';
 }
@@ -68,6 +145,7 @@ function SearchGroupCard({
   const machineReadableFallback = Boolean(hit.machineReadableAvailable || hit.markdownPath || hit.openableKind === 'machine_markdown');
   const openDisabled = Boolean(hit.openOriginalDisabledReason && !machineReadableFallback);
   const openLabel = openLabelForHit(hit, group.layer);
+  const freshnessDisplay = buildFreshnessDisplay(hit);
   return (
     <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -85,6 +163,7 @@ function SearchGroupCard({
                 {group.sourceAvailabilityLabel}
               </span>
             )}
+            {freshnessDisplay && <FreshnessBadge display={freshnessDisplay} />}
           </div>
           <p className="mt-2 text-[13px] font-bold leading-snug text-slate-900 line-clamp-2">{titleForHit(hit)}</p>
           {sourceLineForHit(hit) && <p className="mt-1 text-[11px] font-semibold text-slate-400">{sourceLineForHit(hit)}</p>}

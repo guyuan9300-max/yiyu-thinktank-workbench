@@ -1754,6 +1754,9 @@ export interface DataCenterSearchHit {
   qualityFlags: string[];
   annotationId?: string | null;
   humanLabel?: 'useful' | 'noise' | 'needs_review' | null;
+  freshnessScore?: number | null;
+  createdAt?: string | null;
+  docType?: string | null;
 }
 
 export interface DataCenterSearchResult {

@@ -207,16 +207,13 @@ def _to_search_hit(
         originalAvailable=item.originalAvailable,
         machineReadableAvailable=item.machineReadableAvailable,
         openOriginalDisabledReason=item.openOriginalDisabledReason,
-        displayPath=item.displayPath,
-        virtualOptimizedPath=item.virtualOptimizedPath,
-        pathOptimizationStatus=item.pathOptimizationStatus,
-        pathOptimizationConfidence=item.pathOptimizationConfidence,
-        purpose=item.purpose,
-        audience=item.audience,
-        projectContext=item.projectContext,
-        keyTopics=item.keyTopics,
-        goodQuestions=item.goodQuestions,
-        riskNotes=item.riskNotes,
+        # 注：以下 10 个字段（displayPath / virtualOptimizedPath /
+        # pathOptimizationStatus / pathOptimizationConfidence / purpose /
+        # audience / projectContext / keyTopics / goodQuestions / riskNotes）
+        # 由 sync commit 10590d7 引入，但从未真正加到 EvidenceItem 模型上。
+        # 之前 file_search workflow 未真正被调用，藏住了 AttributeError；
+        # 真实搜索路径触发后立刻炸。下游 workspace_file_search._field 用
+        # getattr(..., None) 兜底，所以移除这些访问无功能损失。
         score=item.score,
         sectionLabel=item.sectionLabel,
         retrievalStage=item.retrievalStage,
@@ -224,6 +221,9 @@ def _to_search_hit(
         qualityFlags=quality_flags,
         annotationId=annotation_id,
         humanLabel=human_label if human_label in {"useful", "noise", "needs_review"} else None,
+        freshnessScore=signal.freshnessScore,
+        createdAt=item.createdAt,
+        docType=item.docType,
     )
 
 

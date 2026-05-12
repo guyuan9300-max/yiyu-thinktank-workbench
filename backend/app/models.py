@@ -3696,6 +3696,12 @@ class DataCenterSearchHitRecord(BaseModel):
     qualityFlags: list[str] = Field(default_factory=list)
     annotationId: str | None = None
     humanLabel: Literal["useful", "noise", "needs_review"] | None = None
+    # 迭代 1 鲜度可视化：把 evidence_quality 算出的衰减后鲜度暴露到前端，
+    # 让用户在引证面板就能看到"这条证据有多老/多新"。
+    # createdAt 为 ISO 8601；docType 对应 freshness_decay.HALF_LIFE_BY_TYPE。
+    freshnessScore: float | None = None
+    createdAt: str | None = None
+    docType: str | None = None
 
 
 class DataCenterSearchResultRecord(BaseModel):
