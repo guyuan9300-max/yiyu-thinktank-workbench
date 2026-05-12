@@ -142,6 +142,7 @@ import type {
   ReviewDashboardCardTarget,
   ReviewDashboardDrillTargetResponse,
   OrgModelSettings,
+  OrgDepartmentPlanSettings,
   SupportRequestRecord,
   StrategicCockpitSnapshot,
   SystemAdminSettings,
@@ -151,6 +152,9 @@ import type {
   TaskContextPreview,
   TaskSmartBrief,
   TaskList,
+  ObjectStorageSettings,
+  ObjectStorageSettingsPayload,
+  ObjectStorageTestResult,
   SpeechModelSettings,
   SpeechModelSettingsPayload,
   SpeechModelTestResult,
@@ -268,6 +272,8 @@ import {
   deleteTaskTag,
   deleteEventLine,
   retryEventLineSync,
+  getTaskPlanLink,
+  patchTaskPlanLink,
   closeEventLine,
   reopenEventLine,
   disableEmployee,
@@ -322,13 +328,15 @@ import {
   getTaskContextBrief,
   getTaskContextBriefsBatch,
   getTaskPageContext,
-  getTaskUnderstanding,
   getTaskSmartBrief,
   getTaskSmartBriefsBatch,
   getTaskSettings,
   getSpeechModelSettings,
   updateSpeechModelSettings,
   testSpeechModelSettings,
+  getObjectStorageSettings,
+  updateObjectStorageSettings,
+  testObjectStorageSettings,
   getTopics,
   getTopicsSettings,
   getCollabRepoStatus,
@@ -446,7 +454,6 @@ import { TaskCalendarView } from './components/tasks/TaskCalendarView';
 import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationCalendarView';
 import { AgentWeeklyPlanEditor } from './components/tasks/AgentWeeklyPlanEditor';
 import { TaskOrgContextPanel } from './components/tasks/TaskOrgContextPanel';
-import { UnderstandingPanel } from './components/tasks/UnderstandingPanel';
 import { WeeklyReviewStructuredFields, composeReviewNoteFromStructuredFields, createEmptyReviewStructuredNote, getSimpleReviewText, hasMeaningfulReviewStructuredNote } from './components/tasks/WeeklyReviewStructuredFields';
 import { reviewStatusLabel, reviewTaskDateLabel, type ReviewTaskRow } from './components/tasks/reviewDraft';
 import { GrowthProvider, notifyGrowthRefresh } from './components/growth/GrowthContext';
@@ -460,6 +467,7 @@ import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
+import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
@@ -660,7 +668,7 @@ function writeStoredActiveWorkingDocuments(clientId: string, docs: ActiveWorking
 }
 
 type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'plan_workshop' | 'settings';
-type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
+type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines' | 'plan';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | 'link_material' | null;
 type SettingsSectionKey = 'overview' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
 type ReviewFormState = {
@@ -995,6 +1003,13 @@ type TaskEditorState = {
   ddl: string;
   tagIds: string[];
   collaborators: MentionCandidate[];
+  planLinkDepartmentId: string;
+  planLinkPeriodKey: string;
+  planLinkPlanItemId: string;
+  planLinkSource: 'unset' | 'ai' | 'manager' | 'none';
+  planLinkConfidence: number;
+  planLinkTouched: boolean;
+  planLinkReason: string;
 };
 
 type StrategicTaskDraftRequest = {
@@ -3208,6 +3223,29 @@ function defaultDueDateFromPreset(preset: TaskSettings['defaultDueDatePreset']) 
 
 function defaultDdlFromPreset(preset: TaskSettings['defaultDueDatePreset']) {
   return preset === 'today' ? '今天' : '待确认';
+}
+
+function monthKeyFromDate(dateStr: string | null | undefined): string {
+  // Returns "YYYY-MM" from a date string (e.g. "2026-05-12" → "2026-05"). Empty input → current month.
+  if (dateStr && /^\d{4}-\d{2}/.test(dateStr)) return dateStr.slice(0, 7);
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function shiftMonthKey(monthKey: string, delta: number): string {
+  // Shift "YYYY-MM" by delta months (negative = back).
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return monthKey;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1 + delta;
+  const date = new Date(year, month, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatMonthKeyLabel(monthKey: string): string {
+  const match = monthKey.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return monthKey;
+  return `${match[1]} 年 ${Number(match[2])} 月`;
 }
 
 function formatDateOnlyValue(date: Date) {
@@ -5862,6 +5900,9 @@ export default function App() {
   // 语音识别模型配置（input-breadth 线程 I1a 新增）
   const [speechModelSettingsState, setSpeechModelSettingsState] = useState<SpeechModelSettings | null>(null);
   const [isSavingSpeechModelSettings, setIsSavingSpeechModelSettings] = useState(false);
+  // 对象存储（音频中转）配置（input-breadth 线程 I1b-1 新增）
+  const [objectStorageSettingsState, setObjectStorageSettingsState] = useState<ObjectStorageSettings | null>(null);
+  const [isSavingObjectStorageSettings, setIsSavingObjectStorageSettings] = useState(false);
   const orgSetupInputDraftsRef = useRef<OrganizationSetupInputDraftState>({});
   const [profileDraft, setProfileDraft] = useState<UpdateProfilePayload>({
     fullName: currentSessionUser?.fullName || '',
@@ -6526,11 +6567,20 @@ export default function App() {
     }
   }
 
+  async function loadObjectStorageSettingsBlock() {
+    try {
+      const response = await getObjectStorageSettings();
+      setObjectStorageSettingsState(response);
+    } catch (error) {
+      console.warn('[object-storage] load failed', error);
+    }
+  }
+
   async function loadSettingsSectionBlock(section: SettingsSectionKey, force = false) {
     if (!force && settingsSectionLoaded[section]) return;
     switch (section) {
       case 'overview':
-        await loadSpeechModelSettingsBlock();
+        await Promise.all([loadSpeechModelSettingsBlock(), loadObjectStorageSettingsBlock()]);
         break;
       case 'tasks':
         await loadTaskSettingsBlock();
@@ -7606,7 +7656,6 @@ export default function App() {
     { id: 'strategic_accompaniment' as const, label: '战略陪伴', icon: Target },
     { id: 'topics_management' as const, label: '资讯情报站', icon: Newspaper },
     { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
-    { id: 'plan_workshop' as const, label: '计划工坊', icon: ClipboardList },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
 
@@ -8214,6 +8263,30 @@ export default function App() {
     );
     };
 
+	  const handleSavePlanFromWorkshop = async (plan: OrgDepartmentPlanSettings) => {
+	    const existingIndex = orgModelDraft.departmentPlans.findIndex(
+	      (p) => p.departmentId === plan.departmentId && (p.weekLabel || '').trim() === (plan.weekLabel || '').trim(),
+	    );
+	    const nextPlans = existingIndex >= 0
+	      ? orgModelDraft.departmentPlans.map((p, i) => (i === existingIndex ? plan : p))
+	      : [...orgModelDraft.departmentPlans, plan];
+	    const nextDraft: OrgModelSettings = { ...orgModelDraft, departmentPlans: nextPlans };
+	    setOrgModelDraft(nextDraft);
+	    setIsSavingOrgModel(true);
+	    try {
+	      const next = await updateOrgModelProfile(nextDraft);
+	      setOrgModelState(next);
+	      setOrgModelDraft(next);
+	      setIsOrgModelDraftDirty(false);
+	      flash('success', '计划已保存');
+	    } catch (error) {
+	      flash('error', error instanceof Error ? error.message : '保存失败');
+	      throw error;
+	    } finally {
+	      setIsSavingOrgModel(false);
+	    }
+	  };
+
 	  const tasksViewBridgeRef = useRef<Record<string, unknown>>({});
 	  tasksViewBridgeRef.current = {
     activeTab,
@@ -8251,6 +8324,8 @@ export default function App() {
     organizationTaskAutoReason,
     organizationTaskManualReason,
     organizationTaskName,
+    orgModelState,
+    handleSavePlanFromWorkshop,
     reviewDashboard,
     reviewHistory,
     setActiveTab,
@@ -8315,6 +8390,8 @@ export default function App() {
     organizationTaskAutoReason: typeof organizationTaskAutoReason;
     organizationTaskManualReason: typeof organizationTaskManualReason;
     organizationTaskName: typeof organizationTaskName;
+    orgModelState: typeof orgModelState;
+    handleSavePlanFromWorkshop: typeof handleSavePlanFromWorkshop;
     reviewDashboard: typeof reviewDashboard;
     reviewHistory: typeof reviewHistory;
     setActiveTab: typeof setActiveTab;
@@ -8380,6 +8457,8 @@ export default function App() {
       organizationTaskAutoReason,
       organizationTaskManualReason,
       organizationTaskName,
+      orgModelState,
+      handleSavePlanFromWorkshop,
       reviewDashboard,
       reviewHistory,
       setActiveTab,
@@ -8467,6 +8546,13 @@ export default function App() {
       ddl: defaultDdlFromPreset(effectiveTaskSettings.defaultDueDatePreset),
       tagIds: [],
       collaborators: buildDefaultCollaborators(),
+      planLinkDepartmentId: currentSessionUser?.departmentId || '',
+      planLinkPeriodKey: monthKeyFromDate(defaultDueDateFromPreset(effectiveTaskSettings.defaultDueDatePreset)),
+      planLinkPlanItemId: '',
+      planLinkSource: 'unset',
+      planLinkConfidence: 0,
+      planLinkTouched: false,
+      planLinkReason: '可选：把任务挂到本月部门计划项上，组织计划能看到这条任务在推进哪条计划。',
     });
     const [taskClientDnaCache, setTaskClientDnaCache] = useState<Record<string, ClientDnaModule[]>>({});
     const [projectStructureCache, setProjectStructureCache] = useState<Record<string, ProjectStructureResponse>>({});
@@ -8492,8 +8578,6 @@ export default function App() {
       closeEditor?: boolean;
     } | null>(null);
     const [isSavingTask, setIsSavingTask] = useState(false);
-    const [taskUnderstanding, setTaskUnderstanding] = useState<import('./lib/api').TaskUnderstandingSnapshot | null>(null);
-    const [isLoadingUnderstanding, setIsLoadingUnderstanding] = useState(false);
     const isTaskModalOpenRef = useRef(false);
     const [tagDraft, setTagDraft] = useState({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
     const [mentionQuery, setMentionQuery] = useState('');
@@ -8569,19 +8653,6 @@ export default function App() {
     useEffect(() => {
       isTaskModalOpenRef.current = isTaskModalOpen;
     }, [isTaskModalOpen]);
-
-    // Load understanding when editing an existing task
-    useEffect(() => {
-      if (!isTaskModalOpen || !editingTask.id) {
-        setTaskUnderstanding(null);
-        return;
-      }
-      setIsLoadingUnderstanding(true);
-      getTaskUnderstanding(editingTask.id)
-        .then(setTaskUnderstanding)
-        .catch(() => setTaskUnderstanding(null))
-        .finally(() => setIsLoadingUnderstanding(false));
-    }, [isTaskModalOpen, editingTask.id]);
 
     const resetTaskModalTransientState = () => {
       setIsDuePickerOpen(false);
@@ -10638,6 +10709,26 @@ export default function App() {
             : await createTask(payload);
           upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId);
 
+          // Sync plan-link only if the user touched the plan-link section. Otherwise leave it to the
+          // backend's automatic AI matching (already runs on task create/update).
+          if (draftSnapshot.planLinkTouched && !isEditingTaskPersonal) {
+            try {
+              if (draftSnapshot.planLinkSource === 'manager' && draftSnapshot.planLinkPlanItemId) {
+                await patchTaskPlanLink(savedTask.id, {
+                  departmentPlanItemId: draftSnapshot.planLinkPlanItemId,
+                  focusItemId: null,
+                });
+              } else if (draftSnapshot.planLinkSource === 'none') {
+                await patchTaskPlanLink(savedTask.id, {
+                  departmentPlanItemId: null,
+                  focusItemId: null,
+                });
+              }
+            } catch (error) {
+              console.warn('[plan-link] failed to sync user choice', error);
+            }
+          }
+
           if (!draftSnapshot.id && smartBriefSourceSnapshot?.sourceTaskId && smartBriefSourceSnapshot.actionKey) {
             setTaskSmartBriefs((prev) => {
               const sourceBrief = prev[smartBriefSourceSnapshot.sourceTaskId];
@@ -11102,6 +11193,13 @@ export default function App() {
         ddl: nextDueParts.date ? formatTaskDueLabel(nextDueDate) : defaultDdlFromPreset(effectiveTaskSettings.defaultDueDatePreset),
         tagIds: [],
         collaborators: buildDefaultCollaborators(),
+        planLinkDepartmentId: currentSessionUser?.departmentId || '',
+        planLinkPeriodKey: monthKeyFromDate(nextDueParts.date || nextDueDate),
+        planLinkPlanItemId: '',
+        planLinkSource: 'unset',
+        planLinkConfidence: 0,
+        planLinkTouched: false,
+        planLinkReason: '可选：把任务挂到本月部门计划项上，组织计划能看到这条任务在推进哪条计划。',
       });
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
@@ -11160,7 +11258,30 @@ export default function App() {
           primaryRole: currentSessionUser?.primaryRole || 'employee',
           isSelf: item.userId === currentSessionUser?.id,
         })),
+        planLinkDepartmentId: currentSessionUser?.departmentId || '',
+        planLinkPeriodKey: monthKeyFromDate(resolvedDueParts.date || resolvedDueDate),
+        planLinkPlanItemId: '',
+        planLinkSource: 'unset',
+        planLinkConfidence: 0,
+        planLinkTouched: false,
+        planLinkReason: '可选：把任务挂到本月部门计划项上。点开下拉可手动选择或确认 AI 建议。',
       });
+      // Asynchronously fetch current plan-link for this task and prefill the editor.
+      void getTaskPlanLink(task.id).then((link) => {
+        if (!link) return;
+        setEditingTask((prev) => {
+          if (prev.id !== task.id || prev.planLinkTouched) return prev; // user already edited; keep their choice
+          return {
+            ...prev,
+            planLinkPlanItemId: link.departmentPlanItemId || '',
+            planLinkSource: (link.linkedBy as 'ai' | 'manager') || 'ai',
+            planLinkConfidence: link.confidence || 0,
+            planLinkReason: link.linkedBy === 'manager'
+              ? '当前已手动关联，AI 不再覆盖此选择。'
+              : `AI 自动推荐 (置信度 ${Math.round((link.confidence || 0) * 100)}%)，可手动改。`,
+          };
+        });
+      }).catch(() => {});
       setTagDraft({ name: '', scope: defaultTagScope, color: TASK_COLOR_OPTIONS[0] });
       setSuggestedTaskTags([]);
       setPendingTaskArchiveText('');
@@ -12292,6 +12413,7 @@ export default function App() {
                 {[
                   { id: 'list', label: '任务列表' },
                   { id: 'calendar', label: '我的月历' },
+                  { id: 'plan', label: '组织计划' },
                   { id: 'event_lines', label: '事件线' },
                   { id: 'review', label: '周复盘' },
                 ].map((mode) => (
@@ -13371,6 +13493,14 @@ export default function App() {
               onSelectDate={handleCalendarDateSelect}
               onShiftMonth={handleCalendarShift}
               onGoToToday={handleCalendarToday}
+            />
+          )}
+
+          {taskViewMode === 'plan' && (
+            <PlanWorkshopView
+              value={orgModelState}
+              currentUser={currentSessionUser}
+              onSavePlan={handleSavePlanFromWorkshop}
             />
           )}
 
@@ -14917,36 +15047,10 @@ export default function App() {
                       })
                     }
                     placeholder="添加任务描述，背景、目的、预期结果..."
-                    className="min-h-[220px] w-full flex-1 resize-none border-none text-[15px] leading-relaxed text-gray-600 outline-none placeholder:text-gray-400"
+                    className="min-h-[120px] w-full flex-1 resize-none border-none text-[15px] leading-relaxed text-gray-600 outline-none placeholder:text-gray-400"
                   />
 
-                  {/* 系统理解面板 */}
-                  {editingTask.id && (
-                    <div className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/20 p-4">
-                      <div className="mb-3 flex items-center gap-2">
-                        <div className="flex h-5 w-5 items-center justify-center rounded bg-blue-100">
-                          <BrainCircuit size={12} className="text-blue-600" />
-                        </div>
-                        <span className="text-[12px] font-bold text-blue-700">系统理解</span>
-                        {isLoadingUnderstanding && (
-                          <span className="text-[11px] text-slate-400 animate-pulse">正在分析...</span>
-                        )}
-                      </div>
-                      {taskUnderstanding ? (
-                        <UnderstandingPanel snapshot={taskUnderstanding as any} />
-                      ) : isLoadingUnderstanding ? (
-                        <div className="space-y-2">
-                          <div className="h-4 w-3/4 animate-pulse rounded bg-blue-100/50" />
-                          <div className="h-4 w-1/2 animate-pulse rounded bg-blue-100/50" />
-                          <div className="h-4 w-2/3 animate-pulse rounded bg-blue-100/50" />
-                        </div>
-                      ) : (
-                        <p className="text-[12px] text-slate-400">暂无法生成理解（新任务保存后可用）</p>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="mt-6 space-y-3">
+                  <div className="mt-3 space-y-3 flex-shrink-0">
                     <div
                       className="rounded-lg border-2 border-dashed border-gray-200 bg-white p-4 transition focus-within:border-blue-400 focus-within:bg-blue-50/40"
                       onDragOver={handleTaskAttachmentDragOver}
@@ -15350,6 +15454,122 @@ export default function App() {
                       </select>
                     </TaskPropertyRow>
                   </div>
+
+                  {(() => {
+                    if (isEditingTaskPersonal) return null;
+                    const periodKey = editingTask.planLinkPeriodKey;
+                    const deptId = editingTask.planLinkDepartmentId;
+                    const isAdmin = currentSessionUser?.primaryRole === 'admin';
+                    const visibleDepartments = (orgModelState.departments || []).filter((d) => d.active !== false);
+                    const departmentChoices = isAdmin ? visibleDepartments : visibleDepartments.filter((d) => d.id === currentSessionUser?.departmentId);
+                    const matchingPlans = (orgModelState.departmentPlans || []).filter((p) => p.departmentId === deptId && (p.weekLabel || '').trim() === periodKey);
+                    const planItems = matchingPlans.flatMap((p) => p.items || []);
+                    const badgeMap: Record<string, { label: string; cls: string }> = {
+                      ai: { label: 'AI 推荐', cls: 'bg-gray-100 text-gray-500' },
+                      manager: { label: '已手动确认', cls: 'bg-[#5B7BFE]/10 text-[#5B7BFE]' },
+                      none: { label: '明确不挂', cls: 'bg-rose-50 text-rose-600' },
+                      unset: { label: '未关联', cls: 'bg-amber-50 text-amber-600' },
+                    };
+                    const badge = badgeMap[editingTask.planLinkSource] || badgeMap.unset;
+                    return (
+                      <div className="border-b border-gray-100 p-5">
+                        <div className="mb-2 flex items-center justify-between">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">计划关联</h3>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.label}</span>
+                        </div>
+
+                        <div className="space-y-3">
+                          <TaskPropertyRow icon={<CalendarIcon size={16} />} label="计划周期">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="rounded p-1 text-gray-500 hover:bg-gray-100"
+                                onClick={() => setEditingTask((prev) => ({
+                                  ...prev,
+                                  planLinkPeriodKey: shiftMonthKey(prev.planLinkPeriodKey, -1),
+                                  planLinkPlanItemId: '',
+                                  planLinkSource: 'unset',
+                                  planLinkTouched: true,
+                                }))}
+                              >
+                                <ChevronLeft size={14} />
+                              </button>
+                              <span className="text-sm font-medium text-gray-700 min-w-[88px] text-center">{formatMonthKeyLabel(periodKey)}</span>
+                              <button
+                                type="button"
+                                className="rounded p-1 text-gray-500 hover:bg-gray-100"
+                                onClick={() => setEditingTask((prev) => ({
+                                  ...prev,
+                                  planLinkPeriodKey: shiftMonthKey(prev.planLinkPeriodKey, 1),
+                                  planLinkPlanItemId: '',
+                                  planLinkSource: 'unset',
+                                  planLinkTouched: true,
+                                }))}
+                              >
+                                <ChevronRight size={14} />
+                              </button>
+                            </div>
+                          </TaskPropertyRow>
+
+                          <TaskPropertyRow icon={<Briefcase size={16} />} label="所属部门">
+                            <select
+                              value={deptId}
+                              onChange={(event) => setEditingTask((prev) => ({
+                                ...prev,
+                                planLinkDepartmentId: event.target.value,
+                                planLinkPlanItemId: '',
+                                planLinkSource: 'unset',
+                                planLinkTouched: true,
+                              }))}
+                              disabled={!isAdmin && departmentChoices.length <= 1}
+                              className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                            >
+                              <option value="">请选择部门</option>
+                              {departmentChoices.map((dept) => (
+                                <option key={dept.id} value={dept.id}>{dept.name}</option>
+                              ))}
+                            </select>
+                          </TaskPropertyRow>
+
+                          <TaskPropertyRow icon={<Target size={16} />} label="关联计划项">
+                            <select
+                              value={editingTask.planLinkPlanItemId || (editingTask.planLinkSource === 'none' ? '__none__' : '')}
+                              onChange={(event) => {
+                                const val = event.target.value;
+                                setEditingTask((prev) => {
+                                  if (val === '__none__') {
+                                    return { ...prev, planLinkPlanItemId: '', planLinkSource: 'none', planLinkTouched: true, planLinkReason: '已明确标记为"计划外/支撑性任务"。' };
+                                  }
+                                  if (!val) {
+                                    return { ...prev, planLinkPlanItemId: '', planLinkSource: 'unset', planLinkTouched: true, planLinkReason: '可选：把任务挂到本月部门计划项上。' };
+                                  }
+                                  const picked = planItems.find((it) => it.id === val);
+                                  return {
+                                    ...prev,
+                                    planLinkPlanItemId: val,
+                                    planLinkSource: 'manager',
+                                    planLinkTouched: true,
+                                    planLinkReason: picked ? `已手动关联到：${picked.title}。AI 不再覆盖此选择。` : '已手动关联。',
+                                  };
+                                });
+                              }}
+                              className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700"
+                            >
+                              <option value="">{planItems.length === 0 ? '该月该部门暂无计划项' : '请选择计划项'}</option>
+                              {planItems.map((item) => (
+                                <option key={item.id} value={item.id}>{item.title}</option>
+                              ))}
+                              <option value="__none__">— 不关联（计划外/支撑性任务）</option>
+                            </select>
+                          </TaskPropertyRow>
+
+                          {editingTask.planLinkReason && (
+                            <p className="ml-[28px] text-[11px] leading-5 text-gray-400">{editingTask.planLinkReason}</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="border-b border-gray-100 p-5">
                     <div className="mb-2 flex items-center justify-between">
@@ -22283,6 +22503,24 @@ export default function App() {
       return testSpeechModelSettings(payload);
     };
 
+    // 对象存储 handlers（input-breadth 线程 I1b-1 新增）
+    const handleSaveObjectStorageSettings = async (payload: ObjectStorageSettingsPayload) => {
+      setIsSavingObjectStorageSettings(true);
+      try {
+        const next = await updateObjectStorageSettings(payload);
+        setObjectStorageSettingsState(next);
+        flash('success', '对象存储配置已保存（仅本机）');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '保存失败');
+      } finally {
+        setIsSavingObjectStorageSettings(false);
+      }
+    };
+
+    const handleTestObjectStorageSettings = async (payload: ObjectStorageSettingsPayload): Promise<ObjectStorageTestResult> => {
+      return testObjectStorageSettings(payload);
+    };
+
     const handleSyncAiToCloud = async () => {
       try {
         const result = await syncOrgAiConfigToCloud();
@@ -23022,6 +23260,14 @@ export default function App() {
           onTest={handleTestSpeechModelSettings}
         />
 
+        <ObjectStorageSettingsCard
+          settings={objectStorageSettingsState}
+          canEdit={canManageSensitiveSettings}
+          isSaving={isSavingObjectStorageSettings}
+          onSave={handleSaveObjectStorageSettings}
+          onTest={handleTestObjectStorageSettings}
+        />
+
         <AccountIdentityCard />
 
         {isLocalSession ? (
@@ -23645,13 +23891,8 @@ export default function App() {
     plan_workshop: (
       <PlanWorkshopView
         value={orgModelDraft}
-        departmentCatalog={departmentOptions}
-        employees={employeeReviews}
         currentUser={currentSessionUser}
-        canEdit
-        isSaving={isSavingOrgModel}
-        onChange={handleChangeOrgModelDraft}
-        onSave={() => { void handleSaveOrgModel(); }}
+        onSavePlan={handleSavePlanFromWorkshop}
       />
     ),
     settings: renderSettingsView(),

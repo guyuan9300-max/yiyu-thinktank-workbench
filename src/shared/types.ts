@@ -442,6 +442,11 @@ export interface TaskPlanLinkRecord {
   updatedAt: string;
 }
 
+export interface TaskPlanLinkUpsertPayload {
+  departmentPlanItemId?: string | null;
+  focusItemId?: string | null;
+}
+
 export interface SupportRequestRecord {
   id: string;
   taskId?: string | null;
@@ -6696,6 +6701,32 @@ export interface SpeechModelSettingsPayload {
 }
 
 export interface SpeechModelTestResult {
+  success: boolean;
+  message: string;
+  detail?: string | null;
+  latencyMs?: number | null;
+}
+
+// === I1b-1：对象存储（音频中转）配置 ===
+
+export type ObjectStorageProviderId = 'volcano_tos' | 'aliyun_oss' | 'aws_s3';
+
+export interface ObjectStorageSettings {
+  provider: string;
+  credentials: Record<string, string>;
+  extraConfig: Record<string, string>;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface ObjectStorageSettingsPayload {
+  provider: string;
+  credentials: Record<string, string>;
+  extraConfig: Record<string, string>;
+  enabled: boolean;
+}
+
+export interface ObjectStorageTestResult {
   success: boolean;
   message: string;
   detail?: string | null;

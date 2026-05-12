@@ -19,6 +19,7 @@ dependencies = [
     "python-multipart>=0.0.22",
     "yt-dlp>=2026.3.17",
     "curl-cffi>=0.11.0,<0.15",
+    "tos>=2.7.0",
 ]
 
 [tool.pytest.ini_options]

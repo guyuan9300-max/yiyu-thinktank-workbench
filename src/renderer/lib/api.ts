@@ -190,10 +190,15 @@ import type {
   TaskTagSuggestionPayload,
   TaskMutationPayload,
   TaskListMutationPayload,
+  ObjectStorageSettings,
+  ObjectStorageSettingsPayload,
+  ObjectStorageTestResult,
   SpeechModelSettings,
   SpeechModelSettingsPayload,
   SpeechModelTestResult,
   TaskList,
+  TaskPlanLinkRecord,
+  TaskPlanLinkUpsertPayload,
   TaskSettings,
   TaskSettingsPayload,
   TopicsSettings,
@@ -1094,6 +1099,26 @@ export async function updateSpeechModelSettings(payload: SpeechModelSettingsPayl
 
 export async function testSpeechModelSettings(payload: SpeechModelSettingsPayload) {
   return request<SpeechModelTestResult>('/api/v1/settings/speech-model/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+// === I1b-1：对象存储 ===
+
+export async function getObjectStorageSettings() {
+  return request<ObjectStorageSettings>('/api/v1/settings/object-storage');
+}
+
+export async function updateObjectStorageSettings(payload: ObjectStorageSettingsPayload) {
+  return request<ObjectStorageSettings>('/api/v1/settings/object-storage', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testObjectStorageSettings(payload: ObjectStorageSettingsPayload) {
+  return request<ObjectStorageTestResult>('/api/v1/settings/object-storage/test', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -3002,6 +3027,53 @@ export async function retryEventLineSync(id: string) {
     `/api/v1/event-lines/${id}/retry-sync`,
     { method: 'POST' },
   );
+}
+
+export async function getTaskPlanLink(taskId: string) {
+  return request<TaskPlanLinkRecord | null>(`/api/v1/tasks/${taskId}/plan-link`);
+}
+
+export async function patchTaskPlanLink(taskId: string, payload: TaskPlanLinkUpsertPayload) {
+  return request<TaskPlanLinkRecord | null>(`/api/v1/tasks/${taskId}/plan-link`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function recomputeTaskPlanLink(taskId: string) {
+  return request<TaskPlanLinkRecord | null>(`/api/v1/tasks/${taskId}/plan-link/recompute`, {
+    method: 'POST',
+  });
+}
+
+export async function getTasksForPlanItem(itemId: string) {
+  return request<Task[]>(`/api/v1/org-model/plan-items/${itemId}/tasks`);
+}
+
+export interface ParsedPlanItem {
+  title: string;
+  statement: string;
+  expectedOutput: string;
+}
+
+export interface ParsedPlanResponse {
+  items: ParsedPlanItem[];
+  summary: string;
+  confidence: 'low' | 'medium' | 'high';
+}
+
+export async function parseDepartmentPlan(payload: {
+  text: string;
+  organizationName?: string;
+  scopeKind?: 'org' | 'department';
+  scopeName?: string;
+  periodKey?: string;
+  cycleType?: 'month' | 'quarter' | 'year' | 'week' | 'custom';
+}) {
+  return request<ParsedPlanResponse>('/api/v1/org-model/plans/parse', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function addEventLineNote(id: string, text: string) {

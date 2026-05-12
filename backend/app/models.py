@@ -7733,3 +7733,31 @@ class SpeechModelTestResult(BaseModel):
     message: str = ""
     detail: str | None = None
     latencyMs: float | None = None
+
+
+# === I1b-1：对象存储（音频中转）配置 ===
+
+ObjectStorageProvider = Literal["volcano_tos", "aliyun_oss", "aws_s3"]
+
+
+class ObjectStorageSettingsRecord(BaseModel):
+    """单 org 级对象存储配置。Provider 抽象，credentials/extra 用 JSON 灵活承载。"""
+    provider: str = ""
+    credentials: dict[str, str] = Field(default_factory=dict)
+    extraConfig: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = False
+    updatedAt: str = ""
+
+
+class ObjectStorageSettingsPayload(BaseModel):
+    provider: str
+    credentials: dict[str, str] = Field(default_factory=dict)
+    extraConfig: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = False
+
+
+class ObjectStorageTestResult(BaseModel):
+    success: bool
+    message: str = ""
+    detail: str | None = None
+    latencyMs: float | None = None

@@ -344,6 +344,9 @@ from app.models import (
     TaskPayload,
     TaskRecord,
     TaskRejectPayload,
+    ObjectStorageSettingsPayload,
+    ObjectStorageSettingsRecord,
+    ObjectStorageTestResult,
     SpeechModelSettingsPayload,
     SpeechModelSettingsRecord,
     SpeechModelTestResult,
@@ -30132,6 +30135,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid task plan link payload")
         return TaskPlanLinkRecord(**response)
 
+    @app.get("/api/v1/org-model/plan-items/{item_id}/tasks", response_model=list[TaskRecord])
+    def list_tasks_for_plan_item(item_id: str) -> list[TaskRecord]:
+        response = cloud_request("GET", f"/api/v1/org-model/plan-items/{item_id}/tasks")
+        if not isinstance(response, list):
+            return []
+        return [TaskRecord(**item) for item in response if isinstance(item, dict)]
+
+    @app.post("/api/v1/org-model/plans/parse")
+    def parse_plan_text(payload: dict = Body(...)) -> dict:
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text 不能为空")
+        if len(text) > 20000:
+            raise HTTPException(status_code=400, detail="text 长度超过 20000 字符上限，请缩减后重试")
+        organization_name = str(payload.get("organizationName") or "").strip()
+        scope_kind = str(payload.get("scopeKind") or "department").strip()
+        if scope_kind not in {"org", "department"}:
+            scope_kind = "department"
+        scope_name = str(payload.get("scopeName") or "").strip()
+        period_key = str(payload.get("periodKey") or "").strip()
+        cycle_type = str(payload.get("cycleType") or "month").strip()
+        result = state.ai.parse_department_plan_text(
+            text=text,
+            organization_name=organization_name,
+            scope_kind=scope_kind,
+            scope_name=scope_name,
+            period_key=period_key,
+            cycle_type=cycle_type,
+        )
+        return result
+
     @app.get("/api/v1/support-requests", response_model=list[SupportRequestRecord])
     def list_support_requests(status: str | None = Query(default=None), taskId: str | None = Query(default=None)) -> list[SupportRequestRecord]:
         query = []
@@ -30709,6 +30743,58 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             timeout_seconds=30.0,
         )
         return SpeechModelTestResult(
+            success=result.success,
+            message=result.message,
+            detail=result.detail,
+            latencyMs=result.latency_ms,
+        )
+
+    # === I1b-1：对象存储（音频中转）配置 API ===
+
+    @app.get("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
+    def get_object_storage_settings_endpoint() -> ObjectStorageSettingsRecord:
+        from app.services.object_storage.settings_store import get_object_storage_settings
+        return get_object_storage_settings(state.db)
+
+    @app.put("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
+    def update_object_storage_settings_endpoint(
+        payload: ObjectStorageSettingsPayload,
+    ) -> ObjectStorageSettingsRecord:
+        ensure_business_settings_editable()
+        from app.services.object_storage.settings_store import save_object_storage_settings
+        provider_name = (payload.provider or "").strip()
+        if not provider_name:
+            raise HTTPException(status_code=400, detail="请选择对象存储服务商")
+        next_record = save_object_storage_settings(state.db, payload, now_iso=now_iso())
+        log_activity(
+            "settings.object_storage.update",
+            "settings",
+            "object_storage",
+            {"provider": provider_name, "enabled": payload.enabled},
+        )
+        return next_record
+
+    @app.post("/api/v1/settings/object-storage/test", response_model=ObjectStorageTestResult)
+    def test_object_storage_settings_endpoint(
+        payload: ObjectStorageSettingsPayload,
+    ) -> ObjectStorageTestResult:
+        """测试连接：上传 + 删除一个 1-byte 探针对象，验证桶可读可写。"""
+        from app.services.object_storage.registry import get_provider
+        provider_name = (payload.provider or "").strip()
+        if not provider_name:
+            return ObjectStorageTestResult(success=False, message="请先选择服务商再测试连接")
+        provider = get_provider(provider_name)
+        if provider is None:
+            return ObjectStorageTestResult(
+                success=False,
+                message=f"暂未支持该服务商（{provider_name}），请选其他选项或等待后续支持",
+            )
+        result = provider.test_connection(
+            credentials=dict(payload.credentials or {}),
+            extra_config=dict(payload.extraConfig or {}),
+            timeout_seconds=30.0,
+        )
+        return ObjectStorageTestResult(
             success=result.success,
             message=result.message,
             detail=result.detail,
