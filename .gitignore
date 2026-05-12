@@ -42,3 +42,10 @@ external/*.tar.gz
 # Test outputs - never commit (filtered out 2026-05-12)
 backend/output/
 output/
+
+# Report generator sandbox/preview artifacts (chart png / preview jpg / LibreOffice locks / tmp)
+docs/.~lock.*#
+docs/0[1-9]_*.png
+docs/preview-*.jpg
+docs/internal-preview-*.jpg
+docs/lu*.tmp
