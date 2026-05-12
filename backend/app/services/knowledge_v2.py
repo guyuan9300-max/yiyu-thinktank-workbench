@@ -1998,6 +1998,28 @@ def ingest_document_knowledge(
                         chunk_id,
                         document_id,
                     )
+                # 迭代 6：原子事实 + 矛盾检测（同 client 同 subject+attribute
+                # 不同 value → 自动 detect 并写入 fact_contradictions）
+                try:
+                    from app.services.contradiction_detector import persist_chunk_facts
+                    from app.services.fact_extractor import extract_facts_from_chunk
+
+                    facts = extract_facts_from_chunk(chunk["content"])
+                    if facts:
+                        persist_chunk_facts(
+                            db.conn,
+                            client_id=client_id,
+                            v2_document_id=v2_document_id,
+                            v2_chunk_id=chunk_id,
+                            facts=facts,
+                            now=created_at,
+                        )
+                except Exception:
+                    logger.exception(
+                        "fact extraction / contradiction detection failed for chunk %s (doc=%s)",
+                        chunk_id,
+                        document_id,
+                    )
 
     db.execute(
         """

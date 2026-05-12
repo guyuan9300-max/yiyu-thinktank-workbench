@@ -221,6 +221,8 @@ import type {
   ConflictGroup,
   Entity,
   EntityListResponse,
+  FactContradiction,
+  FactContradictionListResponse,
   OpenQuestion,
   OrgWritingNorm,
   OrgFeishuIntegration,
@@ -1503,6 +1505,36 @@ export async function getClientEntities(
   const suffix = params.toString();
   const url = `/api/v1/clients/${clientId}/entities${suffix ? `?${suffix}` : ''}`;
   return request<EntityListResponse>(url);
+}
+
+export async function getClientContradictions(
+  clientId: string,
+  options: {
+    status?: 'pending' | 'dismissed' | 'resolved';
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<FactContradictionListResponse> {
+  const params = new URLSearchParams();
+  if (options.status) params.set('status', options.status);
+  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
+  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
+  const suffix = params.toString();
+  const url = `/api/v1/clients/${clientId}/contradictions${suffix ? `?${suffix}` : ''}`;
+  return request<FactContradictionListResponse>(url);
+}
+
+export async function reviewContradiction(
+  contradictionId: string,
+  payload: {
+    reviewStatus: 'dismissed' | 'resolved';
+    resolutionNote?: string;
+  },
+): Promise<{ status: string }> {
+  return request<{ status: string }>(`/api/v1/contradictions/${contradictionId}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getAnalysisMigrationMetrics() {
@@ -2876,6 +2908,13 @@ export async function deleteEventLine(id: string) {
   return request<{ status: string; counts?: Record<string, number> }>(`/api/v1/event-lines/${id}`, {
     method: 'DELETE',
   });
+}
+
+export async function retryEventLineSync(id: string) {
+  return request<{ status: string; syncStatus: string | null; lastSyncError: string | null }>(
+    `/api/v1/event-lines/${id}/retry-sync`,
+    { method: 'POST' },
+  );
 }
 
 export async function addEventLineNote(id: string, text: string) {

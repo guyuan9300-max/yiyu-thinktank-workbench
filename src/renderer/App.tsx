@@ -57,6 +57,7 @@ import {
   Square,
   Link2,
   X,
+  ClipboardList,
 } from 'lucide-react';
 
 import type {
@@ -263,6 +264,7 @@ import {
   deleteTask,
   deleteTaskTag,
   deleteEventLine,
+  retryEventLineSync,
   closeEventLine,
   reopenEventLine,
   disableEmployee,
@@ -447,9 +449,11 @@ import { AppLogoMark, BrandLogoMark } from './components/settings/BrandLogoSetti
 import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel';
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { EntityListPanel } from './components/client_workspace/EntityListPanel';
+import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
+import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import type { OrganizationSetupInputDraftState } from './components/settings/OrganizationSetupCenter';
 import { isLegacyOrganizationEmployee } from './lib/organizationEmployeeFilters';
@@ -647,7 +651,7 @@ function writeStoredActiveWorkingDocuments(clientId: string, docs: ActiveWorking
   }
 }
 
-type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'settings';
+type NavKey = 'tasks' | 'client_workspace' | 'strategic_accompaniment' | 'topics_management' | 'growth_handbook' | 'plan_workshop' | 'settings';
 type TaskViewMode = 'inbox' | 'list' | 'calendar' | 'agent_schedule' | 'review' | 'event_lines';
 type ClientOverlayMode = 'meeting' | 'goal' | 'dna' | 'paste_document' | 'link_material' | null;
 type SettingsSectionKey = 'overview' | 'tasks' | 'client_workspace' | 'topics' | 'handbook' | 'system_admin' | 'org_overview' | 'org_departments' | 'org_people' | 'org_rules' | 'system_logs';
@@ -735,7 +739,7 @@ const NAV_QUERY_SETTINGS_SECTION_PARAM = 'settingsSection';
 const NAV_QUERY_EVIDENCE_MODE_PARAM = 'evidenceMode';
 const NAV_QUERY_TASK_ID_PARAM = 'taskId';
 const NAV_QUERY_CLIENT_ID_PARAM = 'clientId';
-const NAV_KEYS: NavKey[] = ['tasks', 'client_workspace', 'strategic_accompaniment', 'topics_management', 'growth_handbook', 'settings'];
+const NAV_KEYS: NavKey[] = ['tasks', 'client_workspace', 'strategic_accompaniment', 'topics_management', 'growth_handbook', 'plan_workshop', 'settings'];
 const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   'overview',
   'tasks',
@@ -7578,6 +7582,7 @@ export default function App() {
     { id: 'strategic_accompaniment' as const, label: '战略陪伴', icon: Target },
     { id: 'topics_management' as const, label: '资讯情报站', icon: Newspaper },
     { id: 'growth_handbook' as const, label: '成长中心', icon: BookOpen },
+    { id: 'plan_workshop' as const, label: '计划工坊', icon: ClipboardList },
     { id: 'settings' as const, label: '系统设置', icon: Settings },
   ];
 
@@ -8506,6 +8511,7 @@ export default function App() {
     const [taskEventLineCreateDraft, setTaskEventLineCreateDraft] = useState<TaskEventLineCreateDraftState>(buildTaskEventLineCreateDraft());
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
+    const [retryingSyncIds, setRetryingSyncIds] = useState<Set<string>>(new Set());
     const [eventLineConfirm, setEventLineConfirm] = useState<
       | { mode: 'single'; target: EventLine }
       | { mode: 'bulk'; targets: EventLine[] }
@@ -10040,6 +10046,72 @@ export default function App() {
       } else {
         await handleCloseEventLine(selectedEventLineSummary);
       }
+    };
+
+    const handleRetryEventLineSync = async (target: EventLine) => {
+      if (retryingSyncIds.has(target.id)) return;
+      setRetryingSyncIds((prev) => {
+        const next = new Set(prev);
+        next.add(target.id);
+        return next;
+      });
+      try {
+        const result = await retryEventLineSync(target.id);
+        const nextStatus = (result.syncStatus || 'pending') as EventLine['syncStatus'];
+        setEventLines((prev) => prev.map((el) => (el.id === target.id ? { ...el, syncStatus: nextStatus, lastSyncError: result.lastSyncError || null } : el)));
+        if (result.status === 'ok') {
+          flash('success', '事件线已重新同步到云端。');
+        } else if (result.status === 'already_synced') {
+          flash('info', '该事件线已是最新状态。');
+        } else {
+          flash('error', `同步失败：${result.lastSyncError || '云端未接受请求'}`);
+        }
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '重试同步失败');
+      } finally {
+        setRetryingSyncIds((prev) => {
+          const next = new Set(prev);
+          next.delete(target.id);
+          return next;
+        });
+      }
+    };
+
+    const renderEventLineSyncBadge = (el: EventLine) => {
+      const status = el.syncStatus;
+      if (!status || status === 'synced') return null;
+      const cfg: Record<string, { label: string; cls: string; title?: string }> = {
+        local: { label: '仅本地', cls: 'bg-gray-100 text-gray-500', title: '尚未连接云端，暂存在本地' },
+        syncing: { label: '同步中', cls: 'bg-sky-50 text-sky-600' },
+        pending: { label: '待同步', cls: 'bg-amber-50 text-amber-600', title: '已暂存本地，等待重新连接云端' },
+        error: { label: '同步失败', cls: 'bg-rose-50 text-rose-600', title: el.lastSyncError || '云端拒绝了上次同步' },
+      };
+      const item = cfg[status];
+      if (!item) return null;
+      return (
+        <span className={`rounded-full px-2.5 py-1 font-bold ${item.cls}`} title={item.title}>
+          {item.label}
+        </span>
+      );
+    };
+
+    const renderEventLineCompletenessBadge = (el: EventLine) => {
+      const score = typeof el.completenessScore === 'number' ? el.completenessScore : null;
+      if (score == null) return null;
+      const status = el.completenessStatus || 'insufficient';
+      const palette: Record<string, string> = {
+        high_confidence: 'bg-emerald-50 text-emerald-700',
+        forecast_ready: 'bg-sky-50 text-sky-700',
+        summary_ready: 'bg-amber-50 text-amber-700',
+        insufficient: 'bg-rose-50 text-rose-700',
+      };
+      const missingHint = (el.completenessMissingSlots || []).slice(0, 3).join('、');
+      const title = missingHint ? `证据完整度 ${score} / 100，缺：${missingHint}` : `证据完整度 ${score} / 100`;
+      return (
+        <span className={`rounded-full px-2.5 py-1 font-bold ${palette[status] || palette.insufficient}`} title={title}>
+          完整度 {score}
+        </span>
+      );
     };
 
     const handleCreateProjectModuleFromTask = () => {
@@ -13388,12 +13460,25 @@ export default function App() {
                             {el.primaryClientName && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">{el.primaryClientName}</span>}
                             <span className="rounded-full bg-gray-100 px-2.5 py-1 font-semibold text-gray-500">{taskCount} 条关联任务</span>
                             {el.ownerName && <span className="rounded-full bg-blue-50 px-2.5 py-1 font-semibold text-blue-600">{el.ownerName}</span>}
+                            {renderEventLineCompletenessBadge(el)}
+                            {renderEventLineSyncBadge(el)}
                           </div>
                         </button>
                         <div className="shrink-0 flex items-start gap-2">
                           <div className="pt-1 text-[11px] text-gray-400">
                             {el.updatedAt.slice(0, 10)}
                           </div>
+                          {(el.syncStatus === 'error' || el.syncStatus === 'pending') && (
+                            <button
+                              type="button"
+                              className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-[12px] font-bold text-orange-600 transition hover:bg-orange-100 disabled:opacity-60"
+                              onClick={() => void handleRetryEventLineSync(el)}
+                              disabled={retryingSyncIds.has(el.id)}
+                              title={el.lastSyncError || '点击重试云端同步'}
+                            >
+                              {retryingSyncIds.has(el.id) ? '同步中…' : '重试同步'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="rounded-xl border border-[#D7E0FF] bg-[#F8FAFF] px-3 py-2 text-[12px] font-bold text-[#5B7BFE] transition hover:bg-[#EEF2FF]"
@@ -20213,6 +20298,7 @@ export default function App() {
                           void refreshWorkspace(currentClientId);
                         }}
                       />
+                      {currentClientId && <ContradictionAlertPanel clientId={currentClientId} />}
                       {currentClientId && <EntityListPanel clientId={currentClientId} />}
                     </>
                   );
@@ -21797,6 +21883,61 @@ export default function App() {
 	      flash('error', error instanceof Error ? error.message : '组织身份申请提交失败');
 	    } finally {
 	      setMembershipApplySubmitting(false);
+	    }
+	  };
+
+	  // ↓ 这两个 handler 之前定义在 renderSettingsView 闭包内；为了让 PlanWorkshopView（在 viewMap 里）也能用，
+	  //   提升到 component 顶层 scope。逻辑跟原来完全一致。
+	  const handleChangeOrgModelDraft = (nextDraft: OrgModelSettings) => {
+	    setIsOrgModelDraftDirty(true);
+	    setOrgModelDraft(nextDraft);
+	  };
+
+	  const handleSaveOrgModel = async (nextDraft: OrgModelSettings = orgModelDraft): Promise<boolean> => {
+	    setOrgModelDraft(nextDraft);
+	    setIsSavingOrgModel(true);
+	    try {
+	      const next = await updateOrgModelProfile(nextDraft);
+	      setOrgModelState(next);
+	      setOrgModelDraft(next);
+	      clearOrgSetupInputDrafts();
+	      setIsOrgModelDraftDirty(false);
+	      flash('success', '组织底盘已保存');
+
+	      // reload + backfill 火-忘：失败不影响"保存成功"反馈
+	      void (async () => {
+	        try {
+	          const defaultReviewPerspective = resolveDefaultReviewPerspectiveForUser(currentSessionUser);
+	          await Promise.all([
+	            loadEmployeeReviewBlock(),
+	            loadTaskBlock(),
+	            loadReviewBlock(resolveSelectedReviewWeekLabel(), {
+	              skipAi: true,
+	              perspective: defaultReviewPerspective,
+	              departmentId: resolveDefaultReviewDepartmentIdForUser(currentSessionUser, defaultReviewPerspective),
+	            }),
+	          ]);
+	        } catch (error) {
+	          console.warn('[org-model save] post-save reload failed (data is saved, UI may need manual refresh)', error);
+	        }
+	        try {
+	          const backfill = await backfillOrgTaskLinks();
+	          const touchedCount = backfill.createdLinks + backfill.updatedLinks;
+	          if (touchedCount > 0) {
+	            flash('info', `任务关联已同步 ${touchedCount} 条`);
+	          }
+	        } catch (error) {
+	          console.warn('[org-model save] backfill failed', error);
+	          flash('error', error instanceof Error ? `任务关联回填失败：${error.message}` : '任务关联回填失败（组织底盘已保存）');
+	        }
+	      })();
+
+	      return true;
+	    } catch (error) {
+	      flash('error', error instanceof Error ? error.message : '组织底盘保存失败');
+	      return false;
+	    } finally {
+	      setIsSavingOrgModel(false);
 	    }
 	  };
 
@@ -23441,6 +23582,18 @@ export default function App() {
     ),
     growth_handbook: (
       <GrowthCenterView />
+    ),
+    plan_workshop: (
+      <PlanWorkshopView
+        value={orgModelDraft}
+        departmentCatalog={departmentOptions}
+        employees={employeeReviews}
+        currentUser={currentSessionUser}
+        canEdit
+        isSaving={isSavingOrgModel}
+        onChange={handleChangeOrgModelDraft}
+        onSave={() => { void handleSaveOrgModel(); }}
+      />
     ),
     settings: renderSettingsView(),
   };

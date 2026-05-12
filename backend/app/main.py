@@ -134,6 +134,9 @@ from app.models import (
     EntityRecord,
     EvidenceItem,
     ExportAnswerPayload,
+    FactContradictionListResponseRecord,
+    FactContradictionRecord,
+    FactContradictionReviewPayload,
     RelationshipListResponseRecord,
     RelationshipTripleRecord,
     JudgmentConfirmPayload,
@@ -32600,6 +32603,76 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ],
             total=total,
         )
+
+    @app.get(
+        "/api/v1/clients/{client_id}/contradictions",
+        response_model=FactContradictionListResponseRecord,
+    )
+    def get_client_contradictions(
+        client_id: str,
+        status: str = "pending",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> FactContradictionListResponseRecord:
+        """迭代 6：查询客户的矛盾告警（默认 pending）。
+
+        status ∈ {pending, dismissed, resolved}
+        """
+        from app.services.contradiction_detector import list_contradictions
+
+        build_client_summary(client_id)
+        safe_status = status if status in {"pending", "dismissed", "resolved"} else "pending"
+        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
+        rows, total = list_contradictions(
+            state.db.conn,
+            client_id=client_id,
+            review_status=safe_status,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        return FactContradictionListResponseRecord(
+            contradictions=[
+                FactContradictionRecord(
+                    id=str(r["id"]),
+                    clientId=client_id,
+                    subjectText=str(r["subject_text"]),
+                    attribute=str(r["attribute"]),
+                    valueA=str(r["value_a"]),
+                    valueB=str(r["value_b"]),
+                    evidenceA=str(r["evidence_a"] or ""),
+                    evidenceB=str(r["evidence_b"] or ""),
+                    factAId=str(r["fact_a_id"]),
+                    factBId=str(r["fact_b_id"]),
+                    factAAt=str(r["fact_a_at"]),
+                    factBAt=str(r["fact_b_at"]),
+                    contradictionType=str(r["contradiction_type"]),  # type: ignore[arg-type]
+                    severity=str(r["severity"]),  # type: ignore[arg-type]
+                    reviewStatus=str(r["review_status"]),  # type: ignore[arg-type]
+                    resolutionNote=r["resolution_note"],  # type: ignore[arg-type]
+                    detectedAt=str(r["detected_at"]),
+                )
+                for r in rows
+            ],
+            total=total,
+        )
+
+    @app.post("/api/v1/contradictions/{contradiction_id}/review")
+    def review_contradiction(
+        contradiction_id: str,
+        payload: FactContradictionReviewPayload,
+    ) -> dict[str, str]:
+        """用户审阅一条矛盾：dismissed（忽略）或 resolved（已解决）。"""
+        from app.services.contradiction_detector import update_review_status
+
+        update_review_status(
+            state.db.conn,
+            contradiction_id=contradiction_id,
+            review_status=payload.reviewStatus,
+            resolution_note=payload.resolutionNote,
+        )
+        state.db.conn.commit()
+        return {"status": "ok"}
 
     @app.get("/api/v1/runtime/analysis-migration-metrics", response_model=AnalysisMigrationMetricsRecord)
     def get_analysis_migration_metrics_endpoint() -> AnalysisMigrationMetricsRecord:

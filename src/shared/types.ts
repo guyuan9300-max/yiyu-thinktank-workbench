@@ -1736,6 +1736,31 @@ export interface ActionSuggestion {
   targetRefs: ProposalTargetRef[];
 }
 
+export interface FactContradiction {
+  id: string;
+  clientId: string;
+  subjectText: string;
+  attribute: string;
+  valueA: string;
+  valueB: string;
+  evidenceA: string;
+  evidenceB: string;
+  factAId: string;
+  factBId: string;
+  factAAt: string;
+  factBAt: string;
+  contradictionType: 'value_diff' | 'temporal' | 'scope';
+  severity: 'low' | 'medium' | 'high';
+  reviewStatus: 'pending' | 'dismissed' | 'resolved';
+  resolutionNote?: string | null;
+  detectedAt: string;
+}
+
+export interface FactContradictionListResponse {
+  contradictions: FactContradiction[];
+  total: number;
+}
+
 export type EntityType =
   | 'person'
   | 'company'
@@ -2582,6 +2607,9 @@ export interface EventLine {
   cloudId?: string | null;
   pendingSyncAction?: 'create' | 'update' | 'archive' | null;
   lastSyncError?: string | null;
+  completenessScore?: number;
+  completenessStatus?: 'insufficient' | 'summary_ready' | 'forecast_ready' | 'high_confidence';
+  completenessMissingSlots?: string[];
   createdAt: string;
   updatedAt: string;
 }

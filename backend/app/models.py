@@ -3745,6 +3745,42 @@ class RelationshipListResponseRecord(BaseModel):
     total: int = 0
 
 
+class FactContradictionRecord(BaseModel):
+    """迭代 6：矛盾告警记录。"""
+
+    id: str
+    clientId: str
+    subjectText: str
+    attribute: str
+    valueA: str
+    valueB: str
+    evidenceA: str
+    evidenceB: str
+    factAId: str
+    factBId: str
+    factAAt: str
+    factBAt: str
+    contradictionType: Literal["value_diff", "temporal", "scope"] = "value_diff"
+    severity: Literal["low", "medium", "high"] = "medium"
+    reviewStatus: Literal["pending", "dismissed", "resolved"] = "pending"
+    resolutionNote: str | None = None
+    detectedAt: str
+
+
+class FactContradictionListResponseRecord(BaseModel):
+    """GET /api/v1/clients/{id}/contradictions 响应。"""
+
+    contradictions: list[FactContradictionRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class FactContradictionReviewPayload(BaseModel):
+    """POST /api/v1/contradictions/{id}/review 请求。"""
+
+    reviewStatus: Literal["dismissed", "resolved"]
+    resolutionNote: str | None = None
+
+
 class DataCenterSearchHitRecord(BaseModel):
     title: str
     excerpt: str

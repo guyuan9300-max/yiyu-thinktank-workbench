@@ -2238,6 +2238,58 @@ class Database:
                     ON relationship_triples(client_id, object_entity_id);
                 CREATE INDEX IF NOT EXISTS idx_rel_triples_predicate
                     ON relationship_triples(client_id, predicate, created_at DESC);
+
+                -- 迭代 6：原子事实 + 矛盾检测
+                -- atomic_facts = (subject, attribute, value) 三元组，
+                -- subject 可以是 entity_id 也可以是自由文本（如"客户"作为
+                -- 通用 sentinel）
+                CREATE TABLE IF NOT EXISTS atomic_facts (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    subject_entity_id TEXT,
+                    subject_text TEXT NOT NULL,
+                    attribute TEXT NOT NULL,
+                    value_text TEXT NOT NULL,
+                    value_normalized TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    source_v2_chunk_id TEXT,
+                    source_v2_document_id TEXT,
+                    evidence_text TEXT,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(subject_entity_id) REFERENCES entities(id) ON DELETE SET NULL,
+                    FOREIGN KEY(source_v2_chunk_id) REFERENCES v2_chunks(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_atomic_facts_subject_attr
+                    ON atomic_facts(client_id, subject_text, attribute, status);
+                CREATE INDEX IF NOT EXISTS idx_atomic_facts_recent
+                    ON atomic_facts(client_id, created_at DESC);
+
+                -- fact_contradictions = 两条事实之间的冲突记录
+                -- contradiction_type: value_diff / temporal / scope
+                -- review_status: pending / dismissed / resolved
+                CREATE TABLE IF NOT EXISTS fact_contradictions (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    fact_a_id TEXT NOT NULL,
+                    fact_b_id TEXT NOT NULL,
+                    contradiction_type TEXT NOT NULL DEFAULT 'value_diff',
+                    severity TEXT NOT NULL DEFAULT 'medium',
+                    review_status TEXT NOT NULL DEFAULT 'pending',
+                    resolution_note TEXT,
+                    detected_at TEXT NOT NULL,
+                    reviewed_at TEXT,
+                    reviewed_by TEXT,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(fact_a_id) REFERENCES atomic_facts(id) ON DELETE CASCADE,
+                    FOREIGN KEY(fact_b_id) REFERENCES atomic_facts(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_contradictions_pair
+                    ON fact_contradictions(client_id, fact_a_id, fact_b_id);
+                CREATE INDEX IF NOT EXISTS idx_fact_contradictions_pending
+                    ON fact_contradictions(client_id, review_status, detected_at DESC);
                 """
             )
             self._ensure_column("v2_documents", "markdown_path", "TEXT")
