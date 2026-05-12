@@ -1513,6 +1513,21 @@ def _content_hash(text: str, path: Path) -> str:
     return hasher.hexdigest()
 
 
+def hash_file_bytes(path: Path) -> str | None:
+    """迭代 2 F3：在导入闸门期算文件 SHA-256，用于跨路径/同路径变更检测。
+
+    返回 None 表示读不出来（路径不存在/权限不足），由调用方决定降级策略。
+    """
+    hasher = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except Exception:
+        return None
+    return hasher.hexdigest()
+
+
 def _remove_existing_v2_rows(db: Database, v2_document_id: str) -> None:
     db.execute("DELETE FROM v2_chunks WHERE v2_document_id = ?", (v2_document_id,))
     db.execute("DELETE FROM v2_sections WHERE v2_document_id = ?", (v2_document_id,))
@@ -3590,6 +3605,8 @@ def retrieve_knowledge_bundle(
           AND vd.parse_status IN ('ready', 'partial_ready')
           AND COALESCE(vd.is_searchable, d.is_searchable, 1) = 1
           AND COALESCE(vd.lifecycle_status, d.lifecycle_status, 'active') = 'active'
+          -- 迭代 2 F3：默认只检索 current 版本，被 superseded 的旧版不进检索池
+          AND COALESCE(kd.lifecycle_status, 'current') = 'current'
           AND {access.sql}
           AND NOT (
             vd.canonical_kind = 'task_doc'

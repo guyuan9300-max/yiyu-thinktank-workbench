@@ -524,7 +524,7 @@ from app.services.answer_layer import (
     should_include_answer_boundary,
     should_include_answer_next_actions,
 )
-from app.services.data_center_kernel import resolve_data_center_kernel
+from app.services.data_center_kernel import resolve_data_center_kernel, set_version_info_lookup
 from app.services.data_center_quality import validate_answer_quality
 from app.services.workspace_data_center_adapter import (
     build_consultant_synthesis_material_pack,
@@ -737,6 +737,7 @@ from app.services.knowledge_v2 import (
     retrieve_knowledge_bundle,
     normalize_text,
     has_effective_machine_text,
+    hash_file_bytes,
     is_placeholder_machine_text,
     safe_filename,
     serialize_retrieval_bundle,
@@ -1108,6 +1109,42 @@ class AppState:
 
 _runtime_state: AppState | None = None
 logger = logging.getLogger(__name__)
+
+
+_TECHNICAL_ERROR_MARKERS: tuple[str, ...] = (
+    "validation error for",
+    "Traceback",
+    "errors.pydantic.dev",
+    "Input should be",
+    "pydantic_core",
+    "<class '",
+)
+
+
+def sanitize_chat_failure_reason(error: object, *, fallback_tag: str = "internal_error") -> str:
+    """Reduce an internal exception/string to a short, user-safe failure label.
+
+    Values from this helper end up in DB columns (`chat_messages.failure_reason`,
+    `client_analysis_runs.failure_reason`) and in `AiStructuredResponse.analysis`,
+    which the workbench UI may render directly. They must NEVER contain Python
+    tracebacks, Pydantic validation dumps, or other developer-facing detail.
+
+    The full original exception should be preserved separately via
+    ``logger.exception(...)`` at the call site so debugging is unaffected.
+    """
+    if error is None:
+        return fallback_tag
+    try:
+        raw = str(error).strip()
+    except Exception:  # noqa: BLE001 — defensive: stringification itself should never propagate
+        return fallback_tag
+    if not raw:
+        return fallback_tag
+    if any(marker in raw for marker in _TECHNICAL_ERROR_MARKERS):
+        return fallback_tag
+    if "\n" in raw or len(raw) > 200:
+        return fallback_tag
+    return raw
 
 
 def _require_runtime_state() -> AppState:
@@ -2551,6 +2588,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title=APP_NAME, version=APP_VERSION)
     app.state.app_state = state
 
+    # 迭代 2 F3：把版本查找回调注入 data_center_kernel，让 _to_search_hit
+    # 能给前端塞版本徽章信息（"v2 · 最新" / "已被 v3 取代"）。
+    def _lookup_version_info_for_kernel(document_id: str) -> dict[str, object]:
+        row = state.db.fetchone(
+            "SELECT version_chain_id, version_number, lifecycle_status "
+            "FROM knowledge_documents WHERE document_id = ?",
+            (document_id,),
+        )
+        if not row:
+            return {}
+        chain_id = str(row["version_chain_id"] or "")
+        chain_total = 1
+        if chain_id:
+            count_row = state.db.fetchone(
+                "SELECT COUNT(1) AS n FROM knowledge_documents WHERE version_chain_id = ?",
+                (chain_id,),
+            )
+            if count_row:
+                chain_total = int(count_row["n"] or 1)
+        return {
+            "versionNumber": int(row["version_number"] or 1),
+            "versionChainId": chain_id or None,
+            "lifecycleStatus": str(row["lifecycle_status"] or "current"),
+            "chainTotalVersions": chain_total,
+        }
+
+    set_version_info_lookup(_lookup_version_info_for_kernel)
+
     def _safe_data_center_ingest(label: str, callback) -> None:
         try:
             callback()
@@ -3602,6 +3667,45 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         append_knowledge_job_event(job_id, "info", message, {"processedItems": processed_items})
 
+    def _apply_version_chain(
+        db,
+        *,
+        document_id: str,
+        version_chain_id: object,
+        version_number: int,
+        predecessor_kd_id: object,
+    ) -> None:
+        """迭代 2 F3：把闸门决定的版本链信息落到 knowledge_documents。
+
+        - 新文档：找到由 ingest 创建的 knowledge_documents 行，写入 version_chain_id
+          （null 表示新链 → 用自己的 id 当链头）和 version_number。
+        - 升级版本：把前一版 lifecycle_status 改为 superseded，并设 superseded_by_id。
+        """
+        kd_row = db.fetchone(
+            "SELECT id FROM knowledge_documents WHERE document_id = ?",
+            (document_id,),
+        )
+        if not kd_row:
+            return
+        new_kd_id = str(kd_row["id"])
+        final_chain_id = str(version_chain_id) if version_chain_id else new_kd_id
+        timestamp = now_iso()
+        db.execute(
+            "UPDATE knowledge_documents "
+            "SET version_chain_id = ?, version_number = ?, "
+            "    lifecycle_status = 'current', updated_at = ? "
+            "WHERE id = ?",
+            (final_chain_id, version_number, timestamp, new_kd_id),
+        )
+        if predecessor_kd_id:
+            db.execute(
+                "UPDATE knowledge_documents "
+                "SET lifecycle_status = 'superseded', superseded_by_id = ?, "
+                "    updated_at = ? "
+                "WHERE id = ?",
+                (new_kd_id, timestamp, str(predecessor_kd_id)),
+            )
+
     def process_knowledge_job(job: dict[str, object]) -> None:
         job_id = str(job["id"])
         client_id = str(job["client_id"])
@@ -3644,6 +3748,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     fallback_excerpt=excerpt,
                     created_at=str(item.get("createdAt", now_iso())),
                     ai_service=state.ai,
+                )
+                # 迭代 2 F3：回写版本链元数据。
+                # ingest 已创建/更新了 knowledge_documents 行（按 document_id 查），
+                # 现在把闸门期决定的 version_chain_id / version_number 应用上去，
+                # 并把前一版（如果有）标记为 superseded。
+                _apply_version_chain(
+                    state.db,
+                    document_id=document_id,
+                    version_chain_id=item.get("versionChainId"),
+                    version_number=int(item.get("versionNumber") or 1),
+                    predecessor_kd_id=item.get("predecessorKnowledgeDocumentId"),
                 )
                 record_imported_document_writeback(
                     state.db,
@@ -29622,7 +29737,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if task_count > 0:
                 raise HTTPException(status_code=403, detail="事件线已有关联任务，不能删除，请使用「结束事件线」功能进行归档。")
         if row:
-            row_client_id = str(row["primary_client_id"] or "").strip() if row.get("primary_client_id") is not None else ""
+            row_client_id = str(row["primary_client_id"] or "").strip()
             state.db.execute("UPDATE tasks SET event_line_id = NULL, updated_at = ? WHERE event_line_id = ?", (now_iso(), event_line_id))
             state.db.execute("DELETE FROM event_line_activities WHERE event_line_id = ?", (event_line_id,))
             state.db.execute("DELETE FROM event_line_attachments WHERE event_line_id = ?", (event_line_id,))
@@ -36081,22 +36196,65 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 mode=payload.mode,
                 created_at=timestamp,
             )
+            # 迭代 2 F3：拆分 skip 原因（unsupported / duplicate / version_upgrade）
+            duplicate_count = 0
+            unsupported_count = 0
+            version_upgrade_count = 0
             queued_documents: list[dict[str, object]] = []
             for path in candidates:
                 if path.suffix.lower() not in allowed_extensions:
+                    unsupported_count += 1
                     skipped += 1
                     continue
-                if state.db.fetchone(
+                # 闸门期算文件内容 hash，支撑"按内容去重 + 版本识别"
+                file_hash = hash_file_bytes(path)
+                # 查同客户、同路径的 current 版（lifecycle_status='current'）
+                existing_same_path = state.db.fetchone(
                     """
-                    SELECT 1
+                    SELECT id, document_id, binary_hash, version_chain_id, version_number
                     FROM knowledge_documents
                     WHERE client_id = ?
+                      AND lifecycle_status = 'current'
                       AND (import_source_path = ? OR current_human_path = ? OR original_path = ?)
+                    ORDER BY version_number DESC
+                    LIMIT 1
                     """,
                     (payload.clientId, str(path), str(path), str(path)),
-                ):
-                    skipped += 1
-                    continue
+                )
+                version_chain_id: str | None = None
+                version_number = 1
+                predecessor_kd_id: str | None = None
+                if existing_same_path:
+                    existing_hash = str(existing_same_path["binary_hash"] or "")
+                    if file_hash and existing_hash and file_hash == existing_hash:
+                        # 同路径 + 同内容 = 真重复
+                        duplicate_count += 1
+                        skipped += 1
+                        continue
+                    # 同路径 + 内容已变 → 视为版本升级
+                    version_upgrade_count += 1
+                    version_chain_id = str(
+                        existing_same_path["version_chain_id"]
+                        or existing_same_path["id"]
+                    )
+                    version_number = int(existing_same_path["version_number"] or 1) + 1
+                    predecessor_kd_id = str(existing_same_path["id"])
+                elif file_hash:
+                    # 不同路径但内容已存在（用户从别处拖入同样的文件）→ 当重复
+                    existing_same_hash = state.db.fetchone(
+                        """
+                        SELECT 1 FROM knowledge_documents
+                        WHERE client_id = ?
+                          AND lifecycle_status = 'current'
+                          AND binary_hash = ?
+                        LIMIT 1
+                        """,
+                        (payload.clientId, file_hash),
+                    )
+                    if existing_same_hash:
+                        duplicate_count += 1
+                        skipped += 1
+                        continue
                 managed_import_path = stage_import_copy(state.data_dir, payload.clientId, import_id, path)
                 excerpt = build_excerpt(path)
                 document_id = new_id("doc")
@@ -36128,12 +36286,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         "kind": path.suffix.lower().lstrip("."),
                         "source": payload.mode,
                         "createdAt": timestamp,
+                        # 迭代 2 F3：版本链元数据，由 ingest 后步骤回写
+                        "versionChainId": version_chain_id,
+                        "versionNumber": version_number,
+                        "predecessorKnowledgeDocumentId": predecessor_kd_id,
                     }
                 )
                 queued += 1
             state.db.execute(
-                "UPDATE imports SET skipped_count = ? WHERE id = ?",
-                (skipped, import_id),
+                "UPDATE imports SET skipped_count = ?, duplicate_count = ?, "
+                "    unsupported_count = ?, version_upgrade_count = ? WHERE id = ?",
+                (skipped, duplicate_count, unsupported_count, version_upgrade_count, import_id),
             )
             if queued == 0:
                 state.db.execute(
@@ -36159,6 +36322,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         status="completed",
                         importedCount=0,
                         skippedCount=skipped,
+                        duplicateCount=duplicate_count,
+                        versionUpgradeCount=version_upgrade_count,
+                        unsupportedCount=unsupported_count,
                         createdAt=timestamp,
                         jobId=None,
                         documents=[],
@@ -36186,6 +36352,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     status="queued",
                     importedCount=queued,
                     skippedCount=skipped,
+                    duplicateCount=duplicate_count,
+                    versionUpgradeCount=version_upgrade_count,
+                    unsupportedCount=unsupported_count,
                     createdAt=timestamp,
                     jobId=job.id,
                     documents=[
@@ -37890,6 +38059,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception as error:
             if is_client_analysis_run_canceled(run_id):
                 return
+            logger.exception("[workspace-chat] background_resolve_chat_answer failed for assistant %s", assistant_id)
+            user_safe_reason = sanitize_chat_failure_reason(error)
+            raw_error_text = str(error)
             timestamp = now_iso()
             current_row = state.db.fetchone("SELECT * FROM chat_messages WHERE id = ?", (assistant_id,))
             existing_summary = from_json(str(current_row["retrieval_summary_json"] or "{}"), {}) if current_row else {}
@@ -37898,7 +38070,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if _assistant_message_has_final_answer(current_row):
                 existing_summary.update(
                     {
-                        "postFinalizeError": str(error),
+                        "postFinalizeError": raw_error_text,
                         "postFinalizeErrorAt": timestamp,
                         "postFinalizeFailureStage": "background_resolve_chat_answer",
                         "asyncPath": True,
@@ -37913,7 +38085,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 warnings.append(
                     {
                         "stage": "background_resolve_chat_answer",
-                        "error": str(error),
+                        "error": raw_error_text,
                         "at": timestamp,
                     }
                 )
@@ -37938,7 +38110,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         progress_floor=100.0,
                         progress_ceiling=100.0,
                         stage_label="回答已生成；收尾诊断有警告",
-                        failure_reason=f"post_finalize_warning: {str(error)}",
+                        failure_reason=f"post_finalize_warning: {user_safe_reason}",
                         elapsed_ms=round((perf_counter() - request_started) * 1000, 2),
                         timing={"totalMs": round((perf_counter() - request_started) * 1000, 2), "retrievalMs": 0.0, "llmMs": 0.0},
                     )
@@ -37950,19 +38122,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "progressFloor": 100.0,
                     "progressCeiling": 100.0,
                     "stageLabel": "回答生成失败",
-                    "failureReason": str(error),
+                    "failureReason": user_safe_reason,
                     "lastUpdatedAt": timestamp,
                 }
             )
             failure_finalization = finalize_workspace_answer(
                 content="庆华暂时没能完成这次回答。",
                 answer_mode="system_failure",
-                failure_reason=str(error),
+                failure_reason=user_safe_reason,
                 fallback_presentation_mode="compact_user_answer",
                 kernel_result=None,
                 answer_quality={"grade": "fail"},
                 selected_evidence_count=0,
-                llm_error=str(error),
+                llm_error=user_safe_reason,
             )
             existing_summary["workspaceAnswerFinalization"] = failure_finalization.model_dump(mode="json")
             existing_summary["answerPresentation"] = build_workspace_answer_presentation(
@@ -37979,7 +38151,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 answer_presentation=existing_summary.get("answerPresentation") if isinstance(existing_summary.get("answerPresentation"), dict) else None,
                 answer_intent=None,
             )
-            existing_summary["generationFailureDetail"] = str(error)
+            existing_summary["generationFailureDetail"] = raw_error_text
             state.db.execute(
                 """
                 UPDATE chat_messages
@@ -37994,13 +38166,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         AiStructuredResponse(
                             content=failure_finalization.content,
                             judgment="模型调用失败，本次回答未成功生成。",
-                            analysis=f"错误信息：{str(error)}",
+                            analysis="本次回答未能成功生成，请稍后重试。如果持续失败，请联系开发同学查看后端日志。",
                             actions="建议稍后重试；如果持续失败，请检查本地后端与 AI 配置。",
                             timeline="恢复后可立即重新生成。",
                         ).model_dump()
                     ),
                     "AI 调用失败",
-                    str(error),
+                    user_safe_reason,
                     to_json({"totalMs": round((perf_counter() - request_started) * 1000, 2), "retrievalMs": 0.0, "llmMs": 0.0}),
                     to_json(existing_summary),
                     timestamp,
@@ -38016,7 +38188,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     progress_floor=100.0,
                     progress_ceiling=100.0,
                     stage_label="回答生成失败",
-                    failure_reason=str(error),
+                    failure_reason=user_safe_reason,
                     long_answer_status="failed",
                     summary_status="failed",
                     elapsed_ms=round((perf_counter() - request_started) * 1000, 2),
@@ -38291,6 +38463,86 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             thread=fetch_chat_thread_for_client(client_id, thread_id),
             messages=list_chat_messages_for_thread(client_id, thread_id),
         )
+
+    @app.delete("/api/v1/clients/{client_id}/workspace/chat/messages/{message_id}")
+    def delete_chat_message_pair(client_id: str, message_id: str) -> dict:
+        target = state.db.fetchone(
+            """
+            SELECT m.id, m.thread_id, m.role, m.created_at
+            FROM chat_messages m
+            JOIN chat_threads t ON t.id = m.thread_id
+            WHERE m.id = ? AND t.client_id = ?
+            """,
+            (message_id, client_id),
+        )
+        if not target:
+            raise HTTPException(status_code=404, detail="Chat message not found")
+        thread_id = str(target["thread_id"])
+        deleted_ids = [str(target["id"])]
+        if str(target["role"]) == "user":
+            partner = state.db.fetchone(
+                """
+                SELECT id FROM chat_messages
+                WHERE thread_id = ? AND role = 'assistant' AND created_at >= ? AND id != ?
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (thread_id, target["created_at"], target["id"]),
+            )
+        else:
+            partner = state.db.fetchone(
+                """
+                SELECT id FROM chat_messages
+                WHERE thread_id = ? AND role = 'user' AND created_at <= ? AND id != ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (thread_id, target["created_at"], target["id"]),
+            )
+        if partner:
+            deleted_ids.append(str(partner["id"]))
+        placeholders = ",".join(["?"] * len(deleted_ids))
+        state.db.execute(
+            f"DELETE FROM chat_messages WHERE id IN ({placeholders})",
+            tuple(deleted_ids),
+        )
+        state.db.execute(
+            "DELETE FROM chat_thread_memory_packs WHERE thread_id = ?",
+            (thread_id,),
+        )
+        remaining = int(
+            state.db.scalar(
+                "SELECT COUNT(1) FROM chat_messages WHERE thread_id = ?",
+                (thread_id,),
+            )
+            or 0
+        )
+        thread_deleted = False
+        if remaining == 0:
+            state.db.execute("DELETE FROM chat_threads WHERE id = ?", (thread_id,))
+            thread_deleted = True
+        else:
+            state.db.execute(
+                "UPDATE chat_threads SET updated_at = ? WHERE id = ?",
+                (now_iso(), thread_id),
+            )
+        log_activity(
+            "workspace.chat.delete_message_pair",
+            "chat_message",
+            message_id,
+            {
+                "clientId": client_id,
+                "threadId": thread_id,
+                "deletedIds": deleted_ids,
+                "threadDeleted": thread_deleted,
+            },
+        )
+        return {
+            "clientId": client_id,
+            "threadId": thread_id,
+            "deletedIds": deleted_ids,
+            "threadDeleted": thread_deleted,
+        }
 
     @app.post("/api/v1/clients/{client_id}/workspace/chat", response_model=ChatMessageRecord)
     def send_chat_message(client_id: str, payload: ChatRequest) -> ChatMessageRecord:

@@ -366,6 +366,7 @@ import {
   searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
+  deleteClientChatMessagePair,
   startClientMessage,
   getClientMessage,
   updateEmployeeRole,
@@ -538,6 +539,38 @@ function normalizeWorkingDocumentStatus(value?: string | null): ActiveWorkingDoc
   if (value === 'ready' || value === 'partial_ready' || value === 'failed') return value;
   if (value === 'queued') return 'queued';
   return 'processing';
+}
+
+const TECHNICAL_FAILURE_MARKERS: readonly string[] = [
+  'validation error for',
+  'Traceback',
+  'errors.pydantic.dev',
+  'Input should be',
+  'pydantic_core',
+  "<class '",
+];
+
+const KNOWN_FAILURE_TAGS: Record<string, string> = {
+  internal_error: '回答过程出现了系统错误，请重试一次。',
+  user_canceled: '已取消生成。',
+  chat_executor_unavailable: '后台执行器暂不可用，请稍后重试。',
+  ai_result_unavailable: 'AI 暂时无法生成回答，请稍后重试。',
+  llm_local_fallback_after_retry: '在线模型不可用，已自动退回本地兜底回答。',
+  llm_partial_preserved_after_stale_recovery: '上次回答中断，已保留部分内容，请重试以获取完整回答。',
+  no_relevant_materials: '当前客户资料中没有命中相关内容。',
+};
+
+function friendlyFailureMessage(raw: string | null | undefined, fallback = '请稍后重试。'): string {
+  const text = (raw || '').trim();
+  if (!text) return fallback;
+  if (KNOWN_FAILURE_TAGS[text]) return KNOWN_FAILURE_TAGS[text];
+  if (TECHNICAL_FAILURE_MARKERS.some((marker) => text.includes(marker))) {
+    return KNOWN_FAILURE_TAGS.internal_error;
+  }
+  if (text.length > 200 || text.includes('\n')) {
+    return KNOWN_FAILURE_TAGS.internal_error;
+  }
+  return text;
 }
 
 function mergeActiveWorkingDocuments(
@@ -1673,8 +1706,11 @@ type AnswerBlock =
   | { type: 'list'; items: string[]; ordered: boolean };
 
 function parseAnswerBlocks(text: string): AnswerBlock[] {
-  const cleaned = normalizeAnswerTextForDisplay(text);
+  let cleaned = normalizeAnswerTextForDisplay(text);
   if (!cleaned) return [];
+  if (!cleaned.includes('\n\n') && cleaned.split('\n').filter((line) => line.trim()).length >= 3) {
+    cleaned = cleaned.replace(/\n+/g, '\n\n');
+  }
   const lines = cleaned.split('\n');
   const blocks: AnswerBlock[] = [];
   const firstNonEmptyIndex = lines.findIndex((line) => line.trim());
@@ -8470,6 +8506,12 @@ export default function App() {
     const [taskEventLineCreateDraft, setTaskEventLineCreateDraft] = useState<TaskEventLineCreateDraftState>(buildTaskEventLineCreateDraft());
     const [isCreatingEventLine, setIsCreatingEventLine] = useState(false);
     const [isDeletingEventLine, setIsDeletingEventLine] = useState(false);
+    const [eventLineConfirm, setEventLineConfirm] = useState<
+      | { mode: 'single'; target: EventLine }
+      | { mode: 'bulk'; targets: EventLine[] }
+      | null
+    >(null);
+    const [bulkDeleteProgress, setBulkDeleteProgress] = useState<{ done: number; total: number; failed: number } | null>(null);
     const [isCreatingTaskProjectModule, setIsCreatingTaskProjectModule] = useState(false);
     const [isCreatingTaskProjectFlow, setIsCreatingTaskProjectFlow] = useState(false);
     const [isTemplateEditorOpen, setIsTemplateEditorOpen] = useState(false);
@@ -9913,32 +9955,88 @@ export default function App() {
       }
     };
 
-    const handleDeleteEventLine = async (targetEventLine: EventLine) => {
+    const handleDeleteEventLine = (targetEventLine: EventLine) => {
       if (isDeletingEventLine) return;
+      setEventLineConfirm({ mode: 'single', target: targetEventLine });
+    };
+
+    const executeDeleteEventLine = async (targetEventLine: EventLine) => {
       const lineName = targetEventLine.name || '未命名事件线';
-      if (!window.confirm(`确认删除事件线”${lineName}”？删除后不可恢复。`)) {
-        return;
-      }
-      setIsDeletingEventLine(true);
       try {
         await deleteEventLine(targetEventLine.id);
-        // Remove from local state immediately (cloud may keep an archived copy)
         setEventLines((prev) => prev.filter((el) => el.id !== targetEventLine.id));
         if (editingTask.eventLineId === targetEventLine.id) {
           setEditingTask((prev) => ({ ...prev, eventLineId: '', eventLineTouched: true, eventLineReason: `事件线已删除：${lineName}。` }));
         }
         if (activeEventLine?.eventLine.id === targetEventLine.id) { setActiveEventLine(null); }
-        flash('success', '事件线已删除');
+        return { ok: true as const, name: lineName };
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '事件线删除失败');
-      } finally {
-        setIsDeletingEventLine(false);
+        const detail = error instanceof Error ? error.message : '事件线删除失败';
+        return { ok: false as const, name: lineName, detail };
       }
     };
+
+    const handleConfirmDeleteEventLineSingle = async () => {
+      if (!eventLineConfirm || eventLineConfirm.mode !== 'single') return;
+      const target = eventLineConfirm.target;
+      setIsDeletingEventLine(true);
+      try {
+        const result = await executeDeleteEventLine(target);
+        if (result.ok) {
+          flash('success', '事件线已删除');
+        } else {
+          flash('error', result.detail);
+        }
+      } finally {
+        setIsDeletingEventLine(false);
+        setEventLineConfirm(null);
+      }
+    };
+
+    const openBulkDeleteEmptyEventLines = () => {
+      const targets = filteredEventLines.filter((el) => tasks.filter((t) => t.eventLineId === el.id).length === 0);
+      if (targets.length === 0) {
+        flash('info', '当前筛选范围内没有可清理的空事件线。');
+        return;
+      }
+      setEventLineConfirm({ mode: 'bulk', targets });
+    };
+
+    const handleConfirmBulkDeleteEmptyEventLines = async () => {
+      if (!eventLineConfirm || eventLineConfirm.mode !== 'bulk') return;
+      const targets = eventLineConfirm.targets;
+      setIsDeletingEventLine(true);
+      setBulkDeleteProgress({ done: 0, total: targets.length, failed: 0 });
+      let done = 0;
+      let failed = 0;
+      const failedDetails: string[] = [];
+      for (const target of targets) {
+        const result = await executeDeleteEventLine(target);
+        done += 1;
+        if (!result.ok) {
+          failed += 1;
+          failedDetails.push(`${result.name}: ${result.detail}`);
+        }
+        setBulkDeleteProgress({ done, total: targets.length, failed });
+      }
+      setIsDeletingEventLine(false);
+      setEventLineConfirm(null);
+      setBulkDeleteProgress(null);
+      const success = targets.length - failed;
+      if (failed === 0) {
+        flash('success', `已批量清理 ${success} 条空事件线。`);
+      } else if (success === 0) {
+        flash('error', `批量删除全部失败：${failedDetails.slice(0, 3).join('；')}`);
+      } else {
+        flash('info', `清理完成：成功 ${success} 条，失败 ${failed} 条。失败原因请看控制台。`);
+        console.warn('[bulk-delete-event-lines] failures:', failedDetails);
+      }
+    };
+
     const handleDeleteEventLineFromTask = async () => {
       if (!selectedEventLineSummary) return;
       if (selectedEventLineSummary.visibilityScope === 'private') {
-        await handleDeleteEventLine(selectedEventLineSummary);
+        handleDeleteEventLine(selectedEventLineSummary);
       } else {
         await handleCloseEventLine(selectedEventLineSummary);
       }
@@ -13183,9 +13281,27 @@ export default function App() {
           {taskViewMode === 'event_lines' && (
             <div className="max-w-4xl mx-auto pb-10">
               <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-                <div>
+                <div className="flex-1 min-w-0">
                   <h2 className="text-[18px] font-bold text-gray-900">事件线</h2>
                   <p className="text-[12px] text-gray-500 mt-1">按项目查看事件线；卡片主体进汇报预览，右侧可直接编辑或删除。</p>
+                  {(() => {
+                    const emptyCount = filteredEventLines.filter((el) => tasks.filter((t) => t.eventLineId === el.id).length === 0).length;
+                    if (emptyCount === 0) return null;
+                    return (
+                      <div className="mt-3 inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={openBulkDeleteEmptyEventLines}
+                          disabled={isDeletingEventLine}
+                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
+                          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                        >
+                          一键清理空事件线（{emptyCount}）
+                        </button>
+                        <span className="text-[11px] text-gray-400">仅删除当前筛选范围内、未挂任何任务的事件线</span>
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="window-no-drag w-full md:max-w-[320px]" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                   <label className="mb-2 block text-[11px] font-bold text-gray-400">项目筛选</label>
@@ -13319,6 +13435,68 @@ export default function App() {
                   );
                 })}
               </div>
+              {eventLineConfirm && (
+                <div
+                  className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 px-6"
+                  style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                  onClick={(e) => {
+                    if (e.target === e.currentTarget && !isDeletingEventLine) setEventLineConfirm(null);
+                  }}
+                >
+                  <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+                    {eventLineConfirm.mode === 'single' ? (
+                      <>
+                        <h3 className="text-[16px] font-bold text-gray-900">确认删除事件线</h3>
+                        <p className="mt-3 text-[13px] leading-6 text-gray-600">
+                          将删除事件线「{eventLineConfirm.target.name || '未命名事件线'}」。删除后不可恢复，相关的活动记录、附件会一并清理。
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <h3 className="text-[16px] font-bold text-gray-900">一键清理空事件线</h3>
+                        <p className="mt-3 text-[13px] leading-6 text-gray-600">
+                          将删除当前筛选范围内 <span className="font-bold text-rose-600">{eventLineConfirm.targets.length}</span> 条未挂任何任务的事件线。删除后不可恢复。
+                        </p>
+                        <div className="mt-3 max-h-[180px] overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
+                          {eventLineConfirm.targets.slice(0, 50).map((el) => (
+                            <div key={el.id} className="truncate py-0.5">· {el.name || '未命名事件线'}</div>
+                          ))}
+                          {eventLineConfirm.targets.length > 50 && (
+                            <div className="py-0.5 text-gray-400">…等共 {eventLineConfirm.targets.length} 条</div>
+                          )}
+                        </div>
+                        {bulkDeleteProgress && (
+                          <p className="mt-3 text-[12px] text-gray-500">
+                            进度：{bulkDeleteProgress.done}/{bulkDeleteProgress.total}
+                            {bulkDeleteProgress.failed > 0 && `（失败 ${bulkDeleteProgress.failed}）`}
+                          </p>
+                        )}
+                      </>
+                    )}
+                    <div className="mt-5 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { if (!isDeletingEventLine) setEventLineConfirm(null); }}
+                        disabled={isDeletingEventLine}
+                        className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-[13px] font-bold text-gray-600 transition hover:bg-gray-50 disabled:opacity-60"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (eventLineConfirm.mode === 'single') void handleConfirmDeleteEventLineSingle();
+                          else void handleConfirmBulkDeleteEmptyEventLines();
+                        }}
+                        disabled={isDeletingEventLine}
+                        className="rounded-xl border border-rose-200 bg-rose-500 px-4 py-2 text-[13px] font-bold text-white transition hover:bg-rose-600 disabled:opacity-60"
+                      >
+                        {isDeletingEventLine ? '处理中…' : (eventLineConfirm.mode === 'single' ? '确认删除' : `确认清理 ${eventLineConfirm.targets.length} 条`)}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -16784,6 +16962,45 @@ export default function App() {
         .filter((item) => item.status !== 'loading' && item.id !== activeAssistantMessageId)
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     }, [currentThreadMessages, activeOptimisticMessages, activeAssistantMessageId]);
+
+    const handleRepeatChatMessage = (message: DisplayChatMessage) => {
+      if (message.role !== 'user') return;
+      const promptText = (message.content || '').trim();
+      if (!promptText) return;
+      if (hasPendingAnalysisRun || isComposerStartingMessage) {
+        flash('info', '当前问题尚未完成，请稍后再试。');
+        return;
+      }
+      void sendMessage(promptText);
+    };
+
+    const handleDeleteChatMessagePair = async (message: DisplayChatMessage) => {
+      if (!currentClientId) return;
+      const promptLabel = message.role === 'user' ? '这条提问及其对应的回答' : '这条回答及其对应的提问';
+      if (!window.confirm(`确认删除${promptLabel}？删除后不可恢复。`)) return;
+      try {
+        const result = await deleteClientChatMessagePair(currentClientId, message.id);
+        dispatchWorkspaceClientUi({
+          type: 'removeThreadMessages',
+          threadId: result.threadId,
+          messageIds: result.deletedIds,
+        });
+        if (activeMessageId && result.deletedIds.includes(activeMessageId)) {
+          setActiveMessageId(null);
+        }
+        if (result.threadDeleted) {
+          setWorkspace((prev) =>
+            prev ? { ...prev, threads: prev.threads.filter((thread) => thread.id !== result.threadId) } : prev,
+          );
+          if (workspaceSelectedThreadId === result.threadId) {
+            setWorkspaceSelectedThreadId(null);
+          }
+        }
+        flash('success', '已删除对话。');
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '删除对话失败');
+      }
+    };
     const workspaceKnowledgeUiActive =
       isImportSubmitting ||
       Boolean((workspace?.knowledgeStatus?.pendingJobs || 0) + (workspace?.knowledgeStatus?.runningJobs || 0));
@@ -17606,6 +17823,10 @@ export default function App() {
         const importResults = await importPaths(currentClientId, mode, paths);
         const importedCount = importResults.reduce((sum, item) => sum + (item.importedCount || 0), 0);
         const skippedCount = importResults.reduce((sum, item) => sum + (item.skippedCount || 0), 0);
+        // 迭代 2 F1+F2：拆分跳过原因
+        const duplicateCount = importResults.reduce((sum, item) => sum + (item.duplicateCount || 0), 0);
+        const versionUpgradeCount = importResults.reduce((sum, item) => sum + (item.versionUpgradeCount || 0), 0);
+        const unsupportedCount = importResults.reduce((sum, item) => sum + (item.unsupportedCount || 0), 0);
         const queuedImports = importResults.filter((item) => item.status === 'queued').length;
         const workingDocs = options?.attachToComposer ? buildActiveWorkingDocumentsFromImports(importResults) : [];
         if (workingDocs.length > 0) {
@@ -17623,21 +17844,39 @@ export default function App() {
             }
           }, 1600);
         }
+        // 迭代 2 F1+F2：把跳过原因拆成精准 3 档
+        const buildSkipDetail = (): string | null => {
+          const parts: string[] = [];
+          if (duplicateCount > 0) parts.push(`${duplicateCount} 份内容已存在（自动去重）`);
+          if (versionUpgradeCount > 0) parts.push(`${versionUpgradeCount} 份内容已变化（视为新版本入库）`);
+          if (unsupportedCount > 0) parts.push(`${unsupportedCount} 份格式不支持`);
+          return parts.length > 0 ? parts.join('，') : null;
+        };
+        const skipDetail = buildSkipDetail();
         if (importedCount === 0) {
-          const text = skippedCount > 0 ? `没有发现新增资料，本次跳过 ${skippedCount} 个已入库或不支持的文件。` : '没有发现可导入的新资料。';
+          const text = skipDetail
+            ? `没有新资料入库：${skipDetail}。`
+            : (skippedCount > 0
+              ? `没有发现新增资料，本次跳过 ${skippedCount} 个文件。`
+              : '没有发现可导入的新资料。');
           setLatestImportFeedback({
             tone: 'info',
             text,
             detail: mode === 'folder'
-              ? '如果这是同一个资料文件夹，系统会自动跳过已经入库的文件，不会重复建库。'
+              ? '同一份文件再次导入会被自动跳过（按内容 hash 判断）；如需替换旧版本，请把新版本保存到原位置覆盖后重新导入。'
               : '当前选中的文件可能已经入库，或不是系统支持的资料格式。',
             timestamp: Date.now(),
           });
           flash('info', text);
         } else if (queuedImports > 0) {
+          // 迭代 2 F1+F2：成功路径里如果有跳过的，把数字摆出来
+          const baseText = mode === 'folder'
+            ? `已接收 ${importedCount} 个新文件，后台正在分析归档并建库。`
+            : `已接收 ${importedCount} 个新文件，后台正在处理。`;
+          const fullText = skipDetail ? `${baseText.replace(/。$/, '')}；同时跳过 ${skipDetail}。` : baseText;
           setLatestImportFeedback({
             tone: 'success',
-            text: mode === 'folder' ? `已接收 ${importedCount} 个新文件，后台正在分析归档并建库。` : `已接收 ${importedCount} 个新文件，后台正在处理。`,
+            text: fullText,
             detail: options?.attachToComposer
               ? '这些文件已作为当前对话的优先背景；解析完成前可以提问，但回答会标明可用边界。'
               : '你可以留在当前页面观察建库进度，也可以切到工作台继续其他操作。',
@@ -18941,23 +19180,66 @@ export default function App() {
                               .filter(Boolean)
                           : [];
                         return (
-                      <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`} onClick={() => msg.role === 'assistant' && setActiveMessageId(msg.id)}>
+                      <div key={msg.id} className={`group/message relative flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`} onClick={() => msg.role === 'assistant' && setActiveMessageId(msg.id)}>
                         {msg.role === 'user' && (
-                          <div className="bg-[#5B7BFE] text-white px-4 py-3 xl:px-5 xl:py-3.5 rounded-[20px] rounded-tr-sm max-w-[85%] text-[13px] xl:text-[14px] font-medium leading-relaxed shadow-[0_4px_12px_rgba(91,123,254,0.25)]">
-                            {msg.content}
+                          <div className="relative max-w-[85%]">
+                            <div className="bg-[#5B7BFE] text-white px-4 py-3 xl:px-5 xl:py-3.5 rounded-[20px] rounded-tr-sm text-[13px] xl:text-[14px] font-medium leading-relaxed shadow-[0_4px_12px_rgba(91,123,254,0.25)]">
+                              {msg.content}
+                            </div>
+                            <div className="absolute -left-[72px] top-1/2 -translate-y-1/2 hidden group-hover/message:flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleRepeatChatMessage(msg);
+                                }}
+                                disabled={hasPendingAnalysisRun || isComposerStartingMessage}
+                                className="flex items-center justify-center w-7 h-7 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-[#5B7BFE] hover:border-blue-200 hover:bg-blue-50 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400 disabled:hover:bg-white disabled:hover:border-gray-200"
+                                aria-label="重新提问"
+                                title="重新提问"
+                              >
+                                <RefreshCw size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteChatMessagePair(msg);
+                                }}
+                                className="flex items-center justify-center w-7 h-7 rounded-full bg-white border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors shadow-sm"
+                                aria-label="删除该问答"
+                                title="删除该问答"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           </div>
                         )}
 
                         {msg.role === 'assistant' && (
                           <div className={`bg-white border rounded-[24px] rounded-tl-sm max-w-[98%] xl:max-w-[95%] overflow-hidden transition-all duration-300 shadow-sm ${activeMessageId === msg.id ? 'border-[#5B7BFE] ring-4 ring-blue-500/10 shadow-[0_8px_24px_rgba(91,123,254,0.12)]' : 'border-gray-200 hover:border-blue-200'}`}>
                               <div>
-                                <div className="bg-gray-50/80 border-b border-gray-100 px-4 xl:px-5 py-3 flex items-center justify-between">
+                                <div className="bg-gray-50/80 border-b border-gray-100 px-4 xl:px-5 py-3 flex items-center justify-between gap-3">
                                   <span className="flex items-center gap-1.5 text-[10px] xl:text-[11px] font-bold text-gray-500 uppercase tracking-widest">
                                     <Zap size={14} className="text-amber-500" /> {isHistoricalMockAnswer ? '配置前本地测试回答' : (msg.llmInvoked ? msg.modelRoute || aiRouteLabel(msg.providerUsed || health?.ai.provider, health?.ai.model, health?.ai.providerLabel) : '背景整理')}
                                   </span>
-                                  <span className="text-[10px] xl:text-[11px] text-gray-400 font-medium">
-                                    {msg.timing?.totalMs ? `耗时 ${formatElapsedLabel(msg.timing.totalMs)}` : '点击激活右侧证据线索'}
-                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] xl:text-[11px] text-gray-400 font-medium">
+                                      {msg.timing?.totalMs ? `耗时 ${formatElapsedLabel(msg.timing.totalMs)}` : '点击激活右侧证据线索'}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void handleDeleteChatMessagePair(msg);
+                                      }}
+                                      className="hidden group-hover/message:flex items-center justify-center w-6 h-6 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                                      aria-label="删除该问答"
+                                      title="删除该问答"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </div>
                                 </div>
 
                                 <div className="p-4 xl:p-6 space-y-5 xl:space-y-6">
@@ -19018,7 +19300,7 @@ export default function App() {
                                   {isHardSystemFailure && (
                                     <div className="rounded-2xl border border-rose-100 bg-rose-50/80 px-4 py-3 text-[12px] font-bold text-rose-700">
                                       {(legacyFallbackNotice?.title || '本次回答未成功生成。')}
-                                      <p className="mt-1 font-medium opacity-90">{legacyFallbackNotice?.detail || msg.failureReason || '请稍后重试。'}</p>
+                                      <p className="mt-1 font-medium opacity-90">{legacyFallbackNotice?.detail || friendlyFailureMessage(msg.failureReason)}</p>
                                     </div>
                                   )}
 
@@ -21596,28 +21878,43 @@ export default function App() {
       setOrgModelDraft(nextDraft);
       setIsSavingOrgModel(true);
       try {
+        // ① 真保存：等这一步成功就立刻报"已保存"，不让 reload/backfill 阻塞反馈
         const next = await updateOrgModelProfile(nextDraft);
         setOrgModelState(next);
         setOrgModelDraft(next);
         clearOrgSetupInputDrafts();
         setIsOrgModelDraftDirty(false);
-        const defaultReviewPerspective = resolveDefaultReviewPerspectiveForUser(currentSessionUser);
-        await Promise.all([
-          loadEmployeeReviewBlock(),
-          loadTaskBlock(),
-          loadReviewBlock(resolveSelectedReviewWeekLabel(), {
-            skipAi: true,
-            perspective: defaultReviewPerspective,
-            departmentId: resolveDefaultReviewDepartmentIdForUser(currentSessionUser, defaultReviewPerspective),
-          }),
-        ]);
-        try {
-          const backfill = await backfillOrgTaskLinks();
-          const touchedCount = backfill.createdLinks + backfill.updatedLinks;
-          flash('success', touchedCount > 0 ? `组织底盘已保存，已同步 ${touchedCount} 条任务关联` : '组织底盘已保存，任务关联已校准');
-        } catch (error) {
-          flash('error', error instanceof Error ? `组织底盘已保存，但任务关联回填失败：${error.message}` : '组织底盘已保存，但任务关联回填失败');
-        }
+        flash('success', '组织底盘已保存');
+
+        // ② reload + backfill 火-忘：失败不影响"保存成功"反馈
+        // （之前是串联 await，任一抛错都会让保存看起来失败，但其实后端已 200）
+        void (async () => {
+          try {
+            const defaultReviewPerspective = resolveDefaultReviewPerspectiveForUser(currentSessionUser);
+            await Promise.all([
+              loadEmployeeReviewBlock(),
+              loadTaskBlock(),
+              loadReviewBlock(resolveSelectedReviewWeekLabel(), {
+                skipAi: true,
+                perspective: defaultReviewPerspective,
+                departmentId: resolveDefaultReviewDepartmentIdForUser(currentSessionUser, defaultReviewPerspective),
+              }),
+            ]);
+          } catch (error) {
+            console.warn('[org-model save] post-save reload failed (data is saved, UI may need manual refresh)', error);
+          }
+          try {
+            const backfill = await backfillOrgTaskLinks();
+            const touchedCount = backfill.createdLinks + backfill.updatedLinks;
+            if (touchedCount > 0) {
+              flash('info', `任务关联已同步 ${touchedCount} 条`);
+            }
+          } catch (error) {
+            console.warn('[org-model save] backfill failed', error);
+            flash('error', error instanceof Error ? `任务关联回填失败：${error.message}` : '任务关联回填失败（组织底盘已保存）');
+          }
+        })();
+
         return true;
       } catch (error) {
         flash('error', error instanceof Error ? error.message : '组织底盘保存失败');

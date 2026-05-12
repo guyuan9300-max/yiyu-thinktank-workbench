@@ -931,6 +931,10 @@ class ImportRecord(BaseModel):
     status: Literal["queued", "processing", "completed", "failed", "scanned"]
     importedCount: int
     skippedCount: int
+    # 迭代 2 F1+F2：拆分跳过原因
+    duplicateCount: int = 0   # 内容重复（同 path 同 hash）
+    versionUpgradeCount: int = 0  # 同路径但内容已变 → 自动建版本链
+    unsupportedCount: int = 0  # 格式不支持
     createdAt: str
     jobId: str | None = None
     documents: list[ImportDocumentRecord] = Field(default_factory=list)
@@ -3739,6 +3743,11 @@ class DataCenterSearchHitRecord(BaseModel):
     freshnessScore: float | None = None
     createdAt: str | None = None
     docType: str | None = None
+    # 迭代 2 F3：版本链信息（UI 显示 "v2 · 最新" 徽章）
+    versionNumber: int | None = None
+    versionChainId: str | None = None
+    lifecycleStatus: Literal["current", "superseded", "deleted"] | None = None
+    chainTotalVersions: int | None = None
 
 
 class DataCenterSearchResultRecord(BaseModel):

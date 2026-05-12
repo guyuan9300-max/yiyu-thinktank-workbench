@@ -224,7 +224,30 @@ def _to_search_hit(
         freshnessScore=signal.freshnessScore,
         createdAt=item.createdAt,
         docType=item.docType,
+        **_lookup_version_info(item.documentId),
     )
+
+
+# 迭代 2 F3：版本信息查找的注入点（由 main.py 注册）。
+# 不直接持有 db 引用，避免循环依赖；用回调让 main.py 注入。
+_version_info_lookup: Any = None
+
+
+def set_version_info_lookup(fn: Any) -> None:
+    """由 main.py 在 create_app 时调用，注入按 document_id 查版本链的函数。"""
+    global _version_info_lookup
+    _version_info_lookup = fn
+
+
+def _lookup_version_info(document_id: str | None) -> dict[str, object]:
+    """按 document_id 拿版本号 + 同链总版本数。未注入或查询失败 → 空 dict。"""
+    if not document_id or _version_info_lookup is None:
+        return {}
+    try:
+        result = _version_info_lookup(document_id)
+        return result or {}
+    except Exception:
+        return {}
 
 
 def _is_markdown_path(value: str | None) -> bool:

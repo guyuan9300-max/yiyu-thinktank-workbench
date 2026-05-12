@@ -2176,6 +2176,31 @@ class Database:
             self._ensure_column("learning_recommendations", "why_now", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("learning_recommendations", "linked_contexts_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column("knowledge_documents", "reclass_confidence", "REAL NOT NULL DEFAULT 0.0")
+            # 迭代 2 F3：版本链字段。lifecycle_status 控制检索是否召回；
+            # version_chain_id 同一份资料的所有版本共享；version_number 是顺序号。
+            self._ensure_column("knowledge_documents", "lifecycle_status", "TEXT NOT NULL DEFAULT 'current'")
+            self._ensure_column("knowledge_documents", "superseded_by_id", "TEXT")
+            self._ensure_column("knowledge_documents", "version_chain_id", "TEXT")
+            self._ensure_column("knowledge_documents", "version_number", "INTEGER NOT NULL DEFAULT 1")
+            # 索引：检索默认 WHERE lifecycle_status='current' 必须命中索引
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_docs_lifecycle "
+                "ON knowledge_documents(client_id, lifecycle_status)"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_docs_chain "
+                "ON knowledge_documents(version_chain_id, version_number DESC)"
+            )
+            # 一次性 backfill：把已有文档的 version_chain_id 设为自己的 id
+            # （每份资料独立成链）。lifecycle_status 在 ALTER 时已默认 'current'。
+            self.conn.execute(
+                "UPDATE knowledge_documents SET version_chain_id = id "
+                "WHERE version_chain_id IS NULL"
+            )
+            # 迭代 2 F1+F2：imports 表拆分跳过原因（duplicate / unsupported / version_upgrade）
+            self._ensure_column("imports", "duplicate_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("imports", "unsupported_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("imports", "version_upgrade_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("v2_documents", "markdown_path", "TEXT")
             self._ensure_column("v2_documents", "markdown_content", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("answer_runs", "retrieval_mode", "TEXT NOT NULL DEFAULT 'legacy'")

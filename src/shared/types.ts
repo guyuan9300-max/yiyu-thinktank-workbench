@@ -872,6 +872,9 @@ export interface ImportRecord {
   status: 'queued' | 'processing' | 'completed' | 'failed' | 'scanned';
   importedCount: number;
   skippedCount: number;
+  duplicateCount?: number;
+  versionUpgradeCount?: number;
+  unsupportedCount?: number;
   createdAt: string;
   jobId?: string | null;
   documents?: ImportDocumentRecord[];
@@ -1786,6 +1789,10 @@ export interface DataCenterSearchHit {
   freshnessScore?: number | null;
   createdAt?: string | null;
   docType?: string | null;
+  versionNumber?: number | null;
+  versionChainId?: string | null;
+  lifecycleStatus?: 'current' | 'superseded' | 'deleted' | null;
+  chainTotalVersions?: number | null;
 }
 
 export interface DataCenterSearchResult {

@@ -101,6 +101,34 @@ function FreshnessBadge({ display }: { display: FreshnessDisplay }) {
   );
 }
 
+function VersionBadge({ hit }: { hit: DataCenterSearchHit }) {
+  const versionNumber = typeof hit.versionNumber === 'number' ? hit.versionNumber : null;
+  const chainTotal = typeof hit.chainTotalVersions === 'number' ? hit.chainTotalVersions : 1;
+  const status = hit.lifecycleStatus || 'current';
+  if (status === 'superseded') {
+    return (
+      <span
+        className="rounded-full border border-rose-100 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700"
+        title={`此版本已被新版本取代，仅供历史追溯`}
+      >
+        已被取代
+      </span>
+    );
+  }
+  if (versionNumber && versionNumber > 1) {
+    const tail = chainTotal > 1 ? ` · 共 ${chainTotal} 版` : '';
+    return (
+      <span
+        className="rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700"
+        title={`这份资料的第 ${versionNumber} 版${tail}（旧版已自动归档，不进检索）`}
+      >
+        v{versionNumber} · 最新{tail}
+      </span>
+    );
+  }
+  return null;
+}
+
 function titleForHit(hit: DataCenterSearchHit): string {
   return hit.title || '未命名资料';
 }
@@ -164,6 +192,7 @@ function SearchGroupCard({
               </span>
             )}
             {freshnessDisplay && <FreshnessBadge display={freshnessDisplay} />}
+            <VersionBadge hit={hit} />
           </div>
           <p className="mt-2 text-[13px] font-bold leading-snug text-slate-900 line-clamp-2">{titleForHit(hit)}</p>
           {sourceLineForHit(hit) && <p className="mt-1 text-[11px] font-semibold text-slate-400">{sourceLineForHit(hit)}</p>}
