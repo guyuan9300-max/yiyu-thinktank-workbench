@@ -1,39 +1,49 @@
-"""火山引擎录音文件识别 provider。
+"""火山引擎大模型录音文件识别 provider。
 
-API 文档：https://www.volcengine.com/docs/6561/80816 （录音文件识别 - 大模型）
+官方文档（旧版控制台）：
+- 提交：POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit
+- 查询：POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/query
 
-鉴权字段（前端 UI 暴露 + 用户填写）：
-- app_id        : 火山应用 App ID
-- access_key    : 火山 Access Key（短期）/ Access Key ID（长期）
-- access_token  : 用户在火山控制台拿到的 access token（敏感，UI 显示为 password）
+鉴权 headers（不是 Bearer！火山有自己的 X-Api-* 协议）：
+- X-Api-App-Key       : 用户在火山控制台的 App ID
+- X-Api-Access-Key    : 用户在火山控制台拿到的 Access Token（敏感）
+- X-Api-Resource-Id   : 资源 ID — volc.bigasr.auc（1.0）/ volc.seedasr.auc（2.0）
+- X-Api-Request-Id    : 用户生成的任务 UUID
+- X-Api-Sequence      : 固定 -1
 
-接口形态（异步任务 + 轮询）：
-1. POST {endpoint}/submit  → 拿 task_id
-2. POST {endpoint}/query   → 轮询，status=success/failed/processing
+Payload 结构（**无 app 节点，无 cluster**）：
+  {"user": {"uid": "..."}, "audio": {"url": "...", "format": "mp3"},
+   "request": {"model_name": "bigmodel", ...}}
 
-I1a 只用到 test_connection（提交一段内置 1s 静音，看流程是否能 submit + 轮询成功）。
-I1b 才会真正用 transcribe_file 跑用户上传的录音。
+应答：Body 为空，所有状态都在 Response Header 里：
+- X-Api-Status-Code   : "20000000" = 成功；"45000001" = 请求参数无效
+- X-Api-Message       : 文本描述
+- X-Tt-Logid          : 服务端日志 ID（查询任务时要传回去）
+
+I1a 只用 test_connection（用一个明显不可达的 audio.url 探测鉴权层）。
+I1b 才会真正实现 transcribe_file（上传到对象存储 → submit → 轮询 query）。
 """
 from __future__ import annotations
 
 import time
-from pathlib import Path
+import uuid
 from typing import Any
 
 import httpx
 
 from . import TestConnectionResult, TranscriptionProvider, TranscriptionResult, TranscriptionSegment
 
-# 火山录音文件识别（大模型版）官方端点。如果未来变更，从 extra_config["base_url"] 读取覆盖。
-DEFAULT_BASE_URL = "https://openspeech.bytedance.com/api/v1/auc"
+DEFAULT_BASE_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel"
+DEFAULT_RESOURCE_ID = "volc.bigasr.auc"  # 豆包录音文件识别 1.0
 
-# 1 秒静音 .wav（44 bytes WAV header + 一秒 16kHz 16bit 单声道静音 = 32044 bytes）
-# 内置一段最小测试音频，避免依赖 ffmpeg 实时生成。文件放在同目录的 testdata/silence_1s.wav。
-SILENCE_WAV_PATH = Path(__file__).parent / "testdata" / "silence_1s.wav"
+# 鉴权失败的 X-Api-Status-Code（前缀映射；火山没有公开列出所有 4xxx）
+_AUTH_FAILURE_CODES = {"45000001"}  # 参数无效（含鉴权字段错），有时鉴权问题也走这条
+_PARAM_INVALID_CODES = {"45000001", "45000002", "45000131", "45000132", "45000151"}
+_SUCCESS_OR_PROCESSING = {"20000000", "20000001", "20000002", "20000003"}
 
 
 class VolcanoTranscriptionProvider:
-    """火山引擎录音文件识别 provider 实现。"""
+    """火山引擎大模型录音文件识别（豆包）provider 实现。"""
     name = "volcano"
 
     def test_connection(
@@ -44,9 +54,8 @@ class VolcanoTranscriptionProvider:
         extra_config: dict[str, str],
         timeout_seconds: float = 30.0,
     ) -> TestConnectionResult:
-        app_id = credentials.get("app_id", "").strip()
-        access_key = credentials.get("access_key", "").strip()
-        access_token = credentials.get("access_token", "").strip()
+        app_id = (credentials.get("app_id") or "").strip()
+        access_token = (credentials.get("access_token") or "").strip()
         if not app_id or not access_token:
             return TestConnectionResult(
                 success=False,
@@ -54,61 +63,98 @@ class VolcanoTranscriptionProvider:
                 detail="请在配置里填写完整的 App ID 和 Access Token 后再测试。",
             )
 
-        base_url = extra_config.get("base_url", "").strip() or DEFAULT_BASE_URL
+        resource_id = (extra_config.get("resource_id") or "").strip() or DEFAULT_RESOURCE_ID
+        base_url = (extra_config.get("base_url") or "").strip() or DEFAULT_BASE_URL
+        submit_url = f"{base_url.rstrip('/')}/submit"
 
         started = time.perf_counter()
         try:
-            # 用 HEAD 请求或非破坏性的"鉴权预检"调用打到火山端点。
-            # 直接 submit 一个真任务会扣费，所以 test_connection 选择只验证鉴权可用（401/403 vs 其他）。
-            # 火山 ASR 没有专门 ping 接口，这里 submit 一个最小静音任务，拿到 task_id 即视为成功。
-            payload = self._build_submit_payload_for_silence(app_id=app_id, model_id=model_id)
-            headers = self._build_headers(access_key=access_key, access_token=access_token)
+            # test_connection 提交一个明显假的 audio URL：火山会先做鉴权 + 参数校验，
+            # 鉴权失败 → X-Api-Status-Code 走 4xxxxxx 且包含"auth"语义
+            # 鉴权通过但参数无效 → 也走 45000001 但 message 含 "url" / "invalid url" 等
+            # 不管哪条 4xxxxxx，鉴权层已通过 = 我们要的成功信号
+            headers = {
+                "Content-Type": "application/json",
+                "X-Api-App-Key": app_id,
+                "X-Api-Access-Key": access_token,
+                "X-Api-Resource-Id": resource_id,
+                "X-Api-Request-Id": str(uuid.uuid4()),
+                "X-Api-Sequence": "-1",
+            }
+            payload: dict[str, Any] = {
+                "user": {"uid": "yiyu-test-connection"},
+                "audio": {
+                    "url": "https://yiyu-internal-probe.invalid/silence.mp3",
+                    "format": "mp3",
+                },
+                "request": {
+                    "model_name": "bigmodel",
+                    "enable_itn": True,
+                },
+            }
             resp = httpx.post(
-                f"{base_url}/submit",
+                submit_url,
                 json=payload,
                 headers=headers,
                 timeout=min(timeout_seconds, 15.0),
             )
             latency_ms = (time.perf_counter() - started) * 1000.0
+
+            # 火山把状态全放在 response header 里，body 是空的
+            status_code = resp.headers.get("X-Api-Status-Code", "").strip()
+            api_message = resp.headers.get("X-Api-Message", "").strip()
+            logid = resp.headers.get("X-Tt-Logid", "").strip()
+
+            # 401/403 = 完全的 HTTP 层鉴权拒绝（火山 v3 一般不走这条，但 v1 / 旧 API 会）
             if resp.status_code in (401, 403):
                 return TestConnectionResult(
                     success=False,
-                    message=f"鉴权失败（HTTP {resp.status_code}）：请检查 App ID / Access Key / Access Token",
-                    detail=resp.text[:400],
+                    message=f"鉴权失败（HTTP {resp.status_code}）：请检查 App ID 和 Access Token",
+                    detail=f"X-Api-Message: {api_message or '无'} / X-Tt-Logid: {logid}",
                     latency_ms=latency_ms,
                 )
-            if resp.status_code >= 400:
-                return TestConnectionResult(
-                    success=False,
-                    message=f"火山接口返回 HTTP {resp.status_code}",
-                    detail=resp.text[:400],
-                    latency_ms=latency_ms,
-                )
-            data: Any
-            try:
-                data = resp.json()
-            except Exception:
-                return TestConnectionResult(
-                    success=False,
-                    message="火山接口返回非 JSON，请检查 base_url 是否正确",
-                    detail=resp.text[:400],
-                    latency_ms=latency_ms,
-                )
-            # 火山返回 {"resp": {"code": 1000, "message": "Success", "id": "..."}} 即成功
-            code = (data or {}).get("resp", {}).get("code")
-            if code in (1000, 0, "1000", "0"):
+
+            # 成功 / 处理中 / 队列中 / 静音音频 — 都说明鉴权 + endpoint + resource_id 全过
+            if status_code in _SUCCESS_OR_PROCESSING:
                 return TestConnectionResult(
                     success=True,
-                    message="已连通：火山接口认可当前鉴权与 App ID。",
-                    detail=None,
+                    message="已连通：火山接口认可你的 App ID + Access Token + Resource ID。",
+                    detail=f"X-Api-Status-Code: {status_code} / X-Api-Message: {api_message}",
                     latency_ms=latency_ms,
                 )
+
+            # 45000001 参数无效 — 我们故意传了假 url，火山会因为 url 不可达而报错
+            # 但这意味着 *鉴权层完全通过了*，是我们要的连通成功信号
+            if status_code in _PARAM_INVALID_CODES:
+                # 但要排除"鉴权字段错误"这种 4xxxxxx —— 检查 message 是不是含鉴权关键词
+                msg_lower = api_message.lower()
+                auth_indicators = ("auth", "token", "appid", "app_key", "access_key",
+                                   "resource", "grant", "permission", "denied", "not granted")
+                if any(ind in msg_lower for ind in auth_indicators):
+                    return TestConnectionResult(
+                        success=False,
+                        message=f"鉴权失败：{api_message}",
+                        detail=f"X-Api-Status-Code: {status_code} / X-Tt-Logid: {logid}",
+                        latency_ms=latency_ms,
+                    )
+                return TestConnectionResult(
+                    success=True,
+                    message="鉴权已通过（火山反馈测试请求参数无效是预期的，因为 test_connection 故意传了假音频 URL）。",
+                    detail=f"X-Api-Status-Code: {status_code} / X-Api-Message: {api_message}",
+                    latency_ms=latency_ms,
+                )
+
+            # 其他情况：5500xxxx 服务内部错误等
             return TestConnectionResult(
                 success=False,
-                message=f"火山接口拒绝了请求：{(data or {}).get('resp', {}).get('message', 'unknown')}",
-                detail=str(data)[:400],
+                message=(
+                    f"火山接口异常（X-Api-Status-Code: {status_code or 'unknown'}）"
+                    + (f"：{api_message}" if api_message else "")
+                ),
+                detail=f"HTTP {resp.status_code} / X-Tt-Logid: {logid} / body: {resp.text[:200]}",
                 latency_ms=latency_ms,
             )
+
         except httpx.TimeoutException:
             return TestConnectionResult(
                 success=False,
@@ -136,38 +182,5 @@ class VolcanoTranscriptionProvider:
         extra_config: dict[str, str],
         timeout_seconds: float = 1800.0,
     ) -> TranscriptionResult:
-        """I1b 才会实现。I1a 占位，调用即抛 NotImplementedError。"""
+        """I1b 才会实现：上传文件到对象存储 → submit → 轮询 query 拿结果。"""
         raise NotImplementedError("transcribe_file 留给 I1b 迭代实现")
-
-    # --- 内部 helper ---
-
-    def _build_headers(self, *, access_key: str, access_token: str) -> dict[str, str]:
-        # 火山 API 的鉴权头组合（按官方文档；不同子产品略有差异，I1b 会精化）
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer; {access_token}",
-            "Resource-Id": "volc.bigasr.auc",
-            **({"X-Volc-Access-Key": access_key} if access_key else {}),
-        }
-
-    def _build_submit_payload_for_silence(self, *, app_id: str, model_id: str) -> dict[str, Any]:
-        # 提交一段内置静音音频（用 file_url 引用占位的 1s wav data URL）做最轻量探测。
-        # 实际生产环境的 file_url 是用户上传到对象存储的链接；test_connection 只验证鉴权流程。
-        return {
-            "app": {"appid": app_id},
-            "user": {"uid": "yiyu-test-connection"},
-            "audio": {
-                "format": "wav",
-                "rate": 16000,
-                "bits": 16,
-                "channel": 1,
-                # 注意：这里只是"鉴权探测"用的请求。真正提交时火山可能拒绝无效 url，
-                # 但鉴权失败会优先返回 401/403，鉴权成功后才会校验音频可达性 —— 这正是我们要的信号。
-                "url": "https://example.com/yiyu-test-connection.wav",
-            },
-            "request": {
-                "model_name": model_id or "bigmodel",
-                "show_utterances": True,
-                "enable_punc": True,
-            },
-        }

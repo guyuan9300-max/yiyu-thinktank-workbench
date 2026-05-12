@@ -31,11 +31,17 @@ function buildEmptyDraft(): SpeechModelSettingsPayload {
 
 function settingsToDraft(settings: SpeechModelSettings | null): SpeechModelSettingsPayload {
   if (!settings) return buildEmptyDraft();
+  // 给当前 provider 的 extraFields 补默认值，避免已存配置缺新字段（如 cluster）导致提交空值
+  const descriptor = findSpeechProvider(settings.provider);
+  const defaultExtras: Record<string, string> = {};
+  if (descriptor) {
+    for (const f of descriptor.extraFields) defaultExtras[f.key] = f.defaultValue;
+  }
   return {
     provider: settings.provider || '',
     credentials: { ...(settings.credentials || {}) },
     modelId: settings.modelId || '',
-    extraConfig: { ...(settings.extraConfig || {}) },
+    extraConfig: { ...defaultExtras, ...(settings.extraConfig || {}) },
     enabled: Boolean(settings.enabled),
   };
 }
@@ -231,6 +237,7 @@ export function SpeechModelSettingsCard({
                       </option>
                     ))}
                   </select>
+                  {field.helper && <p className="text-[11px] text-gray-400">{field.helper}</p>}
                 </div>
               ))}
             </div>

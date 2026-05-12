@@ -54,29 +54,41 @@ export interface SpeechProviderDescriptor {
 export const SPEECH_MODEL_PROVIDERS: SpeechProviderDescriptor[] = [
   {
     id: 'volcano',
-    label: '火山引擎（豆包语音识别）',
+    label: '火山引擎（豆包大模型录音文件识别）',
     supported: true,
-    description: '火山引擎录音文件识别 / 一句话识别。中文场景准确率高，数据合规友好，与你已接入的豆包大模型同一账号。',
+    description: '火山引擎豆包大模型录音文件识别。中文场景准确率高，最长支持 5 小时音频/512MB 文件。endpoint 走 openspeech.bytedance.com 旧版控制台 API（不是 ark）。',
     credentialFields: [
-      { key: 'app_id', label: 'App ID', type: 'text', placeholder: '在火山引擎控制台拿到的应用 App ID' },
-      { key: 'access_key', label: 'Access Key', type: 'text', placeholder: '可选；长期 Access Key ID' },
-      { key: 'access_token', label: 'Access Token', type: 'password', placeholder: '火山控制台 → 语音技术 → API Token' },
+      { key: 'app_id', label: 'App ID', type: 'text', placeholder: '火山控制台 → 语音技术 → 你的应用 App ID（数字串）' },
+      { key: 'access_token', label: 'Access Token', type: 'password', placeholder: '火山控制台 → 语音技术 → API Access Token' },
     ],
     models: [
-      { id: 'bigmodel', label: '豆包·录音文件识别（大模型版）', description: '异步任务，最长 5h，中文准确率最高' },
-      { id: 'standard', label: '录音文件识别（标准版）', description: '同上但模型较老，价格略低' },
+      { id: 'bigmodel', label: '豆包·录音文件识别（model_name=bigmodel）', description: '当前火山只支持这一个 model_name' },
     ],
     extraFields: [
+      {
+        key: 'resource_id',
+        label: '模型资源 ID',
+        type: 'select',
+        options: [
+          { value: 'volc.bigasr.auc', label: '豆包录音文件识别 1.0（volc.bigasr.auc）' },
+          { value: 'volc.seedasr.auc', label: '豆包录音文件识别 2.0 · Seed-ASR（volc.seedasr.auc）' },
+        ],
+        defaultValue: 'volc.bigasr.auc',
+        helper: '对应火山控制台的"模型版本"。先选 1.0；2.0 是 Seed-ASR，额外支持图片上下文。',
+      },
       {
         key: 'language',
         label: '识别语种',
         type: 'select',
         options: [
-          { value: 'zh-CN', label: '简体中文' },
-          { value: 'en-US', label: '英文（美国）' },
-          { value: 'auto', label: '自动识别' },
+          { value: '', label: '自动（中英文 + 部分方言）' },
+          { value: 'zh-CN', label: '中文普通话（zh-CN）' },
+          { value: 'en-US', label: '英文（en-US）' },
+          { value: 'yue-CN', label: '粤语（yue-CN）' },
+          { value: 'ja-JP', label: '日语（ja-JP）' },
+          { value: 'ko-KR', label: '韩语（ko-KR）' },
         ],
-        defaultValue: 'zh-CN',
+        defaultValue: '',
       },
     ],
   },
