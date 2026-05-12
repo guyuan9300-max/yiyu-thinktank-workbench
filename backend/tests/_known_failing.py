@@ -36,7 +36,8 @@ KNOWN_FAILING_TESTS: frozenset[str] = frozenset({
     "tests/test_api_smoke.py::test_client_dna_documents_are_saved_and_prioritized_in_chat_context",
     "tests/test_api_smoke.py::test_cloud_task_board_builds_event_line_shadow_and_memory_hints",
     "tests/test_api_smoke.py::test_data_center_ingest_skips_task_with_missing_client",
-    "tests/test_api_smoke.py::test_event_line_clarification_draft_can_be_generated_from_conversation",
+    # 注：test_event_line_clarification_draft_can_be_generated_from_conversation
+    # 已被 document_path_optimizations + document_cards schema 修复（ee88d0c），从清单移除
     "tests/test_api_smoke.py::test_event_line_report_snapshot_includes_document_parse_fields_locally",
     "tests/test_api_smoke.py::test_feishu_user_binding_callback_persists_current_user",
     "tests/test_api_smoke.py::test_feishu_user_binding_start_uses_configured_public_callback",
