@@ -5,6 +5,10 @@ from datetime import datetime
 from typing import Any
 
 from app.models import EvidenceItem, EvidenceQualitySignalRecord
+from app.services.freshness_decay import (
+    NEUTRAL_WHEN_UNKNOWN,
+    compute_time_decay,
+)
 from app.services.source_semantics import infer_semantic_source_roles_fields
 
 
@@ -72,6 +76,8 @@ def classify_evidence_quality_fields(
     section_label: str = "",
     retrieval_stage: str = "",
     path: str = "",
+    created_at: str | None = None,
+    doc_type: str | None = None,
 ) -> EvidenceQualitySignalRecord:
     merged = _norm(f"{title} {section_label} {excerpt} {path}")
     source_type_norm = _norm(source_type)
@@ -167,11 +173,22 @@ def classify_evidence_quality_fields(
     if source_kind == "judgment" and authority_hint == "unknown":
         authority_hint = "state"
 
-    year = _parse_year_from_text(str(title or "") + " " + str(excerpt or ""))
-    freshness = 0.2
-    if year:
-        current_year = datetime.now().year
-        freshness = max(0.0, min(1.0, 1.0 - (current_year - year) * 0.2))
+    # 迭代 1（鲜度衰减）：
+    # 优先用 created_at + doc_type 做指数时间衰减；没有 created_at 才降级到
+    # 旧的"从 title/excerpt 抓 4 位年份做线性衰减"启发式。这是为了保留对
+    # 不带显式 createdAt 的老构造点的可读性，同时让新主路径走精确时间衰减。
+    if created_at:
+        # 上下文里有真实创建时间，doc_type 作为分类提示（None → default 90 天）。
+        freshness = compute_time_decay(created_at, doc_type)
+    else:
+        year = _parse_year_from_text(str(title or "") + " " + str(excerpt or ""))
+        if year:
+            current_year = datetime.now().year
+            # 线性 fallback 保持向后兼容
+            freshness = max(0.0, min(1.0, 1.0 - (current_year - year) * 0.2))
+        else:
+            # 不再硬编码 0.2（等同"4 年前"的强烈降权）——用中性值
+            freshness = NEUTRAL_WHEN_UNKNOWN
 
     quality_score = max(-2.0, min(3.0, score - demotion + freshness))
     return EvidenceQualitySignalRecord(
@@ -211,6 +228,8 @@ def classify_evidence_quality(item: EvidenceItem) -> EvidenceQualitySignalRecord
         section_label=item.sectionLabel or "",
         retrieval_stage=item.retrievalStage or "",
         path=item.path or "",
+        created_at=item.createdAt,
+        doc_type=item.docType,
     )
 
 
@@ -222,4 +241,6 @@ def classify_evidence_quality_payload(payload: dict[str, Any]) -> EvidenceQualit
         section_label=str(payload.get("sectionLabel") or payload.get("section_label") or ""),
         retrieval_stage=str(payload.get("retrievalStage") or payload.get("sourceStage") or payload.get("source_stage") or ""),
         path=str(payload.get("path") or ""),
+        created_at=(payload.get("createdAt") or payload.get("created_at")) or None,
+        doc_type=(payload.get("docType") or payload.get("doc_type")) or None,
     )

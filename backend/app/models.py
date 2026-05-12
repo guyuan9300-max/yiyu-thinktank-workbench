@@ -1099,6 +1099,12 @@ class EvidenceItem(BaseModel):
     citationRole: Literal["direct_quote", "direct_support", "background"] | None = None
     citationPriority: int | None = None
     citationReason: str | None = None
+    # 迭代 1（鲜度衰减）：携带文档创建时间，供 evidence_quality 做时间衰减。
+    # ISO 8601 字符串；None 表示该构造点未提供（向后兼容，evidence_quality
+    # 会降级到旧的 year-regex 启发式）。
+    createdAt: str | None = None
+    # 文档类型键，对应 freshness_decay.HALF_LIFE_BY_TYPE。None → default。
+    docType: str | None = None
 
 
 class AiStructuredResponse(BaseModel):

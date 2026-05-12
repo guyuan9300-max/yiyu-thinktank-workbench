@@ -111,6 +111,10 @@ def _to_evidence_item(index: int, item: dict[str, object], *, prefix: str, sourc
         score=float(item.get("score") or 0.0) if item.get("score") is not None else None,
         sectionLabel=str(item.get("sectionLabel") or "") or None,
         retrievalStage=str(item.get("sourceStage") or stage),
+        # 迭代 1：把上游字典里的创建时间/类型透传给 EvidenceItem，
+        # 让 evidence_quality 做真实时间衰减。
+        createdAt=_string_value(item, "createdAt", "created_at"),
+        docType=_string_value(item, "docType", "doc_type", "kind"),
     )
 
 
