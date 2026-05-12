@@ -137,6 +137,10 @@ from app.models import (
     EntityMergeResultRecord,
     EntityRecord,
     EvidenceItem,
+    GlossaryCreatePayload,
+    GlossaryEntryRecord,
+    GlossaryListResponseRecord,
+    GlossaryUpdatePayload,
     ExportAnswerPayload,
     FactContradictionListResponseRecord,
     FactContradictionRecord,
@@ -32556,6 +32560,115 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ],
             total=total,
         )
+
+    def _glossary_entry_to_record(entry) -> GlossaryEntryRecord:
+        return GlossaryEntryRecord(
+            id=entry.id,
+            clientId=entry.client_id,
+            term=entry.term,
+            normalizedTerm=entry.normalized_term,
+            definition=entry.definition,
+            aliases=entry.aliases,
+            category=entry.category,
+            createdAt=entry.created_at,
+            updatedAt=entry.updated_at,
+        )
+
+    @app.get(
+        "/api/v1/clients/{client_id}/glossary",
+        response_model=GlossaryListResponseRecord,
+    )
+    def get_client_glossary(
+        client_id: str,
+        q: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> GlossaryListResponseRecord:
+        """迭代 7：查询客户术语表。"""
+        from app.services.glossary_store import list_glossary
+
+        build_client_summary(client_id)
+        safe_limit = max(1, min(int(limit or 100), 500))
+        safe_offset = max(0, int(offset or 0))
+        entries, total = list_glossary(
+            state.db.conn,
+            client_id=client_id,
+            query=q or None,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        return GlossaryListResponseRecord(
+            entries=[_glossary_entry_to_record(e) for e in entries],
+            total=total,
+        )
+
+    @app.post(
+        "/api/v1/clients/{client_id}/glossary",
+        response_model=GlossaryEntryRecord,
+    )
+    def create_client_glossary(
+        client_id: str,
+        payload: GlossaryCreatePayload,
+    ) -> GlossaryEntryRecord:
+        from app.services.glossary_store import create_glossary_entry
+
+        build_client_summary(client_id)
+        try:
+            entry = create_glossary_entry(
+                state.db.conn,
+                client_id=client_id,
+                term=payload.term,
+                definition=payload.definition,
+                aliases=payload.aliases,
+                category=payload.category,
+            )
+            state.db.conn.commit()
+        except ValueError as exc:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            from fastapi import HTTPException
+
+            state.db.conn.rollback()
+            # IntegrityError → 409
+            raise HTTPException(status_code=409, detail=f"该术语已存在: {exc}")
+        return _glossary_entry_to_record(entry)
+
+    @app.patch("/api/v1/glossary/{entry_id}", response_model=GlossaryEntryRecord)
+    def update_glossary(
+        entry_id: str,
+        payload: GlossaryUpdatePayload,
+    ) -> GlossaryEntryRecord:
+        from app.services.glossary_store import update_glossary_entry
+
+        try:
+            entry = update_glossary_entry(
+                state.db.conn,
+                entry_id=entry_id,
+                term=payload.term,
+                definition=payload.definition,
+                aliases=payload.aliases,
+                category=payload.category,
+            )
+            state.db.conn.commit()
+        except ValueError as exc:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail=str(exc))
+        return _glossary_entry_to_record(entry)
+
+    @app.delete("/api/v1/glossary/{entry_id}")
+    def delete_glossary(entry_id: str) -> dict[str, str]:
+        from app.services.glossary_store import delete_glossary_entry
+
+        deleted = delete_glossary_entry(state.db.conn, entry_id=entry_id)
+        state.db.conn.commit()
+        if not deleted:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="not found")
+        return {"status": "ok"}
 
     @app.get(
         "/api/v1/clients/{client_id}/entity-merge-candidates",

@@ -450,6 +450,7 @@ import { DataCenterOpsPanel } from './components/data_center/DataCenterOpsPanel'
 import { FileSearchResultPanel } from './components/data_center/FileSearchResultPanel';
 import { EntityListPanel } from './components/client_workspace/EntityListPanel';
 import { ContradictionAlertPanel } from './components/client_workspace/ContradictionAlertPanel';
+import { GlossaryPanel } from './components/client_workspace/GlossaryPanel';
 import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
@@ -20306,6 +20307,7 @@ export default function App() {
                       />
                       {currentClientId && <ContradictionAlertPanel clientId={currentClientId} />}
                       {currentClientId && <EntityListPanel clientId={currentClientId} />}
+                      {currentClientId && <GlossaryPanel clientId={currentClientId} />}
                     </>
                   );
                 })()}

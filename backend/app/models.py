@@ -3754,6 +3754,45 @@ class EntityMergeResultRecord(BaseModel):
     factsMoved: int = 0
 
 
+class GlossaryEntryRecord(BaseModel):
+    """迭代 7：客户私有术语。"""
+
+    id: str
+    clientId: str
+    term: str
+    normalizedTerm: str
+    definition: str
+    aliases: list[str] = Field(default_factory=list)
+    category: str = ""
+    createdAt: str
+    updatedAt: str
+
+
+class GlossaryListResponseRecord(BaseModel):
+    """GET /api/v1/clients/{id}/glossary 响应。"""
+
+    entries: list[GlossaryEntryRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class GlossaryCreatePayload(BaseModel):
+    """POST /api/v1/clients/{id}/glossary 请求。"""
+
+    term: str
+    definition: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    category: str = ""
+
+
+class GlossaryUpdatePayload(BaseModel):
+    """PATCH /api/v1/glossary/{id} 请求。"""
+
+    term: str | None = None
+    definition: str | None = None
+    aliases: list[str] | None = None
+    category: str | None = None
+
+
 class RelationshipTripleRecord(BaseModel):
     """迭代 5：关系三元组。"""
 

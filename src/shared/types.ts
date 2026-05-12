@@ -1820,6 +1820,23 @@ export interface EntityMergeResult {
   factsMoved: number;
 }
 
+export interface GlossaryEntry {
+  id: string;
+  clientId: string;
+  term: string;
+  normalizedTerm: string;
+  definition: string;
+  aliases: string[];
+  category: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GlossaryListResponse {
+  entries: GlossaryEntry[];
+  total: number;
+}
+
 export interface DataCenterSearchHit {
   title: string;
   excerpt: string;

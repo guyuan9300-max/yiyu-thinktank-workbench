@@ -2308,6 +2308,24 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_entity_merge_log_client
                     ON entity_merge_log(client_id, created_at DESC);
+
+                -- 迭代 7：客户私有术语库
+                -- term: 原始术语；normalized_term: 归一化（用于 dedup + 查找）
+                -- definition: 术语含义解释；aliases: 别名列表（用于检索时召回）
+                CREATE TABLE IF NOT EXISTS client_glossary (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    term TEXT NOT NULL,
+                    normalized_term TEXT NOT NULL,
+                    definition TEXT NOT NULL DEFAULT '',
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    category TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_client_glossary_client_term
+                    ON client_glossary(client_id, normalized_term);
                 """
             )
             self._ensure_column("v2_documents", "markdown_path", "TEXT")

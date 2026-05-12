@@ -224,6 +224,8 @@ import type {
   EntityMergeCandidate,
   EntityMergeCandidatesResponse,
   EntityMergeResult,
+  GlossaryEntry,
+  GlossaryListResponse,
   FactContradiction,
   FactContradictionListResponse,
   OpenQuestion,
@@ -1508,6 +1510,45 @@ export async function getClientEntities(
   const suffix = params.toString();
   const url = `/api/v1/clients/${clientId}/entities${suffix ? `?${suffix}` : ''}`;
   return request<EntityListResponse>(url);
+}
+
+export async function getClientGlossary(
+  clientId: string,
+  options: { q?: string; limit?: number; offset?: number } = {},
+): Promise<GlossaryListResponse> {
+  const params = new URLSearchParams();
+  if (options.q) params.set('q', options.q);
+  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
+  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
+  const suffix = params.toString();
+  const url = `/api/v1/clients/${clientId}/glossary${suffix ? `?${suffix}` : ''}`;
+  return request<GlossaryListResponse>(url);
+}
+
+export async function createGlossaryEntry(
+  clientId: string,
+  payload: { term: string; definition?: string; aliases?: string[]; category?: string },
+): Promise<GlossaryEntry> {
+  return request<GlossaryEntry>(`/api/v1/clients/${clientId}/glossary`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateGlossaryEntry(
+  entryId: string,
+  payload: { term?: string; definition?: string; aliases?: string[]; category?: string },
+): Promise<GlossaryEntry> {
+  return request<GlossaryEntry>(`/api/v1/glossary/${entryId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteGlossaryEntry(entryId: string): Promise<void> {
+  await request<{ status: string }>(`/api/v1/glossary/${entryId}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function getEntityMergeCandidates(
