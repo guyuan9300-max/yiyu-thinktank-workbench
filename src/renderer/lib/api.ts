@@ -221,6 +221,9 @@ import type {
   ConflictGroup,
   Entity,
   EntityListResponse,
+  EntityMergeCandidate,
+  EntityMergeCandidatesResponse,
+  EntityMergeResult,
   FactContradiction,
   FactContradictionListResponse,
   OpenQuestion,
@@ -1505,6 +1508,25 @@ export async function getClientEntities(
   const suffix = params.toString();
   const url = `/api/v1/clients/${clientId}/entities${suffix ? `?${suffix}` : ''}`;
   return request<EntityListResponse>(url);
+}
+
+export async function getEntityMergeCandidates(
+  clientId: string,
+  limit = 50,
+): Promise<EntityMergeCandidatesResponse> {
+  return request<EntityMergeCandidatesResponse>(
+    `/api/v1/clients/${clientId}/entity-merge-candidates?limit=${limit}`,
+  );
+}
+
+export async function mergeEntityInto(
+  mergedId: string,
+  payload: { survivingEntityId: string; mergeReason?: string },
+): Promise<EntityMergeResult> {
+  return request<EntityMergeResult>(`/api/v1/entities/${mergedId}/merge`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getClientContradictions(

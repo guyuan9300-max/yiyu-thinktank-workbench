@@ -131,6 +131,10 @@ from app.models import (
     DnaDeltaRecord,
     DocumentReadingPreviewRecord,
     EntityListResponseRecord,
+    EntityMergeCandidateRecord,
+    EntityMergeCandidatesResponseRecord,
+    EntityMergePayload,
+    EntityMergeResultRecord,
     EntityRecord,
     EvidenceItem,
     ExportAnswerPayload,
@@ -32551,6 +32555,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for row in rows
             ],
             total=total,
+        )
+
+    @app.get(
+        "/api/v1/clients/{client_id}/entity-merge-candidates",
+        response_model=EntityMergeCandidatesResponseRecord,
+    )
+    def get_entity_merge_candidates(
+        client_id: str,
+        limit: int = 50,
+    ) -> EntityMergeCandidatesResponseRecord:
+        """迭代 3：查询客户范围内"可能是同一实体"的相似实体对。"""
+        from app.services.entity_merger import find_merge_candidates
+
+        build_client_summary(client_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+        candidates = find_merge_candidates(
+            state.db.conn,
+            client_id=client_id,
+            limit=safe_limit,
+        )
+        return EntityMergeCandidatesResponseRecord(
+            candidates=[
+                EntityMergeCandidateRecord(
+                    entityAId=c.entity_a_id,
+                    entityBId=c.entity_b_id,
+                    entityType=c.entity_type,
+                    nameA=c.name_a,
+                    nameB=c.name_b,
+                    mentionCountA=c.mention_count_a,
+                    mentionCountB=c.mention_count_b,
+                    similarity=round(c.similarity, 3),
+                    reason=c.reason,
+                )
+                for c in candidates
+            ]
+        )
+
+    @app.post(
+        "/api/v1/entities/{merged_id}/merge",
+        response_model=EntityMergeResultRecord,
+    )
+    def merge_entity_into(
+        merged_id: str,
+        payload: EntityMergePayload,
+    ) -> EntityMergeResultRecord:
+        """迭代 3：把 merged_id 合并到 survivingEntityId。两条必须同客户。"""
+        from app.services.entity_merger import merge_entities
+
+        # 先按 merged_id 找出 client_id
+        row = state.db.fetchone(
+            "SELECT client_id FROM entities WHERE id = ?",
+            (merged_id,),
+        )
+        if not row:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="entity not found")
+        client_id = str(row["client_id"])
+        try:
+            result = merge_entities(
+                state.db.conn,
+                client_id=client_id,
+                surviving_id=payload.survivingEntityId,
+                merged_id=merged_id,
+                merge_reason=payload.mergeReason or "",
+            )
+            state.db.conn.commit()
+        except ValueError as exc:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail=str(exc))
+        return EntityMergeResultRecord(
+            mentionsMoved=result["mentions_moved"],
+            triplesMoved=result["triples_moved"],
+            factsMoved=result["facts_moved"],
         )
 
     @app.get("/api/v1/clients/{client_id}/relationships", response_model=RelationshipListResponseRecord)

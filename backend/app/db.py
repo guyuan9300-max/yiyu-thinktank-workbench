@@ -2290,6 +2290,24 @@ class Database:
                     ON fact_contradictions(client_id, fact_a_id, fact_b_id);
                 CREATE INDEX IF NOT EXISTS idx_fact_contradictions_pending
                     ON fact_contradictions(client_id, review_status, detected_at DESC);
+
+                -- 迭代 3：实体合并日志（审计 + undo 用）
+                CREATE TABLE IF NOT EXISTS entity_merge_log (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    surviving_entity_id TEXT NOT NULL,
+                    merged_entity_id TEXT NOT NULL,
+                    mentions_moved INTEGER NOT NULL DEFAULT 0,
+                    triples_moved INTEGER NOT NULL DEFAULT 0,
+                    facts_moved INTEGER NOT NULL DEFAULT 0,
+                    merge_reason TEXT,
+                    merged_by TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(surviving_entity_id) REFERENCES entities(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_entity_merge_log_client
+                    ON entity_merge_log(client_id, created_at DESC);
                 """
             )
             self._ensure_column("v2_documents", "markdown_path", "TEXT")

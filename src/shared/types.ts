@@ -1798,6 +1798,28 @@ export interface EntityListResponse {
   total: number;
 }
 
+export interface EntityMergeCandidate {
+  entityAId: string;
+  entityBId: string;
+  entityType: EntityType;
+  nameA: string;
+  nameB: string;
+  mentionCountA: number;
+  mentionCountB: number;
+  similarity: number;
+  reason: string;
+}
+
+export interface EntityMergeCandidatesResponse {
+  candidates: EntityMergeCandidate[];
+}
+
+export interface EntityMergeResult {
+  mentionsMoved: number;
+  triplesMoved: number;
+  factsMoved: number;
+}
+
 export interface DataCenterSearchHit {
   title: string;
   excerpt: string;

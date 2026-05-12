@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
-import type { Entity, EntityType } from '../../../shared/types';
-import { getClientEntities } from '../../lib/api';
+import type { Entity, EntityMergeCandidate, EntityType } from '../../../shared/types';
+import { getClientEntities, getEntityMergeCandidates, mergeEntityInto } from '../../lib/api';
 
 type EntityListPanelProps = {
   clientId: string;
@@ -50,19 +50,27 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
   const [entities, setEntities] = useState<Entity[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<EntityMergeCandidate[]>([]);
+  const [candidatesOpen, setCandidatesOpen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     if (!clientId) {
       setEntities([]);
+      setCandidates([]);
       return;
     }
     setLoading(true);
     setError(null);
-    getClientEntities(clientId, { limit: 200 })
-      .then((result) => {
+    Promise.all([
+      getClientEntities(clientId, { limit: 200 }),
+      getEntityMergeCandidates(clientId, 50).catch(() => ({ candidates: [] })),
+    ])
+      .then(([entResult, candResult]) => {
         if (cancelled) return;
-        setEntities(result.entities);
+        setEntities(entResult.entities);
+        setCandidates(candResult.candidates);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -75,7 +83,27 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
     return () => {
       cancelled = true;
     };
-  }, [clientId, refreshKey]);
+  }, [clientId, refreshKey, reloadKey]);
+
+  const handleMerge = async (
+    survivingEntityId: string,
+    mergedEntityId: string,
+    survivingName: string,
+    mergedName: string,
+  ) => {
+    if (!window.confirm(`确认把"${mergedName}"合并到"${survivingName}"？此操作会迁移所有提及/关系/事实到目标实体。`)) {
+      return;
+    }
+    try {
+      await mergeEntityInto(mergedEntityId, {
+        survivingEntityId,
+        mergeReason: `手动合并 · ${mergedName} → ${survivingName}`,
+      });
+      setReloadKey((v) => v + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '合并失败');
+    }
+  };
 
   const grouped = useMemo(() => {
     const map = new Map<EntityType, Entity[]>();
@@ -99,10 +127,70 @@ export function EntityListPanel({ clientId, refreshKey = 0 }: EntityListPanelPro
     <div className="space-y-3 rounded-3xl border border-slate-100 bg-white p-4">
       <div className="flex items-center justify-between gap-2">
         <p className="text-[12px] font-black text-slate-700">识别出的实体</p>
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-          {entities.length} 个
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+            {entities.length} 个
+          </span>
+          {candidates.length > 0 && (
+            <button
+              type="button"
+              className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 hover:bg-amber-200"
+              onClick={() => setCandidatesOpen((v) => !v)}
+              title="发现可能是同一实体的相似名（如「张总」和「张总监」）"
+            >
+              {candidatesOpen ? '收起' : `${candidates.length} 个疑似重复`}
+            </button>
+          )}
+        </div>
       </div>
+
+      {candidatesOpen && candidates.length > 0 && (
+        <div className="space-y-1.5 rounded-2xl border border-amber-100 bg-amber-50/70 px-3 py-2">
+          <p className="text-[10px] font-bold text-amber-700">疑似重复实体（点击合并方向）</p>
+          {candidates.map((c) => {
+            // 默认推荐：mention_count 更高的一方作为 surviving
+            const aIsBetter = c.mentionCountA >= c.mentionCountB;
+            return (
+              <div
+                key={`${c.entityAId}-${c.entityBId}`}
+                className="rounded-lg bg-white px-2.5 py-1.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold text-slate-500">
+                    {c.entityType} · 相似度 {Math.round(c.similarity * 100)}% · {c.reason}
+                  </p>
+                </div>
+                <div className="mt-1 grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    className={`rounded-md px-2 py-1 text-[10px] font-bold ${
+                      aIsBetter
+                        ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                    onClick={() => void handleMerge(c.entityAId, c.entityBId, c.nameA, c.nameB)}
+                    title={`保留"${c.nameA}"，把"${c.nameB}"的所有提及/关系合进来`}
+                  >
+                    保留 {c.nameA} ({c.mentionCountA})
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded-md px-2 py-1 text-[10px] font-bold ${
+                      !aIsBetter
+                        ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                    onClick={() => void handleMerge(c.entityBId, c.entityAId, c.nameB, c.nameA)}
+                    title={`保留"${c.nameB}"，把"${c.nameA}"的所有提及/关系合进来`}
+                  >
+                    保留 {c.nameB} ({c.mentionCountB})
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {loading && entities.length === 0 && (
         <p className="text-[11px] font-semibold text-slate-400">加载中…</p>

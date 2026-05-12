@@ -3719,6 +3719,41 @@ class EntityListResponseRecord(BaseModel):
     total: int = 0
 
 
+class EntityMergeCandidateRecord(BaseModel):
+    """迭代 3：实体合并候选——两个相似实体的对。"""
+
+    entityAId: str
+    entityBId: str
+    entityType: str
+    nameA: str
+    nameB: str
+    mentionCountA: int = 0
+    mentionCountB: int = 0
+    similarity: float
+    reason: str
+
+
+class EntityMergeCandidatesResponseRecord(BaseModel):
+    """GET /api/v1/clients/{id}/entity-merge-candidates 响应。"""
+
+    candidates: list[EntityMergeCandidateRecord] = Field(default_factory=list)
+
+
+class EntityMergePayload(BaseModel):
+    """POST /api/v1/entities/{merged_id}/merge 请求。"""
+
+    survivingEntityId: str
+    mergeReason: str | None = None
+
+
+class EntityMergeResultRecord(BaseModel):
+    """POST /api/v1/entities/{merged_id}/merge 响应。"""
+
+    mentionsMoved: int = 0
+    triplesMoved: int = 0
+    factsMoved: int = 0
+
+
 class RelationshipTripleRecord(BaseModel):
     """迭代 5：关系三元组。"""
 
