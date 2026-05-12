@@ -6733,6 +6733,128 @@ export interface ObjectStorageTestResult {
   latencyMs?: number | null;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// 报告生成器（与 backend/app/models.py R0.5 模型一一对应；
+// 因后端 Pydantic 用 snake_case 字段、未加 alias_generator，前端类型保持 snake_case）
+// ──────────────────────────────────────────────────────────────────────
+
+export type ReportChartKind =
+  | 'pie'
+  | 'progress_bar_h'
+  | 'timeline'
+  | 'grouped_bar'
+  | 'risk_bubble'
+  | 'table_only'
+  | 'callout_only';
+
+export interface ChartHint {
+  kind: ReportChartKind;
+  title: string;
+  caption?: string | null;
+  data_source_hint: string;
+}
+
+export interface SectionPlan {
+  level: number;
+  title: string;
+  goal: string;
+  data_sources: string[];
+  chart_hints: ChartHint[];
+  citation_budget: number;
+  estimated_words: number;
+}
+
+export interface ReportBlueprint {
+  title: string;
+  subtitle?: string | null;
+  report_kind: string;
+  audience: string;
+  tone: string;
+  period_start: string;
+  period_end: string;
+  sections: SectionPlan[];
+  inferred_theme: string;
+  confidence: number;
+  open_questions_for_human: string[];
+  event_line_id: string | null;
+  client_id: string;
+  generated_at: string;
+}
+
+export type ReportCitationType =
+  | 'judgment'
+  | 'event'
+  | 'task'
+  | 'document'
+  | 'metric'
+  | 'commit';
+
+export interface CitationRef {
+  type: ReportCitationType;
+  id: string;
+  label: string;
+  excerpt?: string | null;
+}
+
+export interface GeneratedChart {
+  hint: ChartHint;
+  png_bytes_base64: string;
+  width_cm: number;
+}
+
+export interface SectionContent {
+  plan: SectionPlan;
+  markdown: string;
+  citations: CitationRef[];
+  charts: GeneratedChart[];
+  data_source_annotation: string;
+  confidence: number;
+  warnings: string[];
+}
+
+export interface DraftBlueprintRequest {
+  event_line_id?: string | null;
+  client_id?: string | null;
+  period_start?: string | null;
+  period_end?: string | null;
+  intent_hint?: string | null;
+  audience_hint?: string | null;
+  tone_hint?: string | null;
+}
+
+export interface DraftSectionsRequest {
+  section_indices?: number[] | null;
+  max_workers?: number;
+}
+
+export type ReportRunStatus =
+  | 'blueprint_pending'
+  | 'blueprint_confirmed'
+  | 'drafting'
+  | 'rendered'
+  | 'published'
+  | 'failed';
+
+export type ReportSectionStatus = 'pending' | 'drafting' | 'done' | 'failed';
+
+export type ReportFileFormat = 'docx' | 'pdf' | 'md';
+
+export interface ReportRunSummary {
+  id: string;
+  client_id: string;
+  event_line_id: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  intent_hint: string | null;
+  status: ReportRunStatus;
+  blueprint: ReportBlueprint | null;
+  sections_status: ReportSectionStatus[];
+  output_files: Partial<Record<ReportFileFormat, string>>;
+  total_llm_tokens: number;
+  created_at: string;
+  updated_at: string;
+}
+
 declare global {
   interface Window {
     __YIYU_TEST_DIALOGS__?: {

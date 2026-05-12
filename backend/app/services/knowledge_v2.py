@@ -1347,7 +1347,74 @@ def extract_document_with_metadata(
             return ExtractedDocument(cleaned, final_sections, ExtractionMetadata(parse_status="ready" if cleaned and final_sections else "failed"))
         return ExtractedDocument("", [], ExtractionMetadata(parse_status="failed", parse_error="未能解析出可用正文", failure_type="empty_text"))
     if suffix in ARCHIVE_XML_EXTENSIONS:
-        text = _archive_xml_text(path)
+        # Phase 0：xlsx / pptx 走结构化解析，保留 sheet/slide 边界 + 表格 +
+        # 演讲者备注。失败则 fallback 到旧的 _archive_xml_text 路径，零回归风险。
+        try:
+            from app.services.structured_table_parser import (
+                StructuredParseError,
+                parse_pptx_structured,
+                parse_xlsx_structured,
+            )
+
+            if suffix == ".xlsx":
+                parsed_sheets = parse_xlsx_structured(path)
+                sections = [
+                    {"title": f"Sheet · {s.sheet_name}", "text": s.markdown}
+                    for s in parsed_sheets
+                ]
+                full_text = "\n\n".join(s["text"] for s in sections)
+                cleaned = _clean_ingested_text(full_text)
+                cleaned_sections = [
+                    {"title": s["title"], "text": _clean_ingested_text(s["text"])}
+                    for s in sections
+                ]
+                cleaned_sections = [s for s in cleaned_sections if s["text"]]
+                if cleaned and cleaned_sections:
+                    return ExtractedDocument(
+                        cleaned,
+                        cleaned_sections,
+                        ExtractionMetadata(parse_status="ready"),
+                    )
+            elif suffix == ".pptx":
+                parsed_slides = parse_pptx_structured(path)
+                sections = [
+                    {"title": f"Slide {s.slide_no} · {s.title or '无标题'}", "text": s.markdown}
+                    for s in parsed_slides
+                ]
+                full_text = "\n\n".join(s["text"] for s in sections)
+                cleaned = _clean_ingested_text(full_text)
+                cleaned_sections = [
+                    {"title": s["title"], "text": _clean_ingested_text(s["text"])}
+                    for s in sections
+                ]
+                cleaned_sections = [s for s in cleaned_sections if s["text"]]
+                if cleaned and cleaned_sections:
+                    return ExtractedDocument(
+                        cleaned,
+                        cleaned_sections,
+                        ExtractionMetadata(parse_status="ready"),
+                    )
+        except StructuredParseError as exc:
+            logger.warning(
+                "structured parser failed for %s, fallback to _archive_xml_text: %s",
+                path.name,
+                exc,
+            )
+        except Exception:
+            logger.exception("unexpected error in structured parser for %s", path.name)
+        # Fallback：旧路径（保底）。文件根本不是 zip 时这里也会抛，再加一层兜底。
+        try:
+            text = _archive_xml_text(path)
+        except Exception as exc:
+            return ExtractedDocument(
+                "",
+                [],
+                ExtractionMetadata(
+                    parse_status="failed",
+                    parse_error=f"无法解析 {suffix} 文件：{exc}",
+                    failure_type="unsupported_format",
+                ),
+            )
         cleaned = _clean_ingested_text(text)
         sections = _build_generic_sections(cleaned)
         return ExtractedDocument(cleaned, sections, ExtractionMetadata(parse_status="ready" if cleaned and sections else "failed"))

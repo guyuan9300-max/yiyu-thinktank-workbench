@@ -445,6 +445,7 @@ import { ClientProjectSetupPage } from './components/client_workspace/ClientProj
 import { EventLineClarificationComposer } from './components/tasks/EventLineClarificationComposer';
 import EventLineReportPanel from './components/tasks/EventLineReportPanel';
 import type { ReportDraft } from './components/tasks/EventLineReportPanel';
+import AIReportGeneratorModal from './components/reports/AIReportGeneratorModal';
 import { TaskTemplateEditorModal } from './components/tasks/TaskTemplateEditorModal';
 import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
@@ -8604,6 +8605,7 @@ export default function App() {
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
     const [activeEventLine, setActiveEventLine] = useState<EventLineDetail | null>(null);
     const [reportEventLineId, setReportEventLineId] = useState<string | null>(null);
+    const [aiReportTarget, setAiReportTarget] = useState<{ id: string; name: string; clientName?: string } | null>(null);
     const [eventLineClarificationDraft, setEventLineClarificationDraft] = useState<EventLineClarificationState>(buildEventLineClarificationDraft(null));
     const [isEventLineClarifyMode, setIsEventLineClarifyMode] = useState(false);
     const [isEventLineBusy, setIsEventLineBusy] = useState(false);
@@ -14696,14 +14698,27 @@ export default function App() {
                   <button type="button" onClick={() => setActiveEventLine(null)} className="text-gray-400 hover:text-gray-700 transition-colors">
                     <X size={20} />
                   </button>
-                  <button
-                    type="button"
-                    className="bg-blue-600 hover:bg-blue-700 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
-                    onClick={() => { setReportEventLineId(el.id); setActiveEventLine(null); }}
-                  >
-                    <FileBadge size={14} />
-                    汇报预览
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                      onClick={() => {
+                        setAiReportTarget({ id: el.id, name: el.name, clientName: el.primaryClientName || undefined });
+                        setActiveEventLine(null);
+                      }}
+                    >
+                      <Sparkles size={14} />
+                      AI 报告
+                    </button>
+                    <button
+                      type="button"
+                      className="bg-blue-600 hover:bg-blue-700 transition-colors text-white text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                      onClick={() => { setReportEventLineId(el.id); setActiveEventLine(null); }}
+                    >
+                      <FileBadge size={14} />
+                      汇报预览
+                    </button>
+                  </div>
                 </div>
 
                 {/* Event line name */}
@@ -14891,6 +14906,34 @@ export default function App() {
                   flash('error', err instanceof Error ? err.message : '导出 Word 失败');
                 }
               })();
+            }}
+          />
+        )}
+
+        {aiReportTarget && (
+          <AIReportGeneratorModal
+            eventLineId={aiReportTarget.id}
+            eventLineName={aiReportTarget.name}
+            clientName={aiReportTarget.clientName}
+            onClose={() => setAiReportTarget(null)}
+            onDownload={async (url, fileName) => {
+              try {
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`下载失败 (${resp.status})`);
+                const blob = await resp.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = fileName;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(objectUrl);
+                flash('success', `已下载 ${fileName}`);
+              } catch (err) {
+                flash('error', err instanceof Error ? err.message : '下载失败');
+                throw err;
+              }
             }}
           />
         )}

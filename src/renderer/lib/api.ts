@@ -3575,3 +3575,61 @@ export async function rebuildAndInstallFromRepo(repoPath: string) {
 export async function setWorkspaceInteractionState(payload: { active: boolean; source: string; detail?: string | null }) {
   return window.yiyuWorkbench.setWorkspaceInteractionState(payload);
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// 报告生成器 · 5 个 endpoint client
+// ──────────────────────────────────────────────────────────────────────
+
+export async function draftReportBlueprint(
+  payload: import('../../shared/types.js').DraftBlueprintRequest,
+): Promise<import('../../shared/types.js').ReportRunSummary> {
+  return request<import('../../shared/types.js').ReportRunSummary>(
+    '/api/v1/reports/draft-blueprint',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function draftReportSections(
+  reportRunId: string,
+  payload: import('../../shared/types.js').DraftSectionsRequest = {},
+): Promise<import('../../shared/types.js').ReportRunSummary> {
+  return request<import('../../shared/types.js').ReportRunSummary>(
+    `/api/v1/reports/${encodeURIComponent(reportRunId)}/draft-sections`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function renderReport(
+  reportRunId: string,
+  format: import('../../shared/types.js').ReportFileFormat = 'docx',
+): Promise<import('../../shared/types.js').ReportRunSummary> {
+  return request<import('../../shared/types.js').ReportRunSummary>(
+    `/api/v1/reports/${encodeURIComponent(reportRunId)}/render?format=${format}`,
+    { method: 'POST' },
+  );
+}
+
+export async function getReportRun(
+  reportRunId: string,
+): Promise<import('../../shared/types.js').ReportRunSummary> {
+  return request<import('../../shared/types.js').ReportRunSummary>(
+    `/api/v1/reports/${encodeURIComponent(reportRunId)}`,
+  );
+}
+
+export function getReportFileDownloadUrl(
+  reportRunId: string,
+  format: import('../../shared/types.js').ReportFileFormat,
+): string {
+  return (
+    `${baseUrl}/api/v1/reports/${encodeURIComponent(reportRunId)}/files/${format}`
+  );
+}
