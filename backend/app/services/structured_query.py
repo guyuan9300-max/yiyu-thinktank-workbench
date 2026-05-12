@@ -46,7 +46,7 @@ class StructuredQueryResult:
 # ---- 意图识别 ------------------------------------------------------------
 
 
-_SUM_KEYWORDS = ("总额", "总和", "合计", "总计", "加起来")
+_SUM_KEYWORDS = ("总额", "总和", "合计", "总计", "加起来", "小计", "总成本", "总费用", "总预算", "金额是多少", "费用是多少")
 _RATE_KEYWORDS = ("执行率", "完成率", "达成率", "占比")
 _OVERSPEND_KEYWORDS = ("超支", "超出预算", "超过预算")
 _COUNT_KEYWORDS = ("多少个", "几个", "多少人", "几人", "数量")
@@ -72,17 +72,40 @@ def detect_intent(question: str) -> str:
 # ---- 列识别 --------------------------------------------------------------
 
 
-_BUDGET_AMOUNT_PATTERNS = ("预算", "金额", "费用")
-_SPENT_PATTERNS = ("已花费", "支出", "已支出", "实际", "花费", "已使用")
+_BUDGET_AMOUNT_PATTERNS = ("预算", "金额", "经费", "小计", "总额", "总计", "成本", "费用合计", "费用支出")
+_SPENT_PATTERNS = ("已花费", "已支出", "已使用", "实际支出", "已用")
 _BENEFICIARY_PATTERNS = ("受益人", "人数", "学员数")
 
+# 黑名单：明明含"费用"但其实是 text 类别名
+_AMOUNT_NEGATIVE_PATTERNS = ("类别", "种类", "名称", "项目内容")
 
-def _find_column(headers: list[str], patterns: tuple[str, ...]) -> str | None:
-    for header in headers:
-        for p in patterns:
-            if p in header:
-                return header
-    return None
+
+def _find_column(
+    headers: list[str],
+    patterns: tuple[str, ...],
+    *,
+    column_types: dict[str, str] | None = None,
+    require_type: str | None = "number",
+    negative_patterns: tuple[str, ...] = (),
+) -> str | None:
+    """按 patterns 找匹配列名。
+
+    - require_type='number'：**强制**返回的列必须是数字类型；不存在则返回 None。
+      避免把"费用类别"这种 text 列当 amount 做 sum。
+    - negative_patterns：排除名字含黑名单词的列（如"类别/名称"）。
+    """
+    candidates = [
+        header
+        for header in headers
+        if any(p in header for p in patterns)
+        and not any(neg in header for neg in negative_patterns)
+    ]
+    if not candidates:
+        return None
+    if column_types and require_type:
+        typed = [c for c in candidates if column_types.get(c) == require_type]
+        return typed[0] if typed else None
+    return candidates[0]
 
 
 # ---- 计算 ----------------------------------------------------------------
@@ -90,8 +113,17 @@ def _find_column(headers: list[str], patterns: tuple[str, ...]) -> str | None:
 
 def _query_budget_table(question: str, intent: str, table: StructuredTableRow) -> StructuredQueryResult | None:
     df = table_to_dataframe(table)
-    amount_col = _find_column(table.headers, _BUDGET_AMOUNT_PATTERNS)
-    spent_col = _find_column(table.headers, _SPENT_PATTERNS)
+    amount_col = _find_column(
+        table.headers, _BUDGET_AMOUNT_PATTERNS,
+        column_types=table.column_types,
+        require_type="number",
+        negative_patterns=_AMOUNT_NEGATIVE_PATTERNS,
+    )
+    spent_col = _find_column(
+        table.headers, _SPENT_PATTERNS,
+        column_types=table.column_types,
+        require_type="number",
+    )
 
     if intent == "sum" and amount_col:
         total = float(df[amount_col].sum())
