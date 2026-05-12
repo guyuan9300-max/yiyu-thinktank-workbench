@@ -561,6 +561,7 @@ class ConsultationChatPayload(BaseModel):
     workspaceContext: str | None = None
     eventLineContext: str | None = None
     taskBoardContext: str | None = None
+    understandingContext: str | None = None
     sourceLabels: list[str] = Field(default_factory=list)
     missingEventLineHint: str | None = None
 
@@ -586,6 +587,12 @@ class ConsultationEvidenceRecord(BaseModel):
         "thread_snapshot",
         "task_board",
         "client_name",
+        "understanding",
+        "entity",
+        "relation",
+        "atomic_fact",
+        "contradiction",
+        "glossary_term",
     ]
     title: str
     updatedAt: str | None = None
@@ -603,6 +610,7 @@ class ConsultationMissingContextRecord(BaseModel):
         "strategic_cockpit",
         "knowledge_surrogate",
         "task_board",
+        "understanding",
     ]
     message: str
 
@@ -622,6 +630,7 @@ class MobileCapabilityRecord(BaseModel):
     strategicCockpit: bool = False
     knowledgeMirror: bool = False
     contextBundle: bool = False
+    understandingMirror: bool = False
     consultationPayloadVersion: str = "v2"
     updatedAt: str
 
@@ -712,6 +721,7 @@ class CloudKnowledgeMirrorPublishItemPayload(BaseModel):
         "meeting_summary",
         "knowledge_surrogate",
         "strategic_cockpit",
+        "client_understanding",
     ]
     sourceId: str
     snapshotVersion: int = 1
@@ -720,6 +730,70 @@ class CloudKnowledgeMirrorPublishItemPayload(BaseModel):
     publishedAt: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
     evidenceRefs: list[str] = Field(default_factory=list)
+
+
+class MobileClientUnderstandingEntityRecord(BaseModel):
+    id: str
+    name: str
+    type: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    mentions: int = 0
+    confidence: float | None = None
+    updatedAt: str | None = None
+
+
+class MobileClientUnderstandingRelationRecord(BaseModel):
+    id: str
+    subject: str
+    predicate: str
+    object: str
+    confidence: float | None = None
+    evidenceCount: int = 0
+    updatedAt: str | None = None
+
+
+class MobileClientUnderstandingFactRecord(BaseModel):
+    id: str
+    statement: str
+    semanticType: str = ""
+    confidence: float | None = None
+    freshness: float | None = None
+    sourceCount: int = 0
+    updatedAt: str | None = None
+
+
+class MobileClientUnderstandingContradictionRecord(BaseModel):
+    id: str
+    topic: str
+    conflictingStatements: list[str] = Field(default_factory=list)
+    severity: Literal["low", "medium", "high"] | None = None
+    updatedAt: str | None = None
+
+
+class MobileClientUnderstandingGlossaryRecord(BaseModel):
+    id: str
+    term: str
+    definition: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    updatedAt: str | None = None
+
+
+class MobileClientUnderstandingFreshnessRecord(BaseModel):
+    halfLifeDays: float | None = None
+    score: float | None = None
+
+
+class MobileClientUnderstandingResponse(BaseModel):
+    clientId: str
+    status: Literal["ready", "partial", "missing"] = "missing"
+    updatedAt: str | None = None
+    snapshotHash: str | None = None
+    entities: list[MobileClientUnderstandingEntityRecord] = Field(default_factory=list)
+    relations: list[MobileClientUnderstandingRelationRecord] = Field(default_factory=list)
+    atomicFacts: list[MobileClientUnderstandingFactRecord] = Field(default_factory=list)
+    contradictions: list[MobileClientUnderstandingContradictionRecord] = Field(default_factory=list)
+    glossary: list[MobileClientUnderstandingGlossaryRecord] = Field(default_factory=list)
+    freshness: MobileClientUnderstandingFreshnessRecord | None = None
 
 
 class CloudKnowledgeMirrorPublishPayload(BaseModel):

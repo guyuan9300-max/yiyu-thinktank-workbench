@@ -833,6 +833,25 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_cloud_cockpit_snapshots_client
                     ON cloud_strategic_cockpit_snapshots(organization_id, client_id, updated_at DESC, published_at DESC);
 
+                CREATE TABLE IF NOT EXISTS cloud_client_understanding_snapshots (
+                    id TEXT PRIMARY KEY,
+                    organization_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    snapshot_version INTEGER NOT NULL DEFAULT 1,
+                    snapshot_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(organization_id, client_id, source_id),
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_cloud_client_understanding_client
+                    ON cloud_client_understanding_snapshots(organization_id, client_id, updated_at DESC, published_at DESC);
+
                 CREATE TABLE IF NOT EXISTS cloud_context_bundle_cache (
                     id TEXT PRIMARY KEY,
                     organization_id TEXT NOT NULL,

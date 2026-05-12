@@ -73,6 +73,13 @@ from app.models import (
     MobileContextSourceStatusRecord,
     MobileCockpitHeadlineRecord,
     MobileCockpitSummaryItemRecord,
+    MobileClientUnderstandingContradictionRecord,
+    MobileClientUnderstandingEntityRecord,
+    MobileClientUnderstandingFactRecord,
+    MobileClientUnderstandingFreshnessRecord,
+    MobileClientUnderstandingGlossaryRecord,
+    MobileClientUnderstandingRelationRecord,
+    MobileClientUnderstandingResponse,
     MobileStrategicCockpitCompatResponse,
     MobileWorkspaceCompatClientRecord,
     MobileWorkspaceCompatItemRecord,
@@ -1528,6 +1535,7 @@ MIRROR_TABLE_BY_SOURCE_TYPE: dict[str, str] = {
     "meeting_summary": "cloud_meeting_summaries",
     "knowledge_surrogate": "cloud_knowledge_surrogates",
     "strategic_cockpit": "cloud_strategic_cockpit_snapshots",
+    "client_understanding": "cloud_client_understanding_snapshots",
 }
 
 
@@ -1652,12 +1660,19 @@ def _mobile_task_item(item: dict[str, object] | None) -> MobileWorkspaceCompatTa
 
 
 def _build_mobile_capabilities(state: AppState, current_user: SessionUser) -> MobileCapabilityRecord:
+    understanding_present = bool(
+        state.db.scalar(
+            "SELECT COUNT(1) AS count FROM cloud_client_understanding_snapshots WHERE organization_id = ?",
+            (current_user.organizationId,),
+        )
+    )
     return MobileCapabilityRecord(
         consultationChat=True,
         clientWorkspace=True,
         strategicCockpit=True,
         knowledgeMirror=_mirror_has_any_records(state, current_user.organizationId),
         contextBundle=True,
+        understandingMirror=understanding_present,
         consultationPayloadVersion="v2",
         updatedAt=now_iso(),
     )
@@ -1957,6 +1972,153 @@ def _build_workspace_compat_response(state: AppState, client_row, organization_i
         knowledgeStatus=knowledge_status,
         missingSources=missing_sources,
         sourceAvailability=available_sources,
+    )
+
+
+def _coerce_optional_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, bool):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_str_list(value: object | None, *, limit: int = 32) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for item in value:
+        text = _coerce_text(item)
+        if text:
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _build_client_understanding_response(
+    state: AppState, client_row, organization_id: str
+) -> MobileClientUnderstandingResponse:
+    """Read the cloud-mirrored understanding snapshot for a client and shape it
+    into a typed response. Defensive — the desktop side can ship any subset of
+    fields (entities / relations / atomicFacts / contradictions / glossary /
+    freshness); anything missing degrades gracefully to empty lists."""
+
+    client_id = str(client_row["id"])
+    row = _mirror_latest_row(state, "cloud_client_understanding_snapshots", organization_id, client_id)
+    if not row:
+        return MobileClientUnderstandingResponse(
+            clientId=client_id,
+            status="missing",
+            updatedAt=None,
+            snapshotHash=None,
+        )
+
+    payload = _mirror_payload(row)
+
+    def _entity(item: dict[str, object], idx: int) -> MobileClientUnderstandingEntityRecord:
+        return MobileClientUnderstandingEntityRecord(
+            id=_coerce_text(item.get("id"), f"entity-{idx}"),
+            name=_coerce_text(item.get("name") or item.get("normalizedName"), "未命名实体"),
+            type=_coerce_text(item.get("type") or item.get("entityType")),
+            aliases=_coerce_str_list(item.get("aliases"), limit=8),
+            mentions=int(item.get("mentions") or item.get("mentionCount") or 0),
+            confidence=_coerce_optional_float(item.get("confidence")),
+            updatedAt=_coerce_text(item.get("updatedAt") or item.get("lastSeenAt")) or None,
+        )
+
+    def _relation(item: dict[str, object], idx: int) -> MobileClientUnderstandingRelationRecord:
+        return MobileClientUnderstandingRelationRecord(
+            id=_coerce_text(item.get("id"), f"relation-{idx}"),
+            subject=_coerce_text(item.get("subject") or item.get("source")),
+            predicate=_coerce_text(item.get("predicate") or item.get("relation")),
+            object=_coerce_text(item.get("object") or item.get("target")),
+            confidence=_coerce_optional_float(item.get("confidence")),
+            evidenceCount=int(item.get("evidenceCount") or item.get("supportCount") or 0),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+
+    def _fact(item: dict[str, object], idx: int) -> MobileClientUnderstandingFactRecord:
+        return MobileClientUnderstandingFactRecord(
+            id=_coerce_text(item.get("id"), f"fact-{idx}"),
+            statement=_coerce_text(item.get("statement") or item.get("text") or item.get("content")),
+            semanticType=_coerce_text(item.get("semanticType") or item.get("type")),
+            confidence=_coerce_optional_float(item.get("confidence")),
+            freshness=_coerce_optional_float(item.get("freshness")),
+            sourceCount=int(item.get("sourceCount") or item.get("supportCount") or 0),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+
+    def _contradiction(item: dict[str, object], idx: int) -> MobileClientUnderstandingContradictionRecord:
+        severity_raw = _coerce_text(item.get("severity")).lower()
+        severity: Literal["low", "medium", "high"] | None = (
+            severity_raw if severity_raw in {"low", "medium", "high"} else None  # type: ignore[assignment]
+        )
+        return MobileClientUnderstandingContradictionRecord(
+            id=_coerce_text(item.get("id"), f"contradiction-{idx}"),
+            topic=_coerce_text(item.get("topic") or item.get("title")),
+            conflictingStatements=_coerce_str_list(
+                item.get("conflictingStatements") or item.get("statements"),
+                limit=6,
+            ),
+            severity=severity,
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+
+    def _glossary(item: dict[str, object], idx: int) -> MobileClientUnderstandingGlossaryRecord:
+        return MobileClientUnderstandingGlossaryRecord(
+            id=_coerce_text(item.get("id"), f"glossary-{idx}"),
+            term=_coerce_text(item.get("term") or item.get("name")),
+            definition=_coerce_text(item.get("definition") or item.get("meaning")),
+            aliases=_coerce_str_list(item.get("aliases"), limit=8),
+            updatedAt=_coerce_text(item.get("updatedAt")) or None,
+        )
+
+    def _safe_list(value: object | None) -> list[dict[str, object]]:
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
+
+    entities = [_entity(item, idx) for idx, item in enumerate(_safe_list(payload.get("entities")))]
+    relations = [_relation(item, idx) for idx, item in enumerate(_safe_list(payload.get("relations")))]
+    atomic_facts = [_fact(item, idx) for idx, item in enumerate(_safe_list(payload.get("atomicFacts") or payload.get("facts")))]
+    contradictions = [_contradiction(item, idx) for idx, item in enumerate(_safe_list(payload.get("contradictions")))]
+    glossary = [_glossary(item, idx) for idx, item in enumerate(_safe_list(payload.get("glossary") or payload.get("glossaryTerms")))]
+
+    freshness_raw = payload.get("freshness") if isinstance(payload.get("freshness"), dict) else None
+    freshness = (
+        MobileClientUnderstandingFreshnessRecord(
+            halfLifeDays=_coerce_optional_float(freshness_raw.get("halfLifeDays")) if freshness_raw else None,
+            score=_coerce_optional_float(freshness_raw.get("score")) if freshness_raw else None,
+        )
+        if freshness_raw
+        else None
+    )
+
+    has_anything = any([entities, relations, atomic_facts, contradictions, glossary])
+    rich = bool(entities) and bool(relations) and (bool(atomic_facts) or bool(contradictions))
+    status: Literal["ready", "partial", "missing"]
+    if rich:
+        status = "ready"
+    elif has_anything:
+        status = "partial"
+    else:
+        status = "missing"
+
+    return MobileClientUnderstandingResponse(
+        clientId=client_id,
+        status=status,
+        updatedAt=_mirror_updated_at(row),
+        snapshotHash=_coerce_text(row["snapshot_hash"]) or None,
+        entities=entities,
+        relations=relations,
+        atomicFacts=atomic_facts,
+        contradictions=contradictions,
+        glossary=glossary,
+        freshness=freshness,
     )
 
 
@@ -3200,6 +3362,23 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
         ),
     )
 
+    # Snapshot task_plan_links BEFORE we delete plan items / focus items, because the FK
+    # `ON DELETE SET NULL` would otherwise quietly zero out every task's plan link mid-save.
+    # We restore the link after re-inserting the new plan items, but only for ids that still exist.
+    task_plan_links_snapshot = [
+        {
+            "task_id": str(row["task_id"]),
+            "department_plan_item_id": str(row["department_plan_item_id"]) if row["department_plan_item_id"] else None,
+            "focus_item_id": str(row["focus_item_id"]) if row["focus_item_id"] else None,
+            "linked_by": str(row["linked_by"] or "ai"),
+            "confidence": float(row["confidence"] or 0),
+        }
+        for row in state.db.fetchall(
+            "SELECT task_id, department_plan_item_id, focus_item_id, linked_by, confidence FROM task_plan_links WHERE organization_id = ?",
+            (organization_id,),
+        )
+    ]
+
     state.db.execute("DELETE FROM org_task_control_rules WHERE organization_id = ?", (organization_id,))
     state.db.execute("DELETE FROM org_role_process_templates WHERE organization_id = ?", (organization_id,))
     state.db.execute("DELETE FROM org_department_plan_items WHERE organization_id = ?", (organization_id,))
@@ -3482,6 +3661,61 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
             )
 
     _backfill_employee_org_bindings_from_accounts(state, organization_id)
+
+    # Restore task_plan_links that were nulled out by the FK ON DELETE SET NULL trigger during
+    # the plan-items DELETE+INSERT above. We only restore refs for ids that still exist in the
+    # newly-inserted plan items / focus items — anything truly removed stays NULL.
+    restored_plan_count = 0
+    restored_focus_count = 0
+    for link in task_plan_links_snapshot:
+        task_id = link["task_id"]
+        # Verify the task itself still exists in this organization (defensive).
+        task_exists = state.db.fetchone(
+            "SELECT 1 FROM tasks WHERE id = ? AND organization_id = ?",
+            (task_id, organization_id),
+        )
+        if not task_exists:
+            continue
+        plan_ref = link["department_plan_item_id"]
+        if plan_ref and not state.db.fetchone(
+            "SELECT 1 FROM org_department_plan_items WHERE id = ? AND organization_id = ?",
+            (plan_ref, organization_id),
+        ):
+            plan_ref = None
+        focus_ref = link["focus_item_id"]
+        if focus_ref and focus_ref not in focus_item_ids:
+            focus_ref = None
+        # Skip rows that have no surviving refs at all — let the orphan-cleanup below catch them.
+        if plan_ref is None and focus_ref is None:
+            continue
+        state.db.execute(
+            """
+            UPDATE task_plan_links
+               SET department_plan_item_id = ?,
+                   focus_item_id = ?,
+                   linked_by = ?,
+                   confidence = ?,
+                   updated_at = ?
+             WHERE task_id = ?
+            """,
+            (plan_ref, focus_ref, link["linked_by"], link["confidence"], timestamp, task_id),
+        )
+        if plan_ref is not None:
+            restored_plan_count += 1
+        if focus_ref is not None:
+            restored_focus_count += 1
+
+    # Drop any task_plan_links row left with both refs NULL (truly orphan).
+    state.db.execute(
+        """
+        DELETE FROM task_plan_links
+         WHERE organization_id = ?
+           AND department_plan_item_id IS NULL
+           AND focus_item_id IS NULL
+        """,
+        (organization_id,),
+    )
+
     _log_audit(
         state,
         "save_org_model_profile",
@@ -3496,6 +3730,8 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
             "roleProcessTemplateCount": len(payload.roleProcessTemplates),
             "focusItemCount": len(payload.focusItems),
             "departmentPlanCount": len(payload.departmentPlans),
+            "restoredPlanItemLinks": restored_plan_count,
+            "restoredFocusItemLinks": restored_focus_count,
         },
     )
     _backfill_task_org_links(state, organization_id)
@@ -9903,6 +10139,20 @@ def create_app() -> FastAPI:
         client_row = _client_row_or_404(state, client_id, current_user.organizationId)
         return _build_cockpit_compat_response(state, client_row, current_user.organizationId)
 
+    @app.get("/api/v1/clients/{client_id}/understanding", response_model=MobileClientUnderstandingResponse)
+    def get_mobile_client_understanding(
+        client_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> MobileClientUnderstandingResponse:
+        """Expose the desktop calculation center's enrichment snapshot
+        (entities / relations / atomic facts / contradictions / glossary /
+        freshness) to mobile clients. Backed by the
+        `cloud_client_understanding_snapshots` mirror table — desktop
+        publishes via `/api/v1/mobile/knowledge-mirror/publish` with
+        sourceType='client_understanding'."""
+        client_row = _client_row_or_404(state, client_id, current_user.organizationId)
+        return _build_client_understanding_response(state, client_row, current_user.organizationId)
+
     @app.post("/api/v1/mobile/knowledge-mirror/publish", response_model=CloudKnowledgeMirrorPublishResultRecord)
     def publish_mobile_knowledge_mirror(
         payload: CloudKnowledgeMirrorPublishPayload,
@@ -10639,6 +10889,24 @@ def create_app() -> FastAPI:
         row = _task_plan_link_row(state, task_id)
         return _task_plan_link_record(row) if row else None
 
+    @app.get("/api/v1/org-model/plan-items/{item_id}/tasks", response_model=list[TaskRecord])
+    def list_tasks_for_plan_item(
+        item_id: str,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> list[TaskRecord]:
+        rows = state.db.fetchall(
+            """
+            SELECT t.* FROM tasks t
+            JOIN task_plan_links l ON l.task_id = t.id
+            WHERE l.department_plan_item_id = ?
+              AND l.organization_id = ?
+              AND t.organization_id = ?
+            ORDER BY t.updated_at DESC
+            """,
+            (item_id, current_user.organizationId, current_user.organizationId),
+        )
+        return [_task_record(state, row, current_user.id) for row in rows]
+
     @app.post("/api/v1/tasks/{task_id}/plan-link/recompute", response_model=TaskPlanLinkRecord | None)
     def recompute_task_plan_link(
         task_id: str,
@@ -10986,6 +11254,12 @@ def create_app() -> FastAPI:
                 "thread_snapshot",
                 "task_board",
                 "client_name",
+                "understanding",
+                "entity",
+                "relation",
+                "atomic_fact",
+                "contradiction",
+                "glossary_term",
             ],
             title: str,
             *,
@@ -11028,6 +11302,7 @@ def create_app() -> FastAPI:
                 "strategic_cockpit",
                 "knowledge_surrogate",
                 "task_board",
+                "understanding",
             ],
             message: str,
         ) -> None:
@@ -11220,6 +11495,118 @@ def create_app() -> FastAPI:
             )
         elif resolved_client_id:
             _mark_missing("strategic_cockpit", "当前云端没有战略 cockpit 快照，无法给出正式战略判断层。")
+
+        # ── 计算中心理解快照（实体/关系/原子事实/矛盾/术语库） ───────────────────────
+        # 优先用 payload 自带的 understandingContext（移动端可以预生成）；
+        # 否则从 cloud_client_understanding_snapshots 镜像拼一份摘要。
+        understanding_response = (
+            _build_client_understanding_response(state, client_row, current_user.organizationId)
+            if client_row
+            else None
+        )
+        understanding_context_text = payload.understandingContext
+        if not understanding_context_text and understanding_response and understanding_response.status != "missing":
+            understanding_lines: list[str] = []
+            if understanding_response.entities:
+                top_entities = [
+                    f"{item.name}（{item.type}）" if item.type else item.name
+                    for item in understanding_response.entities[:5]
+                ]
+                understanding_lines.append("关键实体：" + "；".join(top_entities))
+            if understanding_response.relations:
+                top_relations = [
+                    f"{item.subject} →{item.predicate}→ {item.object}"
+                    for item in understanding_response.relations[:4]
+                    if item.subject and item.object
+                ]
+                if top_relations:
+                    understanding_lines.append("已知关系：" + "；".join(top_relations))
+            if understanding_response.atomicFacts:
+                top_facts = [
+                    item.statement for item in understanding_response.atomicFacts[:4] if item.statement
+                ]
+                if top_facts:
+                    understanding_lines.append("原子事实：" + "；".join(top_facts))
+            if understanding_response.contradictions:
+                top_contradictions = [
+                    item.topic for item in understanding_response.contradictions[:3] if item.topic
+                ]
+                if top_contradictions:
+                    understanding_lines.append("已检测的矛盾：" + "；".join(top_contradictions))
+            if understanding_response.glossary:
+                top_terms = [
+                    f"{item.term}：{item.definition}" if item.definition else item.term
+                    for item in understanding_response.glossary[:4]
+                    if item.term
+                ]
+                if top_terms:
+                    understanding_lines.append("客户术语：" + "；".join(top_terms))
+            understanding_context_text = "\n".join(understanding_lines) or None
+
+        if understanding_context_text:
+            _append_context_block(context_parts, "理解快照", understanding_context_text, 1800)
+            _mark_available("understanding")
+            _append_evidence(
+                "understanding",
+                "客户理解快照",
+                snippet=understanding_context_text,
+                updated_at=understanding_response.updatedAt if understanding_response else None,
+                source_name="understanding",
+            )
+            if understanding_response:
+                for item in understanding_response.entities[:6]:
+                    _append_evidence(
+                        "entity",
+                        item.name,
+                        snippet=f"{item.type}" + (f"（提及 {item.mentions} 次）" if item.mentions else ""),
+                        evidence_id=f"entity:{item.id}",
+                        updated_at=item.updatedAt,
+                    )
+                for item in understanding_response.relations[:4]:
+                    if not (item.subject and item.object):
+                        continue
+                    _append_evidence(
+                        "relation",
+                        f"{item.subject} → {item.predicate} → {item.object}",
+                        snippet=item.predicate,
+                        evidence_id=f"relation:{item.id}",
+                        updated_at=item.updatedAt,
+                    )
+                for item in understanding_response.atomicFacts[:4]:
+                    if not item.statement:
+                        continue
+                    _append_evidence(
+                        "atomic_fact",
+                        item.statement[:60],
+                        snippet=item.statement,
+                        evidence_id=f"fact:{item.id}",
+                        updated_at=item.updatedAt,
+                    )
+                for item in understanding_response.contradictions[:3]:
+                    if not item.topic:
+                        continue
+                    _append_evidence(
+                        "contradiction",
+                        item.topic,
+                        snippet="；".join(item.conflictingStatements[:2]) if item.conflictingStatements else None,
+                        evidence_id=f"contradiction:{item.id}",
+                        updated_at=item.updatedAt,
+                    )
+                for item in understanding_response.glossary[:4]:
+                    if not item.term:
+                        continue
+                    _append_evidence(
+                        "glossary_term",
+                        item.term,
+                        snippet=item.definition or None,
+                        evidence_id=f"glossary:{item.id}",
+                        updated_at=item.updatedAt,
+                    )
+        elif resolved_client_id:
+            _mark_missing(
+                "understanding",
+                "桌面计算中心还没把这位客户的理解快照（实体/关系/事实/矛盾/术语）推上云，回答会缺少结构化知识层。",
+            )
 
         dna_context = ""
         dna_doc_map: dict[str, str] = {}
