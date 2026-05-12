@@ -151,21 +151,22 @@ def list_triples(
     offset: int = 0,
 ) -> tuple[list[dict[str, object]], int]:
     """按 client + 可选 subject / object / predicate 查三元组。"""
-    where = ["client_id = ?"]
+    # 注：JOIN 后 client_id 在 entities 表里也有，必须用 rt. 前缀显式定位
+    where = ["rt.client_id = ?"]
     params: list[object] = [client_id]
     if subject_entity_id:
-        where.append("subject_entity_id = ?")
+        where.append("rt.subject_entity_id = ?")
         params.append(subject_entity_id)
     if object_entity_id:
-        where.append("object_entity_id = ?")
+        where.append("rt.object_entity_id = ?")
         params.append(object_entity_id)
     if predicate:
-        where.append("predicate = ?")
+        where.append("rt.predicate = ?")
         params.append(predicate)
     where_clause = " AND ".join(where)
 
     count_row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM relationship_triples WHERE {where_clause}",
+        f"SELECT COUNT(*) AS n FROM relationship_triples rt WHERE {where_clause}",
         tuple(params),
     ).fetchone()
     total = int(count_row["n"] or 0) if count_row else 0
