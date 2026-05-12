@@ -2,7 +2,27 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# Retrieval stages used by knowledge search / evidence pipelines.
+# Centralised here so call sites and validators agree on the white list.
+RETRIEVAL_STAGE_VALUES: tuple[str, ...] = (
+    "master_index",
+    "surrogate",
+    "raw_chunk",
+    "state_pool",
+)
+
+
+def normalize_retrieval_stage(value: object, default: str = "raw_chunk") -> str:
+    """Normalise a retrieval stage value to one of RETRIEVAL_STAGE_VALUES.
+
+    Any input not in the white list (including None, empty string, legacy
+    aliases) falls back to ``default``. This keeps Pydantic Literal fields
+    from blowing up at runtime when upstream data is missing or stale.
+    """
+    return value if value in RETRIEVAL_STAGE_VALUES else default
 
 
 Priority = Literal["low", "normal", "high"]
@@ -6449,6 +6469,13 @@ class KnowledgeSearchHitRecord(BaseModel):
     path: str | None = None
     sectionLabel: str | None = None
     matchedTerms: list[str] = Field(default_factory=list)
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def _coerce_stage(cls, value: object) -> str:
+        # Defensive: any None / legacy / unknown value falls back to raw_chunk
+        # so this record never fails Pydantic validation on upstream gaps.
+        return normalize_retrieval_stage(value)
 
 
 class KnowledgeSearchResponse(BaseModel):

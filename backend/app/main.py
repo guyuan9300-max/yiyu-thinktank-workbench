@@ -493,6 +493,7 @@ from app.models import (
     EvidenceQualityAnnotationRecord,
     EvidenceQualityAnnotationLabelPayloadRecord,
     ExternalEvidenceCardRecord,
+    normalize_retrieval_stage,
 )
 from app.services.ai import (
     AiInvocationError,
@@ -13033,7 +13034,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     score=item.score,
                     coverage=item.coverage,
                     sectionLabel=item.section_label,
-                    retrievalStage={"master_index": "master_index", "surrogate": "surrogate"}.get(item.source_stage, "raw_chunk"),
+                    retrievalStage=normalize_retrieval_stage(item.source_stage),
                     isFallback=item.source_stage == "master_index",
                     matchedTerms=item.matched_terms,
                 )
@@ -13058,7 +13059,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 title=item.title,
                 excerpt=item.excerpt,
                 score=float(item.score or 0.0),
-                stage=item.retrievalStage,  # type: ignore[arg-type]
+                stage=normalize_retrieval_stage(item.retrievalStage),
                 path=item.path,
                 sectionLabel=item.sectionLabel,
                 matchedTerms=item.matchedTerms,
@@ -14357,7 +14358,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 score=item.score,
                 coverage=item.coverage,
                 sectionLabel=item.section_label,
-                retrievalStage={"master_index": "master_index", "surrogate": "surrogate"}.get(item.source_stage, "raw_chunk"),
+                retrievalStage=normalize_retrieval_stage(item.source_stage),
                 isFallback=item.source_stage == "master_index",
                 matchedTerms=item.matched_terms,
             )
@@ -35526,7 +35527,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 title=item.title,
                 excerpt=item.excerpt,
                 score=item.score,
-                stage={"master_index": "master_index", "surrogate": "surrogate"}.get(item.source_stage, "raw_chunk"),  # type: ignore[arg-type]
+                stage=normalize_retrieval_stage(item.source_stage),
                 path=item.path,
                 sectionLabel=item.section_label,
                 matchedTerms=item.matched_terms,
@@ -35544,7 +35545,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 score=item.score,
                 coverage=item.coverage,
                 sectionLabel=item.section_label,
-                retrievalStage={"master_index": "master_index", "surrogate": "surrogate"}.get(item.source_stage, "raw_chunk"),
+                retrievalStage=normalize_retrieval_stage(item.source_stage),
                 isFallback=item.source_stage == "master_index",
                 matchedTerms=item.matched_terms,
             )
