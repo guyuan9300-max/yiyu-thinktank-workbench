@@ -469,6 +469,7 @@ import { WorkStatusPanel } from './components/data_center/WorkStatusPanel';
 import { FeishuOrgIntegrationPanel } from './components/settings/FeishuOrgIntegrationPanel';
 import { SpeechModelSettingsCard } from './components/settings/SpeechModelSettingsCard';
 import { ObjectStorageSettingsCard } from './components/settings/ObjectStorageSettingsCard';
+import { LocalAsrModelPanel } from './components/settings/LocalAsrModelPanel';
 import type { OrgModelTab } from './components/settings/OrganizationModelSettingsPanel';
 import { PlanWorkshopView } from './components/plan_workshop/PlanWorkshopView';
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
@@ -8693,6 +8694,23 @@ export default function App() {
     );
     const [reviewPerspective, setReviewPerspective] = useState<ReviewPerspectiveKey>(() => defaultReviewPerspective);
     const [reviewDepartmentId, setReviewDepartmentId] = useState<string>(() => defaultReviewDepartmentId || '');
+    const [reviewDeptDropdownOpen, setReviewDeptDropdownOpen] = useState(false);
+    const [reviewDeptDropdownAnchor, setReviewDeptDropdownAnchor] = useState<{ top: number; left: number } | null>(null);
+    const reviewDeptDropdownRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+      if (!reviewDeptDropdownOpen) return;
+      const onDocClick = (e: MouseEvent) => {
+        const target = e.target as HTMLElement | null;
+        // Don't close when clicking the trigger button (it has its own toggle behavior).
+        if (target && target.closest('[data-dept-trigger="1"]')) return;
+        if (!reviewDeptDropdownRef.current) return;
+        if (!reviewDeptDropdownRef.current.contains(e.target as Node)) {
+          setReviewDeptDropdownOpen(false);
+        }
+      };
+      document.addEventListener('mousedown', onDocClick);
+      return () => document.removeEventListener('mousedown', onDocClick);
+    }, [reviewDeptDropdownOpen]);
     const [reviewForm, setReviewForm] = useState<ReviewFormState>(createEmptyReviewForm());
     const [isReviewWeekSwitching, setIsReviewWeekSwitching] = useState(false);
     const reviewRequestDepartmentId = reviewPerspective === 'department' ? reviewDepartmentId || null : null;
@@ -13826,52 +13844,106 @@ export default function App() {
                   ))}
                 </div>
                 <div className="mb-3 ml-4 flex shrink-0 items-center gap-2">
-                  {shouldShowReviewPerspectiveSwitch && (
-                    <div className="flex items-center bg-gray-100/50 p-1 rounded-full">
-                      {availableReviewPerspectives.map((item) => (
-                        <button
-                          key={item.key}
-                          type="button"
-	                      onClick={() => {
-		                            const rawDepartmentId = (item as { departmentId?: unknown }).departmentId;
-		                            const itemDepartmentId = typeof rawDepartmentId === 'string' ? rawDepartmentId : null;
-	                            const nextDepartmentId = item.key === 'department'
-	                              ? itemDepartmentId || reviewDepartmentId || reviewDepartmentOptions[0]?.id || null
-	                              : null;
-                            setReviewPerspective(item.key);
-                            if (item.key === 'organization' || item.key === 'department') {
-                              setReviewScope('work');
-                            }
-                            if (item.key === 'department') {
-                              if (nextDepartmentId) setReviewDepartmentId(nextDepartmentId);
-                            } else {
+                  {shouldShowReviewPerspectiveSwitch && (() => {
+                    const hasMine = availableReviewPerspectives.some((o) => o.key === 'mine');
+                    const hasDepartment = availableReviewPerspectives.some((o) => o.key === 'department');
+                    const hasOrganization = availableReviewPerspectives.some((o) => o.key === 'organization');
+                    const currentDeptName = reviewDepartmentId
+                      ? (reviewDepartmentOptions.find((d) => d.id === reviewDepartmentId)?.name || '部门视角')
+                      : (reviewDepartmentOptions[0]?.name || '部门视角');
+                    const isDeptActive = reviewPerspective === 'department';
+                    const baseBtn = 'px-4 py-1.5 rounded-full text-[12px] font-bold transition whitespace-nowrap';
+                    const activeBtn = 'bg-white text-[#5B7BFE] shadow-sm';
+                    const idleBtn = 'text-gray-500 hover:text-gray-700';
+                    return (
+                      <div className="flex items-center bg-gray-100/50 p-1 rounded-full">
+                        {/* 我的视角 — 第一位 */}
+                        {hasMine && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReviewPerspective('mine');
                               setReviewDepartmentId('');
-                            }
-                          }}
-                          className={`px-4 py-1.5 rounded-full text-[12px] font-bold transition ${reviewPerspective === item.key ? 'bg-white text-[#5B7BFE] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {shouldShowReviewDepartmentPicker && (
-                    <select
-                      value={reviewDepartmentId || reviewDepartmentOptions[0]?.id || ''}
-                      onChange={(event) => {
-                        const nextDepartmentId = event.target.value;
-                        setReviewPerspective('department');
-                        setReviewDepartmentId(nextDepartmentId);
-                        setReviewScope('work');
-                      }}
-                      className="h-8 rounded-full border border-gray-200 bg-white px-3 text-[12px] font-bold text-gray-600 shadow-sm outline-none transition focus:border-[#5B7BFE]"
-                      aria-label="选择部门视角"
-                    >
-                      {reviewDepartmentOptions.map((department) => (
-                        <option key={department.id} value={department.id}>{department.name}</option>
-                      ))}
-                    </select>
-                  )}
+                            }}
+                            className={`${baseBtn} ${reviewPerspective === 'mine' ? activeBtn : idleBtn}`}
+                          >
+                            我的视角
+                          </button>
+                        )}
+                        {/* 部门视角 — 中间，直接下拉显示部门名 */}
+                        {hasDepartment && (
+                          <div className="relative" ref={reviewDeptDropdownRef}>
+                            <button
+                              type="button"
+                              data-dept-trigger="1"
+                              onClick={(e) => {
+                                // For dept lead with only one department, toggle perspective directly without dropdown.
+                                if (reviewDepartmentOptions.length <= 1) {
+                                  const onlyId = reviewDepartmentOptions[0]?.id || '';
+                                  setReviewPerspective('department');
+                                  if (onlyId) setReviewDepartmentId(onlyId);
+                                  setReviewScope('work');
+                                  return;
+                                }
+                                // Anchor the (fixed-position) dropdown right under the button.
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setReviewDeptDropdownAnchor({ top: rect.bottom + 4, left: rect.left });
+                                setReviewDeptDropdownOpen((v) => !v);
+                              }}
+                              className={`${baseBtn} inline-flex items-center gap-1 ${isDeptActive ? activeBtn : idleBtn}`}
+                            >
+                              {isDeptActive && reviewDepartmentOptions.length > 1
+                                ? currentDeptName
+                                : (reviewDepartmentOptions.length <= 1 ? (currentDeptName || '部门视角') : '部门视角')}
+                              {reviewDepartmentOptions.length > 1 && (
+                                <ChevronDown size={12} className={`${isDeptActive ? 'text-[#5B7BFE]' : 'text-gray-400'} transition-transform ${reviewDeptDropdownOpen ? 'rotate-180' : ''}`} />
+                              )}
+                            </button>
+                            {reviewDeptDropdownOpen && reviewDepartmentOptions.length > 1 && reviewDeptDropdownAnchor && (
+                              <div
+                                className="fixed z-[9999] min-w-[160px] rounded-xl border border-gray-200 bg-white shadow-2xl overflow-hidden"
+                                style={{ top: reviewDeptDropdownAnchor.top, left: reviewDeptDropdownAnchor.left }}
+                              >
+                                {reviewDepartmentOptions.map((department) => (
+                                  <button
+                                    key={department.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setReviewPerspective('department');
+                                      setReviewDepartmentId(department.id);
+                                      setReviewScope('work');
+                                      setReviewDeptDropdownOpen(false);
+                                    }}
+                                    className={`w-full px-3.5 py-2 text-left text-[12px] transition hover:bg-[#5B7BFE]/5 ${
+                                      isDeptActive && reviewDepartmentId === department.id
+                                        ? 'font-bold text-[#5B7BFE] bg-[#5B7BFE]/10'
+                                        : 'text-gray-700'
+                                    }`}
+                                  >
+                                    {department.name}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* 组织视角 — 最后一位 */}
+                        {hasOrganization && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReviewPerspective('organization');
+                              setReviewDepartmentId('');
+                              setReviewScope('work');
+                            }}
+                            className={`${baseBtn} ${reviewPerspective === 'organization' ? activeBtn : idleBtn}`}
+                          >
+                            组织视角
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -14887,6 +14959,15 @@ export default function App() {
             eventLineId={reportEventLineId}
             backendBaseUrl={window.yiyuWorkbench?.backendBaseUrl || 'http://127.0.0.1:47829'}
             onClose={() => setReportEventLineId(null)}
+            onOpenAIReport={(target) => {
+              const id = reportEventLineId;
+              setReportEventLineId(null);
+              setAiReportTarget({
+                id,
+                name: target.eventLineName,
+                clientName: target.clientName || undefined,
+              });
+            }}
             onExportWord={(draft) => {
               void (async () => {
                 try {
@@ -23275,6 +23356,22 @@ export default function App() {
                       </div>
                     );
                   })}
+                  {/* 第 5 个 slot：本地语音识别（input-breadth I1b-2 新增） */}
+                  <div className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3 lg:col-span-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[13px] font-bold text-gray-900">本地语音识别 (ASR)</p>
+                        <p className="text-[12px] text-gray-500 mt-1">
+                          上传录音文件 / 直接录音 → 自动转写为文字资料。SenseVoice-Small (达摩院) · 完全离线 · 不需要对象存储。
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 shrink-0">
+                        <span className="rounded-full bg-gray-100 px-2 py-1">本地</span>
+                        <span className="rounded-full bg-gray-100 px-2 py-1">speech_recognition</span>
+                      </div>
+                    </div>
+                    <LocalAsrModelPanel canEdit={canManageSensitiveSettings} />
+                  </div>
                 </div>
             </div>
             )}
