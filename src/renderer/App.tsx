@@ -18936,6 +18936,12 @@ export default function App() {
               </div>
             </div>
 
+            {currentClientId && (
+              <div className="px-6 xl:px-8 pt-3">
+                <ContradictionAlertPanel clientId={currentClientId} />
+              </div>
+            )}
+
             <div
               className="flex-1 overflow-y-auto p-6 xl:p-8 space-y-8"
               ref={chatContainerRef}

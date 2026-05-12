@@ -135,6 +135,7 @@ export type WorkspaceClientUiAction =
   | { type: 'setOptimisticMessages'; threadId: string; messages: WorkspaceDisplayChatMessage[] }
   | { type: 'replaceThreadMessagesById'; value: Record<string, WorkspaceDisplayChatMessage[]> }
   | { type: 'upsertThreadMessages'; threadId: string; messages: WorkspaceDisplayChatMessage[] }
+  | { type: 'removeThreadMessages'; threadId: string; messageIds: string[] }
   | { type: 'setThreadMessagesLoadingId'; threadId: string | null }
   | { type: 'setStartingMessage'; clientId: string; isStarting: boolean }
   | { type: 'setFileSearchQuery'; clientId: string; query: string }
@@ -336,6 +337,30 @@ export function workspaceClientUiReducer(
           ...state.threadMessagesById,
           [action.threadId]: mergedMessages,
         },
+      };
+    }
+
+    case 'removeThreadMessages': {
+      const removalIds = new Set(action.messageIds);
+      if (removalIds.size === 0) return state;
+      const currentMessages = state.threadMessagesById[action.threadId] || [];
+      const remaining = currentMessages.filter((message) => !removalIds.has(message.id));
+      if (remaining.length === currentMessages.length) return state;
+      const nextThreadMessagesById = remaining.length
+        ? { ...state.threadMessagesById, [action.threadId]: remaining }
+        : removeKey(state.threadMessagesById, action.threadId);
+      const currentOptimistic = state.optimisticMessagesByThread[action.threadId] || [];
+      const remainingOptimistic = currentOptimistic.filter((message) => !removalIds.has(message.id));
+      const optimisticChanged = remainingOptimistic.length !== currentOptimistic.length;
+      const nextOptimistic = optimisticChanged
+        ? (remainingOptimistic.length
+            ? { ...state.optimisticMessagesByThread, [action.threadId]: remainingOptimistic }
+            : removeKey(state.optimisticMessagesByThread, action.threadId))
+        : state.optimisticMessagesByThread;
+      return {
+        ...state,
+        threadMessagesById: nextThreadMessagesById,
+        optimisticMessagesByThread: nextOptimistic,
       };
     }
 
