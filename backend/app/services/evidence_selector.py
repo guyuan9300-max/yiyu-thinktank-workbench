@@ -254,6 +254,34 @@ def _fill_selection_priority(
     )
 
 
+def _semantic_weight_for_doc(db: Database, document_id: str) -> float:
+    """按 documentId 取代表性语义类型，返回对应的检索加权乘数。
+
+    迭代 4 follow-up：让 RAG 真正用上 SEMANTIC_WEIGHT。fact 类资料权重
+    上调 20%，opinion 下调 30%，等等。N+1 query 在 evidence 池小（< 60）
+    时性能可接受；后续可批量预加载。
+    """
+    from app.services.semantic_classifier import semantic_weight
+
+    row = db.fetchone(
+        """
+        SELECT vc.semantic_type AS semantic_type, COUNT(1) AS hit_count
+        FROM v2_chunks vc
+        JOIN v2_documents vd ON vd.id = vc.v2_document_id
+        WHERE vd.document_id = ?
+          AND vc.semantic_type IS NOT NULL
+          AND vc.semantic_type != 'unclassified'
+        GROUP BY vc.semantic_type
+        ORDER BY hit_count DESC
+        LIMIT 1
+        """,
+        (document_id,),
+    )
+    if not row or not row["semantic_type"]:
+        return 1.0
+    return semantic_weight(str(row["semantic_type"]))
+
+
 def _score_item(
     intent: PageIntentType,
     item: EvidenceItem,
@@ -391,7 +419,21 @@ def select_answer_evidence_with_trace(
                 document_id=item.documentId,
                 excerpt_hash=excerpt_hash,
             )
-        scored.append(_score_item(intent, item, prompt=prompt, focus_frame=focus_frame, human_adjustment=adjustment))
+        candidate = _score_item(intent, item, prompt=prompt, focus_frame=focus_frame, human_adjustment=adjustment)
+        # 迭代 4 follow-up：按 chunk 语义类型加权（fact 1.2 > judgment/action 1.0
+        # > background 0.9 > opinion 0.7）。chunk 级 semantic_type 通过 db
+        # 按 documentId 取该文档"代表性"语义类型（aggregate 出现最多的）。
+        if db is not None and item.documentId:
+            try:
+                from app.services.semantic_classifier import semantic_weight
+
+                weight = _semantic_weight_for_doc(db, item.documentId)
+                if weight != 1.0:
+                    candidate.score *= weight
+                    candidate.priority_reasons.append(f"semantic_weight:{weight:.2f}")
+            except Exception:
+                pass
+        scored.append(candidate)
 
     scored.sort(key=lambda candidate: candidate.score, reverse=True)
 
