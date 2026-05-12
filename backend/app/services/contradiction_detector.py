@@ -47,8 +47,34 @@ def insert_fact(
     source_v2_document_id: str | None = None,
     now: str | None = None,
 ) -> str:
-    """插入一条原子事实，返回 fact id。"""
+    """插入或返回已有原子事实，返回 fact id。
+
+    Dedup 键：(client_id, subject_text, attribute, value_normalized, status='active')
+    同一个事实从多个 chunk 提及不应当产生 N 条重复 fact——否则矛盾检测
+    会对每对组合都触发，产生 N×N 个冗余告警。
+    """
     timestamp = now or _now_iso()
+    # 先查是否已存在相同的 active fact
+    existing = conn.execute(
+        """
+        SELECT id FROM atomic_facts
+        WHERE client_id = ?
+          AND subject_text = ?
+          AND attribute = ?
+          AND value_normalized = ?
+          AND status = 'active'
+        LIMIT 1
+        """,
+        (client_id, fact.subject_text, fact.attribute, fact.value_normalized),
+    ).fetchone()
+    if existing:
+        # 已存在 → 更新 updated_at（保留最近一次见到的时间）+ 返回旧 id
+        conn.execute(
+            "UPDATE atomic_facts SET updated_at = ? WHERE id = ?",
+            (timestamp, str(existing["id"])),
+        )
+        return str(existing["id"])
+
     fact_id = str(uuid.uuid4())
     conn.execute(
         """

@@ -108,6 +108,54 @@ def test_extract_no_match_returns_empty() -> None:
     assert extract_facts_from_chunk("普通陈述句无属性。") == []
 
 
+@pytest.mark.unit
+def test_extract_rejects_attribute_ending_in_stopchar() -> None:
+    """attribute 末尾是虚词/否定/连接词 → 必须被过滤掉。
+
+    避免噪音如：
+    - "建立起良好的专业关系才是服务" → attribute=专业关系才（末字"才"）
+    - "鸿鹄计划的学员认为他们已经结项" → attribute=学员认（末字"认"）
+    - "真正的升级不是换UI" → attribute=升级不（末字"不"）
+    """
+    cases = [
+        "建立起良好的专业关系才是服务的关键。",
+        "鸿鹄计划的学员认为鸿鹄计划已结项。",
+        "真正的升级不是换UI。",
+        "客户的也许是好选择。",  # 末字"也"
+        "项目的可以推迟到下周。",  # 末字"可"，但"可以"是连词
+    ]
+    for text in cases:
+        facts = extract_facts_from_chunk(text)
+        # 噪音的 attribute 不应该出现
+        for f in facts:
+            assert f.attribute[-1] not in "才认不也都正将否已又就会能可", (
+                f"未过滤掉的噪音: {f.attribute} from {text!r}"
+            )
+
+
+@pytest.mark.unit
+def test_extract_keeps_valid_business_attributes() -> None:
+    """真实业务属性应当被保留。"""
+    facts = extract_facts_from_chunk("客户的预算是 50 万元。项目的计划时间定在 6 月。")
+    attrs = {f.attribute for f in facts}
+    assert "预算" in attrs
+    assert "计划时间" in attrs
+
+
+@pytest.mark.unit
+def test_insert_fact_dedupes_same_value(conn: sqlite3.Connection) -> None:
+    """同 (subject, attribute, value_normalized) 不应当产生重复 fact。"""
+    fact = AtomicFact("客户", "预算", "50 万元", "50万元", 0.8)
+    id1 = insert_fact(conn, client_id="cli-A", fact=fact)
+    id2 = insert_fact(conn, client_id="cli-A", fact=fact)
+    id3 = insert_fact(conn, client_id="cli-A", fact=fact)
+    assert id1 == id2 == id3
+    count = conn.execute(
+        "SELECT COUNT(*) AS n FROM atomic_facts WHERE client_id='cli-A'"
+    ).fetchone()["n"]
+    assert count == 1
+
+
 # ---- 矛盾检测 ------------------------------------------------------------
 
 
