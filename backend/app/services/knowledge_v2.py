@@ -1976,6 +1976,28 @@ def ingest_document_knowledge(
                         chunk_id,
                         document_id,
                     )
+                # 迭代 5：关系三元组抽取（规则层）。
+                # 依赖实体已经入库（同一 chunk 内 entity 在前面已 persist）。
+                try:
+                    from app.services.relation_extractor import extract_relations_from_chunk
+                    from app.services.relation_store import persist_chunk_relations
+
+                    relations = extract_relations_from_chunk(chunk["content"])
+                    if relations:
+                        persist_chunk_relations(
+                            db.conn,
+                            client_id=client_id,
+                            v2_document_id=v2_document_id,
+                            v2_chunk_id=chunk_id,
+                            extracted=relations,
+                            now=created_at,
+                        )
+                except Exception:
+                    logger.exception(
+                        "relation extraction failed for chunk %s (doc=%s)",
+                        chunk_id,
+                        document_id,
+                    )
 
     db.execute(
         """

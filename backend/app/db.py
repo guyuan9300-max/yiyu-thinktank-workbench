@@ -2209,6 +2209,37 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_v2_chunks_semantic_type "
                 "ON v2_chunks(v2_document_id, semantic_type)"
             )
+            # 迭代 5：关系三元组
+            # subject 是实体；object 可以是实体（object_entity_id）或自由文本（object_text）
+            self.conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS relationship_triples (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL,
+                    subject_entity_id TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object_entity_id TEXT,
+                    object_text TEXT,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    source_v2_chunk_id TEXT,
+                    source_v2_document_id TEXT,
+                    evidence_text TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                    FOREIGN KEY(subject_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+                    FOREIGN KEY(object_entity_id) REFERENCES entities(id) ON DELETE SET NULL,
+                    FOREIGN KEY(source_v2_chunk_id) REFERENCES v2_chunks(id) ON DELETE SET NULL,
+                    FOREIGN KEY(source_v2_document_id) REFERENCES v2_documents(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_rel_triples_client_subject
+                    ON relationship_triples(client_id, subject_entity_id, predicate);
+                CREATE INDEX IF NOT EXISTS idx_rel_triples_client_object
+                    ON relationship_triples(client_id, object_entity_id);
+                CREATE INDEX IF NOT EXISTS idx_rel_triples_predicate
+                    ON relationship_triples(client_id, predicate, created_at DESC);
+                """
+            )
             self._ensure_column("v2_documents", "markdown_path", "TEXT")
             self._ensure_column("v2_documents", "markdown_content", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("answer_runs", "retrieval_mode", "TEXT NOT NULL DEFAULT 'legacy'")

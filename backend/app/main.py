@@ -134,6 +134,8 @@ from app.models import (
     EntityRecord,
     EvidenceItem,
     ExportAnswerPayload,
+    RelationshipListResponseRecord,
+    RelationshipTripleRecord,
     JudgmentConfirmPayload,
     JudgmentVersionRecord,
     FileReclassEventRecord,
@@ -8828,10 +8830,84 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updatedAt=str(row["updated_at"]),
         )
 
+    def _compute_event_line_completeness(
+        *,
+        summary: str | None,
+        stage: str | None,
+        intent: str | None,
+        current_blocker: str | None,
+        recent_decision: str | None,
+        next_step: str | None,
+        owner_name: str | None,
+        primary_client_name: str | None,
+        evidence_count: int,
+    ) -> tuple[int, str, list[str]]:
+        # Lightweight scoring on the event-line row alone (no joins). Heavy scoring
+        # still lives in review_analysis.build_event_line_completeness — this just gives
+        # users a perceivable signal in lists/details without expensive aggregation.
+        slot_weights = {
+            "summary": 18,
+            "stage": 14,
+            "intent": 10,
+            "owner_chain": 10,
+            "project_link": 8,
+            "current_blocker": 14,
+            "next_action": 14,
+            "recent_decision": 8,
+            "evidence": 4,
+        }
+        filled: dict[str, bool] = {
+            "summary": bool((summary or "").strip()),
+            "stage": bool((stage or "").strip()),
+            "intent": bool((intent or "").strip()),
+            "owner_chain": bool((owner_name or "").strip()),
+            "project_link": bool((primary_client_name or "").strip()),
+            "current_blocker": bool((current_blocker or "").strip()),
+            "next_action": bool((next_step or "").strip()),
+            "recent_decision": bool((recent_decision or "").strip()),
+            "evidence": evidence_count > 0,
+        }
+        score = sum(slot_weights[key] for key, ok in filled.items() if ok)
+        score = max(0, min(100, score))
+        if score >= 80:
+            status = "high_confidence"
+        elif score >= 60:
+            status = "forecast_ready"
+        elif score >= 35:
+            status = "summary_ready"
+        else:
+            status = "insufficient"
+        slot_labels = {
+            "summary": "本线是什么",
+            "stage": "当前阶段",
+            "intent": "目标/意图",
+            "owner_chain": "责任关系",
+            "project_link": "项目归属",
+            "current_blocker": "当前阻塞",
+            "next_action": "下一步",
+            "recent_decision": "最近决策",
+            "evidence": "支撑证据",
+        }
+        missing = [slot_labels[key] for key in slot_weights if not filled[key]]
+        return score, status, missing
+
     def build_cloud_event_line(payload: dict[str, object]) -> EventLineRecord:
         client_id = str(payload.get("primaryClientId")) if payload.get("primaryClientId") else None
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
         cloud_client_name = str(payload.get("primaryClientName")).strip() if payload.get("primaryClientName") else None
+        resolved_client_name = (str(client_row["name"]) if client_row else None) or cloud_client_name
+        evidence_count = int(payload.get("evidenceCount") or 0)
+        completeness_score, completeness_status, completeness_missing = _compute_event_line_completeness(
+            summary=str(payload.get("summary")) if payload.get("summary") else None,
+            stage=str(payload.get("stage")) if payload.get("stage") else None,
+            intent=str(payload.get("intent")) if payload.get("intent") else None,
+            current_blocker=str(payload.get("currentBlocker")) if payload.get("currentBlocker") else None,
+            recent_decision=str(payload.get("recentDecision")) if payload.get("recentDecision") else None,
+            next_step=str(payload.get("nextStep")) if payload.get("nextStep") else None,
+            owner_name=str(payload.get("ownerName")) if payload.get("ownerName") else None,
+            primary_client_name=resolved_client_name,
+            evidence_count=evidence_count,
+        )
         return EventLineRecord(
             id=str(payload.get("id", "")),
             name=str(payload.get("name", "")),
@@ -8845,11 +8921,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             currentBlocker=str(payload.get("currentBlocker")) if payload.get("currentBlocker") else None,
             recentDecision=str(payload.get("recentDecision")) if payload.get("recentDecision") else None,
             nextStep=str(payload.get("nextStep")) if payload.get("nextStep") else None,
-            evidenceCount=int(payload.get("evidenceCount") or 0),
+            evidenceCount=evidence_count,
             ownerId=str(payload.get("ownerId")) if payload.get("ownerId") else None,
             ownerName=str(payload.get("ownerName")) if payload.get("ownerName") else None,
             primaryClientId=client_id,
-            primaryClientName=(str(client_row["name"]) if client_row else None) or cloud_client_name,
+            primaryClientName=resolved_client_name,
             primaryDepartmentId=str(payload.get("primaryDepartmentId")) if payload.get("primaryDepartmentId") else None,
             primaryDepartmentName=str(payload.get("primaryDepartmentName")) if payload.get("primaryDepartmentName") else None,
             participantIds=[str(item) for item in payload.get("participantIds", [])] if isinstance(payload.get("participantIds"), list) else [],
@@ -8859,6 +8935,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cloudId=str(payload.get("id")) if payload.get("id") else None,
             pendingSyncAction=None,
             lastSyncError=None,
+            completenessScore=completeness_score,
+            completenessStatus=completeness_status,  # type: ignore[arg-type]
+            completenessMissingSlots=completeness_missing,
             createdAt=str(payload.get("createdAt", now_iso())),
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
@@ -8898,6 +8977,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         client_id = str(row["primary_client_id"]) if row["primary_client_id"] else None
         client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,)) if client_id else None
         activity_count = int(state.db.scalar("SELECT COUNT(1) FROM event_line_activities WHERE event_line_id = ?", (str(row["id"]),)) or 0)
+        evidence_count = max(int(row["evidence_count"] or 0), activity_count)
+        client_name = str(client_row["name"]) if client_row else (str(row["primary_client_name"]) if row["primary_client_name"] else None)
+        completeness_score, completeness_status, completeness_missing = _compute_event_line_completeness(
+            summary=str(row["summary"]) if row["summary"] else None,
+            stage=str(row["stage"]) if row["stage"] else None,
+            intent=str(row["intent"]) if row["intent"] else None,
+            current_blocker=str(row["current_blocker"]) if row["current_blocker"] else None,
+            recent_decision=str(row["recent_decision"]) if row["recent_decision"] else None,
+            next_step=str(row["next_step"]) if row["next_step"] else None,
+            owner_name=str(row["owner_name"]) if row["owner_name"] else None,
+            primary_client_name=client_name,
+            evidence_count=evidence_count,
+        )
         return EventLineRecord(
             id=str(row["id"]),
             name=str(row["name"]),
@@ -8911,11 +9003,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             currentBlocker=str(row["current_blocker"]) if row["current_blocker"] else None,
             recentDecision=str(row["recent_decision"]) if row["recent_decision"] else None,
             nextStep=str(row["next_step"]) if row["next_step"] else None,
-            evidenceCount=max(int(row["evidence_count"] or 0), activity_count),
+            evidenceCount=evidence_count,
             ownerId=str(row["owner_id"]) if row["owner_id"] else None,
             ownerName=str(row["owner_name"]) if row["owner_name"] else None,
             primaryClientId=client_id,
-            primaryClientName=str(client_row["name"]) if client_row else (str(row["primary_client_name"]) if row["primary_client_name"] else None),
+            primaryClientName=client_name,
             primaryDepartmentId=str(row["primary_department_id"]) if row["primary_department_id"] else None,
             primaryDepartmentName=str(row["primary_department_name"]) if row["primary_department_name"] else None,
             participantIds=[str(item) for item in from_json(row["participant_ids_json"], []) if str(item)],
@@ -8925,6 +9017,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cloudId=str(row["cloud_id"]) if row["cloud_id"] else None,
             pendingSyncAction=str(row["pending_sync_action"]) if row["pending_sync_action"] else None,  # type: ignore[arg-type]
             lastSyncError=str(row["last_sync_error"]) if row["last_sync_error"] else None,
+            completenessScore=completeness_score,
+            completenessStatus=completeness_status,  # type: ignore[arg-type]
+            completenessMissingSlots=completeness_missing,
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -29728,6 +29823,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 _sync_event_line_row_to_cloud(updated_row, forced_action="update" if updated_row["cloud_id"] else "create")
         return {"status": "active"}
 
+    @app.post("/api/v1/event-lines/{event_line_id}/retry-sync")
+    def retry_event_line_sync(event_line_id: str) -> dict:
+        if not get_cloud_token():
+            raise HTTPException(status_code=400, detail="云端账号未登录，无法重试同步")
+        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ? OR cloud_id = ?", (event_line_id, event_line_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        local_event_line_id = str(row["id"])
+        current_sync_status = str(row["sync_status"] or "").strip()
+        if current_sync_status == "synced" and not (row["pending_sync_action"] or "").strip():
+            return {"status": "already_synced", "syncStatus": "synced"}
+        forced_action = str(row["pending_sync_action"] or "").strip() or None
+        state.db.execute(
+            "UPDATE event_lines SET sync_status = 'syncing', last_sync_error = '', updated_at = ? WHERE id = ?",
+            (now_iso(), local_event_line_id),
+        )
+        refreshed = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (local_event_line_id,))
+        try:
+            ok = _sync_event_line_row_to_cloud(refreshed, forced_action=forced_action) if refreshed else False
+        except HTTPException:
+            raise
+        final = state.db.fetchone("SELECT sync_status, last_sync_error FROM event_lines WHERE id = ?", (local_event_line_id,))
+        return {
+            "status": "ok" if ok else "failed",
+            "syncStatus": str(final["sync_status"]) if final and final["sync_status"] else None,
+            "lastSyncError": str(final["last_sync_error"]) if final and final["last_sync_error"] else None,
+        }
+
     @app.delete("/api/v1/event-lines/{event_line_id}")
     def delete_event_line(event_line_id: str) -> dict:
         cloud_deleted = False
@@ -32423,6 +32546,57 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     status=row.status,  # type: ignore[arg-type]
                 )
                 for row in rows
+            ],
+            total=total,
+        )
+
+    @app.get("/api/v1/clients/{client_id}/relationships", response_model=RelationshipListResponseRecord)
+    def get_client_relationships(
+        client_id: str,
+        subject: str | None = None,
+        object: str | None = None,  # noqa: A002 - 是查询参数名
+        predicate: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> RelationshipListResponseRecord:
+        """迭代 5：查询客户范围内的关系三元组。
+
+        支持按 subject_entity_id / object_entity_id / predicate 任意组合过滤。
+        """
+        from app.services.relation_dictionary import label_for_predicate
+        from app.services.relation_store import list_triples
+
+        build_client_summary(client_id)
+        safe_limit = max(1, min(int(limit or 50), 200))
+        safe_offset = max(0, int(offset or 0))
+        rows, total = list_triples(
+            state.db.conn,
+            client_id=client_id,
+            subject_entity_id=subject or None,
+            object_entity_id=object or None,
+            predicate=predicate or None,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        return RelationshipListResponseRecord(
+            relationships=[
+                RelationshipTripleRecord(
+                    id=str(r["id"]),
+                    clientId=str(r["clientId"]),
+                    subjectEntityId=str(r["subjectEntityId"]),
+                    subjectDisplayName=str(r["subjectDisplayName"]),
+                    predicate=str(r["predicate"]),
+                    predicateLabel=label_for_predicate(str(r["predicate"])),
+                    objectEntityId=r["objectEntityId"],  # type: ignore[arg-type]
+                    objectDisplayName=r["objectDisplayName"],  # type: ignore[arg-type]
+                    objectText=str(r["objectText"]),
+                    confidence=float(r["confidence"]),
+                    sourceV2ChunkId=r["sourceV2ChunkId"],  # type: ignore[arg-type]
+                    sourceV2DocumentId=r["sourceV2DocumentId"],  # type: ignore[arg-type]
+                    evidenceText=str(r["evidenceText"]),
+                    createdAt=str(r["createdAt"]),
+                )
+                for r in rows
             ],
             total=total,
         )

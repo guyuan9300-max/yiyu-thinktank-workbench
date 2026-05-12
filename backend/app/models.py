@@ -2549,6 +2549,9 @@ class EventLineRecord(BaseModel):
     cloudId: str | None = None
     pendingSyncAction: Literal["create", "update", "archive"] | None = None
     lastSyncError: str | None = None
+    completenessScore: int = 0
+    completenessStatus: Literal["insufficient", "summary_ready", "forecast_ready", "high_confidence"] = "insufficient"
+    completenessMissingSlots: list[str] = Field(default_factory=list)
     createdAt: str
     updatedAt: str
 
@@ -3713,6 +3716,32 @@ class EntityListResponseRecord(BaseModel):
     """GET /api/v1/clients/{id}/entities 响应。"""
 
     entities: list[EntityRecord] = Field(default_factory=list)
+    total: int = 0
+
+
+class RelationshipTripleRecord(BaseModel):
+    """迭代 5：关系三元组。"""
+
+    id: str
+    clientId: str
+    subjectEntityId: str
+    subjectDisplayName: str
+    predicate: str
+    predicateLabel: str
+    objectEntityId: str | None = None
+    objectDisplayName: str | None = None
+    objectText: str
+    confidence: float = 0.0
+    sourceV2ChunkId: str | None = None
+    sourceV2DocumentId: str | None = None
+    evidenceText: str = ""
+    createdAt: str
+
+
+class RelationshipListResponseRecord(BaseModel):
+    """GET /api/v1/clients/{id}/relationships 响应。"""
+
+    relationships: list[RelationshipTripleRecord] = Field(default_factory=list)
     total: int = 0
 
 
