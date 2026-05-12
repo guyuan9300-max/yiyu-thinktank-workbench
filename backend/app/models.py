@@ -3830,6 +3830,24 @@ class StructuredTableListResponseRecord(BaseModel):
     total: int = 0
 
 
+class StructuredQueryResultRecord(BaseModel):
+    """Phase 1：对 structured_tables 跑计算后的单条结果。"""
+
+    tableId: str
+    sheetName: str
+    semanticRole: str
+    intent: Literal["list", "sum", "execution_rate", "overspend", "count"]
+    summary: str
+    markdown: str
+
+
+class StructuredQueryResponseRecord(BaseModel):
+    """GET /api/v1/clients/{id}/structured-query?q=... 响应。"""
+
+    question: str
+    results: list[StructuredQueryResultRecord] = Field(default_factory=list)
+
+
 class RelationshipTripleRecord(BaseModel):
     """迭代 5：关系三元组。"""
 

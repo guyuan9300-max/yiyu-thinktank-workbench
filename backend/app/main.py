@@ -141,6 +141,8 @@ from app.models import (
     GlossaryEntryRecord,
     GlossaryListResponseRecord,
     GlossaryUpdatePayload,
+    StructuredQueryResponseRecord,
+    StructuredQueryResultRecord,
     StructuredTableDetailRecord,
     StructuredTableListResponseRecord,
     StructuredTableSummaryRecord,
@@ -32863,6 +32865,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for t in tables
             ],
             total=total,
+        )
+
+    @app.get(
+        "/api/v1/clients/{client_id}/structured-query",
+        response_model=StructuredQueryResponseRecord,
+    )
+    def query_client_structured_tables(
+        client_id: str,
+        q: str,
+    ) -> StructuredQueryResponseRecord:
+        """Phase 1：对客户的 structured_tables 跑问题级查询，返回精确计算结果。
+
+        例如 q="日慈 Q1 预算总额是多少？" → 命中 budget 表 → SUM(预算金额)
+        例如 q="哪些项目超支了？" → 找超支项目，列出明细 + 执行率
+        """
+        from app.services.structured_query import query_structured_tables
+
+        build_client_summary(client_id)
+        results = query_structured_tables(
+            state.db.conn,
+            client_id=client_id,
+            question=q,
+        )
+        return StructuredQueryResponseRecord(
+            question=q,
+            results=[
+                StructuredQueryResultRecord(
+                    tableId=r.table_id,
+                    sheetName=r.sheet_name,
+                    semanticRole=r.semantic_role,
+                    intent=r.intent,  # type: ignore[arg-type]
+                    summary=r.summary,
+                    markdown=r.markdown,
+                )
+                for r in results
+            ],
         )
 
     @app.get(
