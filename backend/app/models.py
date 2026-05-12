@@ -3760,6 +3760,15 @@ class FactContradictionRecord(BaseModel):
     factBId: str
     factAAt: str
     factBAt: str
+    # 来源文件元信息（让用户能看清是哪两份资料冲突）
+    docAFileName: str | None = None
+    docAImportedAt: str | None = None
+    docAOriginalPath: str | None = None
+    docASizeBytes: int | None = None
+    docBFileName: str | None = None
+    docBImportedAt: str | None = None
+    docBOriginalPath: str | None = None
+    docBSizeBytes: int | None = None
     contradictionType: Literal["value_diff", "temporal", "scope"] = "value_diff"
     severity: Literal["low", "medium", "high"] = "medium"
     reviewStatus: Literal["pending", "dismissed", "resolved"] = "pending"
@@ -3775,9 +3784,14 @@ class FactContradictionListResponseRecord(BaseModel):
 
 
 class FactContradictionReviewPayload(BaseModel):
-    """POST /api/v1/contradictions/{id}/review 请求。"""
+    """POST /api/v1/contradictions/{id}/review 请求。
+
+    - 'resolved' + acceptedFactId：采纳某一份事实，另一份自动归档
+    - 'dismissed'（不带 acceptedFactId）：视为误报或暂时忽略
+    """
 
     reviewStatus: Literal["dismissed", "resolved"]
+    acceptedFactId: str | None = None
     resolutionNote: str | None = None
 
 

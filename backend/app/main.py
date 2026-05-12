@@ -32631,6 +32631,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             limit=safe_limit,
             offset=safe_offset,
         )
+        # 文件大小：os.stat 原路径（拿不到就 None，不阻塞）
+        def _safe_size(path_str: object) -> int | None:
+            if not path_str:
+                return None
+            try:
+                from pathlib import Path
+
+                p = Path(str(path_str))
+                if p.is_file():
+                    return p.stat().st_size
+            except Exception:
+                return None
+            return None
+
         return FactContradictionListResponseRecord(
             contradictions=[
                 FactContradictionRecord(
@@ -32646,6 +32660,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     factBId=str(r["fact_b_id"]),
                     factAAt=str(r["fact_a_at"]),
                     factBAt=str(r["fact_b_at"]),
+                    docAFileName=str(r["doc_a_file_name"] or r["doc_a_title"] or "") or None,
+                    docAImportedAt=str(r["doc_a_imported_at"] or "") or None,
+                    docAOriginalPath=str(r["doc_a_original_path"] or r["doc_a_path"] or "") or None,
+                    docASizeBytes=_safe_size(r["doc_a_original_path"] or r["doc_a_path"]),
+                    docBFileName=str(r["doc_b_file_name"] or r["doc_b_title"] or "") or None,
+                    docBImportedAt=str(r["doc_b_imported_at"] or "") or None,
+                    docBOriginalPath=str(r["doc_b_original_path"] or r["doc_b_path"] or "") or None,
+                    docBSizeBytes=_safe_size(r["doc_b_original_path"] or r["doc_b_path"]),
                     contradictionType=str(r["contradiction_type"]),  # type: ignore[arg-type]
                     severity=str(r["severity"]),  # type: ignore[arg-type]
                     reviewStatus=str(r["review_status"]),  # type: ignore[arg-type]
@@ -32669,6 +32691,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db.conn,
             contradiction_id=contradiction_id,
             review_status=payload.reviewStatus,
+            accepted_fact_id=payload.acceptedFactId,
             resolution_note=payload.resolutionNote,
         )
         state.db.conn.commit()

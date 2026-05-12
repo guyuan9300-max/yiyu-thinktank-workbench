@@ -20,7 +20,8 @@ const SEVERITY_LABEL: Record<string, string> = {
   low: '低',
 };
 
-function formatRelative(iso: string): string {
+function formatRelative(iso: string | null | undefined): string {
+  if (!iso) return '时间未知';
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return '';
   const diff = Date.now() - parsed.getTime();
@@ -29,6 +30,39 @@ function formatRelative(iso: string): string {
   if (diff < 7 * day) return `${Math.floor(diff / day)} 天前`;
   if (diff < 30 * day) return `${Math.floor(diff / (7 * day))} 周前`;
   return `${Math.floor(diff / (30 * day))} 个月前`;
+}
+
+function formatBytes(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function FileMetaLine({
+  fileName,
+  importedAt,
+  sizeBytes,
+}: {
+  fileName: string | null | undefined;
+  importedAt: string | null | undefined;
+  sizeBytes: number | null | undefined;
+}) {
+  const parts: string[] = [];
+  if (importedAt) parts.push(`导入于 ${formatRelative(importedAt)}`);
+  const sizeLabel = formatBytes(sizeBytes);
+  if (sizeLabel) parts.push(sizeLabel);
+  return (
+    <div className="space-y-0.5">
+      <p className="truncate text-[10px] font-bold text-slate-600" title={fileName || ''}>
+        📄 {fileName || '未知文件'}
+      </p>
+      {parts.length > 0 && (
+        <p className="text-[9px] font-semibold text-slate-400">{parts.join(' · ')}</p>
+      )}
+    </div>
+  );
 }
 
 export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: ContradictionAlertPanelProps) {
@@ -63,26 +97,34 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
     };
   }, [clientId, refreshKey, reload]);
 
-  const handleReview = async (id: string, status: 'dismissed' | 'resolved') => {
+  const handleAccept = async (id: string, factId: string) => {
     try {
-      await reviewContradiction(id, { reviewStatus: status });
+      await reviewContradiction(id, { reviewStatus: 'resolved', acceptedFactId: factId });
       setReload((value) => value + 1);
     } catch (err) {
-      const message = err instanceof Error ? err.message : '操作失败';
-      setError(message);
+      setError(err instanceof Error ? err.message : '操作失败');
+    }
+  };
+
+  const handleKeepBoth = async (id: string) => {
+    try {
+      await reviewContradiction(id, {
+        reviewStatus: 'dismissed',
+        resolutionNote: '两份都保留（不是矛盾）',
+      });
+      setReload((value) => value + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '操作失败');
     }
   };
 
   if (!clientId) return null;
-  if (!loading && items.length === 0 && !error) {
-    // 没有矛盾时不显示，避免占据屏幕
-    return null;
-  }
+  if (!loading && items.length === 0 && !error) return null;
 
   return (
     <div className="space-y-3 rounded-3xl border border-rose-100 bg-white p-4">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-black text-rose-700">⚠ 矛盾告警</p>
+        <p className="text-[12px] font-black text-rose-700">⚠ 矛盾告警 · 同一客户的不同资料有冲突信息</p>
         <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-700">
           {items.length} 待处理
         </span>
@@ -90,7 +132,7 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
 
       {error && <p className="text-[11px] font-semibold text-rose-600">{error}</p>}
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         {items.map((item) => (
           <div
             key={item.id}
@@ -101,35 +143,66 @@ export function ContradictionAlertPanel({ clientId, refreshKey = 0 }: Contradict
                 {item.subjectText} · {item.attribute}
               </p>
               <span className="shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
-                {SEVERITY_LABEL[item.severity] || '中'} · {formatRelative(item.detectedAt)}
+                严重度 {SEVERITY_LABEL[item.severity] || '中'} · 检出 {formatRelative(item.detectedAt)}
               </span>
             </div>
+
             <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] leading-5">
-              <div className="rounded-xl bg-white/80 px-2 py-1.5">
-                <p className="text-[10px] font-bold text-slate-400">{formatRelative(item.factAAt)}</p>
-                <p className="mt-0.5 font-bold text-slate-700">{item.valueA}</p>
+              {/* 左侧 · 资料 A */}
+              <div className="rounded-xl bg-white/90 px-2.5 py-2 ring-1 ring-slate-200">
+                <FileMetaLine
+                  fileName={item.docAFileName}
+                  importedAt={item.docAImportedAt}
+                  sizeBytes={item.docASizeBytes}
+                />
+                <p className="mt-1.5 text-[13px] font-black text-slate-800">{item.valueA}</p>
+                {item.evidenceA && (
+                  <p className="mt-1 line-clamp-2 text-[10px] font-medium text-slate-500" title={item.evidenceA}>
+                    "{item.evidenceA.trim()}"
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="mt-2 w-full rounded-lg bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
+                  onClick={() => handleAccept(item.id, item.factAId)}
+                  title="采用此版本，自动归档另一份；未来 AI 不再用旧值回答"
+                >
+                  ✓ 采用此版本
+                </button>
               </div>
-              <div className="rounded-xl bg-white/80 px-2 py-1.5">
-                <p className="text-[10px] font-bold text-slate-400">{formatRelative(item.factBAt)}</p>
-                <p className="mt-0.5 font-bold text-slate-700">{item.valueB}</p>
+
+              {/* 右侧 · 资料 B */}
+              <div className="rounded-xl bg-white/90 px-2.5 py-2 ring-1 ring-slate-200">
+                <FileMetaLine
+                  fileName={item.docBFileName}
+                  importedAt={item.docBImportedAt}
+                  sizeBytes={item.docBSizeBytes}
+                />
+                <p className="mt-1.5 text-[13px] font-black text-slate-800">{item.valueB}</p>
+                {item.evidenceB && (
+                  <p className="mt-1 line-clamp-2 text-[10px] font-medium text-slate-500" title={item.evidenceB}>
+                    "{item.evidenceB.trim()}"
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="mt-2 w-full rounded-lg bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
+                  onClick={() => handleAccept(item.id, item.factBId)}
+                  title="采用此版本，自动归档另一份；未来 AI 不再用旧值回答"
+                >
+                  ✓ 采用此版本
+                </button>
               </div>
             </div>
-            <div className="mt-2 flex gap-2">
-              <button
-                type="button"
-                className="rounded-lg bg-emerald-100 px-2.5 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
-                onClick={() => handleReview(item.id, 'resolved')}
-                title="已确认正确版本，忽略此告警"
-              >
-                ✓ 已解决
-              </button>
+
+            <div className="mt-2 flex justify-end">
               <button
                 type="button"
                 className="rounded-lg bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600 hover:bg-slate-200"
-                onClick={() => handleReview(item.id, 'dismissed')}
-                title="不是真的矛盾，忽略"
+                onClick={() => handleKeepBoth(item.id)}
+                title="两份都不是错的，只是不同时点/不同场景的描述，保持两份都活跃"
               >
-                忽略
+                两份都保留（不是矛盾）
               </button>
             </div>
           </div>

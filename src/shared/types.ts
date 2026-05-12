@@ -1749,6 +1749,14 @@ export interface FactContradiction {
   factBId: string;
   factAAt: string;
   factBAt: string;
+  docAFileName?: string | null;
+  docAImportedAt?: string | null;
+  docAOriginalPath?: string | null;
+  docASizeBytes?: number | null;
+  docBFileName?: string | null;
+  docBImportedAt?: string | null;
+  docBOriginalPath?: string | null;
+  docBSizeBytes?: number | null;
   contradictionType: 'value_diff' | 'temporal' | 'scope';
   severity: 'low' | 'medium' | 'high';
   reviewStatus: 'pending' | 'dismissed' | 'resolved';

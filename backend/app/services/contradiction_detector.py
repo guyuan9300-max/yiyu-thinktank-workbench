@@ -235,7 +235,11 @@ def list_contradictions(
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict[str, object]], int]:
-    """查询客户的矛盾列表（默认 pending）。"""
+    """查询客户的矛盾列表（默认 pending）。
+
+    JOIN v2_documents + documents 拿出每条事实来源的**文件名、原路径、
+    导入时间**——前端用这些渲染"哪两份文件冲突了"。
+    """
     count_row = conn.execute(
         "SELECT COUNT(*) AS n FROM fact_contradictions "
         "WHERE client_id = ? AND review_status = ?",
@@ -252,10 +256,28 @@ def list_contradictions(
                fa.created_at AS fact_a_at,
                fb.value_text AS value_b, fb.evidence_text AS evidence_b,
                fb.created_at AS fact_b_at,
-               fc.fact_a_id, fc.fact_b_id
+               fc.fact_a_id, fc.fact_b_id,
+               -- 来源文件 A
+               vda.file_name AS doc_a_file_name,
+               vda.id AS doc_a_v2_id,
+               da.title AS doc_a_title,
+               da.path AS doc_a_path,
+               da.original_source_path AS doc_a_original_path,
+               da.created_at AS doc_a_imported_at,
+               -- 来源文件 B
+               vdb.file_name AS doc_b_file_name,
+               vdb.id AS doc_b_v2_id,
+               db.title AS doc_b_title,
+               db.path AS doc_b_path,
+               db.original_source_path AS doc_b_original_path,
+               db.created_at AS doc_b_imported_at
         FROM fact_contradictions fc
         JOIN atomic_facts fa ON fa.id = fc.fact_a_id
         JOIN atomic_facts fb ON fb.id = fc.fact_b_id
+        LEFT JOIN v2_documents vda ON vda.id = fa.source_v2_document_id
+        LEFT JOIN documents da ON da.id = vda.document_id
+        LEFT JOIN v2_documents vdb ON vdb.id = fb.source_v2_document_id
+        LEFT JOIN documents db ON db.id = vdb.document_id
         WHERE fc.client_id = ? AND fc.review_status = ?
         ORDER BY fc.detected_at DESC
         LIMIT ? OFFSET ?
@@ -270,17 +292,46 @@ def update_review_status(
     *,
     contradiction_id: str,
     review_status: str,
+    accepted_fact_id: str | None = None,
     resolution_note: str | None = None,
     reviewed_by: str | None = None,
 ) -> None:
-    """用户审阅一条矛盾（dismissed / resolved）。"""
+    """用户审阅一条矛盾。
+
+    - review_status='resolved' + accepted_fact_id：采纳某一份事实，另一份
+      自动归档（atomic_facts.status='superseded'），未来 RAG 不再用旧值
+    - review_status='dismissed'：视为误报或暂时忽略，不改 facts 状态
+    """
+    timestamp = _now_iso()
+    if review_status == "resolved" and accepted_fact_id:
+        # 找到这条矛盾涉及的两条事实
+        row = conn.execute(
+            "SELECT fact_a_id, fact_b_id FROM fact_contradictions WHERE id = ?",
+            (contradiction_id,),
+        ).fetchone()
+        if row:
+            fact_a_id = str(row["fact_a_id"])
+            fact_b_id = str(row["fact_b_id"])
+            # 验证 accepted_fact_id 是这两个之一
+            if accepted_fact_id in {fact_a_id, fact_b_id}:
+                losing_id = fact_b_id if accepted_fact_id == fact_a_id else fact_a_id
+                # 失败方归档
+                conn.execute(
+                    "UPDATE atomic_facts SET status = 'superseded', updated_at = ? WHERE id = ?",
+                    (timestamp, losing_id),
+                )
+                # 胜出方保证 active
+                conn.execute(
+                    "UPDATE atomic_facts SET status = 'active', updated_at = ? WHERE id = ?",
+                    (timestamp, accepted_fact_id),
+                )
     conn.execute(
         """
         UPDATE fact_contradictions
         SET review_status = ?, resolution_note = ?, reviewed_at = ?, reviewed_by = ?
         WHERE id = ?
         """,
-        (review_status, resolution_note, _now_iso(), reviewed_by, contradiction_id),
+        (review_status, resolution_note, timestamp, reviewed_by, contradiction_id),
     )
 
 

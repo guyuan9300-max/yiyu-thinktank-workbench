@@ -22,7 +22,18 @@ from app.services.fact_extractor import AtomicFact, extract_facts_from_chunk
 
 SCHEMA = """
 CREATE TABLE clients (id TEXT PRIMARY KEY);
-CREATE TABLE v2_documents (id TEXT PRIMARY KEY);
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    path TEXT,
+    original_source_path TEXT,
+    created_at TEXT
+);
+CREATE TABLE v2_documents (
+    id TEXT PRIMARY KEY,
+    document_id TEXT,
+    file_name TEXT
+);
 CREATE TABLE v2_chunks (id TEXT PRIMARY KEY, v2_document_id TEXT);
 CREATE TABLE entities (id TEXT PRIMARY KEY);
 CREATE TABLE atomic_facts (

@@ -1528,6 +1528,7 @@ export async function reviewContradiction(
   contradictionId: string,
   payload: {
     reviewStatus: 'dismissed' | 'resolved';
+    acceptedFactId?: string;
     resolutionNote?: string;
   },
 ): Promise<{ status: string }> {
