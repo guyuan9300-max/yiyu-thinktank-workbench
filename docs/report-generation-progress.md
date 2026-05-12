@@ -39,7 +39,7 @@
 | **R0.0** | 搬沙箱 3 份原型 + 写本文档 + .gitignore | 15 调用 | ✅ 完成 |
 | **R0.5** | Pydantic 数据契约（10 个模型）+ 2 张 DB 表 + 4 个空 API skeleton + 27 个测试 | 30 调用 | ✅ 完成 |
 | **R1** | report_context_builder + report_blueprint_drafter（LLM A · 豆包）+ 切实现 `POST /reports/draft-blueprint` + 51 个测试 + 真机验收 | 50 调用 | ✅ 完成 |
-| **R2** | section_drafter（LLM B）+ materialize_charts + 并行调度 + `POST /reports/{id}/draft-sections` | 50 调用 | 待开始 |
+| **R2** | section_drafter（LLM B · 豆包）+ chart_materializer + 并行调度 + 切实现 `POST /reports/{id}/draft-sections`（BackgroundTask）+ 42 个测试 + 真机验收 | 50 调用 | ✅ 完成 |
 | **R3** | report_docx_renderer（基于沙箱 helper）+ markdown 解析 + LibreOffice → PDF（可选）+ `POST /reports/{id}/render` | 40 调用 | 待开始 |
 | **R4** | UI 入口（客户工作台"生成报告"按钮 + 进度页 + 主理人审阅 + 报告列表）—— **早期挂入，不等 R3** | 60 调用 | 待开始 |
 | **R5** | 多主题样例（3-5 种事件线）+ 使用手册 | 30 调用 | 待开始 |
@@ -246,13 +246,94 @@ CREATE TABLE report_section_runs (
 
 ---
 
+## R2 · 已完成动作（2026-05-12）
+
+### 1. `backend/app/services/report_chart_materializer.py`（+220 行，新）
+
+- `materialize_chart(hint, data) → GeneratedChart`：根据 hint.kind 派发到 chart_generator 函数生 PNG → base64
+- 5 种实图：pie / progress_bar_h / timeline / grouped_bar / risk_bubble
+- 2 种占位：table_only / callout_only（不画图，但仍返回 GeneratedChart 占位空 base64，R3 渲染器只走 markdown）
+- 输入校验：labels/counts 数量一致、counts 非负且不全 0、size 一致、risk_bubble 钳到 0-5、grouped_bar 数值非法时 raise
+- matplotlib pyplot 全局 state 多线程不安全 → 用 `_CHART_LOCK = threading.Lock()` 串行；LLM 调用是 30-90s 大头，chart 渲染只占毫秒，串行不会成瓶颈
+
+### 2. `backend/app/services/report_section_drafter.py`（+360 行，新）
+
+- `draft_section(ai, *, plan, context, blueprint_title/audience/tone, section_idx, max_retries=3, timeout_seconds=90, max_tokens=3500) → SectionContent`
+- LLM B prompt 关键约束：
+  - 字数 estimated_words ± 30%
+  - markdown 里用 `[CHART:idx]` 占位符（R3 渲染器替换为图）
+  - chart 数据：对每个 chart_hint 必须给具体 data，按 chart_hint_idx 对齐
+  - 引用：自然行文 + 章末"数据源"短句 + citations 数组（≤ citation_budget × 2）
+  - 不编造数据，缺信息进 warnings
+- 失败重试：第 2/3 次在 prompt 附"上次失败原因"
+- chart 生成失败不让整节失败，记 warning 留空 base64
+
+### 3. `backend/app/services/report_section_scheduler.py`（+130 行，新）
+
+- `draft_sections_parallel(ai, blueprint, context, section_indices=None, max_workers=4, timeout_per_section=120, progress_cb=None)`
+- ThreadPoolExecutor 并行调度（max_workers 自动钳到 ≤ 章节数）
+- 三态进度回调：drafting / done / failed
+- 异常分级：`SectionDraftError` 记原始消息；非预期异常记"未预期错误"前缀，整个 scheduler 不崩
+
+### 4. `backend/app/main.py` · POST `/reports/{id}/draft-sections`
+
+- 把 R0.5 的 501 stub 切实现
+- `BackgroundTasks` 异步执行：POST 立即返回 ReportRunSummary(status='drafting', 各节='drafting')，前端 poll GET 看实时进度
+- progress_cb 内联写 `report_section_runs.status`/`content_json`/`error_message`，每节完成立即持久化
+- 整 run 收尾：全 done → status='drafting' 等 R3 渲染；全 fail → status='failed'
+
+### 5. 测试
+
+| 文件 | 测试数 | 内容 |
+|---|---|---|
+| `tests/test_report_chart_materializer.py` | 23 | 5 种实图各自 happy + 数据缺失/不一致/越界边界 + table_only/callout_only 占位 + 非 dict data 报错 |
+| `tests/test_report_section_drafter.py` | 10 | happy（含真 chart materialize）+ retry on 空 markdown / exception / 全失败 + chart 缺数据/生成失败 → warning + 非法 citation type 丢弃 + confidence 钳位 + chart_hint_idx 越界忽略 |
+| `tests/test_report_section_scheduler.py` | 9 | 全 done / 部分失败 / 子集起草 / 越界 indices 过滤 / 空 indices / 三态回调 / 回调异常不破坏调度 / max_workers 钳位 / 非预期异常接住 |
+| 合计 R0~R2 | **93** | 全 pass，0 warning |
+
+### 6. 真实事件线端到端验收
+
+- 调 `POST /reports/{R1_run_id}/draft-sections {"max_workers": 4}`
+- BackgroundTask 异步跑、POST < 1 秒返回
+- 4 节并行起草 ≈ 4 分钟（其中 3 节在 ~30s 内完成，1 节 ~3 分钟）
+- 中途 poll GET 看进度：`sections_status=['done','done','drafting','done']`，可见逐节完成
+- 最终 4 节全 done：
+
+| 节 | 标题 | 字数 | citations | charts (kind/状态) | warnings |
+|---|---|---|---|---|---|
+| 0 | Q1战略陪伴整体进展复盘 | 365 | 3 | timeline ✓ PNG / progress_bar_h ✓ PNG | "教师项目方案待提交" |
+| 1 | 教师项目设计现状诊断 | 378 | 2 | callout_only （空占位） | "需待项目方完整方案" |
+| 2 | Q2战略陪伴工作规划 | 511 | 3 | table_only （空占位） | "细节信息不足，预估" |
+| 3 | 教师项目与中长期战略适配建议 | 367 | 3 | callout_only （空占位） | "需完整方案后细化" |
+
+- timeline PNG 渲染：5 个里程碑（4 done 绿 + 1 in_progress 黄），中文字体正常
+- progress_bar_h PNG 渲染：4 个任务完成度（3×100% + 教师方案 40%），含期初/期末双色对照
+- LLM B 自己识别"信息不足"主动 raise warning，没编造数据 ✓ 这正是我们要的诚实
+- content_json 总长度：节 0 142KB（含 2 PNG base64）、节 1-3 ~1.5KB 各（仅 markdown）
+
+### 7. 修订记录
+
+- 新增 main.py 顶部 `from fastapi import BackgroundTasks, ...`
+
+### 8. 已知风险更新
+
+| 风险 | 状态 |
+|---|---|
+| 章节并行触 LLM rate limit | ✅ 4 节 × max_workers=4 实测豆包未限流；如需降可调 payload.max_workers |
+| matplotlib 多线程崩 | ✅ _CHART_LOCK 串行；30 张图实测无问题 |
+| LLM 字数失控 | ⚠️ 节 2 字数 511 略超 plan.estimated_words=300 的 ±30% 上限 390；R5 阶段考虑加二次 trim prompt |
+
+---
+
 ## 下次 checkpoint
 
-R1 完成 → commit → 报告给用户 → 等 "继续 R2" 进入 LLM B 章节起草员 + materialize_charts 阶段。
+R2 完成 → commit → 报告给用户 → 等 "继续 R3" 进入 docx 渲染 + Markdown 解析 + LibreOffice PDF（可选）阶段。
 
-**R2 范围预告：**
-- 新增 `backend/app/services/report_section_drafter.py`（LLM B · 豆包，按 SectionPlan 起草 markdown + 列引用）
-- 新增 `backend/app/services/report_chart_materializer.py`（接 chart_hints → 调 chart_generator 生成 PNG）
-- 新增 `backend/app/services/report_section_scheduler.py`（并行调度 max_workers=4）
-- 切实现 `POST /reports/{id}/draft-sections`
-- 更新章节状态机：pending → drafting → done/failed
+**R3 范围预告：**
+- 新增 `backend/app/services/report_docx_renderer.py`（基于沙箱 helper，把 ReportArtifact → docx）
+- markdown 解析：`[CHART:N]` 占位符替换为对应 PNG，标题/段落/列表/表格/callout 转 docx 样式
+- 章末"数据源"自然语句段落
+- LibreOffice headless → PDF（可选，机器装了 LO 才走）
+- 切实现 `POST /reports/{id}/render?format=docx|pdf|md`
+- 持久化 docx_path/pdf_path/md_path 到 report_runs；status='rendered'
+- 提供下载接口 `GET /reports/{id}/files/{format}`

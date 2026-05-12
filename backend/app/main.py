@@ -22,7 +22,7 @@ from urllib.parse import quote, urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from docx import Document as WordDocument
@@ -44512,15 +44512,158 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def report_draft_sections(
         report_run_id: str,
         payload: DraftSectionsRequest,
+        background_tasks: BackgroundTasks,
     ) -> ReportRunSummary:
-        """阶段二：填充章节内容（并行）。
+        """阶段二：填充章节内容（并行，BackgroundTasks 异步执行）。
 
+        请求立即返回 status='drafting' + 各节 sections_status='drafting'，
+        前端 poll GET /reports/{id} 看实时进度（每节完成立即写 DB）。
         幂等：单章节级幂等，重跑指定 section_indices 用最新版替换。
         """
-        raise HTTPException(
-            status_code=501,
-            detail="R2 阶段实现：section_drafter + materialize_charts 未就绪",
+        from app.services.report_context_builder import (
+            build_report_prompt_context,
         )
+        from app.services.report_section_scheduler import (
+            draft_sections_parallel,
+        )
+
+        run_row = state.db.fetchone(
+            "SELECT * FROM report_runs WHERE id = ?", (report_run_id,)
+        )
+        if run_row is None:
+            raise HTTPException(status_code=404, detail="报告任务不存在")
+        if not run_row["blueprint_json"]:
+            raise HTTPException(
+                status_code=400,
+                detail="尚未完成 blueprint，无法起草章节",
+            )
+        try:
+            blueprint = ReportBlueprint.model_validate_json(
+                run_row["blueprint_json"]
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"blueprint_json 损坏：{exc}"
+            )
+
+        if not blueprint.sections:
+            raise HTTPException(
+                status_code=400, detail="blueprint 无章节"
+            )
+
+        section_indices = payload.section_indices
+        if section_indices is None:
+            target_indices = list(range(len(blueprint.sections)))
+        else:
+            target_indices = sorted(
+                i for i in section_indices if 0 <= i < len(blueprint.sections)
+            )
+            if not target_indices:
+                raise HTTPException(
+                    status_code=400, detail="section_indices 全部越界"
+                )
+
+        try:
+            context = build_report_prompt_context(
+                state.db,
+                client_id=str(run_row["client_id"]),
+                event_line_id=run_row["event_line_id"],
+                period_start=run_row["period_start"] or "",
+                period_end=run_row["period_end"] or "",
+                intent_hint=run_row["intent_hint"] or "",
+                audience_hint=run_row["audience_hint"] or "",
+                tone_hint=run_row["tone_hint"] or "",
+            )
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+
+        now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        state.db.execute(
+            "UPDATE report_runs SET status='drafting', error_message=NULL, "
+            "updated_at=? WHERE id=?",
+            (now_iso, report_run_id),
+        )
+        for idx in target_indices:
+            state.db.execute(
+                "UPDATE report_section_runs SET status='drafting', "
+                "error_message=NULL, started_at=?, finished_at=NULL, "
+                "content_json=NULL WHERE report_run_id=? AND section_idx=?",
+                (now_iso, report_run_id, idx),
+            )
+
+        def _run_background() -> None:
+            def progress_cb(
+                idx: int,
+                status: str,
+                content,
+                err,
+            ) -> None:
+                ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                if status == "drafting":
+                    return
+                if status == "done" and content is not None:
+                    state.db.execute(
+                        "UPDATE report_section_runs SET status='done', "
+                        "content_json=?, finished_at=? "
+                        "WHERE report_run_id=? AND section_idx=?",
+                        (
+                            content.model_dump_json(),
+                            ts,
+                            report_run_id,
+                            idx,
+                        ),
+                    )
+                elif status == "failed":
+                    state.db.execute(
+                        "UPDATE report_section_runs SET status='failed', "
+                        "error_message=?, finished_at=? "
+                        "WHERE report_run_id=? AND section_idx=?",
+                        (str(err or "")[:500], ts, report_run_id, idx),
+                    )
+
+            try:
+                draft_sections_parallel(
+                    state.ai,
+                    blueprint=blueprint,
+                    context=context,
+                    section_indices=target_indices,
+                    max_workers=payload.max_workers,
+                    progress_cb=progress_cb,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "draft-sections background run failed: %s", exc
+                )
+                fail_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                state.db.execute(
+                    "UPDATE report_runs SET status='failed', error_message=?, "
+                    "updated_at=? WHERE id=?",
+                    (str(exc)[:500], fail_ts, report_run_id),
+                )
+                return
+
+            final_rows = state.db.fetchall(
+                "SELECT status FROM report_section_runs "
+                "WHERE report_run_id=? ORDER BY section_idx",
+                (report_run_id,),
+            )
+            statuses = [str(r["status"]) for r in final_rows]
+            distinct = set(statuses)
+            final_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            if not distinct or distinct == {"done"}:
+                new_status = "drafting"  # 章节都好，等 R3 渲染切到 'rendered'
+            elif "failed" in distinct and "done" not in distinct:
+                new_status = "failed"
+            else:
+                new_status = "drafting"
+            state.db.execute(
+                "UPDATE report_runs SET status=?, updated_at=? WHERE id=?",
+                (new_status, final_ts, report_run_id),
+            )
+
+        background_tasks.add_task(_run_background)
+
+        return get_report_run(report_run_id)
 
     @app.post("/api/v1/reports/{report_run_id}/render", response_model=ReportRunSummary)
     def report_render(
