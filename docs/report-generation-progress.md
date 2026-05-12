@@ -40,7 +40,7 @@
 | **R0.5** | Pydantic 数据契约（10 个模型）+ 2 张 DB 表 + 4 个空 API skeleton + 27 个测试 | 30 调用 | ✅ 完成 |
 | **R1** | report_context_builder + report_blueprint_drafter（LLM A · 豆包）+ 切实现 `POST /reports/draft-blueprint` + 51 个测试 + 真机验收 | 50 调用 | ✅ 完成 |
 | **R2** | section_drafter（LLM B · 豆包）+ chart_materializer + 并行调度 + 切实现 `POST /reports/{id}/draft-sections`（BackgroundTask）+ 42 个测试 + 真机验收 | 50 调用 | ✅ 完成 |
-| **R3** | report_docx_renderer（基于沙箱 helper）+ markdown 解析 + LibreOffice → PDF（可选）+ `POST /reports/{id}/render` | 40 调用 | 待开始 |
+| **R3** | 重写 report_docx_renderer（markdown→docx 解析 + 行内 [CHART:N] 拆段）+ md 自包含归档 + LibreOffice → PDF（可选）+ 切实现 `POST /reports/{id}/render` + `GET /reports/{id}/files/{format}` 下载 + 18 个测试 + 真机验收 | 40 调用 | ✅ 完成 |
 | **R4** | UI 入口（客户工作台"生成报告"按钮 + 进度页 + 主理人审阅 + 报告列表）—— **早期挂入，不等 R3** | 60 调用 | 待开始 |
 | **R5** | 多主题样例（3-5 种事件线）+ 使用手册 | 30 调用 | 待开始 |
 
@@ -325,15 +325,96 @@ CREATE TABLE report_section_runs (
 
 ---
 
+## R3 · 已完成动作（2026-05-12）
+
+### 1. 完全重写 `backend/app/services/report_docx_renderer.py`（沙箱 mock build() → 真实 service）
+
+删除沙箱遗留：
+- broken `sys.path.insert + from generate_report import ...`
+- broken `import chart_generator as chart`
+- mock `OUTPUT_PATH` 常量、`build()` 内部产品复盘示例 mock 代码、`main()`
+
+新增 4 个对外入口：
+
+| 函数 | 作用 |
+|---|---|
+| `render_report_artifact_to_docx(artifact, output_path, client_name=None) → Path` | 主渲染入口 |
+| `render_report_artifact_to_markdown(artifact, output_path, client_name=None) → Path` | self-contained md 归档（图用 base64 data URI 内嵌） |
+| `convert_docx_to_pdf_via_libreoffice(docx_path, output_dir, timeout_seconds=90) → Path \| None` | LO 不在 PATH 时优雅返回 None |
+| `add_image_from_bytes(doc, png_bytes, *, width_cm, caption)` | helper，被主渲染调用 |
+
+渲染流程：
+1. **封面**：标题（28pt 蓝粗）/ 副标题（14pt 灰斜）/ 客户 / 期间 / 报告类型
+2. **报告说明**：受众 / 基调 / 推导主题 / 生成时间 / open_questions_for_human callout
+3. **各章节**：标题（plan.level 1→docx h1，2→h2）+ markdown 正文（含图）+ 章末数据源段
+4. **附录**（如有 warnings）：起草警告列表，提示主理人复核
+
+### 2. markdown → docx 解析（行 by 行）
+
+| markdown 语法 | docx 元素 |
+|---|---|
+| `# / ## / ### 标题` | `add_heading(level=2/2/3)` |
+| `- / * / + 项` | `add_bullet(level=indent//2)` |
+| `1. 项` | `add_bullet`（带序号前缀） |
+| `> callout`（多行合并） | `add_callout` |
+| `\| a \| b \|` 表格（首行表头，可选 `\|---\|` 分隔） | `add_table(headers, rows)` |
+| `[CHART:N]` 独立成行 | `add_image_from_bytes(charts[N])` |
+| `...时间线[CHART:0]。` 行内嵌占位 | 段落（去占位） + 段后追加图（`_render_paragraph_with_inline_charts`） |
+| 空行 | 跳过 |
+| 其他 | `add_paragraph` |
+
+LLM B 经常把 `[CHART:N]` 嵌在句子里（"...如时间线[CHART:0]所示"），首次真机渲染漏图。修复：
+- renderer 端：行内 [CHART:N] 删占位符 + 段落后追加图
+- prompt 端：明确要求"图占位符独立成行"，给出正例
+
+### 3. `backend/app/main.py` POST `/api/v1/reports/{id}/render?format=docx|pdf|md`
+
+- 读 report_runs + section_runs → 校验全部 done → 重建 ReportArtifact → renderer
+- 文件路径：`state.data_dir / "reports" / run_id / {safe_stem}.{ext}`
+  - safe_stem 来自 blueprint.title，过滤路径非法字符
+- 持久化 docx_path/pdf_path/md_path、status='rendered'
+- PDF 走 docx → LibreOffice headless 转换；机器没装 LO 时 400 提示
+- DocxRenderError 整 run.status → 'failed'
+
+### 4. 新增下载接口 GET `/api/v1/reports/{id}/files/{format}`
+
+- 用 `FileResponse` 流给前端，自动设置 Content-Type / Content-Disposition
+- 404 / 410 / 400 三种错误码分别对应任务不存在 / 文件失效 / format 错误
+
+### 5. 测试
+
+| 文件 | 测试数 | 内容 |
+|---|---|---|
+| `tests/test_report_docx_renderer.py` | 18 | end-to-end docx 生成 / md 输出 self-contained / 无章节 raise / 空 chart base64 跳过 / chart_idx 越界占位 / 表格 / callout 多行 / 列表（无序+编号+缩进）/ warnings appendix / 无 warnings 不出 appendix / 行内 [CHART:N] 拆段插图 / 同段多 chart / LibreOffice 未装返回 None / 源文件不存在返回 None / `_parse_table_row` / `_is_separator_row` / `_replace_chart_placeholders_with_data_uri` |
+| 合计 R0~R3 | **111** | 全 pass，0 warning |
+
+### 6. 真机端到端验收
+
+- 调 `POST /reports/{R1 run_id}/render?format=docx`（日慈 4 节 + 2 图）
+- 响应：`status='rendered'`，docx_path 落到 `~/Library/Application Support/YiyuThinkTankWorkbench2/reports/{run_id}/`
+- 下载 docx 135 KB，python-docx 解析：46 段落 / 1 表格 / **2 inline shapes**（图）
+- **MD5 对比**：docx 里嵌入的两张 PNG 与 R2 阶段写入 DB 的 base64 解出来的 PNG **完全一致**（ec1ad...3 + ebec5...5），证明 R2→DB→R3 端到端无失真
+- 调 `POST /render?format=md`：147 KB self-contained markdown，含 base64 内嵌图
+- 调 `POST /render?format=pdf`：机器未装 LibreOffice，按设计返回 400 + 友好提示
+
+### 7. 已知风险更新
+
+| 风险 | 状态 |
+|---|---|
+| LibreOffice 部署依赖 | 当前 macOS 开发机未装；用户需要 PDF 时安装 LibreOffice 即可（`brew install --cask libreoffice`） |
+| 大表格列宽自适应 | python-docx 表格列宽未自动算最优；R5 再优化 |
+| 中文字体 Word 端兼容 | 现 `FONT_CN="微软雅黑"`、Mac 上自动 fallback 到苹方；R5 真用户测试再决定是否换 |
+
+---
+
 ## 下次 checkpoint
 
-R2 完成 → commit → 报告给用户 → 等 "继续 R3" 进入 docx 渲染 + Markdown 解析 + LibreOffice PDF（可选）阶段。
+R3 完成 → commit → 报告给用户 → 等 "继续 R4" 进入 UI 入口阶段。
 
-**R3 范围预告：**
-- 新增 `backend/app/services/report_docx_renderer.py`（基于沙箱 helper，把 ReportArtifact → docx）
-- markdown 解析：`[CHART:N]` 占位符替换为对应 PNG，标题/段落/列表/表格/callout 转 docx 样式
-- 章末"数据源"自然语句段落
-- LibreOffice headless → PDF（可选，机器装了 LO 才走）
-- 切实现 `POST /reports/{id}/render?format=docx|pdf|md`
-- 持久化 docx_path/pdf_path/md_path 到 report_runs；status='rendered'
-- 提供下载接口 `GET /reports/{id}/files/{format}`
+**R4 范围预告：**
+- 在客户工作台 / 事件线详情添加"生成报告"按钮 + 弹窗（选 event_line + period + intent hint + audience/tone）
+- 新增报告进度页：拉 GET /reports/{id} 轮询 sections_status，逐节滑入完成
+- 主理人审阅页：展示 blueprint + open_questions，confirm 后调 draft-sections
+- 报告列表：列出客户名下所有 report_runs，按时间倒序，含下载按钮
+- TypeScript types + api.ts 添加 5 个 endpoint 的 client
+- 新增 src/renderer/components/reports/* 组件树

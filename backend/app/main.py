@@ -44670,10 +44670,193 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         report_run_id: str,
         format: Literal["docx", "pdf", "md"] = Query(default="docx"),
     ) -> ReportRunSummary:
-        """阶段三：渲染并落盘 docx / pdf / md。"""
-        raise HTTPException(
-            status_code=501,
-            detail="R3 阶段实现：report_docx_renderer 未就绪",
+        """阶段三：渲染并落盘 docx / pdf / md。
+
+        format=docx：生成 docx（核心产物）
+        format=pdf：先生成 docx，再 LibreOffice headless 转 PDF（机器没装 LO 则 400）
+        format=md：归档用 markdown 文件，图表 base64 内嵌（self-contained）
+        """
+        from app.models import ReportArtifact, SectionContent
+        from app.services.report_docx_renderer import (
+            DocxRenderError,
+            convert_docx_to_pdf_via_libreoffice,
+            render_report_artifact_to_docx,
+            render_report_artifact_to_markdown,
+        )
+
+        run_row = state.db.fetchone(
+            "SELECT * FROM report_runs WHERE id = ?", (report_run_id,)
+        )
+        if run_row is None:
+            raise HTTPException(status_code=404, detail="报告任务不存在")
+        if not run_row["blueprint_json"]:
+            raise HTTPException(
+                status_code=400, detail="尚未生成 blueprint，无法渲染"
+            )
+
+        section_rows = state.db.fetchall(
+            "SELECT section_idx, status, content_json FROM report_section_runs "
+            "WHERE report_run_id = ? ORDER BY section_idx",
+            (report_run_id,),
+        )
+        if not section_rows:
+            raise HTTPException(
+                status_code=400, detail="尚无章节记录，无法渲染"
+            )
+        section_contents: list[SectionContent] = []
+        for r in section_rows:
+            if str(r["status"]) != "done" or not r["content_json"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"章节 #{r['section_idx']} 尚未完成起草"
+                        f" (status={r['status']})，无法渲染"
+                    ),
+                )
+            try:
+                section_contents.append(
+                    SectionContent.model_validate_json(r["content_json"])
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"章节 #{r['section_idx']} 内容损坏: {exc}",
+                )
+
+        try:
+            blueprint = ReportBlueprint.model_validate_json(
+                run_row["blueprint_json"]
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"blueprint_json 损坏: {exc}"
+            )
+
+        client_row = state.db.fetchone(
+            "SELECT name FROM clients WHERE id = ?",
+            (str(run_row["client_id"]),),
+        )
+        client_name = (
+            str(client_row["name"]) if client_row else None  # type: ignore[index]
+        )
+
+        artifact = ReportArtifact(
+            blueprint=blueprint,
+            sections=section_contents,
+            output_files={},
+            generated_at=datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            total_llm_tokens=int(run_row["total_llm_tokens"] or 0),
+        )
+
+        target_dir = (state.data_dir / "reports" / report_run_id).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = re.sub(r"[\\/:*?\"<>|\s]+", "_", blueprint.title)[:60] or "report"
+
+        docx_path: Path | None = None
+        pdf_path: Path | None = None
+        md_path: Path | None = None
+        existing_docx = run_row["docx_path"]
+        existing_pdf = run_row["pdf_path"]
+        existing_md = run_row["md_path"]
+        if existing_docx:
+            docx_path = Path(existing_docx)
+        if existing_pdf:
+            pdf_path = Path(existing_pdf)
+        if existing_md:
+            md_path = Path(existing_md)
+
+        try:
+            if format == "docx":
+                docx_path = render_report_artifact_to_docx(
+                    artifact, target_dir / f"{safe_stem}.docx",
+                    client_name=client_name,
+                )
+            elif format == "md":
+                md_path = render_report_artifact_to_markdown(
+                    artifact, target_dir / f"{safe_stem}.md",
+                    client_name=client_name,
+                )
+            elif format == "pdf":
+                if docx_path is None or not docx_path.exists():
+                    docx_path = render_report_artifact_to_docx(
+                        artifact, target_dir / f"{safe_stem}.docx",
+                        client_name=client_name,
+                    )
+                pdf_path = convert_docx_to_pdf_via_libreoffice(
+                    docx_path, target_dir
+                )
+                if pdf_path is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "PDF 转换失败：机器未安装 LibreOffice 或 "
+                            "soffice/libreoffice 不在 PATH。docx 已生成可直接下载。"
+                        ),
+                    )
+        except DocxRenderError as exc:
+            fail_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+            state.db.execute(
+                "UPDATE report_runs SET status='failed', error_message=?, "
+                "updated_at=? WHERE id=?",
+                (str(exc)[:500], fail_ts, report_run_id),
+            )
+            raise HTTPException(
+                status_code=500, detail=f"渲染失败：{exc}"
+            )
+
+        now_ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        state.db.execute(
+            "UPDATE report_runs SET docx_path=?, pdf_path=?, md_path=?, "
+            "status='rendered', error_message=NULL, updated_at=? WHERE id=?",
+            (
+                str(docx_path) if docx_path else None,
+                str(pdf_path) if pdf_path else None,
+                str(md_path) if md_path else None,
+                now_ts,
+                report_run_id,
+            ),
+        )
+
+        return get_report_run(report_run_id)
+
+    @app.get("/api/v1/reports/{report_run_id}/files/{file_format}")
+    def report_download_file(report_run_id: str, file_format: str) -> Response:
+        """下载已渲染的报告文件（docx / pdf / md）。"""
+        from fastapi.responses import FileResponse
+
+        if file_format not in {"docx", "pdf", "md"}:
+            raise HTTPException(
+                status_code=400, detail="format 必须是 docx/pdf/md"
+            )
+        row = state.db.fetchone(
+            "SELECT docx_path, pdf_path, md_path FROM report_runs WHERE id = ?",
+            (report_run_id,),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="报告任务不存在")
+        path_str = row[f"{file_format}_path"]
+        if not path_str:
+            raise HTTPException(
+                status_code=404,
+                detail=f"该报告尚未生成 {file_format} 文件，请先调 /render",
+            )
+        path = Path(path_str)
+        if not path.exists():
+            raise HTTPException(
+                status_code=410, detail=f"文件已不在磁盘上：{path}"
+            )
+        media_type = {
+            "docx": (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            "pdf": "application/pdf",
+            "md": "text/markdown; charset=utf-8",
+        }[file_format]
+        return FileResponse(
+            path=str(path),
+            media_type=media_type,
+            filename=path.name,
         )
 
     @app.get("/api/v1/reports/{report_run_id}", response_model=ReportRunSummary)
