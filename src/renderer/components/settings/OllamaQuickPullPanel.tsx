@@ -145,12 +145,19 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
 
   if (!health.running) {
     return (
-      <div className="space-y-2 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-800">
-        <div className="flex items-start gap-2">
+      <div className="space-y-2 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-amber-800">
+        <div className="flex items-center gap-2 pb-1 border-b border-amber-100">
+          <Download size={14} className="text-amber-700" />
+          <span className="text-[13px] font-bold text-gray-900">
+            自动下载模型（推荐路线）
+          </span>
+        </div>
+        <div className="flex items-start gap-2 text-[11px]">
           <AlertCircle size={13} className="mt-0.5 shrink-0" />
-          <div>
-            <p className="font-bold">Ollama 未运行（{health.error || '无法连接 127.0.0.1:11434'}）</p>
-            <p className="opacity-80 mt-0.5">本地大语言模型需要先安装 Ollama（一次性，免费开源，Mac 一键安装）。</p>
+          <div className="min-w-0">
+            <p className="font-bold break-words">Ollama 未运行</p>
+            <p className="opacity-80 mt-0.5 break-words">{health.error || '无法连接 127.0.0.1:11434'}</p>
+            <p className="opacity-80 mt-1">本地大语言模型需要先安装 Ollama（一次性，免费开源，Mac 一键安装）。</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -179,18 +186,28 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
     : 0;
 
   return (
-    <div className="space-y-2 rounded-2xl border border-blue-100 bg-blue-50/60 px-3 py-2.5 text-[11px]">
-      <div className="flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1 font-bold text-blue-800">
-          <CheckCircle2 size={11} className="text-emerald-600" />
-          Ollama 运行中
-          {health.version ? <span className="opacity-60 font-normal">v{health.version}</span> : null}
-          <span className="opacity-60 font-normal">· {health.installedModels.length} 个已装模型</span>
+    <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">
+      {/* 大标题：让用户一眼知道这就是"一键下载"入口 */}
+      <div className="flex items-center gap-2 pb-1 border-b border-blue-100">
+        <Download size={14} className="text-[#5B7BFE]" />
+        <span className="text-[13px] font-bold text-gray-900">
+          自动下载模型（推荐路线）
         </span>
       </div>
 
+      {/* Ollama 健康状态 */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-gray-600 min-w-0">
+        <CheckCircle2 size={11} className="shrink-0 text-emerald-600" />
+        <span className="font-bold text-blue-800">Ollama 运行中</span>
+        {health.version && (
+          <span className="opacity-60 truncate max-w-[80px]">v{health.version}</span>
+        )}
+        <span className="opacity-60">·</span>
+        <span className="opacity-60">{health.installedModels.length} 个已装模型</span>
+      </div>
+
       {/* 推荐模型 dropdown */}
-      <div className="flex items-stretch gap-1.5">
+      <div className="flex flex-col sm:flex-row sm:items-stretch gap-2">
         <select
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
@@ -241,16 +258,16 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
 
       {/* 进度条 */}
       {pullStatus?.inProgress && (
-        <div className="space-y-1">
-          <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
+        <div className="space-y-1.5">
+          <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
             <div className="h-full bg-[#5B7BFE] transition-all" style={{ width: `${pullPercent}%` }} />
           </div>
-          <div className="flex items-center justify-between text-[10px] text-blue-700">
-            <span className="inline-flex items-center gap-1">
-              <Loader2 size={9} className="animate-spin" />
-              {pullStatus.modelName} · {pullStatus.status}
+          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-blue-700">
+            <span className="inline-flex items-center gap-1 min-w-0 truncate">
+              <Loader2 size={10} className="shrink-0 animate-spin" />
+              <span className="truncate">{pullStatus.modelName} · {pullStatus.status}</span>
             </span>
-            <span>
+            <span className="shrink-0">
               {formatBytes(pullStatus.bytesDownloaded)} / {formatBytes(pullStatus.bytesTotal)}（{pullPercent.toFixed(1)}%）
             </span>
           </div>
@@ -258,10 +275,10 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
       )}
 
       {pullStatus?.error && !pullStatus.inProgress && (
-        <p className="text-[10px] text-rose-600">{pullStatus.error}</p>
+        <p className="text-[11px] text-rose-600 break-words">{pullStatus.error}</p>
       )}
-      {actionMessage && <p className="text-[10px] text-emerald-700">{actionMessage}</p>}
-      {actionError && <p className="text-[10px] text-rose-600">{actionError}</p>}
+      {actionMessage && <p className="text-[11px] text-emerald-700 break-words">{actionMessage}</p>}
+      {actionError && <p className="text-[11px] text-rose-600 break-words">{actionError}</p>}
     </div>
   );
 }
