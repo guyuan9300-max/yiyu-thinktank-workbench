@@ -35,6 +35,13 @@ AgentDepartmentKey = Literal["strategy_design", "tech_development", "info_data"]
 TopicTaskOwnerMode = Literal["self", "empty"]
 TopicCandidateStatus = Literal["candidate", "tracking", "promoted", "archived"]
 TopicCandidateInsightStatus = Literal["pending", "ready", "failed"]
+# 客户项目情报流（同事新版资讯情报站 Literal 别名）— 2026-05-13 补回
+IntelligenceContentKind = Literal["profile_completion", "timely_intelligence"]
+IntelligenceWorkObjectType = Literal["client", "project_module"]
+IntelligenceFocusScopeType = Literal["global", "client", "project_module"]
+IntelligenceItemUserStatus = Literal["active", "dismissed", "following"]
+IntelligenceSearchIntentStatus = Literal["missing", "stale", "ready", "running", "failed"]
+IntelligenceSupplyStatus = Literal["missing", "stale", "ready", "running", "failed"]
 MeetingStage = Literal["prepared", "ingested", "extracted", "resolved", "published"]
 AiProvider = Literal["mock", "openai_compatible", "qwen", "doubao"]
 AiModelMode = Literal["auto", "online_first", "local_first", "local_only"]
@@ -8000,3 +8007,351 @@ class OllamaDeleteModelPayload(BaseModel):
 class OllamaDeleteModelResponse(BaseModel):
     success: bool
     message: str = ""
+
+# ─────────────────────────────────────────────────────────────────────
+# 客户项目情报流 Pydantic 类（同事新版资讯情报站）— 2026-05-13 补回
+# 来源：origin-main-backup-before-force-push-2026-05-13 tag
+# ─────────────────────────────────────────────────────────────────────
+
+class IntelligenceWorkObjectRecord(BaseModel):
+    type: IntelligenceWorkObjectType
+    id: str
+    clientId: str
+    projectModuleId: str | None = None
+    name: str
+    subtitle: str = ""
+    color: str = "#5B7BFE"
+    updatedAt: str | None = None
+    searchIntentStatus: IntelligenceSearchIntentStatus = "missing"
+    searchIntentHint: str | None = None
+    sourceCoverageStatus: IntelligenceSupplyStatus = "missing"
+    candidateRefreshStatus: IntelligenceSupplyStatus = "missing"
+    candidateRefreshHint: str | None = None
+    lastCandidateFetchAt: str | None = None
+    candidateCounts: dict[str, int] = Field(default_factory=dict)
+
+
+class IntelligenceSourceDiagnosticSourceRecord(BaseModel):
+    id: str
+    sourceType: str
+    sourceName: str
+    sourceUrlTemplate: str
+    contentKinds: list[str] = Field(default_factory=list)
+    region: str = "全国"
+    reliabilityTier: str = "standard"
+    priority: int = 50
+    enabled: bool = True
+    discoverySource: str = "default_template"
+    discoveryReason: str = ""
+    discoverySamples: list[dict[str, str]] = Field(default_factory=list)
+    healthScore: float = 70
+    successCount: int = 0
+    failureCount: int = 0
+    candidateCount: int = 0
+    promotedCount: int = 0
+    duplicateCount: int = 0
+    lastStatus: str = "unknown"
+    lastCheckedAt: str | None = None
+    lastSuccessAt: str | None = None
+    lastFailureAt: str | None = None
+    nextDueAt: str | None = None
+
+
+class IntelligenceSourceDiagnosticFetchJobRecord(BaseModel):
+    id: str
+    contentKind: str
+    provider: str
+    sourceConfigId: str | None = None
+    query: str
+    status: str
+    rawCount: int = 0
+    dedupedCount: int = 0
+    candidateCount: int = 0
+    sampleHits: list[dict[str, str]] = Field(default_factory=list)
+    failureReason: str = ""
+    durationMs: int = 0
+    createdAt: str
+
+
+class IntelligenceSourceDiagnosticsResponse(BaseModel):
+    scopeType: str
+    scopeId: str
+    contentKind: IntelligenceContentKind | None = None
+    sourceCoverageStatus: IntelligenceSupplyStatus = "missing"
+    candidateRefreshStatus: IntelligenceSupplyStatus = "missing"
+    candidateRefreshHint: str | None = None
+    lastCandidateFetchAt: str | None = None
+    candidateCounts: dict[str, int] = Field(default_factory=dict)
+    officialSiteDiscoveredCount: int = 0
+    coverageGaps: list[str] = Field(default_factory=list)
+    sources: list[IntelligenceSourceDiagnosticSourceRecord] = Field(default_factory=list)
+    recentFetchJobs: list[IntelligenceSourceDiagnosticFetchJobRecord] = Field(default_factory=list)
+    officialSiteDiscoverySamples: list[IntelligenceSourceDiagnosticFetchJobRecord] = Field(default_factory=list)
+
+
+class IntelligenceFocusDirectiveRecord(BaseModel):
+    id: str
+    scopeType: IntelligenceFocusScopeType
+    scopeId: str | None = None
+    profileCompletionFocus: list[str] = Field(default_factory=list)
+    timelyIntelligenceFocus: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class IntelligenceFocusDirectivePayload(BaseModel):
+    scopeType: IntelligenceFocusScopeType = "global"
+    scopeId: str | None = None
+    profileCompletionFocus: list[str] = Field(default_factory=list)
+    timelyIntelligenceFocus: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+
+
+class IntelligenceItemRecord(BaseModel):
+    id: str
+    contentKind: IntelligenceContentKind
+    scopeType: str | None = None
+    scopeId: str | None = None
+    clientId: str | None = None
+    projectModuleId: str | None = None
+    title: str
+    summary: str = ""
+    keyPoints: list[str] = Field(default_factory=list)
+    analysis: str = ""
+    impact: str = ""
+    intelligenceType: str | None = None
+    timelinessLabel: str | None = None
+    relevanceReason: str = ""
+    suggestedAction: str = ""
+    followupQuestions: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    source: str = ""
+    sourceUrl: str | None = None
+    publishedAt: str | None = None
+    capturedAt: str
+    verifiedAt: str | None = None
+    credibilityScore: float | None = None
+    confidenceScore: float | None = None
+    dataCenterIngestEventId: str | None = None
+    externalEvidenceCardId: str | None = None
+    topicCandidateId: str | None = None
+    convertedTaskId: str | None = None
+    verificationStatus: str = "verified"
+    verificationReason: str = ""
+    userStatus: IntelligenceItemUserStatus = "active"
+    createdAt: str
+    updatedAt: str
+
+
+class IntelligenceCandidateSample(BaseModel):
+    id: str
+    contentKind: IntelligenceContentKind
+    scopeType: str
+    scopeId: str
+    clientId: str | None = None
+    projectModuleId: str | None = None
+    title: str
+    url: str | None = None
+    snippet: str = ""
+    source: str = ""
+    publishedAt: str | None = None
+    capturedAt: str
+    confidenceScore: float = 0
+    classificationStatus: str = "candidate"
+    promotionReason: str = ""
+    verificationStatus: str = "pending"
+    verificationReason: str = ""
+    bodyFetchStatus: str = "not_attempted"
+    summaryStatus: str = "not_attempted"
+    mappedTags: list[str] = Field(default_factory=list)
+    isUserVisibleCandidate: bool = True
+
+
+class IntelligenceItemsResponse(BaseModel):
+    items: list[IntelligenceItemRecord] = Field(default_factory=list)
+    candidateSamples: list[IntelligenceCandidateSample] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    pageSize: int = 10
+
+
+class IntelligenceRefreshPayload(BaseModel):
+    scopeType: Literal["all", "client", "project_module"] = "all"
+    scopeId: str | None = None
+    contentKind: str
+    force: bool = True
+
+
+class IntelligenceRefreshObjectResult(BaseModel):
+    scopeType: IntelligenceWorkObjectType
+    scopeId: str
+    clientId: str
+    projectModuleId: str | None = None
+    name: str
+    contentKind: IntelligenceContentKind
+    status: Literal["completed", "no_results", "failed"] = "completed"
+    intentCount: int = 0
+    diagnosticRunCount: int = 0
+    diagnosticSuccessCount: int = 0
+    fetchJobCount: int = 0
+    candidateCount: int = 0
+    promotedCount: int = 0
+    duplicateCount: int = 0
+    failedCount: int = 0
+    bodyFetchedCount: int = 0
+    verifiedCount: int = 0
+    summarySuccessCount: int = 0
+    rejectionCounts: dict[str, int] = Field(default_factory=dict)
+    sourceCoverageStatus: IntelligenceSupplyStatus = "missing"
+    candidateRefreshStatus: IntelligenceSupplyStatus = "missing"
+    lastCandidateFetchAt: str | None = None
+    candidateCounts: dict[str, int] = Field(default_factory=dict)
+    candidateSamples: list[IntelligenceCandidateSample] = Field(default_factory=list)
+    queuedJobId: str | None = None
+    message: str = ""
+    errors: list[str] = Field(default_factory=list)
+
+
+class IntelligenceRefreshTotals(BaseModel):
+    objectCount: int = 0
+    completedCount: int = 0
+    noResultCount: int = 0
+    failedCount: int = 0
+    intentCount: int = 0
+    fetchJobCount: int = 0
+    candidateCount: int = 0
+    promotedCount: int = 0
+    duplicateCount: int = 0
+    bodyFetchedCount: int = 0
+    verifiedCount: int = 0
+    summarySuccessCount: int = 0
+    rejectionCounts: dict[str, int] = Field(default_factory=dict)
+
+
+class IntelligenceRefreshResult(BaseModel):
+    status: Literal["completed", "no_results", "failed", "partial_failed"] = "completed"
+    contentKind: IntelligenceContentKind
+    scopeType: Literal["all", "client", "project_module"] = "all"
+    scopeId: str | None = None
+    results: list[IntelligenceRefreshObjectResult] = Field(default_factory=list)
+    totals: IntelligenceRefreshTotals = Field(default_factory=IntelligenceRefreshTotals)
+    message: str = ""
+    generatedAt: str
+
+
+class IntelligenceDismissPayload(BaseModel):
+    reasonCode: Literal["irrelevant", "inaccurate", "duplicate", "outdated", "low_value"] = "irrelevant"
+    note: str = ""
+
+
+class IntelligenceFollowPayload(BaseModel):
+    followMode: Literal["same_theme", "same_source", "same_work_object"] = "same_theme"
+    note: str = ""
+
+
+class IntelligenceVerificationRuleRecord(BaseModel):
+    id: str
+    scopeType: IntelligenceFocusScopeType = "global"
+    scopeId: str | None = None
+    positiveRules: list[str] = Field(default_factory=list)
+    excludeRules: list[str] = Field(default_factory=list)
+    identityAnchors: list[str] = Field(default_factory=list)
+    clarificationExamples: list[str] = Field(default_factory=list)
+    createdAt: str
+    updatedAt: str
+
+
+class IntelligenceVerificationRulePayload(BaseModel):
+    scopeType: IntelligenceFocusScopeType = "global"
+    scopeId: str | None = None
+    positiveRules: list[str] = Field(default_factory=list)
+    excludeRules: list[str] = Field(default_factory=list)
+    identityAnchors: list[str] = Field(default_factory=list)
+
+
+class IntelligenceVerificationFeedbackPayload(BaseModel):
+    targetType: Literal["item", "candidate"]
+    targetId: str
+    scopeType: IntelligenceFocusScopeType
+    scopeId: str | None = None
+    note: str
+
+
+class IntelligenceTaskDraftPayload(BaseModel):
+    title: str | None = None
+    desc: str | None = None
+    priority: Priority = "normal"
+    listId: str | None = None
+    dueDate: str | None = None
+    ddl: str = "本周"
+    ownerId: str | None = None
+    ownerName: str = ""
+    tags: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class IntelligenceTaskDraftResponse(BaseModel):
+    itemId: str
+    draft: IntelligenceTaskDraftPayload
+
+
+class IntelligenceTaskCreatePayload(IntelligenceTaskDraftPayload):
+    title: str
+
+
+class IntelligenceTaskCreateResponse(BaseModel):
+    item: IntelligenceItemRecord
+    task: TaskRecord
+
+
+class TopicCandidateChatMessageRecord(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    createdAt: str
+
+
+class IntelligenceItemChatResponse(BaseModel):
+    itemId: str
+    question: str
+    answer: str
+    generatedAt: str
+    message: TopicCandidateChatMessageRecord
+
+
+class IntelligenceFeedbackSummaryRecord(BaseModel):
+    targetType: str
+    targetLabel: str
+    positiveCount: int = 0
+    negativeCount: int = 0
+    neutralCount: int = 0
+    score: float = 0
+    lastEventAt: str | None = None
+
+
+class IntelligenceFeedbackEventRecord(BaseModel):
+    id: str
+    contentKind: str
+    itemId: str | None = None
+    candidateId: str | None = None
+    actionType: str
+    reasonCode: str = ""
+    note: str = ""
+    extractedTopics: list[str] = Field(default_factory=list)
+    source: str = ""
+    sourceDomain: str = ""
+    scoreDelta: float = 0
+    createdAt: str
+
+
+class IntelligenceFeedbackDiagnosticsResponse(BaseModel):
+    scopeType: str
+    scopeId: str
+    contentKind: IntelligenceContentKind | None = None
+    summaries: list[IntelligenceFeedbackSummaryRecord] = Field(default_factory=list)
+    events: list[IntelligenceFeedbackEventRecord] = Field(default_factory=list)
+
+
+class TopicCandidateChatPayload(BaseModel):
+    question: str
+    history: list[TopicCandidateChatMessageRecord] = Field(default_factory=list)

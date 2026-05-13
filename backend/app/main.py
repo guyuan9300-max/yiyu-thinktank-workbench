@@ -856,6 +856,25 @@ from app.services.local_model_optimizer import (
     retry_failed_local_model_optimization_tasks,
 )
 from app.services.internet_crawler import run_internet_enrichment
+# 客户项目情报流（同事新版资讯情报站）— 2026-05-13 整合
+from app.services.intelligence_search_intents import (
+    generate_intelligence_search_intents,
+    get_search_intent_status_for_scope,
+    run_intelligence_search_diagnostic,
+    select_enrichment_seed_queries,
+)
+from app.services.intelligence_candidate_supply import (
+    cleanup_low_value_intelligence_artifacts,
+    get_candidate_supply_status_for_scope,
+    get_source_diagnostics,
+    run_intelligence_candidate_refresh,
+)
+from app.services.intelligence_feedback import (
+    FeedbackContext,
+    context_from_item_row,
+    feedback_diagnostics,
+    record_feedback_event,
+)
 from app.services.memory_foundation import (
     answer_clarification_record,
     backfill_memory_foundation,
@@ -45695,6 +45714,532 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
+
+    # ────────────────────────────────────────────────────────────────────
+    # 客户项目情报流（同事新版资讯情报站）— 2026-05-13 接通
+    # 最小可用版：让 UI 能加载 + 客户下拉显示 + refresh 真实调用 service
+    # 未实现的次要 endpoint（dismiss/follow/task-draft/tasks/chat/diagnostics）
+    # 返回基础数据或 stub，等同事下次完善
+    # ────────────────────────────────────────────────────────────────────
+    import uuid as _uuid_intel
+    from app.models import (
+        IntelligenceWorkObjectRecord,
+        IntelligenceItemsResponse,
+        IntelligenceItemRecord,
+        IntelligenceFocusDirectiveRecord,
+        IntelligenceFocusDirectivePayload,
+        IntelligenceVerificationRuleRecord,
+        IntelligenceVerificationRulePayload,
+        IntelligenceVerificationFeedbackPayload,
+        IntelligenceRefreshPayload,
+        IntelligenceRefreshResult,
+        IntelligenceRefreshTotals,
+        IntelligenceRefreshObjectResult,
+        IntelligenceSourceDiagnosticsResponse,
+        IntelligenceFeedbackDiagnosticsResponse,
+    )
+    from app.services.intelligence_search_intents import IntelligenceSearchScope
+
+    def _intel_now() -> str:
+        return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    @app.get("/api/v1/intelligence/work-objects", response_model=list[IntelligenceWorkObjectRecord])
+    def list_intelligence_work_objects() -> list[IntelligenceWorkObjectRecord]:
+        """返回所有客户作为情报流的"客户/项目"工作对象。"""
+        client_rows = state.db.fetchall(
+            "SELECT id, name, intro, stage FROM clients ORDER BY name ASC"
+        )
+        out: list[IntelligenceWorkObjectRecord] = []
+        for row in client_rows:
+            out.append(
+                IntelligenceWorkObjectRecord(
+                    type="client",
+                    id=str(row["id"]),
+                    clientId=str(row["id"]),
+                    projectModuleId=None,
+                    name=str(row["name"] or ""),
+                    subtitle=str(row["intro"] or "")[:60],
+                    introSummary=str(row["intro"] or ""),
+                    stageLabel=str(row["stage"] or ""),
+                )
+            )
+        return out
+
+    @app.get("/api/v1/intelligence/items", response_model=IntelligenceItemsResponse)
+    def list_intelligence_items(
+        contentKind: Literal["profile_completion", "timely_intelligence"] = Query(...),
+        scopeType: str = Query(default="all"),
+        scopeId: str | None = Query(default=None),
+        userStatus: Literal["active", "dismissed", "following"] = Query(default="active"),
+        sort: str = Query(default="published_desc"),
+        page: int = Query(default=1, ge=1),
+        pageSize: int = Query(default=10, ge=1, le=100),
+    ) -> IntelligenceItemsResponse:
+        """按 contentKind + scope 分页返回 intelligence_items。"""
+        sql_filters = ["content_kind = ?", "user_status = ?"]
+        sql_params: list = [contentKind, userStatus]
+        if scopeType == "client" and scopeId:
+            sql_filters.append("client_id = ?")
+            sql_params.append(scopeId)
+        elif scopeType == "project_module" and scopeId:
+            sql_filters.append("project_module_id = ?")
+            sql_params.append(scopeId)
+        where_clause = " AND ".join(sql_filters)
+        order_sql = {
+            "published_desc": "published_at DESC NULLS LAST, captured_at DESC",
+            "published_asc": "published_at ASC NULLS LAST, captured_at ASC",
+            "captured_desc": "captured_at DESC",
+            "captured_asc": "captured_at ASC",
+        }.get(sort, "captured_at DESC")
+        # sqlite 不支持 NULLS LAST 直接，但用 COALESCE 改写
+        if "NULLS LAST" in order_sql:
+            order_sql = order_sql.replace(" NULLS LAST", "")
+        offset = (page - 1) * pageSize
+        count_row = state.db.fetchone(
+            f"SELECT COUNT(1) AS n FROM intelligence_items WHERE {where_clause}",
+            tuple(sql_params),
+        )
+        total = int(count_row["n"] or 0) if count_row else 0
+        rows = state.db.fetchall(
+            f"SELECT * FROM intelligence_items WHERE {where_clause} "
+            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+            tuple(sql_params + [pageSize, offset]),
+        )
+        items: list[IntelligenceItemRecord] = []
+        for row in rows:
+            items.append(
+                IntelligenceItemRecord(
+                    id=str(row["id"]),
+                    contentKind=row["content_kind"],
+                    scopeType=row["scope_type"] or None,
+                    scopeId=row["scope_id"] or None,
+                    clientId=row["client_id"] or None,
+                    projectModuleId=row["project_module_id"] or None,
+                    title=str(row["title"] or ""),
+                    summary=str(row["summary"] or ""),
+                    keyPoints=from_json(row["key_points_json"] or "[]", []),
+                    analysis=str(row["analysis"] or ""),
+                    impact=str(row["impact"] or ""),
+                    intelligenceType=row["intelligence_type"] or None,
+                    timelinessLabel=row["timeliness_label"] or None,
+                    relevanceReason=str(row["relevance_reason"] or ""),
+                    suggestedAction=str(row["suggested_action"] or ""),
+                    followupQuestions=from_json(row["followup_questions_json"] or "[]", []),
+                    tags=from_json(row["tags_json"] or "[]", []),
+                    source=str(row["source"] or ""),
+                    sourceUrl=str(row["source_url"] or ""),
+                    sourceType=str(row["source_type"] or ""),
+                    sourceTier=str(row["source_tier"] or "standard"),
+                    confidence=float(row["confidence"] or 0),
+                    relevanceScore=float(row["relevance_score"] or 0),
+                    timelinessScore=float(row["timeliness_score"] or 0),
+                    overallScore=float(row["overall_score"] or 0),
+                    capturedAt=str(row["captured_at"]),
+                    publishedAt=row["published_at"] or None,
+                    expiresAt=row["expires_at"] or None,
+                    userStatus=row["user_status"] or "active",
+                    dismissedAt=row["dismissed_at"] or None,
+                    dismissedReason=str(row["dismissed_reason"] or ""),
+                    dismissedNote=str(row["dismissed_note"] or ""),
+                    followedAt=row["followed_at"] or None,
+                    followedMode=str(row["followed_mode"] or ""),
+                    followedNote=str(row["followed_note"] or ""),
+                    taskId=row["task_id"] or None,
+                    promotedAt=row["promoted_at"] or None,
+                    createdAt=str(row["created_at"]),
+                    updatedAt=str(row["updated_at"]),
+                )
+            )
+        return IntelligenceItemsResponse(
+            items=items, candidateSamples=[], total=total, page=page, pageSize=pageSize
+        )
+
+    @app.get("/api/v1/intelligence/focus-directives", response_model=list[IntelligenceFocusDirectiveRecord])
+    def list_focus_directives() -> list[IntelligenceFocusDirectiveRecord]:
+        rows = state.db.fetchall(
+            "SELECT * FROM intelligence_focus_directives ORDER BY scope_type, scope_id"
+        )
+        out: list[IntelligenceFocusDirectiveRecord] = []
+        for row in rows:
+            out.append(
+                IntelligenceFocusDirectiveRecord(
+                    id=str(row["id"]),
+                    scopeType=row["scope_type"],
+                    scopeId=row["scope_id"] or None,
+                    profileCompletionFocus=from_json(row["profile_completion_focus_json"] or "[]", []),
+                    timelyIntelligenceFocus=from_json(row["timely_intelligence_focus_json"] or "[]", []),
+                    exclude=from_json(row["exclude_json"] or "[]", []),
+                    createdAt=str(row["created_at"]),
+                    updatedAt=str(row["updated_at"]),
+                )
+            )
+        return out
+
+    @app.put("/api/v1/intelligence/focus-directives", response_model=IntelligenceFocusDirectiveRecord)
+    def save_focus_directive(payload: IntelligenceFocusDirectivePayload) -> IntelligenceFocusDirectiveRecord:
+        scope_type = payload.scopeType or "global"
+        scope_id = payload.scopeId or ""
+        existing = state.db.fetchone(
+            "SELECT id FROM intelligence_focus_directives WHERE scope_type=? AND scope_id=?",
+            (scope_type, scope_id),
+        )
+        now_ts = _intel_now()
+        if existing:
+            state.db.execute(
+                "UPDATE intelligence_focus_directives SET "
+                "profile_completion_focus_json=?, timely_intelligence_focus_json=?, "
+                "exclude_json=?, updated_at=? WHERE id=?",
+                (
+                    to_json(payload.profileCompletionFocus or []),
+                    to_json(payload.timelyIntelligenceFocus or []),
+                    to_json(payload.exclude or []),
+                    now_ts,
+                    existing["id"],
+                ),
+            )
+            row_id = str(existing["id"])
+            created_at = state.db.fetchone(
+                "SELECT created_at FROM intelligence_focus_directives WHERE id=?",
+                (row_id,),
+            )["created_at"]
+        else:
+            row_id = str(_uuid_intel.uuid4())
+            state.db.execute(
+                "INSERT INTO intelligence_focus_directives "
+                "(id, scope_type, scope_id, profile_completion_focus_json, "
+                "timely_intelligence_focus_json, exclude_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row_id,
+                    scope_type,
+                    scope_id,
+                    to_json(payload.profileCompletionFocus or []),
+                    to_json(payload.timelyIntelligenceFocus or []),
+                    to_json(payload.exclude or []),
+                    now_ts,
+                    now_ts,
+                ),
+            )
+            created_at = now_ts
+        return IntelligenceFocusDirectiveRecord(
+            id=row_id,
+            scopeType=scope_type,  # type: ignore[arg-type]
+            scopeId=scope_id or None,
+            profileCompletionFocus=payload.profileCompletionFocus or [],
+            timelyIntelligenceFocus=payload.timelyIntelligenceFocus or [],
+            exclude=payload.exclude or [],
+            createdAt=str(created_at),
+            updatedAt=now_ts,
+        )
+
+    @app.get("/api/v1/intelligence/verification-rules", response_model=list[IntelligenceVerificationRuleRecord])
+    def list_verification_rules(
+        scopeType: str | None = Query(default=None),
+        scopeId: str | None = Query(default=None),
+    ) -> list[IntelligenceVerificationRuleRecord]:
+        sql = "SELECT * FROM intelligence_verification_rules"
+        sql_params: list = []
+        filters: list[str] = []
+        if scopeType:
+            filters.append("scope_type = ?")
+            sql_params.append(scopeType)
+        if scopeId is not None:
+            filters.append("scope_id = ?")
+            sql_params.append(scopeId)
+        if filters:
+            sql += " WHERE " + " AND ".join(filters)
+        sql += " ORDER BY scope_type, scope_id"
+        rows = state.db.fetchall(sql, tuple(sql_params))
+        out: list[IntelligenceVerificationRuleRecord] = []
+        for row in rows:
+            out.append(
+                IntelligenceVerificationRuleRecord(
+                    id=str(row["id"]),
+                    scopeType=row["scope_type"],
+                    scopeId=row["scope_id"] or None,
+                    positiveRules=from_json(row["positive_rules_json"] or "[]", []),
+                    excludeRules=from_json(row["exclude_rules_json"] or "[]", []),
+                    identityAnchors=from_json(row["identity_anchors_json"] or "[]", []),
+                    clarificationExamples=from_json(row["clarification_examples_json"] or "[]", []),
+                    createdAt=str(row["created_at"]),
+                    updatedAt=str(row["updated_at"]),
+                )
+            )
+        return out
+
+    @app.put("/api/v1/intelligence/verification-rules", response_model=IntelligenceVerificationRuleRecord)
+    def save_verification_rule(payload: IntelligenceVerificationRulePayload) -> IntelligenceVerificationRuleRecord:
+        scope_type = payload.scopeType or "global"
+        scope_id = payload.scopeId or ""
+        existing = state.db.fetchone(
+            "SELECT id FROM intelligence_verification_rules WHERE scope_type=? AND scope_id=?",
+            (scope_type, scope_id),
+        )
+        now_ts = _intel_now()
+        if existing:
+            state.db.execute(
+                "UPDATE intelligence_verification_rules SET "
+                "positive_rules_json=?, exclude_rules_json=?, identity_anchors_json=?, "
+                "clarification_examples_json=?, updated_at=? WHERE id=?",
+                (
+                    to_json(payload.positiveRules or []),
+                    to_json(payload.excludeRules or []),
+                    to_json(payload.identityAnchors or []),
+                    to_json(payload.clarificationExamples or []),
+                    now_ts,
+                    existing["id"],
+                ),
+            )
+            row_id = str(existing["id"])
+            created_at = state.db.fetchone(
+                "SELECT created_at FROM intelligence_verification_rules WHERE id=?",
+                (row_id,),
+            )["created_at"]
+        else:
+            row_id = str(_uuid_intel.uuid4())
+            state.db.execute(
+                "INSERT INTO intelligence_verification_rules "
+                "(id, scope_type, scope_id, positive_rules_json, exclude_rules_json, "
+                "identity_anchors_json, clarification_examples_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row_id,
+                    scope_type,
+                    scope_id,
+                    to_json(payload.positiveRules or []),
+                    to_json(payload.excludeRules or []),
+                    to_json(payload.identityAnchors or []),
+                    to_json(payload.clarificationExamples or []),
+                    now_ts,
+                    now_ts,
+                ),
+            )
+            created_at = now_ts
+        return IntelligenceVerificationRuleRecord(
+            id=row_id,
+            scopeType=scope_type,  # type: ignore[arg-type]
+            scopeId=scope_id or None,
+            positiveRules=payload.positiveRules or [],
+            excludeRules=payload.excludeRules or [],
+            identityAnchors=payload.identityAnchors or [],
+            clarificationExamples=payload.clarificationExamples or [],
+            createdAt=str(created_at),
+            updatedAt=now_ts,
+        )
+
+    @app.post("/api/v1/intelligence/verification-feedback", response_model=IntelligenceVerificationRuleRecord)
+    def submit_verification_feedback(payload: IntelligenceVerificationFeedbackPayload) -> IntelligenceVerificationRuleRecord:
+        """记录反馈并返回当前 scope 的规则（如有）。最小实现：只确保规则存在。"""
+        scope_type = payload.scopeType or "global"
+        scope_id = payload.scopeId or ""
+        existing = state.db.fetchone(
+            "SELECT * FROM intelligence_verification_rules WHERE scope_type=? AND scope_id=?",
+            (scope_type, scope_id),
+        )
+        if existing is None:
+            # 创建空规则记录
+            now_ts = _intel_now()
+            row_id = str(_uuid_intel.uuid4())
+            state.db.execute(
+                "INSERT INTO intelligence_verification_rules "
+                "(id, scope_type, scope_id, positive_rules_json, exclude_rules_json, "
+                "identity_anchors_json, clarification_examples_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, '[]', '[]', '[]', '[]', ?, ?)",
+                (row_id, scope_type, scope_id, now_ts, now_ts),
+            )
+            return IntelligenceVerificationRuleRecord(
+                id=row_id,
+                scopeType=scope_type,  # type: ignore[arg-type]
+                scopeId=scope_id or None,
+                positiveRules=[],
+                excludeRules=[],
+                identityAnchors=[],
+                clarificationExamples=[],
+                createdAt=now_ts,
+                updatedAt=now_ts,
+            )
+        return IntelligenceVerificationRuleRecord(
+            id=str(existing["id"]),
+            scopeType=existing["scope_type"],
+            scopeId=existing["scope_id"] or None,
+            positiveRules=from_json(existing["positive_rules_json"] or "[]", []),
+            excludeRules=from_json(existing["exclude_rules_json"] or "[]", []),
+            identityAnchors=from_json(existing["identity_anchors_json"] or "[]", []),
+            clarificationExamples=from_json(existing["clarification_examples_json"] or "[]", []),
+            createdAt=str(existing["created_at"]),
+            updatedAt=str(existing["updated_at"]),
+        )
+
+    @app.post("/api/v1/intelligence/refresh", response_model=IntelligenceRefreshResult)
+    def trigger_intelligence_refresh(payload: IntelligenceRefreshPayload) -> IntelligenceRefreshResult:
+        """触发情报刷新：对目标客户跑 search-intent → diagnostic → candidate-refresh 链路。"""
+        content_kind = payload.contentKind
+        if content_kind not in {"profile_completion", "timely_intelligence"}:
+            raise HTTPException(status_code=400, detail="contentKind 必须是 profile_completion 或 timely_intelligence")
+
+        # 确定目标客户列表
+        if payload.scopeType == "client" and payload.scopeId:
+            target_ids = [payload.scopeId]
+        elif payload.scopeType == "all":
+            client_rows = state.db.fetchall("SELECT id, name FROM clients ORDER BY name")
+            target_ids = [str(r["id"]) for r in client_rows]
+        else:
+            raise HTTPException(status_code=400, detail="scopeType 必须是 all 或 client，且 client 时需 scopeId")
+
+        results: list[IntelligenceRefreshObjectResult] = []
+        for client_id in target_ids:
+            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
+            if not client_row:
+                continue
+            client_name = str(client_row["name"] or "")
+            scope = IntelligenceSearchScope(
+                scope_type="client",
+                scope_id=client_id,
+                client_id=client_id,
+                project_module_id=None,
+                display_name=client_name,
+            )
+            try:
+                generation = generate_intelligence_search_intents(
+                    state.db,
+                    state.ai,
+                    scope_type="client",
+                    scope_id=client_id,
+                    content_kind=content_kind,
+                    force=payload.force,
+                )
+                refresh = run_intelligence_candidate_refresh(
+                    state.db,
+                    data_dir=state.data_dir,
+                    ai_service=state.ai,
+                    scope=scope,
+                    intents=generation.intents,
+                    trigger_source="manual",
+                )
+                results.append(
+                    IntelligenceRefreshObjectResult(
+                        scopeType="client",
+                        scopeId=client_id,
+                        clientId=client_id,
+                        projectModuleId=None,
+                        name=client_name,
+                        contentKind=content_kind,
+                        status=getattr(refresh, "status", "completed"),
+                        intentCount=len(generation.intents),
+                        fetchJobCount=getattr(refresh, "fetch_job_count", 0),
+                        candidateCount=getattr(refresh, "candidate_count", 0),
+                        promotedCount=getattr(refresh, "promoted_count", 0),
+                        duplicateCount=getattr(refresh, "duplicate_count", 0),
+                        bodyFetchedCount=getattr(refresh, "body_fetched_count", 0),
+                        verifiedCount=getattr(refresh, "verified_count", 0),
+                        summarySuccessCount=getattr(refresh, "summary_success_count", 0),
+                        rejectionCounts=dict(getattr(refresh, "rejection_counts", {})),
+                        failureReason=str(getattr(refresh, "failure_reason", "") or ""),
+                    )
+                )
+            except Exception as exc:
+                logger.exception("intelligence refresh failed for %s: %s", client_id, exc)
+                results.append(
+                    IntelligenceRefreshObjectResult(
+                        scopeType="client",
+                        scopeId=client_id,
+                        clientId=client_id,
+                        projectModuleId=None,
+                        name=client_name,
+                        contentKind=content_kind,
+                        status="failed",
+                        failureReason=str(exc)[:200],
+                    )
+                )
+
+        completed = sum(1 for r in results if r.status == "completed")
+        no_results = sum(1 for r in results if r.status == "no_results")
+        failed = sum(1 for r in results if r.status == "failed")
+        totals = IntelligenceRefreshTotals(
+            objectCount=len(results),
+            completedCount=completed,
+            noResultCount=no_results,
+            failedCount=failed,
+            intentCount=sum(r.intentCount for r in results),
+            fetchJobCount=sum(r.fetchJobCount for r in results),
+            candidateCount=sum(r.candidateCount for r in results),
+            promotedCount=sum(r.promotedCount for r in results),
+            duplicateCount=sum(r.duplicateCount for r in results),
+            bodyFetchedCount=sum(r.bodyFetchedCount for r in results),
+            verifiedCount=sum(r.verifiedCount for r in results),
+            summarySuccessCount=sum(r.summarySuccessCount for r in results),
+        )
+        if failed and (completed or no_results):
+            overall_status: Literal["completed", "no_results", "failed", "partial_failed"] = "partial_failed"
+        elif failed:
+            overall_status = "failed"
+        elif no_results and not completed:
+            overall_status = "no_results"
+        else:
+            overall_status = "completed"
+        label = "资料补全" if content_kind == "profile_completion" else "时效情报"
+        message = f"{label}刷新：处理 {totals.objectCount} 个对象，线索 {totals.candidateCount} 条，成卡 {totals.promotedCount} 条"
+        return IntelligenceRefreshResult(
+            status=overall_status,
+            contentKind=content_kind,
+            scopeType=payload.scopeType,  # type: ignore[arg-type]
+            scopeId=payload.scopeId,
+            results=results,
+            totals=totals,
+            message=message,
+        )
+
+    @app.get("/api/v1/intelligence/source-diagnostics", response_model=IntelligenceSourceDiagnosticsResponse)
+    def get_source_diagnostics_endpoint(
+        scopeType: str = Query(default="all"),
+        scopeId: str | None = Query(default=None),
+        contentKind: Literal["profile_completion", "timely_intelligence"] | None = Query(default=None),
+    ) -> IntelligenceSourceDiagnosticsResponse:
+        """来源诊断：先返回空 stub，等同事接通真实逻辑。"""
+        return IntelligenceSourceDiagnosticsResponse(
+            scopeType=scopeType,
+            scopeId=scopeId or "",
+            contentKind=contentKind,
+            sourceCoverageStatus="missing",
+            candidateRefreshStatus="missing",
+            candidateRefreshHint=None,
+            sources=[],
+            fetchJobs=[],
+        )
+
+    @app.get("/api/v1/intelligence/feedback-diagnostics", response_model=IntelligenceFeedbackDiagnosticsResponse)
+    def get_feedback_diagnostics_endpoint(
+        scopeType: str = Query(default="global"),
+        scopeId: str | None = Query(default=None),
+        contentKind: Literal["profile_completion", "timely_intelligence"] | None = Query(default=None),
+    ) -> IntelligenceFeedbackDiagnosticsResponse:
+        return IntelligenceFeedbackDiagnosticsResponse(
+            scopeType=scopeType,
+            scopeId=scopeId or "",
+            contentKind=contentKind,
+            summaries=[],
+            events=[],
+        )
+
+    @app.post("/api/v1/intelligence/items/{item_id}/dismiss", response_model=IntelligenceItemRecord)
+    def dismiss_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:  # noqa: ARG001
+        raise HTTPException(status_code=501, detail="dismiss 同事 service 待补，下次 sync 后启用")
+
+    @app.post("/api/v1/intelligence/items/{item_id}/follow", response_model=IntelligenceItemRecord)
+    def follow_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:  # noqa: ARG001
+        raise HTTPException(status_code=501, detail="follow 同事 service 待补，下次 sync 后启用")
+
+    @app.post("/api/v1/intelligence/items/{item_id}/task-draft")
+    def get_intelligence_task_draft_endpoint(item_id: str) -> dict:  # noqa: ARG001
+        raise HTTPException(status_code=501, detail="task-draft 同事 service 待补")
+
+    @app.post("/api/v1/intelligence/items/{item_id}/tasks")
+    def create_intelligence_task_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
+        raise HTTPException(status_code=501, detail="tasks 同事 service 待补")
+
+    @app.post("/api/v1/intelligence/items/{item_id}/chat")
+    def chat_intelligence_item_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
+        raise HTTPException(status_code=501, detail="chat 同事 service 待补")
 
     return app
 

@@ -1720,6 +1720,275 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_topic_candidate_seen_radar_title_source_key
                     ON topic_candidate_seen(radar_id, title_source_key);
 
+                -- ──────────────────────────────────────────────────────────
+                -- 客户项目情报流（同事新版资讯情报站）— 2026-05-13 补回
+                -- 来源：origin-main-backup-before-force-push-2026-05-13 tag
+                -- ──────────────────────────────────────────────────────────
+                CREATE TABLE IF NOT EXISTS intelligence_focus_directives (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    profile_completion_focus_json TEXT NOT NULL DEFAULT '[]',
+                    timely_intelligence_focus_json TEXT NOT NULL DEFAULT '[]',
+                    exclude_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS intelligence_verification_rules (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    positive_rules_json TEXT NOT NULL DEFAULT '[]',
+                    exclude_rules_json TEXT NOT NULL DEFAULT '[]',
+                    identity_anchors_json TEXT NOT NULL DEFAULT '[]',
+                    clarification_examples_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS intelligence_items (
+                    id TEXT PRIMARY KEY,
+                    content_kind TEXT NOT NULL,
+                    scope_type TEXT,
+                    scope_id TEXT,
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    key_points_json TEXT NOT NULL DEFAULT '[]',
+                    analysis TEXT NOT NULL DEFAULT '',
+                    impact TEXT NOT NULL DEFAULT '',
+                    intelligence_type TEXT,
+                    timeliness_label TEXT,
+                    relevance_reason TEXT NOT NULL DEFAULT '',
+                    suggested_action TEXT NOT NULL DEFAULT '',
+                    followup_questions_json TEXT NOT NULL DEFAULT '[]',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    source TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_tier TEXT NOT NULL DEFAULT 'standard',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    relevance_score REAL NOT NULL DEFAULT 0,
+                    timeliness_score REAL NOT NULL DEFAULT 0,
+                    overall_score REAL NOT NULL DEFAULT 0,
+                    captured_at TEXT NOT NULL,
+                    published_at TEXT,
+                    expires_at TEXT,
+                    user_status TEXT NOT NULL DEFAULT 'active',
+                    dismissed_at TEXT,
+                    dismissed_reason TEXT NOT NULL DEFAULT '',
+                    dismissed_note TEXT NOT NULL DEFAULT '',
+                    followed_at TEXT,
+                    followed_mode TEXT NOT NULL DEFAULT '',
+                    followed_note TEXT NOT NULL DEFAULT '',
+                    task_id TEXT,
+                    promoted_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_items_kind_status
+                    ON intelligence_items(content_kind, user_status, captured_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_items_client
+                    ON intelligence_items(client_id, content_kind, captured_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_items_project
+                    ON intelligence_items(project_module_id, content_kind, captured_at DESC);
+
+                CREATE TABLE IF NOT EXISTS intelligence_feedback_events (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    content_kind TEXT NOT NULL,
+                    item_id TEXT,
+                    candidate_id TEXT,
+                    action_type TEXT NOT NULL,
+                    reason_code TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    extracted_topics_json TEXT NOT NULL DEFAULT '[]',
+                    source TEXT NOT NULL DEFAULT '',
+                    source_domain TEXT NOT NULL DEFAULT '',
+                    score_delta REAL NOT NULL DEFAULT 0,
+                    operator_id TEXT NOT NULL DEFAULT '',
+                    operator_name TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_feedback_events_scope
+                    ON intelligence_feedback_events(scope_type, scope_id, content_kind, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_feedback_events_item
+                    ON intelligence_feedback_events(item_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS intelligence_feedback_summaries (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    target_type TEXT NOT NULL,
+                    target_label TEXT NOT NULL DEFAULT '',
+                    target_value TEXT NOT NULL DEFAULT '',
+                    positive_count INTEGER NOT NULL DEFAULT 0,
+                    negative_count INTEGER NOT NULL DEFAULT 0,
+                    neutral_count INTEGER NOT NULL DEFAULT 0,
+                    score REAL NOT NULL DEFAULT 0,
+                    last_action_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_id, target_type, target_value)
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_feedback_summaries_scope
+                    ON intelligence_feedback_summaries(scope_type, scope_id, target_type);
+
+                CREATE TABLE IF NOT EXISTS intelligence_search_intents (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    content_kind TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    exclude_terms_json TEXT NOT NULL DEFAULT '[]',
+                    source_inputs_json TEXT NOT NULL DEFAULT '[]',
+                    reason TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 50,
+                    status TEXT NOT NULL DEFAULT 'ready',
+                    input_hash TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_search_intents_scope
+                    ON intelligence_search_intents(scope_type, scope_id, content_kind, status, expires_at);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_search_intents_client
+                    ON intelligence_search_intents(client_id, content_kind, expires_at);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_search_intents_project
+                    ON intelligence_search_intents(project_module_id, content_kind, expires_at);
+
+                CREATE TABLE IF NOT EXISTS intelligence_search_diagnostics (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    intent_id TEXT,
+                    content_kind TEXT NOT NULL,
+                    query TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    trigger_source TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'success',
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    deduped_count INTEGER NOT NULL DEFAULT 0,
+                    sample_hits_json TEXT NOT NULL DEFAULT '[]',
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_search_diagnostics_scope
+                    ON intelligence_search_diagnostics(scope_type, scope_id, content_kind, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_search_diagnostics_intent
+                    ON intelligence_search_diagnostics(intent_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS intelligence_source_configs (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL,
+                    source_name TEXT NOT NULL DEFAULT '',
+                    source_url_template TEXT NOT NULL DEFAULT '',
+                    content_kinds_json TEXT NOT NULL DEFAULT '[]',
+                    region TEXT NOT NULL DEFAULT '全国',
+                    industries_json TEXT NOT NULL DEFAULT '[]',
+                    auth_kind TEXT NOT NULL DEFAULT 'none',
+                    auth_secret_id TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 50,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    health_status TEXT NOT NULL DEFAULT 'unknown',
+                    last_health_at TEXT,
+                    last_success_at TEXT,
+                    last_failure_at TEXT,
+                    next_due_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_id, source_type, source_url_template)
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_source_configs_scope
+                    ON intelligence_source_configs(scope_type, scope_id, enabled, priority DESC);
+
+                CREATE TABLE IF NOT EXISTS intelligence_fetch_jobs (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    content_kind TEXT NOT NULL,
+                    trigger_source TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL DEFAULT '',
+                    source_config_id TEXT,
+                    query TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'success',
+                    raw_count INTEGER NOT NULL DEFAULT 0,
+                    deduped_count INTEGER NOT NULL DEFAULT 0,
+                    candidate_count INTEGER NOT NULL DEFAULT 0,
+                    sample_hits_json TEXT NOT NULL DEFAULT '[]',
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(source_config_id) REFERENCES intelligence_source_configs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_fetch_jobs_scope
+                    ON intelligence_fetch_jobs(scope_type, scope_id, content_kind, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_fetch_jobs_config
+                    ON intelligence_fetch_jobs(source_config_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS intelligence_candidate_items (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    content_kind TEXT NOT NULL,
+                    intent_id TEXT,
+                    source_config_id TEXT,
+                    fetch_job_id TEXT,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL DEFAULT '',
+                    normalized_url TEXT NOT NULL DEFAULT '',
+                    snippet TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    source_tier TEXT NOT NULL DEFAULT 'standard',
+                    provider TEXT NOT NULL DEFAULT '',
+                    published_at TEXT,
+                    captured_at TEXT NOT NULL,
+                    matched_terms_json TEXT NOT NULL DEFAULT '[]',
+                    dedupe_key TEXT NOT NULL DEFAULT '',
+                    duplicate_of_id TEXT,
+                    confidence_score REAL NOT NULL DEFAULT 0,
+                    relevance_score REAL NOT NULL DEFAULT 0,
+                    timeliness_score REAL NOT NULL DEFAULT 0,
+                    overall_score REAL NOT NULL DEFAULT 0,
+                    classification_status TEXT NOT NULL DEFAULT 'pending',
+                    classification_reason TEXT NOT NULL DEFAULT '',
+                    weak_signal_reasons_json TEXT NOT NULL DEFAULT '[]',
+                    mapped_tags_json TEXT NOT NULL DEFAULT '[]',
+                    is_user_visible_candidate INTEGER NOT NULL DEFAULT 1,
+                    body_excerpt TEXT NOT NULL DEFAULT '',
+                    body_fetched_at TEXT,
+                    promoted_intelligence_item_id TEXT,
+                    data_center_ingest_event_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(intent_id) REFERENCES intelligence_search_intents(id) ON DELETE SET NULL,
+                    FOREIGN KEY(source_config_id) REFERENCES intelligence_source_configs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(fetch_job_id) REFERENCES intelligence_fetch_jobs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(duplicate_of_id) REFERENCES intelligence_candidate_items(id) ON DELETE SET NULL,
+                    FOREIGN KEY(promoted_intelligence_item_id) REFERENCES intelligence_items(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_candidate_items_scope
+                    ON intelligence_candidate_items(scope_type, scope_id, content_kind, classification_status, captured_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_intelligence_candidate_items_dedupe
+                    ON intelligence_candidate_items(scope_type, scope_id, content_kind, dedupe_key);
+
                 CREATE TABLE IF NOT EXISTS intelligence_profiles (
                     id TEXT PRIMARY KEY,
                     scope_type TEXT NOT NULL,
