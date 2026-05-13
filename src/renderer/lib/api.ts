@@ -284,6 +284,25 @@ import type {
   PullSelectedFromMainPayload,
   PushPreview,
   EventLineReportSnapshot,
+  // 客户项目情报流类型（2026-05-13 整合同事新版资讯情报站时补回）
+  IntelligenceWorkObject,
+  IntelligenceItem,
+  IntelligenceSourceDiagnosticsResponse,
+  IntelligenceFocusDirective,
+  IntelligenceFocusDirectivePayload,
+  IntelligenceItemsResponse,
+  IntelligenceRefreshPayload,
+  IntelligenceRefreshResult,
+  IntelligenceVerificationRule,
+  IntelligenceVerificationRulePayload,
+  IntelligenceVerificationFeedbackPayload,
+  IntelligenceDismissPayload,
+  IntelligenceFollowPayload,
+  IntelligenceTaskDraftResponse,
+  IntelligenceTaskCreatePayload,
+  IntelligenceTaskCreateResponse,
+  IntelligenceItemChatResponse,
+  IntelligenceContentKind,
 } from '../../shared/types';
 
 export type {
@@ -3845,3 +3864,135 @@ export function getReportFileDownloadUrl(
     `${baseUrl}/api/v1/reports/${encodeURIComponent(reportRunId)}/files/${format}`
   );
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// 客户项目情报流（同事 push 的新一代资讯情报 API）—— 2026-05-13 补回
+// 来源：origin-main-backup-before-force-push-2026-05-13 tag 中 api.ts L2993-3120
+// IntelligenceStationView.tsx 依赖这些函数；force push 时漏带，现在补回
+// ──────────────────────────────────────────────────────────────────────
+
+export async function getIntelligenceWorkObjects() {
+  return request<IntelligenceWorkObject[]>('/api/v1/intelligence/work-objects');
+}
+
+export async function getIntelligenceSourceDiagnostics(params: {
+  scopeType: IntelligenceWorkObject['type'];
+  scopeId: string;
+  contentKind?: IntelligenceItem['contentKind'];
+}) {
+  const query = new URLSearchParams();
+  query.set('scopeType', params.scopeType);
+  query.set('scopeId', params.scopeId);
+  if (params.contentKind) query.set('contentKind', params.contentKind);
+  return request<IntelligenceSourceDiagnosticsResponse>(`/api/v1/intelligence/source-diagnostics?${query.toString()}`);
+}
+
+export async function getIntelligenceFocusDirectives() {
+  return request<IntelligenceFocusDirective[]>('/api/v1/intelligence/focus-directives');
+}
+
+export async function saveIntelligenceFocusDirective(payload: IntelligenceFocusDirectivePayload) {
+  return request<IntelligenceFocusDirective>('/api/v1/intelligence/focus-directives', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getIntelligenceItems(params: {
+  contentKind?: IntelligenceItem['contentKind'];
+  workObjectType?: IntelligenceWorkObject['type'];
+  workObjectId?: string;
+  sort?: 'published_desc' | 'published_asc' | 'captured_desc' | 'captured_asc';
+  page?: number;
+  pageSize?: number;
+} = {}) {
+  const query = new URLSearchParams();
+  if (params.contentKind) query.set('contentKind', params.contentKind);
+  if (params.workObjectType) query.set('workObjectType', params.workObjectType);
+  if (params.workObjectId) query.set('workObjectId', params.workObjectId);
+  if (params.sort) query.set('sort', params.sort);
+  if (params.page) query.set('page', String(params.page));
+  if (params.pageSize) query.set('pageSize', String(params.pageSize));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<IntelligenceItemsResponse>(`/api/v1/intelligence/items${suffix}`);
+}
+
+export async function refreshIntelligenceSupply(payload: IntelligenceRefreshPayload) {
+  return request<IntelligenceRefreshResult>('/api/v1/intelligence/refresh', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getIntelligenceVerificationRules(params?: {
+  scopeType?: IntelligenceVerificationRulePayload['scopeType'];
+  scopeId?: string | null;
+}) {
+  const query = new URLSearchParams();
+  if (params?.scopeType) query.set('scopeType', params.scopeType);
+  if (params?.scopeId) query.set('scopeId', params.scopeId);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<IntelligenceVerificationRule[]>(`/api/v1/intelligence/verification-rules${suffix}`);
+}
+
+export async function saveIntelligenceVerificationRules(payload: IntelligenceVerificationRulePayload) {
+  return request<IntelligenceVerificationRule>('/api/v1/intelligence/verification-rules', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function submitIntelligenceVerificationFeedback(payload: IntelligenceVerificationFeedbackPayload) {
+  return request<IntelligenceVerificationRule>('/api/v1/intelligence/verification-feedback', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function dismissIntelligenceItem(id: string, payload: IntelligenceDismissPayload) {
+  return request<IntelligenceItem>(`/api/v1/intelligence/items/${id}/dismiss`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function followIntelligenceItem(id: string, payload: IntelligenceFollowPayload) {
+  return request<IntelligenceItem>(`/api/v1/intelligence/items/${id}/follow`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getIntelligenceTaskDraft(id: string) {
+  return request<IntelligenceTaskDraftResponse>(`/api/v1/intelligence/items/${id}/task-draft`, { method: 'POST' });
+}
+
+export async function createIntelligenceTask(id: string, payload: IntelligenceTaskCreatePayload) {
+  return request<IntelligenceTaskCreateResponse>(`/api/v1/intelligence/items/${id}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function askIntelligenceItemQuestion(id: string, payload: TopicCandidateChatPayload) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+  try {
+    return await request<IntelligenceItemChatResponse>(`/api/v1/intelligence/items/${id}/chat`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/abort|aborted|signal is aborted/i.test(detail)) {
+      throw new Error('大周这次追问超时了。可以直接再问一次，或者把问题问得更具体一点。');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+// captureTopicRadars 已在 line 3426 定义，从同事 backup append 段里的重复已删除
+

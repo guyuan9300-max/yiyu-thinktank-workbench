@@ -6952,6 +6952,356 @@ export interface ReportRunSummary {
   updated_at: string;
 }
 
+
+// ──────────────────────────────────────────────────────────────────────
+// 客户项目情报流（同事 push 的新一代资讯情报站接口）—— 2026-05-13 补回
+// 来源：origin-main-backup-before-force-push-2026-05-13 tag 中 types.ts L4614-4956
+// IntelligenceStationView.tsx 依赖这些类型；force push 时漏带，现在补回
+// ──────────────────────────────────────────────────────────────────────
+
+export type IntelligenceContentKind = 'profile_completion' | 'timely_intelligence';
+export type IntelligenceWorkObjectType = 'client' | 'project_module';
+export type IntelligenceFocusScopeType = 'global' | 'client' | 'project_module';
+export type IntelligenceItemUserStatus = 'active' | 'dismissed' | 'following';
+export type IntelligenceSearchIntentStatus = 'missing' | 'stale' | 'ready' | 'running' | 'failed';
+export type IntelligenceSupplyStatus = 'missing' | 'stale' | 'ready' | 'running' | 'failed';
+
+export interface IntelligenceWorkObject {
+  type: IntelligenceWorkObjectType;
+  id: string;
+  clientId: string;
+  projectModuleId?: string | null;
+  name: string;
+  subtitle: string;
+  color: string;
+  updatedAt?: string | null;
+  searchIntentStatus: IntelligenceSearchIntentStatus;
+  searchIntentHint?: string | null;
+  sourceCoverageStatus: IntelligenceSupplyStatus;
+  candidateRefreshStatus: IntelligenceSupplyStatus;
+  candidateRefreshHint?: string | null;
+  lastCandidateFetchAt?: string | null;
+  candidateCounts: Record<string, number>;
+}
+
+export interface IntelligenceSourceDiagnosticSource {
+  id: string;
+  sourceType: string;
+  sourceName: string;
+  sourceUrlTemplate: string;
+  contentKinds: IntelligenceContentKind[];
+  region: string;
+  reliabilityTier: string;
+  priority: number;
+  enabled: boolean;
+  discoverySource: string;
+  discoveryReason: string;
+  discoverySamples: Array<Record<string, string>>;
+  healthScore: number;
+  successCount: number;
+  failureCount: number;
+  candidateCount: number;
+  promotedCount: number;
+  duplicateCount: number;
+  lastStatus: string;
+  lastCheckedAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastFailureAt?: string | null;
+  nextDueAt?: string | null;
+}
+
+export interface IntelligenceSourceDiagnosticFetchJob {
+  id: string;
+  contentKind: IntelligenceContentKind | 'source_discovery';
+  provider: string;
+  sourceConfigId?: string | null;
+  query: string;
+  status: string;
+  rawCount: number;
+  dedupedCount: number;
+  candidateCount: number;
+  sampleHits: Array<Record<string, string>>;
+  failureReason: string;
+  durationMs: number;
+  createdAt: string;
+}
+
+export interface IntelligenceSourceDiagnosticsResponse {
+  scopeType: IntelligenceWorkObjectType;
+  scopeId: string;
+  contentKind?: IntelligenceContentKind | null;
+  sourceCoverageStatus: IntelligenceSupplyStatus;
+  candidateRefreshStatus: IntelligenceSupplyStatus;
+  candidateRefreshHint?: string | null;
+  lastCandidateFetchAt?: string | null;
+  candidateCounts: Record<string, number>;
+  officialSiteDiscoveredCount: number;
+  coverageGaps: string[];
+  sources: IntelligenceSourceDiagnosticSource[];
+  recentFetchJobs: IntelligenceSourceDiagnosticFetchJob[];
+  officialSiteDiscoverySamples: IntelligenceSourceDiagnosticFetchJob[];
+}
+
+export interface IntelligenceFocusDirective {
+  id: string;
+  scopeType: IntelligenceFocusScopeType;
+  scopeId?: string | null;
+  profileCompletionFocus: string[];
+  timelyIntelligenceFocus: string[];
+  exclude: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntelligenceFocusDirectivePayload {
+  scopeType: IntelligenceFocusScopeType;
+  scopeId?: string | null;
+  profileCompletionFocus: string[];
+  timelyIntelligenceFocus: string[];
+  exclude: string[];
+}
+
+export interface IntelligenceItem {
+  id: string;
+  contentKind: IntelligenceContentKind;
+  scopeType?: string | null;
+  scopeId?: string | null;
+  clientId?: string | null;
+  projectModuleId?: string | null;
+  title: string;
+  summary: string;
+  keyPoints: string[];
+  analysis: string;
+  impact: string;
+  intelligenceType?: string | null;
+  timelinessLabel?: string | null;
+  relevanceReason: string;
+  suggestedAction: string;
+  followupQuestions: string[];
+  tags: string[];
+  source: string;
+  sourceUrl?: string | null;
+  publishedAt?: string | null;
+  capturedAt: string;
+  verifiedAt?: string | null;
+  credibilityScore?: number | null;
+  confidenceScore?: number | null;
+  dataCenterIngestEventId?: string | null;
+  externalEvidenceCardId?: string | null;
+  topicCandidateId?: string | null;
+  convertedTaskId?: string | null;
+  verificationStatus: string;
+  verificationReason: string;
+  userStatus: IntelligenceItemUserStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntelligenceCandidateSample {
+  id: string;
+  contentKind: IntelligenceContentKind;
+  scopeType: string;
+  scopeId: string;
+  clientId?: string | null;
+  projectModuleId?: string | null;
+  title: string;
+  url?: string | null;
+  snippet: string;
+  source: string;
+  publishedAt?: string | null;
+  capturedAt: string;
+  confidenceScore: number;
+  classificationStatus: string;
+  promotionReason: string;
+  verificationStatus: string;
+  verificationReason: string;
+  bodyFetchStatus: string;
+  summaryStatus: string;
+  mappedTags: string[];
+  isUserVisibleCandidate: boolean;
+}
+
+export interface IntelligenceItemsResponse {
+  items: IntelligenceItem[];
+  candidateSamples: IntelligenceCandidateSample[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface IntelligenceRefreshPayload {
+  scopeType: 'all' | IntelligenceWorkObjectType;
+  scopeId?: string | null;
+  contentKind: IntelligenceContentKind;
+  force?: boolean;
+}
+
+export interface IntelligenceRefreshObjectResult {
+  scopeType: IntelligenceWorkObjectType;
+  scopeId: string;
+  clientId: string;
+  projectModuleId?: string | null;
+  name: string;
+  contentKind: IntelligenceContentKind;
+  status: 'completed' | 'no_results' | 'failed';
+  intentCount: number;
+  diagnosticRunCount: number;
+  diagnosticSuccessCount: number;
+  fetchJobCount: number;
+  candidateCount: number;
+  promotedCount: number;
+  duplicateCount: number;
+  failedCount: number;
+  bodyFetchedCount: number;
+  verifiedCount: number;
+  summarySuccessCount: number;
+  rejectionCounts: Record<string, number>;
+  sourceCoverageStatus: IntelligenceSupplyStatus;
+  candidateRefreshStatus: IntelligenceSupplyStatus;
+  lastCandidateFetchAt?: string | null;
+  candidateCounts: Record<string, number>;
+  candidateSamples: IntelligenceCandidateSample[];
+  queuedJobId?: string | null;
+  message: string;
+  errors: string[];
+}
+
+export interface IntelligenceRefreshTotals {
+  objectCount: number;
+  completedCount: number;
+  noResultCount: number;
+  failedCount: number;
+  intentCount: number;
+  fetchJobCount: number;
+  candidateCount: number;
+  promotedCount: number;
+  duplicateCount: number;
+  bodyFetchedCount: number;
+  verifiedCount: number;
+  summarySuccessCount: number;
+  rejectionCounts: Record<string, number>;
+}
+
+export interface IntelligenceRefreshResult {
+  status: 'completed' | 'no_results' | 'failed' | 'partial_failed';
+  contentKind: IntelligenceContentKind;
+  scopeType: 'all' | IntelligenceWorkObjectType;
+  scopeId?: string | null;
+  results: IntelligenceRefreshObjectResult[];
+  totals: IntelligenceRefreshTotals;
+  message: string;
+  generatedAt: string;
+}
+
+export type IntelligenceDismissReasonCode = 'irrelevant' | 'inaccurate' | 'duplicate' | 'outdated' | 'low_value';
+
+export interface IntelligenceDismissPayload {
+  reasonCode: IntelligenceDismissReasonCode;
+  note?: string;
+}
+
+export type IntelligenceFollowMode = 'same_theme' | 'same_source' | 'same_work_object';
+
+export interface IntelligenceFollowPayload {
+  followMode: IntelligenceFollowMode;
+  note?: string;
+}
+
+export interface IntelligenceVerificationRule {
+  id: string;
+  scopeType: IntelligenceFocusScopeType;
+  scopeId?: string | null;
+  positiveRules: string[];
+  excludeRules: string[];
+  identityAnchors: string[];
+  clarificationExamples: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntelligenceVerificationRulePayload {
+  scopeType: IntelligenceFocusScopeType;
+  scopeId?: string | null;
+  positiveRules: string[];
+  excludeRules: string[];
+  identityAnchors: string[];
+}
+
+export interface IntelligenceVerificationFeedbackPayload {
+  targetType: 'item' | 'candidate';
+  targetId: string;
+  scopeType: IntelligenceFocusScopeType;
+  scopeId?: string | null;
+  note: string;
+}
+
+export interface IntelligenceItemChatResponse {
+  itemId: string;
+  question: string;
+  answer: string;
+  generatedAt: string;
+  message: TopicCandidateChatMessage;
+}
+
+export interface IntelligenceTaskDraftPayload {
+  title?: string | null;
+  desc?: string | null;
+  priority: Priority;
+  listId?: string | null;
+  dueDate?: string | null;
+  ddl: string;
+  ownerId?: string | null;
+  ownerName: string;
+  tags: string[];
+  note: string;
+}
+
+export interface IntelligenceTaskDraftResponse {
+  itemId: string;
+  draft: IntelligenceTaskDraftPayload;
+}
+
+export interface IntelligenceTaskCreatePayload extends IntelligenceTaskDraftPayload {
+  title: string;
+}
+
+export interface IntelligenceTaskCreateResponse {
+  item: IntelligenceItem;
+  task: Task;
+}
+
+export interface IntelligenceFeedbackSummaryRecord {
+  targetType: string;
+  targetLabel: string;
+  positiveCount: number;
+  negativeCount: number;
+  neutralCount: number;
+  score: number;
+  lastEventAt?: string | null;
+}
+
+export interface IntelligenceFeedbackEventRecord {
+  id: string;
+  contentKind: IntelligenceContentKind;
+  itemId?: string | null;
+  candidateId?: string | null;
+  actionType: string;
+  reasonCode: string;
+  note: string;
+  extractedTopics: string[];
+  source: string;
+  sourceDomain: string;
+  scoreDelta: number;
+  createdAt: string;
+}
+
+export interface IntelligenceFeedbackDiagnosticsResponse {
+  scopeType: IntelligenceFocusScopeType;
+  scopeId: string;
+  contentKind?: IntelligenceContentKind | null;
+  summaries: IntelligenceFeedbackSummaryRecord[];
+  events: IntelligenceFeedbackEventRecord[];
+}
 declare global {
   interface Window {
     __YIYU_TEST_DIALOGS__?: {

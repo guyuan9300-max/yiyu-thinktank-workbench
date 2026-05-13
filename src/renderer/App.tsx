@@ -448,6 +448,7 @@ import type { TemplateData } from './components/tasks/TaskTemplateEditorModal';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
 import { StrategicBrainView, type ThoughtTaskPayload } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
+import { IntelligenceStationView } from './components/intelligence/IntelligenceStationView';
 import { TaskCalendarView } from './components/tasks/TaskCalendarView';
 import { AgentSimulationCalendarView } from './components/tasks/AgentSimulationCalendarView';
 import { AgentWeeklyPlanEditor } from './components/tasks/AgentWeeklyPlanEditor';
@@ -23946,18 +23947,12 @@ export default function App() {
       />
     ),
     topics_management: (
-      <TopicsManagementView
-        radars={radars}
-        intelligenceProfiles={intelligenceProfiles}
-        candidates={candidates}
-        tasks={sharedTasks}
+      <IntelligenceStationView
         activeTaskLists={activeTaskLists}
         effectiveTaskSettings={effectiveTaskSettings}
-        topicsSettingsState={topicsSettingsState}
         currentSessionUser={currentSessionUser}
         currentOperatorName={currentOperatorName}
         flash={flash}
-        onTopicsReload={loadTopicsBlock}
         onTasksReload={loadTaskBlock}
       />
     ),
