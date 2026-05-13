@@ -206,13 +206,13 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
         <span className="opacity-60">{health.installedModels.length} 个已装模型</span>
       </div>
 
-      {/* 推荐模型 dropdown */}
-      <div className="flex flex-col sm:flex-row sm:items-stretch gap-2">
+      {/* 推荐模型 dropdown + 按钮 — 永远竖排，避免在窄卡片里按钮被挤出视野 */}
+      <div className="space-y-2">
         <select
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
           disabled={!canEdit || pullStatus?.inProgress}
-          className="flex-1 rounded-xl border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-50"
+          className="block w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-50"
         >
           <option value="">— 选择推荐模型 —</option>
           {recommended.map((m) => {
@@ -230,16 +230,16 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
               type="button"
               onClick={() => handleUseInstalled(selectedModel)}
               disabled={!canEdit}
-              className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-emerald-700 disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-bold hover:bg-emerald-700 disabled:opacity-50"
             >
-              <CheckCircle2 size={11} /> 使用此模型
+              <CheckCircle2 size={13} /> 使用此已安装模型
             </button>
           ) : (
             <button
               type="button"
               onClick={() => void handlePull()}
               disabled={!canEdit || !selectedModel}
-              className="inline-flex items-center gap-1 rounded-xl bg-[#5B7BFE] text-white px-3 py-1.5 text-[11px] font-bold disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3 py-2 text-[12px] font-bold shadow-[0_4px_12px_rgba(91,123,254,0.18)] disabled:opacity-50"
             >
               <Download size={11} /> 下载模型
             </button>
@@ -249,9 +249,9 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
           <button
             type="button"
             onClick={() => void handleCancel()}
-            className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-[11px] font-bold text-rose-600 hover:border-rose-300"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-[12px] font-bold text-rose-600 hover:border-rose-300"
           >
-            <X size={11} /> 取消
+            <X size={13} /> 取消下载
           </button>
         )}
       </div>
