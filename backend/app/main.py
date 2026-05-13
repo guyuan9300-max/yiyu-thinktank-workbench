@@ -579,6 +579,8 @@ from app.models import (
     IntelligenceRefreshObjectResult,
     IntelligenceSourceDiagnosticsResponse,
     IntelligenceFeedbackDiagnosticsResponse,
+    IntelligenceItemChatResponse,
+    TopicCandidateChatMessageRecord,
 )
 from app.services.intelligence_search_intents import IntelligenceSearchScope
 from app.services.ai import (
@@ -46336,25 +46338,245 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             events=[],
         )
 
+    def _fetch_intelligence_item_or_404(item_id: str):
+        row = state.db.fetchone(
+            "SELECT * FROM intelligence_items WHERE id = ?", (item_id,)
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="情报项不存在")
+        return row
+
+    def _row_to_intelligence_item_record(row) -> IntelligenceItemRecord:
+        return IntelligenceItemRecord(
+            id=str(row["id"]),
+            contentKind=row["content_kind"],
+            scopeType=row["scope_type"] or None,
+            scopeId=row["scope_id"] or None,
+            clientId=row["client_id"] or None,
+            projectModuleId=row["project_module_id"] or None,
+            title=str(row["title"] or ""),
+            summary=str(row["summary"] or ""),
+            keyPoints=from_json(row["key_points_json"] or "[]", []),
+            analysis=str(row["analysis"] or ""),
+            impact=str(row["impact"] or ""),
+            intelligenceType=row["intelligence_type"] or None,
+            timelinessLabel=row["timeliness_label"] or None,
+            relevanceReason=str(row["relevance_reason"] or ""),
+            suggestedAction=str(row["suggested_action"] or ""),
+            followupQuestions=from_json(row["followup_questions_json"] or "[]", []),
+            tags=from_json(row["tags_json"] or "[]", []),
+            source=str(row["source"] or ""),
+            sourceUrl=row["source_url"] or None,
+            publishedAt=row["published_at"] or None,
+            capturedAt=str(row["captured_at"]),
+            verifiedAt=row["verified_at"] or None,
+            credibilityScore=row["credibility_score"] if row["credibility_score"] is not None else None,
+            confidenceScore=row["confidence_score"] if row["confidence_score"] is not None else None,
+            dataCenterIngestEventId=row["data_center_ingest_event_id"] or None,
+            externalEvidenceCardId=row["external_evidence_card_id"] or None,
+            topicCandidateId=row["topic_candidate_id"] or None,
+            convertedTaskId=row["converted_task_id"] or None,
+            verificationStatus=str(row["verification_status"] or "verified"),
+            verificationReason=str(row["verification_reason"] or ""),
+            userStatus=row["user_status"] or "active",
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
     @app.post("/api/v1/intelligence/items/{item_id}/dismiss", response_model=IntelligenceItemRecord)
-    def dismiss_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="dismiss 同事 service 待补，下次 sync 后启用")
+    def dismiss_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:
+        """标记情报为'不采纳'。"""
+        row = _fetch_intelligence_item_or_404(item_id)
+        reason_code = str((payload or {}).get("reasonCode") or "irrelevant")
+        note = str((payload or {}).get("note") or "")[:500]
+        if reason_code not in {"irrelevant", "inaccurate", "duplicate", "outdated", "low_value"}:
+            reason_code = "irrelevant"
+        now_ts = _intel_now()
+        state.db.execute(
+            "UPDATE intelligence_items SET user_status='dismissed', "
+            "user_feedback_json=?, updated_at=? WHERE id=?",
+            (
+                to_json({"dismissedAt": now_ts, "reasonCode": reason_code, "note": note}),
+                now_ts,
+                item_id,
+            ),
+        )
+        # 记 feedback event（让同事 service 后续学习）
+        try:
+            state.db.execute(
+                "INSERT INTO intelligence_feedback_events "
+                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
+                "reason_code, note, source, source_domain, score_delta, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'dismiss', ?, ?, ?, ?, -1.0, ?)",
+                (
+                    str(_uuid_intel.uuid4()),
+                    row["scope_type"] or "",
+                    row["scope_id"] or "",
+                    row["content_kind"],
+                    item_id,
+                    reason_code,
+                    note,
+                    row["source"] or "",
+                    "",
+                    now_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("dismiss feedback_event 写入失败: %s", exc)
+        updated_row = _fetch_intelligence_item_or_404(item_id)
+        return _row_to_intelligence_item_record(updated_row)
 
     @app.post("/api/v1/intelligence/items/{item_id}/follow", response_model=IntelligenceItemRecord)
-    def follow_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="follow 同事 service 待补，下次 sync 后启用")
+    def follow_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:
+        """标记情报为'持续跟进'。"""
+        row = _fetch_intelligence_item_or_404(item_id)
+        follow_mode = str((payload or {}).get("followMode") or "same_theme")
+        note = str((payload or {}).get("note") or "")[:500]
+        if follow_mode not in {"same_theme", "same_source", "same_work_object"}:
+            follow_mode = "same_theme"
+        now_ts = _intel_now()
+        state.db.execute(
+            "UPDATE intelligence_items SET user_status='following', "
+            "user_feedback_json=?, updated_at=? WHERE id=?",
+            (
+                to_json({"followedAt": now_ts, "followMode": follow_mode, "note": note}),
+                now_ts,
+                item_id,
+            ),
+        )
+        try:
+            state.db.execute(
+                "INSERT INTO intelligence_feedback_events "
+                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
+                "reason_code, note, source, source_domain, score_delta, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'follow', ?, ?, ?, ?, 1.0, ?)",
+                (
+                    str(_uuid_intel.uuid4()),
+                    row["scope_type"] or "",
+                    row["scope_id"] or "",
+                    row["content_kind"],
+                    item_id,
+                    follow_mode,
+                    note,
+                    row["source"] or "",
+                    "",
+                    now_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("follow feedback_event 写入失败: %s", exc)
+        updated_row = _fetch_intelligence_item_or_404(item_id)
+        return _row_to_intelligence_item_record(updated_row)
 
     @app.post("/api/v1/intelligence/items/{item_id}/task-draft")
     def get_intelligence_task_draft_endpoint(item_id: str) -> dict:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="task-draft 同事 service 待补")
+        """task-draft 依赖完整 task 子系统（task_lists / task_settings / 操作员归属），
+        同事 backup 实现 507 行，本次不搬。前端这个按钮会拿 501 提示。"""
+        raise HTTPException(
+            status_code=501,
+            detail="task-draft 依赖 task 子系统，等同事下次 sync 后启用",
+        )
 
     @app.post("/api/v1/intelligence/items/{item_id}/tasks")
     def create_intelligence_task_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="tasks 同事 service 待补")
+        raise HTTPException(
+            status_code=501,
+            detail="转任务依赖 task 子系统，等同事下次 sync 后启用",
+        )
 
-    @app.post("/api/v1/intelligence/items/{item_id}/chat")
-    def chat_intelligence_item_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="chat 同事 service 待补")
+    @app.post("/api/v1/intelligence/items/{item_id}/chat", response_model=IntelligenceItemChatResponse)
+    def chat_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemChatResponse:
+        """追问大周：基于当前情报上下文调豆包回答用户问题。"""
+        row = _fetch_intelligence_item_or_404(item_id)
+        question = str((payload or {}).get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="问题不能为空")
+
+        item = _row_to_intelligence_item_record(row)
+        context_lines = [
+            f"标题：{item.title}",
+            f"内容类型：{item.contentKind}",
+        ]
+        if item.summary:
+            context_lines.append(f"摘要：{item.summary}")
+        if item.analysis:
+            context_lines.append(f"分析：{item.analysis}")
+        if item.impact:
+            context_lines.append(f"影响：{item.impact}")
+        if item.relevanceReason:
+            context_lines.append(f"相关性：{item.relevanceReason}")
+        if item.suggestedAction:
+            context_lines.append(f"建议动作：{item.suggestedAction}")
+        if item.keyPoints:
+            context_lines.append("要点：" + " / ".join(item.keyPoints))
+        if item.tags:
+            context_lines.append("标签：" + ", ".join(item.tags))
+        if item.source:
+            context_lines.append(f"来源：{item.source}")
+        if item.sourceUrl:
+            context_lines.append(f"链接：{item.sourceUrl}")
+        if item.publishedAt:
+            context_lines.append(f"发布时间：{item.publishedAt}")
+        context_summary = "\n".join(context_lines)
+
+        system_instruction = (
+            "你是资讯情报站里的资深顾问。"
+            "你只能围绕当前这条情报回答追问，区分事实、推断和待核验事项。"
+            "回答必须聚焦在传导链条、对象相关度、判断分歧、证据缺口和下一步决策。"
+            "不要只复述网页摘要，也不要只回答'这是什么、有哪些要点、怎么跟进'。"
+            "如果材料不足，请直接指出缺什么，并给出最小核验动作。"
+            "请用中文直接回答，不要输出 JSON 也不要 Markdown 包裹。"
+        )
+
+        try:
+            raw = state.ai._qwen_generate(
+                prompt=f"问题：{question}\n\n情报上下文：\n{context_summary}",
+                system_instruction=system_instruction,
+                response_schema=None,
+                timeout_seconds=30.0,
+                max_tokens=1200,
+                temperature=0.5,
+                top_p=0.9,
+            )
+        except Exception as exc:
+            logger.warning("intelligence chat LLM 调用失败: %s", exc)
+            raise HTTPException(status_code=502, detail=f"豆包调用失败：{exc}")
+
+        answer = str(raw or "").strip()
+        if not answer:
+            answer = "我暂时还没法基于这条情报给出稳定回答，建议先补充来源或关键事实后再继续追问。"
+
+        now_ts = _intel_now()
+        try:
+            state.db.execute(
+                "INSERT INTO intelligence_feedback_events "
+                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
+                "reason_code, note, source, source_domain, score_delta, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'chat', 'question', ?, ?, ?, 0.0, ?)",
+                (
+                    str(_uuid_intel.uuid4()),
+                    row["scope_type"] or "",
+                    row["scope_id"] or "",
+                    row["content_kind"],
+                    item_id,
+                    question[:500],
+                    row["source"] or "",
+                    "",
+                    now_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("chat feedback_event 写入失败: %s", exc)
+
+        return IntelligenceItemChatResponse(
+            itemId=item_id,
+            question=question,
+            answer=answer,
+            generatedAt=now_ts,
+            message=TopicCandidateChatMessageRecord(
+                role="assistant", content=answer, createdAt=now_ts
+            ),
+        )
 
     return app
 
