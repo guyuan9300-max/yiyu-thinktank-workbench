@@ -396,6 +396,9 @@ function createBrowserWorkbenchFallback(): Window['yiyuWorkbench'] {
     revealInFinder: async () => notAvailable('在 Finder 中显示'),
     saveFileAs: async () => notAvailable('另存为'),
     quitApp: async () => notAvailable('退出应用'),
+    saveRecordingBlob: async () => notAvailable('保存录音文件'),
+    readRecordingFile: async () => notAvailable('读取录音文件'),
+    setRecordingActive: async () => ({ active: false }),
   };
 }
 
@@ -1157,6 +1160,36 @@ export async function transcribeTestLocalAsr(audioPath: string) {
   return request<LocalAsrTestTranscriptionResponse>('/api/v1/local-asr/transcribe-test', {
     method: 'POST',
     body: JSON.stringify({ audioPath }),
+  });
+}
+
+export type DiarizationModelStatus = {
+  segmentationModelName: string;
+  embeddingModelName: string;
+  segmentationInstalled: boolean;
+  embeddingInstalled: boolean;
+  bothInstalled: boolean;
+  sizeBytes: number;
+  downloadInProgress: boolean;
+  downloadBytesDownloaded: number;
+  downloadBytesTotal: number;
+  downloadCurrentFile: string;
+  downloadCurrentModel: string;
+  downloadPendingModels: string[];
+  downloadCompletedModels: string[];
+  downloadCompleted: boolean;
+  downloadError: string | null;
+  downloadElapsedSeconds: number;
+};
+
+export async function getDiarizationModelStatus() {
+  return request<DiarizationModelStatus>('/api/v1/local-asr/diarization/status');
+}
+
+export async function startDiarizationModelDownload(preferMirror = true) {
+  return request<LocalAsrDownloadStartResponse>('/api/v1/local-asr/diarization/download', {
+    method: 'POST',
+    body: JSON.stringify({ preferMirror }),
   });
 }
 
@@ -2959,6 +2992,77 @@ export async function updateAgentWeeklyPlan(weekLabel: string, agentKey: string,
   });
 }
 
+export type RecordingTranscriptSegment = {
+  startMs: number;
+  endMs: number;
+  text: string;
+  emotion?: string | null;
+  event?: string | null;
+  speakerId?: string | null;
+};
+
+export type RecordingTranscribeResponse = {
+  success: boolean;
+  text: string;
+  durationMs: number;
+  elapsedMs: number;
+  language: string;
+  segments: RecordingTranscriptSegment[];
+  sourceFormat: string;
+  transcodedToWav: boolean;
+  /** "说话人A：...\n说话人B：..."；diarization 未启用时为空或与 text 相同 */
+  dialogueText: string;
+  numSpeakers: number;
+  diarizationUsed: boolean;
+  diarizationError?: string | null;
+  errorMessage?: string | null;
+};
+
+export async function transcribeRecordingLocalAudio(payload: {
+  audioPath: string;
+  language?: string;
+}) {
+  return request<RecordingTranscribeResponse>(
+    '/api/v1/recordings/transcribe-local-audio',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        audioPath: payload.audioPath,
+        language: payload.language || 'auto',
+      }),
+    },
+  );
+}
+
+export type RecordingMeetingMinutesResponse = {
+  success: boolean;
+  title: string;
+  minutesMd: string;
+  errorMessage?: string | null;
+};
+
+export async function summarizeRecordingMeetingMinutes(payload: {
+  transcript: string;
+  taskTitleHint?: string;
+  languageHint?: string;
+  dialogueText?: string;
+  numSpeakers?: number;
+}) {
+  return request<RecordingMeetingMinutesResponse>(
+    '/api/v1/recordings/summarize-meeting-minutes',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        transcript: payload.transcript,
+        taskTitleHint: payload.taskTitleHint || '',
+        languageHint: payload.languageHint || '',
+        dialogueText: payload.dialogueText || '',
+        numSpeakers: payload.numSpeakers || 0,
+      }),
+    },
+  );
+}
+
 export async function getAgentExecutionTasks(weekLabel: string, departmentName?: string) {
   const params = new URLSearchParams({ week: weekLabel });
   if (departmentName?.trim()) {
@@ -3045,6 +3149,44 @@ export async function uploadTaskAttachment(
   return requestForm<Task>(`/api/v1/tasks/${taskId}/attachments`, formData, {
     method: 'POST',
     onProgress: payload.onProgress,
+  });
+}
+
+// 删附件：syncKnowledge=true 时连带删除数据中心里的文档行 + 物理文件。
+// 用户点附件 × 按钮 → 弹窗里勾选 "同步删除数据中心" 默认勾选 → 调这里。
+export async function deleteTaskAttachment(
+  taskId: string,
+  attachmentId: string,
+  syncKnowledge: boolean,
+) {
+  const qs = syncKnowledge ? '?syncKnowledge=true' : '?syncKnowledge=false';
+  return request<{ deleted: boolean; knowledgeDeleted: boolean; fileDeleted: boolean }>(
+    `/api/v1/tasks/${taskId}/attachments/${attachmentId}${qs}`,
+    { method: 'DELETE' },
+  );
+}
+
+// 录音会议纪要专用：前端发 markdown 原文，后端用 python-docx 转 .docx 后挂附件。
+// 这样用户在任务详情双击附件直接用 Word/Pages 打开，不用面对 .md 源码。
+export async function uploadTaskAttachmentFromMarkdown(
+  taskId: string,
+  payload: {
+    title: string;
+    markdown: string;
+    clientId?: string | null;
+    eventLineId?: string | null;
+    taskTitle?: string | null;
+  },
+) {
+  return request<Task>(`/api/v1/tasks/${taskId}/attachments/from-markdown`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title: payload.title,
+      markdown: payload.markdown,
+      clientId: payload.clientId ?? null,
+      eventLineId: payload.eventLineId ?? null,
+      taskTitle: payload.taskTitle ?? null,
+    }),
   });
 }
 

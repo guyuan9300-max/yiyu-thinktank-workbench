@@ -49,3 +49,10 @@ docs/0[1-9]_*.png
 docs/preview-*.jpg
 docs/internal-preview-*.jpg
 docs/lu*.tmp
+# 报告生成器运行时产物（用 GET /reports/{id}/files/{format} 下载即可）
+docs/*.docx
+docs/*.pdf
+# 一次性 filter-repo 清理脚本
+run-filter-repo-cleanup.sh
+# backend/output 是产物目录（cowork 误推过 118 个文件）
+backend/output/

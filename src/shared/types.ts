@@ -6992,6 +6992,13 @@ declare global {
       revealInFinder(targetPath: string): Promise<boolean>;
       saveFileAs(sourcePath: string, suggestedName?: string): Promise<string | null>;
       quitApp(): Promise<boolean>;
+      saveRecordingBlob(payload: {
+        buffer: ArrayBuffer;
+        extension?: string;
+        sessionId?: string;
+      }): Promise<{ absolutePath: string; sizeBytes: number; sessionId: string }>;
+      readRecordingFile(absolutePath: string): Promise<{ buffer: Uint8Array; sizeBytes: number; name: string }>;
+      setRecordingActive(payload: { active: boolean; taskTitle?: string }): Promise<{ active: boolean }>;
     };
   }
 }

@@ -15,8 +15,15 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
-import { getSystemLogs, exportSystemLogs, type SystemLogEntry, type SystemLogsResponse } from '../../lib/api';
-import type { MaintenanceModeStatus } from '../../../shared/types';
+import {
+  getSystemLogs,
+  exportSystemLogs,
+  getMaintenanceModeMembers,
+  updateMaintenanceModeMembers,
+  type SystemLogEntry,
+  type SystemLogsResponse,
+} from '../../lib/api';
+import type { MaintenanceModeStatus, MaintenanceMemberPermission } from '../../../shared/types';
 import { formatDateInputValue } from '../../../shared/taskTime';
 
 const LEVEL_OPTIONS = ['', 'ERROR', 'WARN', 'INFO', 'DEBUG'] as const;
@@ -69,6 +76,56 @@ export function SystemLogPanel({
   onEnterMaintenanceMode,
   onExitMaintenanceMode,
 }: SystemLogPanelProps) {
+  const [members, setMembers] = useState<MaintenanceMemberPermission[]>([]);
+  const [isMembersLoading, setIsMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [savingMemberId, setSavingMemberId] = useState<string | null>(null);
+
+  const canManagePermissions = Boolean(maintenanceModeStatus?.canManagePermissions);
+
+  const loadMembers = useCallback(async () => {
+    setIsMembersLoading(true);
+    setMembersError(null);
+    try {
+      const list = await getMaintenanceModeMembers();
+      setMembers(list);
+    } catch (error) {
+      setMembersError(error instanceof Error ? error.message : '员工授权列表加载失败');
+    } finally {
+      setIsMembersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (canManagePermissions) {
+      void loadMembers();
+    } else {
+      setMembers([]);
+    }
+  }, [canManagePermissions, loadMembers]);
+
+  const handleToggleAuthorized = useCallback(async (member: MaintenanceMemberPermission, nextAuthorized: boolean) => {
+    if (member.primaryRole === 'admin') return; // admin always authorized; cannot toggle
+    setSavingMemberId(member.userId);
+    setMembersError(null);
+    try {
+      const updated = await updateMaintenanceModeMembers({
+        members: [
+          {
+            userId: member.userId,
+            authorized: nextAuthorized,
+            canManagePermissions: nextAuthorized ? member.canManagePermissions : false,
+          },
+        ],
+      });
+      setMembers(updated);
+    } catch (error) {
+      setMembersError(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSavingMemberId(null);
+    }
+  }, []);
+
   const [logs, setLogs] = useState<SystemLogEntry[]>([]);
   const [dates, setDates] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -208,6 +265,79 @@ export function SystemLogPanel({
           </button>
         </div>
       </div>
+
+      {/* 员工授权列表 — 仅 admin / 有权限管理者可见 */}
+      {canManagePermissions && (
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <p className="text-[13px] font-bold text-slate-900">允许打开推送同步的同事</p>
+              <p className="mt-1 text-[12px] text-slate-500">勾选后该同事可以在自己的应用里打开"左下角推送同步"模式，把代码改动同步给你。管理员默认拥有此权限。</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadMembers()}
+              disabled={isMembersLoading}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 shrink-0"
+            >
+              <RefreshCw size={13} className={isMembersLoading ? 'animate-spin' : ''} />
+              刷新
+            </button>
+          </div>
+
+          {membersError && (
+            <div className="rounded-lg bg-rose-50 border border-rose-200 px-3 py-2 text-[12px] text-rose-600 mb-3">
+              {membersError}
+            </div>
+          )}
+
+          {isMembersLoading && members.length === 0 ? (
+            <p className="text-[12px] text-slate-400 px-2 py-3">加载中…</p>
+          ) : members.length === 0 ? (
+            <p className="text-[12px] text-slate-400 px-2 py-3 text-center">暂无可授权的同事</p>
+          ) : (
+            <div className="space-y-1">
+              {members.map((member) => {
+                const isAdmin = member.primaryRole === 'admin';
+                const isSaving = savingMemberId === member.userId;
+                return (
+                  <label
+                    key={member.userId}
+                    className={`flex items-center gap-3 rounded-lg px-3 py-2 ${
+                      isAdmin ? 'bg-slate-50' : 'hover:bg-slate-50 cursor-pointer'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isAdmin || member.authorized}
+                      onChange={(e) => {
+                        if (isAdmin) return;
+                        void handleToggleAuthorized(member, e.target.checked);
+                      }}
+                      disabled={isAdmin || isSaving}
+                      className="h-4 w-4 rounded border-slate-300 text-[#5B7BFE] focus:ring-[#5B7BFE]/30 disabled:opacity-50"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] font-bold text-slate-800 truncate">{member.fullName}</span>
+                        {isAdmin && (
+                          <span className="rounded-full bg-[#5B7BFE]/10 px-2 py-0.5 text-[10px] font-bold text-[#5B7BFE]">管理员（默认授权）</span>
+                        )}
+                        {!isAdmin && member.canManagePermissions && (
+                          <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">可代管理</span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-400 truncate">{member.email}</p>
+                    </div>
+                    {isSaving && <Loader2 size={13} className="animate-spin text-slate-400 shrink-0" />}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Stats bar */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-50 border border-slate-100 text-[12px] font-semibold text-slate-500">

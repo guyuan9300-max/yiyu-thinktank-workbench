@@ -1281,6 +1281,52 @@ async function extractPlatformDnaText(targetPath: string) {
   return typeof payload.text === 'string' ? payload.text : '';
 }
 
+// 防御性兜底：sherpa-onnx wheel 把 libonnxruntime.X.Y.Z.dylib 绑死在 @rpath（文件名带版本号），
+// 但 wheel 自身不带这个 dylib，靠同 venv 里的 onnxruntime 包提供。如果两者版本不一致，
+// `import sherpa_onnx` 会 dlopen 失败 → ImportError。第一道防线是 pyproject.toml 把
+// onnxruntime 锁到与 sherpa-onnx 编译版本兼容的范围；这一层是第二道防线：扫期望版本 → 扫实际
+// 版本 → 不匹配时建软链。哪怕将来 sherpa-onnx 升级又出现错配，用户首次安装/重建 venv 都不会被绊。
+// 只在 macOS 处理：otool 是 macOS 专属，且 Linux/Windows 的 sherpa-onnx wheel 一般自包含 dylib。
+async function ensureSherpaOnnxDylibAligned(venvPath: string): Promise<void> {
+  if (process.platform !== 'darwin') return;
+  try {
+    const sherpaLibDir = path.join(venvPath, 'lib', 'python3.11', 'site-packages', 'sherpa_onnx', 'lib');
+    const onnxCapiDir = path.join(venvPath, 'lib', 'python3.11', 'site-packages', 'onnxruntime', 'capi');
+    if (!fs.existsSync(sherpaLibDir) || !fs.existsSync(onnxCapiDir)) return;
+    const sherpaSo = fs.readdirSync(sherpaLibDir).find((f) => f.startsWith('_sherpa_onnx.') && f.endsWith('.so'));
+    if (!sherpaSo) return;
+    const sherpaSoPath = path.join(sherpaLibDir, sherpaSo);
+    const otoolOutput = await new Promise<string>((resolve, reject) => {
+      const child = spawn('/usr/bin/otool', ['-L', sherpaSoPath], { env: process.env });
+      const chunks: string[] = [];
+      child.stdout.on('data', (chunk) => chunks.push(chunk.toString()));
+      child.on('error', reject);
+      child.on('exit', (code) => {
+        if (code === 0) resolve(chunks.join(''));
+        else reject(new Error(`otool exited ${code}`));
+      });
+    });
+    const expectedMatch = otoolOutput.match(/libonnxruntime\.(\d+\.\d+\.\d+)\.dylib/);
+    if (!expectedMatch) return;
+    const expectedVersion = expectedMatch[1];
+    const expectedDylibName = `libonnxruntime.${expectedVersion}.dylib`;
+    const expectedDylibPath = path.join(sherpaLibDir, expectedDylibName);
+    if (fs.existsSync(expectedDylibPath)) return;
+    const actualDylib = fs.readdirSync(onnxCapiDir).find((f) => /^libonnxruntime\.\d+\.\d+\.\d+\.dylib$/.test(f));
+    if (!actualDylib) {
+      logElectronError(`[asr-dylib] onnxruntime/capi 缺少 libonnxruntime.*.dylib，sherpa-onnx 期望的 ${expectedDylibName} 无法对齐`);
+      return;
+    }
+    fs.symlinkSync(path.join(onnxCapiDir, actualDylib), expectedDylibPath);
+    appendElectronLaunchLog(
+      'INFO',
+      `[asr-dylib] aligned ${expectedDylibName} -> ${actualDylib} (sherpa-onnx expects ${expectedVersion}, onnxruntime provides ${actualDylib.match(/(\d+\.\d+\.\d+)/)?.[1] ?? '?'})`,
+    );
+  } catch (error) {
+    logElectronError(`[asr-dylib] 对齐失败（非致命，转写运行时会显式报错）：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function ensurePackagedBackendRuntime(venvPath: string) {
   const seed = readPackagedRuntimeSeed();
   const metadataPath = projectRuntimeMetadataPath('backend', venvPath);
@@ -1341,6 +1387,7 @@ async function ensurePackagedBackendRuntime(venvPath: string) {
   if (!isExecutable(uvicornPath)) {
     throw new Error('内置后端运行时安装完成后仍缺少 uvicorn');
   }
+  await ensureSherpaOnnxDylibAligned(venvPath);
   writeRuntimeSyncMetadata(metadataPath, {
     fingerprint,
     syncedAt: new Date().toISOString(),
@@ -1379,6 +1426,9 @@ async function ensureProjectRuntime(projectDirName: 'backend' | 'cloud_backend',
     backendEnv({ VIRTUAL_ENV: venvPath }),
     `${projectDirName}:sync`,
   );
+  if (projectDirName === 'backend') {
+    await ensureSherpaOnnxDylibAligned(venvPath);
+  }
   writeRuntimeSyncMetadata(metadataPath, {
     fingerprint,
     syncedAt: new Date().toISOString(),
@@ -1726,6 +1776,12 @@ function startBackend() {
     throw new Error('missing_backend_runtime');
   }
   const args = ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(backendPort)];
+  // Dev-only: hot-reload Python on source changes so we don't need to restart
+  // Electron after every backend edit. Packaged builds keep the old behaviour
+  // (no reload) since the bundled source is immutable.
+  if (!app.isPackaged) {
+    args.push('--reload', '--reload-dir', path.join(projectRoot, 'backend', 'app'));
+  }
   backendProcess = spawn(
     entrypoint,
     args,
@@ -2707,7 +2763,47 @@ app.whenReady().then(async () => {
   });
 });
 
+let isRecordingActive = false;
+let recordingTaskTitle = '';
+let userConfirmedQuitDespiteRecording = false;
+
+ipcMain.handle(
+  'yiyu-workbench:setRecordingActive',
+  async (_event, payload: { active: boolean; taskTitle?: string }) => {
+    isRecordingActive = Boolean(payload?.active);
+    recordingTaskTitle = (payload?.taskTitle || '').trim();
+    appendElectronLaunchLog(
+      'INFO',
+      `[recording] setRecordingActive active=${isRecordingActive} title=${recordingTaskTitle.slice(0, 60)}`,
+    );
+    return { active: isRecordingActive };
+  },
+);
+
 app.on('before-quit', (event) => {
+  if (isRecordingActive && !userConfirmedQuitDespiteRecording) {
+    const targetWindow = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+    const choice = dialog.showMessageBoxSync(
+      targetWindow as BrowserWindow,
+      {
+        type: 'warning',
+        buttons: ['取消退出', '仍然退出'],
+        defaultId: 0,
+        cancelId: 0,
+        title: '录音进行中',
+        message: '当前有录音正在进行',
+        detail: `任务"${recordingTaskTitle || '未命名录音文件'}"正在录音，退出软件会丢失这段录音。\n\n确定要退出吗？`,
+        noLink: true,
+      },
+    );
+    appendElectronLaunchLog('INFO', `[app] before-quit recording-block choice=${choice}`);
+    if (choice === 0) {
+      event.preventDefault();
+      return;
+    }
+    userConfirmedQuitDespiteRecording = true;
+    isRecordingActive = false;
+  }
   appendElectronLaunchLog('INFO', `[app] before-quit fired quitRequest=${JSON.stringify(lastQuitRequest || { reason: 'unknown_external_or_system' })}`);
   stopBackend();
   stopCloudBackend();
@@ -2996,3 +3092,53 @@ ipcMain.handle('yiyu-workbench:saveFileAs', async (_event, sourcePath: string, s
   await fs.promises.copyFile(resolvedSourcePath, filePath);
   return filePath;
 });
+
+const SAFE_RECORDING_EXTENSIONS = new Set(['webm', 'wav', 'mp3', 'm4a', 'mp4', 'ogg', 'opus', 'flac']);
+
+ipcMain.handle(
+  'yiyu-workbench:readRecordingFile',
+  async (_event, absolutePath: string): Promise<{ buffer: Uint8Array; sizeBytes: number; name: string }> => {
+    if (!absolutePath || typeof absolutePath !== 'string') {
+      throw new Error('readRecordingFile: missing path');
+    }
+    const recordingsRoot = path.join(app.getPath('userData'), 'recordings');
+    const normalized = path.resolve(absolutePath);
+    if (!normalized.startsWith(recordingsRoot + path.sep) && normalized !== recordingsRoot) {
+      throw new Error('readRecordingFile: path outside recordings directory');
+    }
+    const stat = await fs.promises.stat(normalized);
+    if (!stat.isFile()) {
+      throw new Error('readRecordingFile: not a file');
+    }
+    const data = await fs.promises.readFile(normalized);
+    return {
+      buffer: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      sizeBytes: stat.size,
+      name: path.basename(normalized),
+    };
+  },
+);
+
+ipcMain.handle(
+  'yiyu-workbench:saveRecordingBlob',
+  async (
+    _event,
+    payload: { buffer: ArrayBuffer | Uint8Array; extension?: string; sessionId?: string },
+  ): Promise<{ absolutePath: string; sizeBytes: number; sessionId: string }> => {
+    if (!payload || (!payload.buffer && (payload.buffer as unknown) !== 0)) {
+      throw new Error('saveRecordingBlob: missing buffer');
+    }
+    const extRaw = (payload.extension || 'webm').trim().toLowerCase().replace(/^\./, '');
+    const ext = SAFE_RECORDING_EXTENSIONS.has(extRaw) ? extRaw : 'webm';
+    const sessionId = (payload.sessionId || crypto.randomUUID()).trim() || crypto.randomUUID();
+    const recordingsRoot = path.join(app.getPath('userData'), 'recordings');
+    await fs.promises.mkdir(recordingsRoot, { recursive: true });
+    const targetPath = path.join(recordingsRoot, `${sessionId}.${ext}`);
+    const data = payload.buffer instanceof Uint8Array
+      ? Buffer.from(payload.buffer)
+      : Buffer.from(new Uint8Array(payload.buffer));
+    await fs.promises.writeFile(targetPath, data);
+    const stat = await fs.promises.stat(targetPath);
+    return { absolutePath: targetPath, sizeBytes: stat.size, sessionId };
+  },
+);

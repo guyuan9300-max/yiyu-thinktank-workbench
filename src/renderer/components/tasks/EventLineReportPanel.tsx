@@ -1545,9 +1545,11 @@ type Props = {
   backendBaseUrl: string;
   onClose: () => void;
   onExportWord: (draft: ReportDraft) => void;
+  /** 切换到 R0~R3 "AI 主理人"完整报告流程（关本面板 → 开 AI 报告 Modal）。 */
+  onOpenAIReport?: (target: { eventLineName: string; clientName: string }) => void;
 };
 
-export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onClose, onExportWord }: Props) {
+export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onClose, onExportWord, onOpenAIReport }: Props) {
   const [snapshot, setSnapshot] = useState<EventLineReportSnapshot | null>(null);
   const [organizationName, setOrganizationName] = useState('');
   const [exportProgress, setExportProgress] = useState<{ stage: string; detail: string } | null>(null);
@@ -2042,7 +2044,54 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
               <Users size={11} /> {draft.participantNames.join('、')}
             </span>
           )}
+          {(() => {
+            const status = snapshot.eventLine.syncStatus;
+            if (!status || status === 'synced') return null;
+            const cfg: Record<string, { label: string; cls: string }> = {
+              local: { label: '仅本地', cls: 'bg-gray-100 text-gray-500' },
+              syncing: { label: '同步中', cls: 'bg-sky-50 text-sky-600' },
+              pending: { label: '待同步', cls: 'bg-amber-50 text-amber-600' },
+              error: { label: '同步失败', cls: 'bg-rose-50 text-rose-600' },
+            };
+            const item = cfg[status];
+            if (!item) return null;
+            return (
+              <span className={`rounded-full px-2.5 py-1 font-bold ${item.cls}`} title={snapshot.eventLine.lastSyncError || undefined}>
+                {item.label}
+              </span>
+            );
+          })()}
         </div>
+        {/* ── Completeness panel ── */}
+        {typeof snapshot.eventLine.completenessScore === 'number' && (() => {
+          const score = snapshot.eventLine.completenessScore;
+          const status = snapshot.eventLine.completenessStatus || 'insufficient';
+          const missing = snapshot.eventLine.completenessMissingSlots || [];
+          const palette: Record<string, { bar: string; chip: string; label: string }> = {
+            high_confidence: { bar: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700', label: '可对外汇报' },
+            forecast_ready: { bar: 'bg-sky-500', chip: 'bg-sky-50 text-sky-700', label: '可形成预测' },
+            summary_ready: { bar: 'bg-amber-500', chip: 'bg-amber-50 text-amber-700', label: '可初步总结' },
+            insufficient: { bar: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700', label: '证据不足' },
+          };
+          const p = palette[status] || palette.insufficient;
+          return (
+            <div className="border-b border-gray-50 px-6 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-[12px]">
+                  <span className="font-bold text-gray-700">证据完整度</span>
+                  <span className="font-bold text-gray-900">{score} / 100</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${p.chip}`}>{p.label}</span>
+                </div>
+                {missing.length > 0 && (
+                  <span className="text-[11px] text-gray-500">缺：{missing.slice(0, 4).join('、')}{missing.length > 4 ? '…' : ''}</span>
+                )}
+              </div>
+              <div className="mt-2 h-1.5 w-full rounded-full bg-gray-100">
+                <div className={`h-1.5 rounded-full transition-all ${p.bar}`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── Export progress overlay ── */}
         {exportProgress && (
@@ -2158,7 +2207,38 @@ export default function EventLineReportPanel({ eventLineId, backendBaseUrl, onCl
             </div>
           ) : viewMode === 'report' && reportPreview ? (
             reportPreview.hasRenderableContent ? (
-            <div className="mx-auto max-w-[760px] space-y-8 pb-6">
+            <div className="mx-auto max-w-[760px] space-y-6 pb-6">
+              {onOpenAIReport && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenAIReport({
+                      eventLineName: draft.eventLineName || '',
+                      clientName: organizationName || '',
+                    })
+                  }
+                  className="group flex w-full items-center gap-4 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-indigo-50 px-5 py-4 text-left transition hover:border-blue-400 hover:shadow-lg"
+                >
+                  <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-md transition group-hover:scale-105">
+                    <span className="text-[20px]">✨</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[14px] font-bold text-gray-900">
+                      用 AI 主理人生成完整报告
+                    </p>
+                    <p className="mt-1 text-[12px] text-gray-600">
+                      豆包推骨架 → 章节并行起草 + 信息图 → 一键导出 docx / Markdown ·
+                      约 2-4 分钟
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 text-[12px] font-medium text-blue-600 transition group-hover:translate-x-1">
+                    开始 →
+                  </div>
+                </button>
+              )}
+              <p className="-mt-1 text-center text-[11px] text-gray-400">
+                ↓ 下方为上一代静态预览（封面页 + 目录页 mock）
+              </p>
               <section className="overflow-hidden rounded-[32px] border border-[#DDE4F3] bg-[#F9FBFF] shadow-[0_24px_70px_rgba(56,86,174,0.10)]">
                 <div className="relative min-h-[1020px] px-10 py-10 text-[#3F3A36]">
                   <div

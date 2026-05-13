@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Building2, Check, ChevronLeft, Copy, FileText, Plus, Save, Trash2, UploadCloud, Users, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Building2, Check, ChevronDown, ChevronLeft, Copy, FileText, Pencil, Plus, Save, Trash2, UploadCloud, Users, X } from 'lucide-react';
 
 import type {
   DepartmentOption,
@@ -280,6 +281,59 @@ function applyOrganizationLeaderNameDraft(value: OrgModelSettings, rawName: stri
   };
 }
 
+function applyOrganizationLeaderUserIdDraft(
+  value: OrgModelSettings,
+  userId: string | null,
+  displayName: string,
+): OrgModelSettings {
+  const nextName = displayName.trim();
+  if (
+    (value.organization.leaderUserId ?? null) === userId
+    && (value.organization.leaderName ?? '') === nextName
+  ) {
+    return value;
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    organization: {
+      ...value.organization,
+      leaderUserId: userId,
+      leaderName: nextName,
+      managementUserIds: userId ? [userId] : [],
+      updatedAt: timestamp,
+    },
+    updatedAt: timestamp,
+  };
+}
+
+function applyDepartmentLeaderUserIdDraft(
+  value: OrgModelSettings,
+  departmentId: string,
+  userId: string | null,
+  displayName: string,
+): OrgModelSettings {
+  const dept = value.departments.find((d) => d.id === departmentId);
+  if (!dept) return value;
+  const nextName = displayName.trim();
+  if (
+    (dept.leaderUserId ?? null) === userId
+    && (dept.leaderName ?? '') === nextName
+  ) {
+    return value;
+  }
+  const timestamp = new Date().toISOString();
+  return {
+    ...value,
+    departments: value.departments.map((d) =>
+      d.id === departmentId
+        ? { ...d, leaderUserId: userId, leaderName: nextName, updatedAt: timestamp }
+        : d,
+    ),
+    updatedAt: timestamp,
+  };
+}
+
 function applyDepartmentLeaderNameDrafts(
   value: OrgModelSettings,
   drafts: Record<string, string>,
@@ -438,6 +492,10 @@ export function OrganizationSetupCenter({
   const [bulkInviteCopied, setBulkInviteCopied] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
+  // 编辑模式开关：默认关闭，组织搭建视图为只读；点"编辑组织"开启后才显示
+  // 各种局部编辑控件（添加部门/岗位、删除 X、保存对勾、文本输入框）。
+  const [isEditingMode, setIsEditingMode] = useState(false);
+  const canModify = canEdit && isEditingMode;
   const [lines, setLines] = useState<LineDefinition[]>([]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bulkInviteTimerRef = useRef<number | null>(null);
@@ -679,6 +737,109 @@ export function OrganizationSetupCenter({
     clearOrganizationLeaderNameDraft();
     return nextValue;
   }, [clearOrganizationLeaderNameDraft, onChange, organizationLeaderNameInput, value]);
+
+  // 通过下拉选择组织负责人：同时绑定 leaderUserId（精确关联，不依赖文本 fuzzy match）
+  const handleSelectOrganizationLeader = useCallback((employee: EmployeeRecord | null) => {
+    if (!canEdit) return;
+    const nextValue = applyOrganizationLeaderUserIdDraft(
+      value,
+      employee?.id ?? null,
+      employee?.fullName ?? '',
+    );
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setOrganizationLeaderNameInput(employee?.fullName ?? '');
+    clearOrganizationLeaderNameDraft();
+  }, [canEdit, clearOrganizationLeaderNameDraft, onChange, value]);
+
+  // 通过下拉选择岗位持岗人：更新 bindings (userId.primaryRoleId = roleId)
+  // 一个员工同时只能有一个 primaryRoleId；若选的员工已经占别的岗位，会被搬过来；
+  // 若该岗位本来有人，那个人的 primaryRoleId 会被置空。
+  const handleSelectRoleHolder = useCallback((roleId: string, employee: EmployeeRecord | null) => {
+    if (!canEdit) return;
+    const timestamp = new Date().toISOString();
+    const targetUserId = employee?.id ?? null;
+
+    // 1. 找到当前占该岗位的员工 binding
+    const currentHolder = value.bindings.find((b) => b.primaryRoleId === roleId);
+    // No-op：当前持岗人就是目标
+    if ((currentHolder?.userId ?? null) === targetUserId) return;
+
+    // 2. 找到目标员工的现有 binding（如果有）
+    const targetExistingBinding = targetUserId
+      ? value.bindings.find((b) => b.userId === targetUserId)
+      : null;
+
+    // 3. 从该岗位查 departmentId（用作新 binding 的 default departmentId）
+    const role = value.roles.find((r) => r.id === roleId);
+    const inferredDepartmentId = role?.departmentId ?? null;
+
+    let nextBindings = value.bindings.map((b) => {
+      // 清空 current holder 的 primaryRoleId（如果要换人/清空）
+      if (currentHolder && b.userId === currentHolder.userId && currentHolder.userId !== targetUserId) {
+        return { ...b, primaryRoleId: null, updatedAt: timestamp };
+      }
+      // 把 target employee 的 binding.primaryRoleId 设到此 role
+      if (targetUserId && b.userId === targetUserId) {
+        return {
+          ...b,
+          primaryRoleId: roleId,
+          departmentId: b.departmentId ?? inferredDepartmentId,
+          updatedAt: timestamp,
+        };
+      }
+      return b;
+    });
+
+    // 4. 如果 target employee 没有现存 binding，新建一条
+    if (targetUserId && !targetExistingBinding) {
+      nextBindings = [
+        ...nextBindings,
+        {
+          userId: targetUserId,
+          departmentId: inferredDepartmentId,
+          primaryRoleId: roleId,
+          managerUserId: null,
+          isManager: false,
+          projectRoleLabels: [],
+          currentFocus: '',
+          taskEditScope: 'self',
+          canApproveTasks: false,
+          canReassignTasks: false,
+          canChangeDeadline: false,
+          updatedAt: timestamp,
+        },
+      ];
+    }
+
+    onChange({
+      ...value,
+      bindings: nextBindings,
+      updatedAt: timestamp,
+    });
+  }, [canEdit, onChange, value]);
+
+  // 通过下拉选择部门负责人：同时绑定 leaderUserId
+  const handleSelectDepartmentLeader = useCallback((departmentId: string, employee: EmployeeRecord | null) => {
+    if (!canEdit) return;
+    const nextValue = applyDepartmentLeaderUserIdDraft(
+      value,
+      departmentId,
+      employee?.id ?? null,
+      employee?.fullName ?? '',
+    );
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+    setDepartmentLeaderNameInputs((previous) => {
+      if (!(departmentId in previous)) return previous;
+      const next = { ...previous };
+      delete next[departmentId];
+      return next;
+    });
+    clearDepartmentLeaderNameDraft(departmentId);
+  }, [canEdit, clearDepartmentLeaderNameDraft, onChange, value]);
 
   const handleDepartmentLeaderNameChange = useCallback((departmentId: string, nextName: string) => {
     setDepartmentLeaderNameDraft(departmentId, nextName);
@@ -1039,6 +1200,9 @@ export function OrganizationSetupCenter({
     const saved = await onSave(nextValue);
     if (saved !== false) {
       showToast('组织结构已保存');
+      // 保存成功后自动退出编辑模式：右上角的 X / + / 对勾按钮一齐隐藏，
+      // 用户视觉上明确知道"这一轮编辑已完成"，下次还要改再点"编辑组织"。
+      setIsEditingMode(false);
     }
   }, [applyActiveEditingDraft, clearInputDrafts, departmentLeaderNameInputs, finishEditing, onChange, onSave, organizationLeaderNameInput, organizationNameInput, pendingDepartmentIntroDocuments, pendingOrganizationIntroDocument, showToast, value]);
 
@@ -1243,26 +1407,47 @@ export function OrganizationSetupCenter({
           </div>
           <div className="flex items-center gap-3">
             {canEdit ? (
-              <>
+              isEditingMode ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-5 py-3 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Save size={14} />
+                    {isSaving ? '保存中' : '保存修改'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingMode(false)}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-3 text-[13px] font-bold text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <X size={14} />
+                    退出编辑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenResetConfirm}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-rose-100 bg-white px-3 py-2 text-[12px] font-medium text-rose-500 transition hover:border-rose-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    title="谨慎操作：会删除整个组织搭建"
+                  >
+                    <Trash2 size={12} />
+                    删除搭建
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleOpenResetConfirm}
-                  disabled={isSaving}
-                  className="inline-flex items-center gap-2 rounded-full border border-rose-100 bg-white px-4 py-3 text-[13px] font-bold text-rose-500 transition hover:border-rose-200 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => setIsEditingMode(true)}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-5 py-3 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF]"
                 >
-                  <Trash2 size={14} />
-                  删除搭建
+                  <Pencil size={14} />
+                  编辑组织
                 </button>
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="inline-flex items-center gap-2 rounded-full bg-[#5B7BFE] px-5 py-3 text-[13px] font-bold text-white shadow-[0_12px_30px_rgba(91,123,254,0.25)] transition hover:bg-[#4A63CF] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <Save size={14} />
-                  {isSaving ? '保存中' : '保存'}
-                </button>
-              </>
+              )
             ) : null}
             {activeView === 'tree' ? (
               <button
@@ -1306,7 +1491,7 @@ export function OrganizationSetupCenter({
                   id={`node-${tree.id}`}
                   className="relative z-10 flex min-w-[260px] flex-col gap-3 rounded-2xl border-2 border-[#5B7BFE]/30 bg-gradient-to-br from-[#EEF3FF] to-white px-5 py-4 pr-12 shadow-sm"
                 >
-                  {canEdit ? (
+                  {canModify ? (
                     <CardSaveButton
                       active={organizationCardDirty}
                       disabled={isSaving}
@@ -1316,7 +1501,7 @@ export function OrganizationSetupCenter({
                   ) : null}
                   <div className="flex items-center gap-3">
                     <Building2 className="text-[#5B7BFE]" size={20} />
-                    {canEdit ? (
+                    {canModify ? (
                       <input
                         value={organizationNameInput}
                         onCompositionStart={handleTextCompositionStart}
@@ -1345,26 +1530,15 @@ export function OrganizationSetupCenter({
                   </div>
                   <div className="flex items-center gap-2 pl-8">
                     <span className="text-[11px] font-medium text-gray-400">负责人</span>
-                    {canEdit ? (
-                      <input
-                        value={organizationLeaderNameInput}
-                        onCompositionStart={handleTextCompositionStart}
-                        onCompositionEnd={handleTextCompositionEnd}
-                        onChange={(event) => setOrganizationLeaderNameDraft(event.target.value)}
-                        onBlur={commitOrganizationLeaderNameInput}
-                        onKeyDown={(event) => {
-                          if (isComposingKeyEvent(event, textCompositionRef)) return;
-                          if (event.key === 'Enter') {
-                            event.currentTarget.blur();
-                          }
-                          if (event.key === 'Escape') {
-                            setOrganizationLeaderNameInput(visibleLeaderNameInput(value.organization.leaderName));
-                            clearOrganizationLeaderNameDraft();
-                            event.currentTarget.blur();
-                          }
+                    {canModify ? (
+                      <LeaderPicker
+                        value={{
+                          userId: value.organization.leaderUserId ?? null,
+                          displayName: visibleLeaderNameInput(value.organization.leaderName),
                         }}
-                        placeholder="请输入负责人姓名"
-                        className="min-w-[160px] rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE]"
+                        employees={employees}
+                        onSelect={handleSelectOrganizationLeader}
+                        placeholder="从同事中选负责人"
                       />
                     ) : (
                       <span className="rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700">
@@ -1373,7 +1547,7 @@ export function OrganizationSetupCenter({
                     )}
                   </div>
                   <IntroDocumentAction
-                    canEdit={canEdit}
+                    canEdit={canModify}
                     disabled={isSaving || !onUploadIntroDocument}
                     document={value.organization.introDocument}
                     label="组织介绍"
@@ -1417,7 +1591,7 @@ export function OrganizationSetupCenter({
                           className="group relative z-10 flex min-w-[170px] flex-col gap-1.5 rounded-2xl border border-gray-200 bg-white px-4 py-3 pr-10 shadow-sm transition hover:border-[#5B7BFE]/40"
                           style={{ boxShadow: `0 12px 28px ${tint(department.color, '16')}` }}
                         >
-                          {canEdit ? (
+                          {canModify ? (
                             <CardSaveButton
                               active={departmentCardDirty}
                               disabled={isSaving}
@@ -1425,11 +1599,12 @@ export function OrganizationSetupCenter({
                               onClick={() => handleSaveDepartmentCard(department.id)}
                             />
                           ) : null}
-                          {canEdit ? (
+                          {canModify ? (
                             <button
                               type="button"
                               onClick={() => handleDeleteDepartment(department.id)}
-                              className="absolute -right-2 -top-2 rounded-full border border-gray-200 bg-white p-0.5 text-gray-300 opacity-0 shadow-sm transition group-hover:opacity-100 hover:border-rose-200 hover:text-rose-500"
+                              className="absolute -right-2 -top-2 rounded-full border border-rose-200 bg-white p-0.5 text-rose-400 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500"
+                              title="删除该部门"
                             >
                               <X size={12} />
                             </button>
@@ -1461,25 +1636,16 @@ export function OrganizationSetupCenter({
 
                           <div className="flex items-center gap-1.5 pl-6">
                             <span className="text-[11px] text-gray-400">负责人</span>
-                            {canEdit ? (
-                              <input
-                                value={departmentLeaderNameValue}
-                                onCompositionStart={handleTextCompositionStart}
-                                onCompositionEnd={handleTextCompositionEnd}
-                                onChange={(event) => handleDepartmentLeaderNameChange(department.id, event.target.value)}
-                                onBlur={() => commitDepartmentLeaderNameInput(department.id)}
-                                onKeyDown={(event) => {
-                                  if (isComposingKeyEvent(event, textCompositionRef)) return;
-                                  if (event.key === 'Enter') {
-                                    event.currentTarget.blur();
-                                  }
-                                  if (event.key === 'Escape') {
-                                    handleDepartmentLeaderNameChange(department.id, visibleLeaderNameInput(department.leaderName));
-                                    event.currentTarget.blur();
-                                  }
+                            {canModify ? (
+                              <LeaderPicker
+                                value={{
+                                  userId: department.leaderUserId ?? null,
+                                  displayName: visibleLeaderNameInput(department.leaderName),
                                 }}
-                                placeholder="姓名"
-                                className="min-w-[88px] rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 outline-none transition placeholder:text-gray-300 focus:border-[#5B7BFE]/50"
+                                employees={employees}
+                                onSelect={(employee) => handleSelectDepartmentLeader(department.id, employee)}
+                                placeholder="选负责人"
+                                compact
                               />
                             ) : (
                               <span className="text-[11px] text-gray-500">{department.leadName || '待设置'}</span>
@@ -1498,7 +1664,7 @@ export function OrganizationSetupCenter({
                             </span>
                           </div>
                           <IntroDocumentAction
-                            canEdit={canEdit}
+                            canEdit={canModify}
                             compact
                             disabled={isSaving || !onUploadIntroDocument}
                             document={departmentSettings?.introDocument}
@@ -1514,13 +1680,18 @@ export function OrganizationSetupCenter({
                             const roleCardDirty = isEditingRoleName
                               && editingText.trim().length > 0
                               && editingText.trim() !== role.name;
+                            // 通过 bindings 反查持岗人
+                            const holderBinding = value.bindings.find((b) => b.primaryRoleId === role.id);
+                            const holderEmployee = holderBinding
+                              ? employees.find((e) => e.id === holderBinding.userId) ?? null
+                              : null;
                             return (
                               <div
                                 id={`node-${role.id}`}
                                 key={role.id}
-                                className="group relative z-10 min-w-[120px] rounded-xl border border-gray-100 bg-gray-50/90 px-3 py-2 pr-8 transition hover:border-gray-200"
+                                className="group relative z-10 min-w-[180px] rounded-xl border border-gray-100 bg-gray-50/90 px-3 py-2 pr-8 transition hover:border-gray-200"
                               >
-                                {canEdit ? (
+                                {canModify ? (
                                   <CardSaveButton
                                     active={roleCardDirty}
                                     className="right-1.5 top-1.5 h-5 w-5"
@@ -1530,16 +1701,18 @@ export function OrganizationSetupCenter({
                                     onClick={() => handleSaveRoleCard(role.id)}
                                   />
                                 ) : null}
-                                {canEdit ? (
+                                {canModify ? (
                                   <button
                                     type="button"
                                     onClick={() => handleDeleteRole(role.id)}
-                                    className="absolute -right-1.5 -top-1.5 rounded-full border border-gray-200 bg-white p-0.5 text-gray-300 opacity-0 shadow-sm transition group-hover:opacity-100 hover:border-rose-200 hover:text-rose-500"
+                                    className="absolute -right-1.5 -top-1.5 rounded-full border border-rose-200 bg-white p-0.5 text-rose-400 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-500"
+                                    title="删除该岗位"
                                   >
                                     <X size={10} />
                                   </button>
                                 ) : null}
 
+                                {/* 岗位名（可编辑） */}
                                 {isEditingRoleName ? (
                                   <input
                                     autoFocus
@@ -1554,17 +1727,38 @@ export function OrganizationSetupCenter({
                                 ) : (
                                   <button
                                     type="button"
-                                    onClick={() => startEditing(role.id, 'name', role.name)}
-                                    className="w-full text-center text-[12px] font-medium text-gray-600 transition hover:text-[#5B7BFE]"
+                                    onClick={() => canModify && startEditing(role.id, 'name', role.name)}
+                                    disabled={!canModify}
+                                    className="w-full text-center text-[12px] font-medium text-gray-600 transition hover:text-[#5B7BFE] disabled:cursor-default disabled:hover:text-gray-600"
                                   >
                                     {role.name}
                                   </button>
                                 )}
+
+                                {/* 持岗人（下拉选员工） */}
+                                <div className="mt-1.5 flex items-center justify-center gap-1">
+                                  {canModify ? (
+                                    <LeaderPicker
+                                      value={{
+                                        userId: holderEmployee?.id ?? null,
+                                        displayName: holderEmployee?.fullName ?? '',
+                                      }}
+                                      employees={employees}
+                                      onSelect={(employee) => handleSelectRoleHolder(role.id, employee)}
+                                      placeholder="选员工"
+                                      compact
+                                    />
+                                  ) : (
+                                    <span className="text-[11px] text-gray-500">
+                                      {holderEmployee?.fullName || '待指派'}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
 
-                          {canEdit ? (
+                          {canModify ? (
                             <button
                               id={`add-btn-${department.id}`}
                               type="button"
@@ -1580,7 +1774,7 @@ export function OrganizationSetupCenter({
                     );
                   })}
 
-                  {canEdit ? (
+                  {canModify ? (
                     <button
                       id={`add-btn-${tree.id}`}
                       type="button"
@@ -1765,5 +1959,194 @@ function InviteCard({
         {positions}
       </div>
     </div>
+  );
+}
+
+
+type LeaderPickerProps = {
+  value: { userId: string | null; displayName: string };
+  employees: EmployeeRecord[];
+  onSelect: (employee: EmployeeRecord | null) => void;
+  placeholder?: string;
+  compact?: boolean;
+  disabled?: boolean;
+};
+
+function LeaderPicker({
+  value,
+  employees,
+  onSelect,
+  placeholder = '选择负责人',
+  compact = false,
+  disabled = false,
+}: LeaderPickerProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  // dropdown 位置 — 通过 Portal 渲染到 body 后，需用 fixed 定位
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  const candidates = useMemo(
+    () =>
+      employees.filter(
+        (e) =>
+          e.accountStatus === 'approved'
+          && (e.membershipStatus ?? 'approved') === 'approved',
+      ),
+    [employees],
+  );
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return candidates;
+    return candidates.filter(
+      (e) =>
+        e.fullName.toLowerCase().includes(needle)
+        || (e.email || '').toLowerCase().includes(needle),
+    );
+  }, [candidates, search]);
+
+  // 计算 dropdown 的 fixed 位置（按钮下方 4px，右边贴齐 viewport）
+  const computePosition = useCallback(() => {
+    if (!buttonRef.current) return null;
+    const rect = buttonRef.current.getBoundingClientRect();
+    const dropdownWidth = 260;
+    const gap = 6;
+    // 默认贴按钮左侧；若右溢出，右对齐
+    let left = rect.left;
+    if (left + dropdownWidth > window.innerWidth - 12) {
+      left = Math.max(12, window.innerWidth - dropdownWidth - 12);
+    }
+    return { top: rect.bottom + gap, left };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPosition(null);
+      return;
+    }
+    setPosition(computePosition());
+  }, [open, computePosition]);
+
+  // 监听 scroll / resize 重新算位置（dropdown 跟随按钮）
+  useEffect(() => {
+    if (!open) return;
+    const recalc = () => setPosition(computePosition());
+    window.addEventListener('scroll', recalc, true);
+    window.addEventListener('resize', recalc);
+    return () => {
+      window.removeEventListener('scroll', recalc, true);
+      window.removeEventListener('resize', recalc);
+    };
+  }, [open, computePosition]);
+
+  // ESC 关闭
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        setSearch('');
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open]);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setSearch('');
+  }, []);
+
+  const handleSelect = useCallback(
+    (employee: EmployeeRecord | null) => {
+      onSelect(employee);
+      close();
+    },
+    [close, onSelect],
+  );
+
+  const displayLabel = value.displayName?.trim() || '';
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((prev) => !prev)}
+        className={
+          compact
+            ? 'inline-flex min-w-[100px] items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 outline-none transition hover:border-[#5B7BFE]/50 disabled:cursor-not-allowed disabled:opacity-50'
+            : 'inline-flex min-w-[160px] items-center gap-1 rounded-full border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-medium text-gray-700 outline-none transition hover:border-[#5B7BFE] disabled:cursor-not-allowed disabled:opacity-50'
+        }
+      >
+        <span className={displayLabel ? '' : 'text-gray-300'}>{displayLabel || placeholder}</span>
+        <ChevronDown size={10} className="ml-auto opacity-60" />
+      </button>
+      {open && position
+        ? createPortal(
+            <>
+              {/* 毛玻璃 backdrop — 覆盖整个屏幕，点击即关闭 */}
+              <div
+                className="fixed inset-0 z-[100] bg-gray-900/15 backdrop-blur-[3px] transition-opacity"
+                onClick={close}
+                aria-hidden
+              />
+              {/* dropdown 面板 — 在 backdrop 之上 */}
+              <div
+                role="dialog"
+                style={{ top: position.top, left: position.left }}
+                className="fixed z-[101] w-[260px] rounded-2xl border border-gray-100 bg-white p-2 shadow-2xl ring-1 ring-black/5"
+              >
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="搜索姓名或邮箱..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  className="mb-1.5 w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-[12px] outline-none transition focus:border-[#5B7BFE] focus:bg-white"
+                />
+                <div className="max-h-[260px] overflow-y-auto">
+                  <button
+                    type="button"
+                    onClick={() => handleSelect(null)}
+                    className="w-full rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-400 transition hover:bg-gray-50"
+                  >
+                    清空（不指定负责人）
+                  </button>
+                  {filtered.length === 0 ? (
+                    <p className="px-2 py-2 text-[10px] text-gray-400">
+                      无匹配同事 — 请先让 ta 在系统注册
+                    </p>
+                  ) : (
+                    filtered.map((e) => (
+                      <button
+                        key={e.id}
+                        type="button"
+                        onClick={() => handleSelect(e)}
+                        className={`w-full rounded-lg px-2 py-1.5 text-left text-[11px] transition hover:bg-[#EEF3FF] ${
+                          e.id === value.userId ? 'bg-[#EEF3FF] font-bold text-[#4A63CF]' : 'text-gray-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span>{e.fullName}</span>
+                          {e.primaryRole === 'admin' ? (
+                            <span className="rounded-full bg-[#FFF7E0] px-1.5 py-0.5 text-[9px] font-bold text-[#A87A1F]">
+                              admin
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="text-[10px] text-gray-400">{e.email}</div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }

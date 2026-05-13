@@ -196,6 +196,7 @@ import {
   workspaceClientUiReducer,
 } from './lib/workspaceClientUiStore';
 import { ClientWorkspaceView } from './components/client_workspace/ClientWorkspaceView';
+import { FileTypeIcon, hasOpenableFile } from './components/FileTypeIcon';
 import type {
   WorkspaceDisplayChatMessage as DisplayChatMessage,
   WorkspacePendingQuestionState,
@@ -225,13 +226,7 @@ import {
 } from '../shared/workspaceChatPresentation';
 import {
   buildEvidenceCitationCards,
-  EVIDENCE_BUSINESS_TAG_LABELS,
-  EVIDENCE_CITATION_ROLE_LABELS,
-  EVIDENCE_SUPPORT_LABELS,
-  type EvidenceBusinessTag,
-  type EvidenceCitationRole,
   type EvidenceCitationCard,
-  type EvidenceSupportLevel,
 } from '../shared/workspaceEvidencePresentation';
 import {
   parseWorkspaceThreadPreference,
@@ -257,7 +252,6 @@ import {
   createProjectFlow,
   createProjectModule,
   deleteClient,
-  deleteClientFolder,
   createGoal,
   launchFeishuMeeting,
   createHandbook,
@@ -381,7 +375,6 @@ import {
   saveCloudAuthInputMemory,
   saveFeishuDeliveryProfile,
   saveFeishuInputMemory,
-  searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
   deleteClientChatMessagePair,
@@ -415,6 +408,8 @@ import {
   updateTaskTag,
   updateTask,
   uploadTaskAttachment,
+  uploadTaskAttachmentFromMarkdown,
+  deleteTaskAttachment,
   summarizeRecordingMeetingMinutes,
   updateTopicsSettings,
   upsertDna,
@@ -426,8 +421,6 @@ import {
   backfillClientWorkspaceImports,
   pullSelectedFromMain,
   selectCollabRepo,
-  createClientFolder,
-  updateClientFolder,
   recommendClientFolderPlan,
   applyClientFolderRecommendation,
   previewClientDocumentAutoRepair,
@@ -796,30 +789,6 @@ function parseEvidenceMode(value: string | null): EvidenceMode | null {
 function normalizeEvidenceQueryValue(value: string | null): string | null {
   const normalized = (value || '').trim();
   return normalized || null;
-}
-
-function evidenceSupportClass(level: EvidenceSupportLevel): string {
-  if (level === 'strong') return 'border-teal-100 bg-teal-50 text-teal-700';
-  if (level === 'reference') return 'border-sky-100 bg-sky-50 text-sky-700';
-  return 'border-gray-100 bg-gray-50 text-gray-600';
-}
-
-function evidenceCitationRoleClass(role?: EvidenceCitationRole | string | null): string {
-  if (role === 'direct_quote' || role === 'direct_support') return 'border-blue-100 bg-blue-50 text-blue-700';
-  if (role === 'background') return 'border-slate-100 bg-slate-50 text-slate-600';
-  return '';
-}
-
-function evidenceTagClass(tag: EvidenceBusinessTag): string {
-  if (tag === 'direct_support') return 'border-blue-100 bg-blue-50 text-blue-700';
-  if (tag === 'background_support') return 'border-slate-100 bg-slate-50 text-slate-600';
-  if (tag === 'strategy_material') return 'border-indigo-100 bg-indigo-50 text-indigo-700';
-  if (tag === 'meeting_material') return 'border-emerald-100 bg-emerald-50 text-emerald-700';
-  if (tag === 'project_material') return 'border-amber-100 bg-amber-50 text-amber-700';
-  if (tag === 'raw_source') return 'border-violet-100 bg-violet-50 text-violet-700';
-  if (tag === 'summary_source') return 'border-cyan-100 bg-cyan-50 text-cyan-700';
-  if (tag === 'index_source') return 'border-stone-100 bg-stone-50 text-stone-600';
-  return 'border-rose-100 bg-rose-50 text-rose-700';
 }
 
 type InitialNavigationState = {
@@ -5520,6 +5489,13 @@ export default function App() {
     initialNavigationStateRef.current = normalizeStartupNavigationState(readInitialNavigationState());
   }
   const [activeTab, setActiveTab] = useState<NavKey>(initialNavigationStateRef.current.activeTab);
+  // 附件 × 删除按钮 → 弹窗状态：含同步删除数据中心的勾选项（默认勾选）
+  const [attachmentDeleteConfirm, setAttachmentDeleteConfirm] = useState<{
+    taskId: string;
+    attachmentId: string;
+    title: string;
+    syncKnowledge: boolean;
+  } | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem('yiyu-sidebar-collapsed') === '1';
@@ -6005,47 +5981,21 @@ export default function App() {
       const originalTaskTitle = (binding.taskTitle || '').trim();
       const fallbackTaskTitle = originalTaskTitle || '未命名录音文件';
 
-      const uploadOriginalRecording = async (taskTitleForFile: string) => {
-        try {
-          const read = await window.yiyuWorkbench.readRecordingFile(absolutePath);
-          const audioMime = sourceFormat === 'webm'
-            ? 'audio/webm'
-            : sourceFormat === 'ogg'
-              ? 'audio/ogg'
-              : sourceFormat === 'mp4' || sourceFormat === 'm4a'
-                ? 'audio/mp4'
-                : sourceFormat === 'wav'
-                  ? 'audio/wav'
-                  : 'application/octet-stream';
-          const audioBlob = new Blob([read.buffer as BlobPart], { type: audioMime });
-          const ext = sourceFormat || 'webm';
-          const audioFile = new File([audioBlob], `${taskTitleForFile}-录音原件-${stamp}.${ext}`, {
-            type: audioMime,
-          });
-          await uploadTaskAttachment(binding.taskId, {
-            file: audioFile,
-            clientId: binding.clientId || undefined,
-            eventLineId: binding.eventLineId || undefined,
-            taskTitle: taskTitleForFile,
-          });
-          return true;
-        } catch (err) {
-          console.warn('[recording] upload original audio failed', err);
-          return false;
-        }
-      };
-
       if (!transcript.trim()) {
-        const audioOk = await uploadOriginalRecording(fallbackTaskTitle);
         flash(
-          audioOk ? 'info' : 'error',
-          audioOk
-            ? `录音已作为附件挂到任务"${fallbackTaskTitle}"（转写文本为空）`
-            : `转写文本为空，且录音附件挂载失败。原件保留在 ${absolutePath}`,
+          'error',
+          `录音转写文本为空。录音原件保留在 ${absolutePath}`,
         );
         void loadTaskBlock();
         return;
       }
+
+      // 含说话人的对话稿（diarization 启用时填）；落附件 + 喂摘要时优先用它
+      const dialogueText = (payload.dialogueText || '').trim();
+      const documentBodyText = dialogueText || transcript;
+      const speakerHint = payload.diarizationUsed && payload.numSpeakers > 0
+        ? `说话人数量：${payload.numSpeakers}\n`
+        : '';
 
       // 1. 转写文本挂附件
       try {
@@ -6055,8 +6005,9 @@ export default function App() {
             `录音时长：${Math.round(durationMs / 1000)} 秒\n`,
             `语言：${language || 'auto'}\n`,
             `源格式：${sourceFormat}\n`,
-            `录音文件：${absolutePath}\n\n`,
-            transcript,
+            speakerHint,
+            '\n',
+            documentBodyText,
           ],
           { type: 'text/plain;charset=utf-8' },
         );
@@ -6071,23 +6022,19 @@ export default function App() {
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const audioOk = await uploadOriginalRecording(fallbackTaskTitle);
-        flash(
-          'error',
-          audioOk
-            ? `转写文本挂附件失败：${msg}（已把录音原件作为附件挂到任务）`
-            : `转写文本挂附件失败：${msg}（录音原件保留在 ${absolutePath}）`,
-        );
+        flash('error', `转写文本挂附件失败：${msg}（录音原件保留在 ${absolutePath}）`);
         void loadTaskBlock();
         return;
       }
 
-      // 2. 调摘要拿 {title, minutesMd}
+      // 2. 调摘要拿 {title, minutesMd}（优先用对话稿，让纪要能点名说话人）
       let summaryTitle = '';
       let summaryMinutesMd = '';
       try {
         const summary = await summarizeRecordingMeetingMinutes({
           transcript,
+          dialogueText,
+          numSpeakers: payload.numSpeakers,
           taskTitleHint: originalTaskTitle,
           languageHint: language,
         });
@@ -6101,15 +6048,13 @@ export default function App() {
 
       const finalTitle = summaryTitle || fallbackTaskTitle;
 
-      // 3. 会议纪要落第二附件（如果生成出了内容）
+      // 3. 会议纪要落第二附件 —— 后端把 markdown 渲染成 .docx，
+      //    用户在任务详情双击附件可以直接用 Word/Pages 打开编辑。
       if (summaryMinutesMd) {
         try {
-          const mdBlob = new Blob([summaryMinutesMd], { type: 'text/markdown;charset=utf-8' });
-          const mdFile = new File([mdBlob], `${finalTitle}-会议纪要-${stamp}.md`, {
-            type: 'text/markdown;charset=utf-8',
-          });
-          await uploadTaskAttachment(binding.taskId, {
-            file: mdFile,
+          await uploadTaskAttachmentFromMarkdown(binding.taskId, {
+            title: `${finalTitle}-会议纪要-${stamp}`,
+            markdown: summaryMinutesMd,
             clientId: binding.clientId || undefined,
             eventLineId: binding.eventLineId || undefined,
             taskTitle: finalTitle,
@@ -6119,9 +6064,11 @@ export default function App() {
         }
       }
 
-      // 4. 把 LLM 给出的标题回填到任务（若与当前不同）
+      // 4. 把 LLM 给出的标题回填到任务 —— 只在「原任务没有标题」时才写入
+      //    （场景：用户直接点录音按钮就开始录，任务标题留空）。
+      //    如果用户已经为任务起过名，尊重用户的命名，不覆盖。
       let titleUpdated = false;
-      if (summaryTitle && summaryTitle !== originalTaskTitle) {
+      if (summaryTitle && !originalTaskTitle) {
         try {
           const updated = await updateTask(binding.taskId, { title: summaryTitle });
           setTasks((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
@@ -6131,14 +6078,10 @@ export default function App() {
         }
       }
 
-      // 5. 原始音频也作为附件挂到任务（用最终标题命名）
-      const audioOk = await uploadOriginalRecording(finalTitle);
-
       const summaryHint = summaryMinutesMd
         ? `，已生成会议纪要${titleUpdated ? `并把任务标题改为"${summaryTitle}"` : ''}`
         : '';
-      const audioHint = audioOk ? '' : `（录音原件挂附件失败，保留在 ${absolutePath}）`;
-      flash('success', `录音处理完成${summaryHint}${audioHint}`);
+      flash('success', `录音处理完成${summaryHint}`);
       void loadTaskBlock();
     },
     onError: (message: string) => {
@@ -13113,9 +13056,37 @@ export default function App() {
                             {task.attachments && task.attachments.length > 0 && (
                               <div className="mb-3 flex flex-wrap gap-2">
                                 {task.attachments.map((att) => (
-                                  <span key={att.id} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600">
+                                  <span
+                                    key={att.id}
+                                    className="group inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 pl-2 pr-1 py-1 text-[11px] text-gray-600 cursor-pointer transition hover:border-[#5B7BFE] hover:bg-blue-50"
+                                    title="双击用系统应用打开"
+                                    onDoubleClick={async () => {
+                                      try {
+                                        await window.yiyuWorkbench.openPath(att.path);
+                                      } catch (err) {
+                                        const msg = err instanceof Error ? err.message : String(err);
+                                        flash('error', `打开附件失败：${msg}`);
+                                      }
+                                    }}
+                                  >
                                     <Paperclip size={11} className="text-gray-400" />
-                                    {att.title}
+                                    <span className="truncate max-w-[260px]">{att.title}</span>
+                                    <button
+                                      type="button"
+                                      className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full text-gray-300 hover:bg-rose-100 hover:text-rose-600 transition"
+                                      title="删除附件"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setAttachmentDeleteConfirm({
+                                          taskId: task.id,
+                                          attachmentId: att.id,
+                                          title: att.title,
+                                          syncKnowledge: true,
+                                        });
+                                      }}
+                                    >
+                                      <X size={10} />
+                                    </button>
                                   </span>
                                 ))}
                               </div>
@@ -16586,22 +16557,9 @@ export default function App() {
     const currentClient = clients.find((client) => client.id === currentClientId) || clients[0];
     const [searchQuery, setSearchQuery] = useState('');
     const workspaceClientUiKey = currentClientId || WORKSPACE_COMPOSER_NO_CLIENT_KEY;
-    const workspaceFileSearchState = getWorkspaceFileSearchState(workspaceClientUiState, workspaceClientUiKey);
     const workspaceRightTab = getWorkspaceRightTab(workspaceClientUiState, workspaceClientUiKey);
     const setWorkspaceRightTab = (tab: WorkspaceRightTabKey) =>
       dispatchWorkspaceClientUi({ type: 'setRightTab', clientId: workspaceClientUiKey, tab });
-    const workspaceFileSearchQuery = workspaceFileSearchState.query;
-    const workspaceFileSearchSubmittedQuery = workspaceFileSearchState.submittedQuery;
-    const workspaceFileSearchResult = workspaceFileSearchState.result;
-    const isWorkspaceFileSearching = workspaceFileSearchState.isSearching;
-    const setWorkspaceFileSearchQuery = (query: string) =>
-      dispatchWorkspaceClientUi({ type: 'setFileSearchQuery', clientId: workspaceClientUiKey, query });
-    const setWorkspaceFileSearchSubmittedQuery = (submittedQuery: string) =>
-      dispatchWorkspaceClientUi({ type: 'setFileSearchSubmittedQuery', clientId: workspaceClientUiKey, submittedQuery });
-    const setWorkspaceFileSearchResult = (result: KnowledgeSearchResult | null) =>
-      dispatchWorkspaceClientUi({ type: 'setFileSearchResult', clientId: workspaceClientUiKey, result });
-    const setIsWorkspaceFileSearching = (isSearching: boolean) =>
-      dispatchWorkspaceClientUi({ type: 'setFileSearchLoading', clientId: workspaceClientUiKey, isSearching });
     const workspaceComposerDraftKey = currentClientId || WORKSPACE_COMPOSER_NO_CLIENT_KEY;
     const [localInputValue, setLocalInputValue] = useState(() => (
       workspaceComposerDraftRef.current[workspaceComposerDraftKey]
@@ -16669,6 +16627,14 @@ export default function App() {
       dispatchWorkspaceClientUi({ type: 'setActiveMessageId', clientId: currentClientId, messageId });
     };
     const [isEvidencePanelExpanded, setIsEvidencePanelExpanded] = useState(false);
+    const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(() => new Set());
+    const toggleEvidenceCardExpanded = (id: string) =>
+      setExpandedEvidenceIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
     const rightPanelEvidenceSnapshot = currentClientId
       ? workspaceClientUiState.rightPanelEvidenceSnapshotByClient[currentClientId] || null
       : null;
@@ -16770,7 +16736,6 @@ export default function App() {
       dispatchWorkspaceClientUi({ type: 'setLinkMaterialCookieBrowser', clientId: workspaceClientUiKey, cookieBrowser });
     const setIsStartingClientLinkMaterial = (isStarting: boolean) =>
       dispatchWorkspaceClientUi({ type: 'setLinkMaterialStarting', clientId: workspaceClientUiKey, isStarting });
-    const [isFolderEditMode, setIsFolderEditMode] = useState(false);
     type FolderRecommendationUiState = {
       plan: ClientFolderRecommendationPlan | null;
       open: boolean;
@@ -16932,52 +16897,6 @@ export default function App() {
   const setupModeClientIdRef = useRef<string | null>(null);
   const clientImportDropDepthRef = useRef<{ buffer: number; composer: number }>({ buffer: 0, composer: 0 });
 
-    const aggregatedWorkspaceFileHits = useMemo(() => {
-      const hitMap = new Map<string, {
-        key: string;
-        title: string;
-        path: string | null;
-        excerpt: string;
-        score: number;
-        matchedTerms: string[];
-        stage: string;
-        hitCount: number;
-      }>();
-      (workspaceFileSearchResult?.hits || []).forEach((hit) => {
-        const key = (hit.path && hit.path.trim()) || hit.title.trim();
-        if (!key) return;
-        const score = hit.score || 0;
-        const existing = hitMap.get(key);
-        if (!existing) {
-          hitMap.set(key, {
-            key,
-            title: hit.title,
-            path: hit.path || null,
-            excerpt: hit.excerpt,
-            score,
-            matchedTerms: [...hit.matchedTerms],
-            stage: hit.stage,
-            hitCount: 1,
-          });
-          return;
-        }
-        existing.hitCount += 1;
-        if (score > existing.score) {
-          existing.score = score;
-          existing.excerpt = hit.excerpt;
-          existing.title = hit.title;
-          existing.path = hit.path || existing.path;
-          existing.stage = hit.stage;
-        }
-        existing.matchedTerms = Array.from(new Set([...existing.matchedTerms, ...hit.matchedTerms])).slice(0, 6);
-      });
-      return Array.from(hitMap.values()).sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        if (right.hitCount !== left.hitCount) return right.hitCount - left.hitCount;
-        return left.title.localeCompare(right.title, 'zh-CN');
-      });
-    }, [workspaceFileSearchResult]);
-    const isWorkspaceFileSearchMode = workspaceFileSearchSubmittedQuery.trim().length > 0;
     useEffect(() => {
       if (activeTab !== 'client_workspace' || !growthContextJump) return;
       const requestId = growthContextJump.requestId;
@@ -18025,7 +17944,17 @@ export default function App() {
           ? rightPanelEvidenceSnapshot.evidence
           : [];
     const evidenceCitationCards = useMemo(
-      () => buildEvidenceCitationCards(activeEvidence),
+      () => {
+        const userFacingEvidence = activeEvidence.filter((item) => {
+          const kind = (item.canonicalKind || '').toLowerCase();
+          // Only show real user-uploaded files; hide system locator cards
+          // (task_doc / meeting_doc / review_doc / event_line_doc / project_doc /
+          // judgment_doc / calendar_doc / internet_fact_card / project_enrichment_doc / ...).
+          // An empty canonicalKind defaults to raw_file in the backend, so keep those too.
+          return kind === '' || kind === 'raw_file';
+        });
+        return buildEvidenceCitationCards(userFacingEvidence);
+      },
       [activeEvidence],
     );
     const visibleEvidenceCitationCards = isEvidencePanelExpanded
@@ -18034,7 +17963,24 @@ export default function App() {
     const hiddenEvidenceCitationCount = Math.max(0, evidenceCitationCards.length - 5);
     useEffect(() => {
       setIsEvidencePanelExpanded(false);
+      setExpandedEvidenceIds(new Set());
     }, [activeMessageId, currentClientId]);
+    const highlightCitationTerms = (text: string, terms: string[]): React.ReactNode => {
+      const cleaned = Array.from(new Set(terms.map((t) => t.trim()).filter((t) => t.length > 0)));
+      if (cleaned.length === 0) return text;
+      const escaped = cleaned.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const regex = new RegExp(`(${escaped.join('|')})`, 'gi');
+      const parts = text.split(regex);
+      return parts.map((part, index) => {
+        if (!part) return null;
+        const isMatch = cleaned.some((term) => part.toLowerCase() === term.toLowerCase());
+        return isMatch ? (
+          <span key={index} className="underline decoration-slate-400 decoration-1 underline-offset-2">{part}</span>
+        ) : (
+          <span key={index}>{part}</span>
+        );
+      });
+    };
     const latestImport = workspace?.imports[0] || null;
     const topDocumentCards = workspace?.documentCards?.slice(0, 6) || [];
     const importStats = useMemo(
@@ -18396,41 +18342,6 @@ export default function App() {
       }
     };
 
-    const handleDeleteClientFolder = async (folder: ClientWorkspace['folders'][number]) => {
-      if (!currentClientId) return;
-      if (folder.isSystem) {
-        flash('error', '系统文件夹不能移除');
-        return;
-      }
-      if (!window.confirm(`确认隐藏快捷通道里的"${folder.label}"？只有空文件夹可以彻底移除，非空文件夹会保留资料。`)) {
-        return;
-      }
-      try {
-        await deleteClientFolder(currentClientId, folder.id);
-        await refreshWorkspace(currentClientId);
-        flash('success', '文件夹已移除');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '移除文件夹失败');
-      }
-    };
-
-    const handleRenameClientFolder = async (folder: ClientWorkspace['folders'][number]) => {
-      if (!currentClientId) return;
-      if (folder.isSystem) {
-        flash('error', '系统文件夹不能重命名');
-        return;
-      }
-      const name = window.prompt('输入新的文件夹名称：', folder.label);
-      if (!name?.trim() || name.trim() === folder.label) return;
-      try {
-        await updateClientFolder(currentClientId, folder.id, { label: name.trim() });
-        await refreshWorkspace(currentClientId);
-        flash('success', '文件夹已重命名');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '重命名文件夹失败');
-      }
-    };
-
     const handlePreviewFolderRecommendation = async () => {
       if (!currentClientId) return;
       setIsFolderRecommendationLoading(true);
@@ -18493,36 +18404,6 @@ export default function App() {
       } finally {
         setIsDocumentAutoRepairApplying(false);
       }
-    };
-
-    const runWorkspaceFileSearch = async (rawQuery?: string) => {
-      const query = (rawQuery ?? workspaceFileSearchQuery).trim();
-      if (!currentClientId) {
-        flash('error', '请先选择客户');
-        return;
-      }
-      if (!query) {
-        setWorkspaceFileSearchSubmittedQuery('');
-        setWorkspaceFileSearchResult(null);
-        return;
-      }
-      try {
-        setIsWorkspaceFileSearching(true);
-        const result = await searchClientKnowledge(currentClientId, query, currentThreadId || undefined);
-        setWorkspaceFileSearchSubmittedQuery(query);
-        setWorkspaceFileSearchResult(result);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '搜索文件失败');
-      } finally {
-        setIsWorkspaceFileSearching(false);
-      }
-    };
-
-    const clearWorkspaceFileSearch = () => {
-      setWorkspaceFileSearchQuery('');
-      setWorkspaceFileSearchSubmittedQuery('');
-      setWorkspaceFileSearchResult(null);
-      setIsWorkspaceFileSearching(false);
     };
 
     const handleImport = async (mode: 'folder' | 'file', paths: string[], options?: { attachToComposer?: boolean }) => {
@@ -18629,10 +18510,6 @@ export default function App() {
         return [];
       }
     };
-
-    useEffect(() => {
-      clearWorkspaceFileSearch();
-    }, [currentClientId]);
 
     const fillTemplateFromPath = async (
       templatePath: string,
@@ -19335,202 +19212,6 @@ export default function App() {
                         清空搜索并创建项目
                       </button>
                     </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="p-5 xl:p-6 flex-1 min-h-0 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
-                  <FolderOpen size={12} />
-                  根目录快捷通道
-                </p>
-                {isWorkspaceFileSearchMode ? (
-                  <button
-                    type="button"
-                    onClick={clearWorkspaceFileSearch}
-                    className="rounded-full px-2.5 py-1 text-[9px] font-bold tracking-wider border border-gray-200 bg-gray-100 text-gray-500 hover:border-[#5B7BFE] hover:text-[#5B7BFE] transition-colors"
-                  >
-                    清空搜索
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setIsFolderEditMode((prev) => !prev)}
-                    className={`group rounded-full px-2.5 py-1 text-[9px] font-bold tracking-wider transition-all duration-300 ${
-                      isFolderEditMode
-                        ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-[0_8px_18px_rgba(16,185,129,0.25)] hover:from-emerald-600 hover:to-teal-600'
-                        : 'border border-gray-200 bg-gray-100 text-gray-500 shadow-none hover:border-[#5B7BFE] hover:bg-gradient-to-r hover:from-[#5B7BFE] hover:to-sky-500 hover:text-white hover:shadow-[0_8px_20px_rgba(91,123,254,0.24)]'
-                    }`}
-                  >
-                    {isFolderEditMode ? '完成' : (
-                      <>
-                        <span className="group-hover:hidden">{knowledgeStatus?.totalDocuments || workspace?.documents.length || 0} 文件</span>
-                        <span className="hidden group-hover:inline">编辑</span>
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-              <div className="mb-3 flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input
-                    type="text"
-                    value={workspaceFileSearchQuery}
-                    onChange={(event) => setWorkspaceFileSearchQuery(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        void runWorkspaceFileSearch();
-                      }
-                    }}
-                    placeholder="搜索文件"
-                    className="w-full rounded-2xl border border-gray-200 bg-white pl-9 pr-10 py-2 text-[12px] font-medium text-gray-700 outline-none transition-all focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
-                  />
-                  {workspaceFileSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={clearWorkspaceFileSearch}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-                      aria-label="清空文件搜索"
-                    >
-                      <X size={13} />
-                    </button>
-                  )}
-                </div>
-                <Button
-                  className="h-9 shrink-0 rounded-[14px] px-3 border border-[#E5E5EA] bg-white text-[#5B7BFE] shadow-none hover:bg-blue-50"
-                  onClick={() => void runWorkspaceFileSearch()}
-                  disabled={isWorkspaceFileSearching}
-                >
-                  {isWorkspaceFileSearching ? '搜索中' : '搜索'}
-                </Button>
-              </div>
-              {isWorkspaceFileSearchMode && (
-                <div className="mb-3 text-[11px] text-gray-400">
-                  {workspaceFileSearchSubmittedQuery
-                    ? `按相关度显示"${workspaceFileSearchSubmittedQuery}"的文件结果 · 共 ${aggregatedWorkspaceFileHits.length} 项`
-                    : '输入关键词后回车或点击搜索'}
-                </div>
-              )}
-              <div className="workspace-thin-scroll min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
-                <div className="grid grid-cols-1 gap-2.5">
-                  {isWorkspaceFileSearchMode ? (
-                    aggregatedWorkspaceFileHits.length > 0 ? (
-                      aggregatedWorkspaceFileHits.map((hit, index) => (
-                        <button
-                          type="button"
-                          key={hit.key}
-                          onClick={() =>
-                            hit.path
-                              ? void openPathBridge(hit.path).then((opened) => {
-                                  if (!opened) flash('error', '文件不存在或暂时无法打开');
-                                })
-                              : undefined
-                          }
-                          className="bg-white border border-gray-100 p-2.5 xl:p-3 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 text-left"
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="w-7 h-7 rounded-xl bg-blue-50/50 flex items-center justify-center shrink-0 text-[11px] font-bold text-[#5B7BFE]">
-                              {index + 1}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[12px] xl:text-[13px] font-bold text-gray-700 truncate">{hit.title}</div>
-                              <div className="mt-1 text-[11px] text-gray-500 line-clamp-3">{hit.excerpt}</div>
-                              <div className="mt-2 flex items-center justify-between gap-2">
-                                <div className="flex flex-wrap gap-1.5">
-                                  {hit.matchedTerms.slice(0, 4).map((term) => (
-                                    <span key={`${hit.key}-${term}`} className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-[#5B7BFE]">
-                                      {term}
-                                    </span>
-                                  ))}
-                                </div>
-                                <span className="shrink-0 text-[10px] font-bold text-gray-400">
-                                  相关度 {Math.round(hit.score)}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-4 text-center text-[12px] text-gray-500">
-                        没有找到匹配的文件，请换一个关键词试试。
-                      </div>
-                    )
-                  ) : (
-                    <>
-                      {(workspace?.folders || []).map((folder) => (
-                        <div
-                          key={folder.id}
-                          className="bg-white border border-gray-100 p-2.5 xl:p-3 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-200 transition-all duration-300 flex items-center gap-3 group text-left"
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              void openPathBridge(folder.path).then((opened) => {
-                                if (!opened) flash('error', '目录不存在或暂时无法打开');
-                              })
-                            }
-                            className="flex flex-1 items-center gap-3 min-w-0"
-                          >
-                            <div className="w-8 h-8 rounded-xl bg-blue-50/50 flex items-center justify-center shrink-0 group-hover:bg-blue-100 transition-colors">
-                              <FolderDot size={16} className="text-[#5B7BFE]" />
-                            </div>
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-[12px] xl:text-[13px] font-bold text-gray-700 truncate group-hover:text-[#5B7BFE] transition-colors">
-                                {folder.label === '待处理' ? '待整理资料' : folder.label}
-                              </span>
-                              <span className="mt-0.5 flex items-center gap-1.5 text-[9px] font-semibold text-gray-400">
-                                {folder.isSystem ? <span>系统</span> : folder.folderKind === 'legacy_business' ? <span>旧分类</span> : <span>客户自定义</span>}
-                                {folder.suggested && <span>AI 建议</span>}
-                                <span>{folder.fileCount || 0} 个文件</span>
-                              </span>
-                            </span>
-                          </button>
-                          {isFolderEditMode && (
-                            <div className="shrink-0 flex items-center gap-1">
-                              {!folder.isSystem && (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleRenameClientFolder(folder)}
-                                  className="rounded-xl px-2 py-1 text-[10px] font-bold text-gray-400 hover:bg-blue-50 hover:text-[#5B7BFE] transition-colors"
-                                  title={`重命名 ${folder.label}`}
-                                >
-                                  改名
-                                </button>
-                              )}
-                              {!folder.isSystem && (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleDeleteClientFolder(folder)}
-                                  className="rounded-xl p-2 text-red-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                                  title={`隐藏 ${folder.label}`}
-                                >
-                                  <Minus size={14} />
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {workspace?.folders.length === 0 && <div className="text-[12px] text-gray-400 py-2">还没有绑定任何客户目录。</div>}
-                      {/* New folder button */}
-                      <button
-                        className="w-full mt-2 py-2 px-3 rounded-2xl border border-dashed border-gray-200 text-[11px] font-bold text-gray-400 hover:text-[#5B7BFE] hover:border-[#C7D5FF] hover:bg-blue-50/50 transition-colors flex items-center justify-center gap-1.5"
-                        onClick={() => {
-                          const name = window.prompt('输入新文件夹名称：');
-                          if (!name?.trim() || !currentClientId) return;
-                          void createClientFolder(currentClientId, name.trim())
-                            .then(() => refreshWorkspace(currentClientId))
-                            .catch((err) => flash('error', err instanceof Error ? err.message : '创建文件夹失败'));
-                        }}
-                      >
-                        <Plus size={12} /> 新建文件夹
-                      </button>
-                    </>
                   )}
                 </div>
               </div>
@@ -20957,77 +20638,86 @@ export default function App() {
                 </h3>
               </div>
 
-              <div className="space-y-3">
-                {visibleEvidenceCitationCards.map((card: EvidenceCitationCard, index) => {
-                  const sourceLineParts = [
-                    card.sourceTitle ? `来源：${card.sourceTitle}` : null,
-                    card.sectionLabel ? card.sectionLabel : null,
-                  ].filter(Boolean);
-                  const snippetPreview = card.primarySnippet.excerpt;
-                  const openPath = card.openPath || card.primarySnippet.path || card.sourcePath;
-                  const citationRole = (
-                    card.citationRole === 'direct_quote'
-                    || card.citationRole === 'direct_support'
-                    || card.citationRole === 'background'
-                  )
-                    ? card.citationRole
-                    : null;
-                  const citationBadgeLabel = citationRole ? EVIDENCE_CITATION_ROLE_LABELS[citationRole] : EVIDENCE_SUPPORT_LABELS[card.supportLevel];
-                  const citationBadgeClass = citationRole ? evidenceCitationRoleClass(citationRole) : evidenceSupportClass(card.supportLevel);
+              <div className="space-y-2.5">
+                {visibleEvidenceCitationCards.map((card: EvidenceCitationCard) => {
+                  const openPath = card.openPath || card.primarySnippet.path || card.sourcePath || '';
+                  const canOpen = Boolean(openPath) && hasOpenableFile(openPath);
+                  const basename = openPath ? openPath.split(/[/\\]/).pop() || '' : '';
+                  const fileLabel = basename || card.sourceTitle || card.claimTitle || '未命名资料';
+                  const snippetPreview = card.primarySnippet.excerpt || '';
+                  const matchedTerms = card.primarySnippet.matchedTerms || [];
+                  const isExpanded = expandedEvidenceIds.has(card.id);
                   return (
-                    <div key={card.id} className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-[0_2px_8px_rgba(0,0,0,0.02)] hover:shadow-md transition-shadow group relative">
-                      <div className="absolute left-0 top-0 bottom-0 w-[4px] bg-amber-400" />
-                      <div className="p-3.5 pl-5">
-                        <div className="mb-2 flex items-start gap-2">
-                          <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-md font-bold mt-0.5 shrink-0">{index + 1}</span>
-                          <span
-                            className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${citationBadgeClass}`}
-                            title={typeof card.maxScore === 'number' ? `原始分数 ${card.maxScore}` : undefined}
-                          >
-                            {citationBadgeLabel}
-                          </span>
-                        </div>
-                        <p className="text-[13px] xl:text-[14px] font-bold text-slate-900 leading-snug line-clamp-2" title={card.claimTitle}>
-                          {card.claimTitle}
-                        </p>
-                        {sourceLineParts.length > 0 && (
-                          <p className="mt-1.5 text-[10px] xl:text-[11px] font-semibold text-slate-400 leading-4 line-clamp-1" title={sourceLineParts.join(' · ')}>
-                            {sourceLineParts.join(' · ')}
+                    <div key={card.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
+                      <div className="flex items-center gap-3 px-3 py-2.5">
+                        <FileTypeIcon path={openPath || null} size={34} />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[13px] font-semibold text-slate-900 truncate" title={fileLabel}>
+                            {fileLabel}
                           </p>
-                        )}
-                        <div className="mt-2.5 flex flex-wrap gap-1.5">
-                          {card.businessTags.slice(0, 5).map((tag) => (
-                            <span
-                              key={`${card.id}-${tag}`}
-                              className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${evidenceTagClass(tag)}`}
-                            >
-                              {EVIDENCE_BUSINESS_TAG_LABELS[tag]}
-                            </span>
-                          ))}
-                        </div>
-                        {snippetPreview && snippetPreview !== card.claimTitle && (
-                          <p className="mt-2.5 text-[11px] leading-5 text-slate-600 line-clamp-2">
-                            {snippetPreview}
-                          </p>
-                        )}
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <div className="min-w-0 text-[10px] font-semibold text-slate-400">
-                            {card.snippets.length > 1 ? `还有 ${card.snippets.length - 1} 个相关片段` : ''}
-                          </div>
-                          {openPath && (
-                            <button
-                              className="shrink-0 text-[10px] xl:text-[11px] font-bold text-gray-500 hover:text-[#5B7BFE] bg-gray-50 hover:bg-blue-50 px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1"
-                              onClick={() =>
-                                void openPathBridge(openPath || '').then((opened) => {
-                                  if (!opened) flash('error', '原文路径不存在或当前无法打开');
-                                })
-                              }
-                            >
-                              <ExternalLink size={12} /> {card.openActionLabel}
-                            </button>
+                          {card.sectionLabel && (
+                            <p className="mt-0.5 text-[10px] text-slate-400 truncate" title={card.sectionLabel}>
+                              {card.sectionLabel}
+                            </p>
                           )}
                         </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleEvidenceCardExpanded(card.id)}
+                            className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors"
+                            title={isExpanded ? '收起命中段落' : '查看原文片段'}
+                          >
+                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!canOpen}
+                            onClick={() =>
+                              void openPathBridge(openPath).then((opened) => {
+                                if (!opened) flash('error', '原文路径不存在或当前无法打开');
+                              })
+                            }
+                            className={`rounded-lg p-1.5 transition-colors ${
+                              canOpen
+                                ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                                : 'text-slate-300 cursor-not-allowed'
+                            }`}
+                            title={canOpen ? '用默认应用打开原文件' : 'AI 生成内容，无可打开的原文件'}
+                          >
+                            <ExternalLink size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!canOpen}
+                            onClick={() =>
+                              void revealInFinderBridge(openPath).then((opened) => {
+                                if (!opened) flash('error', '无法在 Finder 中显示该文件');
+                              })
+                            }
+                            className={`rounded-lg p-1.5 transition-colors ${
+                              canOpen
+                                ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                                : 'text-slate-300 cursor-not-allowed'
+                            }`}
+                            title={canOpen ? '在 Finder 中显示所在文件夹' : 'AI 生成内容，无文件夹位置'}
+                          >
+                            <FolderOpen size={16} />
+                          </button>
+                        </div>
                       </div>
+                      {isExpanded && snippetPreview && (
+                        <div className="px-3 pb-3 pt-1 border-t border-slate-100 bg-slate-50/30">
+                          <p className="text-[12px] leading-[0.8] text-slate-600 line-clamp-5">
+                            {highlightCitationTerms(snippetPreview, matchedTerms)}
+                          </p>
+                          {card.snippets.length > 1 && (
+                            <p className="mt-2 text-[10px] text-slate-400">
+                              还有 {card.snippets.length - 1} 个相关片段
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -24465,7 +24155,7 @@ export default function App() {
           style={{ top: 'calc(var(--window-drag-strip-height) + 6px)' }}
         >
           <div
-            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 shadow-lg backdrop-blur-sm ${
+            className={`flex items-center gap-2 rounded-full border py-1 pl-1 pr-3 shadow-lg backdrop-blur-sm ${
               recordingSession.status === 'recording'
                 ? 'border-rose-200 bg-rose-50/95 text-rose-700'
                 : recordingSession.status === 'transcribing'
@@ -24474,12 +24164,43 @@ export default function App() {
             }`}
             title={recordingSession.binding?.taskTitle || '录音中'}
           >
-            <span
-              className={`inline-block h-2.5 w-2.5 rounded-full ${
-                recordingSession.status === 'recording' ? 'bg-rose-500 animate-pulse' : 'bg-slate-400'
-              }`}
-              aria-hidden="true"
-            />
+            {(() => {
+              const isLive = recordingSession.status === 'recording';
+              const baseHeights = [0.4, 0.7, 1.0, 0.75, 0.45];
+              const now = Date.now();
+              const barAccent = recordingSession.status === 'recording'
+                ? 'bg-rose-500'
+                : recordingSession.status === 'transcribing'
+                  ? 'bg-amber-500'
+                  : 'bg-slate-400';
+              const circleBg = recordingSession.status === 'recording'
+                ? 'bg-white/85 border-rose-200'
+                : recordingSession.status === 'transcribing'
+                  ? 'bg-white/85 border-amber-200'
+                  : 'bg-white/85 border-slate-200';
+              return (
+                <div
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${circleBg}`}
+                  aria-label="麦克风音量"
+                >
+                  <div className="flex h-4 items-center gap-[2px]">
+                    {baseHeights.map((base, i) => {
+                      const wave = isLive ? 0.55 + 0.45 * Math.sin((now + i * 115) / 130) : 1;
+                      const target = isLive
+                        ? Math.max(0.18, Math.min(1, recordingSession.audioLevel * base * 1.6 * wave + 0.08))
+                        : 0.2;
+                      return (
+                        <span
+                          key={i}
+                          className={`w-[2px] rounded-full ${barAccent}`}
+                          style={{ height: `${Math.max(2, Math.round(target * 16))}px` }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
             <span
               className={`text-[11px] font-bold tracking-wider ${
                 recordingSession.status === 'recording' ? 'animate-pulse' : ''
@@ -24673,6 +24394,70 @@ export default function App() {
         </React.Suspense>
       )}
       {renderCloudAuthModal()}
+      {attachmentDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/35 z-[60] flex items-center justify-center animate-in fade-in">
+          <div
+            className="w-[440px] rounded-[24px] bg-white border border-rose-100 shadow-[0_24px_80px_rgba(0,0,0,0.18)] overflow-hidden"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="px-7 py-5 border-b border-rose-100 bg-rose-50/70">
+              <div className="flex items-center gap-3">
+                <X size={18} className="text-rose-500" />
+                <div className="text-[16px] font-bold text-rose-700">确认删除附件</div>
+              </div>
+            </div>
+            <div className="px-7 py-5 space-y-3">
+              <p className="text-[13px] text-gray-700">
+                附件：<span className="font-mono text-gray-900 break-all">{attachmentDeleteConfirm.title}</span>
+              </p>
+              <label className="flex items-start gap-2 text-[13px] text-gray-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={attachmentDeleteConfirm.syncKnowledge}
+                  onChange={(event) =>
+                    setAttachmentDeleteConfirm((prev) =>
+                      prev ? { ...prev, syncKnowledge: event.target.checked } : prev,
+                    )
+                  }
+                />
+                <span>
+                  同步删除数据中心里的这份文件
+                  <span className="block text-[11px] text-gray-400 mt-0.5">勾选后会一并清理知识库记录和物理文件</span>
+                </span>
+              </label>
+            </div>
+            <div className="px-7 py-4 bg-gray-50 flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-[12px] font-bold text-gray-600 bg-white border border-gray-200 hover:border-gray-300"
+                onClick={() => setAttachmentDeleteConfirm(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl text-[12px] font-bold text-white bg-rose-600 hover:bg-rose-700"
+                onClick={async () => {
+                  const confirm = attachmentDeleteConfirm;
+                  if (!confirm) return;
+                  try {
+                    await deleteTaskAttachment(confirm.taskId, confirm.attachmentId, confirm.syncKnowledge);
+                    setAttachmentDeleteConfirm(null);
+                    flash('success', confirm.syncKnowledge ? '附件和数据中心记录已删除' : '附件已删除');
+                    void loadTaskBlock();
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    flash('error', `删除失败：${msg}`);
+                  }
+                }}
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </GrowthProvider>
   );

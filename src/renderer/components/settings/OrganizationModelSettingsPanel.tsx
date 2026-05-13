@@ -320,6 +320,40 @@ export function OrganizationModelSettingsPanel({
     });
   };
 
+  // 跨周期 carry-over：基于某份历史 plan 创建新 plan，继承所有未完成项（status != 'done'）
+  // 新计划的 weekLabel 留空让用户填、status='draft'。继承的 item 重置为 active 状态、
+  // title 加 "↑ " 前缀作为可视化追溯。majorRisks / dependencies 全量拷贝。
+  const carryOverPlan = (sourcePlanId: string) => {
+    const source = value.departmentPlans.find((plan) => plan.id === sourcePlanId);
+    if (!source) return;
+    const unfinishedItems = source.items.filter((item) => item.status !== 'done');
+    onChange({
+      ...value,
+      departmentPlans: [
+        ...value.departmentPlans,
+        {
+          id: nextUiId('plan'),
+          departmentId: source.departmentId,
+          weekLabel: '',
+          ownerUserId: source.ownerUserId,
+          summary: `（继承自上一份计划，含 ${unfinishedItems.length} 个未完成项）`,
+          majorRisks: [...source.majorRisks],
+          dependencies: [...source.dependencies],
+          status: 'draft',
+          items: unfinishedItems.map((item, idx) => ({
+            ...item,
+            id: nextUiId('plan_item'),
+            title: item.title ? `↑ ${item.title}` : '↑ 上期未完成项',
+            status: 'active',
+            sortOrder: idx,
+            updatedAt: '',
+          })),
+          updatedAt: '',
+        },
+      ],
+    });
+  };
+
   const addDepartmentPlanItem = (planId: string) => {
     updateDepartmentPlan(planId, (plan) => ({
       ...plan,
@@ -835,6 +869,21 @@ export function OrganizationModelSettingsPanel({
                         </div>
                       )}
                     </div>
+                  </div>
+                  {/* 跨周期 carry-over：基于本计划创建一份新计划，自动带过来 status != 'done' 的项 */}
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <span className="text-[11px] text-gray-400">
+                      未完成项 {plan.items.filter((item) => item.status !== 'done').length} / 共 {plan.items.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => carryOverPlan(plan.id)}
+                      disabled={!canEdit || plan.items.filter((item) => item.status !== 'done').length === 0}
+                      className="rounded-xl border border-[#DCE4FF] bg-white px-3 py-1.5 text-[11px] font-bold text-[#4A63CF] transition hover:border-[#5B7BFE] hover:bg-[#EEF3FF] disabled:cursor-not-allowed disabled:opacity-50"
+                      title="基于本计划创建新计划，自动带过来所有未完成项（仅 status != 'done'）"
+                    >
+                      ↗ 继承到新计划
+                    </button>
                   </div>
                 </div>
               ))}

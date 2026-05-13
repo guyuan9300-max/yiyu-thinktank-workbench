@@ -51,6 +51,16 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   saveFileAs: (sourcePath: string, suggestedName?: string): Promise<string | null> =>
     ipcRenderer.invoke('yiyu-workbench:saveFileAs', sourcePath, suggestedName),
   quitApp: (): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:quitApp'),
+  saveRecordingBlob: (payload: {
+    buffer: ArrayBuffer;
+    extension?: string;
+    sessionId?: string;
+  }): Promise<{ absolutePath: string; sizeBytes: number; sessionId: string }> =>
+    ipcRenderer.invoke('yiyu-workbench:saveRecordingBlob', payload),
+  readRecordingFile: (absolutePath: string): Promise<{ buffer: Uint8Array; sizeBytes: number; name: string }> =>
+    ipcRenderer.invoke('yiyu-workbench:readRecordingFile', absolutePath),
+  setRecordingActive: (payload: { active: boolean; taskTitle?: string }): Promise<{ active: boolean }> =>
+    ipcRenderer.invoke('yiyu-workbench:setRecordingActive', payload),
   watchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:watchFile', targetPath),
   unwatchFile: (targetPath: string): Promise<boolean> => ipcRenderer.invoke('yiyu-workbench:unwatchFile', targetPath),
   onFileChanged: (callback: (filePath: string) => void) => {
