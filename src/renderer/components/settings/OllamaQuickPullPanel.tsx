@@ -19,6 +19,8 @@ interface OllamaQuickPullPanelProps {
   canEdit: boolean;
   /** 下载完成后回调，给上层（profile 表单）自动写入 baseUrl + model */
   onModelReady: (modelName: string) => void;
+  /** 当前 profile 已配置的模型名（如果有）—— dropdown 默认选这个，标题显示"当前在用" */
+  currentModelName?: string;
 }
 
 function formatBytes(bytes: number): string {
@@ -27,7 +29,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: OllamaQuickPullPanelProps) {
+export function OllamaQuickPullPanel({ capability, canEdit, onModelReady, currentModelName }: OllamaQuickPullPanelProps) {
   const [health, setHealth] = useState<OllamaHealthResponse | null>(null);
   const [recommended, setRecommended] = useState<OllamaRecommendedModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -53,13 +55,13 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
     try {
       const r = await getOllamaRecommendedModels(capability);
       setRecommended(r.models);
-      // 默认选中带 default=true 的
-      const def = r.models.find((m) => m.default);
-      if (def) setSelectedModel((prev) => prev || def.name);
+      // dropdown 默认选中：优先用 profile 当前已配置的，否则用 recommended default
+      const fallback = currentModelName || r.models.find((m) => m.default)?.name || '';
+      if (fallback) setSelectedModel((prev) => prev || fallback);
     } catch (error) {
       console.warn('[ollama] recommended failed', error);
     }
-  }, [capability]);
+  }, [capability, currentModelName]);
 
   const refreshPullStatus = useCallback(async () => {
     try {
@@ -157,19 +159,12 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
 
   if (!health.running) {
     return (
-      <div className="space-y-2 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-amber-800">
-        <div className="flex items-center gap-2 pb-1 border-b border-amber-100">
-          <Download size={14} className="text-amber-700" />
-          <span className="text-[13px] font-bold text-gray-900">
-            自动下载模型（推荐路线）
-          </span>
-        </div>
+      <div className="space-y-2 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2.5 text-amber-800">
         <div className="flex items-start gap-2 text-[11px]">
           <AlertCircle size={13} className="mt-0.5 shrink-0" />
           <div className="min-w-0">
-            <p className="font-bold break-words">Ollama 未运行</p>
+            <p className="font-bold break-words">需要先安装 Ollama</p>
             <p className="opacity-80 mt-0.5 break-words">{health.error || '无法连接 127.0.0.1:11434'}</p>
-            <p className="opacity-80 mt-1">本地大语言模型需要先安装 Ollama（一次性，免费开源，Mac 一键安装）。</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -198,26 +193,12 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
     : 0;
 
   return (
-    <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">
-      {/* 大标题：让用户一眼知道这就是"一键下载"入口 */}
-      <div className="flex items-center gap-2 pb-1 border-b border-blue-100">
-        <Download size={14} className="text-[#5B7BFE]" />
-        <span className="text-[13px] font-bold text-gray-900">
-          自动下载模型（推荐路线）
-        </span>
-      </div>
-
-      {/* Ollama 健康状态 */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-gray-600 min-w-0">
-        <CheckCircle2 size={11} className="shrink-0 text-emerald-600" />
-        <span className="font-bold text-blue-800">Ollama 运行中</span>
-        {health.version && (
-          <span className="opacity-60 truncate max-w-[80px]">v{health.version}</span>
-        )}
-        <span className="opacity-60">·</span>
-        <span className="opacity-60">{health.installedModels.length} 个已装模型</span>
-      </div>
-
+    <div className="space-y-2 rounded-2xl border border-blue-100 bg-blue-50/60 px-3 py-2.5">
+      {currentModelName && (
+        <p className="text-[11px] text-gray-600 break-all">
+          当前在用：<span className="font-mono font-bold text-gray-900">{currentModelName}</span>
+        </p>
+      )}
       {/* 区分"这个 panel 自己在下载" vs "别的 panel 在下载" */}
       {(() => {
         const someoneDownloading = pullStatus?.inProgress;

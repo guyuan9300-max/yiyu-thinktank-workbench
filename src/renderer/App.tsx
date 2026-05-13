@@ -58,6 +58,8 @@ import {
   Link2,
   X,
   ClipboardList,
+  Mic,
+  StopCircle,
 } from 'lucide-react';
 
 import type {
@@ -413,6 +415,7 @@ import {
   updateTaskTag,
   updateTask,
   uploadTaskAttachment,
+  summarizeRecordingMeetingMinutes,
   updateTopicsSettings,
   upsertDna,
   vectorizeAnswer,
@@ -441,6 +444,7 @@ import {
   labelDataCenterEvidenceQuality,
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
+import { useRecordingSession, formatRecordingClock, type TranscribedPayload } from './lib/useRecordingSession';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
 import { EventLineClarificationComposer } from './components/tasks/EventLineClarificationComposer';
 import EventLineReportPanel from './components/tasks/EventLineReportPanel';
@@ -5994,6 +5998,167 @@ export default function App() {
     showBanner(type, text);
   };
 
+  const recordingSession = useRecordingSession({
+    onTranscribed: async (payload: TranscribedPayload) => {
+      const { binding, transcript, absolutePath, language, durationMs, sourceFormat } = payload;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const originalTaskTitle = (binding.taskTitle || '').trim();
+      const fallbackTaskTitle = originalTaskTitle || '未命名录音文件';
+
+      const uploadOriginalRecording = async (taskTitleForFile: string) => {
+        try {
+          const read = await window.yiyuWorkbench.readRecordingFile(absolutePath);
+          const audioMime = sourceFormat === 'webm'
+            ? 'audio/webm'
+            : sourceFormat === 'ogg'
+              ? 'audio/ogg'
+              : sourceFormat === 'mp4' || sourceFormat === 'm4a'
+                ? 'audio/mp4'
+                : sourceFormat === 'wav'
+                  ? 'audio/wav'
+                  : 'application/octet-stream';
+          const audioBlob = new Blob([read.buffer as BlobPart], { type: audioMime });
+          const ext = sourceFormat || 'webm';
+          const audioFile = new File([audioBlob], `${taskTitleForFile}-录音原件-${stamp}.${ext}`, {
+            type: audioMime,
+          });
+          await uploadTaskAttachment(binding.taskId, {
+            file: audioFile,
+            clientId: binding.clientId || undefined,
+            eventLineId: binding.eventLineId || undefined,
+            taskTitle: taskTitleForFile,
+          });
+          return true;
+        } catch (err) {
+          console.warn('[recording] upload original audio failed', err);
+          return false;
+        }
+      };
+
+      if (!transcript.trim()) {
+        const audioOk = await uploadOriginalRecording(fallbackTaskTitle);
+        flash(
+          audioOk ? 'info' : 'error',
+          audioOk
+            ? `录音已作为附件挂到任务"${fallbackTaskTitle}"（转写文本为空）`
+            : `转写文本为空，且录音附件挂载失败。原件保留在 ${absolutePath}`,
+        );
+        void loadTaskBlock();
+        return;
+      }
+
+      // 1. 转写文本挂附件
+      try {
+        const txtBlob = new Blob(
+          [
+            `# ${fallbackTaskTitle}\n`,
+            `录音时长：${Math.round(durationMs / 1000)} 秒\n`,
+            `语言：${language || 'auto'}\n`,
+            `源格式：${sourceFormat}\n`,
+            `录音文件：${absolutePath}\n\n`,
+            transcript,
+          ],
+          { type: 'text/plain;charset=utf-8' },
+        );
+        const txtFile = new File([txtBlob], `${fallbackTaskTitle}-录音转写-${stamp}.txt`, {
+          type: 'text/plain;charset=utf-8',
+        });
+        await uploadTaskAttachment(binding.taskId, {
+          file: txtFile,
+          clientId: binding.clientId || undefined,
+          eventLineId: binding.eventLineId || undefined,
+          taskTitle: fallbackTaskTitle,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const audioOk = await uploadOriginalRecording(fallbackTaskTitle);
+        flash(
+          'error',
+          audioOk
+            ? `转写文本挂附件失败：${msg}（已把录音原件作为附件挂到任务）`
+            : `转写文本挂附件失败：${msg}（录音原件保留在 ${absolutePath}）`,
+        );
+        void loadTaskBlock();
+        return;
+      }
+
+      // 2. 调摘要拿 {title, minutesMd}
+      let summaryTitle = '';
+      let summaryMinutesMd = '';
+      try {
+        const summary = await summarizeRecordingMeetingMinutes({
+          transcript,
+          taskTitleHint: originalTaskTitle,
+          languageHint: language,
+        });
+        if (summary.success) {
+          summaryTitle = (summary.title || '').trim();
+          summaryMinutesMd = (summary.minutesMd || '').trim();
+        }
+      } catch (err) {
+        console.warn('[recording] meeting minutes failed', err);
+      }
+
+      const finalTitle = summaryTitle || fallbackTaskTitle;
+
+      // 3. 会议纪要落第二附件（如果生成出了内容）
+      if (summaryMinutesMd) {
+        try {
+          const mdBlob = new Blob([summaryMinutesMd], { type: 'text/markdown;charset=utf-8' });
+          const mdFile = new File([mdBlob], `${finalTitle}-会议纪要-${stamp}.md`, {
+            type: 'text/markdown;charset=utf-8',
+          });
+          await uploadTaskAttachment(binding.taskId, {
+            file: mdFile,
+            clientId: binding.clientId || undefined,
+            eventLineId: binding.eventLineId || undefined,
+            taskTitle: finalTitle,
+          });
+        } catch (err) {
+          console.warn('[recording] minutes attachment failed', err);
+        }
+      }
+
+      // 4. 把 LLM 给出的标题回填到任务（若与当前不同）
+      let titleUpdated = false;
+      if (summaryTitle && summaryTitle !== originalTaskTitle) {
+        try {
+          const updated = await updateTask(binding.taskId, { title: summaryTitle });
+          setTasks((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
+          titleUpdated = true;
+        } catch (err) {
+          console.warn('[recording] update task title failed', err);
+        }
+      }
+
+      // 5. 原始音频也作为附件挂到任务（用最终标题命名）
+      const audioOk = await uploadOriginalRecording(finalTitle);
+
+      const summaryHint = summaryMinutesMd
+        ? `，已生成会议纪要${titleUpdated ? `并把任务标题改为"${summaryTitle}"` : ''}`
+        : '';
+      const audioHint = audioOk ? '' : `（录音原件挂附件失败，保留在 ${absolutePath}）`;
+      flash('success', `录音处理完成${summaryHint}${audioHint}`);
+      void loadTaskBlock();
+    },
+    onError: (message: string) => {
+      flash('error', message);
+    },
+  });
+
+  useEffect(() => {
+    void window.yiyuWorkbench.setRecordingActive({
+      active: recordingSession.isActive,
+      taskTitle: recordingSession.binding?.taskTitle || '',
+    });
+  }, [recordingSession.isActive, recordingSession.binding?.taskTitle]);
+
+  // 新建任务点录音按钮 → handleSaveTask 完成后通过这个 ref 触发录音启动
+  const pendingRecordingStartRef = useRef<{ requested: boolean; titleFallback: string }>({
+    requested: false,
+    titleFallback: '',
+  });
+
   useEffect(() => {
     clientEditorModalStateRef.current = clientEditorModalState;
   }, [clientEditorModalState]);
@@ -10730,6 +10895,25 @@ export default function App() {
             : await createTask(payload);
           upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId);
 
+          // 如果是"点录音按钮触发的保存"，拿到真 taskId 后立刻启动录音
+          if (pendingRecordingStartRef.current?.requested) {
+            const fallback = pendingRecordingStartRef.current.titleFallback || '未命名录音文件';
+            pendingRecordingStartRef.current = { requested: false, titleFallback: '' };
+            try {
+              const recStart = await recordingSession.start({
+                taskId: savedTask.id,
+                taskTitle: (savedTask.title || fallback).trim() || fallback,
+                clientId: savedTask.clientId || null,
+                eventLineId: savedTask.eventLineId || null,
+              });
+              if (!recStart.started) {
+                flash('error', recStart.reason || '录音启动失败');
+              }
+            } catch (err) {
+              console.warn('[recording] post-save start failed', err);
+            }
+          }
+
           // Sync plan-link only if the user touched the plan-link section. Otherwise leave it to the
           // backend's automatic AI matching (already runs on task create/update).
           if (draftSnapshot.planLinkTouched && !isEditingTaskPersonal) {
@@ -15223,39 +15407,120 @@ export default function App() {
                             ? '个人日程不会同步到客户工作台。'
                             : '保存后文字和附件会自动归档到客户工作台。'}
                         </p>
-                        {!isEditingTaskPersonal && (
-                          taskAttachmentUploadProgress ? (
-                            <div className="shrink-0 flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-1.5">
-                              <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-blue-200 border-t-[#5B7BFE]" />
-                              <div className="flex flex-col">
-                                <span className="text-[11px] font-medium text-[#5B7BFE]">
-                                  上传中 {taskAttachmentUploadProgress.percent}%
-                                </span>
-                                <span className="text-[10px] text-blue-400 truncate max-w-[120px]">
-                                  {taskAttachmentUploadProgress.currentFileName}
-                                </span>
-                              </div>
-                            </div>
-                          ) : (
-                            <label className="shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-gray-400 cursor-pointer transition hover:text-[#5B7BFE] hover:bg-blue-50">
-                              <UploadCloud size={13} />
-                              上传附件
-                              <input
-                                type="file"
-                                multiple
-                                className="hidden"
-                                onChange={(event) => {
-                                  const files = event.target.files;
-                                  if (!files || files.length === 0) return;
-                                  void handleTaskAttachmentFiles(Array.from(files)).catch((err: Error) => {
-                                    flash('error', err.message || '附件上传失败');
-                                  });
-                                  event.target.value = '';
+                        <div className="flex shrink-0 items-center gap-2">
+                          {(() => {
+                            const isThisTaskRecording =
+                              recordingSession.isActive
+                              && recordingSession.binding?.taskId === editingTask.id
+                              && Boolean(editingTask.id);
+                            if (isThisTaskRecording) {
+                              const label = recordingSession.status === 'recording'
+                                ? `停止 ${formatRecordingClock(recordingSession.elapsedSeconds)}`
+                                : recordingSession.status === 'transcribing'
+                                  ? '转写中…'
+                                  : recordingSession.status === 'stopping'
+                                    ? '处理中…'
+                                    : '请稍候…';
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => void recordingSession.stop()}
+                                  disabled={recordingSession.status !== 'recording'}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-2.5 py-1.5 text-[11px] font-bold text-rose-600 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-70"
+                                >
+                                  <StopCircle size={13} />
+                                  {label}
+                                </button>
+                              );
+                            }
+                            const isAnyOtherRecording = recordingSession.isActive;
+                            const disabled = isEditingTaskPersonal || isAnyOtherRecording;
+                            const tooltip = isEditingTaskPersonal
+                              ? '个人日程不支持录音转写'
+                              : isAnyOtherRecording
+                                ? '已有一个录音正在进行'
+                                : editingTask.id
+                                  ? '开始录音（最长 4 小时）'
+                                  : '点击会自动保存当前任务并开始录音';
+                            return (
+                              <button
+                                type="button"
+                                title={tooltip}
+                                disabled={disabled}
+                                onClick={async () => {
+                                  if (editingTask.id) {
+                                    const result = await recordingSession.start({
+                                      taskId: editingTask.id,
+                                      taskTitle: editingTask.title.trim() || '未命名录音文件',
+                                      clientId: editingTask.clientId || null,
+                                      eventLineId: editingTask.eventLineId || null,
+                                    });
+                                    if (!result.started) {
+                                      flash('error', result.reason || '录音启动失败');
+                                      return;
+                                    }
+                                    closeTaskModal('start-recording');
+                                    return;
+                                  }
+                                  // 新建任务：先标题兜底，再触发 handleSaveTask；
+                                  // 真 taskId 拿到后 handleSaveTask 内部会用 pendingRecordingStartRef 启动录音
+                                  const titleFallback = '未命名录音文件';
+                                  pendingRecordingStartRef.current = {
+                                    requested: true,
+                                    titleFallback,
+                                  };
+                                  if (!editingTask.title.trim()) {
+                                    flushSync(() => {
+                                      setEditingTask((prev) => ({ ...prev, title: titleFallback }));
+                                    });
+                                  }
+                                  void handleSaveTask();
                                 }}
-                              />
-                            </label>
-                          )
-                        )}
+                                className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
+                                  disabled
+                                    ? 'cursor-not-allowed text-gray-300'
+                                    : 'cursor-pointer text-gray-400 hover:bg-rose-50 hover:text-rose-500'
+                                }`}
+                              >
+                                <Mic size={13} />
+                                录音
+                              </button>
+                            );
+                          })()}
+                          {!isEditingTaskPersonal && (
+                            taskAttachmentUploadProgress ? (
+                              <div className="flex shrink-0 items-center gap-2 rounded-lg bg-blue-50 px-3 py-1.5">
+                                <div className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-blue-200 border-t-[#5B7BFE]" />
+                                <div className="flex flex-col">
+                                  <span className="text-[11px] font-medium text-[#5B7BFE]">
+                                    上传中 {taskAttachmentUploadProgress.percent}%
+                                  </span>
+                                  <span className="text-[10px] text-blue-400 truncate max-w-[120px]">
+                                    {taskAttachmentUploadProgress.currentFileName}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <label className="shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-gray-400 cursor-pointer transition hover:text-[#5B7BFE] hover:bg-blue-50">
+                                <UploadCloud size={13} />
+                                上传附件
+                                <input
+                                  type="file"
+                                  multiple
+                                  className="hidden"
+                                  onChange={(event) => {
+                                    const files = event.target.files;
+                                    if (!files || files.length === 0) return;
+                                    void handleTaskAttachmentFiles(Array.from(files)).catch((err: Error) => {
+                                      flash('error', err.message || '附件上传失败');
+                                    });
+                                    event.target.value = '';
+                                  }}
+                                />
+                              </label>
+                            )
+                          )}
+                        </div>
                       </div>
                     </div>
                     {pendingTaskArchiveText.trim() && (
@@ -23288,9 +23553,27 @@ export default function App() {
               <p className="text-[12px] text-gray-500">
                 {AI_MODEL_MODE_OPTIONS.find((option) => option.value === draft.aiModelMode)?.description}
               </p>
-              <p className="rounded-2xl border border-blue-100 bg-white px-4 py-3 text-[12px] leading-5 text-gray-500">
-                线上主模型沿用上方统一大模型配置；这里仅配置本地深度文本、本地视觉/OCR、本地快速结构化。
-              </p>
+              {/* 第一组：项目内置可下载（ASR，独占一行）*/}
+              <div className="space-y-2">
+                <p className="text-[12px] font-bold text-gray-700">
+                  📥 项目内置（点一下下载，不需要装别的软件）
+                </p>
+                <div className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3">
+                  <div>
+                    <p className="text-[13px] font-bold text-gray-900">本地语音识别 (ASR)</p>
+                    <p className="text-[12px] text-gray-500 mt-1">
+                      上传录音文件 / 直接录音 → 自动转写为文字资料
+                    </p>
+                  </div>
+                  <LocalAsrModelPanel canEdit={canManageSensitiveSettings} />
+                </div>
+              </div>
+
+              {/* 第二组：需要先装 Ollama（3 个并列）*/}
+              <div className="space-y-2 pt-1">
+                <p className="text-[12px] font-bold text-gray-700">
+                  🦙 需要先安装 <a href="https://ollama.com/download" target="_blank" rel="noreferrer" className="underline decoration-dotted text-[#5B7BFE]">Ollama</a>（一次性免费安装，下面 3 个模型共用一个 Ollama 服务）
+                </p>
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
                   {AI_LOCAL_MODEL_PROFILE_ORDER.map((profileKey) => {
                     const profile = draft.aiModelProfiles[profileKey] || AI_MODEL_PROFILE_DEFAULTS[profileKey];
@@ -23299,11 +23582,11 @@ export default function App() {
                     return (
                       <div key={profileKey} className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3">
                         <div className="flex items-start justify-between gap-3">
-                          <div>
+                          <div className="min-w-0">
                             <p className="text-[13px] font-bold text-gray-900">{meta.title}</p>
                             <p className="text-[12px] text-gray-500 mt-1">{meta.purpose}</p>
                           </div>
-                          <label className="flex items-center gap-2 text-[12px] font-bold text-gray-600">
+                          <label className="flex items-center gap-1.5 text-[12px] font-bold text-gray-600 shrink-0">
                             <input
                               type="checkbox"
                               checked={profile.enabled}
@@ -23313,10 +23596,11 @@ export default function App() {
                             启用
                           </label>
                         </div>
-                        {/* 一键拉 Ollama 模型（input-breadth P0-② 新增） */}
+                        {/* 一键拉 Ollama 模型 */}
                         <OllamaQuickPullPanel
                           capability={profile.capability}
                           canEdit={canManageSensitiveSettings}
+                          currentModelName={profile.enabled ? profile.model : undefined}
                           onModelReady={(modelName) => updateAiModelProfile(profileKey, {
                             enabled: true,
                             model: modelName,
@@ -23324,67 +23608,17 @@ export default function App() {
                             providerLabel: profile.providerLabel || '本地 Ollama',
                           })}
                         />
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                          <input
-                            value={profile.providerLabel}
-                            onChange={(event) => updateAiModelProfile(profileKey, { providerLabel: event.target.value })}
-                            placeholder="服务名称"
-                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-bold text-gray-900 outline-none"
-                            disabled={!canManageSensitiveSettings || !profile.enabled}
-                          />
-                          <input
-                            value={profile.model}
-                            onChange={(event) => updateAiModelProfile(profileKey, { model: event.target.value })}
-                            placeholder="模型名"
-                            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-bold text-gray-900 outline-none"
-                            disabled={!canManageSensitiveSettings || !profile.enabled}
-                          />
-                        </div>
-                        <input
-                          value={profile.baseUrl}
-                          onChange={(event) => updateAiModelProfile(profileKey, { baseUrl: event.target.value })}
-                          placeholder="接口地址 Base URL"
-                          className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-medium text-gray-900 outline-none"
-                          disabled={!canManageSensitiveSettings || !profile.enabled}
-                        />
-                        <input
-                          type="password"
-                          value={draft.aiModelProfileApiKeys[profileKey] || ''}
-                          onChange={(event) => updateAiModelProfileApiKey(profileKey, event.target.value)}
-                          placeholder={profile.isLocal ? 'API Key（本地模型可留空；留空沿用已保存密钥）' : 'API Key（留空沿用已保存密钥）'}
-                          className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-medium text-gray-900 outline-none"
-                          disabled={!canManageSensitiveSettings || !profile.enabled}
-                          autoComplete="off"
-                        />
-                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
-                          <span className="rounded-full bg-gray-100 px-2 py-1">{profile.isLocal ? '本地' : '远程'}</span>
-                          <span className="rounded-full bg-gray-100 px-2 py-1">{profile.capability}</span>
-                          {profileHealth && (
-                            <span className={profileHealth.ready ? 'text-green-700' : 'text-amber-700'}>
-                              {profileHealth.ready ? '已配置' : '未就绪'}：{profileHealth.detail}
-                            </span>
-                          )}
-                        </div>
+                        {/* 健康状态徽章（只保留有用的"已配置/未就绪"，去掉"本地/远程""capability" 这种技术名 */}
+                        {profileHealth && (
+                          <p className={`text-[11px] ${profileHealth.ready ? 'text-emerald-700' : 'text-amber-700'}`}>
+                            {profileHealth.ready ? '✅ 已配置' : '⚠️ 未就绪'}：{profileHealth.detail}
+                          </p>
+                        )}
                       </div>
                     );
                   })}
-                  {/* 第 5 个 slot：本地语音识别（input-breadth I1b-2 新增） */}
-                  <div className="rounded-3xl border border-gray-200 bg-white p-4 space-y-3 lg:col-span-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[13px] font-bold text-gray-900">本地语音识别 (ASR)</p>
-                        <p className="text-[12px] text-gray-500 mt-1">
-                          上传录音文件 / 直接录音 → 自动转写为文字资料。SenseVoice-Small (达摩院) · 完全离线 · 不需要对象存储。
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 shrink-0">
-                        <span className="rounded-full bg-gray-100 px-2 py-1">本地</span>
-                        <span className="rounded-full bg-gray-100 px-2 py-1">speech_recognition</span>
-                      </div>
-                    </div>
-                    <LocalAsrModelPanel canEdit={canManageSensitiveSettings} />
-                  </div>
                 </div>
+              </div>
             </div>
             )}
             {isLocalSession && (
@@ -24225,6 +24459,64 @@ export default function App() {
   return (
     <GrowthProvider>
       <div className="window-drag window-drag-strip" aria-hidden="true" />
+      {recordingSession.isActive && (
+        <div
+          className="window-no-drag fixed right-3 z-[9000] pointer-events-auto"
+          style={{ top: 'calc(var(--window-drag-strip-height) + 6px)' }}
+        >
+          <div
+            className={`flex items-center gap-2 rounded-full border px-3 py-1.5 shadow-lg backdrop-blur-sm ${
+              recordingSession.status === 'recording'
+                ? 'border-rose-200 bg-rose-50/95 text-rose-700'
+                : recordingSession.status === 'transcribing'
+                  ? 'border-amber-200 bg-amber-50/95 text-amber-700'
+                  : 'border-slate-200 bg-slate-50/95 text-slate-700'
+            }`}
+            title={recordingSession.binding?.taskTitle || '录音中'}
+          >
+            <span
+              className={`inline-block h-2.5 w-2.5 rounded-full ${
+                recordingSession.status === 'recording' ? 'bg-rose-500 animate-pulse' : 'bg-slate-400'
+              }`}
+              aria-hidden="true"
+            />
+            <span
+              className={`text-[11px] font-bold tracking-wider ${
+                recordingSession.status === 'recording' ? 'animate-pulse' : ''
+              }`}
+            >
+              {recordingSession.status === 'recording'
+                ? 'REC'
+                : recordingSession.status === 'transcribing'
+                  ? '转写中'
+                  : recordingSession.status === 'stopping'
+                    ? '收尾'
+                    : recordingSession.status === 'requesting_mic'
+                      ? '请求麦克风'
+                      : 'REC'}
+            </span>
+            <span className="text-[12px] font-mono tabular-nums">
+              {formatRecordingClock(recordingSession.elapsedSeconds)}
+            </span>
+            {recordingSession.binding?.taskTitle && (
+              <span className="hidden text-[11px] font-medium opacity-70 sm:inline-block max-w-[180px] truncate">
+                · {recordingSession.binding.taskTitle}
+              </span>
+            )}
+            {recordingSession.status === 'recording' && (
+              <button
+                type="button"
+                onClick={() => void recordingSession.stop()}
+                className="ml-1 inline-flex items-center gap-1 rounded-full bg-white/80 px-2 py-0.5 text-[11px] font-bold text-rose-600 transition hover:bg-white"
+                aria-label="停止录音"
+              >
+                <StopCircle size={12} />
+                停止
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <div className="min-h-screen bg-[#F9FAFB] flex font-sans overflow-hidden text-gray-800 antialiased selection:bg-blue-100 selection:text-[#5B7BFE]">
       <aside
         className={`w-[60px] ${isSidebarCollapsed ? 'md:w-[88px]' : 'md:w-[240px]'} bg-white border-r border-gray-100 flex flex-col fixed z-20 shrink-0 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.02)] transition-[width] duration-300`}

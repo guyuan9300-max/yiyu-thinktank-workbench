@@ -126,14 +126,11 @@ export function LocalAsrModelPanel({ canEdit }: LocalAsrModelPanelProps) {
     : 0;
 
   return (
-    <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-4">
+    <div className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[13px] font-bold text-gray-800">
-            SenseVoice-Small（达摩院 · 本地离线推理）
-          </p>
-          <p className="text-[11px] text-gray-500 mt-1">
-            模型位置：<span className="font-mono text-[10px]">{status.modelDir}</span>
+        <div className="min-w-0">
+          <p className="text-[12px] text-gray-600">
+            SenseVoice-Small（达摩院 · 中文场景准确率最强 · 完全离线 · ~240MB）
           </p>
         </div>
         {status.installed ? (
