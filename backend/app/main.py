@@ -31010,6 +31010,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("trash.clear", "trash", "", result)
         return result
 
+    # === 统一文件夹迁移 API（一次性使用） ===
+
+    @app.post("/api/v1/admin/unified-workspace-migrate")
+    def unified_workspace_migrate_endpoint(dry_run: bool = True) -> dict:
+        from app.services import unified_workspace_migrator
+        report = unified_workspace_migrator.migrate_all_clients(state.db, state.data_dir, dry_run=dry_run)
+        log_activity(
+            "admin.unified_workspace_migrate",
+            "admin",
+            "",
+            {"dryRun": dry_run, "filesMoved": report.total_files_moved, "filesTrashed": report.total_files_trashed_as_dedup},
+        )
+        return {
+            "dryRun": report.dry_run,
+            "totalFilesMoved": report.total_files_moved,
+            "totalFilesTrashedAsDedup": report.total_files_trashed_as_dedup,
+            "totalFamiliesMerged": report.total_families_merged,
+            "totalDbPathsUpdated": report.total_db_paths_updated,
+            "totalFolderRowsRemoved": report.total_folder_rows_removed,
+            "formatted": unified_workspace_migrator.format_report(report),
+            "perClient": [
+                {
+                    "clientId": cr.client_id,
+                    "clientName": cr.client_name,
+                    "filesMoved": cr.files_moved,
+                    "filesTrashedAsDedup": cr.files_trashed_as_dedup,
+                    "familiesMerged": cr.families_merged,
+                    "dbPathsUpdated": cr.db_paths_updated,
+                    "folderRowsRemoved": cr.folder_rows_removed,
+                    "errorCount": len(cr.errors),
+                    "errors": cr.errors[:5],
+                    "sampleMoves": cr.sample_moves[:3],
+                    "sampleDedups": cr.sample_dedups[:3],
+                }
+                for cr in report.per_client
+            ],
+        }
+
     # === 输入广度线程（input-breadth）：语音识别模型配置 API ===
 
     @app.get("/api/v1/settings/speech-model", response_model=SpeechModelSettingsRecord)
@@ -38574,8 +38612,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             open_model_system_instruction = (
                 "你是一名资深战略咨询顾问，长期陪伴公益组织做战略、组织、业务和品牌升级。"
                 "这个身份只用于内部思考，不要在正文中自称顾问。\n"
+                "上下文里的「背景包」是你已经掌握的画像（客户档案/已确认判断/活跃项目/近期会议/活跃任务/矛盾/待澄清），不需要从资料里再确认；但具体性必须从原始资料里挖。\n"
                 "请根据资料直接回答用户问题，详细、开放、深入地介绍客户。\n"
                 "像真正了解这个组织的人在向合作伙伴或内部决策者介绍客户，而不是资料摘要器。\n"
+                "答案要落到具体——具体的项目名、合作方、活动名、数字、时间节点、决议、人物角色、阶段进展都要点出来；不能只停在战略哲学层的抽象总结。\n"
                 "可以自由组织结构，不需要套固定模板。\n"
                 "要讲清楚客户是什么组织、为什么重要、解决什么问题、怎么做、业务线之间的关系、当前变化、核心资产和未来值得关注什么。\n"
                 "可以做综合判断和解释，但不要编造资料中没有的硬事实；不确定信息自然说明是当前资料显示或仍需进一步确认。\n"
@@ -38584,8 +38624,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         else:
             open_model_system_instruction = (
                 "直接回答用户问题。\n"
-                "只基于给定资料判断。\n"
-                "可以自由组织结构和长度。\n"
+                "上下文里的「背景包」是已知事实清单，不需要再从资料里确认；但答案的具体性（项目名、合作方、活动名、数字、时间节点、人物角色）必须从原始资料里挖。\n"
+                "不要满足于在画像层面做抽象总结，要让读者看到具体在做什么、跟谁、什么时候、做到什么程度。\n"
+                "只基于资料和背景包判断；可以自由组织结构和长度。\n"
                 "不要编造，也不要暴露系统过程。"
             )
         if intro_like_prompt and workspace_generation_mode != "consultant_synthesis":
@@ -46089,8 +46130,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/v1/intelligence/refresh", response_model=IntelligenceRefreshResult)
-    def trigger_intelligence_refresh(payload: IntelligenceRefreshPayload) -> IntelligenceRefreshResult:
-        """触发情报刷新：对目标客户跑 search-intent → diagnostic → candidate-refresh 链路。"""
+    def trigger_intelligence_refresh(
+        payload: IntelligenceRefreshPayload,
+        background_tasks: BackgroundTasks,
+    ) -> IntelligenceRefreshResult:
+        """触发情报刷新（后台异步执行 + 90 秒硬超时）。
+
+        同事 service 调豆包 + 公开搜索 + 抓取，正常 1-5 分钟，可能 hang。
+        改用 BackgroundTasks 把 service 调用扔后台，endpoint 立即返回
+        "已派发"状态，UI 不会被卡。任务完成后写 DB（intelligence_items 等），
+        前端 poll GET /intelligence/items 查最新数据。
+        """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+
         content_kind = payload.contentKind
         if content_kind not in {"profile_completion", "timely_intelligence"}:
             raise HTTPException(status_code=400, detail="contentKind 必须是 profile_completion 或 timely_intelligence")
@@ -46104,12 +46156,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         else:
             raise HTTPException(status_code=400, detail="scopeType 必须是 all 或 client，且 client 时需 scopeId")
 
-        results: list[IntelligenceRefreshObjectResult] = []
-        for client_id in target_ids:
-            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
-            if not client_row:
-                continue
-            client_name = str(client_row["name"] or "")
+        def _run_one_target_bg(client_id: str, client_name: str) -> None:
+            """后台跑单客户的 supply chain，独立 try/except + 超时控制。"""
             scope = IntelligenceSearchScope(
                 scope_type="client",
                 scope_id=client_id,
@@ -46118,6 +46166,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 display_name=client_name,
             )
             try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(
+                        generate_intelligence_search_intents,
+                        state.db, state.ai,
+                        scope_type="client", scope_id=client_id,
+                        content_kind=content_kind, force=payload.force,
+                    )
+                    generation = fut.result(timeout=60)
+                    fut2 = pool.submit(
+                        run_intelligence_candidate_refresh,
+                        state.db,
+                        data_dir=state.data_dir,
+                        ai_service=state.ai,
+                        scope=scope,
+                        intents=generation.intents,
+                        trigger_source="manual",
+                    )
+                    fut2.result(timeout=120)
+                logger.info("[intelligence] bg refresh done for %s (%s)", client_name, client_id)
+            except FutTimeout:
+                logger.warning("[intelligence] bg refresh TIMEOUT for %s (%s)", client_name, client_id)
+            except Exception as exc:
+                logger.warning("[intelligence] bg refresh FAILED for %s: %s", client_name, exc)
+
+        results: list[IntelligenceRefreshObjectResult] = []
+        for client_id in target_ids:
+            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
+            if not client_row:
+                continue
+            client_name = str(client_row["name"] or "")
+            background_tasks.add_task(_run_one_target_bg, client_id, client_name)
+            results.append(
+                IntelligenceRefreshObjectResult(
+                    scopeType="client",
+                    scopeId=client_id,
+                    clientId=client_id,
+                    projectModuleId=None,
+                    name=client_name,
+                    contentKind=content_kind,
+                    status="completed",  # "completed"=已派发后台任务，不代表抓取结果
+                    message="已加入后台抓取队列，2-5 分钟后请刷新列表查看新情报",
+                )
+            )
+            # 跳过同步路径（保留代码供未来同步模式使用）
+            continue
+            try:
+                # 老的同步路径（已被上面 continue 跳过；保留作为 reference）
                 generation = generate_intelligence_search_intents(
                     state.db,
                     state.ai,
