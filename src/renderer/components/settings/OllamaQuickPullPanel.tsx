@@ -36,6 +36,9 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
   const [actionMessage, setActionMessage] = useState<string>('');
   const completedRef = useRef<string>('');
   const pollTimerRef = useRef<number | null>(null);
+  // 当前 panel 触发的下载模型名 — 用来区分"这个 panel 自己启动的下载"vs"别的 panel 启动的下载"
+  // 因为后端 OllamaPullManager 是单例，所有 panel 共享同一个 pullStatus，必须靠这个本地状态区分。
+  const [thisPanelDownloadingModel, setThisPanelDownloadingModel] = useState<string>('');
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -62,17 +65,24 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
     try {
       const s = await getOllamaPullStatus();
       setPullStatus(s);
-      // 下载完成 → 触发回调（一次）
-      if (s.completed && s.modelName && completedRef.current !== s.modelName) {
+      // 只在"这个 panel 自己触发的"下载完成时回调上层填配置
+      // 否则会出现 panel A 下载完，panel B/C 也跟着把 baseUrl/model 填错的情况
+      if (
+        s.completed
+        && s.modelName
+        && s.modelName === thisPanelDownloadingModel
+        && completedRef.current !== s.modelName
+      ) {
         completedRef.current = s.modelName;
         onModelReady(s.modelName);
         setActionMessage(`✅ ${s.modelName} 已下载完成并自动填入下方配置`);
+        setThisPanelDownloadingModel('');
         await refreshHealth();
       }
     } catch (error) {
       console.warn('[ollama] pull status failed', error);
     }
-  }, [onModelReady, refreshHealth]);
+  }, [onModelReady, refreshHealth, thisPanelDownloadingModel]);
 
   useEffect(() => {
     void refreshHealth();
@@ -112,6 +122,8 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
       if (!r.started) {
         setActionError(r.message || '启动拉取失败');
       } else {
+        // 记录这个 panel 触发的模型,后续 pullStatus 看到 modelName 匹配时才认为是"自己的下载"
+        setThisPanelDownloadingModel(selectedModel);
         setActionMessage(r.message || `已开始拉取 ${selectedModel}`);
         void refreshPullStatus();
       }
@@ -206,73 +218,91 @@ export function OllamaQuickPullPanel({ capability, canEdit, onModelReady }: Olla
         <span className="opacity-60">{health.installedModels.length} 个已装模型</span>
       </div>
 
-      {/* 推荐模型 dropdown + 按钮 — 永远竖排，避免在窄卡片里按钮被挤出视野 */}
-      <div className="space-y-2">
-        <select
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          disabled={!canEdit || pullStatus?.inProgress}
-          className="block w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-50"
-        >
-          <option value="">— 选择推荐模型 —</option>
-          {recommended.map((m) => {
-            const isInstalled = installedNames.has(m.name);
-            return (
-              <option key={m.name} value={m.name}>
-                {m.name} ({m.sizeGb.toFixed(1)}GB){isInstalled ? ' · 已安装 ✓' : ''} — {m.description}
-              </option>
-            );
-          })}
-        </select>
-        {!pullStatus?.inProgress && (
-          selectedModel && installedNames.has(selectedModel) ? (
-            <button
-              type="button"
-              onClick={() => handleUseInstalled(selectedModel)}
-              disabled={!canEdit}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-bold hover:bg-emerald-700 disabled:opacity-50"
-            >
-              <CheckCircle2 size={13} /> 使用此已安装模型
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void handlePull()}
-              disabled={!canEdit || !selectedModel}
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3 py-2 text-[12px] font-bold shadow-[0_4px_12px_rgba(91,123,254,0.18)] disabled:opacity-50"
-            >
-              <Download size={11} /> 下载模型
-            </button>
-          )
-        )}
-        {pullStatus?.inProgress && (
-          <button
-            type="button"
-            onClick={() => void handleCancel()}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-[12px] font-bold text-rose-600 hover:border-rose-300"
-          >
-            <X size={13} /> 取消下载
-          </button>
-        )}
-      </div>
+      {/* 区分"这个 panel 自己在下载" vs "别的 panel 在下载" */}
+      {(() => {
+        const someoneDownloading = pullStatus?.inProgress;
+        const itsMyDownload = someoneDownloading && pullStatus.modelName === thisPanelDownloadingModel;
+        const itsOtherDownload = someoneDownloading && !itsMyDownload;
+        return (
+          <>
+            {itsOtherDownload && (
+              <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                <span className="font-bold">⏳ 另一个本地模型正在下载：</span>
+                <span className="ml-1">{pullStatus.modelName} · {pullStatus.status}</span>
+                <span className="ml-1 opacity-70">— 请等它完成后再下载</span>
+              </div>
+            )}
 
-      {/* 进度条 */}
-      {pullStatus?.inProgress && (
-        <div className="space-y-1.5">
-          <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
-            <div className="h-full bg-[#5B7BFE] transition-all" style={{ width: `${pullPercent}%` }} />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-blue-700">
-            <span className="inline-flex items-center gap-1 min-w-0 truncate">
-              <Loader2 size={10} className="shrink-0 animate-spin" />
-              <span className="truncate">{pullStatus.modelName} · {pullStatus.status}</span>
-            </span>
-            <span className="shrink-0">
-              {formatBytes(pullStatus.bytesDownloaded)} / {formatBytes(pullStatus.bytesTotal)}（{pullPercent.toFixed(1)}%）
-            </span>
-          </div>
-        </div>
-      )}
+            {/* 推荐模型 dropdown + 按钮 — 永远竖排，避免在窄卡片里按钮被挤出视野 */}
+            <div className="space-y-2">
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                disabled={!canEdit || Boolean(someoneDownloading)}
+                className="block w-full rounded-xl border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-bold text-gray-900 outline-none focus:border-[#5B7BFE] disabled:opacity-50"
+              >
+                <option value="">— 选择推荐模型 —</option>
+                {recommended.map((m) => {
+                  const isInstalled = installedNames.has(m.name);
+                  return (
+                    <option key={m.name} value={m.name}>
+                      {m.name} ({m.sizeGb.toFixed(1)}GB){isInstalled ? ' · 已安装 ✓' : ''} — {m.description}
+                    </option>
+                  );
+                })}
+              </select>
+              {!someoneDownloading && (
+                selectedModel && installedNames.has(selectedModel) ? (
+                  <button
+                    type="button"
+                    onClick={() => handleUseInstalled(selectedModel)}
+                    disabled={!canEdit}
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-bold hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    <CheckCircle2 size={13} /> 使用此已安装模型
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handlePull()}
+                    disabled={!canEdit || !selectedModel}
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3 py-2 text-[12px] font-bold shadow-[0_4px_12px_rgba(91,123,254,0.18)] disabled:opacity-50"
+                  >
+                    <Download size={11} /> 下载模型
+                  </button>
+                )
+              )}
+              {itsMyDownload && (
+                <button
+                  type="button"
+                  onClick={() => void handleCancel()}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-2 text-[12px] font-bold text-rose-600 hover:border-rose-300"
+                >
+                  <X size={13} /> 取消下载
+                </button>
+              )}
+            </div>
+
+            {/* 进度条 — 只在自己 panel 触发的下载时显示 */}
+            {itsMyDownload && (
+              <div className="space-y-1.5">
+                <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
+                  <div className="h-full bg-[#5B7BFE] transition-all" style={{ width: `${pullPercent}%` }} />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-blue-700">
+                  <span className="inline-flex items-center gap-1 min-w-0 truncate">
+                    <Loader2 size={10} className="shrink-0 animate-spin" />
+                    <span className="truncate">{pullStatus.modelName} · {pullStatus.status}</span>
+                  </span>
+                  <span className="shrink-0">
+                    {formatBytes(pullStatus.bytesDownloaded)} / {formatBytes(pullStatus.bytesTotal)}（{pullPercent.toFixed(1)}%）
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {pullStatus?.error && !pullStatus.inProgress && (
         <p className="text-[11px] text-rose-600 break-words">{pullStatus.error}</p>
