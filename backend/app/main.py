@@ -563,7 +563,24 @@ from app.models import (
     ReportRunSummary,
     DraftBlueprintRequest,
     DraftSectionsRequest,
+    # 客户项目情报流（2026-05-13 整合）— 提到 module 顶部因 FastAPI
+    # get_type_hints 在 `from __future__ import annotations` 时只看 module 名空间
+    IntelligenceWorkObjectRecord,
+    IntelligenceItemsResponse,
+    IntelligenceItemRecord,
+    IntelligenceFocusDirectiveRecord,
+    IntelligenceFocusDirectivePayload,
+    IntelligenceVerificationRuleRecord,
+    IntelligenceVerificationRulePayload,
+    IntelligenceVerificationFeedbackPayload,
+    IntelligenceRefreshPayload,
+    IntelligenceRefreshResult,
+    IntelligenceRefreshTotals,
+    IntelligenceRefreshObjectResult,
+    IntelligenceSourceDiagnosticsResponse,
+    IntelligenceFeedbackDiagnosticsResponse,
 )
+from app.services.intelligence_search_intents import IntelligenceSearchScope
 from app.services.ai import (
     AiInvocationError,
     AiService,
@@ -45720,25 +45737,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # 最小可用版：让 UI 能加载 + 客户下拉显示 + refresh 真实调用 service
     # 未实现的次要 endpoint（dismiss/follow/task-draft/tasks/chat/diagnostics）
     # 返回基础数据或 stub，等同事下次完善
+    # 注意：模型 import 已提到 module 顶部（line 48 附近），因为 main.py 用
+    # `from __future__ import annotations`，FastAPI get_type_hints() 解析
+    # endpoint 签名时只看 module-level namespace，局部 import 不可见，
+    # 否则 body 参数会被错误识别为 query 导致 422 "Field required"
     # ────────────────────────────────────────────────────────────────────
     import uuid as _uuid_intel
-    from app.models import (
-        IntelligenceWorkObjectRecord,
-        IntelligenceItemsResponse,
-        IntelligenceItemRecord,
-        IntelligenceFocusDirectiveRecord,
-        IntelligenceFocusDirectivePayload,
-        IntelligenceVerificationRuleRecord,
-        IntelligenceVerificationRulePayload,
-        IntelligenceVerificationFeedbackPayload,
-        IntelligenceRefreshPayload,
-        IntelligenceRefreshResult,
-        IntelligenceRefreshTotals,
-        IntelligenceRefreshObjectResult,
-        IntelligenceSourceDiagnosticsResponse,
-        IntelligenceFeedbackDiagnosticsResponse,
-    )
-    from app.services.intelligence_search_intents import IntelligenceSearchScope
 
     def _intel_now() -> str:
         return datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -46148,7 +46152,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         name=client_name,
                         contentKind=content_kind,
                         status="failed",
-                        failureReason=str(exc)[:200],
+                        message=f"刷新失败：{exc!s}"[:200],
+                        errors=[str(exc)[:500]],
                     )
                 )
 
@@ -46187,6 +46192,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             results=results,
             totals=totals,
             message=message,
+            generatedAt=_intel_now(),
         )
 
     @app.get("/api/v1/intelligence/source-diagnostics", response_model=IntelligenceSourceDiagnosticsResponse)
