@@ -30996,6 +30996,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("settings.tasks.update", "settings", operator_id, payload.model_dump(exclude_none=True))
         return _get_local_task_settings(operator_id)
 
+    # === 回收站 API ===
+
+    @app.get("/api/v1/trash/status")
+    def get_trash_status_endpoint() -> dict:
+        from app.services import trash_can
+        return trash_can.get_status(state.db, state.data_dir)
+
+    @app.post("/api/v1/trash/clear")
+    def clear_trash_endpoint() -> dict:
+        from app.services import trash_can
+        result = trash_can.clear_all(state.db, state.data_dir)
+        log_activity("trash.clear", "trash", "", result)
+        return result
+
     # === 输入广度线程（input-breadth）：语音识别模型配置 API ===
 
     @app.get("/api/v1/settings/speech-model", response_model=SpeechModelSettingsRecord)

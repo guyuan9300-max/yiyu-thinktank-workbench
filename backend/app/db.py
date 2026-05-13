@@ -1724,6 +1724,10 @@ class Database:
                 -- 客户项目情报流（同事新版资讯情报站）— 2026-05-13 补回
                 -- 来源：origin-main-backup-before-force-push-2026-05-13 tag
                 -- ──────────────────────────────────────────────────────────
+                -- ──────────────────────────────────────────────────────────
+                -- 客户项目情报流（同事新版资讯情报站）— 2026-05-13 整段同步
+                -- 来源：origin-main-backup-before-force-push-2026-05-13 tag 1723-2008
+                -- ──────────────────────────────────────────────────────────
                 CREATE TABLE IF NOT EXISTS intelligence_focus_directives (
                     id TEXT PRIMARY KEY,
                     scope_type TEXT NOT NULL,
@@ -1768,28 +1772,26 @@ class Database:
                     followup_questions_json TEXT NOT NULL DEFAULT '[]',
                     tags_json TEXT NOT NULL DEFAULT '[]',
                     source TEXT NOT NULL DEFAULT '',
-                    source_url TEXT NOT NULL DEFAULT '',
-                    source_type TEXT NOT NULL DEFAULT '',
-                    source_tier TEXT NOT NULL DEFAULT 'standard',
-                    confidence REAL NOT NULL DEFAULT 0,
-                    relevance_score REAL NOT NULL DEFAULT 0,
-                    timeliness_score REAL NOT NULL DEFAULT 0,
-                    overall_score REAL NOT NULL DEFAULT 0,
-                    captured_at TEXT NOT NULL,
+                    source_url TEXT,
                     published_at TEXT,
-                    expires_at TEXT,
+                    captured_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    credibility_score REAL,
+                    confidence_score REAL,
+                    data_center_ingest_event_id TEXT,
+                    external_evidence_card_id TEXT,
+                    topic_candidate_id TEXT,
+                    converted_task_id TEXT,
+                    verification_status TEXT NOT NULL DEFAULT 'verified',
+                    verification_reason TEXT NOT NULL DEFAULT '',
                     user_status TEXT NOT NULL DEFAULT 'active',
-                    dismissed_at TEXT,
-                    dismissed_reason TEXT NOT NULL DEFAULT '',
-                    dismissed_note TEXT NOT NULL DEFAULT '',
-                    followed_at TEXT,
-                    followed_mode TEXT NOT NULL DEFAULT '',
-                    followed_note TEXT NOT NULL DEFAULT '',
-                    task_id TEXT,
-                    promoted_at TEXT,
+                    user_feedback_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_intelligence_items_topic_candidate
+                    ON intelligence_items(topic_candidate_id)
+                    WHERE topic_candidate_id IS NOT NULL;
                 CREATE INDEX IF NOT EXISTS idx_intelligence_items_kind_status
                     ON intelligence_items(content_kind, user_status, captured_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_intelligence_items_client
@@ -1799,23 +1801,30 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS intelligence_feedback_events (
                     id TEXT PRIMARY KEY,
-                    scope_type TEXT NOT NULL,
+                    scope_type TEXT NOT NULL DEFAULT '',
                     scope_id TEXT NOT NULL DEFAULT '',
                     client_id TEXT,
                     project_module_id TEXT,
-                    content_kind TEXT NOT NULL,
+                    content_kind TEXT NOT NULL DEFAULT '',
                     item_id TEXT,
                     candidate_id TEXT,
-                    action_type TEXT NOT NULL,
+                    source_config_id TEXT,
+                    intent_id TEXT,
+                    action_type TEXT NOT NULL DEFAULT '',
                     reason_code TEXT NOT NULL DEFAULT '',
                     note TEXT NOT NULL DEFAULT '',
                     extracted_topics_json TEXT NOT NULL DEFAULT '[]',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
                     source TEXT NOT NULL DEFAULT '',
                     source_domain TEXT NOT NULL DEFAULT '',
+                    source_url TEXT,
                     score_delta REAL NOT NULL DEFAULT 0,
-                    operator_id TEXT NOT NULL DEFAULT '',
-                    operator_name TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(item_id) REFERENCES intelligence_items(id) ON DELETE SET NULL,
+                    FOREIGN KEY(candidate_id) REFERENCES intelligence_candidate_items(id) ON DELETE SET NULL,
+                    FOREIGN KEY(source_config_id) REFERENCES intelligence_source_configs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(intent_id) REFERENCES intelligence_search_intents(id) ON DELETE SET NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_intelligence_feedback_events_scope
                     ON intelligence_feedback_events(scope_type, scope_id, content_kind, created_at DESC);
@@ -1824,22 +1833,25 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS intelligence_feedback_summaries (
                     id TEXT PRIMARY KEY,
-                    scope_type TEXT NOT NULL,
+                    scope_type TEXT NOT NULL DEFAULT '',
                     scope_id TEXT NOT NULL DEFAULT '',
-                    target_type TEXT NOT NULL,
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    content_kind TEXT NOT NULL DEFAULT '',
+                    target_type TEXT NOT NULL DEFAULT '',
+                    target_key TEXT NOT NULL DEFAULT '',
                     target_label TEXT NOT NULL DEFAULT '',
-                    target_value TEXT NOT NULL DEFAULT '',
                     positive_count INTEGER NOT NULL DEFAULT 0,
                     negative_count INTEGER NOT NULL DEFAULT 0,
                     neutral_count INTEGER NOT NULL DEFAULT 0,
                     score REAL NOT NULL DEFAULT 0,
-                    last_action_at TEXT,
+                    last_event_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    UNIQUE(scope_type, scope_id, target_type, target_value)
+                    UNIQUE(scope_type, scope_id, content_kind, target_type, target_key)
                 );
                 CREATE INDEX IF NOT EXISTS idx_intelligence_feedback_summaries_scope
-                    ON intelligence_feedback_summaries(scope_type, scope_id, target_type);
+                    ON intelligence_feedback_summaries(scope_type, scope_id, content_kind, target_type, score DESC);
 
                 CREATE TABLE IF NOT EXISTS intelligence_search_intents (
                     id TEXT PRIMARY KEY,
@@ -1856,33 +1868,37 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'ready',
                     input_hash TEXT NOT NULL DEFAULT '',
                     expires_at TEXT,
+                    generator_version TEXT NOT NULL DEFAULT 'p1a-rule-ai-v1',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope_type, scope_id, content_kind, query)
                 );
                 CREATE INDEX IF NOT EXISTS idx_intelligence_search_intents_scope
-                    ON intelligence_search_intents(scope_type, scope_id, content_kind, status, expires_at);
+                    ON intelligence_search_intents(scope_type, scope_id, content_kind, status, priority DESC);
                 CREATE INDEX IF NOT EXISTS idx_intelligence_search_intents_client
-                    ON intelligence_search_intents(client_id, content_kind, expires_at);
+                    ON intelligence_search_intents(client_id, content_kind, status, priority DESC);
                 CREATE INDEX IF NOT EXISTS idx_intelligence_search_intents_project
-                    ON intelligence_search_intents(project_module_id, content_kind, expires_at);
+                    ON intelligence_search_intents(project_module_id, content_kind, status, priority DESC);
 
                 CREATE TABLE IF NOT EXISTS intelligence_search_diagnostics (
                     id TEXT PRIMARY KEY,
                     scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL DEFAULT '',
-                    intent_id TEXT,
+                    client_id TEXT,
+                    project_module_id TEXT,
                     content_kind TEXT NOT NULL,
-                    query TEXT NOT NULL DEFAULT '',
-                    provider TEXT NOT NULL DEFAULT '',
-                    source TEXT NOT NULL DEFAULT '',
+                    intent_id TEXT,
+                    query TEXT NOT NULL,
                     trigger_source TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'success',
-                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    raw_count INTEGER NOT NULL DEFAULT 0,
                     deduped_count INTEGER NOT NULL DEFAULT 0,
                     sample_hits_json TEXT NOT NULL DEFAULT '[]',
                     failure_reason TEXT NOT NULL DEFAULT '',
                     duration_ms INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(intent_id) REFERENCES intelligence_search_intents(id) ON DELETE SET NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_intelligence_search_diagnostics_scope
                     ON intelligence_search_diagnostics(scope_type, scope_id, content_kind, created_at DESC);
@@ -1893,18 +1909,27 @@ class Database:
                     id TEXT PRIMARY KEY,
                     scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    project_module_id TEXT,
                     source_type TEXT NOT NULL,
                     source_name TEXT NOT NULL DEFAULT '',
                     source_url_template TEXT NOT NULL DEFAULT '',
                     content_kinds_json TEXT NOT NULL DEFAULT '[]',
                     region TEXT NOT NULL DEFAULT '全国',
-                    industries_json TEXT NOT NULL DEFAULT '[]',
-                    auth_kind TEXT NOT NULL DEFAULT 'none',
-                    auth_secret_id TEXT NOT NULL DEFAULT '',
+                    reliability_tier TEXT NOT NULL DEFAULT 'standard',
                     priority INTEGER NOT NULL DEFAULT 50,
                     enabled INTEGER NOT NULL DEFAULT 1,
-                    health_status TEXT NOT NULL DEFAULT 'unknown',
-                    last_health_at TEXT,
+                    discovery_source TEXT NOT NULL DEFAULT 'default_template',
+                    discovery_reason TEXT NOT NULL DEFAULT '',
+                    discovery_samples_json TEXT NOT NULL DEFAULT '[]',
+                    health_score REAL NOT NULL DEFAULT 70,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    candidate_count INTEGER NOT NULL DEFAULT 0,
+                    promoted_count INTEGER NOT NULL DEFAULT 0,
+                    duplicate_count INTEGER NOT NULL DEFAULT 0,
+                    last_status TEXT NOT NULL DEFAULT 'unknown',
+                    last_checked_at TEXT,
                     last_success_at TEXT,
                     last_failure_at TEXT,
                     next_due_at TEXT,
@@ -1964,12 +1989,12 @@ class Database:
                     dedupe_key TEXT NOT NULL DEFAULT '',
                     duplicate_of_id TEXT,
                     confidence_score REAL NOT NULL DEFAULT 0,
-                    relevance_score REAL NOT NULL DEFAULT 0,
-                    timeliness_score REAL NOT NULL DEFAULT 0,
-                    overall_score REAL NOT NULL DEFAULT 0,
-                    classification_status TEXT NOT NULL DEFAULT 'pending',
-                    classification_reason TEXT NOT NULL DEFAULT '',
-                    weak_signal_reasons_json TEXT NOT NULL DEFAULT '[]',
+                    classification_status TEXT NOT NULL DEFAULT 'candidate',
+                    promotion_reason TEXT NOT NULL DEFAULT '',
+                    verification_status TEXT NOT NULL DEFAULT 'pending',
+                    verification_reason TEXT NOT NULL DEFAULT '',
+                    body_fetch_status TEXT NOT NULL DEFAULT 'not_attempted',
+                    summary_status TEXT NOT NULL DEFAULT 'not_attempted',
                     mapped_tags_json TEXT NOT NULL DEFAULT '[]',
                     is_user_visible_candidate INTEGER NOT NULL DEFAULT 1,
                     body_excerpt TEXT NOT NULL DEFAULT '',
@@ -3495,6 +3520,20 @@ class Database:
                     finished_at TEXT,
                     UNIQUE(report_run_id, section_idx)
                 );
+
+                CREATE TABLE IF NOT EXISTS trashed_files (
+                    id TEXT PRIMARY KEY,
+                    client_id TEXT NOT NULL DEFAULT '',
+                    original_path TEXT NOT NULL,
+                    trashed_path TEXT NOT NULL,
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    original_document_id TEXT NOT NULL DEFAULT '',
+                    original_title TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT 'dedup_merge',
+                    trashed_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_trashed_files_trashed_at
+                    ON trashed_files(trashed_at);
                 """
             )
             self.conn.execute(
