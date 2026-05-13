@@ -19,12 +19,17 @@ PyPI 包：``tos``（已加入 pyproject.toml）
 - region    : 默认 ``cn-beijing``
 - bucket    : 用户创建的桶名
 
-I1b-1 只用 test_connection。I1b-2 才会用 upload_file。
+上传策略（``upload_file``）：
+- 用 ``put_object_from_file`` 把本地文件直传桶
+- 用 ``pre_signed_url`` 生成 GET 预签名 URL（默认 1 小时），供豆包 ASR 拉取
+- 失败时抛出带语义的异常，上层捕获后给用户友好反馈
 """
 from __future__ import annotations
 
+import os
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import ObjectStorageProvider, StorageTestResult, StorageUploadResult
@@ -126,5 +131,65 @@ class VolcanoTosObjectStorageProvider:
         extra_config: dict[str, str],
         expires_seconds: int = 3600,
     ) -> StorageUploadResult:
-        """I1b-2 才会实现：put_object_from_file + 预签名 URL"""
-        raise NotImplementedError("upload_file 留给 I1b-2 实现")
+        """把本地文件上传到 TOS 并返回预签名 GET URL。
+
+        失败抛 ``RuntimeError``（带用户可读消息），上层负责兜底。
+        """
+        ak = (credentials.get("access_key_id") or "").strip()
+        sk = (credentials.get("secret_access_key") or "").strip()
+        if not ak or not sk:
+            raise RuntimeError("对象存储凭证缺失：请在设置页填写 Access Key ID / Secret Access Key")
+        endpoint = (extra_config.get("endpoint") or "").strip() or DEFAULT_ENDPOINT
+        region = (extra_config.get("region") or "").strip() or DEFAULT_REGION
+        bucket = (extra_config.get("bucket") or "").strip()
+        if not bucket:
+            raise RuntimeError("对象存储桶未配置：请在设置页填写 Bucket 名称")
+        if not object_key:
+            raise RuntimeError("object_key 不能为空")
+        if not os.path.isfile(local_path):
+            raise RuntimeError(f"本地文件不存在或不可读：{local_path}")
+        size_bytes = os.path.getsize(local_path)
+
+        try:
+            import tos
+        except ImportError as exc:
+            raise RuntimeError("后端缺少 tos SDK，请运行 uv sync 安装") from exc
+
+        try:
+            client = tos.TosClientV2(ak, sk, endpoint, region)
+            client.put_object_from_file(bucket, object_key, local_path)
+            signed = client.pre_signed_url(
+                tos.HttpMethodType.Http_Method_Get,
+                bucket,
+                object_key,
+                expires=int(expires_seconds),
+            )
+            signed_url = getattr(signed, "signed_url", None) or getattr(signed, "url", None) or str(signed)
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(expires_seconds))
+            ).isoformat()
+            return StorageUploadResult(
+                object_key=object_key,
+                url=signed_url,
+                expires_at=expires_at,
+                size_bytes=size_bytes,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            tos_mod = None
+            try:
+                import tos as _tos_mod
+                tos_mod = _tos_mod
+            except ImportError:
+                pass
+            if tos_mod is not None and isinstance(exc, tos_mod.exceptions.TosServerError):
+                hint = ""
+                if exc.status_code in (401, 403):
+                    hint = "（请检查 ak/sk 是否正确，以及该 ak/sk 是否有写权限）"
+                elif exc.status_code == 404:
+                    hint = "（桶不存在；请去火山控制台确认桶名和 region）"
+                raise RuntimeError(
+                    f"TOS 上传失败（状态码 {exc.status_code}）：{exc.message}{hint}"
+                ) from exc
+            raise RuntimeError(f"TOS 上传失败：{exc.__class__.__name__}：{exc}") from exc

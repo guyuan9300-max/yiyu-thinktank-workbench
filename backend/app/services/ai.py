@@ -3464,6 +3464,149 @@ class AiService:
                 return cleaned
         return ""
 
+    def summarize_recording_to_meeting_minutes(
+        self,
+        *,
+        transcript: str,
+        task_title_hint: str = "",
+        language_hint: str = "",
+        dialogue_text: str = "",
+        num_speakers: int = 0,
+    ) -> dict[str, str]:
+        """把一段录音转写的 transcript 浓缩成会议纪要。
+
+        - 若提供 ``dialogue_text``（"说话人A：…\\n说话人B：…\\n"），优先用它作为 LLM 输入，
+          这样纪要能在行动项里点名"说话人A 要做 X"
+        - 否则退回到无说话人 transcript
+
+        返回 ``{"title": str, "minutes_md": str}``：
+        - title：3-20 字的主题，用于回填任务标题
+        - minutes_md：markdown 纪要（含参与方/议题/决议/行动项/未决）
+
+        失败 / LLM 不可用时返回空字符串字段，由上层兜底。
+        """
+        text = (dialogue_text or transcript or "").strip()
+        has_dialogue = bool((dialogue_text or "").strip())
+        if not text:
+            return {"title": "", "minutes_md": ""}
+
+        health = self._health_for_task("default")
+        if not health.ready:
+            return {"title": "", "minutes_md": ""}
+
+        # 4h 录音的 transcript 可能动辄几万字，给 LLM 截短：保头部 12000 字 + 尾部 1500 字
+        head_limit = 12000
+        tail_limit = 1500
+        prepared = text
+        if len(text) > head_limit + tail_limit + 200:
+            prepared = f"{text[:head_limit]}\n\n[…中间省略 {len(text) - head_limit - tail_limit} 字…]\n\n{text[-tail_limit:]}"
+
+        diarization_hint = (
+            "下面这段是按说话人分段的对话稿，每行 \"说话人X：内容\"。"
+            "纪要里要尽量在「行动项」「决议事项」「关键议题」点名具体说话人。"
+            f"已识别说话人数量：{num_speakers}。"
+            if has_dialogue
+            else "下面是录音转写原文（无说话人分段，请基于内容自行总结）。"
+        )
+        system_instruction = (
+            "你是经验丰富的会议纪要助手。任务：把一段录音转写文本浓缩成一份结构化会议纪要。"
+            "严格输出一个 JSON 对象，字段固定为 \"title\" 和 \"minutes_md\"，禁止任何其他内容、解释或 markdown 代码块包裹。"
+            "title：3-20 字，能概括这段录音核心议题，不要写日期、不要写'会议纪要'四个字。"
+            "minutes_md：标准 Markdown，按以下结构组织："
+            "## 概要、## 参与人（如有说话人分段，列出每位说话人 + 推测角色）、"
+            "## 关键议题、## 决议事项、## 行动项（含责任人/截止时间，若未提及则写'未指派'）、## 未决问题。"
+            "找不到某个 section 就略过该 section，不要凭空捏造内容。"
+        )
+        hint_lines: list[str] = []
+        if task_title_hint.strip():
+            hint_lines.append(f"任务原标题（仅参考，纪要标题应基于转写内容自行总结）：{task_title_hint.strip()}")
+        if language_hint.strip():
+            hint_lines.append(f"原音频语言：{language_hint.strip()}")
+        hint_lines.append(diarization_hint)
+        hint_block = "\n".join(hint_lines) + "\n\n"
+        boundary_tag = "DIALOGUE" if has_dialogue else "TRANSCRIPT"
+        prompt = (
+            f"{hint_block}"
+            f"<<<{boundary_tag}>>>\n"
+            f"{prepared}\n"
+            f"<<<END {boundary_tag}>>>\n\n"
+            "请按系统指令输出 JSON。"
+        )
+
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+        for profile in self._resolve_llm_candidates(task_kind="default"):
+            if not self._profile_is_usable(profile):
+                continue
+            payload = {
+                "model": profile.model,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "top_p": 0.8,
+                "max_tokens": 2500,
+                "stream": False,
+            }
+
+            def _do_request() -> dict:
+                with httpx.Client(timeout=self._build_http_timeout(60.0)) as _client:
+                    _resp = _client.post(
+                        f"{profile.base_url}/chat/completions",
+                        headers=self._build_openai_compatible_headers(profile.api_key),
+                        json=payload,
+                    )
+                    _resp.raise_for_status()
+                    return _resp.json()
+
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(_do_request)
+            try:
+                result = future.result(timeout=90.0)
+            except FutureTimeout:
+                future.cancel()
+                continue
+            except Exception:
+                continue
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+
+            raw_text = (
+                result.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            cleaned = str(raw_text or "").strip()
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+            if not cleaned:
+                continue
+            try:
+                parsed = json.loads(cleaned)
+            except json.JSONDecodeError:
+                # 尝试抽出第一个 { ... } 块
+                match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+                if not match:
+                    continue
+                try:
+                    parsed = json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(parsed, dict):
+                continue
+            title = str(parsed.get("title") or "").strip()
+            minutes_md = str(parsed.get("minutes_md") or "").strip()
+            if not title and not minutes_md:
+                continue
+            # 标题兜底长度
+            if len(title) > 40:
+                title = title[:40]
+            self._record_resolved_profile(profile)
+            return {"title": title, "minutes_md": minutes_md}
+
+        return {"title": "", "minutes_md": ""}
+
     def generate_pdf_page_markdown(
         self,
         *,
@@ -3856,6 +3999,131 @@ class AiService:
         except Exception:
             pass
         return fallback
+
+    def parse_department_plan_text(
+        self,
+        *,
+        text: str,
+        organization_name: str = "",
+        scope_kind: str = "department",  # "org" or "department"
+        scope_name: str = "",
+        period_key: str = "",
+        cycle_type: str = "month",
+    ) -> dict[str, object]:
+        """Parse free-form plan text into structured plan items.
+
+        Returns: { items: [{title, statement, expectedOutput}], summary: str, confidence: str }
+        Falls back to simple line-splitting when AI is not ready.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return {"items": [], "summary": "", "confidence": "low"}
+        # Local fallback: split lines + strip list markers (same as current frontend behavior).
+        def _fallback() -> dict[str, object]:
+            import re as _re
+            raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+            list_marker = _re.compile(r"^\s*([\-\*•]|\d+[\.、]|[一二三四五六七八九十]+[、.])\s*", _re.UNICODE)
+            items = []
+            for ln in raw_lines:
+                title = list_marker.sub("", ln).strip()
+                if title:
+                    items.append({"title": title[:120], "statement": "", "expectedOutput": ""})
+            return {"items": items, "summary": "", "confidence": "low"}
+
+        health = self.get_health()
+        if not health.ready or health.provider == "mock":
+            return _fallback()
+
+        cycle_label_map = {
+            "month": "月度",
+            "quarter": "季度",
+            "year": "年度",
+            "week": "周",
+            "custom": "自定义周期",
+        }
+        cycle_label = cycle_label_map.get(cycle_type, cycle_type or "")
+        subject_line = (
+            f"组织级（{organization_name or '组织'}）"
+            if scope_kind == "org"
+            else f"部门：{scope_name or '部门'}"
+        )
+
+        prompt = (
+            "你是组织计划结构化助手。下面给你一段用户粘贴的计划原文，"
+            "请把它整理成一组可执行的计划项（plan items），用于公司/部门的月度、季度或年度计划。\n\n"
+            "**重要规则**：\n"
+            "1. 不是逐行拆分——同一条计划即使写了多行说明，也要合并为一条。\n"
+            "2. 忽略文档标题、章节小标题、序号、表头、空白段落。\n"
+            "3. 把'背景说明 + 目标动作 + 期望产出'拆到不同字段：\n"
+            "   - title: 一句话动作描述（10-30 字，不要带 \"1.\" \"•\" 等列表符号）\n"
+            "   - statement: 这条计划的背景或说明（30-150 字，可选）\n"
+            "   - expectedOutput: 这条计划做完后应该交付什么（如 \"签 20 单\" \"上线 1 个版本\"），没有就空字符串\n"
+            "4. 不要编造原文没有的内容；原文只有 5 条就返回 5 条，不要凑数。\n"
+            "5. 不要把同一件事拆成多条（如 '开发 + 测试 + 上线' 是同一条上线计划）。\n"
+            "6. 排除明显不是'计划项'的内容：感言、总结、致谢、附录。\n"
+            "7. 如果原文是季度/年度战略，标题要写得更概括（'拓展华南市场'），不要写得太细。\n"
+            "8. 整体限制 1-20 条；超过 20 条说明拆得太细，请合并。\n\n"
+            "请返回 JSON：{\n"
+            "  \"items\": [{\"title\": \"...\", \"statement\": \"...\", \"expectedOutput\": \"...\"}],\n"
+            "  \"summary\": \"30 字内描述这份计划主旨（可选）\",\n"
+            "  \"confidence\": \"low|medium|high\"\n"
+            "}\n\n"
+            f"计划主体：{subject_line}\n"
+            f"周期类型：{cycle_label}\n"
+            f"周期值：{period_key or '未指定'}\n\n"
+            f"原文：\n{cleaned[:6000]}"
+        )
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "items": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "title": {"type": "STRING"},
+                            "statement": {"type": "STRING"},
+                            "expectedOutput": {"type": "STRING"},
+                        },
+                    },
+                },
+                "summary": {"type": "STRING"},
+                "confidence": {"type": "STRING", "enum": ["low", "medium", "high"]},
+            },
+        }
+        try:
+            result = self._qwen_generate(
+                prompt,
+                "你是组织计划结构化助手。严格只返回 JSON。",
+                schema,
+                timeout_seconds=40.0,
+                max_tokens=3200,
+            )
+            if isinstance(result, dict):
+                raw_items = result.get("items") if isinstance(result.get("items"), list) else []
+                cleaned_items: list[dict[str, str]] = []
+                for entry in raw_items[:20]:
+                    if not isinstance(entry, dict):
+                        continue
+                    title = str(entry.get("title") or "").strip()[:120]
+                    if not title:
+                        continue
+                    cleaned_items.append({
+                        "title": title,
+                        "statement": str(entry.get("statement") or "").strip()[:400],
+                        "expectedOutput": str(entry.get("expectedOutput") or "").strip()[:200],
+                    })
+                if cleaned_items:
+                    confidence_raw = str(result.get("confidence") or "").strip().lower()
+                    confidence = confidence_raw if confidence_raw in {"low", "medium", "high"} else "medium"
+                    return {
+                        "items": cleaned_items,
+                        "summary": str(result.get("summary") or "").strip()[:120],
+                        "confidence": confidence,
+                    }
+        except Exception:
+            pass
+        return _fallback()
 
     def _normalize_event_line_clarification_draft_payload(
         self,

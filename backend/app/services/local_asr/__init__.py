@@ -50,3 +50,29 @@ class LocalAsrTranscriptionResult:
     duration_ms: int = 0
     elapsed_ms: float = 0.0
     model_name: str = "sense-voice-small"
+
+
+@dataclass
+class DiarizationSegment:
+    """说话人分离后的一段：(start, end) 毫秒 + speaker 簇 ID。
+
+    speaker 是 0-based 整数，由 sherpa-onnx 聚类决定。展示用 "说话人A/B/C…"
+    时由前端按 ``speaker_label_from_index`` 映射。
+    """
+    start_ms: int
+    end_ms: int
+    speaker: int
+
+
+def speaker_label_from_index(index: int) -> str:
+    """0 → '说话人A'，1 → '说话人B'，…，超过 26 退化成 '说话人AA' 等。"""
+    if index < 0:
+        return "说话人未知"
+    label = ""
+    n = index
+    while True:
+        label = chr(ord("A") + (n % 26)) + label
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return f"说话人{label}"

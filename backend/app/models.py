@@ -7834,6 +7834,27 @@ class LocalAsrModelStatusResponse(BaseModel):
     downloadElapsedSeconds: float = 0.0
 
 
+class DiarizationModelStatusResponse(BaseModel):
+    """说话人分离的两个模型：segmentation + embedding 的合并状态。"""
+    segmentationModelName: str
+    embeddingModelName: str
+    segmentationInstalled: bool = False
+    embeddingInstalled: bool = False
+    bothInstalled: bool = False
+    sizeBytes: int = 0
+    # 与 SenseVoice 共享的单例下载 manager 状态
+    downloadInProgress: bool = False
+    downloadBytesDownloaded: int = 0
+    downloadBytesTotal: int = 0
+    downloadCurrentFile: str = ""
+    downloadCurrentModel: str = ""
+    downloadPendingModels: list[str] = Field(default_factory=list)
+    downloadCompletedModels: list[str] = Field(default_factory=list)
+    downloadCompleted: bool = False
+    downloadError: str | None = None
+    downloadElapsedSeconds: float = 0.0
+
+
 class LocalAsrDownloadStartPayload(BaseModel):
     preferMirror: bool = True
 
@@ -7857,6 +7878,7 @@ class LocalAsrTranscriptionSegmentRecord(BaseModel):
     text: str
     emotion: str | None = None
     event: str | None = None
+    speakerId: str | None = None
 
 
 class LocalAsrTestTranscriptionResponse(BaseModel):
@@ -7866,6 +7888,53 @@ class LocalAsrTestTranscriptionResponse(BaseModel):
     elapsedMs: float = 0.0
     language: str = ""
     segments: list[LocalAsrTranscriptionSegmentRecord] = Field(default_factory=list)
+    errorMessage: str | None = None
+
+
+# === I1b-3：录音 ingest（前端把录音文件落到 userData，后端从本地路径直接转写）===
+# 当前只实现 source = local_path；将来加对象存储后扩展 source = remote_url。
+
+
+class RecordingTranscribeLocalPayload(BaseModel):
+    """前端通过 IPC 把录音文件落到 userData 后，传文件绝对路径给后端转写。"""
+    audioPath: str
+    language: str = "auto"
+
+
+class RecordingTranscribeLocalResponse(BaseModel):
+    success: bool
+    text: str = ""
+    durationMs: int = 0
+    elapsedMs: float = 0.0
+    language: str = ""
+    segments: list[LocalAsrTranscriptionSegmentRecord] = Field(default_factory=list)
+    sourceFormat: str = ""  # 原始音频格式（webm / wav / mp3 ...）
+    transcodedToWav: bool = False
+    # 含说话人前缀的对话稿（"说话人A：xxx\n说话人B：xxx\n…"），diarization 启用时填
+    dialogueText: str = ""
+    numSpeakers: int = 0
+    diarizationUsed: bool = False
+    diarizationError: str | None = None
+    errorMessage: str | None = None
+
+
+class RecordingSummarizeMeetingMinutesPayload(BaseModel):
+    """把录音 transcript 摘要成会议纪要 + 标题。
+
+    若提供 dialogueText（"说话人A：…\\n说话人B：…"），LLM 会优先用对话稿生成
+    含具体说话人的纪要；否则降级到 transcript。
+    """
+    transcript: str
+    taskTitleHint: str = ""
+    languageHint: str = ""
+    dialogueText: str = ""
+    numSpeakers: int = 0
+
+
+class RecordingSummarizeMeetingMinutesResponse(BaseModel):
+    success: bool
+    title: str = ""
+    minutesMd: str = ""
     errorMessage: str | None = None
 
 

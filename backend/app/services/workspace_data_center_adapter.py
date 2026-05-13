@@ -556,6 +556,215 @@ def _filter_dna_text_for_purpose(text: str, purpose: str) -> str:
     return "\n".join(kept) or text
 
 
+def _short_label(value: object, *, limit: int = 200) -> str:
+    """Collapse whitespace + truncate to a short single-line label."""
+    cleaned = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(1, limit - 1)].rstrip() + "…"
+
+
+def build_workspace_background_pack(
+    workspace_snapshot: ClientWorkspaceResponse | None,
+    *,
+    max_chars: int = 6000,
+    judgment_limit: int = 6,
+    meeting_limit: int = 3,
+    task_limit: int = 5,
+    project_module_limit: int = 4,
+    goal_limit: int = 4,
+    open_question_limit: int = 3,
+    conflict_limit: int = 3,
+) -> str:
+    """构造"客户画像 + 核心判断 + 当前推进 + 矛盾"的固定背景包。
+
+    这个块在所有 workflow 的主回答 system context 里都注入，作为不变的画像底色 ——
+    让模型永远知道"当前对话锁定的这家组织 / 项目目前状态是什么"，
+    避免它只盯着零散资料、忘记全局。
+
+    与 ``build_dna_tool_context_from_workspace`` 互补：DNA 是"工具调用"，
+    可以承载更丰富的业务/组织/品牌细节；这里是"客户当前状态"，必须紧凑。
+
+    返回 markdown 字符串；客户什么都没有时返回空字符串（不注入空块）。
+    """
+    if workspace_snapshot is None:
+        return ""
+
+    blocks: list[str] = ["【客户背景包 · 永远在场】"]
+
+    # 1) 客户档案
+    client = workspace_snapshot.client
+    if client is not None:
+        archive_lines = [f"客户：{client.name}".strip()]
+        if client.alias and client.alias != client.name:
+            archive_lines.append(f"别名：{client.alias}")
+        if client.type:
+            archive_lines.append(f"类型：{client.type}")
+        if client.stage:
+            archive_lines.append(f"阶段：{client.stage}")
+        intro = _short_label(client.intro, limit=260)
+        if intro:
+            archive_lines.append(f"简介：{intro}")
+        if client.lastActivityAt:
+            archive_lines.append(f"最后活跃：{client.lastActivityAt}")
+        blocks.append("\n".join(archive_lines))
+
+    # 2) 已确认核心判断（优先选 confirmed / approved）
+    judgments = list(workspace_snapshot.latestJudgments or [])
+    confirmed_judgments = [
+        j for j in judgments
+        if str(getattr(j, "status", "") or "").lower() in {"confirmed", "approved"}
+        or str(getattr(j, "authorityLevel", "") or "").lower() == "approved"
+    ]
+    judgment_pool = confirmed_judgments if confirmed_judgments else judgments
+    if judgment_pool:
+        lines = ["─── 已确认核心判断"]
+        for judgment in judgment_pool[:judgment_limit]:
+            topic = _short_label(getattr(judgment, "topic", ""), limit=80) or "判断"
+            summary = _short_label(getattr(judgment, "summary", ""), limit=260)
+            if not summary:
+                continue
+            meta_parts: list[str] = []
+            confidence = str(getattr(judgment, "confidence", "") or "").strip()
+            if confidence:
+                meta_parts.append(f"信心={confidence}")
+            risk = str(getattr(judgment, "riskLevel", "") or "").strip()
+            if risk:
+                meta_parts.append(f"风险={risk}")
+            meta_str = f"（{'，'.join(meta_parts)}）" if meta_parts else ""
+            lines.append(f"- [{topic}] {summary}{meta_str}")
+        if len(lines) > 1:
+            blocks.append("\n".join(lines))
+
+    # 3) 当前推进重点：项目模块 / 会议 / 活跃任务 / 目标
+    drive_sections: list[str] = []
+
+    modules = list(workspace_snapshot.projectModules or [])
+    if modules:
+        module_lines = ["活跃项目模块："]
+        for module in modules[:project_module_limit]:
+            name = _short_label(getattr(module, "name", ""), limit=80) or "项目模块"
+            goal = _short_label(getattr(module, "goal", ""), limit=120)
+            owner = _short_label(getattr(module, "ownerName", ""), limit=40)
+            extras = "；".join(p for p in (goal, f"负责人={owner}" if owner else "") if p)
+            module_lines.append(f"- {name}" + (f"（{extras}）" if extras else ""))
+        drive_sections.append("\n".join(module_lines))
+
+    meetings = list(workspace_snapshot.meetings or [])
+    if meetings:
+        sorted_meetings = sorted(
+            meetings,
+            key=lambda m: str(getattr(m, "scheduledAt", "") or getattr(m, "updatedAt", "") or ""),
+            reverse=True,
+        )
+        meet_lines = ["近期会议："]
+        for meeting in sorted_meetings[:meeting_limit]:
+            title = _short_label(getattr(meeting, "title", ""), limit=120) or "会议"
+            stage = str(getattr(meeting, "stage", "") or "").strip()
+            scheduled = str(getattr(meeting, "scheduledAt", "") or "").strip()
+            updated = str(getattr(meeting, "updatedAt", "") or "").strip()
+            date_label = scheduled or updated
+            meet_lines.append(
+                f"- {title}"
+                + (f"（{stage}）" if stage else "")
+                + (f" · {date_label}" if date_label else "")
+            )
+        drive_sections.append("\n".join(meet_lines))
+
+    tasks = list(workspace_snapshot.relatedTasks or [])
+    active_tasks = [
+        t for t in tasks
+        if str(getattr(t, "status", "") or "").lower() not in {"done", "archived", "completed", "cancelled"}
+    ]
+    if active_tasks:
+        task_lines = ["活跃任务："]
+        for task in active_tasks[:task_limit]:
+            title = _short_label(getattr(task, "title", ""), limit=120) or "任务"
+            status = str(getattr(task, "status", "") or "").strip()
+            due = (
+                str(getattr(task, "dueDate", "") or "").strip()
+                or str(getattr(task, "deadlineAt", "") or "").strip()
+                or str(getattr(task, "ddl", "") or "").strip()
+            )
+            owner = _short_label(getattr(task, "ownerName", ""), limit=40)
+            task_lines.append(
+                f"- {title}"
+                + (f" [{status}]" if status else "")
+                + (f" / 截止 {due}" if due else "")
+                + (f" / {owner}" if owner else "")
+            )
+        drive_sections.append("\n".join(task_lines))
+
+    goals = list(workspace_snapshot.goals or [])
+    if goals:
+        goal_lines = ["目标："]
+        for goal in goals[:goal_limit]:
+            title = _short_label(getattr(goal, "title", ""), limit=120) or "目标"
+            quarter = str(getattr(goal, "quarter", "") or "").strip()
+            progress_val = getattr(goal, "progress", 0)
+            try:
+                progress = int(progress_val)
+            except (TypeError, ValueError):
+                progress = 0
+            tail = "，".join(p for p in (quarter, f"进度 {progress}%") if p)
+            goal_lines.append(f"- {title}" + (f"（{tail}）" if tail else ""))
+        drive_sections.append("\n".join(goal_lines))
+
+    if drive_sections:
+        blocks.append("─── 当前推进重点\n" + "\n\n".join(drive_sections))
+
+    # 4) 矛盾 / 待澄清问题
+    flag_sections: list[str] = []
+    conflicts = list(workspace_snapshot.latestConflicts or [])
+    if conflicts:
+        conflict_lines = ["矛盾："]
+        for conflict in conflicts[:conflict_limit]:
+            title = _short_label(getattr(conflict, "title", ""), limit=80)
+            summary = _short_label(getattr(conflict, "summary", ""), limit=200)
+            severity = str(getattr(conflict, "severity", "") or "").strip()
+            body = summary or title
+            if not body:
+                continue
+            conflict_lines.append(
+                f"- {title}：{summary}" if (title and summary and title != summary)
+                else f"- {body}"
+                + (f"（{severity}）" if severity else "")
+            )
+        if len(conflict_lines) > 1:
+            flag_sections.append("\n".join(conflict_lines))
+
+    open_questions = list(workspace_snapshot.latestOpenQuestions or [])
+    if open_questions:
+        question_lines = ["待澄清问题："]
+        for question in open_questions[:open_question_limit]:
+            text = _short_label(getattr(question, "question", ""), limit=200)
+            blocker = str(getattr(question, "blockerLevel", "") or "").strip()
+            reason = _short_label(getattr(question, "reason", ""), limit=120)
+            if not text:
+                continue
+            question_lines.append(
+                f"- {text}"
+                + (f"（阻塞={blocker}）" if blocker else "")
+                + (f" — {reason}" if reason else "")
+            )
+        if len(question_lines) > 1:
+            flag_sections.append("\n".join(question_lines))
+
+    if flag_sections:
+        blocks.append("─── 当前矛盾与待澄清\n" + "\n\n".join(flag_sections))
+
+    if len(blocks) <= 1:
+        # 标题外什么都没装上 → 客户为空白，干脆不注入
+        return ""
+
+    content = "\n\n".join(block for block in blocks if block).strip()
+    if len(content) > max_chars:
+        content = content[: max(1, max_chars - 1)].rstrip() + "…"
+    return content
+
+
 def build_dna_tool_context_from_workspace(
     workspace_snapshot: ClientWorkspaceResponse | None,
     *,
@@ -788,6 +997,22 @@ def build_consultant_synthesis_material_pack(
         ).strip()
     )
     add_section("客户基础信息", client_lines, "clientBasics")
+    # P0 背景包：consultant_synthesis 后续会单独列正式判断/相关会议/任务，
+    # 这里只放一个紧凑的"画像总览"作为开头底色（不重复后面的 section）。
+    consultant_background = build_workspace_background_pack(
+        workspace_snapshot,
+        max_chars=4000,
+        judgment_limit=4,
+        meeting_limit=2,
+        task_limit=3,
+        project_module_limit=3,
+        goal_limit=3,
+        open_question_limit=2,
+        conflict_limit=2,
+    )
+    if consultant_background:
+        sections.append(consultant_background)
+        source_counts["backgroundPack"] = 1
     dna_tool_context = build_dna_tool_context_from_workspace(
         workspace_snapshot,
         prompt=prompt,
@@ -1174,6 +1399,9 @@ def build_open_workspace_answer_context(
         prompt=prompt,
         max_chars=22000,
     )
+    # P0 背景包：所有 workflow 主回答的固定画像底色（客户档案 + 核心判断 + 当前推进 + 矛盾）。
+    # 区别于 build_dna_tool_context（工具调用 / 业务-组织-品牌细节），背景包是"当前状态"。
+    background_pack = build_workspace_background_pack(workspace_snapshot)
     sections: list[str] = [
         "\n".join(
             [
@@ -1181,13 +1409,16 @@ def build_open_workspace_answer_context(
                 prompt.strip(),
                 "",
                 "【回答原则】",
-                "直接回答用户问题。",
-                "只基于提供资料判断，不要编造。",
-                "可以自由组织结构和长度，不要暴露系统过程。",
+                "你是这家组织的资深陪伴顾问；先在心里建立对这家组织的当前画像（基于背景包），再在画像里定位用户的问题。",
+                '回答时给出有判断的结论，而不是中立陈述；明确区分"资料明示的"与"基于背景推断的"。',
+                "只基于提供资料和背景包推断，不要编造资料之外的硬事实。",
+                "可以自由组织结构和长度；不要暴露系统过程或检索细节。",
             ]
         ).strip(),
         f"【客户】\n{client_label}",
     ]
+    if background_pack:
+        sections.append(background_pack)
     if resolved_dna_tool_context.context_text:
         sections.append(resolved_dna_tool_context.context_text)
     sections.append("【原始阅读资料包 v2】\n" + "\n\n".join(document_sections or ["当前没有可用的文档原文片段。"]))

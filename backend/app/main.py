@@ -23,12 +23,28 @@ from uuid import uuid4
 
 import httpx
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel
+
+
+class TaskAttachmentFromMarkdownPayload(BaseModel):
+    """录音会议纪要专用 payload：前端 POST markdown 文本，后端转 .docx 再挂附件。"""
+
+    title: str
+    markdown: str
+    clientId: str | None = None
+    eventLineId: str | None = None
+    taskTitle: str | None = None
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from docx import Document as WordDocument
 
 from app.db import BACKEND_SCHEMA_VERSION, Database, from_json, to_json
-from app.local_request_guard import ALLOWED_LOCAL_ORIGINS, ALLOWED_LOCAL_ORIGIN_REGEX, validate_local_browser_request
+from app.local_request_guard import (
+    ALLOWED_LOCAL_ORIGINS,
+    ALLOWED_LOCAL_ORIGIN_REGEX,
+    is_allowed_local_origin,
+    validate_local_browser_request,
+)
 from app.models import (
     ActivityLogRecord,
     AgentWeeklyDigestRecord,
@@ -356,6 +372,11 @@ from app.models import (
     LocalAsrTestTranscriptionPayload,
     LocalAsrTestTranscriptionResponse,
     LocalAsrTranscriptionSegmentRecord,
+    DiarizationModelStatusResponse,
+    RecordingTranscribeLocalPayload,
+    RecordingTranscribeLocalResponse,
+    RecordingSummarizeMeetingMinutesPayload,
+    RecordingSummarizeMeetingMinutesResponse,
     OllamaDeleteModelPayload,
     OllamaDeleteModelResponse,
     OllamaHealthResponse,
@@ -2716,6 +2737,27 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_cors_safe(request: Request, exc: Exception):
+        # starlette 的 BaseHTTPMiddleware 在异常路径会绕过 CORSMiddleware，
+        # 导致 500 响应缺 Access-Control-Allow-Origin → 浏览器 fetch 抛
+        # "Failed to fetch" 把真实错误盖住。这里全局兜底未捕获异常，手工补
+        # CORS header，让前端能看到真正的错误信息。HTTPException 仍走 FastAPI
+        # 默认 handler（它返回的 JSONResponse 经过正常 middleware 链，CORS 没问题）。
+        if isinstance(exc, HTTPException):
+            raise exc
+        logger.exception("Unhandled exception in %s %s", request.method, request.url.path)
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": f"{exc.__class__.__name__}: {exc}"},
+        )
+        origin = request.headers.get("origin")
+        if origin and is_allowed_local_origin(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        return response
+
     @app.middleware("http")
     async def _local_browser_origin_guard(request: Request, call_next):
         rejection_reason = validate_local_browser_request(request.url.path, request.headers, request.method)
@@ -4899,6 +4941,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     _review_governance_members_cache: dict[str, object] = {"token": "", "record": None, "ts": 0.0}
 
+    def _sync_review_governance_departments_from_org_model(
+        governance: ReviewGovernanceSettingsRecord,
+    ) -> ReviewGovernanceSettingsRecord:
+        """Replace governance.departments with the authoritative org-model departments (active only).
+
+        Without this, the local `settings.review_governance` table drifts away from the cloud
+        `org_departments` table — admins rename or deactivate departments in the org dashboard
+        but the review perspective dropdown keeps showing the stale list.
+        """
+        try:
+            payload = cloud_request("GET", "/api/v1/settings/org-model/profile")
+        except Exception:
+            return governance
+        if not isinstance(payload, dict):
+            return governance
+        raw_departments = payload.get("departments")
+        if not isinstance(raw_departments, list):
+            return governance
+        # Preserve any leaders/members + monthlyDna/weeklyFocus already configured for matching dept ids.
+        existing_by_id = {d.id: d for d in governance.departments}
+        next_departments: list[ReviewDepartmentConfigRecord] = []
+        for item in raw_departments:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("active", True):
+                continue
+            dept_id = str(item.get("id") or "").strip()
+            dept_name = str(item.get("name") or "").strip()
+            if not dept_id or not dept_name:
+                continue
+            previous = existing_by_id.get(dept_id)
+            next_departments.append(
+                ReviewDepartmentConfigRecord(
+                    id=dept_id,
+                    name=dept_name,
+                    color=str(item.get("color") or (previous.color if previous else "#5B7BFE")),
+                    monthlyDna=previous.monthlyDna if previous else "",
+                    weeklyFocus=previous.weeklyFocus if previous else "",
+                    leaders=previous.leaders if previous else [],
+                    members=previous.members if previous else [],
+                )
+            )
+        return governance.model_copy(update={"departments": next_departments})
+
     def _review_governance_with_members() -> ReviewGovernanceSettingsRecord:
         governance = get_review_governance_settings()
         token = get_cloud_token()
@@ -4912,6 +4998,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             and now - float(_review_governance_members_cache.get("ts") or 0.0) < 60
         ):
             return cached_record
+        # Step 1: align department list with the org-model (renames, deactivations).
+        governance = _sync_review_governance_departments_from_org_model(governance)
         try:
             employees = _load_employee_directory_from_cloud()
         except HTTPException:
@@ -8268,6 +8356,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         local_task_id = str(existing["id"]) if existing and existing["id"] else cloud_id
         progress_status = str(payload.get("progressStatus") or "todo")
+
+        # ─── Protect newer local state from stale-cloud overwrite ──────────────────
+        # When the local task has unsynced changes (sync_status in {'pending','local','error'})
+        # or local is already 'done' while the cloud copy is older, the cloud payload is stale.
+        # Returning early avoids regressing locally-completed tasks back to 'doing/todo'.
+        if existing:
+            local_sync_status = str(existing["sync_status"] or "").strip().lower()
+            local_progress = str(existing["progress_status"] or "").strip()
+            local_completed = str(existing["completed_at"] or "").strip()
+            local_updated_at = str(existing["updated_at"] or "").strip()
+            cloud_updated_at = str(payload.get("updatedAt") or "").strip()
+            cloud_progress = progress_status
+            local_has_unsynced_edits = local_sync_status in {"pending", "local", "error"}
+            local_newer_than_cloud = bool(
+                cloud_updated_at
+                and local_updated_at
+                and local_updated_at > cloud_updated_at
+                and local_sync_status == "synced"
+            )
+            local_done_cloud_not = (
+                local_progress == "done" and cloud_progress != "done"
+            ) or (local_completed and not str(payload.get("completedAt") or "").strip())
+            if local_has_unsynced_edits or local_newer_than_cloud or local_done_cloud_not:
+                import sys as _skip_sys
+                print(
+                    f"[CLOUD-UPSERT-SKIP] task={local_task_id} sync={local_sync_status} "
+                    f"local_progress={local_progress} cloud_progress={cloud_progress} "
+                    f"local_updated={local_updated_at} cloud_updated={cloud_updated_at}",
+                    file=_skip_sys.stderr,
+                    flush=True,
+                )
+                return local_task_id
+        # ───────────────────────────────────────────────────────────────────────────
+
         temporal_fields = derive_task_temporal_fields(
             start_date=str(payload.get("startDate")) if payload.get("startDate") else None,
             due_date=str(payload.get("dueDate")) if payload.get("dueDate") else None,
@@ -8611,10 +8733,69 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ),
                 )
         # Mirror cloud tasks locally
+        cloud_task_ids: set[str] = set()
         for item in payload.get("tasks", []):
             if not isinstance(item, dict):
                 continue
             _upsert_cloud_task_shadow_local(item)
+            task_id = str(item.get("id") or "").strip()
+            if task_id:
+                cloud_task_ids.add(task_id)
+
+        # Reconciliation: detect "ghost-synced" local tasks where local sync_status='synced' and
+        # cloud_id is set, but cloud has no such task (e.g. cloud DB was reset, or earlier push
+        # silently failed). Without this, those tasks stay invisible to the cloud forever — they
+        # show up in your local board but no other org member can see them in their cloud view.
+        try:
+            cached_session = get_cached_session_user()
+            if cached_session and cached_session.id:
+                my_user_id = cached_session.id.strip()
+                ghost_rows = state.db.fetchall(
+                    """
+                    SELECT id, cloud_id, title
+                    FROM tasks
+                    WHERE sync_status = 'synced'
+                      AND cloud_id IS NOT NULL AND cloud_id != ''
+                      AND (creator_id = ? OR owner_id = ?)
+                    """,
+                    (my_user_id, my_user_id),
+                )
+                ghost_ids: list[tuple[str, str, str]] = []
+                for row in ghost_rows:
+                    cloud_ref = str(row["cloud_id"] or "").strip()
+                    if cloud_ref and cloud_ref not in cloud_task_ids:
+                        ghost_ids.append((str(row["id"]), cloud_ref, str(row["title"] or "")))
+                if ghost_ids:
+                    reconciliation_ts = now_iso()
+                    for local_id, cloud_ref, title in ghost_ids:
+                        state.db.execute(
+                            """
+                            UPDATE tasks
+                            SET sync_status = 'pending',
+                                pending_sync_action = 'create',
+                                cloud_id = '',
+                                last_synced_at = '',
+                                last_cloud_version = '',
+                                last_sync_error = ?,
+                                updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                f"Reconciliation: cloud_id={cloud_ref} not found on cloud; queuing re-create",
+                                reconciliation_ts,
+                                local_id,
+                            ),
+                        )
+                    import sys as _r_sys
+                    print(
+                        f"[TASK-RECONCILE] queued {len(ghost_ids)} ghost-synced task(s) for re-create: "
+                        + ", ".join(f"{tid}({title[:20]!r})" for tid, _, title in ghost_ids[:5]),
+                        file=_r_sys.stderr,
+                        flush=True,
+                    )
+        except Exception as _reconcile_err:
+            import sys as _r_sys
+            print(f"[TASK-RECONCILE] failed (continuing anyway): {_reconcile_err}", file=_r_sys.stderr, flush=True)
 
     def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
         """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
@@ -21390,6 +21571,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _last_pending_sync_ts = now
         if not get_cloud_token():
             return 0
+        # Pre-fetch the cloud-valid user_id set so we can drop ghost users from ownerId / collaboratorIds.
+        # Local tasks often reference users that exist locally but are no longer in the cloud employees
+        # table — without this filter, cloud create_task fails with 404 Not Found and the task is stuck.
+        cloud_user_ids: set[str] = set()
+        try:
+            emp_payload = cloud_request("GET", "/api/v1/employees/directory", timeout=6.0)
+            if isinstance(emp_payload, list):
+                for emp in emp_payload:
+                    if isinstance(emp, dict) and emp.get("id"):
+                        cloud_user_ids.add(str(emp["id"]))
+        except Exception:
+            cloud_user_ids = set()  # fall back to no filtering; downstream may still 404
         pending_rows = state.db.fetchall(
             """
             SELECT id, cloud_id, pending_sync_action, cloud_payload_json,
@@ -21454,6 +21647,45 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     )
                     continue
             try:
+                # Sanitize legacy/stale cloud_payload_json: older versions stored business-shape
+                # tags/collaborators (list of dicts), but the cloud TaskCreatePayload expects
+                # list[str]. Without sanitisation the cloud returns 422 every retry and the task
+                # never makes it back to the cloud.
+                if isinstance(cloud_payload.get("tags"), list):
+                    raw_tags = cloud_payload.get("tags") or []
+                    cloud_payload["tags"] = [
+                        (item.get("name") if isinstance(item, dict) else str(item))
+                        for item in raw_tags
+                        if (isinstance(item, dict) and item.get("name")) or (not isinstance(item, dict) and item)
+                    ]
+                    if not cloud_payload.get("tagIds"):
+                        cloud_payload["tagIds"] = [
+                            item.get("id") for item in raw_tags
+                            if isinstance(item, dict) and item.get("id")
+                        ]
+                if isinstance(cloud_payload.get("collaborators"), list) and not cloud_payload.get("collaboratorIds"):
+                    cloud_payload["collaboratorIds"] = [
+                        item.get("userId") for item in cloud_payload["collaborators"]
+                        if isinstance(item, dict) and item.get("userId")
+                    ]
+                # Filter ghost user references: ownerId / collaboratorIds pointing to users
+                # that no longer exist on the cloud would cause _get_user_or_404 → 404.
+                if cloud_user_ids:
+                    raw_owner = cloud_payload.get("ownerId")
+                    if raw_owner and raw_owner not in cloud_user_ids:
+                        import sys as _ghost_sys
+                        print(
+                            f"[SYNC-PENDING] dropping ghost ownerId={raw_owner} for task {task_id}",
+                            file=_ghost_sys.stderr,
+                            flush=True,
+                        )
+                        cloud_payload["ownerId"] = None
+                    raw_collabs = cloud_payload.get("collaboratorIds") or []
+                    cloud_payload["collaboratorIds"] = [
+                        uid for uid in raw_collabs
+                        if uid and uid in cloud_user_ids
+                    ]
+
                 if not _resolve_task_cloud_event_line_dependency(task_id, cloud_payload):
                     continue
                 if pending_action == "update":
@@ -30923,6 +31155,142 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         except Exception as exc:  # noqa: BLE001
             return LocalAsrTestTranscriptionResponse(
+                success=False,
+                errorMessage=f"{exc.__class__.__name__}：{exc}",
+            )
+
+    @app.get(
+        "/api/v1/local-asr/diarization/status",
+        response_model=DiarizationModelStatusResponse,
+    )
+    def get_diarization_model_status() -> DiarizationModelStatusResponse:
+        from app.services.local_asr.model_paths import (
+            SPEAKER_EMBEDDING_MODEL_NAME,
+            SPEAKER_SEGMENTATION_MODEL_NAME,
+            is_diarization_ready,
+            is_model_ready,
+            total_size_bytes,
+        )
+        from app.services.local_asr.model_downloader import get_download_manager
+
+        progress = get_download_manager().status()
+        return DiarizationModelStatusResponse(
+            segmentationModelName=SPEAKER_SEGMENTATION_MODEL_NAME,
+            embeddingModelName=SPEAKER_EMBEDDING_MODEL_NAME,
+            segmentationInstalled=is_model_ready(SPEAKER_SEGMENTATION_MODEL_NAME),
+            embeddingInstalled=is_model_ready(SPEAKER_EMBEDDING_MODEL_NAME),
+            bothInstalled=is_diarization_ready(),
+            sizeBytes=(
+                total_size_bytes(SPEAKER_SEGMENTATION_MODEL_NAME)
+                + total_size_bytes(SPEAKER_EMBEDDING_MODEL_NAME)
+            ),
+            downloadInProgress=progress.in_progress,
+            downloadBytesDownloaded=progress.bytes_downloaded,
+            downloadBytesTotal=progress.bytes_total,
+            downloadCurrentFile=progress.current_file,
+            downloadCurrentModel=progress.current_model,
+            downloadPendingModels=list(progress.pending_models),
+            downloadCompletedModels=list(progress.completed_models),
+            downloadCompleted=progress.completed,
+            downloadError=progress.error_message,
+            downloadElapsedSeconds=progress.elapsed_seconds,
+        )
+
+    @app.post(
+        "/api/v1/local-asr/diarization/download",
+        response_model=LocalAsrDownloadStartResponse,
+    )
+    def start_diarization_model_download(
+        payload: LocalAsrDownloadStartPayload | None = None,
+    ) -> LocalAsrDownloadStartResponse:
+        """同时下载 segmentation + embedding 两个模型（manager 顺序下）。"""
+        from app.services.local_asr.model_downloader import get_download_manager
+        from app.services.local_asr.model_paths import (
+            SPEAKER_EMBEDDING_MODEL_NAME,
+            SPEAKER_SEGMENTATION_MODEL_NAME,
+        )
+
+        prefer_mirror = True if payload is None else bool(payload.preferMirror)
+        manager = get_download_manager()
+        started, message = manager.start_download(
+            model_name=[SPEAKER_SEGMENTATION_MODEL_NAME, SPEAKER_EMBEDDING_MODEL_NAME],
+            prefer_mirror=prefer_mirror,
+        )
+        return LocalAsrDownloadStartResponse(started=started, message=message)
+
+    @app.post(
+        "/api/v1/recordings/transcribe-local-audio",
+        response_model=RecordingTranscribeLocalResponse,
+    )
+    def transcribe_recording_local_audio_endpoint(
+        payload: RecordingTranscribeLocalPayload,
+    ) -> RecordingTranscribeLocalResponse:
+        """前端落地 → 后端转写。webm/opus/m4a 等会先用 ffmpeg 转 wav 再喂 SenseVoice。"""
+        from app.services.local_asr.recording_ingest import transcribe_recording_local_path
+
+        try:
+            outcome = transcribe_recording_local_path(
+                payload.audioPath,
+                language=(payload.language or "auto"),
+            )
+            return RecordingTranscribeLocalResponse(
+                success=True,
+                text=outcome.result.text,
+                durationMs=outcome.result.duration_ms,
+                elapsedMs=outcome.result.elapsed_ms,
+                language=outcome.result.language,
+                segments=[
+                    LocalAsrTranscriptionSegmentRecord(
+                        startMs=seg.start_ms,
+                        endMs=seg.end_ms,
+                        text=seg.text,
+                        emotion=seg.emotion,
+                        event=seg.event,
+                        speakerId=seg.speaker_id,
+                    )
+                    for seg in outcome.result.segments
+                ],
+                sourceFormat=outcome.source_format,
+                transcodedToWav=outcome.transcoded_to_wav,
+                dialogueText=outcome.dialogue_text,
+                numSpeakers=outcome.num_speakers,
+                diarizationUsed=outcome.diarization_used,
+                diarizationError=outcome.diarization_error,
+            )
+        except FileNotFoundError as exc:
+            return RecordingTranscribeLocalResponse(
+                success=False,
+                errorMessage=str(exc),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return RecordingTranscribeLocalResponse(
+                success=False,
+                errorMessage=f"{exc.__class__.__name__}：{exc}",
+            )
+
+    @app.post(
+        "/api/v1/recordings/summarize-meeting-minutes",
+        response_model=RecordingSummarizeMeetingMinutesResponse,
+    )
+    def summarize_meeting_minutes_endpoint(
+        payload: RecordingSummarizeMeetingMinutesPayload,
+    ) -> RecordingSummarizeMeetingMinutesResponse:
+        """transcript → 会议纪要（含标题）。失败返回空字段，前端按需兜底。"""
+        try:
+            outcome = state.ai.summarize_recording_to_meeting_minutes(
+                transcript=payload.transcript or "",
+                task_title_hint=payload.taskTitleHint or "",
+                language_hint=payload.languageHint or "",
+                dialogue_text=payload.dialogueText or "",
+                num_speakers=int(payload.numSpeakers or 0),
+            )
+            return RecordingSummarizeMeetingMinutesResponse(
+                success=bool(outcome.get("title") or outcome.get("minutes_md")),
+                title=str(outcome.get("title") or ""),
+                minutesMd=str(outcome.get("minutes_md") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return RecordingSummarizeMeetingMinutesResponse(
                 success=False,
                 errorMessage=f"{exc.__class__.__name__}：{exc}",
             )
@@ -41993,6 +42361,113 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return task_after_upload
 
+    @app.delete("/api/v1/tasks/{task_id}/attachments/{attachment_id}")
+    def delete_task_attachment(
+        task_id: str,
+        attachment_id: str,
+        syncKnowledge: bool = Query(default=False),
+    ) -> dict[str, object]:
+        # 用户在任务详情点附件 × 按钮时调用。
+        # syncKnowledge=true 时连带删除知识库（数据中心）里的文件 + 物理文件，
+        # 让用户能"一键彻底清理"——不然附件 row 删了，知识库还残留就成了孤儿数据。
+        # 弹窗里那个勾默认勾选，所以前端绝大多数请求会带 syncKnowledge=true。
+        att_row = state.db.fetchone(
+            """
+            SELECT id, task_id, client_id, document_id, path, title
+            FROM task_attachments
+            WHERE id = ? AND task_id = ?
+            UNION ALL
+            SELECT id, task_id, client_id, document_id, path, title
+            FROM task_attachments_cloud
+            WHERE id = ? AND task_id = ?
+            """,
+            (attachment_id, task_id, attachment_id, task_id),
+        )
+        if not att_row:
+            raise HTTPException(status_code=404, detail="附件不存在或已被删除")
+        document_id = att_row["document_id"]
+        att_path = att_row["path"]
+        att_title = att_row["title"]
+        # 先删两张可能命中的 attachment 行（cloud + local），保持幂等
+        state.db.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
+        state.db.execute("DELETE FROM task_attachments_cloud WHERE id = ?", (attachment_id,))
+        knowledge_deleted = False
+        file_deleted = False
+        if syncKnowledge:
+            # 删数据中心：v2_documents 没有声明 FK 到 documents，所以两边都要显式删；
+            # v2_chunks/v2_sections/v2_chunk_entities 通过 v2_documents 的 ON DELETE
+            # CASCADE 会自动清理，无需手动 DELETE。
+            if document_id:
+                try:
+                    state.db.execute("DELETE FROM v2_documents WHERE document_id = ?", (document_id,))
+                    state.db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+                    knowledge_deleted = True
+                except Exception:
+                    logger.exception("删除知识库文档失败 document_id=%s", document_id)
+            # 删物理文件
+            if att_path:
+                try:
+                    p = Path(att_path)
+                    if p.exists() and p.is_file():
+                        p.unlink()
+                        file_deleted = True
+                except Exception:
+                    logger.exception("删除附件物理文件失败 path=%s", att_path)
+        log_activity(
+            "task.attachment.delete",
+            "task",
+            task_id,
+            {
+                "attachmentId": attachment_id,
+                "documentId": document_id,
+                "title": att_title,
+                "syncKnowledge": syncKnowledge,
+                "knowledgeDeleted": knowledge_deleted,
+                "fileDeleted": file_deleted,
+            },
+        )
+        return {
+            "deleted": True,
+            "knowledgeDeleted": knowledge_deleted,
+            "fileDeleted": file_deleted,
+        }
+
+    @app.post(
+        "/api/v1/tasks/{task_id}/attachments/from-markdown",
+        response_model=TaskRecord,
+    )
+    def upload_task_attachment_from_markdown(
+        task_id: str,
+        payload: TaskAttachmentFromMarkdownPayload = Body(...),
+    ) -> TaskRecord:
+        # 录音 → 转写 → LLM 摘要返回 markdown 文本。前端不要在浏览器里组装 .docx
+        # （需要新加 npm 依赖），而是把 markdown 原文 POST 给后端，由 python-docx
+        # 渲染成 .docx 落盘。这样用户在任务详情里双击附件就能直接用 Word/Pages 打开，
+        # 而不用面对一份 .md 源码。
+        # 附件本身仍然走标准 upload_task_attachment 流程，知识库 ingest、
+        # event_line 关联、云端同步、AI 摘要预处理等全套行为一致。
+        from io import BytesIO
+        from starlette.datastructures import Headers, UploadFile
+
+        from app.services.markdown_to_docx import render_markdown_to_docx_bytes
+
+        if not payload.markdown.strip():
+            raise HTTPException(status_code=400, detail="markdown 内容为空")
+        safe_title = (payload.title or "会议纪要").strip() or "会议纪要"
+        docx_bytes = render_markdown_to_docx_bytes(payload.markdown, document_title=safe_title)
+        filename = f"{safe_filename(safe_title)}.docx"
+        headers = Headers(
+            {"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+        )
+        upload_file = UploadFile(filename=filename, file=BytesIO(docx_bytes), headers=headers)
+        return upload_task_attachment(
+            task_id=task_id,
+            file=upload_file,
+            clientId=payload.clientId,
+            eventLineId=payload.eventLineId,
+            taskTitle=payload.taskTitle,
+        )
+
     @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
     def confirm_task(task_id: str) -> TaskRecord:
         session_user = get_cached_session_user()
@@ -42209,6 +42684,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             cloud_search = []
             if weekLabel:
                 cloud_search.append(f"weekLabel={quote(weekLabel)}")
+            # Forward perspective + departmentId so the cloud sources work_items from the right scope
+            # (members of the requested department, or whole org). Otherwise dept lead / admin gets
+            # only their own items and `augment_review_response` can't expand them locally.
+            if perspective:
+                cloud_search.append(f"perspective={quote(perspective)}")
+            if departmentId:
+                cloud_search.append(f"departmentId={quote(departmentId)}")
             suffix = f"?{'&'.join(cloud_search)}" if cloud_search else ""
             payload = _safe_cloud_request("GET", f"/api/v1/reviews/dashboard{suffix}")
             if isinstance(payload, dict):

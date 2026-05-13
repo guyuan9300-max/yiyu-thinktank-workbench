@@ -8120,12 +8120,64 @@ def _visible_tasks_for_user(state: AppState, current_user: SessionUser) -> list[
         FROM tasks t
         LEFT JOIN task_collaborators tc ON tc.task_id = t.id
         WHERE t.organization_id = ?
-          AND (t.creator_id = ? OR tc.user_id = ?)
+          AND (t.creator_id = ? OR tc.user_id = ? OR t.owner_id = ?)
         ORDER BY t.updated_at DESC
         """,
-        (current_user.organizationId, current_user.id, current_user.id),
+        (current_user.organizationId, current_user.id, current_user.id, current_user.id),
     )
     return [_task_record(state, row, current_user.id) for row in rows]
+
+
+def _visible_tasks_for_department(state: AppState, organization_id: str, department_id: str) -> list[TaskRecord]:
+    """Return shared tasks where any member of `department_id` is owner/creator/collaborator.
+
+    Membership = users with employee_accounts.department_id matching, plus the dept's leader_user_id.
+    """
+    member_rows = state.db.fetchall(
+        """
+        SELECT id FROM employee_accounts
+        WHERE organization_id = ? AND department_id = ? AND account_status = 'approved'
+        UNION
+        SELECT leader_user_id AS id FROM org_departments
+        WHERE id = ? AND organization_id = ? AND leader_user_id IS NOT NULL AND leader_user_id != ''
+        """,
+        (organization_id, department_id, department_id, organization_id),
+    )
+    member_ids = {str(r["id"]) for r in member_rows if r["id"]}
+    if not member_ids:
+        return []
+    placeholders = ",".join(["?"] * len(member_ids))
+    members = list(member_ids)
+    rows = state.db.fetchall(
+        f"""
+        SELECT DISTINCT t.*
+        FROM tasks t
+        LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+        WHERE t.organization_id = ?
+          AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+          AND (
+              t.owner_id IN ({placeholders})
+           OR t.creator_id IN ({placeholders})
+           OR tc.user_id IN ({placeholders})
+          )
+        ORDER BY t.updated_at DESC
+        """,
+        (organization_id, *members, *members, *members),
+    )
+    return [_task_record(state, row) for row in rows]
+
+
+def _visible_tasks_for_organization(state: AppState, organization_id: str) -> list[TaskRecord]:
+    rows = state.db.fetchall(
+        """
+        SELECT * FROM tasks
+        WHERE organization_id = ?
+          AND COALESCE(scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+        ORDER BY updated_at DESC
+        """,
+        (organization_id,),
+    )
+    return [_task_record(state, row) for row in rows]
 
 
 def _task_in_week(task: TaskRecord, week_label: str) -> bool:
@@ -8295,18 +8347,54 @@ def _compose_review_note(structured_note: WeeklyReviewTaskStructuredNoteRecord, 
     return "\n".join(part for part in parts if part) or fallback_note.strip()
 
 
-def _dashboard_review_items(state: AppState, current_user: SessionUser, week_label: str, review_row) -> tuple[list[WeeklyReviewTaskEntryRecord], list[WeeklyReviewTaskEntryRecord]]:
-    visible_tasks = [task for task in _visible_tasks_for_user(state, current_user) if _task_in_week(task, week_label)]
-    entry_rows = state.db.fetchall(
-        """
-        SELECT *
-        FROM weekly_review_task_entries
-        WHERE user_id = ? AND week_label = ?
-        ORDER BY reviewed_at DESC
-        """,
-        (current_user.id, week_label),
-    )
-    entries_by_task = {str(row["task_id"]): row for row in entry_rows}
+def _dashboard_review_items(
+    state: AppState,
+    current_user: SessionUser,
+    week_label: str,
+    review_row,
+    *,
+    perspective: str = "mine",
+    department_id: str | None = None,
+) -> tuple[list[WeeklyReviewTaskEntryRecord], list[WeeklyReviewTaskEntryRecord]]:
+    # Source the visible tasks for the requested perspective so that a department lead / admin
+    # sees their team's tasks, not only their own.
+    if perspective == "organization":
+        source_tasks = _visible_tasks_for_organization(state, current_user.organizationId)
+    elif perspective == "department" and department_id:
+        source_tasks = _visible_tasks_for_department(state, current_user.organizationId, department_id)
+    else:
+        source_tasks = _visible_tasks_for_user(state, current_user)
+    visible_tasks = [task for task in source_tasks if _task_in_week(task, week_label)]
+    # Pull review entries from ALL relevant authors, not just current_user, when in dept/org view —
+    # otherwise the dept lead would see tasks without any of the actual authors' reflection notes.
+    if perspective in ("organization", "department") and visible_tasks:
+        task_id_list = [t.id for t in visible_tasks]
+        placeholders = ",".join(["?"] * len(task_id_list))
+        entry_rows = state.db.fetchall(
+            f"""
+            SELECT *
+            FROM weekly_review_task_entries
+            WHERE week_label = ? AND task_id IN ({placeholders})
+            ORDER BY reviewed_at DESC
+            """,
+            (week_label, *task_id_list),
+        )
+    else:
+        entry_rows = state.db.fetchall(
+            """
+            SELECT *
+            FROM weekly_review_task_entries
+            WHERE user_id = ? AND week_label = ?
+            ORDER BY reviewed_at DESC
+            """,
+            (current_user.id, week_label),
+        )
+    # When multiple entries per task (different reviewers in dept view), keep the most-recently-reviewed.
+    entries_by_task: dict[str, object] = {}
+    for row in entry_rows:
+        tid = str(row["task_id"])
+        if tid not in entries_by_task:
+            entries_by_task[tid] = row
     work_items: list[WeeklyReviewTaskEntryRecord] = []
     personal_items: list[WeeklyReviewTaskEntryRecord] = []
     for task in visible_tasks:
@@ -8747,12 +8835,22 @@ def _org_report_for_admin(state: AppState, admin_user: SessionUser, week_label: 
         actions=actions,
     )
 
-def _dashboard_for_user(state: AppState, current_user: SessionUser, week_label: str | None = None) -> ReviewDashboardResponse:
+def _dashboard_for_user(
+    state: AppState,
+    current_user: SessionUser,
+    week_label: str | None = None,
+    *,
+    perspective: str = "mine",
+    department_id: str | None = None,
+) -> ReviewDashboardResponse:
     plans = _plan_nodes(state, current_user.organizationId)
     target_week = week_label or _latest_review_week_label_for_dashboard(state, current_user) or _current_week_label()
     review_row = _review_row_for_user_week(state, current_user.id, target_week)
     current_review = _build_review_entry_record(state, review_row) if review_row else None
-    work_items, personal_items = _dashboard_review_items(state, current_user, target_week, review_row)
+    work_items, personal_items = _dashboard_review_items(
+        state, current_user, target_week, review_row,
+        perspective=perspective, department_id=department_id,
+    )
     signal_card: ManagementSignalCardRecord | None = None
     growth_card: PersonalGrowthCardRecord | None = None
     team_report: HierarchyReportRecord | None = None
@@ -13021,7 +13119,11 @@ def create_app() -> FastAPI:
         return {"deleted": True}
 
     @app.get("/api/v1/tasks", response_model=TaskBoardResponse)
-    def list_tasks(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> TaskBoardResponse:
+    def list_tasks(
+        perspective: Literal["mine", "department", "organization"] = Query(default="mine"),
+        departmentId: str | None = Query(default=None),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> TaskBoardResponse:
         list_rows = state.db.fetchall(
             """
             SELECT *
@@ -13033,17 +13135,82 @@ def create_app() -> FastAPI:
             """,
             (current_user.organizationId,),
         )
-        task_rows = state.db.fetchall(
-            """
-            SELECT DISTINCT t.*
-            FROM tasks t
-            LEFT JOIN task_collaborators tc ON tc.task_id = t.id
-            WHERE t.organization_id = ?
-              AND (t.creator_id = ? OR tc.user_id = ?)
-            ORDER BY t.updated_at DESC
-            """,
-            (current_user.organizationId, current_user.id, current_user.id),
-        )
+
+        is_admin = current_user.primaryRole == "admin"
+
+        if perspective == "organization":
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="只有管理员可以查看组织视角")
+            task_rows = state.db.fetchall(
+                """
+                SELECT DISTINCT t.*
+                FROM tasks t
+                WHERE t.organization_id = ?
+                  AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                ORDER BY t.updated_at DESC
+                """,
+                (current_user.organizationId,),
+            )
+        elif perspective == "department":
+            target_dept_id = (departmentId or "").strip()
+            if not target_dept_id:
+                raise HTTPException(status_code=400, detail="departmentId 不能为空")
+            # Permission: admin can view any department; otherwise only the dept's leader can.
+            if not is_admin:
+                dept_row = state.db.fetchone(
+                    "SELECT leader_user_id FROM org_departments WHERE id = ? AND organization_id = ?",
+                    (target_dept_id, current_user.organizationId),
+                )
+                if not dept_row or str(dept_row["leader_user_id"] or "") != current_user.id:
+                    raise HTTPException(status_code=403, detail="只能查看你所负责的部门")
+            # Department members = leader_user_id (org_departments) + everyone with employee_accounts.department_id matching
+            member_id_rows = state.db.fetchall(
+                """
+                SELECT id FROM employee_accounts
+                WHERE organization_id = ? AND department_id = ? AND account_status = 'approved'
+                UNION
+                SELECT leader_user_id AS id FROM org_departments
+                WHERE id = ? AND organization_id = ? AND leader_user_id IS NOT NULL AND leader_user_id != ''
+                """,
+                (current_user.organizationId, target_dept_id, target_dept_id, current_user.organizationId),
+            )
+            member_ids = {str(r["id"]) for r in member_id_rows if r["id"]}
+            if not member_ids:
+                task_rows = []
+            else:
+                placeholders = ",".join(["?"] * len(member_ids))
+                member_list = list(member_ids)
+                # task is visible to dept view if (a) owner/creator is a dept member OR (b) any dept member is a collaborator
+                task_rows = state.db.fetchall(
+                    f"""
+                    SELECT DISTINCT t.*
+                    FROM tasks t
+                    LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+                    WHERE t.organization_id = ?
+                      AND COALESCE(t.scope_mode, 'COLLAB_SHARED') != 'PERSONAL_ONLY'
+                      AND (
+                            t.owner_id IN ({placeholders})
+                         OR t.creator_id IN ({placeholders})
+                         OR tc.user_id IN ({placeholders})
+                      )
+                    ORDER BY t.updated_at DESC
+                    """,
+                    (current_user.organizationId, *member_list, *member_list, *member_list),
+                )
+        else:
+            # perspective == "mine" (default, also the previous behaviour)
+            task_rows = state.db.fetchall(
+                """
+                SELECT DISTINCT t.*
+                FROM tasks t
+                LEFT JOIN task_collaborators tc ON tc.task_id = t.id
+                WHERE t.organization_id = ?
+                  AND (t.creator_id = ? OR tc.user_id = ? OR t.owner_id = ?)
+                ORDER BY t.updated_at DESC
+                """,
+                (current_user.organizationId, current_user.id, current_user.id, current_user.id),
+            )
+
         all_tags = _visible_task_tags(state, current_user)
         return TaskBoardResponse(
             tasks=[_task_record(state, row, current_user.id) for row in task_rows],
@@ -13866,9 +14033,30 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/reviews/dashboard", response_model=ReviewDashboardResponse)
     def review_dashboard(
         weekLabel: str | None = Query(default=None),
+        perspective: Literal["mine", "department", "organization"] = Query(default="mine"),
+        departmentId: str | None = Query(default=None),
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> ReviewDashboardResponse:
-        return _dashboard_for_user(state, current_user, weekLabel)
+        is_admin = current_user.primaryRole == "admin"
+        if perspective == "organization" and not is_admin:
+            raise HTTPException(status_code=403, detail="只有管理员可以查看组织视角")
+        resolved_dept_id: str | None = None
+        if perspective == "department":
+            target = (departmentId or "").strip()
+            if not target:
+                raise HTTPException(status_code=400, detail="departmentId 不能为空")
+            if not is_admin:
+                dept_row = state.db.fetchone(
+                    "SELECT leader_user_id FROM org_departments WHERE id = ? AND organization_id = ?",
+                    (target, current_user.organizationId),
+                )
+                if not dept_row or str(dept_row["leader_user_id"] or "") != current_user.id:
+                    raise HTTPException(status_code=403, detail="只能查看你所负责的部门")
+            resolved_dept_id = target
+        return _dashboard_for_user(
+            state, current_user, weekLabel,
+            perspective=perspective, department_id=resolved_dept_id,
+        )
 
     @app.get("/api/v1/reviews/history", response_model=ReviewHistoryResponse)
     def review_history(current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization))) -> ReviewHistoryResponse:

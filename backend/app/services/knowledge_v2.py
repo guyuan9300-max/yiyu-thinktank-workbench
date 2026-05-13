@@ -2017,14 +2017,17 @@ def ingest_document_knowledge(
                     from app.services.entity_extractor import extract_entities_from_chunk
                     from app.services.entity_store import persist_chunk_entities
 
-                    extracted = extract_entities_from_chunk(chunk["content"])
-                    if extracted:
+                    # 不能复用外层 `extracted` 变量名 —— 外层 line 1808 的 `extracted`
+                    # 是 extract_document_with_metadata 返回的对象，line 2105 还要读它的
+                    # .structured_sheets；这里覆盖会让外层挂在 AttributeError。
+                    chunk_entities = extract_entities_from_chunk(chunk["content"])
+                    if chunk_entities:
                         persist_chunk_entities(
                             db.conn,
                             client_id=client_id,
                             v2_document_id=v2_document_id,
                             v2_chunk_id=chunk_id,
-                            extracted=extracted,
+                            extracted=chunk_entities,
                             now=created_at,
                         )
                 except Exception:

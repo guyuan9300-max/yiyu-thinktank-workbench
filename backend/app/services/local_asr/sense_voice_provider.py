@@ -159,3 +159,93 @@ def is_recognizer_loaded(model_name: str = DEFAULT_MODEL_NAME) -> bool:
     """诊断用：当前 recognizer 是否已加载到内存。"""
     with _RECOGNIZER_LOCK:
         return model_name in _RECOGNIZER_CACHE
+
+
+def transcribe_local_audio_segments(
+    file_path: str,
+    segments_ms: list[tuple[int, int]],
+    *,
+    model_name: str = DEFAULT_MODEL_NAME,
+    language: str = "auto",
+    use_itn: bool = True,
+    num_threads: int = 4,
+) -> list[LocalAsrTranscriptionResult]:
+    """对一个本地音频文件的多段时间区间分别转写。
+
+    读音频一次，避免重复 IO + 解码。每段单独 ``accept_waveform`` + ``decode_stream``，
+    跟整段调用 ``transcribe_local_audio`` 相同的 recognizer 单例。
+
+    参数：
+    - file_path: 本地音频文件
+    - segments_ms: ``[(start_ms, end_ms), ...]``；超出音频长度或 start>=end 的段会被跳过
+
+    返回：与输入 ``segments_ms`` 一一对应的 ``LocalAsrTranscriptionResult`` 列表
+    （非法段返回空 result 占位，保证下标对齐）。
+    """
+    if not Path(file_path).exists():
+        raise FileNotFoundError(f"音频文件不存在：{file_path}")
+    if not segments_ms:
+        return []
+
+    recognizer = _load_recognizer(model_name, num_threads=num_threads)
+    audio, sample_rate = _read_audio_as_pcm(file_path)
+    total_samples = len(audio)
+    total_duration_ms = int(total_samples * 1000 / sample_rate)
+
+    results: list[LocalAsrTranscriptionResult] = []
+    for (start_ms, end_ms) in segments_ms:
+        if end_ms <= start_ms or end_ms <= 0:
+            results.append(_empty_segment_result(model_name, start_ms, end_ms))
+            continue
+        clamped_start = max(0, min(start_ms, total_duration_ms))
+        clamped_end = max(clamped_start, min(end_ms, total_duration_ms))
+        start_sample = int(clamped_start * sample_rate / 1000)
+        end_sample = int(clamped_end * sample_rate / 1000)
+        if end_sample <= start_sample:
+            results.append(_empty_segment_result(model_name, start_ms, end_ms))
+            continue
+        chunk = audio[start_sample:end_sample]
+        started = time.perf_counter()
+        stream = recognizer.create_stream()
+        stream.accept_waveform(sample_rate, chunk)
+        recognizer.decode_stream(stream)
+        raw_text = (stream.result.text or "").strip()
+        cleaned_text, lang_tag, emotion_tag, event_tag = _strip_sense_voice_tags(raw_text)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        seg_duration_ms = clamped_end - clamped_start
+        results.append(
+            LocalAsrTranscriptionResult(
+                text=cleaned_text,
+                segments=[
+                    LocalAsrTranscriptionSegment(
+                        start_ms=clamped_start,
+                        end_ms=clamped_end,
+                        text=cleaned_text,
+                        emotion=emotion_tag,
+                        event=event_tag,
+                    )
+                ],
+                language=lang_tag or language,
+                duration_ms=seg_duration_ms,
+                elapsed_ms=elapsed_ms,
+                model_name=model_name,
+            )
+        )
+    return results
+
+
+def _empty_segment_result(model_name: str, start_ms: int, end_ms: int) -> LocalAsrTranscriptionResult:
+    return LocalAsrTranscriptionResult(
+        text="",
+        segments=[
+            LocalAsrTranscriptionSegment(
+                start_ms=max(0, start_ms),
+                end_ms=max(0, end_ms),
+                text="",
+            )
+        ],
+        language="",
+        duration_ms=max(0, end_ms - start_ms),
+        elapsed_ms=0.0,
+        model_name=model_name,
+    )
