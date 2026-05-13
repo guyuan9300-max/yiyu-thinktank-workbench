@@ -620,10 +620,17 @@ from app.services.workspace_data_center_adapter import (
     build_consultant_synthesis_material_pack,
     build_dna_tool_context_from_workspace,
     build_open_workspace_answer_context,
+    build_workspace_background_pack,
     build_workspace_context_quality_summary,
     build_workspace_data_center_request,
     build_workspace_data_center_request_from_route,
     build_workspace_dc_response_meta,
+)
+from app.services.workspace_chat_multipass import (
+    AnswerOutline,
+    MultipassAnswer,
+    MultipassPlanError,
+    generate_multipass_answer,
 )
 from app.services.workspace_file_search import build_file_search_user_summary
 from app.services.workspace_followups import (
@@ -7954,7 +7961,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     _cloud_task_board_cache: dict[str, object] = {"data": None, "ts": 0.0}
-    _cloud_tasks_pulled_to_local: bool = False
+    # 节流"从云端拉手机端任务回本地"——30 秒内只拉一次。
+    # 历史上这里是个 ONE-TIME flag（_cloud_tasks_pulled_to_local），意味着桌面 backend
+    # 启动后只拉过一次，后续手机端在 cloud 创建的任务永远不会同步回桌面，是个严重 bug。
+    # 改成时间戳节流：用户打开任务/工作台时如果距上次拉超过 30s 就重新拉，保证手机
+    # 创建的任务在 30s 内能在桌面端"任务与日程"看到。
+    _cloud_tasks_last_pulled_at: float = 0.0
+    _cloud_tasks_pull_in_flight: bool = False
+    _CLOUD_TASKS_PULL_TTL_SECONDS: float = 30.0
 
     def _upsert_cloud_task_list_shadow_local(
         payload: dict[str, object],
@@ -8719,23 +8733,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return restored
 
     def _pull_cloud_tasks_to_local() -> None:
-        """One-time pull: download cloud tasks and upsert them into local SQLite."""
-        nonlocal _cloud_tasks_pulled_to_local
-        if _cloud_tasks_pulled_to_local:
+        """Throttled pull: download cloud tasks and upsert them into local SQLite.
+
+        30 秒节流：用户在桌面端打开任务页 / 工作台时调本函数，距离上次拉超过
+        TTL 才重新拉。这样：
+          - 手机端在云端新建的任务，桌面端在 30 秒内必能看到（用户切到"任务与
+            日程"会自动触发拉取）
+          - 不会每个 endpoint 调用都打云端（防止过载 + 避免请求风暴）
+          - 拉失败时不更新 timestamp，下次调用会立刻重试
+        """
+        nonlocal _cloud_tasks_last_pulled_at, _cloud_tasks_pull_in_flight
+        if _cloud_tasks_pull_in_flight:
+            # 同一进程内已有拉取在飞 —— 避免重入，等当前拉完。
             return
-        _cloud_tasks_pulled_to_local = True
+        now = time.time()
+        if now - _cloud_tasks_last_pulled_at < _CLOUD_TASKS_PULL_TTL_SECONDS:
+            return
         if not get_cloud_token():
             return
         if not _ensure_task_tag_schema_for_cloud_pull():
-            _cloud_tasks_pulled_to_local = False
             return
+        _cloud_tasks_pull_in_flight = True
         try:
             payload = cloud_request("GET", "/api/v1/tasks", timeout=10.0)
         except Exception:
-            _cloud_tasks_pulled_to_local = False  # retry next time
+            # 拉失败不更新 timestamp，下次调用会立刻重试
+            _cloud_tasks_pull_in_flight = False
             return
+        finally:
+            _cloud_tasks_pull_in_flight = False
         if not isinstance(payload, dict):
             return
+        # 成功拉到（哪怕 payload 是空 dict）—— 更新 timestamp 防止 30s 内重复拉
+        _cloud_tasks_last_pulled_at = time.time()
         timestamp = now_iso()
         # Mirror cloud lists locally
         for item in payload.get("lists", []):
@@ -31249,6 +31279,88 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 errorMessage=f"{exc.__class__.__name__}：{exc}",
             )
 
+    # ──────────────────────────────────────────────────────────
+    # Phase 3：本地 AI 推理调度 governor + 任务队列 端点
+    # ──────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/local-ai/health")
+    def get_local_ai_health() -> dict[str, object]:
+        """返回 governor 当前判定 + 机器健康快照（温度/空闲/电池/Ollama/内存）。"""
+        from app.services.local_model_optimizer import inspect_local_inference_health
+        return inspect_local_inference_health(state.db)
+
+    @app.get("/api/v1/local-ai/queue")
+    def get_local_ai_queue(
+        status: str | None = None,
+        task_type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """查看队列。可按 status (queued/running/completed/failed) 和
+        task_type (visual_ocr/document_card_generation/...) 过滤。"""
+        where: list[str] = []
+        params: list[object] = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if task_type:
+            where.append("task_type = ?")
+            params.append(task_type)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+        clipped_limit = max(1, min(500, int(limit or 50)))
+
+        rows = state.db.fetchall(
+            f"""
+            SELECT id, task_type, status, priority, client_id,
+                   knowledge_document_id, model_profile_id, attempts,
+                   max_attempts, last_error, locked_by, started_at,
+                   completed_at, created_at, updated_at,
+                   substr(payload_json, 1, 500) AS payload_preview,
+                   substr(result_json, 1, 500)  AS result_preview
+            FROM local_model_tasks
+            {clause}
+            ORDER BY
+              CASE status
+                WHEN 'running' THEN 0
+                WHEN 'queued' THEN 1
+                WHEN 'failed' THEN 2
+                WHEN 'completed' THEN 3
+                ELSE 9
+              END,
+              priority ASC,
+              created_at DESC
+            LIMIT ?
+            """,
+            (*params, clipped_limit),
+        )
+
+        # 统计每种 status 的总数（不受 limit 影响，便于看大盘）
+        status_rows = state.db.fetchall(
+            "SELECT status, COUNT(*) AS n FROM local_model_tasks GROUP BY status"
+        )
+        status_counts = {str(r["status"]): int(r["n"]) for r in status_rows}
+
+        return {
+            "tasks": [dict(r) for r in rows],
+            "totalByStatus": status_counts,
+            "filter": {"status": status, "task_type": task_type, "limit": clipped_limit},
+        }
+
+    @app.post("/api/v1/local-ai/run-now")
+    def run_local_ai_now(force: bool = False) -> dict[str, object]:
+        """强制触发一次队列调度。force=True 时绕开 window/governor 直接跑一条。
+
+        正常情况下后台 worker 每 60s 自动触发；这个端点是给用户 "立刻跑一条" 用的。
+        """
+        from app.services.local_model_optimizer import run_due_local_model_tasks
+        result = run_due_local_model_tasks(
+            state.db,
+            getattr(state, "ai", None),
+            batch_size=1,
+            force=bool(force),
+        )
+        return result
+
     @app.get(
         "/api/v1/local-asr/diarization/status",
         response_model=DiarizationModelStatusResponse,
@@ -38749,60 +38861,167 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             answer_mode = "grounded_answer"
             evidence_status = "sufficient" if kernel_result.searchResult and kernel_result.searchResult.hits else "none"
         else:
-            try:
-                llm_attempt_count += 1
-                structured = state.ai.generate_raw_evidence_response(
-                    prompt_for_context,
-                    open_model_system_instruction,
-                    open_context,
-                    on_partial=push_partial_analysis,
-                    timeout_seconds=generation_timeout_seconds,
-                    max_tokens=5600 if workspace_generation_mode == "consultant_synthesis" else 5200,
-                    enable_thinking=True,
-                )
-            except AiInvocationError as error:
-                provider_used = error.provider
-                model_route = f"AI · {state.ai.model_label(error.provider, model_used)}"
-                generation_failure_detail = str(error.detail or "").strip() or None
-                preserved_content, preserved_structured = load_preserved_partial()
-                if preserved_content:
-                    structured = build_partial_generation_fallback(
-                        prompt,
-                        preserved_content,
-                        error.detail,
-                        partial_structured=preserved_structured,
+            # P0+: Outline-First 多段生成（Pass 1 出大纲 → Pass 2-N 分段写）
+            # 通过 env YIYU_WORKSPACE_MULTIPASS_ENABLED=0 关闭以走回原单次调用。
+            multipass_enabled = os.environ.get("YIYU_WORKSPACE_MULTIPASS_ENABLED", "1") == "1"
+            multipass_used = False
+            multipass_fallback_reason: str | None = None
+            multipass_outcome: MultipassAnswer | None = None
+
+            if multipass_enabled:
+                multipass_state: dict[str, Any] = {
+                    "headline": "",
+                    "judgment_line": "",
+                    "sections": [],  # list[tuple[title, text]]
+                }
+                multipass_background_pack = build_workspace_background_pack(workspace_snapshot) or ""
+
+                def _compose_partial_markdown() -> str:
+                    headline = str(multipass_state.get("headline") or "").strip()
+                    sections = multipass_state.get("sections") or []
+                    lines: list[str] = []
+                    if headline:
+                        lines.append(f"# {headline}")
+                        lines.append("")
+                    for idx, (title, body) in enumerate(sections):
+                        if idx > 0:
+                            lines.append("")
+                            lines.append(f"## {str(title).strip()}")
+                            lines.append("")
+                        lines.append(str(body).strip())
+                    rendered = "\n".join(lines).strip()
+                    if not rendered and headline:
+                        rendered = f"# {headline}\n\n（正在生成详细内容…）"
+                    return rendered
+
+                def _on_outline_ready(outline: AnswerOutline) -> None:
+                    multipass_state["headline"] = outline.headline
+                    multipass_state["judgment_line"] = outline.judgment_line
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": f"已规划 {len(outline.sections)} 段大纲：{outline.headline[:32]}",
+                        "progress": 64.0,
+                        "structured": {
+                            "content": _compose_partial_markdown(),
+                            "judgment": outline.headline,
+                            "analysis": outline.judgment_line,
+                            "actions": "",
+                            "timeline": "",
+                        },
+                    })
+
+                def _on_section_started(index: int, plan) -> None:  # noqa: ANN001
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": f"正在生成第 {index + 1} 段：{plan.title}",
+                        "progress": 66.0 + index * 7.0,
+                        "structured": None,
+                    })
+
+                def _on_section_completed(index: int, title: str, section_text: str) -> None:
+                    sections = list(multipass_state.get("sections") or [])
+                    sections.append((title, section_text))
+                    multipass_state["sections"] = sections
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": f"已完成第 {index + 1} 段：{title}",
+                        "progress": min(95.0, 70.0 + (index + 1) * 7.0),
+                        "structured": None,
+                    })
+
+                try:
+                    multipass_outcome = generate_multipass_answer(
+                        question=prompt_for_context,
+                        background_pack=multipass_background_pack,
+                        evidence_summary=evidence_summary.summaryText or "",
+                        full_context=open_context,
+                        ai_service=state.ai,
+                        on_outline_ready=_on_outline_ready,
+                        on_section_started=_on_section_started,
+                        on_section_completed=_on_section_completed,
+                        max_sections=4,
+                        section_max_tokens=4500,
                     )
-                    answer_mode = "grounded_fallback"
-                    evidence_status = "partial" if evidence else "none"
-                    failure_reason = "llm_partial_preserved_after_retry"
-                    final_failure_stage = "primary_generation_partial_preserved"
-                    partial_generation_preserved = True
-                else:
-                    final_failure_stage = "raw_evidence_generation_failed"
-                    generation_failure_detail = f"primary={error.detail}"
+                    if multipass_outcome.sections_generated > 0 and multipass_outcome.markdown.strip():
+                        structured = state.ai._structured_from_plain_answer(multipass_outcome.markdown)  # noqa: SLF001
+                        if not structured.judgment:
+                            structured = structured.model_copy(update={
+                                "judgment": multipass_outcome.outline.headline,
+                                "analysis": multipass_outcome.outline.judgment_line,
+                            })
+                        multipass_used = True
+                        llm_attempt_count = max(llm_attempt_count, multipass_outcome.llm_attempt_count)
+                        if multipass_outcome.failure_stage:
+                            answer_mode = "grounded_fallback"
+                            evidence_status = "partial" if evidence else "none"
+                            final_failure_stage = f"multipass_{multipass_outcome.failure_stage}"
+                            failure_reason = "multipass_partial_failure"
+                    else:
+                        multipass_fallback_reason = "all_sections_failed"
+                except MultipassPlanError as plan_err:
+                    multipass_fallback_reason = f"pass1_failed: {plan_err}"
+                    logger.warning("[multipass] pass1 failed, fallback to single-pass: %s", plan_err)
+                except Exception as exc:  # noqa: BLE001
+                    multipass_fallback_reason = f"multipass_exception: {exc.__class__.__name__}: {exc}"
+                    logger.warning("[multipass] unexpected error, fallback to single-pass", exc_info=True)
+
+            if multipass_used:
+                pass  # 已经成功，跳过单次调用
+            else:
+                try:
+                    llm_attempt_count += 1
+                    structured = state.ai.generate_raw_evidence_response(
+                        prompt_for_context,
+                        open_model_system_instruction,
+                        open_context,
+                        on_partial=push_partial_analysis,
+                        timeout_seconds=generation_timeout_seconds,
+                        max_tokens=5600 if workspace_generation_mode == "consultant_synthesis" else 5200,
+                        enable_thinking=True,
+                    )
+                except AiInvocationError as error:
+                    provider_used = error.provider
+                    model_route = f"AI · {state.ai.model_label(error.provider, model_used)}"
+                    generation_failure_detail = str(error.detail or "").strip() or None
+                    preserved_content, preserved_structured = load_preserved_partial()
+                    if preserved_content:
+                        structured = build_partial_generation_fallback(
+                            prompt,
+                            preserved_content,
+                            error.detail,
+                            partial_structured=preserved_structured,
+                        )
+                        answer_mode = "grounded_fallback"
+                        evidence_status = "partial" if evidence else "none"
+                        failure_reason = "llm_partial_preserved_after_retry"
+                        final_failure_stage = "primary_generation_partial_preserved"
+                        partial_generation_preserved = True
+                    else:
+                        final_failure_stage = "raw_evidence_generation_failed"
+                        generation_failure_detail = f"primary={error.detail}"
+                        structured = AiStructuredResponse(
+                            content="本轮模型没有成功完成回答。系统已命中相关资料，但没有生成可交付文本。你可以重试，或先处理资料缺口/候选动作。",
+                            judgment="模型生成失败，不输出本地模板伪答案。",
+                            analysis=f"主链失败：{error.detail}",
+                            actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
+                            timeline="可立即重试。",
+                        )
+                        answer_mode = "system_failure"
+                        evidence_status = "partial" if evidence else "none"
+                        failure_reason = "llm_generation_failed"
+                except Exception as error:
+                    final_failure_stage = "primary_generation_exception"
+                    generation_failure_detail = str(error)
                     structured = AiStructuredResponse(
-                        content="本轮模型没有成功完成回答。系统已命中相关资料，但没有生成可交付文本。你可以重试，或先处理资料缺口/候选动作。",
+                        content="这次模型没有成功完成回答。系统已经命中相关资料，但没有生成可交付文本。请重试。",
                         judgment="模型生成失败，不输出本地模板伪答案。",
-                        analysis=f"主链失败：{error.detail}",
+                        analysis=f"错误信息：{str(error)}",
                         actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
                         timeline="可立即重试。",
                     )
                     answer_mode = "system_failure"
                     evidence_status = "partial" if evidence else "none"
                     failure_reason = "llm_generation_failed"
-            except Exception as error:
-                final_failure_stage = "primary_generation_exception"
-                generation_failure_detail = str(error)
-                structured = AiStructuredResponse(
-                    content="这次模型没有成功完成回答。系统已经命中相关资料，但没有生成可交付文本。请重试。",
-                    judgment="模型生成失败，不输出本地模板伪答案。",
-                    analysis=f"错误信息：{str(error)}",
-                    actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
-                    timeline="可立即重试。",
-                )
-                answer_mode = "system_failure"
-                evidence_status = "partial" if evidence else "none"
-                failure_reason = "llm_generation_failed"
         if generation_failure_detail:
             llm_error_kind = classify_llm_error_kind(generation_failure_detail)
 
