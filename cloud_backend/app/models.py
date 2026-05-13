@@ -32,6 +32,7 @@ SmartInputIntent = Literal["task_schedule", "record_note", "unknown"]
 class SessionUser(BaseModel):
     id: str
     organizationId: str
+    organizationName: str | None = None
     email: EmailStr
     phone: str | None = None
     fullName: str
@@ -41,6 +42,7 @@ class SessionUser(BaseModel):
     membershipRejectedReason: str | None = None
     departmentId: str | None = None
     departmentName: str | None = None
+    avatarUrl: str | None = None
     isDepartmentLead: bool = False
 
 

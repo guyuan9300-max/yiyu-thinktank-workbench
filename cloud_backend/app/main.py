@@ -648,12 +648,33 @@ def _create_registration_organization(
     return organization_id, display_name
 
 
-def _row_user(row) -> SessionUser:
+_ORG_NAME_CACHE: dict[str, str] = {}
+
+
+def _organization_name(state: AppState, organization_id: str) -> str | None:
+    """读取组织名 + 进程级缓存。手机端在登录后需要立即显示企业身份，这是
+    手机端唯一会"自动出现"的组织信息，必须保证 SessionUser 出口都带上。"""
+    if not organization_id:
+        return None
+    cached = _ORG_NAME_CACHE.get(organization_id)
+    if cached is not None:
+        return cached or None
+    row = state.db.fetchone("SELECT name FROM organizations WHERE id = ?", (organization_id,))
+    name = str(row["name"]).strip() if row and row["name"] else ""
+    _ORG_NAME_CACHE[organization_id] = name
+    return name or None
+
+
+def _row_user(state: AppState, row) -> SessionUser:
     department_id = str(_row_get(row, "department_id") or "") or None
     department_name = str(_row_get(row, "department_name") or "") or None
+    organization_id = str(row["organization_id"])
+    organization_name = _organization_name(state, organization_id)
+    avatar_url = str(_row_get(row, "avatar_url") or "") or None
     return SessionUser(
         id=str(row["id"]),
-        organizationId=str(row["organization_id"]),
+        organizationId=organization_id,
+        organizationName=organization_name,
         email=str(row["email"]),
         phone=str(_row_get(row, "phone_number") or "") or None,
         fullName=str(row["full_name"]),
@@ -663,6 +684,7 @@ def _row_user(row) -> SessionUser:
         membershipRejectedReason=str(_row_get(row, "membership_rejected_reason") or _row_get(row, "rejected_reason") or "") or None,
         departmentId=department_id,
         departmentName=department_name,
+        avatarUrl=avatar_url,
         isDepartmentLead=bool(int(row["is_department_lead"] or 0)) if "is_department_lead" in row.keys() else False,
     )
 
@@ -3303,6 +3325,41 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
     role_ids = {role.id for role in payload.roles if role.id}
     focus_item_ids = {item.id for item in payload.focusItems if item.id}
 
+    # ───── TEMP DEBUG: trace bindings + dept-leader payload to diagnose missing department assignments ─────
+    import sys as _dbg_sys
+    print(f"[ORG-SAVE-DEBUG] called by user={current_user.id} org={organization_id}", file=_dbg_sys.stderr, flush=True)
+    print(f"[ORG-SAVE-DEBUG] department_ids={sorted(department_ids)}", file=_dbg_sys.stderr, flush=True)
+    print(f"[ORG-SAVE-DEBUG] allowed_user_ids={sorted(allowed_user_ids)}", file=_dbg_sys.stderr, flush=True)
+    for _d in payload.departments:
+        print(f"[ORG-SAVE-DEBUG] dept name={_d.name!r} id={_d.id!r} leaderUserId={_d.leaderUserId!r} leaderName={_d.leaderName!r}", file=_dbg_sys.stderr, flush=True)
+    print(f"[ORG-SAVE-DEBUG] bindings count={len(payload.bindings)}", file=_dbg_sys.stderr, flush=True)
+    for _b in payload.bindings:
+        print(f"[ORG-SAVE-DEBUG] binding userId={_b.userId!r} departmentId={_b.departmentId!r} primaryRoleId={_b.primaryRoleId!r} isManager={_b.isManager}", file=_dbg_sys.stderr, flush=True)
+    # ───── /TEMP DEBUG ─────
+
+    # Backfill leaderUserId by leaderName for departments where the frontend tree editor
+    # left leaderUserId empty (it stores only the typed name into leaderName, never the user id).
+    # Without this, leader_user_id stays NULL in DB and downstream features like
+    # _review_department_for_session_user can't recognise the department's leader.
+    employee_name_to_id: dict[str, str] = {}
+    for emp_row in state.db.fetchall(
+        "SELECT id, full_name FROM employee_accounts WHERE organization_id = ? AND account_status = 'approved'",
+        (organization_id,),
+    ):
+        full_name = str(emp_row["full_name"] or "").strip().lower()
+        if full_name and full_name not in employee_name_to_id:
+            employee_name_to_id[full_name] = str(emp_row["id"])
+    for dept in payload.departments:
+        if dept.leaderUserId:
+            continue
+        leader_name_key = (dept.leaderName or "").strip().lower()
+        if not leader_name_key:
+            continue
+        resolved_id = employee_name_to_id.get(leader_name_key)
+        if resolved_id:
+            dept.leaderUserId = resolved_id
+            print(f"[ORG-SAVE-DEBUG] backfilled leaderUserId for dept {dept.id!r}: name={dept.leaderName!r} -> id={resolved_id!r}", file=_dbg_sys.stderr, flush=True)
+
     def scoped_user_id(value: str | None) -> str | None:
         if not value:
             return None
@@ -3513,6 +3570,29 @@ def _save_org_model_profile(state: AppState, current_user: SessionUser, payload:
                 1 if binding.isManager else 0,
                 timestamp,
                 binding.userId,
+                organization_id,
+            ),
+        )
+
+    # Reverse-fill: a department's leaderUserId means that user belongs to this department and is its lead,
+    # even if the admin never opened the "people" tab to set the binding.departmentId explicitly.
+    # Without this, the previous loop's UPDATE writes NULL and downstream review/permission features can't
+    # resolve department membership from leader-only configuration.
+    for department in payload.departments:
+        leader_id = scoped_user_id(department.leaderUserId)
+        if not leader_id:
+            continue
+        state.db.execute(
+            """
+            UPDATE employee_accounts
+               SET department_id = ?, department_name = ?, is_department_lead = 1, updated_at = ?
+             WHERE id = ? AND organization_id = ?
+            """,
+            (
+                department.id,
+                department.name.strip(),
+                timestamp,
+                leader_id,
                 organization_id,
             ),
         )
@@ -3774,7 +3854,7 @@ def _require_auth(app: FastAPI, authorization: str | None = Header(default=None)
     user_row = _repair_membership_status_from_account(state, user_row)
     if str(user_row["account_status"]) == "disabled":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已停用")
-    return _row_user(user_row)
+    return _row_user(state, user_row)
 
 
 def _require_admin(app: FastAPI, authorization: str | None = Header(default=None)) -> SessionUser:
@@ -5008,7 +5088,7 @@ class FeishuIdentityResolver:
             (organization_id, sender_open_id),
         )
         if mapped:
-            return _row_user(mapped), None
+            return _row_user(self.state, mapped), None
 
         profile = _feishu_fetch_contact_user_profile(
             tenant_access_token=tenant_access_token,
@@ -5034,7 +5114,7 @@ class FeishuIdentityResolver:
             match_status="matched",
             last_error=None,
         )
-        return _row_user(matched_row), None
+        return _row_user(self.state, matched_row), None
 
     def _match_employee_account(self, *, organization_id: str, profile: FeishuSenderProfile):
         candidate_sets = [
@@ -8721,7 +8801,7 @@ def _backfill_task_tag_ids(state: AppState) -> None:
     fallback_user = state.db.fetchone("SELECT * FROM employee_accounts WHERE organization_id = ? ORDER BY created_at ASC LIMIT 1", (org_id,))
     if not fallback_user:
         return
-    fallback_session = _row_user(fallback_user)
+    fallback_session = _row_user(state, fallback_user)
     for row in state.db.fetchall("SELECT id, organization_id, tags_json, tag_ids_json FROM tasks"):
         tag_ids = [str(item) for item in from_json(row["tag_ids_json"], [])] if isinstance(from_json(row["tag_ids_json"], []), list) else []
         if tag_ids:
@@ -9026,7 +9106,7 @@ def create_app() -> FastAPI:
         return row
 
     def _issue_auth_tokens(row, *, session_id: str, refresh_token: str) -> AuthTokenResponse:
-        session_user = _row_user(row)
+        session_user = _row_user(state, row)
         if session_user.membershipStatus == "approved":
             organization_row = state.db.fetchone("SELECT id, name FROM organizations WHERE id = ?", (session_user.organizationId,))
             if organization_row:
@@ -9268,7 +9348,79 @@ def create_app() -> FastAPI:
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
         if not row:
             raise HTTPException(status_code=404, detail="用户不存在。")
-        return _row_user(row)
+        return _row_user(state, row)
+
+    # 头像上传 ── 手机端唯一允许的"个人字段"修改入口。后端中转：
+    # 文件落 state.data_dir / "avatars" / {user_id}.{ext}，对外暴露
+    # /api/public/avatars/{user_id} 公共 URL（已在 auth middleware open paths 里）。
+    @app.post("/api/v1/me/avatar", response_model=SessionUser)
+    async def upload_my_avatar(
+        file: UploadFile = File(...),
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> SessionUser:
+        content_type = (file.content_type or "").lower()
+        allowed = {
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/heic": ".heic",
+        }
+        ext = allowed.get(content_type)
+        if not ext and file.filename:
+            guessed_ext = Path(file.filename).suffix.lower()
+            if guessed_ext in {".jpg", ".jpeg", ".png", ".webp", ".heic"}:
+                ext = ".jpg" if guessed_ext == ".jpeg" else guessed_ext
+        if not ext:
+            raise HTTPException(status_code=415, detail="仅支持 jpg / png / webp / heic 头像")
+
+        avatars_dir = state.data_dir / "avatars"
+        avatars_dir.mkdir(parents=True, exist_ok=True)
+        # 先清掉旧的（不同后缀）—— 一个用户只保留一份。
+        for old in avatars_dir.glob(f"{current_user.id}.*"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+        target_path = avatars_dir / f"{current_user.id}{ext}"
+        # 5MB 上限：单图够用、防止异常大文件吃满磁盘。
+        size_cap = 5 * 1024 * 1024
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > size_cap:
+                raise HTTPException(status_code=413, detail="头像文件超过 5MB 限制")
+            chunks.append(chunk)
+        target_path.write_bytes(b"".join(chunks))
+
+        timestamp = now_iso()
+        avatar_url = f"/api/public/avatars/{current_user.id}?v={int(datetime.now().timestamp())}"
+        state.db.execute(
+            "UPDATE employee_accounts SET avatar_url = ?, updated_at = ? WHERE id = ?",
+            (avatar_url, timestamp, current_user.id),
+        )
+        row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
+        if not row:
+            raise HTTPException(status_code=404, detail="用户不存在。")
+        return _row_user(state, row)
+
+    @app.get("/api/public/avatars/{user_id}")
+    def get_public_avatar(user_id: str) -> FileResponse:
+        # 用户 id 必须是 UUID 形态，避免路径穿越。
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{1,64}", user_id):
+            raise HTTPException(status_code=404, detail="头像不存在")
+        avatars_dir = state.data_dir / "avatars"
+        for ext in (".jpg", ".png", ".webp", ".heic"):
+            candidate = avatars_dir / f"{user_id}{ext}"
+            if candidate.exists() and candidate.is_file():
+                media_type = mimetypes.guess_type(candidate.name)[0] or "image/jpeg"
+                return FileResponse(candidate, media_type=media_type, filename=candidate.name)
+        raise HTTPException(status_code=404, detail="头像不存在")
 
     @app.post("/api/v1/auth/change-password")
     def change_password(
@@ -9487,7 +9639,7 @@ def create_app() -> FastAPI:
         row = state.db.fetchone("SELECT * FROM employee_accounts WHERE id = ?", (current_user.id,))
         if not row:
             raise HTTPException(status_code=404, detail="用户不存在")
-        return _org_membership_summary(state, _row_user(row))
+        return _org_membership_summary(state, _row_user(state, row))
 
     @app.get("/api/v1/org-integrations/feishu", response_model=OrgFeishuIntegrationRecord)
     def get_org_feishu_integration(

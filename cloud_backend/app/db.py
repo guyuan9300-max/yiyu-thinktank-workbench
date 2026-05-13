@@ -885,6 +885,7 @@ class Database:
             self._ensure_column("employee_accounts", "membership_submitted_at", "TEXT")
             self._ensure_column("employee_accounts", "membership_rejected_reason", "TEXT")
             self._ensure_column("employee_accounts", "feishu_mobile", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("employee_accounts", "avatar_url", "TEXT")
             self._ensure_column("clients", "type", "TEXT NOT NULL DEFAULT 'client'")
             self.conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_accounts_phone_number ON employee_accounts(phone_number) WHERE phone_number IS NOT NULL AND phone_number != ''"
