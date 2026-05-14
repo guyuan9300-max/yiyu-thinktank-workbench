@@ -8,7 +8,8 @@
   "scripts": {
     "dev:renderer": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "dev:main": "tsc -p tsconfig.node.json --watch",
-    "dev:electron": "wait-on tcp:4173 build/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
+    "dev:electron": "wait-on tcp:4173 build/main/main.js && cross-env YIYU_REMOTE_CLOUD_API_URL=http://101.126.34.232 VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
+    "dev:electron:local-cloud": "wait-on tcp:4173 build/main/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:4173 node scripts/run-local-electron.mjs .",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
     "typecheck:renderer": "tsc --noEmit --pretty false --incremental false -p tsconfig.json",
     "build:renderer": "npm run typecheck:renderer && vite build",

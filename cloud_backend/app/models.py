@@ -937,7 +937,11 @@ class TaskSettingsRecord(BaseModel):
 class TaskCollaboratorRecord(BaseModel):
     userId: str
     fullName: str
-    email: EmailStr
+    # NOTE: kept as plain str (not EmailStr) because the directory holds placeholder addresses
+    # for archived employees like "archived+xxx@klngo.invalid" — RFC reserves ".invalid" TLD so
+    # EmailStr would reject them and bubble a 500 to every POST /api/v1/tasks that touches such
+    # a collaborator. Display layer should still treat this as best-effort contact info.
+    email: str
     orderIndex: int
     isOwner: bool
     inboxStatus: CollaboratorInboxStatus
