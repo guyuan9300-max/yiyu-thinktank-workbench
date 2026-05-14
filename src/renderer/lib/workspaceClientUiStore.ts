@@ -513,11 +513,10 @@ export function workspaceClientUiReducer(
       };
 
     case 'setRightTab':
+      // 不再针对默认值做压缩：所有切换都显式存进 map。避免和 getWorkspaceRightTab 的默认值耦合。
       return {
         ...state,
-        rightTabByClient: action.tab === 'evidence'
-          ? removeKey(state.rightTabByClient, action.clientId)
-          : { ...state.rightTabByClient, [action.clientId]: action.tab },
+        rightTabByClient: { ...state.rightTabByClient, [action.clientId]: action.tab },
       };
 
     case 'setAnswerActionState':
