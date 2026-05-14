@@ -26,7 +26,7 @@ export type WorkspaceRightPanelEvidenceSnapshot = {
   evidenceKey: string;
 };
 
-export type WorkspaceRightTabKey = 'overview' | 'evidence' | 'memory' | 'proposals' | 'tools';
+export type WorkspaceRightTabKey = 'overview' | 'files' | 'evidence' | 'memory' | 'proposals' | 'tools';
 export type WorkspaceSurfaceMode = 'setup' | 'workspace';
 export type WorkspaceImportDropZone = 'buffer' | 'composer' | null;
 export type WorkspaceAnswerActionName = 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | '';

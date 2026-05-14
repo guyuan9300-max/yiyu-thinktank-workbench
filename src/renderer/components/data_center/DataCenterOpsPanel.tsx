@@ -9,6 +9,7 @@ import {
   getWorkspaceDataCenterReadiness,
   runWorkspaceDataCenterReadinessAction,
 } from '../../lib/api';
+import { LocalAiHealthCard } from './LocalAiHealthCard';
 
 type FlashFn = (type: 'success' | 'error' | 'info', text: string) => void;
 
@@ -231,6 +232,9 @@ export function DataCenterOpsPanel({ clientId, onRefreshWorkspace, flash }: Data
           {error}
         </div>
       )}
+
+      {/* 本地 AI 加速卡片：与 readiness 无关，无论 summary 是否加载完都显示 */}
+      <LocalAiHealthCard />
 
       {isLoading && !readiness ? (
         <div className="mt-3 rounded-2xl border border-white bg-white px-3 py-3 text-[12px] font-bold text-slate-500">

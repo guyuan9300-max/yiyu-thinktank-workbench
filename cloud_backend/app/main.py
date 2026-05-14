@@ -86,6 +86,8 @@ from app.models import (
     MobileWorkspaceCompatResponse,
     MobileWorkspaceCompatTaskRecord,
     MobileWorkspaceKnowledgeStatusRecord,
+    FeishuUserBindingRecord,
+    FeishuUserBindingStartResult,
     OrgDepartmentRecord,
     OrgFeishuIntegrationAuditRecord,
     OrgFeishuIntegrationRecord,
@@ -9858,6 +9860,47 @@ def create_app() -> FastAPI:
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> FeishuDeliveryProfileRecord:
         return _feishu_delivery_profile_record(state, current_user)
+
+    # ─── 飞书 OAuth 用户绑定（stub） ─────────────────────────────────────
+    #
+    # 手机端 profile 页一打开就调 `GET /api/v1/settings/feishu-user-binding`，
+    # 但 cloud_backend 目前只实现了"手机号匹配"的投放档案（feishu-delivery-profile），
+    # OAuth 绑定流（带 openId / authorizeUrl 等）尚未落地 —— 手机端命中 404 会
+    # 整屏弹 Alert 干扰用户主流程。
+    #
+    # 先注册 stub 让 mobile 不再 404：GET 返回未绑定状态、POST/DELETE 返回明确错误
+    # 提示当前不支持。等真的接入 OAuth 后替换 stub 即可。
+    @app.get("/api/v1/settings/feishu-user-binding", response_model=FeishuUserBindingRecord)
+    def get_feishu_user_binding_stub(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuUserBindingRecord:
+        return FeishuUserBindingRecord(
+            linked=False,
+            readyForAuthorization=False,
+            userId=current_user.id,
+            lastError=None,
+        )
+
+    @app.post("/api/v1/settings/feishu-user-binding/start", response_model=FeishuUserBindingStartResult)
+    def start_feishu_user_binding_stub(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuUserBindingStartResult:
+        # 直接 503 比 stub URL 更诚实：客户端会显示"暂未支持"而不是跳到死链接。
+        raise HTTPException(
+            status_code=503,
+            detail="飞书 OAuth 绑定暂未在云端开放，请使用电脑端「系统设置 → 飞书集成」。",
+        )
+
+    @app.delete("/api/v1/settings/feishu-user-binding", response_model=FeishuUserBindingRecord)
+    def clear_feishu_user_binding_stub(
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> FeishuUserBindingRecord:
+        # 没绑就没东西可解 —— 直接返回未绑定状态即可。
+        return FeishuUserBindingRecord(
+            linked=False,
+            readyForAuthorization=False,
+            userId=current_user.id,
+        )
 
     @app.post("/api/v1/me/feishu-delivery-profile", response_model=FeishuDeliveryProfileRecord)
     def save_feishu_delivery_profile(

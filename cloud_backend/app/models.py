@@ -177,6 +177,36 @@ class FeishuDeliveryProfileSavePayload(BaseModel):
     mobile: str | None = None
 
 
+# 手机端"飞书绑定"入口期待的 OAuth 风格响应（mobile FeishuUserBinding 同构）。
+# 目前 cloud_backend 上 OAuth 绑定流程未实现，本类型用于 stub 路由，让 mobile
+# profile 页一进入不再 404 弹 Alert。后续真正接入 OAuth 时只需替换 stub。
+class FeishuUserBindingRecord(BaseModel):
+    linked: bool = False
+    readyForAuthorization: bool = False
+    appId: str = ""
+    userId: str
+    openId: str | None = None
+    unionId: str | None = None
+    feishuUserId: str | None = None
+    name: str | None = None
+    enName: str | None = None
+    avatarUrl: str | None = None
+    email: str | None = None
+    tenantKey: str | None = None
+    boundAt: str | None = None
+    lastVerifiedAt: str | None = None
+    lastError: str | None = None
+
+
+class FeishuUserBindingStartResult(BaseModel):
+    authorizeUrl: str = ""
+    state: str = ""
+    expiresAt: str = ""
+    callbackUrl: str = ""
+    qrReady: bool = False
+    qrBlockedReason: str | None = None
+
+
 class FeishuTaskNotificationRecord(BaseModel):
     id: str
     organizationId: str

@@ -579,6 +579,8 @@ from app.models import (
     IntelligenceRefreshObjectResult,
     IntelligenceSourceDiagnosticsResponse,
     IntelligenceFeedbackDiagnosticsResponse,
+    IntelligenceItemChatResponse,
+    TopicCandidateChatMessageRecord,
 )
 from app.services.intelligence_search_intents import IntelligenceSearchScope
 from app.services.ai import (
@@ -618,10 +620,17 @@ from app.services.workspace_data_center_adapter import (
     build_consultant_synthesis_material_pack,
     build_dna_tool_context_from_workspace,
     build_open_workspace_answer_context,
+    build_workspace_background_pack,
     build_workspace_context_quality_summary,
     build_workspace_data_center_request,
     build_workspace_data_center_request_from_route,
     build_workspace_dc_response_meta,
+)
+from app.services.workspace_chat_multipass import (
+    AnswerOutline,
+    MultipassAnswer,
+    MultipassPlanError,
+    generate_multipass_answer,
 )
 from app.services.workspace_file_search import build_file_search_user_summary
 from app.services.workspace_followups import (
@@ -7952,7 +7961,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     _cloud_task_board_cache: dict[str, object] = {"data": None, "ts": 0.0}
-    _cloud_tasks_pulled_to_local: bool = False
+    # 节流"从云端拉手机端任务回本地"——30 秒内只拉一次。
+    # 历史上这里是个 ONE-TIME flag（_cloud_tasks_pulled_to_local），意味着桌面 backend
+    # 启动后只拉过一次，后续手机端在 cloud 创建的任务永远不会同步回桌面，是个严重 bug。
+    # 改成时间戳节流：用户打开任务/工作台时如果距上次拉超过 30s 就重新拉，保证手机
+    # 创建的任务在 30s 内能在桌面端"任务与日程"看到。
+    _cloud_tasks_last_pulled_at: float = 0.0
+    _cloud_tasks_pull_in_flight: bool = False
+    _CLOUD_TASKS_PULL_TTL_SECONDS: float = 30.0
 
     def _upsert_cloud_task_list_shadow_local(
         payload: dict[str, object],
@@ -8717,23 +8733,39 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return restored
 
     def _pull_cloud_tasks_to_local() -> None:
-        """One-time pull: download cloud tasks and upsert them into local SQLite."""
-        nonlocal _cloud_tasks_pulled_to_local
-        if _cloud_tasks_pulled_to_local:
+        """Throttled pull: download cloud tasks and upsert them into local SQLite.
+
+        30 秒节流：用户在桌面端打开任务页 / 工作台时调本函数，距离上次拉超过
+        TTL 才重新拉。这样：
+          - 手机端在云端新建的任务，桌面端在 30 秒内必能看到（用户切到"任务与
+            日程"会自动触发拉取）
+          - 不会每个 endpoint 调用都打云端（防止过载 + 避免请求风暴）
+          - 拉失败时不更新 timestamp，下次调用会立刻重试
+        """
+        nonlocal _cloud_tasks_last_pulled_at, _cloud_tasks_pull_in_flight
+        if _cloud_tasks_pull_in_flight:
+            # 同一进程内已有拉取在飞 —— 避免重入，等当前拉完。
             return
-        _cloud_tasks_pulled_to_local = True
+        now = time.time()
+        if now - _cloud_tasks_last_pulled_at < _CLOUD_TASKS_PULL_TTL_SECONDS:
+            return
         if not get_cloud_token():
             return
         if not _ensure_task_tag_schema_for_cloud_pull():
-            _cloud_tasks_pulled_to_local = False
             return
+        _cloud_tasks_pull_in_flight = True
         try:
             payload = cloud_request("GET", "/api/v1/tasks", timeout=10.0)
         except Exception:
-            _cloud_tasks_pulled_to_local = False  # retry next time
+            # 拉失败不更新 timestamp，下次调用会立刻重试
+            _cloud_tasks_pull_in_flight = False
             return
+        finally:
+            _cloud_tasks_pull_in_flight = False
         if not isinstance(payload, dict):
             return
+        # 成功拉到（哪怕 payload 是空 dict）—— 更新 timestamp 防止 30s 内重复拉
+        _cloud_tasks_last_pulled_at = time.time()
         timestamp = now_iso()
         # Mirror cloud lists locally
         for item in payload.get("lists", []):
@@ -31010,6 +31042,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity("trash.clear", "trash", "", result)
         return result
 
+    # === 统一文件夹迁移 API（一次性使用） ===
+
+    @app.post("/api/v1/admin/unified-workspace-migrate")
+    def unified_workspace_migrate_endpoint(dry_run: bool = True) -> dict:
+        from app.services import unified_workspace_migrator
+        report = unified_workspace_migrator.migrate_all_clients(state.db, state.data_dir, dry_run=dry_run)
+        log_activity(
+            "admin.unified_workspace_migrate",
+            "admin",
+            "",
+            {"dryRun": dry_run, "filesMoved": report.total_files_moved, "filesTrashed": report.total_files_trashed_as_dedup},
+        )
+        return {
+            "dryRun": report.dry_run,
+            "totalFilesMoved": report.total_files_moved,
+            "totalFilesTrashedAsDedup": report.total_files_trashed_as_dedup,
+            "totalFamiliesMerged": report.total_families_merged,
+            "totalDbPathsUpdated": report.total_db_paths_updated,
+            "totalFolderRowsRemoved": report.total_folder_rows_removed,
+            "formatted": unified_workspace_migrator.format_report(report),
+            "perClient": [
+                {
+                    "clientId": cr.client_id,
+                    "clientName": cr.client_name,
+                    "filesMoved": cr.files_moved,
+                    "filesTrashedAsDedup": cr.files_trashed_as_dedup,
+                    "familiesMerged": cr.families_merged,
+                    "dbPathsUpdated": cr.db_paths_updated,
+                    "folderRowsRemoved": cr.folder_rows_removed,
+                    "errorCount": len(cr.errors),
+                    "errors": cr.errors[:5],
+                    "sampleMoves": cr.sample_moves[:3],
+                    "sampleDedups": cr.sample_dedups[:3],
+                }
+                for cr in report.per_client
+            ],
+        }
+
     # === 输入广度线程（input-breadth）：语音识别模型配置 API ===
 
     @app.get("/api/v1/settings/speech-model", response_model=SpeechModelSettingsRecord)
@@ -31208,6 +31278,88 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 success=False,
                 errorMessage=f"{exc.__class__.__name__}：{exc}",
             )
+
+    # ──────────────────────────────────────────────────────────
+    # Phase 3：本地 AI 推理调度 governor + 任务队列 端点
+    # ──────────────────────────────────────────────────────────
+
+    @app.get("/api/v1/local-ai/health")
+    def get_local_ai_health() -> dict[str, object]:
+        """返回 governor 当前判定 + 机器健康快照（温度/空闲/电池/Ollama/内存）。"""
+        from app.services.local_model_optimizer import inspect_local_inference_health
+        return inspect_local_inference_health(state.db)
+
+    @app.get("/api/v1/local-ai/queue")
+    def get_local_ai_queue(
+        status: str | None = None,
+        task_type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """查看队列。可按 status (queued/running/completed/failed) 和
+        task_type (visual_ocr/document_card_generation/...) 过滤。"""
+        where: list[str] = []
+        params: list[object] = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if task_type:
+            where.append("task_type = ?")
+            params.append(task_type)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+        clipped_limit = max(1, min(500, int(limit or 50)))
+
+        rows = state.db.fetchall(
+            f"""
+            SELECT id, task_type, status, priority, client_id,
+                   knowledge_document_id, model_profile_id, attempts,
+                   max_attempts, last_error, locked_by, started_at,
+                   completed_at, created_at, updated_at,
+                   substr(payload_json, 1, 500) AS payload_preview,
+                   substr(result_json, 1, 500)  AS result_preview
+            FROM local_model_tasks
+            {clause}
+            ORDER BY
+              CASE status
+                WHEN 'running' THEN 0
+                WHEN 'queued' THEN 1
+                WHEN 'failed' THEN 2
+                WHEN 'completed' THEN 3
+                ELSE 9
+              END,
+              priority ASC,
+              created_at DESC
+            LIMIT ?
+            """,
+            (*params, clipped_limit),
+        )
+
+        # 统计每种 status 的总数（不受 limit 影响，便于看大盘）
+        status_rows = state.db.fetchall(
+            "SELECT status, COUNT(*) AS n FROM local_model_tasks GROUP BY status"
+        )
+        status_counts = {str(r["status"]): int(r["n"]) for r in status_rows}
+
+        return {
+            "tasks": [dict(r) for r in rows],
+            "totalByStatus": status_counts,
+            "filter": {"status": status, "task_type": task_type, "limit": clipped_limit},
+        }
+
+    @app.post("/api/v1/local-ai/run-now")
+    def run_local_ai_now(force: bool = False) -> dict[str, object]:
+        """强制触发一次队列调度。force=True 时绕开 window/governor 直接跑一条。
+
+        正常情况下后台 worker 每 60s 自动触发；这个端点是给用户 "立刻跑一条" 用的。
+        """
+        from app.services.local_model_optimizer import run_due_local_model_tasks
+        result = run_due_local_model_tasks(
+            state.db,
+            getattr(state, "ai", None),
+            batch_size=1,
+            force=bool(force),
+        )
+        return result
 
     @app.get(
         "/api/v1/local-asr/diarization/status",
@@ -38574,8 +38726,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             open_model_system_instruction = (
                 "你是一名资深战略咨询顾问，长期陪伴公益组织做战略、组织、业务和品牌升级。"
                 "这个身份只用于内部思考，不要在正文中自称顾问。\n"
+                "上下文里的「背景包」是你已经掌握的画像（客户档案/已确认判断/活跃项目/近期会议/活跃任务/矛盾/待澄清），不需要从资料里再确认；但具体性必须从原始资料里挖。\n"
                 "请根据资料直接回答用户问题，详细、开放、深入地介绍客户。\n"
                 "像真正了解这个组织的人在向合作伙伴或内部决策者介绍客户，而不是资料摘要器。\n"
+                "答案要落到具体——具体的项目名、合作方、活动名、数字、时间节点、决议、人物角色、阶段进展都要点出来；不能只停在战略哲学层的抽象总结。\n"
                 "可以自由组织结构，不需要套固定模板。\n"
                 "要讲清楚客户是什么组织、为什么重要、解决什么问题、怎么做、业务线之间的关系、当前变化、核心资产和未来值得关注什么。\n"
                 "可以做综合判断和解释，但不要编造资料中没有的硬事实；不确定信息自然说明是当前资料显示或仍需进一步确认。\n"
@@ -38584,8 +38738,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         else:
             open_model_system_instruction = (
                 "直接回答用户问题。\n"
-                "只基于给定资料判断。\n"
-                "可以自由组织结构和长度。\n"
+                "上下文里的「背景包」是已知事实清单，不需要再从资料里确认；但答案的具体性（项目名、合作方、活动名、数字、时间节点、人物角色）必须从原始资料里挖。\n"
+                "不要满足于在画像层面做抽象总结，要让读者看到具体在做什么、跟谁、什么时候、做到什么程度。\n"
+                "只基于资料和背景包判断；可以自由组织结构和长度。\n"
                 "不要编造，也不要暴露系统过程。"
             )
         if intro_like_prompt and workspace_generation_mode != "consultant_synthesis":
@@ -38706,60 +38861,167 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             answer_mode = "grounded_answer"
             evidence_status = "sufficient" if kernel_result.searchResult and kernel_result.searchResult.hits else "none"
         else:
-            try:
-                llm_attempt_count += 1
-                structured = state.ai.generate_raw_evidence_response(
-                    prompt_for_context,
-                    open_model_system_instruction,
-                    open_context,
-                    on_partial=push_partial_analysis,
-                    timeout_seconds=generation_timeout_seconds,
-                    max_tokens=5600 if workspace_generation_mode == "consultant_synthesis" else 5200,
-                    enable_thinking=True,
-                )
-            except AiInvocationError as error:
-                provider_used = error.provider
-                model_route = f"AI · {state.ai.model_label(error.provider, model_used)}"
-                generation_failure_detail = str(error.detail or "").strip() or None
-                preserved_content, preserved_structured = load_preserved_partial()
-                if preserved_content:
-                    structured = build_partial_generation_fallback(
-                        prompt,
-                        preserved_content,
-                        error.detail,
-                        partial_structured=preserved_structured,
+            # P0+: Outline-First 多段生成（Pass 1 出大纲 → Pass 2-N 分段写）
+            # 通过 env YIYU_WORKSPACE_MULTIPASS_ENABLED=0 关闭以走回原单次调用。
+            multipass_enabled = os.environ.get("YIYU_WORKSPACE_MULTIPASS_ENABLED", "1") == "1"
+            multipass_used = False
+            multipass_fallback_reason: str | None = None
+            multipass_outcome: MultipassAnswer | None = None
+
+            if multipass_enabled:
+                multipass_state: dict[str, Any] = {
+                    "headline": "",
+                    "judgment_line": "",
+                    "sections": [],  # list[tuple[title, text]]
+                }
+                multipass_background_pack = build_workspace_background_pack(workspace_snapshot) or ""
+
+                def _compose_partial_markdown() -> str:
+                    headline = str(multipass_state.get("headline") or "").strip()
+                    sections = multipass_state.get("sections") or []
+                    lines: list[str] = []
+                    if headline:
+                        lines.append(f"# {headline}")
+                        lines.append("")
+                    for idx, (title, body) in enumerate(sections):
+                        if idx > 0:
+                            lines.append("")
+                            lines.append(f"## {str(title).strip()}")
+                            lines.append("")
+                        lines.append(str(body).strip())
+                    rendered = "\n".join(lines).strip()
+                    if not rendered and headline:
+                        rendered = f"# {headline}\n\n（正在生成详细内容…）"
+                    return rendered
+
+                def _on_outline_ready(outline: AnswerOutline) -> None:
+                    multipass_state["headline"] = outline.headline
+                    multipass_state["judgment_line"] = outline.judgment_line
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": f"已规划 {len(outline.sections)} 段大纲：{outline.headline[:32]}",
+                        "progress": 64.0,
+                        "structured": {
+                            "content": _compose_partial_markdown(),
+                            "judgment": outline.headline,
+                            "analysis": outline.judgment_line,
+                            "actions": "",
+                            "timeline": "",
+                        },
+                    })
+
+                def _on_section_started(index: int, plan) -> None:  # noqa: ANN001
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": f"正在生成第 {index + 1} 段：{plan.title}",
+                        "progress": 66.0 + index * 7.0,
+                        "structured": None,
+                    })
+
+                def _on_section_completed(index: int, title: str, section_text: str) -> None:
+                    sections = list(multipass_state.get("sections") or [])
+                    sections.append((title, section_text))
+                    multipass_state["sections"] = sections
+                    push_partial_analysis({
+                        "content": _compose_partial_markdown(),
+                        "stageLabel": f"已完成第 {index + 1} 段：{title}",
+                        "progress": min(95.0, 70.0 + (index + 1) * 7.0),
+                        "structured": None,
+                    })
+
+                try:
+                    multipass_outcome = generate_multipass_answer(
+                        question=prompt_for_context,
+                        background_pack=multipass_background_pack,
+                        evidence_summary=evidence_summary.summaryText or "",
+                        full_context=open_context,
+                        ai_service=state.ai,
+                        on_outline_ready=_on_outline_ready,
+                        on_section_started=_on_section_started,
+                        on_section_completed=_on_section_completed,
+                        max_sections=4,
+                        section_max_tokens=4500,
                     )
-                    answer_mode = "grounded_fallback"
-                    evidence_status = "partial" if evidence else "none"
-                    failure_reason = "llm_partial_preserved_after_retry"
-                    final_failure_stage = "primary_generation_partial_preserved"
-                    partial_generation_preserved = True
-                else:
-                    final_failure_stage = "raw_evidence_generation_failed"
-                    generation_failure_detail = f"primary={error.detail}"
+                    if multipass_outcome.sections_generated > 0 and multipass_outcome.markdown.strip():
+                        structured = state.ai._structured_from_plain_answer(multipass_outcome.markdown)  # noqa: SLF001
+                        if not structured.judgment:
+                            structured = structured.model_copy(update={
+                                "judgment": multipass_outcome.outline.headline,
+                                "analysis": multipass_outcome.outline.judgment_line,
+                            })
+                        multipass_used = True
+                        llm_attempt_count = max(llm_attempt_count, multipass_outcome.llm_attempt_count)
+                        if multipass_outcome.failure_stage:
+                            answer_mode = "grounded_fallback"
+                            evidence_status = "partial" if evidence else "none"
+                            final_failure_stage = f"multipass_{multipass_outcome.failure_stage}"
+                            failure_reason = "multipass_partial_failure"
+                    else:
+                        multipass_fallback_reason = "all_sections_failed"
+                except MultipassPlanError as plan_err:
+                    multipass_fallback_reason = f"pass1_failed: {plan_err}"
+                    logger.warning("[multipass] pass1 failed, fallback to single-pass: %s", plan_err)
+                except Exception as exc:  # noqa: BLE001
+                    multipass_fallback_reason = f"multipass_exception: {exc.__class__.__name__}: {exc}"
+                    logger.warning("[multipass] unexpected error, fallback to single-pass", exc_info=True)
+
+            if multipass_used:
+                pass  # 已经成功，跳过单次调用
+            else:
+                try:
+                    llm_attempt_count += 1
+                    structured = state.ai.generate_raw_evidence_response(
+                        prompt_for_context,
+                        open_model_system_instruction,
+                        open_context,
+                        on_partial=push_partial_analysis,
+                        timeout_seconds=generation_timeout_seconds,
+                        max_tokens=5600 if workspace_generation_mode == "consultant_synthesis" else 5200,
+                        enable_thinking=True,
+                    )
+                except AiInvocationError as error:
+                    provider_used = error.provider
+                    model_route = f"AI · {state.ai.model_label(error.provider, model_used)}"
+                    generation_failure_detail = str(error.detail or "").strip() or None
+                    preserved_content, preserved_structured = load_preserved_partial()
+                    if preserved_content:
+                        structured = build_partial_generation_fallback(
+                            prompt,
+                            preserved_content,
+                            error.detail,
+                            partial_structured=preserved_structured,
+                        )
+                        answer_mode = "grounded_fallback"
+                        evidence_status = "partial" if evidence else "none"
+                        failure_reason = "llm_partial_preserved_after_retry"
+                        final_failure_stage = "primary_generation_partial_preserved"
+                        partial_generation_preserved = True
+                    else:
+                        final_failure_stage = "raw_evidence_generation_failed"
+                        generation_failure_detail = f"primary={error.detail}"
+                        structured = AiStructuredResponse(
+                            content="本轮模型没有成功完成回答。系统已命中相关资料，但没有生成可交付文本。你可以重试，或先处理资料缺口/候选动作。",
+                            judgment="模型生成失败，不输出本地模板伪答案。",
+                            analysis=f"主链失败：{error.detail}",
+                            actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
+                            timeline="可立即重试。",
+                        )
+                        answer_mode = "system_failure"
+                        evidence_status = "partial" if evidence else "none"
+                        failure_reason = "llm_generation_failed"
+                except Exception as error:
+                    final_failure_stage = "primary_generation_exception"
+                    generation_failure_detail = str(error)
                     structured = AiStructuredResponse(
-                        content="本轮模型没有成功完成回答。系统已命中相关资料，但没有生成可交付文本。你可以重试，或先处理资料缺口/候选动作。",
+                        content="这次模型没有成功完成回答。系统已经命中相关资料，但没有生成可交付文本。请重试。",
                         judgment="模型生成失败，不输出本地模板伪答案。",
-                        analysis=f"主链失败：{error.detail}",
+                        analysis=f"错误信息：{str(error)}",
                         actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
                         timeline="可立即重试。",
                     )
                     answer_mode = "system_failure"
                     evidence_status = "partial" if evidence else "none"
                     failure_reason = "llm_generation_failed"
-            except Exception as error:
-                final_failure_stage = "primary_generation_exception"
-                generation_failure_detail = str(error)
-                structured = AiStructuredResponse(
-                    content="这次模型没有成功完成回答。系统已经命中相关资料，但没有生成可交付文本。请重试。",
-                    judgment="模型生成失败，不输出本地模板伪答案。",
-                    analysis=f"错误信息：{str(error)}",
-                    actions="请重试；如果连续失败，请检查模型配置、网络或上下文长度。",
-                    timeline="可立即重试。",
-                )
-                answer_mode = "system_failure"
-                evidence_status = "partial" if evidence else "none"
-                failure_reason = "llm_generation_failed"
         if generation_failure_detail:
             llm_error_kind = classify_llm_error_kind(generation_failure_detail)
 
@@ -46089,8 +46351,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/v1/intelligence/refresh", response_model=IntelligenceRefreshResult)
-    def trigger_intelligence_refresh(payload: IntelligenceRefreshPayload) -> IntelligenceRefreshResult:
-        """触发情报刷新：对目标客户跑 search-intent → diagnostic → candidate-refresh 链路。"""
+    def trigger_intelligence_refresh(
+        payload: IntelligenceRefreshPayload,
+        background_tasks: BackgroundTasks,
+    ) -> IntelligenceRefreshResult:
+        """触发情报刷新（后台异步执行 + 90 秒硬超时）。
+
+        同事 service 调豆包 + 公开搜索 + 抓取，正常 1-5 分钟，可能 hang。
+        改用 BackgroundTasks 把 service 调用扔后台，endpoint 立即返回
+        "已派发"状态，UI 不会被卡。任务完成后写 DB（intelligence_items 等），
+        前端 poll GET /intelligence/items 查最新数据。
+        """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+
         content_kind = payload.contentKind
         if content_kind not in {"profile_completion", "timely_intelligence"}:
             raise HTTPException(status_code=400, detail="contentKind 必须是 profile_completion 或 timely_intelligence")
@@ -46104,12 +46377,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         else:
             raise HTTPException(status_code=400, detail="scopeType 必须是 all 或 client，且 client 时需 scopeId")
 
-        results: list[IntelligenceRefreshObjectResult] = []
-        for client_id in target_ids:
-            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
-            if not client_row:
-                continue
-            client_name = str(client_row["name"] or "")
+        def _run_one_target_bg(client_id: str, client_name: str) -> None:
+            """后台跑单客户的 supply chain，独立 try/except + 超时控制。"""
             scope = IntelligenceSearchScope(
                 scope_type="client",
                 scope_id=client_id,
@@ -46118,6 +46387,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 display_name=client_name,
             )
             try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    fut = pool.submit(
+                        generate_intelligence_search_intents,
+                        state.db, state.ai,
+                        scope_type="client", scope_id=client_id,
+                        content_kind=content_kind, force=payload.force,
+                    )
+                    generation = fut.result(timeout=60)
+                    fut2 = pool.submit(
+                        run_intelligence_candidate_refresh,
+                        state.db,
+                        data_dir=state.data_dir,
+                        ai_service=state.ai,
+                        scope=scope,
+                        intents=generation.intents,
+                        trigger_source="manual",
+                    )
+                    fut2.result(timeout=120)
+                logger.info("[intelligence] bg refresh done for %s (%s)", client_name, client_id)
+            except FutTimeout:
+                logger.warning("[intelligence] bg refresh TIMEOUT for %s (%s)", client_name, client_id)
+            except Exception as exc:
+                logger.warning("[intelligence] bg refresh FAILED for %s: %s", client_name, exc)
+
+        results: list[IntelligenceRefreshObjectResult] = []
+        for client_id in target_ids:
+            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
+            if not client_row:
+                continue
+            client_name = str(client_row["name"] or "")
+            background_tasks.add_task(_run_one_target_bg, client_id, client_name)
+            results.append(
+                IntelligenceRefreshObjectResult(
+                    scopeType="client",
+                    scopeId=client_id,
+                    clientId=client_id,
+                    projectModuleId=None,
+                    name=client_name,
+                    contentKind=content_kind,
+                    status="completed",  # "completed"=已派发后台任务，不代表抓取结果
+                    message="已加入后台抓取队列，2-5 分钟后请刷新列表查看新情报",
+                )
+            )
+            # 跳过同步路径（保留代码供未来同步模式使用）
+            continue
+            try:
+                # 老的同步路径（已被上面 continue 跳过；保留作为 reference）
                 generation = generate_intelligence_search_intents(
                     state.db,
                     state.ai,
@@ -46241,25 +46557,245 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             events=[],
         )
 
+    def _fetch_intelligence_item_or_404(item_id: str):
+        row = state.db.fetchone(
+            "SELECT * FROM intelligence_items WHERE id = ?", (item_id,)
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="情报项不存在")
+        return row
+
+    def _row_to_intelligence_item_record(row) -> IntelligenceItemRecord:
+        return IntelligenceItemRecord(
+            id=str(row["id"]),
+            contentKind=row["content_kind"],
+            scopeType=row["scope_type"] or None,
+            scopeId=row["scope_id"] or None,
+            clientId=row["client_id"] or None,
+            projectModuleId=row["project_module_id"] or None,
+            title=str(row["title"] or ""),
+            summary=str(row["summary"] or ""),
+            keyPoints=from_json(row["key_points_json"] or "[]", []),
+            analysis=str(row["analysis"] or ""),
+            impact=str(row["impact"] or ""),
+            intelligenceType=row["intelligence_type"] or None,
+            timelinessLabel=row["timeliness_label"] or None,
+            relevanceReason=str(row["relevance_reason"] or ""),
+            suggestedAction=str(row["suggested_action"] or ""),
+            followupQuestions=from_json(row["followup_questions_json"] or "[]", []),
+            tags=from_json(row["tags_json"] or "[]", []),
+            source=str(row["source"] or ""),
+            sourceUrl=row["source_url"] or None,
+            publishedAt=row["published_at"] or None,
+            capturedAt=str(row["captured_at"]),
+            verifiedAt=row["verified_at"] or None,
+            credibilityScore=row["credibility_score"] if row["credibility_score"] is not None else None,
+            confidenceScore=row["confidence_score"] if row["confidence_score"] is not None else None,
+            dataCenterIngestEventId=row["data_center_ingest_event_id"] or None,
+            externalEvidenceCardId=row["external_evidence_card_id"] or None,
+            topicCandidateId=row["topic_candidate_id"] or None,
+            convertedTaskId=row["converted_task_id"] or None,
+            verificationStatus=str(row["verification_status"] or "verified"),
+            verificationReason=str(row["verification_reason"] or ""),
+            userStatus=row["user_status"] or "active",
+            createdAt=str(row["created_at"]),
+            updatedAt=str(row["updated_at"]),
+        )
+
     @app.post("/api/v1/intelligence/items/{item_id}/dismiss", response_model=IntelligenceItemRecord)
-    def dismiss_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="dismiss 同事 service 待补，下次 sync 后启用")
+    def dismiss_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:
+        """标记情报为'不采纳'。"""
+        row = _fetch_intelligence_item_or_404(item_id)
+        reason_code = str((payload or {}).get("reasonCode") or "irrelevant")
+        note = str((payload or {}).get("note") or "")[:500]
+        if reason_code not in {"irrelevant", "inaccurate", "duplicate", "outdated", "low_value"}:
+            reason_code = "irrelevant"
+        now_ts = _intel_now()
+        state.db.execute(
+            "UPDATE intelligence_items SET user_status='dismissed', "
+            "user_feedback_json=?, updated_at=? WHERE id=?",
+            (
+                to_json({"dismissedAt": now_ts, "reasonCode": reason_code, "note": note}),
+                now_ts,
+                item_id,
+            ),
+        )
+        # 记 feedback event（让同事 service 后续学习）
+        try:
+            state.db.execute(
+                "INSERT INTO intelligence_feedback_events "
+                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
+                "reason_code, note, source, source_domain, score_delta, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'dismiss', ?, ?, ?, ?, -1.0, ?)",
+                (
+                    str(_uuid_intel.uuid4()),
+                    row["scope_type"] or "",
+                    row["scope_id"] or "",
+                    row["content_kind"],
+                    item_id,
+                    reason_code,
+                    note,
+                    row["source"] or "",
+                    "",
+                    now_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("dismiss feedback_event 写入失败: %s", exc)
+        updated_row = _fetch_intelligence_item_or_404(item_id)
+        return _row_to_intelligence_item_record(updated_row)
 
     @app.post("/api/v1/intelligence/items/{item_id}/follow", response_model=IntelligenceItemRecord)
-    def follow_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="follow 同事 service 待补，下次 sync 后启用")
+    def follow_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemRecord:
+        """标记情报为'持续跟进'。"""
+        row = _fetch_intelligence_item_or_404(item_id)
+        follow_mode = str((payload or {}).get("followMode") or "same_theme")
+        note = str((payload or {}).get("note") or "")[:500]
+        if follow_mode not in {"same_theme", "same_source", "same_work_object"}:
+            follow_mode = "same_theme"
+        now_ts = _intel_now()
+        state.db.execute(
+            "UPDATE intelligence_items SET user_status='following', "
+            "user_feedback_json=?, updated_at=? WHERE id=?",
+            (
+                to_json({"followedAt": now_ts, "followMode": follow_mode, "note": note}),
+                now_ts,
+                item_id,
+            ),
+        )
+        try:
+            state.db.execute(
+                "INSERT INTO intelligence_feedback_events "
+                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
+                "reason_code, note, source, source_domain, score_delta, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'follow', ?, ?, ?, ?, 1.0, ?)",
+                (
+                    str(_uuid_intel.uuid4()),
+                    row["scope_type"] or "",
+                    row["scope_id"] or "",
+                    row["content_kind"],
+                    item_id,
+                    follow_mode,
+                    note,
+                    row["source"] or "",
+                    "",
+                    now_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("follow feedback_event 写入失败: %s", exc)
+        updated_row = _fetch_intelligence_item_or_404(item_id)
+        return _row_to_intelligence_item_record(updated_row)
 
     @app.post("/api/v1/intelligence/items/{item_id}/task-draft")
     def get_intelligence_task_draft_endpoint(item_id: str) -> dict:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="task-draft 同事 service 待补")
+        """task-draft 依赖完整 task 子系统（task_lists / task_settings / 操作员归属），
+        同事 backup 实现 507 行，本次不搬。前端这个按钮会拿 501 提示。"""
+        raise HTTPException(
+            status_code=501,
+            detail="task-draft 依赖 task 子系统，等同事下次 sync 后启用",
+        )
 
     @app.post("/api/v1/intelligence/items/{item_id}/tasks")
     def create_intelligence_task_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="tasks 同事 service 待补")
+        raise HTTPException(
+            status_code=501,
+            detail="转任务依赖 task 子系统，等同事下次 sync 后启用",
+        )
 
-    @app.post("/api/v1/intelligence/items/{item_id}/chat")
-    def chat_intelligence_item_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
-        raise HTTPException(status_code=501, detail="chat 同事 service 待补")
+    @app.post("/api/v1/intelligence/items/{item_id}/chat", response_model=IntelligenceItemChatResponse)
+    def chat_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemChatResponse:
+        """追问大周：基于当前情报上下文调豆包回答用户问题。"""
+        row = _fetch_intelligence_item_or_404(item_id)
+        question = str((payload or {}).get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="问题不能为空")
+
+        item = _row_to_intelligence_item_record(row)
+        context_lines = [
+            f"标题：{item.title}",
+            f"内容类型：{item.contentKind}",
+        ]
+        if item.summary:
+            context_lines.append(f"摘要：{item.summary}")
+        if item.analysis:
+            context_lines.append(f"分析：{item.analysis}")
+        if item.impact:
+            context_lines.append(f"影响：{item.impact}")
+        if item.relevanceReason:
+            context_lines.append(f"相关性：{item.relevanceReason}")
+        if item.suggestedAction:
+            context_lines.append(f"建议动作：{item.suggestedAction}")
+        if item.keyPoints:
+            context_lines.append("要点：" + " / ".join(item.keyPoints))
+        if item.tags:
+            context_lines.append("标签：" + ", ".join(item.tags))
+        if item.source:
+            context_lines.append(f"来源：{item.source}")
+        if item.sourceUrl:
+            context_lines.append(f"链接：{item.sourceUrl}")
+        if item.publishedAt:
+            context_lines.append(f"发布时间：{item.publishedAt}")
+        context_summary = "\n".join(context_lines)
+
+        system_instruction = (
+            "你是资讯情报站里的资深顾问。"
+            "你只能围绕当前这条情报回答追问，区分事实、推断和待核验事项。"
+            "回答必须聚焦在传导链条、对象相关度、判断分歧、证据缺口和下一步决策。"
+            "不要只复述网页摘要，也不要只回答'这是什么、有哪些要点、怎么跟进'。"
+            "如果材料不足，请直接指出缺什么，并给出最小核验动作。"
+            "请用中文直接回答，不要输出 JSON 也不要 Markdown 包裹。"
+        )
+
+        try:
+            raw = state.ai._qwen_generate(
+                prompt=f"问题：{question}\n\n情报上下文：\n{context_summary}",
+                system_instruction=system_instruction,
+                response_schema=None,
+                timeout_seconds=30.0,
+                max_tokens=1200,
+                temperature=0.5,
+                top_p=0.9,
+            )
+        except Exception as exc:
+            logger.warning("intelligence chat LLM 调用失败: %s", exc)
+            raise HTTPException(status_code=502, detail=f"豆包调用失败：{exc}")
+
+        answer = str(raw or "").strip()
+        if not answer:
+            answer = "我暂时还没法基于这条情报给出稳定回答，建议先补充来源或关键事实后再继续追问。"
+
+        now_ts = _intel_now()
+        try:
+            state.db.execute(
+                "INSERT INTO intelligence_feedback_events "
+                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
+                "reason_code, note, source, source_domain, score_delta, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'chat', 'question', ?, ?, ?, 0.0, ?)",
+                (
+                    str(_uuid_intel.uuid4()),
+                    row["scope_type"] or "",
+                    row["scope_id"] or "",
+                    row["content_kind"],
+                    item_id,
+                    question[:500],
+                    row["source"] or "",
+                    "",
+                    now_ts,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("chat feedback_event 写入失败: %s", exc)
+
+        return IntelligenceItemChatResponse(
+            itemId=item_id,
+            question=question,
+            answer=answer,
+            generatedAt=now_ts,
+            message=TopicCandidateChatMessageRecord(
+                role="assistant", content=answer, createdAt=now_ts
+            ),
+        )
 
     return app
 
