@@ -10922,8 +10922,10 @@ export default function App() {
           // Sync plan-link only if the user touched the plan-link section. Otherwise leave it to the
           // backend's automatic AI matching (already runs on task create/update).
           if (draftSnapshot.planLinkTouched && !isEditingTaskPersonal) {
+            const userExplicitlyLinked =
+              draftSnapshot.planLinkSource === 'manager' && draftSnapshot.planLinkPlanItemId;
             try {
-              if (draftSnapshot.planLinkSource === 'manager' && draftSnapshot.planLinkPlanItemId) {
+              if (userExplicitlyLinked) {
                 await patchTaskPlanLink(savedTask.id, {
                   departmentPlanItemId: draftSnapshot.planLinkPlanItemId,
                   focusItemId: null,
@@ -10935,7 +10937,17 @@ export default function App() {
                 });
               }
             } catch (error) {
+              // 之前是 console.warn 静默吞错——cloud_backend 挂了时用户看到任务成功保存，
+              // 但 plan-link 没写入，去「组织计划」看不到挂载，根本不知道为什么。
+              // 现在显式 flash 错误：任务已保存但挂载失败，用户能立即重试。
               console.warn('[plan-link] failed to sync user choice', error);
+              if (userExplicitlyLinked) {
+                const msg = error instanceof Error ? error.message : '未知错误';
+                flash(
+                  'error',
+                  `任务已保存，但关联到计划项失败：${msg}。可在任务详情里重新挂接。`,
+                );
+              }
             }
           }
 
