@@ -244,7 +244,7 @@ export function getWorkspaceLinkMaterialState(state: WorkspaceClientUiState, cli
 }
 
 export function getWorkspaceRightTab(state: WorkspaceClientUiState, clientId: string): WorkspaceRightTabKey {
-  return state.rightTabByClient[clientId] || 'evidence';
+  return state.rightTabByClient[clientId] || 'files';
 }
 
 export function workspaceClientUiReducer(
