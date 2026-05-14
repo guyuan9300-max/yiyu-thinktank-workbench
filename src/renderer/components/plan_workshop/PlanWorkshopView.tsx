@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardList, ChevronDown, ChevronRight, ExternalLink, Plus, RefreshCw, X, Trash2, Sparkles } from 'lucide-react';
 
 import { getTasksForPlanItem, parseDepartmentPlan } from '../../lib/api';
@@ -203,11 +203,19 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
     : 0;
 
   const [expandedScopeId, setExpandedScopeId] = useState<string | null>(null);
+  // 只在首次加载时自动展开第一个有计划的 row，之后用户主动收起就保持收起。
+  // 不能让 effect 依赖 expandedScopeId — 否则用户点收起后 expandedScopeId=null
+  // 又触发 effect 复位回去，UI 表现为"收不起来"。
+  const hasAutoExpandedRef = useRef(false);
   useEffect(() => {
-    if (expandedScopeId) return;
+    if (hasAutoExpandedRef.current) return;
+    if (rows.length === 0) return;
     const firstWithPlan = rows.find((r) => r.latestPlan !== null);
-    if (firstWithPlan) setExpandedScopeId(firstWithPlan.scopeId);
-  }, [rows, expandedScopeId]);
+    if (firstWithPlan) {
+      setExpandedScopeId(firstWithPlan.scopeId);
+    }
+    hasAutoExpandedRef.current = true;
+  }, [rows]);
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [itemTasks, setItemTasks] = useState<Record<string, Task[]>>({});
