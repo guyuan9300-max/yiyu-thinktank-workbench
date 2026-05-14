@@ -81,6 +81,11 @@ export function normalizeAnswerTextForDisplay(rawText: string) {
   }
   text = text.replace(/\n([一二三四五六七八九十]+、)/g, '\n\n$1');
   text = text.replace(/\n(第[一二三四五六七八九十0-9]+部分)/g, '\n\n$1');
+  text = text.replace(
+    /\n(首先|其次|再次|然后|接着|此外|另外|再者|最后|总之|综上|第[一二三四五六七八九十0-9]+(?:是|，)|[一二三四五六七八九十]是)/g,
+    '\n\n$1',
+  );
+  text = text.replace(/\n{3,}/g, '\n\n');
   return text;
 }
 

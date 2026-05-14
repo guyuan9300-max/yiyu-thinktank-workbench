@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ClipboardList, ChevronDown, ChevronRight, ExternalLink, Plus, X, Trash2, Sparkles } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ClipboardList, ChevronDown, ChevronRight, ExternalLink, Plus, RefreshCw, X, Trash2, Sparkles } from 'lucide-react';
 
 import { getTasksForPlanItem, parseDepartmentPlan } from '../../lib/api';
 import type {
@@ -82,19 +82,38 @@ function newDraftItem(): DraftItem {
   };
 }
 
-function parseTextToItems(text: string): DraftItem[] {
-  const lines = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  return lines.map((raw) => {
-    // Strip leading list markers: "1.", "1、", "•", "-", "*"
-    const cleaned = raw.replace(/^\s*([\-\*•]|\d+[\.、]|[一二三四五六七八九十]+[、.])\s*/u, '').trim();
-    return {
-      ...newDraftItem(),
-      title: cleaned,
-    };
-  });
+/**
+ * 把 weekLabel 转成可排序的 ISO 日期字符串，让月度/季度/年度/周混排时按真实时间序。
+ *
+ * 不修这个 bug：plans.sort((a,b) => b.weekLabel.localeCompare(a.weekLabel)) 用字符串比较会把
+ * "2026-Q3" 排到 "2026-09" 之后（Q > 0~9 字符序），导致月度和季度同时存在时取到错误"最新"。
+ */
+function weekLabelToSortKey(label: string | null | undefined): string {
+  const raw = (label || '').trim();
+  if (!raw) return '0000-00-00';
+  // YYYY  年度（取 1 月 1 日）
+  if (/^\d{4}$/.test(raw)) return `${raw}-01-01`;
+  // YYYY-Q1~4  季度起始月
+  const qMatch = raw.match(/^(\d{4})-Q([1-4])$/i);
+  if (qMatch) {
+    const startMonth = (parseInt(qMatch[2], 10) - 1) * 3 + 1;
+    return `${qMatch[1]}-${String(startMonth).padStart(2, '0')}-01`;
+  }
+  // YYYY-MM  月度
+  if (/^\d{4}-\d{2}$/.test(raw)) return `${raw}-01`;
+  // YYYY-W##  周（近似为年初 + (N-1)*7 天）
+  const wMatch = raw.match(/^(\d{4})-W(\d{1,2})$/i);
+  if (wMatch) {
+    const y = parseInt(wMatch[1], 10);
+    const w = parseInt(wMatch[2], 10);
+    const start = new Date(y, 0, 1);
+    const dayMs = 86400000;
+    const dayOffset = (w - 1) * 7;
+    const d = new Date(start.getTime() + dayOffset * dayMs);
+    return d.toISOString().slice(0, 10);
+  }
+  // custom / 未知格式：原值参与字典序（至少同格式之间还是单调）
+  return raw;
 }
 
 export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
@@ -123,11 +142,13 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
     ): DepartmentRow => {
       const plans = value.departmentPlans.filter(planFilter);
       const latestPlan =
-        [...plans].sort(
-          (a, b) =>
-            (b.weekLabel || '').localeCompare(a.weekLabel || '')
-            || (b.updatedAt || '').localeCompare(a.updatedAt || ''),
-        )[0] || null;
+        [...plans].sort((a, b) => {
+          // 按 weekLabel 真实时间序排（解决月度/季度混排字典序错排）
+          const cmp = weekLabelToSortKey(b.weekLabel).localeCompare(weekLabelToSortKey(a.weekLabel));
+          if (cmp !== 0) return cmp;
+          // 同 period 时 fallback 用 updatedAt
+          return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+        })[0] || null;
       const items = latestPlan?.items ?? [];
       const doneCount = items.filter((i) => i.status === 'done').length;
       const completeness = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0;
@@ -182,21 +203,27 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
     : 0;
 
   const [expandedScopeId, setExpandedScopeId] = useState<string | null>(null);
+  // 只在首次加载时自动展开第一个有计划的 row，之后用户主动收起就保持收起。
+  // 不能让 effect 依赖 expandedScopeId — 否则用户点收起后 expandedScopeId=null
+  // 又触发 effect 复位回去，UI 表现为"收不起来"。
+  const hasAutoExpandedRef = useRef(false);
   useEffect(() => {
-    if (expandedScopeId) return;
+    if (hasAutoExpandedRef.current) return;
+    if (rows.length === 0) return;
     const firstWithPlan = rows.find((r) => r.latestPlan !== null);
-    if (firstWithPlan) setExpandedScopeId(firstWithPlan.scopeId);
-  }, [rows, expandedScopeId]);
+    if (firstWithPlan) {
+      setExpandedScopeId(firstWithPlan.scopeId);
+    }
+    hasAutoExpandedRef.current = true;
+  }, [rows]);
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [itemTasks, setItemTasks] = useState<Record<string, Task[]>>({});
   const [loadingItemId, setLoadingItemId] = useState<string | null>(null);
   const [itemTaskError, setItemTaskError] = useState<string | null>(null);
 
-  const handleSelectItem = async (itemId: string) => {
-    setSelectedItemId(itemId);
+  const fetchTasksForItem = async (itemId: string) => {
     setItemTaskError(null);
-    if (itemTasks[itemId]) return;
     setLoadingItemId(itemId);
     try {
       const tasks = await getTasksForPlanItem(itemId);
@@ -206,6 +233,18 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
     } finally {
       setLoadingItemId(null);
     }
+  };
+
+  const handleSelectItem = async (itemId: string) => {
+    setSelectedItemId(itemId);
+    setItemTaskError(null);
+    if (itemTasks[itemId]) return;
+    await fetchTasksForItem(itemId);
+  };
+
+  const handleRefreshTasks = async () => {
+    if (!selectedItemId) return;
+    await fetchTasksForItem(selectedItemId);
   };
 
   const selectedItem: OrgDepartmentPlanItemSettings | null = useMemo(() => {
@@ -329,6 +368,19 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
     } finally {
       setIsMutatingItem(false);
     }
+  };
+
+  /**
+   * 进入"删除确认"前先 ensure 任务列表已加载，让确认对话框能显示准确的
+   * "挂接 N 条任务会失去关联"提示，避免用户看到模糊的"删除后不可恢复"
+   * 就以为是干净删除（其实可能还挂着任务）。
+   */
+  const handleStartDelete = async () => {
+    if (!selectedItemId) return;
+    if (!itemTasks[selectedItemId]) {
+      await fetchTasksForItem(selectedItemId);
+    }
+    setShowDeleteConfirm(true);
   };
 
   const handleDeleteItem = async () => {
@@ -634,7 +686,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => setShowDeleteConfirm(true)}
+                                  onClick={() => void handleStartDelete()}
                                   disabled={isMutatingItem}
                                   className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-600 hover:bg-rose-100 disabled:opacity-50"
                                 >
@@ -655,25 +707,23 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                             rows={2}
                             className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE] resize-none"
                           />
-                          <div className="grid grid-cols-2 gap-2">
-                            <input
-                              type="text"
-                              value={editDraft.expectedOutput}
-                              onChange={(e) => setEditDraft((prev) => ({ ...prev, expectedOutput: e.target.value }))}
-                              placeholder="期望产出（可选）"
-                              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE]"
-                            />
-                            <select
-                              value={editDraft.status}
-                              onChange={(e) => setEditDraft((prev) => ({ ...prev, status: e.target.value as OrgDepartmentPlanItemStatus }))}
-                              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE]"
-                            >
-                              <option value="active">进行中</option>
-                              <option value="paused">暂停</option>
-                              <option value="done">已完成</option>
-                              <option value="dropped">已废弃</option>
-                            </select>
-                          </div>
+                          <textarea
+                            value={editDraft.expectedOutput}
+                            onChange={(e) => setEditDraft((prev) => ({ ...prev, expectedOutput: e.target.value }))}
+                            placeholder="期望产出（可选，如：输出一份 20 页方案 + 3 个 case study）"
+                            rows={2}
+                            className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE] resize-none"
+                          />
+                          <select
+                            value={editDraft.status}
+                            onChange={(e) => setEditDraft((prev) => ({ ...prev, status: e.target.value as OrgDepartmentPlanItemStatus }))}
+                            className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-[#5B7BFE]"
+                          >
+                            <option value="active">进行中</option>
+                            <option value="paused">暂停</option>
+                            <option value="done">已完成</option>
+                            <option value="dropped">已废弃</option>
+                          </select>
                         </div>
                       ) : (
                         <>
@@ -730,11 +780,22 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <h4 className="text-[12px] font-bold text-gray-700">挂接的任务</h4>
-                        {selectedItemId && itemTasks[selectedItemId] && (
-                          <span className="text-[11px] text-gray-400">
-                            共 {itemTasks[selectedItemId].length} 条
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {selectedItemId && itemTasks[selectedItemId] && (
+                            <span className="text-[11px] text-gray-400">
+                              共 {itemTasks[selectedItemId].length} 条
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleRefreshTasks()}
+                            disabled={loadingItemId === selectedItemId}
+                            title="重新拉取挂接的任务（用户在「任务与日程」新挂任务后点这里刷新）"
+                            className="inline-flex items-center justify-center rounded-md p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 disabled:opacity-40 transition"
+                          >
+                            <RefreshCw size={12} className={loadingItemId === selectedItemId ? 'animate-spin' : ''} />
+                          </button>
+                        </div>
                       </div>
                       {loadingItemId === selectedItemId ? (
                         <div className="text-[12px] text-gray-400">加载中…</div>
@@ -925,19 +986,19 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                               className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-medium outline-none"
                             />
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                              <input
-                                type="text"
+                              <textarea
                                 value={item.statement}
                                 onChange={(e) => setDraftItems((prev) => prev.map((it) => it.id === item.id ? { ...it, statement: e.target.value } : it))}
                                 placeholder="说明（可选）"
-                                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none"
+                                rows={2}
+                                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none resize-none focus:border-[#5B7BFE]"
                               />
-                              <input
-                                type="text"
+                              <textarea
                                 value={item.expectedOutput}
                                 onChange={(e) => setDraftItems((prev) => prev.map((it) => it.id === item.id ? { ...it, expectedOutput: e.target.value } : it))}
-                                placeholder="期望产出（可选）"
-                                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none"
+                                placeholder="期望产出（可选，如：20 页方案 + 3 个 case）"
+                                rows={2}
+                                className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] outline-none resize-none focus:border-[#5B7BFE]"
                               />
                             </div>
                           </div>

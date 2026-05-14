@@ -559,6 +559,49 @@ const ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY = 'yiyu.workspace.activeWorkingDocume
 const ACTIVE_WORKING_DOCUMENTS_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const ACTIVE_WORKING_DOCUMENTS_LIMIT = 6;
 
+type RecentUsedDocument = {
+  documentId: string;
+  title: string;
+  path: string;
+  usedAt: number;
+};
+
+const RECENT_USED_DOCUMENTS_STORAGE_KEY = 'yiyu.workspace.recentUsedDocuments.v1';
+const RECENT_USED_DOCUMENTS_LIMIT = 30;
+
+function readStoredRecentUsedDocuments(clientId: string): RecentUsedDocument[] {
+  if (!clientId || typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_USED_DOCUMENTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Record<string, RecentUsedDocument[]>;
+    const list = Array.isArray(parsed?.[clientId]) ? parsed[clientId] : [];
+    return list
+      .filter((item) =>
+        item
+        && typeof item.documentId === 'string'
+        && typeof item.title === 'string'
+        && typeof item.path === 'string'
+        && typeof item.usedAt === 'number',
+      )
+      .slice(0, RECENT_USED_DOCUMENTS_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredRecentUsedDocuments(clientId: string, docs: RecentUsedDocument[]) {
+  if (!clientId || typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(RECENT_USED_DOCUMENTS_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, RecentUsedDocument[]>) : {};
+    parsed[clientId] = docs.slice(0, RECENT_USED_DOCUMENTS_LIMIT);
+    window.localStorage.setItem(RECENT_USED_DOCUMENTS_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    // ignore
+  }
+}
+
 function normalizeWorkingDocumentStatus(value?: string | null): ActiveWorkingDocument['status'] {
   if (value === 'ready' || value === 'partial_ready' || value === 'failed') return value;
   if (value === 'queued') return 'queued';
@@ -16647,6 +16690,30 @@ export default function App() {
     };
     const [isEvidencePanelExpanded, setIsEvidencePanelExpanded] = useState(false);
     const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(() => new Set());
+    const [recentUsedDocuments, setRecentUsedDocuments] = useState<RecentUsedDocument[]>(() =>
+      readStoredRecentUsedDocuments(currentClientId || ''),
+    );
+    useEffect(() => {
+      setRecentUsedDocuments(readStoredRecentUsedDocuments(currentClientId || ''));
+    }, [currentClientId]);
+    useEffect(() => {
+      if (!currentClientId) return;
+      writeStoredRecentUsedDocuments(currentClientId, recentUsedDocuments);
+    }, [currentClientId, recentUsedDocuments]);
+    const markDocumentAsUsed = (params: { documentId: string; title: string; path: string }) => {
+      const { documentId, title, path } = params;
+      if (!documentId) return;
+      setRecentUsedDocuments((previous) => {
+        const filtered = previous.filter((item) => item.documentId !== documentId);
+        const next: RecentUsedDocument = {
+          documentId,
+          title: title || (path ? path.split(/[/\\]/).pop() || '未命名资料' : '未命名资料'),
+          path: path || '',
+          usedAt: Date.now(),
+        };
+        return [next, ...filtered].slice(0, RECENT_USED_DOCUMENTS_LIMIT);
+      });
+    };
     const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
     const [filesTabSearchResult, setFilesTabSearchResult] = useState<KnowledgeSearchResult | null>(null);
     const [isFilesTabSearching, setIsFilesTabSearching] = useState(false);
@@ -16657,15 +16724,23 @@ export default function App() {
         return;
       }
       if (!query) {
-        setFilesTabSearchResult(null);
+        flash('info', '请先在搜索框里输入一句话再点 AI 搜');
         return;
       }
       try {
         setIsFilesTabSearching(true);
+        // 立即跳到引证 tab，让用户看到"加载中"的反馈
+        setWorkspaceRightTab('evidence');
         const result = await searchClientKnowledge(currentClientId, query, currentThreadId || undefined);
         setFilesTabSearchResult(result);
+        if (result.hits.length === 0) {
+          flash('info', `没有找到与「${query}」相关的资料`);
+        }
       } catch (error) {
-        flash('error', error instanceof Error ? error.message : '搜索失败');
+        const detail = error instanceof Error ? error.message : '搜索失败';
+        // 控制台打印完整错误便于调试
+        console.error('[files-tab-search] failed', error);
+        flash('error', `AI 搜失败：${detail}`);
       } finally {
         setIsFilesTabSearching(false);
       }
@@ -16700,6 +16775,7 @@ export default function App() {
         };
         return [next, ...previous].slice(0, ACTIVE_WORKING_DOCUMENTS_LIMIT);
       });
+      markDocumentAsUsed({ documentId: docId, title: fileLabel, path });
       if (alreadyAttached) {
         flash('info', `「${fileLabel}」已在对话引用里`);
       } else {
@@ -17993,8 +18069,26 @@ export default function App() {
         : workspaceKnowledgeUiActive && rightPanelEvidenceSnapshot?.messageId === activeMessageId
           ? rightPanelEvidenceSnapshot.evidence
           : [];
+    // 当文件 tab 触发了搜索时，把搜索结果当作"临时引证"展示在引证 tab。
     const evidenceCitationCards = useMemo(
       () => {
+        if (filesTabSearchResult) {
+          const searchEvidence: EvidenceItem[] = filesTabSearchResult.hits.map((hit, idx) => ({
+            id: `search_hit_${filesTabSearchResult.searchId}_${idx}`,
+            title: hit.title,
+            excerpt: hit.excerpt,
+            sourceType: 'knowledge_chunk',
+            path: hit.path ?? undefined,
+            originalPath: hit.path ?? undefined,
+            score: hit.score ?? undefined,
+            sectionLabel: hit.sectionLabel ?? undefined,
+            retrievalStage: hit.stage,
+            matchedTerms: hit.matchedTerms ?? [],
+            canonicalKind: 'raw_file',
+            openableKind: 'original_file',
+          }));
+          return buildEvidenceCitationCards(searchEvidence);
+        }
         const userFacingEvidence = activeEvidence.filter((item) => {
           const kind = (item.canonicalKind || '').toLowerCase();
           // Only show real user-uploaded files; hide system locator cards
@@ -18005,7 +18099,7 @@ export default function App() {
         });
         return buildEvidenceCitationCards(userFacingEvidence);
       },
-      [activeEvidence],
+      [activeEvidence, filesTabSearchResult],
     );
     const visibleEvidenceCitationCards = isEvidencePanelExpanded
       ? evidenceCitationCards
@@ -20656,42 +20750,15 @@ export default function App() {
 
             </div>}
 
-            {/* Tab: 文件 */}
+            {/* Tab: 文件（仅显示用户用过的，搜索结果跳引证 tab） */}
             {workspaceRightTab === 'files' && (() => {
-              const documents = workspace?.documents || [];
-              const docByPath = new Map<string, typeof documents[number]>();
-              for (const doc of documents) {
-                if (doc.path) docByPath.set(doc.path, doc);
-              }
-              const sortedDocs = [...documents].sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''));
-              const isSearchMode = filesTabSearchResult != null;
-              const searchHits = filesTabSearchResult?.hits || [];
-              // 把命中结果按 path 反查 documentId，去重，按 hit 顺序
-              const searchedFiles: { documentId: string; title: string; path: string; excerpt: string; matchedTerms: string[] }[] = [];
-              const seenDocIds = new Set<string>();
-              for (const hit of searchHits) {
-                const hitPath = hit.path || '';
-                const doc = hitPath ? docByPath.get(hitPath) : undefined;
-                const docId = doc?.id || '';
-                if (!docId || seenDocIds.has(docId)) continue;
-                seenDocIds.add(docId);
-                searchedFiles.push({
-                  documentId: docId,
-                  title: doc?.title || hit.title,
-                  path: doc?.path || hitPath,
-                  excerpt: hit.excerpt || '',
-                  matchedTerms: hit.matchedTerms || [],
-                });
-              }
               const renderFileCard = (params: {
                 key: string;
                 documentId: string;
                 title: string;
                 path: string;
-                excerpt?: string;
-                matchedTerms?: string[];
               }) => {
-                const { key, documentId, title, path, excerpt, matchedTerms } = params;
+                const { key, documentId, title, path } = params;
                 const canOpen = Boolean(path) && hasOpenableFile(path);
                 const basename = path ? (path.split(/[/\\]/).pop() || '') : '';
                 const fileLabel = basename || title || '未命名资料';
@@ -20706,13 +20773,6 @@ export default function App() {
                         {fileLabel}
                       </p>
                     </div>
-                    {excerpt && (
-                      <p className="px-3 text-[11px] leading-snug text-slate-500 line-clamp-2">
-                        {matchedTerms && matchedTerms.length > 0
-                          ? highlightCitationTerms(excerpt, matchedTerms)
-                          : excerpt}
-                      </p>
-                    )}
                     <div className="flex items-center gap-1 px-3 pt-1.5 pb-2.5">
                       <button
                         type="button"
@@ -20729,11 +20789,12 @@ export default function App() {
                       <button
                         type="button"
                         disabled={!canOpen}
-                        onClick={() =>
+                        onClick={() => {
+                          markDocumentAsUsed({ documentId, title: fileLabel, path });
                           void openPathBridge(path).then((opened) => {
                             if (!opened) flash('error', '原文路径不存在或当前无法打开');
-                          })
-                        }
+                          });
+                        }}
                         className={`rounded-lg p-1.5 transition-colors ${
                           canOpen
                             ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
@@ -20746,11 +20807,12 @@ export default function App() {
                       <button
                         type="button"
                         disabled={!canOpen}
-                        onClick={() =>
+                        onClick={() => {
+                          markDocumentAsUsed({ documentId, title: fileLabel, path });
                           void revealInFinderBridge(path).then((opened) => {
                             if (!opened) flash('error', '无法在 Finder 中显示该文件');
-                          })
-                        }
+                          });
+                        }}
                         className={`rounded-lg p-1.5 transition-colors ${
                           canOpen
                             ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
@@ -20779,7 +20841,7 @@ export default function App() {
                             void runFilesTabSearch();
                           }
                         }}
-                        placeholder="搜索文件名、关键词，或写一句话"
+                        placeholder="写一句话告诉 AI 你想找什么资料"
                         className="w-full rounded-2xl border border-gray-200 bg-white pl-9 pr-10 py-2 text-[12px] font-medium text-gray-700 outline-none transition-all focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
                       />
                       {filesTabSearchInput && (
@@ -20798,39 +20860,25 @@ export default function App() {
                       onClick={() => void runFilesTabSearch()}
                       disabled={isFilesTabSearching}
                     >
-                      {isFilesTabSearching ? '搜索中' : '搜索'}
+                      {isFilesTabSearching ? '搜索中' : 'AI 搜'}
                     </Button>
                   </div>
-                  {isSearchMode && (
-                    <div className="mb-3 text-[11px] text-gray-400">
-                      {searchedFiles.length > 0
-                        ? `按相关度显示「${filesTabSearchResult?.query}」的文件 · 共 ${searchedFiles.length} 个`
-                        : `没有找到匹配「${filesTabSearchResult?.query}」的文件`}
-                    </div>
-                  )}
+                  <p className="mb-3 text-[10px] text-slate-400 leading-relaxed">
+                    最近你用过的文件。搜索结果会出现在「引证」面板。
+                  </p>
                   <div className="space-y-2.5">
-                    {isSearchMode
-                      ? searchedFiles.map((item, index) =>
-                          renderFileCard({
-                            key: `search-${item.documentId}-${index}`,
-                            documentId: item.documentId,
-                            title: item.title,
-                            path: item.path,
-                            excerpt: item.excerpt,
-                            matchedTerms: item.matchedTerms,
-                          }),
-                        )
-                      : sortedDocs.map((doc) =>
-                          renderFileCard({
-                            key: `doc-${doc.id}`,
-                            documentId: doc.id,
-                            title: doc.title,
-                            path: doc.path,
-                          }),
-                        )}
-                    {!isSearchMode && sortedDocs.length === 0 && (
+                    {recentUsedDocuments.map((doc) =>
+                      renderFileCard({
+                        key: `recent-${doc.documentId}`,
+                        documentId: doc.documentId,
+                        title: doc.title,
+                        path: doc.path,
+                      }),
+                    )}
+                    {recentUsedDocuments.length === 0 && (
                       <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-6 text-center text-[12px] text-gray-500">
-                        这个客户还没有上传任何文件。
+                        还没有用过任何文件。<br />
+                        在「引证」里点击 📄 或 📁，文件就会出现在这里。
                       </div>
                     )}
                   </div>
@@ -20840,11 +20888,24 @@ export default function App() {
 
             {/* Tab: 引证 */}
             {workspaceRightTab === 'evidence' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
-              <div className="flex items-center justify-between mb-4 xl:mb-5">
-                <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 flex items-center gap-2">
-                  <FileBadge size={18} className="text-amber-500" />
-                  {activeMessageId ? '当前回答引证' : '默认背景线索'}
+              <div className="flex items-center justify-between mb-4 xl:mb-5 gap-2">
+                <h3 className="text-[13px] xl:text-[14px] font-bold text-gray-900 flex items-center gap-2 min-w-0">
+                  <FileBadge size={18} className="text-amber-500 shrink-0" />
+                  <span className="truncate">
+                    {filesTabSearchResult
+                      ? `搜索：「${filesTabSearchResult.query}」共 ${filesTabSearchResult.hits.length} 条`
+                      : activeMessageId ? '当前回答引证' : '默认背景线索'}
+                  </span>
                 </h3>
+                {filesTabSearchResult && (
+                  <button
+                    type="button"
+                    onClick={clearFilesTabSearch}
+                    className="shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold tracking-wider border border-gray-200 bg-gray-100 text-gray-500 hover:border-[#5B7BFE] hover:text-[#5B7BFE] transition-colors"
+                  >
+                    清空搜索
+                  </button>
+                )}
               </div>
 
               <div className="space-y-2.5">
@@ -20899,11 +20960,12 @@ export default function App() {
                         <button
                           type="button"
                           disabled={!canOpen}
-                          onClick={() =>
+                          onClick={() => {
+                            markDocumentAsUsed({ documentId: card.primarySnippet.documentId || '', title: fileLabel, path: openPath });
                             void openPathBridge(openPath).then((opened) => {
                               if (!opened) flash('error', '原文路径不存在或当前无法打开');
-                            })
-                          }
+                            });
+                          }}
                           className={`rounded-lg p-1.5 transition-colors ${
                             canOpen
                               ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
@@ -20916,11 +20978,12 @@ export default function App() {
                         <button
                           type="button"
                           disabled={!canOpen}
-                          onClick={() =>
+                          onClick={() => {
+                            markDocumentAsUsed({ documentId: card.primarySnippet.documentId || '', title: fileLabel, path: openPath });
                             void revealInFinderBridge(openPath).then((opened) => {
                               if (!opened) flash('error', '无法在 Finder 中显示该文件');
-                            })
-                          }
+                            });
+                          }}
                           className={`rounded-lg p-1.5 transition-colors ${
                             canOpen
                               ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
