@@ -569,7 +569,7 @@ def _short_label(value: object, *, limit: int = 200) -> str:
 def build_workspace_background_pack(
     workspace_snapshot: ClientWorkspaceResponse | None,
     *,
-    max_chars: int = 6000,
+    max_chars: int = 9000,
     judgment_limit: int = 6,
     meeting_limit: int = 3,
     task_limit: int = 5,
@@ -646,10 +646,28 @@ def build_workspace_background_pack(
         module_lines = ["活跃项目模块："]
         for module in modules[:project_module_limit]:
             name = _short_label(getattr(module, "name", ""), limit=80) or "项目模块"
-            goal = _short_label(getattr(module, "goal", ""), limit=120)
+            goal = _short_label(getattr(module, "goal", ""), limit=220)
+            description = _short_label(getattr(module, "description", ""), limit=320)
             owner = _short_label(getattr(module, "ownerName", ""), limit=40)
-            extras = "；".join(p for p in (goal, f"负责人={owner}" if owner else "") if p)
-            module_lines.append(f"- {name}" + (f"（{extras}）" if extras else ""))
+            deliverables_raw = getattr(module, "deliverables", []) or []
+            deliverables_str = "、".join(
+                _short_label(item, limit=60) for item in deliverables_raw[:5] if _short_label(item, limit=60)
+            )
+            keywords_raw = getattr(module, "keywords", []) or []
+            keywords_str = "、".join(
+                _short_label(item, limit=30) for item in keywords_raw[:6] if _short_label(item, limit=30)
+            )
+            module_lines.append(f"- {name}")
+            if goal:
+                module_lines.append(f"    目标：{goal}")
+            if description:
+                module_lines.append(f"    说明：{description}")
+            if deliverables_str:
+                module_lines.append(f"    交付物：{deliverables_str}")
+            if keywords_str:
+                module_lines.append(f"    关键词：{keywords_str}")
+            if owner:
+                module_lines.append(f"    负责人：{owner}")
         drive_sections.append("\n".join(module_lines))
 
     meetings = list(workspace_snapshot.meetings or [])
@@ -689,12 +707,26 @@ def build_workspace_background_pack(
                 or str(getattr(task, "ddl", "") or "").strip()
             )
             owner = _short_label(getattr(task, "ownerName", ""), limit=40)
-            task_lines.append(
-                f"- {title}"
-                + (f" [{status}]" if status else "")
-                + (f" / 截止 {due}" if due else "")
-                + (f" / {owner}" if owner else "")
-            )
+            desc = _short_label(getattr(task, "desc", ""), limit=240)
+            event_line = _short_label(getattr(task, "eventLineName", ""), limit=60)
+            project_module = _short_label(getattr(task, "projectModuleName", ""), limit=60)
+            head = f"- {title}"
+            if status:
+                head += f" [{status}]"
+            if due:
+                head += f" / 截止 {due}"
+            if owner:
+                head += f" / {owner}"
+            task_lines.append(head)
+            if desc:
+                task_lines.append(f"    描述：{desc}")
+            link_parts = []
+            if event_line:
+                link_parts.append(f"事件线={event_line}")
+            if project_module:
+                link_parts.append(f"项目模块={project_module}")
+            if link_parts:
+                task_lines.append(f"    关联：{'；'.join(link_parts)}")
         drive_sections.append("\n".join(task_lines))
 
     goals = list(workspace_snapshot.goals or [])
@@ -1001,11 +1033,11 @@ def build_consultant_synthesis_material_pack(
     # 这里只放一个紧凑的"画像总览"作为开头底色（不重复后面的 section）。
     consultant_background = build_workspace_background_pack(
         workspace_snapshot,
-        max_chars=4000,
+        max_chars=6500,
         judgment_limit=4,
         meeting_limit=2,
-        task_limit=3,
-        project_module_limit=3,
+        task_limit=4,
+        project_module_limit=4,
         goal_limit=3,
         open_question_limit=2,
         conflict_limit=2,
@@ -1409,10 +1441,11 @@ def build_open_workspace_answer_context(
                 prompt.strip(),
                 "",
                 "【回答原则】",
-                "你是这家组织的资深陪伴顾问；先在心里建立对这家组织的当前画像（基于背景包），再在画像里定位用户的问题。",
-                '回答时给出有判断的结论，而不是中立陈述；明确区分"资料明示的"与"基于背景推断的"。',
-                "只基于提供资料和背景包推断，不要编造资料之外的硬事实。",
-                "可以自由组织结构和长度；不要暴露系统过程或检索细节。",
+                "你是这家组织的资深陪伴顾问。下面的「背景包」是你已经知道的事实清单——客户档案、已确认判断、活跃项目模块、近期会议、活跃任务、目标、矛盾、待澄清问题。不需要再从资料里确认这些。",
+                "把背景包当作组织画像的地图，但回答的具体性必须从「原始阅读资料包」里挖出来：具体的项目名、合作方、活动名、数字、时间节点、决议、人物角色，这些是背景包没列出来的，需要你深入文档片段去找。",
+                "不要满足于在画像层面做抽象总结。一份合格的答案要能让读者看到具体在做什么、跟谁做、什么时候做、做到什么程度——这些细节都在资料里。",
+                '给出有判断的结论而非中立陈述；明确标示三种信息来源：「资料明示的」「背景包已有判断」「基于全局推断的」，让读者知道每个论断的来历。',
+                "不要编造资料和背景包之外的硬事实。可以自由组织结构和长度；不要暴露系统过程或检索细节。",
             ]
         ).strip(),
         f"【客户】\n{client_label}",
