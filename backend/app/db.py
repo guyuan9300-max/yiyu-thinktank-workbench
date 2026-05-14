@@ -2460,6 +2460,9 @@ class Database:
             self._ensure_column("handbook_entries", "context_summary", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("handbook_entries", "reuse_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("handbook_entries", "last_reused_at", "TEXT")
+            # Phase 1（数据中心 OCR 调度）：本地推理任务需要带自由 payload，
+            # 比如 visual_ocr 任务的 source_path / slide_no / region 等。
+            self._ensure_column("local_model_tasks", "payload_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("learning_recommendations", "linked_task_id", "TEXT")
             self._ensure_column("learning_recommendations", "client_id", "TEXT")
             self._ensure_column("learning_recommendations", "client_name", "TEXT")
@@ -3520,7 +3523,10 @@ class Database:
                     finished_at TEXT,
                     UNIQUE(report_run_id, section_idx)
                 );
-
+                """
+            )
+            self.conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS trashed_files (
                     id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL DEFAULT '',
@@ -3531,9 +3537,13 @@ class Database:
                     original_title TEXT NOT NULL DEFAULT '',
                     reason TEXT NOT NULL DEFAULT 'dedup_merge',
                     trashed_at TEXT NOT NULL
-                );
+                )
+                """
+            )
+            self.conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_trashed_files_trashed_at
-                    ON trashed_files(trashed_at);
+                    ON trashed_files(trashed_at)
                 """
             )
             self.conn.execute(

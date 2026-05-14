@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime
 from threading import Event
@@ -9,12 +10,27 @@ from typing import Any
 from uuid import uuid4
 
 from app.db import Database, to_json
+from app.services.local_inference_governor import (
+    Decision,
+    collect_machine_health,
+    decide_run,
+    health_summary,
+)
+
+logger = logging.getLogger(__name__)
 
 
 SETTINGS_KEY = "settings.local_model_optimization"
 TASK_TYPE_DOCUMENT_CARD = "document_card_generation"
 TASK_TYPE_PATH_OPTIMIZATION = "document_path_optimization"
-TASK_TYPES = {TASK_TYPE_DOCUMENT_CARD, TASK_TYPE_PATH_OPTIMIZATION}
+TASK_TYPE_VISUAL_OCR = "visual_ocr"  # Phase 1：新增（pptx slide / pdf 页 / 图片）
+TASK_TYPE_NARRATIVE_SYNTHESIS = "narrative_synthesis"  # Phase 4：N 页 → 1 文档
+TASK_TYPES = {
+    TASK_TYPE_DOCUMENT_CARD,
+    TASK_TYPE_PATH_OPTIMIZATION,
+    TASK_TYPE_VISUAL_OCR,
+    TASK_TYPE_NARRATIVE_SYNTHESIS,
+}
 DEFAULT_PROFILE_ID = "local_text_deep"
 PROMPT_VERSION = "local-data-optimizer-v1"
 
@@ -27,6 +43,13 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "paused": False,
     "autoEnqueueDocumentCards": True,
     "autoEnqueuePathOptimization": True,
+    # Phase 0：硬件门控阈值（Governor 用）
+    "maxThermalState": 3,               # SoC 温度档位 0-5；>= 此值暂停
+    "minIdleSeconds": 0,                # 用户连续无输入 >= 此秒数才能跑；0=不强制
+    "minBatteryPercent": 30,            # 电池电量低于此值暂停
+    "requireACPower": False,            # 是否必须插电
+    "cooldownSecondsPerTask": 5,        # 每条任务跑完后强制睡眠（散热）
+    "ollamaBaseUrl": "http://127.0.0.1:11434/v1",  # 探活地址
     "updatedAt": None,
 }
 
@@ -130,6 +153,25 @@ def normalize_local_model_optimization_settings(value: object | None) -> dict[st
     settings["autoEnqueuePathOptimization"] = bool(settings.get("autoEnqueuePathOptimization", True))
     settings["modelProfileId"] = str(settings.get("modelProfileId") or DEFAULT_PROFILE_ID).strip() or DEFAULT_PROFILE_ID
     settings["modelName"] = str(settings.get("modelName") or "").strip()
+    # Phase 0：硬件门控阈值（Governor 用）。clip 到合理范围，防 UI 写入异常值
+    try:
+        settings["maxThermalState"] = max(0, min(5, int(settings.get("maxThermalState") or 3)))
+    except (TypeError, ValueError):
+        settings["maxThermalState"] = 3
+    try:
+        settings["minIdleSeconds"] = max(0, min(3600, int(settings.get("minIdleSeconds") or 0)))
+    except (TypeError, ValueError):
+        settings["minIdleSeconds"] = 0
+    try:
+        settings["minBatteryPercent"] = max(0, min(100, int(settings.get("minBatteryPercent") or 30)))
+    except (TypeError, ValueError):
+        settings["minBatteryPercent"] = 30
+    settings["requireACPower"] = bool(settings.get("requireACPower", False))
+    try:
+        settings["cooldownSecondsPerTask"] = max(0, min(300, int(settings.get("cooldownSecondsPerTask") or 5)))
+    except (TypeError, ValueError):
+        settings["cooldownSecondsPerTask"] = 5
+    settings["ollamaBaseUrl"] = str(settings.get("ollamaBaseUrl") or DEFAULT_SETTINGS["ollamaBaseUrl"]).strip()
     return settings
 
 
@@ -759,6 +801,53 @@ def _mark_task_failed(db: Database, task: dict[str, object], error: Exception) -
     )
 
 
+def _governor_check(normalized: dict[str, object]) -> Decision:
+    """采集一次机器健康，按 settings 阈值给出 Decision。Phase 0 新增。"""
+    health = collect_machine_health(
+        ollama_base_url=str(normalized.get("ollamaBaseUrl") or "") or None,
+    )
+    return decide_run(
+        health=health,
+        max_thermal_state=int(normalized.get("maxThermalState") or 3),
+        min_idle_seconds=float(normalized.get("minIdleSeconds") or 0),
+        min_battery_percent=int(normalized.get("minBatteryPercent") or 30),
+        require_ac_power=bool(normalized.get("requireACPower")),
+        require_ollama=True,
+    )
+
+
+def inspect_local_inference_health(db: Database) -> dict[str, object]:
+    """给 UI / 监控端点用：返回 governor 当前判定 + 健康快照。"""
+    normalized = get_local_model_optimization_settings(db)
+    health = collect_machine_health(
+        ollama_base_url=str(normalized.get("ollamaBaseUrl") or "") or None,
+    )
+    decision = decide_run(
+        health=health,
+        max_thermal_state=int(normalized.get("maxThermalState") or 3),
+        min_idle_seconds=float(normalized.get("minIdleSeconds") or 0),
+        min_battery_percent=int(normalized.get("minBatteryPercent") or 30),
+        require_ac_power=bool(normalized.get("requireACPower")),
+        require_ollama=True,
+    )
+    return {
+        "verdict": decision.verdict,
+        "reason": decision.reason,
+        "retry_after_seconds": decision.retry_after_seconds,
+        "summary": health_summary(health),
+        "thermal_state": health.thermal_state,
+        "cpu_speed_limit": health.cpu_speed_limit,
+        "user_idle_seconds": health.user_idle_seconds,
+        "battery_percent": health.battery_percent,
+        "on_ac_power": health.on_ac_power,
+        "memory_pressure": health.memory_pressure,
+        "ollama_reachable": health.ollama_reachable,
+        "in_run_window": is_within_run_window(normalized),
+        "enabled": bool(normalized.get("enabled")),
+        "paused": bool(normalized.get("paused")),
+    }
+
+
 def run_due_local_model_tasks(
     db: Database,
     ai_service: Any,
@@ -776,12 +865,29 @@ def run_due_local_model_tasks(
             return {"processed": 0, "failed": 0, "skipped": 0, "status": "paused"}
         if not is_within_run_window(normalized):
             return {"processed": 0, "failed": 0, "skipped": 0, "status": "outside_window"}
+        # Phase 0：硬件门控（温度 / CPU 限速 / 内存 / 空闲 / 电池 / Ollama）
+        governor_decision = _governor_check(normalized)
+        if governor_decision.verdict != "go":
+            logger.info(
+                "[governor] hold: %s (retry in %ds)",
+                governor_decision.reason,
+                governor_decision.retry_after_seconds,
+            )
+            return {
+                "processed": 0,
+                "failed": 0,
+                "skipped": 0,
+                "status": "governor_wait",
+                "governor_reason": governor_decision.reason,
+                "governor_retry_after": governor_decision.retry_after_seconds,
+            }
     limit = max(1, int(batch_size or normalized.get("concurrency") or 1))
     resolved_worker = worker_id or f"local_optimizer_{uuid4().hex[:8]}"
+    cooldown_seconds = float(normalized.get("cooldownSecondsPerTask") or 0)
     processed = 0
     failed = 0
     skipped = 0
-    for _ in range(limit):
+    for iteration in range(limit):
         task = _claim_next_task(db, resolved_worker)
         if task is None:
             break
@@ -791,6 +897,14 @@ def run_due_local_model_tasks(
                 result = _process_document_card_task(db, ai_service, task)
             elif task_type == TASK_TYPE_PATH_OPTIMIZATION:
                 result = _process_path_optimization_task(db, ai_service, task)
+            elif task_type == TASK_TYPE_VISUAL_OCR:
+                # Phase 1 会接入；先 placeholder：跳过 + 标 failed
+                # 等 visual_ocr_runner 落地后改为 dispatch
+                from app.services.task_runners import visual_ocr_runner  # type: ignore[import-not-found]
+                result = visual_ocr_runner.process(db, ai_service, task)
+            elif task_type == TASK_TYPE_NARRATIVE_SYNTHESIS:
+                from app.services.task_runners import narrative_synthesis_runner  # type: ignore[import-not-found]
+                result = narrative_synthesis_runner.process(db, ai_service, task)
             else:
                 skipped += 1
                 raise RuntimeError(f"不支持的本地优化任务类型：{task_type}")
@@ -799,8 +913,19 @@ def run_due_local_model_tasks(
         except Exception as error:
             failed += 1
             _mark_task_failed(db, task, error)
-        if not force and not is_within_run_window(normalized):
-            break
+        # 每条任务跑完后：(1) 散热冷却 (2) 重新检查 window + governor
+        if cooldown_seconds > 0 and iteration < limit - 1:
+            time.sleep(cooldown_seconds)
+        if not force:
+            if not is_within_run_window(normalized):
+                break
+            governor_decision = _governor_check(normalized)
+            if governor_decision.verdict != "go":
+                logger.info(
+                    "[governor] mid-batch hold: %s",
+                    governor_decision.reason,
+                )
+                break
     return {"processed": processed, "failed": failed, "skipped": skipped, "status": "completed"}
 
 

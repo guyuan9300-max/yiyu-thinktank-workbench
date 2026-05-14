@@ -61,7 +61,10 @@ TEXT_EXTENSIONS = {".md", ".txt", ".json", ".csv"}
 ARCHIVE_XML_EXTENSIONS = {".pptx", ".xlsx"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ONLINE_TRANSCRIPT_CATEGORY = "线上转写"
-SYSTEM_FOLDER_CATEGORIES = ["收件箱", ONLINE_TRANSCRIPT_CATEGORY, "待处理", "归档"]
+UNIFIED_FOLDER_LABEL = "资料库"
+SYSTEM_FOLDER_CATEGORIES = [UNIFIED_FOLDER_LABEL]
+# 旧常量保留：迁移脚本需要识别这些目录作为搬运源。
+LEGACY_SYSTEM_FOLDER_CATEGORIES = ["收件箱", ONLINE_TRANSCRIPT_CATEGORY, "待处理", "归档"]
 LEGACY_FIXED_CATEGORIES = [
     "财务与筹款",
     "品牌与传播",
@@ -1805,6 +1808,52 @@ def ingest_document_knowledge(
     force_ocr: bool = False,
     ocr_progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, Any]:
+    # 早期 family_id dedup：title 经 _normalized_family_stem 后能识别 xxx(1)/副本xxx/xxx_1 等语义重复。
+    # 已存在同 family 的 raw_file → 当前文件直接进垃圾桶，跳过 ingest，调用方插入的 documents 行也删掉。
+    candidate_family_id = derive_document_family_id(
+        title=title, content_hash="", origin_type="file_import", origin_id=document_id,
+    )
+    if candidate_family_id and ":" in candidate_family_id:
+        stem_part = candidate_family_id.split(":", 1)[1].strip()
+        if stem_part and stem_part != "unknown" and len(stem_part) >= 3:
+            existing = db.fetchone(
+                """
+                SELECT id, path FROM documents
+                WHERE client_id = ? AND document_family_id = ?
+                  AND canonical_kind = 'raw_file' AND id != ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (client_id, candidate_family_id, document_id),
+            )
+            if existing:
+                from app.services import trash_can as _trash_can
+                _trash_can.trash_file(
+                    db, data_dir,
+                    source_path=source_path,
+                    client_id=client_id,
+                    original_document_id=document_id,
+                    original_title=title,
+                    reason="dedup_merge",
+                )
+                db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+                return {
+                    "knowledge_document_id": "",
+                    "legacy_knowledge_document_id": "",
+                    "title": title,
+                    "current_human_path": str(existing["path"] or ""),
+                    "compat_card_path": "",
+                    "markdown_path": "",
+                    "primary_category": UNIFIED_FOLDER_LABEL,
+                    "secondary_category": "",
+                    "short_summary": "",
+                    "summary": "",
+                    "classification_confidence": 1.0,
+                    "material_layer": "",
+                    "needs_review": False,
+                    "dedup_skipped": True,
+                    "dedup_kept_document_id": str(existing["id"]),
+                }
+
     extracted = extract_document_with_metadata(
         source_path,
         title=title,
@@ -1827,11 +1876,9 @@ def ingest_document_knowledge(
         secondary_category,
         confidence,
     )
-    existing_target_folder = db.fetchone(
-        "SELECT id FROM client_folders WHERE client_id = ? AND label = ? AND is_hidden = 0",
-        (client_id, primary_category),
-    )
-    display_category = primary_category if existing_target_folder and confidence >= 0.78 else "待处理"
+    # 统一文件夹策略：所有 raw_file 落到「资料库」。primary_category / confidence
+    # 仍然计算，作为 v2_documents.visible_category 等字段的元数据保留供检索用。
+    display_category = UNIFIED_FOLDER_LABEL
     managed_path = _copy_into_workspace(data_dir, client_id, source_path, display_category, document_id)
     compat_card_path = _write_compat_card_markdown(
         data_dir,
@@ -2126,6 +2173,22 @@ def ingest_document_knowledge(
                 document_id,
             )
     refresh_client_folder_counts(db, client_id)
+
+    # Phase 2：根据文档 kind 自动派发本地推理任务（如 pptx → per-slide visual_ocr）
+    # 不阻塞导入主流程；任何异常吞掉只打日志
+    try:
+        from app.services.task_runners.router import route_document_for_local_inference
+
+        route_result = route_document_for_local_inference(db, v2_document_id)
+        if route_result.get("enqueued"):
+            logger.info(
+                "[router] doc=%s kind=%s enqueued=%d",
+                v2_document_id,
+                route_result.get("kind"),
+                route_result.get("enqueued"),
+            )
+    except Exception:
+        logger.exception("router 派发失败 (doc=%s)", v2_document_id)
 
     # --- 即时写入 master_index，让文档上传后立即可被检索 ---
     try:

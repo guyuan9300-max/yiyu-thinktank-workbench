@@ -37,6 +37,7 @@ import {
   Phone,
   Eye,
   FolderDot,
+  ArrowLeft,
   ArrowUp,
   FileBadge,
   Database,
@@ -86,7 +87,6 @@ import type {
   CoachCaseRecord,
   CoachReminderRule,
   ContextQuality,
-  ClientFolderRecommendationPlan,
   DocumentAutoRepairPreview,
   DocumentReadingPreview,
   PullPreview,
@@ -375,6 +375,7 @@ import {
   saveCloudAuthInputMemory,
   saveFeishuDeliveryProfile,
   saveFeishuInputMemory,
+  searchClientKnowledge,
   getClientAnalysisRun,
   getClientChatThread,
   deleteClientChatMessagePair,
@@ -421,8 +422,6 @@ import {
   backfillClientWorkspaceImports,
   pullSelectedFromMain,
   selectCollabRepo,
-  recommendClientFolderPlan,
-  applyClientFolderRecommendation,
   previewClientDocumentAutoRepair,
   applyClientDocumentAutoRepair,
   createMeetingPrepareProposal,
@@ -438,6 +437,7 @@ import {
 } from './lib/api';
 import { getClientDnaPromptTemplate } from './lib/clientDnaPromptTemplates';
 import { useRecordingSession, formatRecordingClock, type TranscribedPayload } from './lib/useRecordingSession';
+import { useTypewriter } from './lib/useTypewriter';
 import { ClientProjectSetupPage } from './components/client_workspace/ClientProjectSetupPage';
 import { EventLineClarificationComposer } from './components/tasks/EventLineClarificationComposer';
 import EventLineReportPanel from './components/tasks/EventLineReportPanel';
@@ -550,6 +550,9 @@ type ActiveWorkingDocument = {
   preview?: DocumentReadingPreview | null;
   lastError?: string | null;
   updatedAt: number;
+  // 'citation' = 从引证卡片"引用回答"加进来的，发消息后会自动清掉
+  // 缺省（undefined）/ 'import' = 上传/拖文件时附加进来的，保持不动
+  referenceSource?: 'citation' | 'import';
 };
 
 const ACTIVE_WORKING_DOCUMENTS_STORAGE_KEY = 'yiyu.workspace.activeWorkingDocuments.v1';
@@ -1865,6 +1868,16 @@ function AnswerDocument({ text }: { text: string }) {
 	      })}
 	    </div>
   );
+}
+
+/**
+ * 给 AnswerDocument 套一层"打字机"效果：
+ * - streaming=true：用 useTypewriter 把 text 一段段蹦出来（30ms 推进 2 字符）
+ * - streaming=false：直接显示完整 text（历史消息 / 完成态）
+ */
+function StreamingAnswerDocument({ text, streaming }: { text: string; streaming: boolean }) {
+  const displayed = useTypewriter(text, { enabled: streaming, charsPerTick: 2, tickMs: 30 });
+  return <AnswerDocument text={displayed} />;
 }
 
 function WorkTracePanel({
@@ -7155,9 +7168,14 @@ export default function App() {
           flash('error', settingsError instanceof Error ? settingsError.message : '系统设置加载失败');
         }
       }
+      // Always load org membership for cloud-authenticated users so the account-settings page
+      // shows up-to-date organizationName / departmentName (even after a dept lead was bound
+      // after the user already had approved status).
+      if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud') {
+        await loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
+      }
       if (nextAuth.authenticated && nextAuth.sessionMode === 'cloud' && getEffectiveMembershipStatus(nextAuth) !== 'approved') {
         markLoadingPhase('正在读取组织身份状态…');
-        await loadOrgMembershipBlock().catch(() => DEFAULT_ORG_MEMBERSHIP_SUMMARY);
         setClients([]);
         setWorkspace(null);
         setTasks([]);
@@ -16629,6 +16647,72 @@ export default function App() {
     };
     const [isEvidencePanelExpanded, setIsEvidencePanelExpanded] = useState(false);
     const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(() => new Set());
+    const [filesTabSearchInput, setFilesTabSearchInput] = useState('');
+    const [filesTabSearchResult, setFilesTabSearchResult] = useState<KnowledgeSearchResult | null>(null);
+    const [isFilesTabSearching, setIsFilesTabSearching] = useState(false);
+    const runFilesTabSearch = async () => {
+      const query = filesTabSearchInput.trim();
+      if (!currentClientId) {
+        flash('error', '请先选择客户');
+        return;
+      }
+      if (!query) {
+        setFilesTabSearchResult(null);
+        return;
+      }
+      try {
+        setIsFilesTabSearching(true);
+        const result = await searchClientKnowledge(currentClientId, query, currentThreadId || undefined);
+        setFilesTabSearchResult(result);
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '搜索失败');
+      } finally {
+        setIsFilesTabSearching(false);
+      }
+    };
+    const clearFilesTabSearch = () => {
+      setFilesTabSearchInput('');
+      setFilesTabSearchResult(null);
+      setIsFilesTabSearching(false);
+    };
+    const attachDocumentReferenceToComposer = (params: { documentId: string; fileLabel: string; path: string }) => {
+      if (!currentClientId) return;
+      const { documentId: docId, fileLabel, path } = params;
+      if (!docId) {
+        flash('error', '这份资料缺少文件标识，暂时无法加入对话');
+        return;
+      }
+      const basename = path ? (path.split(/[/\\]/).pop() || '') : '';
+      let alreadyAttached = false;
+      setActiveWorkingDocuments((previous) => {
+        if (previous.some((item) => item.documentId === docId)) {
+          alreadyAttached = true;
+          return previous;
+        }
+        const next: ActiveWorkingDocument = {
+          documentId: docId,
+          title: fileLabel,
+          fileName: basename || fileLabel,
+          path,
+          status: 'ready',
+          updatedAt: Date.now(),
+          referenceSource: 'citation',
+        };
+        return [next, ...previous].slice(0, ACTIVE_WORKING_DOCUMENTS_LIMIT);
+      });
+      if (alreadyAttached) {
+        flash('info', `「${fileLabel}」已在对话引用里`);
+      } else {
+        flash('success', `已把「${fileLabel}」加入对话引用`);
+      }
+    };
+    const handleAttachCitationToComposer = (card: EvidenceCitationCard) => {
+      const docId = card.primarySnippet.documentId || '';
+      const openPath = card.openPath || card.primarySnippet.path || card.sourcePath || '';
+      const basename = openPath ? (openPath.split(/[/\\]/).pop() || '') : '';
+      const fileLabel = basename || card.sourceTitle || card.claimTitle || '未命名资料';
+      attachDocumentReferenceToComposer({ documentId: docId, fileLabel, path: openPath });
+    };
     const toggleEvidenceCardExpanded = (id: string) =>
       setExpandedEvidenceIds((prev) => {
         const next = new Set(prev);
@@ -16737,41 +16821,6 @@ export default function App() {
       dispatchWorkspaceClientUi({ type: 'setLinkMaterialCookieBrowser', clientId: workspaceClientUiKey, cookieBrowser });
     const setIsStartingClientLinkMaterial = (isStarting: boolean) =>
       dispatchWorkspaceClientUi({ type: 'setLinkMaterialStarting', clientId: workspaceClientUiKey, isStarting });
-    type FolderRecommendationUiState = {
-      plan: ClientFolderRecommendationPlan | null;
-      open: boolean;
-      loading: boolean;
-      applying: boolean;
-    };
-    const defaultFolderRecommendationState: FolderRecommendationUiState = {
-      plan: null,
-      open: false,
-      loading: false,
-      applying: false,
-    };
-    const folderRecommendationState = currentClientId
-      ? (workspaceClientUiState.folderRecommendationStateByClient[currentClientId] as FolderRecommendationUiState | null | undefined) || defaultFolderRecommendationState
-      : defaultFolderRecommendationState;
-    const setFolderRecommendationState = (
-      nextValue: FolderRecommendationUiState | ((previous: FolderRecommendationUiState) => FolderRecommendationUiState),
-    ) => {
-      if (!currentClientId) return;
-      const previous = (workspaceClientUiState.folderRecommendationStateByClient[currentClientId] as FolderRecommendationUiState | null | undefined) || defaultFolderRecommendationState;
-      const value = typeof nextValue === 'function' ? nextValue(previous) : nextValue;
-      dispatchWorkspaceClientUi({ type: 'setFolderRecommendationState', clientId: currentClientId, value });
-    };
-    const folderRecommendationPlan = folderRecommendationState.plan;
-    const isFolderRecommendationOpen = folderRecommendationState.open;
-    const isFolderRecommendationLoading = folderRecommendationState.loading;
-    const isFolderRecommendationApplying = folderRecommendationState.applying;
-    const setFolderRecommendationPlan = (plan: ClientFolderRecommendationPlan | null) =>
-      setFolderRecommendationState((previous) => ({ ...previous, plan }));
-    const setIsFolderRecommendationOpen = (open: boolean) =>
-      setFolderRecommendationState((previous) => ({ ...previous, open }));
-    const setIsFolderRecommendationLoading = (loading: boolean) =>
-      setFolderRecommendationState((previous) => ({ ...previous, loading }));
-    const setIsFolderRecommendationApplying = (applying: boolean) =>
-      setFolderRecommendationState((previous) => ({ ...previous, applying }));
     type DocumentAutoRepairUiState = {
       preview: DocumentAutoRepairPreview | null;
       open: boolean;
@@ -18343,37 +18392,6 @@ export default function App() {
       }
     };
 
-    const handlePreviewFolderRecommendation = async () => {
-      if (!currentClientId) return;
-      setIsFolderRecommendationLoading(true);
-      setIsFolderRecommendationOpen(true);
-      try {
-        const plan = await recommendClientFolderPlan(currentClientId);
-        setFolderRecommendationPlan(plan);
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '生成整理建议失败');
-      } finally {
-        setIsFolderRecommendationLoading(false);
-      }
-    };
-
-    const handleApplyFolderRecommendation = async () => {
-      if (!currentClientId || !folderRecommendationPlan) return;
-      setIsFolderRecommendationApplying(true);
-      try {
-        const updatedWorkspace = await applyClientFolderRecommendation(currentClientId, {
-          targetFolderLabels: folderRecommendationPlan.folders.map((folder) => folder.targetFolderLabel),
-        });
-        setWorkspace(updatedWorkspace);
-        setIsFolderRecommendationOpen(false);
-        flash('success', '已按整理建议更新文件夹视图');
-      } catch (error) {
-        flash('error', error instanceof Error ? error.message : '应用整理建议失败');
-      } finally {
-        setIsFolderRecommendationApplying(false);
-      }
-    };
-
     const handlePreviewDocumentAutoRepair = async () => {
       if (!currentClientId) return;
       setIsDocumentAutoRepairOpen(true);
@@ -18974,6 +18992,10 @@ export default function App() {
           setClientPendingQuestion(currentClientId, null);
           setActiveMessageId(started.assistantMessage.id);
           setIsStartingMessage(false);
+          // 清掉本轮通过"引用回答"加入的工作文档（保留主动 import 进来的）
+          setActiveWorkingDocuments((previous) =>
+            previous.filter((doc) => doc.referenceSource !== 'citation'),
+          );
         });
         window.requestAnimationFrame(() => {
           const container = chatContainerRef.current;
@@ -19776,7 +19798,10 @@ export default function App() {
 
                                   {shouldRenderPlainWorkspaceAnswer && (
                                     <div className="rounded-[24px] bg-[linear-gradient(180deg,rgba(255,255,255,1),rgba(248,250,252,0.92))] border border-slate-100 px-5 py-5 xl:px-6 xl:py-6 shadow-[0_8px_28px_rgba(15,23,42,0.05)]">
-                                      <AnswerDocument text={msg.content} />
+                                      <StreamingAnswerDocument
+                                        text={msg.content}
+                                        streaming={msg.status === 'loading'}
+                                      />
                                     </div>
                                   )}
 
@@ -20470,6 +20495,7 @@ export default function App() {
             {/* Tab bar */}
             <div className="flex border-b border-gray-100 bg-gray-50/60 px-2 pt-2 gap-0.5 shrink-0">
               {([
+                { key: 'files', label: '文件', icon: FolderOpen },
                 { key: 'evidence', label: '引证', icon: FileBadge },
                 { key: 'memory', label: '收藏', icon: BrainCircuit },
                 { key: 'tools', label: '工具', icon: UploadCloud },
@@ -20630,6 +20656,188 @@ export default function App() {
 
             </div>}
 
+            {/* Tab: 文件 */}
+            {workspaceRightTab === 'files' && (() => {
+              const documents = workspace?.documents || [];
+              const docByPath = new Map<string, typeof documents[number]>();
+              for (const doc of documents) {
+                if (doc.path) docByPath.set(doc.path, doc);
+              }
+              const sortedDocs = [...documents].sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''));
+              const isSearchMode = filesTabSearchResult != null;
+              const searchHits = filesTabSearchResult?.hits || [];
+              // 把命中结果按 path 反查 documentId，去重，按 hit 顺序
+              const searchedFiles: { documentId: string; title: string; path: string; excerpt: string; matchedTerms: string[] }[] = [];
+              const seenDocIds = new Set<string>();
+              for (const hit of searchHits) {
+                const hitPath = hit.path || '';
+                const doc = hitPath ? docByPath.get(hitPath) : undefined;
+                const docId = doc?.id || '';
+                if (!docId || seenDocIds.has(docId)) continue;
+                seenDocIds.add(docId);
+                searchedFiles.push({
+                  documentId: docId,
+                  title: doc?.title || hit.title,
+                  path: doc?.path || hitPath,
+                  excerpt: hit.excerpt || '',
+                  matchedTerms: hit.matchedTerms || [],
+                });
+              }
+              const renderFileCard = (params: {
+                key: string;
+                documentId: string;
+                title: string;
+                path: string;
+                excerpt?: string;
+                matchedTerms?: string[];
+              }) => {
+                const { key, documentId, title, path, excerpt, matchedTerms } = params;
+                const canOpen = Boolean(path) && hasOpenableFile(path);
+                const basename = path ? (path.split(/[/\\]/).pop() || '') : '';
+                const fileLabel = basename || title || '未命名资料';
+                const isReferenced = Boolean(
+                  documentId && activeWorkingDocuments.some((doc) => doc.documentId === documentId),
+                );
+                return (
+                  <div key={key} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
+                    <div className="flex items-start gap-3 px-3 pt-2.5 pb-1.5">
+                      <FileTypeIcon path={path || null} size={34} className="mt-0.5" />
+                      <p className="flex-1 text-[13px] font-semibold text-slate-900 break-words leading-snug pt-1" title={fileLabel}>
+                        {fileLabel}
+                      </p>
+                    </div>
+                    {excerpt && (
+                      <p className="px-3 text-[11px] leading-snug text-slate-500 line-clamp-2">
+                        {matchedTerms && matchedTerms.length > 0
+                          ? highlightCitationTerms(excerpt, matchedTerms)
+                          : excerpt}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-1 px-3 pt-1.5 pb-2.5">
+                      <button
+                        type="button"
+                        onClick={() => attachDocumentReferenceToComposer({ documentId, fileLabel, path })}
+                        className={`rounded-lg p-1.5 transition-colors ${
+                          isReferenced
+                            ? 'text-[#5B7BFE] bg-blue-50'
+                            : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                        }`}
+                        title={isReferenced ? '已加入对话引用' : '把这份文件加入对话引用'}
+                      >
+                        <ArrowLeft size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canOpen}
+                        onClick={() =>
+                          void openPathBridge(path).then((opened) => {
+                            if (!opened) flash('error', '原文路径不存在或当前无法打开');
+                          })
+                        }
+                        className={`rounded-lg p-1.5 transition-colors ${
+                          canOpen
+                            ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                            : 'text-slate-300 cursor-not-allowed'
+                        }`}
+                        title={canOpen ? '用默认应用打开原文件' : '没有可打开的原文件'}
+                      >
+                        <ExternalLink size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canOpen}
+                        onClick={() =>
+                          void revealInFinderBridge(path).then((opened) => {
+                            if (!opened) flash('error', '无法在 Finder 中显示该文件');
+                          })
+                        }
+                        className={`rounded-lg p-1.5 transition-colors ${
+                          canOpen
+                            ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                            : 'text-slate-300 cursor-not-allowed'
+                        }`}
+                        title={canOpen ? '在 Finder 中显示所在文件夹' : '没有可定位的文件夹'}
+                      >
+                        <FolderOpen size={16} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              };
+              return (
+                <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
+                  <div className="mb-3 flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        value={filesTabSearchInput}
+                        onChange={(e) => setFilesTabSearchInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void runFilesTabSearch();
+                          }
+                        }}
+                        placeholder="搜索文件名、关键词，或写一句话"
+                        className="w-full rounded-2xl border border-gray-200 bg-white pl-9 pr-10 py-2 text-[12px] font-medium text-gray-700 outline-none transition-all focus:border-[#5B7BFE] focus:ring-4 focus:ring-blue-500/10"
+                      />
+                      {filesTabSearchInput && (
+                        <button
+                          type="button"
+                          onClick={clearFilesTabSearch}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+                          aria-label="清空搜索"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                    <Button
+                      className="h-9 shrink-0 rounded-[14px] px-3 border border-[#E5E5EA] bg-white text-[#5B7BFE] shadow-none hover:bg-blue-50"
+                      onClick={() => void runFilesTabSearch()}
+                      disabled={isFilesTabSearching}
+                    >
+                      {isFilesTabSearching ? '搜索中' : '搜索'}
+                    </Button>
+                  </div>
+                  {isSearchMode && (
+                    <div className="mb-3 text-[11px] text-gray-400">
+                      {searchedFiles.length > 0
+                        ? `按相关度显示「${filesTabSearchResult?.query}」的文件 · 共 ${searchedFiles.length} 个`
+                        : `没有找到匹配「${filesTabSearchResult?.query}」的文件`}
+                    </div>
+                  )}
+                  <div className="space-y-2.5">
+                    {isSearchMode
+                      ? searchedFiles.map((item, index) =>
+                          renderFileCard({
+                            key: `search-${item.documentId}-${index}`,
+                            documentId: item.documentId,
+                            title: item.title,
+                            path: item.path,
+                            excerpt: item.excerpt,
+                            matchedTerms: item.matchedTerms,
+                          }),
+                        )
+                      : sortedDocs.map((doc) =>
+                          renderFileCard({
+                            key: `doc-${doc.id}`,
+                            documentId: doc.id,
+                            title: doc.title,
+                            path: doc.path,
+                          }),
+                        )}
+                    {!isSearchMode && sortedDocs.length === 0 && (
+                      <div className="rounded-2xl border border-dashed border-gray-200 bg-gray-50/70 px-4 py-6 text-center text-[12px] text-gray-500">
+                        这个客户还没有上传任何文件。
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Tab: 引证 */}
             {workspaceRightTab === 'evidence' && <div className="flex-1 overflow-y-auto p-5 xl:p-6 bg-white">
               <div className="flex items-center justify-between mb-4 xl:mb-5">
@@ -20648,65 +20856,82 @@ export default function App() {
                   const snippetPreview = card.primarySnippet.excerpt || '';
                   const matchedTerms = card.primarySnippet.matchedTerms || [];
                   const isExpanded = expandedEvidenceIds.has(card.id);
+                  const referencedDocId = card.primarySnippet.documentId || '';
+                  const isReferenced = Boolean(
+                    referencedDocId
+                    && activeWorkingDocuments.some((doc) => doc.documentId === referencedDocId),
+                  );
                   return (
                     <div key={card.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:shadow-sm transition-shadow">
-                      <div className="flex items-center gap-3 px-3 py-2.5">
-                        <FileTypeIcon path={openPath || null} size={34} />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[13px] font-semibold text-slate-900 truncate" title={fileLabel}>
-                            {fileLabel}
-                          </p>
-                          {card.sectionLabel && (
-                            <p className="mt-0.5 text-[10px] text-slate-400 truncate" title={card.sectionLabel}>
-                              {card.sectionLabel}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => toggleEvidenceCardExpanded(card.id)}
-                            className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors"
-                            title={isExpanded ? '收起命中段落' : '查看原文片段'}
-                          >
-                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canOpen}
-                            onClick={() =>
-                              void openPathBridge(openPath).then((opened) => {
-                                if (!opened) flash('error', '原文路径不存在或当前无法打开');
-                              })
-                            }
-                            className={`rounded-lg p-1.5 transition-colors ${
-                              canOpen
-                                ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
-                                : 'text-slate-300 cursor-not-allowed'
-                            }`}
-                            title={canOpen ? '用默认应用打开原文件' : 'AI 生成内容，无可打开的原文件'}
-                          >
-                            <ExternalLink size={16} />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canOpen}
-                            onClick={() =>
-                              void revealInFinderBridge(openPath).then((opened) => {
-                                if (!opened) flash('error', '无法在 Finder 中显示该文件');
-                              })
-                            }
-                            className={`rounded-lg p-1.5 transition-colors ${
-                              canOpen
-                                ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
-                                : 'text-slate-300 cursor-not-allowed'
-                            }`}
-                            title={canOpen ? '在 Finder 中显示所在文件夹' : 'AI 生成内容，无文件夹位置'}
-                          >
-                            <FolderOpen size={16} />
-                          </button>
-                        </div>
+                      {/* Row 1: 文件图标 + 完整文件名（不截断）+ 展开箭头 */}
+                      <div className="flex items-start gap-3 px-3 pt-2.5 pb-1.5">
+                        <FileTypeIcon path={openPath || null} size={34} className="mt-0.5" />
+                        <p
+                          className="flex-1 text-[13px] font-semibold text-slate-900 break-words leading-snug pt-1"
+                          title={fileLabel}
+                        >
+                          {fileLabel}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => toggleEvidenceCardExpanded(card.id)}
+                          className="shrink-0 mt-0.5 rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-colors"
+                          title={isExpanded ? '收起命中段落' : '查看原文片段'}
+                        >
+                          {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        </button>
                       </div>
+
+                      {/* Row 2: 三个图标按钮 —— 引用回答 / 打开原文件 / 打开文件夹 */}
+                      <div className="flex items-center gap-1 px-3 pb-2.5">
+                        <button
+                          type="button"
+                          onClick={() => handleAttachCitationToComposer(card)}
+                          className={`rounded-lg p-1.5 transition-colors ${
+                            isReferenced
+                              ? 'text-[#5B7BFE] bg-blue-50'
+                              : 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                          }`}
+                          title={isReferenced ? '已加入对话引用' : '把这份文件加入对话引用'}
+                        >
+                          <ArrowLeft size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canOpen}
+                          onClick={() =>
+                            void openPathBridge(openPath).then((opened) => {
+                              if (!opened) flash('error', '原文路径不存在或当前无法打开');
+                            })
+                          }
+                          className={`rounded-lg p-1.5 transition-colors ${
+                            canOpen
+                              ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                              : 'text-slate-300 cursor-not-allowed'
+                          }`}
+                          title={canOpen ? '用默认应用打开原文件' : 'AI 生成内容，无可打开的原文件'}
+                        >
+                          <ExternalLink size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canOpen}
+                          onClick={() =>
+                            void revealInFinderBridge(openPath).then((opened) => {
+                              if (!opened) flash('error', '无法在 Finder 中显示该文件');
+                            })
+                          }
+                          className={`rounded-lg p-1.5 transition-colors ${
+                            canOpen
+                              ? 'text-slate-500 hover:text-[#5B7BFE] hover:bg-blue-50'
+                              : 'text-slate-300 cursor-not-allowed'
+                          }`}
+                          title={canOpen ? '在 Finder 中显示所在文件夹' : 'AI 生成内容，无文件夹位置'}
+                        >
+                          <FolderOpen size={16} />
+                        </button>
+                      </div>
+
                       {isExpanded && snippetPreview && (
                         <div className="px-3 pb-3 pt-1 border-t border-slate-100 bg-slate-50/30">
                           <p className="text-[12px] leading-[0.8] text-slate-600 line-clamp-5">

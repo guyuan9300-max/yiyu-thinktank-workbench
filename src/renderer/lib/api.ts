@@ -3996,3 +3996,86 @@ export async function askIntelligenceItemQuestion(id: string, payload: TopicCand
 
 // captureTopicRadars 已在 line 3426 定义，从同事 backup append 段里的重复已删除
 
+// ──────────────────────────────────────────────────────────
+// Phase 3：本地 AI 推理调度 health / queue
+// ──────────────────────────────────────────────────────────
+
+export type LocalAiHealthRecord = {
+  verdict: 'go' | 'wait' | 'skip';
+  reason: string;
+  retry_after_seconds: number;
+  summary: string;
+  thermal_state: number;
+  cpu_speed_limit: number;
+  user_idle_seconds: number;
+  battery_percent: number;
+  on_ac_power: boolean;
+  memory_pressure: 'normal' | 'warn' | 'critical' | 'unknown';
+  ollama_reachable: boolean;
+  in_run_window: boolean;
+  enabled: boolean;
+  paused: boolean;
+};
+
+export type LocalAiTaskRecord = {
+  id: string;
+  task_type: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  priority: number;
+  client_id: string | null;
+  knowledge_document_id: string | null;
+  model_profile_id: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  locked_by: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  payload_preview: string;
+  result_preview: string;
+};
+
+export type LocalAiQueueResponse = {
+  tasks: LocalAiTaskRecord[];
+  totalByStatus: Record<string, number>;
+  filter: { status: string | null; task_type: string | null; limit: number };
+};
+
+export type LocalAiRunNowResponse = {
+  processed: number;
+  failed: number;
+  skipped: number;
+  status: string;
+  governor_reason?: string;
+  governor_retry_after?: number;
+};
+
+export async function getLocalAiHealth(): Promise<LocalAiHealthRecord> {
+  return request<LocalAiHealthRecord>('/api/v1/local-ai/health');
+}
+
+export async function getLocalAiQueue(params?: {
+  status?: string;
+  taskType?: string;
+  limit?: number;
+}): Promise<LocalAiQueueResponse> {
+  const query = new URLSearchParams();
+  if (params?.status) query.append('status', params.status);
+  if (params?.taskType) query.append('task_type', params.taskType);
+  if (params?.limit !== undefined) query.append('limit', String(params.limit));
+  const qs = query.toString();
+  return request<LocalAiQueueResponse>(
+    `/api/v1/local-ai/queue${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export async function runLocalAiNow(force = false): Promise<LocalAiRunNowResponse> {
+  return request<LocalAiRunNowResponse>(
+    `/api/v1/local-ai/run-now?force=${force ? 'true' : 'false'}`,
+    { method: 'POST' },
+  );
+}
+
+
