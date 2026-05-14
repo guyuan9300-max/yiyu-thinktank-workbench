@@ -290,9 +290,12 @@ import type {
   IntelligenceSourceDiagnosticsResponse,
   IntelligenceFocusDirective,
   IntelligenceFocusDirectivePayload,
+  IntelligenceRefreshCycleSettings,
+  IntelligenceRefreshCycleSettingsPayload,
   IntelligenceItemsResponse,
   IntelligenceRefreshPayload,
   IntelligenceRefreshResult,
+  IntelligenceRefreshRun,
   IntelligenceVerificationRule,
   IntelligenceVerificationRulePayload,
   IntelligenceVerificationFeedbackPayload,
@@ -3924,6 +3927,34 @@ export async function refreshIntelligenceSupply(payload: IntelligenceRefreshPayl
   });
 }
 
+export async function getIntelligenceRefreshRuns(params: {
+  contentKind?: IntelligenceContentKind;
+  workObjectType?: IntelligenceWorkObject['type'];
+  workObjectId?: string;
+  activeOnly?: boolean;
+  limit?: number;
+} = {}) {
+  const query = new URLSearchParams();
+  if (params.contentKind) query.set('contentKind', params.contentKind);
+  if (params.workObjectType) query.set('scopeType', params.workObjectType);
+  if (params.workObjectId) query.set('scopeId', params.workObjectId);
+  if (typeof params.activeOnly === 'boolean') query.set('activeOnly', String(params.activeOnly));
+  if (params.limit) query.set('limit', String(params.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<IntelligenceRefreshRun[]>(`/api/v1/intelligence/refresh-runs${suffix}`);
+}
+
+export async function getIntelligenceRefreshCycleSettings() {
+  return request<IntelligenceRefreshCycleSettings>('/api/v1/intelligence/refresh-cycle-settings');
+}
+
+export async function updateIntelligenceRefreshCycleSettings(payload: IntelligenceRefreshCycleSettingsPayload) {
+  return request<IntelligenceRefreshCycleSettings>('/api/v1/intelligence/refresh-cycle-settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getIntelligenceVerificationRules(params?: {
   scopeType?: IntelligenceVerificationRulePayload['scopeType'];
   scopeId?: string | null;
@@ -4077,5 +4108,3 @@ export async function runLocalAiNow(force = false): Promise<LocalAiRunNowRespons
     { method: 'POST' },
   );
 }
-
-

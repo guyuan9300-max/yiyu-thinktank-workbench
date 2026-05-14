@@ -7061,6 +7061,16 @@ export interface IntelligenceFocusDirectivePayload {
   exclude: string[];
 }
 
+export interface IntelligenceRefreshCycleSettings {
+  profileCompletionHours: number;
+  timelyIntelligenceHours: number;
+}
+
+export interface IntelligenceRefreshCycleSettingsPayload {
+  profileCompletionHours?: number | null;
+  timelyIntelligenceHours?: number | null;
+}
+
 export interface IntelligenceItem {
   id: string;
   contentKind: IntelligenceContentKind;
@@ -7084,8 +7094,6 @@ export interface IntelligenceItem {
   publishedAt?: string | null;
   capturedAt: string;
   verifiedAt?: string | null;
-  credibilityScore?: number | null;
-  confidenceScore?: number | null;
   dataCenterIngestEventId?: string | null;
   externalEvidenceCardId?: string | null;
   topicCandidateId?: string | null;
@@ -7191,6 +7199,25 @@ export interface IntelligenceRefreshResult {
   totals: IntelligenceRefreshTotals;
   message: string;
   generatedAt: string;
+}
+
+export interface IntelligenceRefreshRun {
+  id: string;
+  scopeType: 'all' | IntelligenceWorkObjectType | '';
+  scopeId?: string | null;
+  clientId?: string | null;
+  projectModuleId?: string | null;
+  contentKind: IntelligenceContentKind;
+  triggerSource: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  stage: string;
+  message: string;
+  result: Record<string, unknown>;
+  rejectionSummary: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 export type IntelligenceDismissReasonCode = 'irrelevant' | 'inaccurate' | 'duplicate' | 'outdated' | 'low_value';

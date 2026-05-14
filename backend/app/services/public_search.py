@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from html import unescape
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlparse
 
 import httpx
 
@@ -341,14 +341,23 @@ def _is_low_value_search_result(url: str, title: str, raw_block: str = "") -> bo
     parsed = urlparse(url or "")
     domain = parsed.netloc.lower().removeprefix("www.")
     path = parsed.path.lower()
+    query = parsed.query.lower()
     text = f"{title} {url} {raw_block}".lower()
     if not domain:
         return True
+    if any(token in text for token in ("用户登录", "验证码", "账号登录", "立即登录")) and any(token in text for token in ("登录", "注册", "验证码", "账号")):
+        return True
     if domain in {"image.so.com", "m.image.so.com"} or domain.endswith(".image.so.com"):
+        return True
+    if domain in {"map.360.cn", "map.so.com", "ditu.so.com", "map.baidu.com"}:
         return True
     if domain in {"so.com", "www.so.com", "m.so.com", "sogou.com", "www.sogou.com"} and any(
         token in path for token in ("/i", "/image", "/pic", "/video", "/news")
     ):
+        return True
+    if any(token in path for token in ("/search", "/s", "/web", "/link")) and domain.endswith(("so.com", "sogou.com", "bing.com", "baidu.com")):
+        return True
+    if any(token in query for token in ("q=", "query=", "wd=")) and domain.endswith(("image.so.com", "map.360.cn", "map.so.com", "sogou.com", "bing.com", "baidu.com")):
         return True
     if any(token in text for token in ("_360图片", "360图片", "图片搜索", "image result", "查看全部图片")):
         return True
@@ -370,4 +379,10 @@ def _normalize_url_for_dedupe(url: str) -> str:
     parsed = urlparse(url or "")
     if not parsed.netloc:
         return ""
-    return parsed._replace(fragment="", query=parsed.query).geturl().rstrip("/")
+    dropped = {"spm", "from", "source", "fbclid", "gclid", "yclid", "bd_vid", "sa", "ved", "usg"}
+    params = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() not in dropped
+    ]
+    return parsed._replace(fragment="", query=urlencode(params, doseq=True)).geturl().rstrip("/")

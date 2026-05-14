@@ -565,16 +565,20 @@ from app.models import (
     DraftSectionsRequest,
     # 客户项目情报流（2026-05-13 整合）— 提到 module 顶部因 FastAPI
     # get_type_hints 在 `from __future__ import annotations` 时只看 module 名空间
+    IntelligenceContentKind,
     IntelligenceWorkObjectRecord,
     IntelligenceItemsResponse,
     IntelligenceItemRecord,
     IntelligenceFocusDirectiveRecord,
     IntelligenceFocusDirectivePayload,
+    IntelligenceRefreshCycleSettingsPayload,
+    IntelligenceRefreshCycleSettingsRecord,
     IntelligenceVerificationRuleRecord,
     IntelligenceVerificationRulePayload,
     IntelligenceVerificationFeedbackPayload,
     IntelligenceRefreshPayload,
     IntelligenceRefreshResult,
+    IntelligenceRefreshRunRecord,
     IntelligenceRefreshTotals,
     IntelligenceRefreshObjectResult,
     IntelligenceSourceDiagnosticsResponse,
@@ -897,9 +901,11 @@ from app.services.intelligence_candidate_supply import (
 )
 from app.services.intelligence_feedback import (
     FeedbackContext,
+    context_from_candidate_row,
     context_from_item_row,
     feedback_diagnostics,
     record_feedback_event,
+    work_object_feedback_score,
 )
 from app.services.memory_foundation import (
     answer_clarification_record,
@@ -46087,6 +46093,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         items: list[IntelligenceItemRecord] = []
         for row in rows:
+            row_keys = set(row.keys())
+
+            def row_value(key: str, default=None):
+                return row[key] if key in row_keys else default
+
             items.append(
                 IntelligenceItemRecord(
                     id=str(row["id"]),
@@ -46100,32 +46111,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     keyPoints=from_json(row["key_points_json"] or "[]", []),
                     analysis=str(row["analysis"] or ""),
                     impact=str(row["impact"] or ""),
-                    intelligenceType=row["intelligence_type"] or None,
-                    timelinessLabel=row["timeliness_label"] or None,
-                    relevanceReason=str(row["relevance_reason"] or ""),
-                    suggestedAction=str(row["suggested_action"] or ""),
-                    followupQuestions=from_json(row["followup_questions_json"] or "[]", []),
+                    intelligenceType=row_value("intelligence_type") or None,
+                    timelinessLabel=row_value("timeliness_label") or None,
+                    relevanceReason=str(row_value("relevance_reason", "") or ""),
+                    suggestedAction=str(row_value("suggested_action", "") or ""),
+                    followupQuestions=from_json(row_value("followup_questions_json", "[]") or "[]", []),
                     tags=from_json(row["tags_json"] or "[]", []),
                     source=str(row["source"] or ""),
                     sourceUrl=str(row["source_url"] or ""),
-                    sourceType=str(row["source_type"] or ""),
-                    sourceTier=str(row["source_tier"] or "standard"),
-                    confidence=float(row["confidence"] or 0),
-                    relevanceScore=float(row["relevance_score"] or 0),
-                    timelinessScore=float(row["timeliness_score"] or 0),
-                    overallScore=float(row["overall_score"] or 0),
                     capturedAt=str(row["captured_at"]),
                     publishedAt=row["published_at"] or None,
-                    expiresAt=row["expires_at"] or None,
                     userStatus=row["user_status"] or "active",
-                    dismissedAt=row["dismissed_at"] or None,
-                    dismissedReason=str(row["dismissed_reason"] or ""),
-                    dismissedNote=str(row["dismissed_note"] or ""),
-                    followedAt=row["followed_at"] or None,
-                    followedMode=str(row["followed_mode"] or ""),
-                    followedNote=str(row["followed_note"] or ""),
-                    taskId=row["task_id"] or None,
-                    promotedAt=row["promoted_at"] or None,
+                    verifiedAt=row["verified_at"] or None,
+                    dataCenterIngestEventId=row["data_center_ingest_event_id"] or None,
+                    externalEvidenceCardId=row["external_evidence_card_id"] or None,
+                    topicCandidateId=row["topic_candidate_id"] or None,
+                    convertedTaskId=row["converted_task_id"] or None,
+                    verificationStatus=str(row["verification_status"] or "verified"),
+                    verificationReason=str(row["verification_reason"] or ""),
                     createdAt=str(row["created_at"]),
                     updatedAt=str(row["updated_at"]),
                 )
@@ -46133,6 +46136,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return IntelligenceItemsResponse(
             items=items, candidateSamples=[], total=total, page=page, pageSize=pageSize
         )
+
+    def _refresh_cycle_settings() -> IntelligenceRefreshCycleSettingsRecord:
+        def read_hours(key: str, default: int) -> int:
+            raw = state.db.get_setting(key, str(default))
+            try:
+                value = int(raw)
+            except Exception:
+                value = default
+            return max(1, min(value, 8760))
+
+        return IntelligenceRefreshCycleSettingsRecord(
+            profileCompletionHours=read_hours("intelligence_profile_completion_cycle_hours", 72),
+            timelyIntelligenceHours=read_hours("intelligence_timely_intelligence_cycle_hours", 24),
+        )
+
+    @app.get("/api/v1/intelligence/refresh-cycle-settings", response_model=IntelligenceRefreshCycleSettingsRecord)
+    def get_refresh_cycle_settings() -> IntelligenceRefreshCycleSettingsRecord:
+        return _refresh_cycle_settings()
+
+    @app.put("/api/v1/intelligence/refresh-cycle-settings", response_model=IntelligenceRefreshCycleSettingsRecord)
+    def update_refresh_cycle_settings(payload: IntelligenceRefreshCycleSettingsPayload) -> IntelligenceRefreshCycleSettingsRecord:
+        timestamp = _intel_now()
+        if payload.profileCompletionHours is not None:
+            value = max(1, min(int(payload.profileCompletionHours), 8760))
+            state.db.set_setting("intelligence_profile_completion_cycle_hours", str(value))
+            state.db.execute(
+                """
+                UPDATE intelligence_source_configs
+                SET next_due_at = datetime(?, '+' || ? || ' hours'), updated_at = ?
+                WHERE content_kinds_json LIKE '%profile_completion%'
+                   OR source_type IN ('web_search', 'official_site', 'official_site_section', 'social_org_registry', 'profile_report', 'charity_media')
+                """,
+                (timestamp, value, timestamp),
+            )
+        if payload.timelyIntelligenceHours is not None:
+            value = max(1, min(int(payload.timelyIntelligenceHours), 8760))
+            state.db.set_setting("intelligence_timely_intelligence_cycle_hours", str(value))
+            state.db.execute(
+                """
+                UPDATE intelligence_source_configs
+                SET next_due_at = datetime(?, '+' || ? || ' hours'), updated_at = ?
+                WHERE content_kinds_json LIKE '%timely_intelligence%'
+                   OR source_type IN ('web_search', 'official_site', 'official_site_section', 'gov_policy', 'procurement', 'grant', 'regulatory_risk', 'partner_peer', 'charity_media')
+                """,
+                (timestamp, value, timestamp),
+            )
+        return _refresh_cycle_settings()
 
     @app.get("/api/v1/intelligence/focus-directives", response_model=list[IntelligenceFocusDirectiveRecord])
     def list_focus_directives() -> list[IntelligenceFocusDirectiveRecord]:
@@ -46201,6 +46251,62 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ),
             )
             created_at = now_ts
+        client_id = scope_id if scope_type == "client" and scope_id else None
+        project_module_id = scope_id if scope_type == "project_module" and scope_id else None
+        focus_payload = {
+            "directiveId": row_id,
+            "scopeType": scope_type,
+            "scopeId": scope_id,
+        }
+        try:
+            for kind, lines, reason_code in (
+                ("profile_completion", payload.profileCompletionFocus or [], "profile_completion_focus"),
+                ("timely_intelligence", payload.timelyIntelligenceFocus or [], "timely_intelligence_focus"),
+            ):
+                cleaned_lines = [str(line).strip() for line in lines if str(line).strip()][:12]
+                if not cleaned_lines:
+                    continue
+                record_feedback_event(
+                    state.db,
+                    context=FeedbackContext(
+                        scope_type=scope_type,
+                        scope_id=scope_id,
+                        client_id=client_id,
+                        project_module_id=project_module_id,
+                        content_kind=kind,
+                        title="关注指令",
+                        summary="\n".join(cleaned_lines),
+                        tags=["关注指令"],
+                        extracted_topics=cleaned_lines,
+                    ),
+                    action_type="focus",
+                    reason_code=reason_code,
+                    note="\n".join(cleaned_lines),
+                    payload=focus_payload,
+                )
+            exclude_lines = [str(line).strip() for line in (payload.exclude or []) if str(line).strip()][:12]
+            if exclude_lines:
+                for kind in ("profile_completion", "timely_intelligence"):
+                    record_feedback_event(
+                        state.db,
+                        context=FeedbackContext(
+                            scope_type=scope_type,
+                            scope_id=scope_id,
+                            client_id=client_id,
+                            project_module_id=project_module_id,
+                            content_kind=kind,
+                            title="少看指令",
+                            summary="\n".join(exclude_lines),
+                            tags=["少看指令"],
+                            extracted_topics=exclude_lines,
+                        ),
+                        action_type="focus_exclude",
+                        reason_code="exclude",
+                        note="\n".join(exclude_lines),
+                        payload=focus_payload,
+                    )
+        except Exception as exc:
+            logger.warning("focus directive feedback_event 写入失败: %s", exc)
         return IntelligenceFocusDirectiveRecord(
             id=row_id,
             scopeType=scope_type,  # type: ignore[arg-type]
@@ -46309,35 +46415,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/intelligence/verification-feedback", response_model=IntelligenceVerificationRuleRecord)
     def submit_verification_feedback(payload: IntelligenceVerificationFeedbackPayload) -> IntelligenceVerificationRuleRecord:
-        """记录反馈并返回当前 scope 的规则（如有）。最小实现：只确保规则存在。"""
+        """记录补充判断标准，并让当前线索退出活跃展示。"""
         scope_type = payload.scopeType or "global"
         scope_id = payload.scopeId or ""
+        note = str(payload.note or "").strip()[:500]
+        if not note:
+            raise HTTPException(status_code=400, detail="判断标准不能为空")
+        now_ts = _intel_now()
         existing = state.db.fetchone(
             "SELECT * FROM intelligence_verification_rules WHERE scope_type=? AND scope_id=?",
             (scope_type, scope_id),
         )
         if existing is None:
-            # 创建空规则记录
-            now_ts = _intel_now()
             row_id = str(_uuid_intel.uuid4())
             state.db.execute(
                 "INSERT INTO intelligence_verification_rules "
                 "(id, scope_type, scope_id, positive_rules_json, exclude_rules_json, "
                 "identity_anchors_json, clarification_examples_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, '[]', '[]', '[]', '[]', ?, ?)",
-                (row_id, scope_type, scope_id, now_ts, now_ts),
+                "VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)",
+                (
+                    row_id,
+                    scope_type,
+                    scope_id,
+                    to_json([note] if any(token in note for token in ("只采纳", "优先", "应", "需要", "必须")) else []),
+                    to_json([note] if any(token in note for token in ("不", "不是", "不要", "排除", "无关", "低价值", "不采纳")) else []),
+                    to_json([note]),
+                    now_ts,
+                    now_ts,
+                ),
             )
-            return IntelligenceVerificationRuleRecord(
-                id=row_id,
-                scopeType=scope_type,  # type: ignore[arg-type]
-                scopeId=scope_id or None,
-                positiveRules=[],
-                excludeRules=[],
-                identityAnchors=[],
-                clarificationExamples=[],
-                createdAt=now_ts,
-                updatedAt=now_ts,
+            existing = state.db.fetchone("SELECT * FROM intelligence_verification_rules WHERE id=?", (row_id,))
+        else:
+            row_id = str(existing["id"])
+            positive_rules = list(from_json(existing["positive_rules_json"] or "[]", []))
+            exclude_rules = list(from_json(existing["exclude_rules_json"] or "[]", []))
+            clarification_examples = list(from_json(existing["clarification_examples_json"] or "[]", []))
+            if any(token in note for token in ("只采纳", "优先", "应", "需要", "必须")) and note not in positive_rules:
+                positive_rules.append(note)
+            if any(token in note for token in ("不", "不是", "不要", "排除", "无关", "低价值", "不采纳")) and note not in exclude_rules:
+                exclude_rules.append(note)
+            if note not in clarification_examples:
+                clarification_examples.append(note)
+            state.db.execute(
+                "UPDATE intelligence_verification_rules SET positive_rules_json=?, exclude_rules_json=?, "
+                "clarification_examples_json=?, updated_at=? WHERE id=?",
+                (
+                    to_json(positive_rules[:40]),
+                    to_json(exclude_rules[:40]),
+                    to_json(clarification_examples[:80]),
+                    now_ts,
+                    row_id,
+                ),
             )
+            existing = state.db.fetchone("SELECT * FROM intelligence_verification_rules WHERE id=?", (row_id,))
+
+        context: FeedbackContext | None = None
+        if payload.targetType == "item":
+            row = _fetch_intelligence_item_or_404(payload.targetId)
+            state.db.execute(
+                "UPDATE intelligence_items SET user_status='dismissed', user_feedback_json=?, updated_at=? WHERE id=?",
+                (
+                    to_json({"dismissedAt": now_ts, "reasonCode": "verification_rule", "note": note}),
+                    now_ts,
+                    payload.targetId,
+                ),
+            )
+            context = context_from_item_row(state.db, row)
+        else:
+            candidate = state.db.fetchone("SELECT * FROM intelligence_candidate_items WHERE id = ?", (payload.targetId,))
+            if candidate is None:
+                raise HTTPException(status_code=404, detail="候选线索不存在")
+            state.db.execute(
+                "UPDATE intelligence_candidate_items SET is_user_visible_candidate=0, classification_status='rejected', promotion_reason=?, updated_at=? WHERE id=?",
+                ("用户补充判断标准后隐藏，后续刷新按新规则核验", now_ts, payload.targetId),
+            )
+            context = context_from_candidate_row(state.db, candidate)
+        try:
+            record_feedback_event(
+                state.db,
+                context=context,
+                action_type="dismiss",
+                reason_code="verification_rule",
+                note=note,
+                payload={"targetType": payload.targetType, "targetId": payload.targetId, "ruleId": row_id},
+            )
+        except Exception as exc:
+            logger.warning("verification feedback_event 写入失败: %s", exc)
+        if existing is None:
+            raise HTTPException(status_code=500, detail="判断规则保存失败")
         return IntelligenceVerificationRuleRecord(
             id=str(existing["id"]),
             scopeType=existing["scope_type"],
@@ -46349,6 +46514,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             createdAt=str(existing["created_at"]),
             updatedAt=str(existing["updated_at"]),
         )
+
+    def _intelligence_refresh_run_from_row(row: sqlite3.Row) -> IntelligenceRefreshRunRecord:
+        return IntelligenceRefreshRunRecord(
+            id=str(row["id"]),
+            scopeType=str(row["scope_type"] or ""),
+            scopeId=str(row["scope_id"] or "") or None,
+            clientId=str(row["client_id"] or "") or None,
+            projectModuleId=str(row["project_module_id"] or "") or None,
+            contentKind=cast(IntelligenceContentKind, str(row["content_kind"] or "profile_completion")),
+            triggerSource=str(row["trigger_source"] or ""),
+            status=cast(Literal["queued", "running", "completed", "failed"], str(row["status"] or "queued")),
+            stage=str(row["stage"] or ""),
+            message=str(row["message"] or ""),
+            result=from_json(row["result_json"] or "{}", {}),
+            rejectionSummary=from_json(row["rejection_summary_json"] or "{}", {}),
+            createdAt=str(row["created_at"] or ""),
+            updatedAt=str(row["updated_at"] or ""),
+            startedAt=str(row["started_at"] or "") or None,
+            finishedAt=str(row["finished_at"] or "") or None,
+        )
+
+    @app.get("/api/v1/intelligence/refresh-runs", response_model=list[IntelligenceRefreshRunRecord])
+    def list_intelligence_refresh_runs(
+        contentKind: str | None = Query(default=None),
+        scopeType: str | None = Query(default=None),
+        scopeId: str | None = Query(default=None),
+        activeOnly: bool = Query(default=False),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> list[IntelligenceRefreshRunRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if contentKind:
+            if contentKind not in {"profile_completion", "timely_intelligence"}:
+                raise HTTPException(status_code=400, detail="contentKind 必须是 profile_completion 或 timely_intelligence")
+            clauses.append("content_kind = ?")
+            params.append(contentKind)
+        if scopeType and scopeType != "all":
+            if scopeType not in {"client", "project_module"}:
+                raise HTTPException(status_code=400, detail="scopeType 必须是 all、client 或 project_module")
+            clauses.append("scope_type = ?")
+            params.append(scopeType)
+            if scopeId:
+                clauses.append("scope_id = ?")
+                params.append(scopeId)
+        if activeOnly:
+            clauses.append("status IN ('queued', 'running')")
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = state.db.fetchall(
+            f"""
+            SELECT *
+            FROM intelligence_refresh_runs
+            {where_sql}
+            ORDER BY
+              CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
+              updated_at DESC,
+              created_at DESC
+            LIMIT ?
+            """,
+            tuple([*params, limit]),
+        )
+        return [_intelligence_refresh_run_from_row(row) for row in rows]
 
     @app.post("/api/v1/intelligence/refresh", response_model=IntelligenceRefreshResult)
     def trigger_intelligence_refresh(
@@ -46370,14 +46596,82 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # 确定目标客户列表
         if payload.scopeType == "client" and payload.scopeId:
-            target_ids = [payload.scopeId]
+            row = state.db.fetchone("SELECT id, name FROM clients WHERE id=?", (payload.scopeId,))
+            target_rows = [row] if row else []
         elif payload.scopeType == "all":
             client_rows = state.db.fetchall("SELECT id, name FROM clients ORDER BY name")
-            target_ids = [str(r["id"]) for r in client_rows]
+            target_rows = sorted(
+                client_rows,
+                key=lambda r: (
+                    -work_object_feedback_score(
+                        state.db,
+                        scope_type="client",
+                        scope_id=str(r["id"]),
+                        content_kind=content_kind,
+                    ),
+                    str(r["name"] or ""),
+                ),
+            )
         else:
             raise HTTPException(status_code=400, detail="scopeType 必须是 all 或 client，且 client 时需 scopeId")
+        if payload.scopeType == "client" and not target_rows:
+            raise HTTPException(status_code=404, detail="客户不存在")
 
-        def _run_one_target_bg(client_id: str, client_name: str) -> None:
+        batch_created_at = _intel_now()
+
+        def _create_refresh_run(client_id: str, client_name: str) -> str:
+            run_id = f"irun_{_uuid_intel.uuid4().hex[:12]}"
+            state.db.execute(
+                """
+                INSERT INTO intelligence_refresh_runs(
+                    id, scope_type, scope_id, client_id, project_module_id, content_kind,
+                    trigger_source, status, stage, message, created_at, updated_at
+                )
+                VALUES(?, 'client', ?, ?, NULL, ?, 'manual', 'queued', 'queued', ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    client_id,
+                    client_id,
+                    content_kind,
+                    f"已排队：{client_name} 的{'资料补全' if content_kind == 'profile_completion' else '时效情报'}后台研究将继续执行",
+                    batch_created_at,
+                    batch_created_at,
+                ),
+            )
+            return run_id
+
+        def _update_refresh_run(run_id: str, *, status: str, stage: str, message: str = "", result: dict[str, object] | None = None, rejection_summary: dict[str, int] | None = None) -> None:
+            now_ts = _intel_now()
+            state.db.execute(
+                """
+                UPDATE intelligence_refresh_runs
+                SET status = ?,
+                    stage = ?,
+                    message = ?,
+                    result_json = COALESCE(?, result_json),
+                    rejection_summary_json = COALESCE(?, rejection_summary_json),
+                    started_at = CASE WHEN started_at IS NULL AND ? = 'running' THEN ? ELSE started_at END,
+                    finished_at = CASE WHEN ? IN ('completed', 'failed') THEN ? ELSE finished_at END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    stage,
+                    message,
+                    to_json(result) if result is not None else None,
+                    to_json(rejection_summary) if rejection_summary is not None else None,
+                    status,
+                    now_ts,
+                    status,
+                    now_ts,
+                    now_ts,
+                    run_id,
+                ),
+            )
+
+        def _run_one_target_bg(client_id: str, client_name: str, run_id: str) -> None:
             """后台跑单客户的 supply chain，独立 try/except + 超时控制。"""
             scope = IntelligenceSearchScope(
                 scope_type="client",
@@ -46387,37 +46681,157 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 display_name=client_name,
             )
             try:
+                max_rounds = 5 if content_kind == "profile_completion" else 4
+                max_total_fetch_jobs = 200 if content_kind == "profile_completion" else 140
+                max_round_fetch_jobs = 60 if content_kind == "profile_completion" else 45
+                max_runtime_seconds = 30 * 60
+                started_monotonic = time.monotonic()
+                deadline_monotonic = started_monotonic + max_runtime_seconds
+                aggregate: dict[str, object] = {
+                    "sourceConfigCount": 0,
+                    "fetchJobCount": 0,
+                    "candidateCount": 0,
+                    "promotedCount": 0,
+                    "duplicateCount": 0,
+                    "failedCount": 0,
+                    "bodyFetchedCount": 0,
+                    "verifiedCount": 0,
+                    "summarySuccessCount": 0,
+                    "searchDirectionCount": 0,
+                    "queryCount": 0,
+                    "successQueryCount": 0,
+                    "noResultQueryCount": 0,
+                    "effectiveLeadCount": 0,
+                    "rounds": 0,
+                    "runtimeBudgetSeconds": max_runtime_seconds,
+                    "fetchJobBudget": max_total_fetch_jobs,
+                }
+                rejection_summary: dict[str, int] = {}
+                last_payload: dict[str, object] = {}
+                no_progress_rounds = 0
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    fut = pool.submit(
-                        generate_intelligence_search_intents,
-                        state.db, state.ai,
-                        scope_type="client", scope_id=client_id,
-                        content_kind=content_kind, force=payload.force,
-                    )
-                    generation = fut.result(timeout=60)
-                    fut2 = pool.submit(
-                        run_intelligence_candidate_refresh,
-                        state.db,
-                        data_dir=state.data_dir,
-                        ai_service=state.ai,
-                        scope=scope,
-                        intents=generation.intents,
-                        trigger_source="manual",
-                    )
-                    fut2.result(timeout=120)
+                    for round_index in range(max_rounds):
+                        remaining_seconds = deadline_monotonic - time.monotonic()
+                        remaining_fetch_jobs = max_total_fetch_jobs - int(aggregate.get("fetchJobCount") or 0)
+                        if remaining_seconds <= 5 or remaining_fetch_jobs <= 0:
+                            break
+                        round_fetch_jobs = min(max_round_fetch_jobs, remaining_fetch_jobs)
+                        _update_refresh_run(
+                            run_id,
+                            status="running",
+                            stage="generating_intents",
+                            message=(
+                                f"正在进行第 {round_index + 1} 轮资料研究：按基础缺口和重点关注生成短查询，最多持续 30 分钟"
+                                if content_kind == "profile_completion"
+                                else f"正在进行第 {round_index + 1} 轮时效研究：按政策、资助、采购、合作方等路线扩展搜索，最多持续 30 分钟"
+                            ),
+                        )
+                        fut = pool.submit(
+                            generate_intelligence_search_intents,
+                            state.db, state.ai,
+                            scope_type="client", scope_id=client_id,
+                            content_kind=content_kind, force=payload.force or round_index > 0,
+                        )
+                        generation = fut.result(timeout=max(10, min(90, int(remaining_seconds))))
+                        remaining_seconds = deadline_monotonic - time.monotonic()
+                        if remaining_seconds <= 5:
+                            break
+                        _update_refresh_run(
+                            run_id,
+                            status="running",
+                            stage="researching_sources",
+                            message=(
+                                f"第 {round_index + 1} 轮：正在抓取来源、下钻详情页、核验证据并提炼资料卡"
+                                if content_kind == "profile_completion"
+                                else f"第 {round_index + 1} 轮：正在核验详情页、识别外部变化和影响链条"
+                            ),
+                            result=aggregate,
+                            rejection_summary=rejection_summary,
+                        )
+                        fut2 = pool.submit(
+                            run_intelligence_candidate_refresh,
+                            state.db,
+                            data_dir=state.data_dir,
+                            ai_service=state.ai,
+                            scope=scope,
+                            intents=generation.intents,
+                            trigger_source="manual",
+                            max_fetch_jobs=round_fetch_jobs,
+                        )
+                        refresh = fut2.result(timeout=max(10, int(deadline_monotonic - time.monotonic())))
+                        last_payload = refresh.as_payload() if hasattr(refresh, "as_payload") else {}
+                        aggregate["rounds"] = int(aggregate.get("rounds") or 0) + 1
+                        for key in (
+                            "sourceConfigCount", "fetchJobCount", "candidateCount", "promotedCount",
+                            "duplicateCount", "failedCount", "bodyFetchedCount", "verifiedCount", "summarySuccessCount",
+                            "searchDirectionCount", "queryCount", "successQueryCount", "noResultQueryCount", "effectiveLeadCount",
+                        ):
+                            aggregate[key] = int(aggregate.get(key) or 0) + int(last_payload.get(key) or 0)
+                        for reason, count in (last_payload.get("rejectionCounts") or {}).items():
+                            rejection_summary[str(reason)] = rejection_summary.get(str(reason), 0) + int(count or 0)
+                        for key in ("profileCoverage", "profileMissingDimensions", "profileCompletionReady", "sourceCoverageStatus", "candidateRefreshStatus", "lastCandidateFetchAt", "candidateCounts", "uncoveredGaps"):
+                            if key in last_payload:
+                                aggregate[key] = last_payload[key]
+                        promoted_this_round = int(last_payload.get("promotedCount") or 0)
+                        effective_this_round = int(last_payload.get("effectiveLeadCount") or 0)
+                        success_this_round = int(last_payload.get("successQueryCount") or 0)
+                        no_progress_rounds = 0 if (promoted_this_round > 0 or effective_this_round > 0 or success_this_round > 0) else no_progress_rounds + 1
+                        if content_kind == "profile_completion" and bool(last_payload.get("profileCompletionReady")):
+                            break
+                        if no_progress_rounds >= 2:
+                            break
+                        if int(aggregate.get("fetchJobCount") or 0) >= max_total_fetch_jobs:
+                            break
+                        if deadline_monotonic - time.monotonic() <= 5:
+                            break
+                        _update_refresh_run(
+                            run_id,
+                            status="running",
+                            stage="continuing_research",
+                            message=(
+                                "资料仍有明显缺口，正在继续下一轮来源搜索和详情页核验"
+                                if content_kind == "profile_completion"
+                                else "仍需扩大时效线索，正在继续下一轮多路线搜索和核验"
+                            ),
+                            result=aggregate,
+                            rejection_summary=rejection_summary,
+                        )
+                if content_kind == "profile_completion":
+                    missing = aggregate.get("profileMissingDimensions")
+                    lead_count = int(aggregate.get("effectiveLeadCount") or 0)
+                    promoted_count = int(aggregate.get("promotedCount") or 0)
+                    if bool(aggregate.get("profileCompletionReady")):
+                        final_message = f"资料研究已覆盖基础维度；本轮找到有效线索 {lead_count} 条，成卡 {promoted_count} 条"
+                    elif isinstance(missing, list) and missing:
+                        final_message = f"本轮连续研究已完成；找到有效线索 {lead_count} 条，成卡 {promoted_count} 条；仍缺：{'、'.join(str(item) for item in missing[:5])}"
+                    else:
+                        final_message = f"本轮连续研究已完成；找到有效线索 {lead_count} 条，成卡 {promoted_count} 条"
+                else:
+                    lead_count = int(aggregate.get("effectiveLeadCount") or 0)
+                    promoted_count = int(aggregate.get("promotedCount") or 0)
+                    final_message = f"时效研究已完成；本轮找到有效线索 {lead_count} 条，成卡 {promoted_count} 条，未用搜索短摘补卡"
+                _update_refresh_run(
+                    run_id,
+                    status="completed",
+                    stage="completed",
+                    message=final_message,
+                    result=aggregate or last_payload,
+                    rejection_summary=rejection_summary,
+                )
                 logger.info("[intelligence] bg refresh done for %s (%s)", client_name, client_id)
             except FutTimeout:
+                _update_refresh_run(run_id, status="failed", stage="timeout", message="后台研究超时：已保留已抓取诊断，未用候选短摘补卡")
                 logger.warning("[intelligence] bg refresh TIMEOUT for %s (%s)", client_name, client_id)
             except Exception as exc:
+                _update_refresh_run(run_id, status="failed", stage="failed", message=f"后台研究失败：{exc!s}"[:240])
                 logger.warning("[intelligence] bg refresh FAILED for %s: %s", client_name, exc)
 
         results: list[IntelligenceRefreshObjectResult] = []
-        for client_id in target_ids:
-            client_row = state.db.fetchone("SELECT name FROM clients WHERE id=?", (client_id,))
-            if not client_row:
-                continue
+        for client_row in target_rows:
+            client_id = str(client_row["id"])
             client_name = str(client_row["name"] or "")
-            background_tasks.add_task(_run_one_target_bg, client_id, client_name)
+            run_id = _create_refresh_run(client_id, client_name)
+            background_tasks.add_task(_run_one_target_bg, client_id, client_name, run_id)
             results.append(
                 IntelligenceRefreshObjectResult(
                     scopeType="client",
@@ -46427,7 +46841,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     name=client_name,
                     contentKind=content_kind,
                     status="completed",  # "completed"=已派发后台任务，不代表抓取结果
-                    message="已加入后台抓取队列，2-5 分钟后请刷新列表查看新情报",
+                    message="已启动后台抓取：公开搜索、正文抓取、质量过滤和成卡判断会继续运行，页面稍后自动刷新",
+                    queuedJobId=run_id,
                 )
             )
             # 跳过同步路径（保留代码供未来同步模式使用）
@@ -46513,7 +46928,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         else:
             overall_status = "completed"
         label = "资料补全" if content_kind == "profile_completion" else "时效情报"
-        message = f"{label}刷新：处理 {totals.objectCount} 个对象，线索 {totals.candidateCount} 条，成卡 {totals.promotedCount} 条"
+        message = f"{label}已启动：已派发 {totals.objectCount} 个对象进入后台抓取"
         return IntelligenceRefreshResult(
             status=overall_status,
             contentKind=content_kind,
@@ -46531,16 +46946,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         scopeId: str | None = Query(default=None),
         contentKind: Literal["profile_completion", "timely_intelligence"] | None = Query(default=None),
     ) -> IntelligenceSourceDiagnosticsResponse:
-        """来源诊断：先返回空 stub，等同事接通真实逻辑。"""
         return IntelligenceSourceDiagnosticsResponse(
-            scopeType=scopeType,
-            scopeId=scopeId or "",
-            contentKind=contentKind,
-            sourceCoverageStatus="missing",
-            candidateRefreshStatus="missing",
-            candidateRefreshHint=None,
-            sources=[],
-            fetchJobs=[],
+            **get_source_diagnostics(
+                state.db,
+                scope_type=scopeType,
+                scope_id=scopeId or "",
+                content_kind=contentKind,
+            )
         )
 
     @app.get("/api/v1/intelligence/feedback-diagnostics", response_model=IntelligenceFeedbackDiagnosticsResponse)
@@ -46550,11 +46962,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         contentKind: Literal["profile_completion", "timely_intelligence"] | None = Query(default=None),
     ) -> IntelligenceFeedbackDiagnosticsResponse:
         return IntelligenceFeedbackDiagnosticsResponse(
-            scopeType=scopeType,
-            scopeId=scopeId or "",
-            contentKind=contentKind,
-            summaries=[],
-            events=[],
+            **feedback_diagnostics(
+                state.db,
+                scope_type=scopeType,
+                scope_id=scopeId or "",
+                content_kind=contentKind,
+            )
         )
 
     def _fetch_intelligence_item_or_404(item_id: str):
@@ -46566,6 +46979,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return row
 
     def _row_to_intelligence_item_record(row) -> IntelligenceItemRecord:
+        row_keys = set(row.keys())
+
+        def row_value(key: str, default=None):
+            return row[key] if key in row_keys else default
+
         return IntelligenceItemRecord(
             id=str(row["id"]),
             contentKind=row["content_kind"],
@@ -46578,19 +46996,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             keyPoints=from_json(row["key_points_json"] or "[]", []),
             analysis=str(row["analysis"] or ""),
             impact=str(row["impact"] or ""),
-            intelligenceType=row["intelligence_type"] or None,
-            timelinessLabel=row["timeliness_label"] or None,
-            relevanceReason=str(row["relevance_reason"] or ""),
-            suggestedAction=str(row["suggested_action"] or ""),
-            followupQuestions=from_json(row["followup_questions_json"] or "[]", []),
+            intelligenceType=row_value("intelligence_type") or None,
+            timelinessLabel=row_value("timeliness_label") or None,
+            relevanceReason=str(row_value("relevance_reason", "") or ""),
+            suggestedAction=str(row_value("suggested_action", "") or ""),
+            followupQuestions=from_json(row_value("followup_questions_json", "[]") or "[]", []),
             tags=from_json(row["tags_json"] or "[]", []),
             source=str(row["source"] or ""),
             sourceUrl=row["source_url"] or None,
             publishedAt=row["published_at"] or None,
             capturedAt=str(row["captured_at"]),
             verifiedAt=row["verified_at"] or None,
-            credibilityScore=row["credibility_score"] if row["credibility_score"] is not None else None,
-            confidenceScore=row["confidence_score"] if row["confidence_score"] is not None else None,
             dataCenterIngestEventId=row["data_center_ingest_event_id"] or None,
             externalEvidenceCardId=row["external_evidence_card_id"] or None,
             topicCandidateId=row["topic_candidate_id"] or None,
@@ -46620,25 +47036,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 item_id,
             ),
         )
-        # 记 feedback event（让同事 service 后续学习）
         try:
-            state.db.execute(
-                "INSERT INTO intelligence_feedback_events "
-                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
-                "reason_code, note, source, source_domain, score_delta, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'dismiss', ?, ?, ?, ?, -1.0, ?)",
-                (
-                    str(_uuid_intel.uuid4()),
-                    row["scope_type"] or "",
-                    row["scope_id"] or "",
-                    row["content_kind"],
-                    item_id,
-                    reason_code,
-                    note,
-                    row["source"] or "",
-                    "",
-                    now_ts,
-                ),
+            record_feedback_event(
+                state.db,
+                context=context_from_item_row(state.db, row),
+                action_type="dismiss",
+                reason_code=reason_code,
+                note=note,
+                payload={"reasonCode": reason_code},
             )
         except Exception as exc:
             logger.warning("dismiss feedback_event 写入失败: %s", exc)
@@ -46664,23 +47069,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )
         try:
-            state.db.execute(
-                "INSERT INTO intelligence_feedback_events "
-                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
-                "reason_code, note, source, source_domain, score_delta, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'follow', ?, ?, ?, ?, 1.0, ?)",
-                (
-                    str(_uuid_intel.uuid4()),
-                    row["scope_type"] or "",
-                    row["scope_id"] or "",
-                    row["content_kind"],
-                    item_id,
-                    follow_mode,
-                    note,
-                    row["source"] or "",
-                    "",
-                    now_ts,
-                ),
+            record_feedback_event(
+                state.db,
+                context=context_from_item_row(state.db, row),
+                action_type="follow",
+                reason_code=follow_mode,
+                note=note,
+                payload={"followMode": follow_mode},
             )
         except Exception as exc:
             logger.warning("follow feedback_event 写入失败: %s", exc)
@@ -46767,22 +47162,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         now_ts = _intel_now()
         try:
-            state.db.execute(
-                "INSERT INTO intelligence_feedback_events "
-                "(id, scope_type, scope_id, content_kind, item_id, action_type, "
-                "reason_code, note, source, source_domain, score_delta, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'chat', 'question', ?, ?, ?, 0.0, ?)",
-                (
-                    str(_uuid_intel.uuid4()),
-                    row["scope_type"] or "",
-                    row["scope_id"] or "",
-                    row["content_kind"],
-                    item_id,
-                    question[:500],
-                    row["source"] or "",
-                    "",
-                    now_ts,
-                ),
+            record_feedback_event(
+                state.db,
+                context=context_from_item_row(state.db, row),
+                action_type="chat",
+                reason_code="question",
+                note=question[:500],
+                payload={"question": question[:500]},
             )
         except Exception as exc:
             logger.warning("chat feedback_event 写入失败: %s", exc)

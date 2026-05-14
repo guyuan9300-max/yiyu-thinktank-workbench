@@ -26,7 +26,9 @@ import type {
   IntelligenceFocusDirectivePayload,
   IntelligenceFollowMode,
   IntelligenceItem,
+  IntelligenceRefreshCycleSettings,
   IntelligenceRefreshResult,
+  IntelligenceRefreshRun,
   IntelligenceTaskDraftPayload,
   IntelligenceWorkObject,
   SessionUser,
@@ -43,12 +45,15 @@ import {
   getCandidateTaskPlan,
   getIntelligenceFocusDirectives,
   getIntelligenceItems,
+  getIntelligenceRefreshCycleSettings,
+  getIntelligenceRefreshRuns,
   getIntelligenceTaskDraft,
   getIntelligenceWorkObjects,
   promoteCandidateTasks,
   refreshIntelligenceSupply,
   saveIntelligenceFocusDirective,
   submitIntelligenceVerificationFeedback,
+  updateIntelligenceRefreshCycleSettings,
 } from '../../lib/api';
 
 type IntelligenceStationViewProps = {
@@ -114,6 +119,11 @@ const EMPTY_FOCUS_DRAFT: FocusDraft = {
   exclude: '',
 };
 
+const DEFAULT_REFRESH_CYCLE_SETTINGS: IntelligenceRefreshCycleSettings = {
+  profileCompletionHours: 72,
+  timelyIntelligenceHours: 24,
+};
+
 function formatTime(value?: string | null) {
   if (!value) return '时间未知';
   const date = new Date(value);
@@ -123,6 +133,20 @@ function formatTime(value?: string | null) {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+  }).format(date);
+}
+
+function formatDateOnly(value?: string | null) {
+  if (!value) return '未标注';
+  const trimmed = value.trim();
+  const directDate = trimmed.match(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}/);
+  if (directDate) return directDate[0].replace(/[年月/.]/g, '-').replace(/日/g, '');
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) return trimmed;
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
   }).format(date);
 }
 
@@ -197,34 +221,6 @@ function selectedObjectLabel(value: WorkObjectSelection, objects: IntelligenceWo
   return `${object.type === 'client' ? '客户' : '项目'} · ${object.name}`;
 }
 
-function weakHintForObject(object: IntelligenceWorkObject | null, objects: IntelligenceWorkObject[]) {
-  if (object) {
-    const hints = [
-      object.searchIntentStatus !== 'ready' ? object.searchIntentHint : '',
-      object.sourceCoverageStatus !== 'ready' ? '来源覆盖待刷新' : '',
-      object.candidateRefreshStatus !== 'ready' ? object.candidateRefreshHint : '',
-    ].filter(Boolean);
-    return hints.join(' · ');
-  }
-  const searchCount = objects.filter((item) => item.searchIntentStatus !== 'ready').length;
-  const sourceCount = objects.filter((item) => item.sourceCoverageStatus !== 'ready').length;
-  const candidateCount = objects.filter((item) => item.candidateRefreshStatus !== 'ready').length;
-  const parts = [
-    searchCount ? `${searchCount} 个对象搜索意图待刷新` : '',
-    sourceCount ? `${sourceCount} 个对象来源覆盖待校准` : '',
-    candidateCount ? `${candidateCount} 个对象线索抓取待完成` : '',
-  ].filter(Boolean);
-  return parts.join(' · ');
-}
-
-function statusText(value?: string | null) {
-  if (value === 'ready') return '已就绪';
-  if (value === 'running') return '刷新中';
-  if (value === 'stale') return '已过期';
-  if (value === 'failed') return '失败';
-  return '未生成';
-}
-
 function scopeRefreshPayload(selection: WorkObjectSelection, object: IntelligenceWorkObject | null, contentKind: IntelligenceContentKind) {
   if (selection === 'all' || !object) {
     return { scopeType: 'all' as const, scopeId: null, contentKind, force: true };
@@ -235,6 +231,9 @@ function scopeRefreshPayload(selection: WorkObjectSelection, object: Intelligenc
 function summarizeRefreshResult(result: IntelligenceRefreshResult) {
   const label = TAB_LABEL[result.contentKind];
   const totals = result.totals;
+  if (isBackgroundRefreshQueued(result)) {
+    return `${label}已启动：已派发 ${totals.objectCount} 个对象进入后台抓取，正在公开搜索、正文抓取和核验。`;
+  }
   if (totals.candidateCount <= 0 && totals.promotedCount <= 0 && !totals.failedCount) {
     return `${label}流程已跑完：处理 ${totals.objectCount} 个对象，但没有找到可进入判断流程的中文公开资料。`;
   }
@@ -242,6 +241,14 @@ function summarizeRefreshResult(result: IntelligenceRefreshResult) {
     return `${label}刷新完成：处理 ${totals.objectCount} 个对象，线索 ${totals.candidateCount} 条，正文抓取 ${totals.bodyFetchedCount} 条，核验通过 ${totals.verifiedCount} 条，摘要生成 ${totals.summarySuccessCount} 条，成卡 ${totals.promotedCount} 条${totals.noResultCount ? `，未找到 ${totals.noResultCount} 个对象` : ''}${totals.failedCount ? `，失败 ${totals.failedCount} 个对象` : ''}。`;
   }
   return `${label}刷新完成：处理 ${totals.objectCount} 个对象，线索 ${totals.candidateCount} 条，成卡 ${totals.promotedCount} 条${totals.noResultCount ? `，未找到 ${totals.noResultCount} 个对象` : ''}${totals.failedCount ? `，失败 ${totals.failedCount} 个对象` : ''}。`;
+}
+
+function isBackgroundRefreshQueued(result: IntelligenceRefreshResult) {
+  if (!result.results.length || result.totals.candidateCount > 0 || result.totals.promotedCount > 0) return false;
+  return result.results.every((item) => {
+    const message = item.message || '';
+    return message.includes('后台抓取队列') || message.includes('后台抓取') || message.includes('已加入后台');
+  });
 }
 
 function isProfileCompletion(item: IntelligenceItem) {
@@ -299,10 +306,35 @@ function profileGapLabel(item: IntelligenceItem) {
   return tags.length > 0 ? tags.join(' / ') : item.title;
 }
 
+function compactSourceLabel(label: string, url: string) {
+  const trimmed = label.trim();
+  if (trimmed && !/^https?:\/\//i.test(trimmed) && trimmed.length <= 36) return trimmed;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, '');
+  } catch {
+    return trimmed || '打开来源';
+  }
+}
+
+function looksLikeDomainLabel(label: string) {
+  const trimmed = label.trim();
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(trimmed);
+}
+
+function profileSourceLabel(label: string, url: string) {
+  const trimmed = label.trim();
+  if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+    return trimmed.length > 42 ? `${trimmed.slice(0, 40)}...` : trimmed;
+  }
+  return compactSourceLabel(label, url);
+}
+
 function sourceLinks(item: IntelligenceItem) {
   const items: Array<{ label: string; url: string }> = [];
   if (item.sourceUrl) {
-    items.push({ label: item.source || item.sourceUrl, url: item.sourceUrl });
+    const sourceLabel = isProfileCompletion(item) && looksLikeDomainLabel(item.source || '') ? item.title : item.source || item.title;
+    items.push({ label: isProfileCompletion(item) ? profileSourceLabel(sourceLabel, item.sourceUrl) : compactSourceLabel(sourceLabel, item.sourceUrl), url: item.sourceUrl });
   }
   const sourceText = item.source || '';
   for (const line of sourceText.split(/\n+/)) {
@@ -311,24 +343,237 @@ function sourceLinks(item: IntelligenceItem) {
     if (!match) continue;
     const url = match[0];
     if (items.some((item) => item.url === url)) continue;
-    items.push({ label: trimmed.replace(url, '').replace(/[：:｜|\-—\s]+$/g, '').trim() || url, url });
+    const label = trimmed.replace(url, '').replace(/[：:｜|\-—\s]+$/g, '').trim();
+    items.push({ label: compactSourceLabel(label, url), url });
   }
   return items;
 }
 
-function RefreshProgressPanel({ contentKind }: { contentKind: IntelligenceContentKind | null }) {
-  if (!contentKind) return null;
+function refreshRunObjectLabel(run: IntelligenceRefreshRun, workObjects: IntelligenceWorkObject[]) {
+  const targetId = run.projectModuleId || run.clientId || run.scopeId || '';
+  const object = workObjects.find((item) => item.id === targetId);
+  if (object) return `${object.type === 'client' ? '客户' : '项目'} · ${object.name}`;
+  return targetId ? `对象 ${targetId}` : '全部对象';
+}
+
+function refreshRunCount(run: IntelligenceRefreshRun, key: string) {
+  const value = run.result?.[key];
+  const number = typeof value === 'number' ? value : Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function refreshRunStringList(runs: IntelligenceRefreshRun[], key: string) {
+  const values: string[] = [];
+  runs.forEach((run) => {
+    const raw = run.result?.[key];
+    if (!Array.isArray(raw)) return;
+    raw.forEach((item) => {
+      const text = String(item || '').trim();
+      if (text && !values.includes(text)) values.push(text);
+    });
+  });
+  return values;
+}
+
+function refreshRunRejections(runs: IntelligenceRefreshRun[]) {
+  const merged: Record<string, number> = {};
+  runs.forEach((run) => {
+    Object.entries(run.rejectionSummary || {}).forEach(([reason, count]) => {
+      merged[reason] = (merged[reason] || 0) + Number(count || 0);
+    });
+  });
+  return Object.entries(merged)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4);
+}
+
+function runTimestamp(run: IntelligenceRefreshRun) {
+  const parsed = new Date(run.finishedAt || run.updatedAt || run.createdAt).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function sameRefreshRunBatch(a: IntelligenceRefreshRun, b: IntelligenceRefreshRun) {
+  if (a.contentKind !== b.contentKind || a.status !== b.status) return false;
+  if (a.triggerSource !== b.triggerSource) return false;
+  if (a.createdAt && b.createdAt && a.createdAt === b.createdAt) return true;
+  const aCreated = new Date(a.createdAt).getTime();
+  const bCreated = new Date(b.createdAt).getTime();
+  if (Number.isNaN(aCreated) || Number.isNaN(bCreated)) return false;
+  return Math.abs(aCreated - bCreated) <= 10_000;
+}
+
+function latestFinishedRunBatch(runs: IntelligenceRefreshRun[], contentKind: IntelligenceContentKind | null) {
+  const finished = runs
+    .filter((run) => (run.status === 'completed' || run.status === 'failed') && (!contentKind || run.contentKind === contentKind))
+    .sort((a, b) => runTimestamp(b) - runTimestamp(a));
+  const latest = finished[0] || null;
+  if (!latest) return { latest, batch: [] as IntelligenceRefreshRun[] };
+  return {
+    latest,
+    batch: finished.filter((run) => sameRefreshRunBatch(run, latest)),
+  };
+}
+
+function refreshRunTimeRange(runs: IntelligenceRefreshRun[]) {
+  const starts = runs.map((run) => run.startedAt || run.createdAt).filter(Boolean).sort();
+  const ends = runs.map((run) => run.finishedAt || run.updatedAt).filter(Boolean).sort();
+  if (!starts.length || !ends.length) return '本次运行';
+  return `${formatTime(starts[0])} - ${formatTime(ends[ends.length - 1])}`;
+}
+
+function refreshRunObjectSummary(runs: IntelligenceRefreshRun[], workObjects: IntelligenceWorkObject[]) {
+  const labels = runs.map((run) => refreshRunObjectLabel(run, workObjects)).filter(Boolean);
+  const unique = Array.from(new Set(labels));
+  if (unique.length <= 2) return unique.join('、') || '当前对象';
+  return `${unique.slice(0, 2).join('、')} 等 ${unique.length} 个`;
+}
+
+function RefreshProgressPanel({
+  contentKind,
+  hasItems,
+  runs,
+  workObjects,
+  loading,
+  onReload,
+}: {
+  contentKind: IntelligenceContentKind | null;
+  hasItems: boolean;
+  runs: IntelligenceRefreshRun[];
+  workObjects: IntelligenceWorkObject[];
+  loading: boolean;
+  onReload: () => void;
+}) {
+  const scopedRuns = contentKind ? runs.filter((run) => run.contentKind === contentKind) : runs;
+  const activeRuns = scopedRuns.filter((run) => run.status === 'queued' || run.status === 'running');
+  const { latest: latestFinishedRun, batch: latestFinishedRuns } = latestFinishedRunBatch(scopedRuns, contentKind);
+  const visibleKind = contentKind || latestFinishedRun?.contentKind || null;
+  if (!visibleKind) return null;
+  const showingActive = activeRuns.length > 0;
+  const finishedRuns = showingActive ? [] : latestFinishedRuns;
+  const finishedRejections = refreshRunRejections(finishedRuns);
+  const promotedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'promotedCount'), 0);
+  const candidateCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'candidateCount'), 0);
+  const bodyFetchedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'bodyFetchedCount'), 0);
+  const verifiedCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'verifiedCount'), 0);
+  const searchDirectionCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'searchDirectionCount'), 0);
+  const queryCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'queryCount'), 0);
+  const successQueryCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'successQueryCount'), 0);
+  const noResultQueryCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'noResultQueryCount'), 0);
+  const effectiveLeadCount = finishedRuns.reduce((sum, run) => sum + refreshRunCount(run, 'effectiveLeadCount'), 0);
+  const uncoveredGaps = refreshRunStringList(finishedRuns, 'uncoveredGaps');
+  const isProfileFinished = !showingActive && latestFinishedRun?.contentKind === 'profile_completion';
   return (
-    <div className="mb-4 border-l-4 border-gray-950 bg-white px-4 py-3 text-[12px] font-semibold leading-5 text-gray-700 shadow-sm">
-      <div className="flex items-center gap-2 text-gray-950">
-        <Loader2 size={15} className="animate-spin" />
-        正在刷新{TAB_LABEL[contentKind]}
+    <div className={`mb-4 border-l-4 bg-white px-4 py-3 text-[12px] font-semibold leading-5 shadow-sm ${showingActive ? 'border-gray-950 text-gray-700' : latestFinishedRun?.status === 'failed' ? 'border-rose-400 text-rose-950' : 'border-blue-300 text-blue-950'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-gray-950">
+          {showingActive ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+          {showingActive
+            ? `后台研究中：${TAB_LABEL[visibleKind]}（${activeRuns.length} 个对象）`
+            : latestFinishedRun?.status === 'failed'
+              ? `最近${TAB_LABEL[visibleKind]}失败`
+              : latestFinishedRun
+                ? `最近${TAB_LABEL[visibleKind]}已完成`
+                : `${TAB_LABEL[visibleKind]}待启动`}
+        </div>
+        <button
+          type="button"
+          onClick={onReload}
+          disabled={loading}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[12px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+          刷新状态
+        </button>
       </div>
-      <p className="mt-2 text-gray-500">
-        {contentKind === 'profile_completion'
-          ? '正在生成搜索意图、校准来源、抓取线索、抓取正文、核验身份锚点，并尝试生成摘要成卡。完成后会刷新列表并显示核验、成卡和失败摘要。'
-          : '正在生成搜索意图、校准来源、抓取线索，并尝试整理为可跟进的时效情报。完成后会刷新列表并显示成卡、未成卡原因和失败摘要。'}
-      </p>
+      {showingActive ? (
+        <>
+          <p className="mt-2 text-gray-500">
+            {visibleKind === 'profile_completion'
+              ? '正在生成研究问题、校准来源、连续抓取正文、核验身份锚点和基础资料缺口；重点关注只作为优先方向。切到其他模块后回来，状态会继续保留。'
+              : '正在抓取可核验详情页，并判断外部变化、影响链条和下一步动作。切到其他模块后回来，状态会继续保留。'}
+          </p>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {activeRuns.slice(0, 4).map((run) => (
+              <div key={run.id} className="rounded-md bg-gray-50 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <b className="text-gray-900">{refreshRunObjectLabel(run, workObjects)}</b>
+                  <span className="text-gray-500">{run.status === 'queued' ? '排队中' : '运行中'} · {formatTime(run.updatedAt)}</span>
+                </div>
+                <p className="mt-1 text-gray-600">{run.message || run.stage || '后台研究正在推进'}</p>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : latestFinishedRun ? (
+        <>
+          {isProfileFinished ? (
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">客户/项目</span>
+                <b>{refreshRunObjectSummary(finishedRuns, workObjects)}</b>
+              </div>
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">运行时间</span>
+                <b>{refreshRunTimeRange(finishedRuns)}</b>
+              </div>
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">线索总数</span>
+                <b>{candidateCount}</b>
+              </div>
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">最终成卡</span>
+                <b>{promotedCount}</b>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">对象</span>
+                <b>{finishedRuns.length || 1}</b>
+              </div>
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">线索</span>
+                <b>{candidateCount}</b>
+              </div>
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">正文/核验</span>
+                <b>{bodyFetchedCount}/{verifiedCount}</b>
+              </div>
+              <div className="rounded-md bg-white/70 px-3 py-2">
+                <span className="block text-blue-900/60">成卡</span>
+                <b>{promotedCount}</b>
+              </div>
+            </div>
+          )}
+          <p className="mt-2 text-blue-900/70">
+            最近更新时间：{formatTime(latestFinishedRun.updatedAt)}。{latestFinishedRun.message || '后台研究已结束。'}
+          </p>
+          {(searchDirectionCount > 0 || queryCount > 0 || effectiveLeadCount > 0 || uncoveredGaps.length > 0) && (
+            <p className="mt-1 text-blue-900/70">
+              本轮搜索 {searchDirectionCount || '若干'} 个方向，执行 {queryCount} 次查询，成功命中 {successQueryCount} 次，空结果 {noResultQueryCount} 次，形成有效线索 {effectiveLeadCount} 条
+              {uncoveredGaps.length ? `；仍缺：${uncoveredGaps.slice(0, 5).join('、')}` : ''}。
+            </p>
+          )}
+          {!isProfileFinished && finishedRejections.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2 text-blue-900/80">
+              {finishedRejections.map(([reason, count]) => (
+                <span key={reason} className="rounded bg-blue-100/70 px-2 py-1">
+                  {reason}：{count}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="mt-2 text-blue-900/70">
+          尚未开始自动抓取，可以点击右上角按钮手动{visibleKind === 'profile_completion' ? '补全资料' : '抓取情报'}。
+        </p>
+      )}
+      {!showingActive && latestFinishedRun && !hasItems && (
+        <p className="mt-1 text-blue-900/70">
+          当前没有通过严格判断的{visibleKind === 'profile_completion' ? '资料卡' : '时效情报卡'}；系统不会把候选短摘或未核验页面放进普通列表。
+        </p>
+      )}
     </div>
   );
 }
@@ -348,176 +593,13 @@ function EmptyState({
   refreshing: boolean;
   onRefresh: (contentKind: IntelligenceContentKind) => void;
 }) {
-  const statusTarget = selectedWorkObject;
-  const latestAllFetchAt =
-    workObjects
-      .map((item) => item.lastCandidateFetchAt)
-      .filter((value): value is string => Boolean(value))
-      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
-  const allSummary = selectedWorkObject
-    ? null
-    : {
-        searchIntentStatus: workObjects.some((item) => item.searchIntentStatus === 'failed') ? 'failed' : workObjects.some((item) => item.searchIntentStatus === 'ready') ? 'ready' : 'missing',
-        sourceCoverageStatus: workObjects.some((item) => item.sourceCoverageStatus === 'failed') ? 'failed' : workObjects.some((item) => item.sourceCoverageStatus === 'ready') ? 'ready' : 'missing',
-        candidateRefreshStatus: workObjects.some((item) => item.candidateRefreshStatus === 'failed') ? 'failed' : workObjects.some((item) => item.candidateRefreshStatus === 'ready') ? 'ready' : 'missing',
-        lastCandidateFetchAt: latestAllFetchAt,
-      };
-  const searchStatus = statusTarget?.searchIntentStatus || allSummary?.searchIntentStatus || 'missing';
-  const sourceStatus = statusTarget?.sourceCoverageStatus || allSummary?.sourceCoverageStatus || 'missing';
-  const candidateStatus = statusTarget?.candidateRefreshStatus || allSummary?.candidateRefreshStatus || 'missing';
-  const lastFetchAt = statusTarget?.lastCandidateFetchAt || allSummary?.lastCandidateFetchAt || null;
-  const hasWorkObjects = workObjects.length > 0;
-  const hasCandidates = candidateSamples.length > 0;
-  const isProfile = contentKind === 'profile_completion';
-  const title = !hasWorkObjects
-    ? '暂无工作对象'
-    : hasCandidates && !isProfile
-      ? '已抓到线索，暂无成卡'
-      : isProfile
-        ? '暂无已核验资料'
-        : '暂无新的时效情报';
-  const description = !hasWorkObjects
-    ? '当前还没有可用于情报站的客户或项目。先在工作台创建客户/项目后，再回来补全资料或抓取情报。'
-    : hasCandidates && !isProfile
-      ? '系统已经抓到公开线索，但暂未通过相关性、时效性或动作价值判断。普通列表只展示成卡后的情报，不把搜索短摘当作情报展示。'
-      : isProfile
-        ? '系统还没有找到同时确认属于当前客户/项目、能补足明确资料缺口、来源页面可访问且已整理为可复用事实的资料。'
-        : '当前还没有通过整理成卡的时效情报。可以先手动启动一轮政策、招采、资助和动态检索。';
-  return (
-    <div className="border-y border-dashed border-gray-200 bg-white px-6 py-10 text-center">
-      <p className="text-[15px] font-black text-gray-800">{title}</p>
-      <p className="mx-auto mt-2 max-w-[520px] text-[13px] leading-6 text-gray-500">
-        {description}
-      </p>
-      {isProfile ? (
-        <div className="mx-auto mt-5 max-w-[640px] rounded-md bg-gray-50 px-4 py-3 text-left text-[12px] font-semibold leading-6 text-gray-600">
-          <p className="font-black text-gray-800">未成卡条件</p>
-          <p>没有抓到可清洗正文、正文未命中客户/项目身份、无法对应资料缺口，或 AI 暂时不可用时，系统都不会把搜索短摘或脏原文当作资料展示。</p>
-          <p className="mt-2 text-gray-500">最近抓取：{lastFetchAt ? formatTime(lastFetchAt) : '暂无'}</p>
-        </div>
-      ) : (
-        <div className="mx-auto mt-5 grid max-w-[640px] gap-2 text-left text-[12px] font-semibold text-gray-600 md:grid-cols-4">
-          <div className="rounded-md bg-gray-50 px-3 py-2">
-            <span className="block text-gray-400">检索准备</span>
-            <b className="mt-1 block text-gray-800">{statusText(searchStatus)}</b>
-          </div>
-          <div className="rounded-md bg-gray-50 px-3 py-2">
-            <span className="block text-gray-400">来源路线</span>
-            <b className="mt-1 block text-gray-800">{statusText(sourceStatus)}</b>
-          </div>
-          <div className="rounded-md bg-gray-50 px-3 py-2">
-            <span className="block text-gray-400">线索抓取</span>
-            <b className="mt-1 block text-gray-800">{statusText(candidateStatus)}</b>
-          </div>
-          <div className="rounded-md bg-gray-50 px-3 py-2">
-            <span className="block text-gray-400">最近抓取</span>
-            <b className="mt-1 block text-gray-800">{lastFetchAt ? formatTime(lastFetchAt) : '暂无'}</b>
-          </div>
-        </div>
-      )}
-      {(statusTarget?.candidateRefreshHint || (!statusTarget && weakHintForObject(null, workObjects))) && (
-        <p className="mx-auto mt-4 max-w-[640px] text-left text-[12px] font-semibold leading-5 text-amber-800">
-          {statusTarget?.candidateRefreshHint || weakHintForObject(null, workObjects)}
-        </p>
-      )}
-      <button
-        type="button"
-        onClick={() => onRefresh(contentKind)}
-        disabled={refreshing || !hasWorkObjects}
-        className="mt-5 inline-flex items-center gap-2 rounded-md bg-gray-950 px-4 py-2 text-[13px] font-bold text-white hover:bg-gray-800 disabled:opacity-50"
-      >
-        {refreshing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-        {contentKind === 'profile_completion' ? '立即补全资料' : '立即抓取情报'}
-      </button>
-    </div>
-  );
-}
-
-function RefreshResultPanel({ result }: { result: IntelligenceRefreshResult | null }) {
-  if (!result) return null;
-  const failedResults = result.results.filter((item) => item.status === 'failed' || item.errors.length > 0).slice(0, 3);
-  const noResultItems = result.results.filter((item) => item.status === 'no_results').slice(0, 3);
-  const rejectionEntries = Object.entries(result.totals.rejectionCounts || {}).slice(0, 4);
-  return (
-    <div className="mb-4 border-l-4 border-blue-300 bg-blue-50 px-4 py-4 text-[12px] font-semibold leading-5 text-blue-950">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span>{summarizeRefreshResult(result)}</span>
-        <span>{formatTime(result.generatedAt)}</span>
-      </div>
-      <div className="mt-3 grid gap-2 md:grid-cols-6">
-        <div className="rounded-md bg-white/70 px-3 py-2">
-          <span className="block text-blue-900/60">对象</span>
-          <b>{result.totals.objectCount}</b>
-        </div>
-        <div className="rounded-md bg-white/70 px-3 py-2">
-          <span className="block text-blue-900/60">有结果</span>
-          <b>{result.totals.completedCount}</b>
-        </div>
-        <div className="rounded-md bg-white/70 px-3 py-2">
-          <span className="block text-blue-900/60">未找到</span>
-          <b>{result.totals.noResultCount}</b>
-        </div>
-        <div className="rounded-md bg-white/70 px-3 py-2">
-          <span className="block text-blue-900/60">失败</span>
-          <b>{result.totals.failedCount}</b>
-        </div>
-        <div className="rounded-md bg-white/70 px-3 py-2">
-          <span className="block text-blue-900/60">线索</span>
-          <b>{result.totals.candidateCount}</b>
-        </div>
-        <div className="rounded-md bg-white/70 px-3 py-2">
-          <span className="block text-blue-900/60">成卡</span>
-          <b>{result.totals.promotedCount}</b>
-        </div>
-      </div>
-      {result.contentKind === 'profile_completion' && (
-        <div className="mt-2 grid gap-2 md:grid-cols-3">
-          <div className="rounded-md bg-white/70 px-3 py-2">
-            <span className="block text-blue-900/60">正文抓取</span>
-            <b>{result.totals.bodyFetchedCount}</b>
-          </div>
-          <div className="rounded-md bg-white/70 px-3 py-2">
-            <span className="block text-blue-900/60">核验通过</span>
-            <b>{result.totals.verifiedCount}</b>
-          </div>
-          <div className="rounded-md bg-white/70 px-3 py-2">
-            <span className="block text-blue-900/60">摘要生成</span>
-            <b>{result.totals.summarySuccessCount}</b>
-          </div>
-        </div>
-      )}
-      {rejectionEntries.length > 0 && (
-        <div className="mt-3 rounded-md bg-white/70 px-3 py-2 text-blue-900/80">
-          <p className="font-black">未成卡原因</p>
-          <div className="mt-1 flex flex-wrap gap-2">
-            {rejectionEntries.map(([reason, count]) => (
-              <span key={reason} className="rounded bg-blue-100/70 px-2 py-1">
-                {reason}：{count}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {failedResults.length > 0 && (
-        <div className="mt-2 space-y-1 text-blue-900/80">
-          {failedResults.map((item) => (
-            <p key={`${item.scopeType}:${item.scopeId}`}>
-              {item.name}：{item.errors[0] || item.message || '未返回具体原因'}
-            </p>
-          ))}
-        </div>
-      )}
-      {noResultItems.length > 0 && (
-        <div className="mt-2 space-y-1 text-blue-900/80">
-          {noResultItems.map((item) => (
-            <p key={`${item.scopeType}:${item.scopeId}:no-results`}>
-              {item.name}：{item.message || '检索链路已跑完，但没有找到可进入判断流程的中文公开资料。'}
-            </p>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  void contentKind;
+  void selectedWorkObject;
+  void workObjects;
+  void candidateSamples;
+  void refreshing;
+  void onRefresh;
+  return null;
 }
 
 function ProfileCompletionCard({
@@ -548,6 +630,9 @@ function ProfileCompletionCard({
           ))}
         </div>
 
+        <p className="text-[12px] font-black text-gray-500">发布时间</p>
+        <p className="text-[13px] font-bold text-gray-700">{formatDateOnly(item.publishedAt)}</p>
+
         <p className="text-[12px] font-black text-gray-500">来源</p>
         <div className="space-y-1 text-[12px] font-semibold leading-5">
           {links.length > 0 ? (
@@ -557,9 +642,10 @@ function ProfileCompletionCard({
                 href={link.url}
                 target="_blank"
                 rel="noreferrer"
-                className="block break-all text-blue-700 hover:text-blue-900 hover:underline"
+                className="inline-flex max-w-full items-center truncate rounded bg-blue-50 px-2 py-1 text-blue-700 hover:text-blue-900 hover:underline"
+                title={link.url}
               >
-                {link.label}：{link.url}
+                {link.label}
               </a>
             ))
           ) : (
@@ -740,9 +826,10 @@ function TimelyIntelligenceCard({
                   href={link.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="block break-all text-blue-700 hover:text-blue-900 hover:underline"
+                  className="inline-flex max-w-full items-center truncate rounded bg-blue-50 px-2 py-1 text-blue-700 hover:text-blue-900 hover:underline"
+                  title={link.url}
                 >
-                  {link.label}：{link.url}
+                  {link.label}
                 </a>
               ))
             ) : (
@@ -816,6 +903,7 @@ export function IntelligenceStationView({
   const [candidateSamples, setCandidateSamples] = useState<IntelligenceCandidateSample[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [focusModalOpen, setFocusModalOpen] = useState(false);
   const [savingFocus, setSavingFocus] = useState(false);
   const [pendingItemId, setPendingItemId] = useState('');
   const [questionItem, setQuestionItem] = useState<IntelligenceItem | null>(null);
@@ -831,8 +919,14 @@ export function IntelligenceStationView({
   const [taskDraftTarget, setTaskDraftTarget] = useState<IntelligenceItem | null>(null);
   const [taskDraft, setTaskDraft] = useState<IntelligenceTaskDraftPayload | null>(null);
   const flashRef = useRef(flash);
+  const refreshPollTimersRef = useRef<number[]>([]);
   const [refreshingKind, setRefreshingKind] = useState<IntelligenceContentKind | null>(null);
-  const [lastRefreshResult, setLastRefreshResult] = useState<IntelligenceRefreshResult | null>(null);
+  const [refreshRuns, setRefreshRuns] = useState<IntelligenceRefreshRun[]>([]);
+  const [refreshRunsLoading, setRefreshRunsLoading] = useState(false);
+  const [refreshCycleSettings, setRefreshCycleSettings] = useState<IntelligenceRefreshCycleSettings>(DEFAULT_REFRESH_CYCLE_SETTINGS);
+  const [cycleEditKind, setCycleEditKind] = useState<IntelligenceContentKind | null>(null);
+  const [cycleEditValue, setCycleEditValue] = useState('');
+  const [cycleSaving, setCycleSaving] = useState(false);
   const [clarificationTarget, setClarificationTarget] = useState<ClarificationTarget | null>(null);
   const [clarificationNote, setClarificationNote] = useState('');
   const [clarificationPending, setClarificationPending] = useState(false);
@@ -849,22 +943,31 @@ export function IntelligenceStationView({
   const defaultListId = effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0';
   const currentOwnerName = currentSessionUser?.fullName || currentOperatorName || '当前用户';
   const currentOwnerId = currentSessionUser?.id || null;
-  const weakHint = weakHintForObject(selectedWorkObject, workObjects);
   const selectedLabel = selectedObjectLabel(selectedScopeKey, workObjects);
   const lastFetchTime = selectedWorkObject?.lastCandidateFetchAt ? formatTime(selectedWorkObject.lastCandidateFetchAt) : null;
+  const activeRefreshRuns = useMemo(() => refreshRuns.filter((run) => run.status === 'queued' || run.status === 'running'), [refreshRuns]);
+  const activeRefreshKind = activeRefreshRuns[0]?.contentKind || refreshingKind;
+  const refreshInProgress = activeRefreshRuns.length > 0 || refreshingKind !== null;
 
   useEffect(() => {
     flashRef.current = flash;
   }, [flash]);
 
+  useEffect(() => () => {
+    refreshPollTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    refreshPollTimersRef.current = [];
+  }, []);
+
   const loadShell = useCallback(async () => {
     try {
-      const [objects, directives] = await Promise.all([
+      const [objects, directives, cycleSettings] = await Promise.all([
         getIntelligenceWorkObjects(),
         getIntelligenceFocusDirectives(),
+        getIntelligenceRefreshCycleSettings(),
       ]);
       setWorkObjects(objects);
       setFocusDirectives(directives);
+      setRefreshCycleSettings(cycleSettings);
     } catch (error) {
       flashRef.current('error', error instanceof Error ? error.message : '情报站初始化失败');
     }
@@ -891,6 +994,28 @@ export function IntelligenceStationView({
     }
   }, [activeTab, currentPage, currentPageSize, selectedWorkObject?.id, selectedWorkObject?.type, sort]);
 
+  const loadRefreshRuns = useCallback(async () => {
+    setRefreshRunsLoading(true);
+    try {
+      const runs = await getIntelligenceRefreshRuns({
+        limit: 12,
+      });
+      setRefreshRuns(runs);
+      const activeRun = runs.find((run) => run.status === 'queued' || run.status === 'running') || null;
+      if (activeRun) {
+        setRefreshingKind(activeRun.contentKind);
+      } else {
+        setRefreshingKind(null);
+      }
+      return runs;
+    } catch (error) {
+      flashRef.current('error', error instanceof Error ? error.message : '刷新状态读取失败');
+      return [];
+    } finally {
+      setRefreshRunsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadShell();
   }, [loadShell]);
@@ -903,6 +1028,18 @@ export function IntelligenceStationView({
   useEffect(() => {
     void loadItems();
   }, [loadItems]);
+
+  useEffect(() => {
+    void loadRefreshRuns();
+  }, [loadRefreshRuns]);
+
+  useEffect(() => {
+    if (activeRefreshRuns.length === 0) return undefined;
+    const timer = window.setInterval(() => {
+      void Promise.all([loadRefreshRuns(), loadShell(), loadItems()]).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeRefreshRuns.length, loadItems, loadRefreshRuns, loadShell]);
 
   function changeScope(next: WorkObjectSelection) {
     setSelectedScopeKey(next);
@@ -926,18 +1063,66 @@ export function IntelligenceStationView({
     }
   }
 
+  async function reloadRefreshStatus() {
+    await Promise.all([loadRefreshRuns(), loadShell(), loadItems()]);
+  }
+
+  function cycleHoursFor(kind: IntelligenceContentKind) {
+    return kind === 'profile_completion'
+      ? refreshCycleSettings.profileCompletionHours
+      : refreshCycleSettings.timelyIntelligenceHours;
+  }
+
+  function beginCycleEdit(kind: IntelligenceContentKind) {
+    setCycleEditKind(kind);
+    setCycleEditValue(String(cycleHoursFor(kind)));
+  }
+
+  async function commitCycleEdit() {
+    if (!cycleEditKind) return;
+    const normalized = Math.max(1, Math.min(parseInt(cycleEditValue, 10) || cycleHoursFor(cycleEditKind), 8760));
+    setCycleSaving(true);
+    try {
+      const payload = cycleEditKind === 'profile_completion'
+        ? { profileCompletionHours: normalized }
+        : { timelyIntelligenceHours: normalized };
+      const settings = await updateIntelligenceRefreshCycleSettings(payload);
+      setRefreshCycleSettings(settings);
+      setCycleEditKind(null);
+      setCycleEditValue('');
+      flashRef.current('success', '默认刷新周期已更新');
+      await loadShell();
+    } catch (error) {
+      flashRef.current('error', error instanceof Error ? error.message : '默认周期更新失败');
+    } finally {
+      setCycleSaving(false);
+    }
+  }
+
+  function scheduleBackgroundRefreshChecks(contentKind: IntelligenceContentKind) {
+    refreshPollTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    refreshPollTimersRef.current = [2500, 8000, 15000].map((delay) => window.setTimeout(() => {
+      void Promise.all([loadRefreshRuns(), loadShell(), loadItems()])
+        .catch(() => undefined)
+        .finally(() => undefined);
+    }, delay));
+  }
+
   async function handleRefreshSupply(contentKind: IntelligenceContentKind) {
+    let queued = false;
     setRefreshingKind(contentKind);
-    setLastRefreshResult(null);
     try {
       const result = await refreshIntelligenceSupply(scopeRefreshPayload(selectedScopeKey, selectedWorkObject, contentKind));
-      setLastRefreshResult(result);
-      await Promise.all([loadShell(), loadItems()]);
-      flashRef.current(result.status === 'failed' ? 'error' : result.status === 'no_results' ? 'info' : 'success', summarizeRefreshResult(result));
+      queued = isBackgroundRefreshQueued(result);
+      if (queued) {
+        scheduleBackgroundRefreshChecks(contentKind);
+      }
+      await Promise.all([loadRefreshRuns(), loadShell(), loadItems()]);
+      flashRef.current(result.status === 'failed' ? 'error' : result.status === 'no_results' || queued ? 'info' : 'success', summarizeRefreshResult(result));
     } catch (error) {
       flashRef.current('error', error instanceof Error ? error.message : `${TAB_LABEL[contentKind]}刷新失败`);
     } finally {
-      setRefreshingKind(null);
+      if (!queued) setRefreshingKind(null);
     }
   }
 
@@ -949,12 +1134,19 @@ export function IntelligenceStationView({
         const others = current.filter((item) => !directiveMatches(item, focusScopeKey));
         return [...others, saved];
       });
+      setFocusModalOpen(false);
       flash('success', '关注指令已保存');
     } catch (error) {
       flash('error', error instanceof Error ? error.message : '保存关注指令失败');
     } finally {
       setSavingFocus(false);
     }
+  }
+
+  function closeFocusModal() {
+    const directive = focusDirectives.find((item) => directiveMatches(item, focusScopeKey));
+    setFocusDraft(draftFromDirective(directive));
+    setFocusModalOpen(false);
   }
 
   function handleDismiss(item: IntelligenceItem) {
@@ -1163,20 +1355,28 @@ export function IntelligenceStationView({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={() => setFocusModalOpen(true)}
+                className="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-bold text-gray-700 hover:bg-gray-50"
+              >
+                <SlidersHorizontal size={16} />
+                我重点关注什么
+              </button>
+              <button
+                type="button"
                 onClick={() => void handleRefreshSupply('profile_completion')}
-                disabled={refreshingKind !== null}
+                disabled={refreshInProgress}
                 className="inline-flex items-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-[13px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
               >
-                {refreshingKind === 'profile_completion' ? <Loader2 size={16} className="animate-spin" /> : <FileCheck2 size={16} />}
+                {activeRefreshKind === 'profile_completion' ? <Loader2 size={16} className="animate-spin" /> : <FileCheck2 size={16} />}
                 立即补全资料
               </button>
               <button
                 type="button"
                 onClick={() => void handleRefreshSupply('timely_intelligence')}
-                disabled={refreshingKind !== null}
+                disabled={refreshInProgress}
                 className="inline-flex items-center gap-2 rounded-md bg-gray-950 px-3 py-2 text-[13px] font-bold text-white hover:bg-gray-800 disabled:opacity-50"
               >
-                {refreshingKind === 'timely_intelligence' ? <Loader2 size={16} className="animate-spin" /> : <BellPlus size={16} />}
+                {activeRefreshKind === 'timely_intelligence' ? <Loader2 size={16} className="animate-spin" /> : <BellPlus size={16} />}
                 立即抓取情报
               </button>
             </div>
@@ -1212,12 +1412,6 @@ export function IntelligenceStationView({
             </label>
           </div>
 
-          {weakHint && (
-            <div className="mt-4 flex items-start gap-2 border-l-4 border-amber-300 bg-amber-50 px-3 py-2 text-[12px] font-semibold leading-5 text-amber-900">
-              <AlertCircle size={15} className="mt-0.5 shrink-0" />
-              <span>{weakHint}</span>
-            </div>
-          )}
         </header>
 
         <main className="mt-5">
@@ -1235,16 +1429,50 @@ export function IntelligenceStationView({
                 </button>
               ))}
             </div>
-            <div className="pb-3 text-[12px] font-semibold text-gray-500">
-              {activeTab === 'profile_completion'
-                ? '建议周期：资料补全 72 小时；App 运行时会自动检查到期刷新'
-                : '建议周期：时效情报 24 小时；App 运行时会自动检查到期刷新'}
+            <div className="flex items-center gap-1 pb-3 text-[12px] font-semibold text-gray-500">
+              <span>默认周期：</span>
+              <span>{TAB_LABEL[activeTab]}</span>
+              {cycleEditKind === activeTab ? (
+                <input
+                  autoFocus
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={cycleEditValue}
+                  disabled={cycleSaving}
+                  onChange={(event) => setCycleEditValue(event.target.value.replace(/[^\d]/g, ''))}
+                  onBlur={() => void commitCycleEdit()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void commitCycleEdit();
+                    if (event.key === 'Escape') {
+                      setCycleEditKind(null);
+                      setCycleEditValue('');
+                    }
+                  }}
+                  className="h-7 w-16 rounded-md border border-gray-200 bg-white px-2 text-center text-[12px] font-black text-gray-900 outline-none focus:border-gray-500"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => beginCycleEdit(activeTab)}
+                  className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[12px] font-black text-gray-900 hover:bg-gray-50"
+                >
+                  {cycleHoursFor(activeTab)}
+                </button>
+              )}
+              <span>小时；App 运行时自动检查到期刷新</span>
             </div>
           </div>
 
           <div className="mt-4 min-h-[420px]">
-            <RefreshProgressPanel contentKind={refreshingKind} />
-            <RefreshResultPanel result={lastRefreshResult} />
+            <RefreshProgressPanel
+              contentKind={activeTab}
+              hasItems={items.length > 0}
+              runs={refreshRuns}
+              workObjects={workObjects}
+              loading={refreshRunsLoading}
+              onReload={() => void reloadRefreshStatus()}
+            />
             {loading ? (
               <div className="flex min-h-[260px] items-center justify-center text-[13px] font-bold text-gray-500">
                 <Loader2 size={18} className="mr-2 animate-spin" />
@@ -1256,20 +1484,12 @@ export function IntelligenceStationView({
                 selectedWorkObject={selectedWorkObject}
                 workObjects={workObjects}
                 candidateSamples={candidateSamples}
-                refreshing={refreshingKind !== null}
+                refreshing={refreshInProgress}
                 onRefresh={(contentKind) => void handleRefreshSupply(contentKind)}
               />
             ) : (
               <div className="space-y-5">
                 <section>
-                  {activeTab === 'profile_completion' && (
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <h2 className="text-[15px] font-black text-gray-950">已核验资料</h2>
-                        <p className="mt-1 text-[12px] font-semibold text-gray-500">已完成正文抓取、身份核验、缺口映射和摘要整理。</p>
-                      </div>
-                    </div>
-                  )}
                   <div className="space-y-3">
                     {items.map((item) => (
                       isProfileCompletion(item) ? (
@@ -1304,74 +1524,87 @@ export function IntelligenceStationView({
           </div>
         </main>
 
-        <section className="mt-7 border-t border-gray-200 pt-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-[17px] font-black text-gray-950">我重点关注什么</h2>
-              <p className="mt-1 text-[12px] font-semibold text-gray-500">关注指令会进入当前对象后续搜索、线索判断和排序学习。</p>
-            </div>
-            <label className="text-[12px] font-bold text-gray-500">
-              生效范围
-              <select
-                value={focusScopeKey}
-                onChange={(event) => setFocusScopeKey(event.target.value as ScopeKey)}
-                className="ml-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-semibold text-gray-800 outline-none focus:border-gray-400"
-              >
-                <option value="global">所有客户/项目</option>
-                {workObjects.map((item) => (
-                  <option key={scopeKeyOfObject(item)} value={scopeKeyOfObject(item)}>
-                    {item.type === 'client' ? '客户' : '项目'}：{item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <label className="text-[12px] font-black text-gray-500">
-              资料补全优先
-              <textarea
-                value={focusDraft.profileCompletionFocus}
-                onChange={(event) => setFocusDraft((current) => ({ ...current, profileCompletionFocus: event.target.value }))}
-                rows={5}
-                placeholder={'客户治理结构\n近期服务对象规模\n项目合作伙伴'}
-                className="mt-2 w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium leading-6 text-gray-800 outline-none focus:border-gray-400"
-              />
-            </label>
-            <label className="text-[12px] font-black text-gray-500">
-              时效情报优先
-              <textarea
-                value={focusDraft.timelyIntelligenceFocus}
-                onChange={(event) => setFocusDraft((current) => ({ ...current, timelyIntelligenceFocus: event.target.value }))}
-                rows={5}
-                placeholder={'资助窗口\n监管变化\n同类机构动作'}
-                className="mt-2 w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium leading-6 text-gray-800 outline-none focus:border-gray-400"
-              />
-            </label>
-            <label className="text-[12px] font-black text-gray-500">
-              少看或不看
-              <textarea
-                value={focusDraft.exclude}
-                onChange={(event) => setFocusDraft((current) => ({ ...current, exclude: event.target.value }))}
-                rows={5}
-                placeholder={'泛泛行业新闻\n重复转载\n无来源截图'}
-                className="mt-2 w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium leading-6 text-gray-800 outline-none focus:border-gray-400"
-              />
-            </label>
-          </div>
-          <div className="mt-4 flex justify-end">
-            <button
-              type="button"
-              onClick={() => void handleSaveFocus()}
-              disabled={savingFocus}
-              className="inline-flex items-center gap-2 rounded-md bg-gray-950 px-4 py-2 text-[13px] font-black text-white hover:bg-gray-800 disabled:bg-gray-300"
-            >
-              {savingFocus ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-              保存关注指令
-            </button>
-          </div>
-        </section>
       </div>
+
+      {focusModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6">
+          <div className="flex max-h-[88vh] w-full max-w-[880px] flex-col rounded-lg bg-white p-5 shadow-2xl">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[12px] font-bold text-gray-400">关注指令</p>
+                <h2 className="mt-1 text-[18px] font-black text-gray-950">我重点关注什么</h2>
+                <p className="mt-2 text-[13px] leading-6 text-gray-500">关注指令会进入当前对象后续搜索、线索判断和排序学习。</p>
+              </div>
+              <label className="text-[12px] font-bold text-gray-500">
+                生效范围
+                <select
+                  value={focusScopeKey}
+                  onChange={(event) => setFocusScopeKey(event.target.value as ScopeKey)}
+                  className="ml-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-semibold text-gray-800 outline-none focus:border-gray-400"
+                >
+                  <option value="global">所有客户/项目</option>
+                  {workObjects.map((item) => (
+                    <option key={scopeKeyOfObject(item)} value={scopeKeyOfObject(item)}>
+                      {item.type === 'client' ? '客户' : '项目'}：{item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4 grid gap-3 overflow-y-auto pr-1 md:grid-cols-3">
+              <label className="text-[12px] font-black text-gray-500">
+                资料补全优先
+                <textarea
+                  value={focusDraft.profileCompletionFocus}
+                  onChange={(event) => setFocusDraft((current) => ({ ...current, profileCompletionFocus: event.target.value }))}
+                  rows={7}
+                  placeholder={'客户治理结构\n近期服务对象规模\n项目合作伙伴'}
+                  className="mt-2 w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium leading-6 text-gray-800 outline-none focus:border-gray-400"
+                />
+              </label>
+              <label className="text-[12px] font-black text-gray-500">
+                时效情报优先
+                <textarea
+                  value={focusDraft.timelyIntelligenceFocus}
+                  onChange={(event) => setFocusDraft((current) => ({ ...current, timelyIntelligenceFocus: event.target.value }))}
+                  rows={7}
+                  placeholder={'资助窗口\n监管变化\n同类机构动作'}
+                  className="mt-2 w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium leading-6 text-gray-800 outline-none focus:border-gray-400"
+                />
+              </label>
+              <label className="text-[12px] font-black text-gray-500">
+                少看或不看
+                <textarea
+                  value={focusDraft.exclude}
+                  onChange={(event) => setFocusDraft((current) => ({ ...current, exclude: event.target.value }))}
+                  rows={7}
+                  placeholder={'泛泛行业新闻\n重复转载\n无来源截图'}
+                  className="mt-2 w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium leading-6 text-gray-800 outline-none focus:border-gray-400"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeFocusModal}
+                className="rounded-md border border-gray-200 px-4 py-2 text-[13px] font-bold text-gray-600 hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSaveFocus()}
+                disabled={savingFocus}
+                className="inline-flex items-center gap-2 rounded-md bg-gray-950 px-4 py-2 text-[13px] font-black text-white hover:bg-gray-800 disabled:bg-gray-300"
+              >
+                {savingFocus ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                保存关注指令
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {clarificationTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6">

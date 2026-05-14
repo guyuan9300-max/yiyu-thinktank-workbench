@@ -8108,6 +8108,16 @@ class IntelligenceFocusDirectivePayload(BaseModel):
     exclude: list[str] = Field(default_factory=list)
 
 
+class IntelligenceRefreshCycleSettingsRecord(BaseModel):
+    profileCompletionHours: int = 72
+    timelyIntelligenceHours: int = 24
+
+
+class IntelligenceRefreshCycleSettingsPayload(BaseModel):
+    profileCompletionHours: int | None = Field(default=None, ge=1, le=8760)
+    timelyIntelligenceHours: int | None = Field(default=None, ge=1, le=8760)
+
+
 class IntelligenceItemRecord(BaseModel):
     id: str
     contentKind: IntelligenceContentKind
@@ -8131,8 +8141,6 @@ class IntelligenceItemRecord(BaseModel):
     publishedAt: str | None = None
     capturedAt: str
     verifiedAt: str | None = None
-    credibilityScore: float | None = None
-    confidenceScore: float | None = None
     dataCenterIngestEventId: str | None = None
     externalEvidenceCardId: str | None = None
     topicCandidateId: str | None = None
@@ -8238,6 +8246,25 @@ class IntelligenceRefreshResult(BaseModel):
     totals: IntelligenceRefreshTotals = Field(default_factory=IntelligenceRefreshTotals)
     message: str = ""
     generatedAt: str
+
+
+class IntelligenceRefreshRunRecord(BaseModel):
+    id: str
+    scopeType: Literal["client", "project_module", "all", ""]
+    scopeId: str | None = None
+    clientId: str | None = None
+    projectModuleId: str | None = None
+    contentKind: IntelligenceContentKind
+    triggerSource: str = ""
+    status: Literal["queued", "running", "completed", "failed"]
+    stage: str = ""
+    message: str = ""
+    result: dict[str, object] = Field(default_factory=dict)
+    rejectionSummary: dict[str, int] = Field(default_factory=dict)
+    createdAt: str
+    updatedAt: str
+    startedAt: str | None = None
+    finishedAt: str | None = None
 
 
 class IntelligenceDismissPayload(BaseModel):

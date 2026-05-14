@@ -11,9 +11,9 @@ from app.db import Database, from_json, to_json
 
 
 POSITIVE_ACTIONS = {"follow", "task"}
-NEGATIVE_ACTIONS = {"dismiss"}
+NEGATIVE_ACTIONS = {"dismiss", "focus_exclude"}
 NEUTRAL_ACTIONS = {"chat", "focus"}
-TARGET_TYPES = {"theme", "tag", "source", "domain", "search_intent"}
+TARGET_TYPES = {"theme", "tag", "source", "domain", "source_config", "search_intent", "work_object"}
 
 
 @dataclass
@@ -167,6 +167,47 @@ def context_from_item_row(db: Database, item_row) -> FeedbackContext:
     )
 
 
+def context_from_candidate_row(db: Database, candidate_row) -> FeedbackContext:
+    tags = _as_text_list(_safe_json(str(candidate_row["mapped_tags_json"] or "[]"), []), limit=12)
+    source_config = None
+    if candidate_row["source_config_id"]:
+        source_config = db.fetchone("SELECT * FROM intelligence_source_configs WHERE id = ?", (str(candidate_row["source_config_id"]),))
+    source_config_id = str(candidate_row["source_config_id"]) if candidate_row["source_config_id"] else None
+    intent_id = str(candidate_row["intent_id"]) if candidate_row["intent_id"] else None
+    source_url = str(candidate_row["url"]) if candidate_row["url"] else None
+    source_name = str(candidate_row["source"] or "")
+    if not source_name and source_config:
+        source_name = str(source_config["source_name"] or "")
+    if source_config and source_config["source_type"]:
+        tags.append(str(source_config["source_type"]))
+    scope_type, scope_id = normalize_scope(
+        str(candidate_row["scope_type"] or ""),
+        str(candidate_row["scope_id"] or ""),
+        str(candidate_row["client_id"] or "") or None,
+        str(candidate_row["project_module_id"] or "") or None,
+    )
+    title = str(candidate_row["title"] or "")
+    summary = str(candidate_row["snippet"] or "")
+    topics = extract_topics(title, summary, tags=tags)
+    return FeedbackContext(
+        candidate_id=str(candidate_row["id"]),
+        source_config_id=source_config_id,
+        intent_id=intent_id,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        client_id=str(candidate_row["client_id"] or "") or None,
+        project_module_id=str(candidate_row["project_module_id"] or "") or None,
+        content_kind=str(candidate_row["content_kind"] or ""),
+        title=title,
+        summary=summary,
+        source=source_name,
+        source_url=source_url,
+        source_domain=source_domain_from_url(source_url),
+        tags=_as_text_list(tags, limit=12),
+        extracted_topics=topics,
+    )
+
+
 def score_delta_for_action(action_type: str, reason_code: str = "") -> float:
     action = str(action_type or "").strip()
     reason = str(reason_code or "").strip()
@@ -178,11 +219,19 @@ def score_delta_for_action(action_type: str, reason_code: str = "") -> float:
         return 0.25
     if action == "focus":
         return 0.4
+    if action == "focus_exclude":
+        return -1.0
     if action == "dismiss":
         if reason in {"duplicate", "outdated"}:
             return -0.6
         return -1.0
     return 0.0
+
+
+def _work_object_label(context: FeedbackContext) -> str:
+    if not context.scope_type or not context.scope_id:
+        return ""
+    return f"{context.scope_type}:{context.scope_id}"
 
 
 def _summary_count_deltas(score_delta: float) -> tuple[int, int, int]:
@@ -193,24 +242,47 @@ def _summary_count_deltas(score_delta: float) -> tuple[int, int, int]:
     return 0, 0, 1
 
 
-def _targets_for_context(context: FeedbackContext, *, action_type: str, note: str = "") -> list[tuple[str, str]]:
+def _targets_for_context(
+    context: FeedbackContext,
+    *,
+    action_type: str,
+    reason_code: str = "",
+    note: str = "",
+) -> list[tuple[str, str]]:
+    action = str(action_type or "").strip()
+    reason = str(reason_code or "").strip()
     topics = list(context.extracted_topics or [])
     topics.extend(extract_topics(note, limit=4))
     targets: list[tuple[str, str]] = []
-    if action_type == "chat":
+    if action == "chat":
         for topic in topics[:5]:
             targets.append(("theme", topic))
         return targets
-    for topic in topics[:6]:
-        targets.append(("theme", topic))
-    for tag in (context.tags or [])[:6]:
-        targets.append(("tag", tag))
-    if context.source:
-        targets.append(("source", context.source))
-    if context.source_domain:
-        targets.append(("domain", context.source_domain))
-    if context.intent_id:
-        targets.append(("search_intent", context.intent_id))
+    if action == "follow" and reason == "same_source":
+        if context.source:
+            targets.append(("source", context.source))
+        if context.source_domain:
+            targets.append(("domain", context.source_domain))
+        if context.source_config_id:
+            targets.append(("source_config", context.source_config_id))
+    elif action == "follow" and reason == "same_work_object":
+        object_label = _work_object_label(context)
+        if object_label:
+            targets.append(("work_object", object_label))
+    else:
+        for topic in topics[:6]:
+            targets.append(("theme", topic))
+        for tag in (context.tags or [])[:6]:
+            targets.append(("tag", tag))
+        if action not in {"focus", "focus_exclude"}:
+            if context.source:
+                targets.append(("source", context.source))
+            if context.source_domain:
+                targets.append(("domain", context.source_domain))
+            if context.source_config_id:
+                targets.append(("source_config", context.source_config_id))
+            if context.intent_id:
+                targets.append(("search_intent", context.intent_id))
     seen: set[tuple[str, str]] = set()
     result: list[tuple[str, str]] = []
     for target_type, label in targets:
@@ -335,7 +407,7 @@ def record_feedback_event(
             timestamp,
         ),
     )
-    for target_type, label in _targets_for_context(context, action_type=action_type, note=note):
+    for target_type, label in _targets_for_context(context, action_type=action_type, reason_code=reason_code, note=note):
         target_delta = score_delta
         if action_type == "chat" and target_type != "theme":
             continue
@@ -361,6 +433,7 @@ def feedback_score_for_candidate(
     tags: list[str] | None = None,
     source: str = "",
     source_domain: str = "",
+    source_config_id: str | None = None,
     intent_id: str | None = None,
 ) -> float:
     topics = extract_topics(title, snippet, tags=tags)
@@ -370,6 +443,8 @@ def feedback_score_for_candidate(
         target_labels.append(("source", source))
     if source_domain:
         target_labels.append(("domain", source_domain))
+    if source_config_id:
+        target_labels.append(("source_config", source_config_id))
     if intent_id:
         target_labels.append(("search_intent", intent_id))
     total = 0.0
@@ -390,7 +465,12 @@ def feedback_score_for_candidate(
             (scope_type, scope_id, content_kind, target_type, target_key),
         )
         if row:
-            weight = 0.35 if target_type in {"theme", "tag"} else 0.5
+            if target_type in {"theme", "tag"}:
+                weight = 0.35
+            elif target_type == "source_config":
+                weight = 0.65
+            else:
+                weight = 0.5
             total += float(row["score"] or 0) * weight
     return max(-3.0, min(3.0, total))
 
@@ -407,7 +487,7 @@ def source_feedback_adjustment(db: Database, *, source_config_id: str, content_k
     if template.startswith("site:"):
         domain = template.split(" ", 1)[0].replace("site:", "").strip()
     total = 0.0
-    for target_type, label in (("source", source), ("domain", domain)):
+    for target_type, label in (("source", source), ("domain", domain), ("source_config", source_config_id)):
         if not label:
             continue
         target_key = _target_key(f"{target_type}:{label}")
@@ -423,6 +503,21 @@ def source_feedback_adjustment(db: Database, *, source_config_id: str, content_k
         if summary:
             total += float(summary["score"] or 0)
     return max(-4.0, min(4.0, total))
+
+
+def work_object_feedback_score(db: Database, *, scope_type: str, scope_id: str, content_kind: str | None = None) -> float:
+    normalized_type = "project_module" if scope_type in {"project", "project_module", "module"} else "client"
+    object_label = f"{normalized_type}:{scope_id}"
+    params: list[object] = [normalized_type, scope_id, "work_object", _target_key(f"work_object:{object_label}")]
+    where = "scope_type = ? AND scope_id = ? AND target_type = ? AND target_key = ?"
+    if content_kind:
+        where += " AND content_kind = ?"
+        params.append(content_kind)
+    rows = db.fetchall(
+        f"SELECT score FROM intelligence_feedback_summaries WHERE {where}",
+        tuple(params),
+    )
+    return max(-5.0, min(5.0, sum(float(row["score"] or 0) for row in rows)))
 
 
 def search_feedback_terms(db: Database, *, scope_type: str, scope_id: str, content_kind: str) -> dict[str, list[str]]:

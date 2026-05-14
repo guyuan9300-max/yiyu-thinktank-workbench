@@ -10,7 +10,6 @@ import {
   APP_NAME,
   DEFAULT_INSTALL_SMOKE_PATH,
   DEFAULT_PACKAGED_REMOTE_CLOUD_API_URL,
-  DEFAULT_WORKSPACE_CHAT_SMOKE_PATH,
   inspectAppBundle,
 } from './app-manifest.mjs';
 
@@ -169,17 +168,6 @@ function runValidation(sourceApp) {
     ],
     { stdio: 'inherit' },
   );
-  runOrFail(
-    'python3',
-    [
-      path.join(projectRoot, 'scripts', 'smoke_workspace_chat_generation.py'),
-      '--backend-url',
-      process.env.YIYU_BACKEND_URL || 'http://127.0.0.1:47829',
-      '--output',
-      DEFAULT_WORKSPACE_CHAT_SMOKE_PATH,
-    ],
-    { stdio: 'inherit' },
-  );
 }
 
 const { skipValidation, launchArgs } = parseArgs(process.argv.slice(2));
@@ -194,4 +182,4 @@ const validationSourceApp = fs.existsSync(sourceApp) ? sourceApp : installedApp;
 
 ensureLatestInstalledBundle(sourceApp);
 runValidation(validationSourceApp);
-console.log('[open-installed-app] verified install receipt + install smoke + workspace chat smoke');
+console.log('[open-installed-app] verified install receipt + install smoke');

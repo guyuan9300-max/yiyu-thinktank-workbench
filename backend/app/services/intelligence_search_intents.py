@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable, Iterable
+from urllib.parse import urlparse
 
 from app.db import Database, from_json, to_json
 from app.services.intelligence_feedback import search_feedback_terms
@@ -17,16 +18,77 @@ from app.services.public_search import search_public_web
 
 logger = logging.getLogger(__name__)
 
-GENERATOR_VERSION = "p1a-rule-ai-v1"
+GENERATOR_VERSION = "p6-search-surface-v1"
 CONTENT_KINDS = ("profile_completion", "timely_intelligence")
 PROFILE_TTL_HOURS = 72
 TIMELY_TTL_HOURS = 24
+PROFILE_INTENT_LIMIT = 40
+TIMELY_INTENT_LIMIT = 32
+QUERY_MAX_LEN = 88
 DEFAULT_EXCLUDE_TERMS = [
     "小红书",
     "微信公众号",
     "登录后可见",
     "无来源截图",
 ]
+
+PROFILE_SEARCH_DIMENSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("机构简介", ("机构简介", "关于我们", "机构介绍")),
+    ("登记信息", ("登记信息", "统一社会信用代码", "社会组织")),
+    ("年报/信息公开", ("年报", "信息公开", "年度报告")),
+    ("项目介绍", ("项目介绍", "项目", "服务内容")),
+    ("项目成效", ("项目成效", "案例", "数据")),
+    ("合作方", ("合作方", "伙伴", "资助方")),
+    ("执行方法", ("执行方法", "课程", "培训")),
+    ("负责人/团队", ("负责人", "团队", "采访")),
+)
+TIMELY_SEARCH_ROUTES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("政策监管", ("政策", "监管", "通知")),
+    ("资助申报", ("资助", "申报", "公益创投")),
+    ("采购招标", ("采购", "招标", "政府购买服务")),
+    ("合作方动态", ("合作方", "资助方", "动态")),
+    ("同类机构动态", ("同类机构", "项目", "动态")),
+    ("新闻舆情", ("新闻", "报道", "舆情")),
+)
+FOCUS_STOPWORDS = {
+    "官网",
+    "官方网站",
+    "介绍",
+    "相关",
+    "有关",
+    "资料",
+    "案例",
+    "数据",
+    "报道",
+    "动态",
+    "方向",
+    "影响",
+    "规则",
+    "建设",
+    "能力",
+    "平台",
+    "组织",
+    "公益",
+    "基金会",
+    "智库",
+    "项目",
+    "服务",
+    "政策",
+}
+
+
+def _refresh_cycle_hours(db: Database, content_kind: str) -> int:
+    key = (
+        "intelligence_profile_completion_cycle_hours"
+        if content_kind == "profile_completion"
+        else "intelligence_timely_intelligence_cycle_hours"
+    )
+    default = PROFILE_TTL_HOURS if content_kind == "profile_completion" else TIMELY_TTL_HOURS
+    try:
+        value = int(db.get_setting(key, str(default)))
+    except Exception:
+        value = default
+    return max(1, min(value, 8760))
 
 
 @dataclass(frozen=True)
@@ -168,6 +230,136 @@ def _extract_terms(*values: object, limit: int = 8) -> list[str]:
     return terms
 
 
+def _normalize_domain(value: str) -> str:
+    text = _clean_text(value, max_len=180).strip("()（）[]【】<>《》。；;，,")
+    if not text:
+        return ""
+    if not re.match(r"^https?://", text, re.I):
+        text = f"https://{text}"
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return ""
+    domain = (parsed.netloc or "").lower().removeprefix("www.")
+    if "." not in domain:
+        return ""
+    return domain
+
+
+def _extract_domains_from_text(value: object) -> list[str]:
+    text = str(value or "")
+    domains: list[str] = []
+    for match in re.finditer(r"(?:https?://)?(?:www\.)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s，。；;、）)]*)?", text):
+        domain = _normalize_domain(match.group(0))
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains[:8]
+
+
+def _strip_urls(value: str) -> str:
+    return re.sub(r"(?:https?://)?(?:www\.)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/[^\s，。；;、）)]*)?", " ", value or "")
+
+
+def _split_focus_atoms(lines: list[str], *, object_terms: list[str], limit: int = 16) -> list[str]:
+    atoms: list[str] = []
+    object_keys = {re.sub(r"\s+", "", item) for item in object_terms if item}
+    for line in lines:
+        text = _strip_urls(line)
+        text = re.sub(r"[()（）【】《》“”\"']", " ", text)
+        text = re.sub(r"(两大|相关|有关|方面|方向|影响|规则|平台|建设|能力|生存与发展)", " ", text)
+        fragments = re.split(r"[\n。；;，,、/|和与及]+", text)
+        for fragment in fragments:
+            cleaned = _clean_text(fragment, max_len=40).strip(" 的地得等有关相关")
+            if not cleaned or len(cleaned) < 2:
+                continue
+            if cleaned in FOCUS_STOPWORDS:
+                continue
+            if re.sub(r"\s+", "", cleaned) in object_keys:
+                continue
+            if cleaned not in atoms:
+                atoms.append(cleaned)
+            for token in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,16}", cleaned):
+                token = token.strip()
+                if token in FOCUS_STOPWORDS:
+                    continue
+                if re.sub(r"\s+", "", token) in object_keys:
+                    continue
+                if token not in atoms:
+                    atoms.append(token)
+                if len(atoms) >= limit:
+                    return atoms
+        if len(atoms) >= limit:
+            break
+    return atoms[:limit]
+
+
+def _object_terms_from_context(context: dict[str, object], scope: IntelligenceSearchScope) -> list[str]:
+    client = context.get("client") if isinstance(context.get("client"), dict) else {}
+    project = context.get("project") if isinstance(context.get("project"), dict) else {}
+    projects = [item for item in context.get("projects", []) or [] if isinstance(item, dict)]
+    values: list[object] = [
+        scope.display_name,
+        client.get("name"),
+        client.get("alias"),
+        project.get("name") if project else "",
+    ]
+    values.extend(item.get("name") for item in projects[:4])
+    return _dedupe(_extract_terms(*values, limit=16), limit=12)
+
+
+def _official_domains_from_context(context: dict[str, object]) -> list[str]:
+    values: list[object] = []
+    client = context.get("client") if isinstance(context.get("client"), dict) else {}
+    values.extend([client.get("website"), client.get("url"), client.get("domain")])
+    for directive in context.get("directives", []) or []:
+        if not isinstance(directive, dict):
+            continue
+        values.extend(_directive_lines({"directives": [directive]}, "profile_completion_focus_json"))
+        values.extend(_directive_lines({"directives": [directive]}, "timely_intelligence_focus_json"))
+    domains: list[str] = []
+    for value in values:
+        for domain in _extract_domains_from_text(value):
+            if domain not in domains:
+                domains.append(domain)
+    return domains[:4]
+
+
+def _short_query(*parts: object, max_units: int = 5) -> str:
+    units: list[str] = []
+    site_unit = ""
+    for part in parts:
+        raw = _clean_text(part, max_len=80)
+        if not raw:
+            continue
+        for token in re.split(r"[\s,，。;；、/|()（）]+", raw):
+            token = _clean_text(token, max_len=36).strip("。；;，,")
+            if not token:
+                continue
+            if token.startswith("site:"):
+                site_unit = token
+                continue
+            if token in FOCUS_STOPWORDS and units:
+                continue
+            if token not in units:
+                units.append(token)
+            if len(units) >= max_units:
+                break
+        if len(units) >= max_units:
+            break
+    query_units = ([site_unit] if site_unit else []) + units[:max_units]
+    return _clean_text(" ".join(query_units), max_len=QUERY_MAX_LEN)
+
+
+def _recent_fetch_stats(context: dict[str, object], content_kind: str) -> dict[str, int]:
+    stats = context.get("recentFetchStats") if isinstance(context.get("recentFetchStats"), dict) else {}
+    value = stats.get(content_kind) if isinstance(stats.get(content_kind), dict) else {}
+    return {
+        "success": int(value.get("success") or 0),
+        "no_results": int(value.get("no_results") or 0),
+        "candidate_count": int(value.get("candidate_count") or 0),
+    }
+
+
 def _row_dict(row) -> dict[str, object]:
     return dict(row) if row is not None else {}
 
@@ -255,6 +447,23 @@ def _collect_context(db: Database, scope: IntelligenceSearchScope) -> dict[str, 
         """
     )
     gap_items = [_row_dict(row) for row in gap_rows]
+    fetch_rows = db.fetchall(
+        """
+        SELECT content_kind, status, COUNT(1) AS count, SUM(candidate_count) AS candidate_count
+        FROM intelligence_fetch_jobs
+        WHERE scope_type = ? AND scope_id = ?
+          AND content_kind IN ('profile_completion', 'timely_intelligence')
+        GROUP BY content_kind, status
+        """,
+        (scope.scope_type, scope.scope_id),
+    )
+    recent_fetch_stats: dict[str, dict[str, int]] = {}
+    for row in fetch_rows:
+        kind = str(row["content_kind"] or "")
+        status = str(row["status"] or "")
+        bucket = recent_fetch_stats.setdefault(kind, {"success": 0, "no_results": 0, "failed": 0, "candidate_count": 0})
+        bucket[status] = bucket.get(status, 0) + int(row["count"] or 0)
+        bucket["candidate_count"] = bucket.get("candidate_count", 0) + int(row["candidate_count"] or 0)
 
     return {
         "client": client,
@@ -263,6 +472,7 @@ def _collect_context(db: Database, scope: IntelligenceSearchScope) -> dict[str, 
         "flows": flows,
         "directives": directives,
         "gapItems": gap_items,
+        "recentFetchStats": recent_fetch_stats,
         "feedbackTerms": {
             kind: search_feedback_terms(db, scope_type=scope.scope_type, scope_id=scope.scope_id, content_kind=kind)
             for kind in CONTENT_KINDS
@@ -280,6 +490,7 @@ def _context_hash(context: dict[str, object], content_kinds: list[str]) -> str:
         "flows": context.get("flows"),
         "directives": context.get("directives"),
         "gapItems": context.get("gapItems"),
+        "recentFetchStats": context.get("recentFetchStats"),
         "feedbackTerms": context.get("feedbackTerms"),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
@@ -308,7 +519,7 @@ def _exclude_terms(context: dict[str, object]) -> list[str]:
 
 
 def _profile_gap_phrases(context: dict[str, object]) -> list[str]:
-    gaps = [
+    default_gaps = [
         "登记信息 信息公开",
         "年报 信息公开",
         "服务对象 规模",
@@ -319,16 +530,17 @@ def _profile_gap_phrases(context: dict[str, object]) -> list[str]:
     client = context.get("client") if isinstance(context.get("client"), dict) else {}
     projects = [item for item in context.get("projects", []) or [] if isinstance(item, dict)]
     if not str(client.get("intro") or "").strip():
-        gaps.append("机构简介 官网")
+        default_gaps.append("机构简介 官网")
     if projects:
-        gaps.extend(["项目介绍", "项目时间线 案例"])
+        default_gaps.extend(["项目介绍", "项目时间线 案例"])
+    focused_gaps = _directive_lines(context, "profile_completion_focus_json")
+    feedback_terms = context.get("feedbackTerms") if isinstance(context.get("feedbackTerms"), dict) else {}
+    profile_feedback = feedback_terms.get("profile_completion") if isinstance(feedback_terms.get("profile_completion"), dict) else {}
+    focused_gaps.extend(_as_text_list(profile_feedback.get("positive"), limit=8))
+    gaps = [*focused_gaps, *default_gaps]
     for item in context.get("gapItems", []) or []:
         if isinstance(item, dict):
             gaps.extend(_as_text_list([item.get("title"), item.get("summary")], limit=3))
-    gaps.extend(_directive_lines(context, "profile_completion_focus_json"))
-    feedback_terms = context.get("feedbackTerms") if isinstance(context.get("feedbackTerms"), dict) else {}
-    profile_feedback = feedback_terms.get("profile_completion") if isinstance(feedback_terms.get("profile_completion"), dict) else {}
-    gaps.extend(_as_text_list(profile_feedback.get("positive"), limit=8))
     return _dedupe(gaps, limit=14)
 
 
@@ -382,6 +594,7 @@ def _make_intent(
     input_hash: str,
     expires_at: str,
 ) -> GeneratedSearchIntent:
+    normalized_query = _short_query(query, max_units=6)
     return GeneratedSearchIntent(
         id=_new_id("isint"),
         scope_type=scope.scope_type,
@@ -389,7 +602,7 @@ def _make_intent(
         client_id=scope.client_id,
         project_module_id=scope.project_module_id,
         content_kind=content_kind,
-        query=_clean_text(query, max_len=140),
+        query=normalized_query,
         exclude_terms=exclude_terms,
         source_inputs=source_inputs,
         reason=_clean_text(reason, max_len=240),
@@ -407,6 +620,7 @@ def _build_rule_intents(
     content_kinds: list[str],
     input_hash: str,
     timestamp: str,
+    cycle_hours: dict[str, int],
 ) -> list[GeneratedSearchIntent]:
     client = context.get("client") if isinstance(context.get("client"), dict) else {}
     project = context.get("project") if isinstance(context.get("project"), dict) else {}
@@ -429,66 +643,170 @@ def _build_rule_intents(
     object_with_domain = " ".join(_dedupe([base_object, domain], limit=4)).strip()
     excludes = _exclude_terms(context)
     inputs = _source_inputs(context)
+    object_terms = _object_terms_from_context(context, scope)
+    object_primary = client_name or scope.display_name or (object_terms[0] if object_terms else "")
+    object_aliases = _dedupe([*object_terms, base_object, client_name], limit=4)
+    official_domains = _official_domains_from_context(context)
+    profile_focus_atoms = _split_focus_atoms(
+        _directive_lines(context, "profile_completion_focus_json"),
+        object_terms=object_terms,
+        limit=16,
+    )
+    timely_focus_atoms = _split_focus_atoms(
+        _directive_lines(context, "timely_intelligence_focus_json"),
+        object_terms=object_terms,
+        limit=16,
+    )
     intents: list[GeneratedSearchIntent] = []
     if "profile_completion" in content_kinds:
-        profile_expires = (datetime.fromisoformat(timestamp) + timedelta(hours=PROFILE_TTL_HOURS)).isoformat()
-        for index, gap in enumerate(_profile_gap_phrases(context), start=1):
-            query = f"{base_object or client_name} {gap}".strip()
-            intents.append(
-                _make_intent(
-                    scope=scope,
-                    content_kind="profile_completion",
-                    query=query,
-                    reason=_profile_gap_description(gap),
-                    priority=96 - index,
-                    exclude_terms=excludes,
-                    source_inputs=inputs,
-                    input_hash=input_hash,
-                    expires_at=profile_expires,
+        profile_expires = (datetime.fromisoformat(timestamp) + timedelta(hours=cycle_hours.get("profile_completion", PROFILE_TTL_HOURS))).isoformat()
+        profile_stats = _recent_fetch_stats(context, "profile_completion")
+        profile_surface_inputs = [*inputs, "search_surface:profile_matrix"]
+        if profile_stats["no_results"] > max(6, profile_stats["success"] * 2):
+            profile_surface_inputs.append("search_surface:relaxed_after_no_results")
+        intent_index = 0
+        for dimension_index, (label, keywords) in enumerate(PROFILE_SEARCH_DIMENSIONS, start=1):
+            primary_keyword = keywords[0]
+            variants = [
+                (f"{label}：宽搜", _short_query(object_primary, primary_keyword, max_units=3)),
+                (f"{label}：对象限定", _short_query(object_aliases[0] if object_aliases else object_primary, keywords[1] if len(keywords) > 1 else primary_keyword, max_units=3)),
+            ]
+            for official_domain in official_domains[:2]:
+                variants.append((f"{label}：官网限定", _short_query(f"site:{official_domain}", object_primary, primary_keyword, max_units=3)))
+            if profile_stats["no_results"] > max(6, profile_stats["success"] * 2):
+                variants.append((f"{label}：空搜放宽", _short_query(object_primary, label, max_units=3)))
+            for route_label, query in variants:
+                if not query:
+                    continue
+                intent_index += 1
+                intents.append(
+                    _make_intent(
+                        scope=scope,
+                        content_kind="profile_completion",
+                        query=query,
+                        reason=f"资料补全缺口：{label}。路线：{route_label}。{_profile_gap_description(label)}",
+                        priority=100 - dimension_index - min(intent_index // 6, 8),
+                        exclude_terms=excludes,
+                        source_inputs=profile_surface_inputs,
+                        input_hash=input_hash,
+                        expires_at=profile_expires,
+                    )
                 )
-            )
+        for focus_index, atom in enumerate(profile_focus_atoms[:14], start=1):
+            focus_queries = [
+                ("重点关注：对象限定", _short_query(object_primary, atom, max_units=3)),
+            ]
+            for official_domain in official_domains[:2]:
+                focus_queries.append(("重点关注：官网限定", _short_query(f"site:{official_domain}", atom, max_units=3)))
+            for route_label, query in focus_queries:
+                if not query:
+                    continue
+                intents.append(
+                    _make_intent(
+                        scope=scope,
+                        content_kind="profile_completion",
+                        query=query,
+                        reason=f"用户重点关注：{atom}。路线：{route_label}，用于优先补充相关资料，但不覆盖基础缺口。",
+                        priority=108 - min(focus_index, 18),
+                        exclude_terms=excludes,
+                        source_inputs=[*profile_surface_inputs, f"focus_atom:{atom}"],
+                        input_hash=input_hash,
+                        expires_at=profile_expires,
+                    )
+                )
+        for item in context.get("gapItems", []) or []:
+            if not isinstance(item, dict):
+                continue
+            for gap_atom in _split_focus_atoms(_as_text_list([item.get("title"), item.get("summary")], limit=3), object_terms=object_terms, limit=4):
+                intents.append(
+                    _make_intent(
+                        scope=scope,
+                        content_kind="profile_completion",
+                        query=_short_query(object_primary, gap_atom, max_units=3),
+                        reason=f"数据中心资料缺口：{gap_atom}。路线：缺口补充。",
+                        priority=84,
+                        exclude_terms=excludes,
+                        source_inputs=[*profile_surface_inputs, "data_center_gap"],
+                        input_hash=input_hash,
+                        expires_at=profile_expires,
+                    )
+                )
         if project_terms:
             intents.append(
                 _make_intent(
                     scope=scope,
                     content_kind="profile_completion",
-                    query=f"{base_object or client_name} {' '.join(project_terms[:3])} 公开资料",
+                    query=_short_query(base_object or client_name, *project_terms[:3], "公开资料", max_units=5),
                     reason="由项目关键词生成的公开资料补全意图",
                     priority=86,
                     exclude_terms=excludes,
-                    source_inputs=inputs,
+                    source_inputs=profile_surface_inputs,
                     input_hash=input_hash,
                     expires_at=profile_expires,
                 )
             )
     if "timely_intelligence" in content_kinds:
-        timely_expires = (datetime.fromisoformat(timestamp) + timedelta(hours=TIMELY_TTL_HOURS)).isoformat()
-        timely_templates = [
-            ("政策窗口", f"{object_with_domain or client_name} 政策 通知"),
-            ("政府购买服务与采购", f"{object_with_domain or client_name} 政府购买服务 招标 采购"),
-            ("资助申报", f"{object_with_domain or client_name} 资助 申报 通知"),
-            ("监管变化", f"{object_with_domain or client_name} 监管 规范 通知"),
-            ("客户动态与舆情", f"{client_name} 新闻 动态 舆情"),
-            ("同类机构动作", f"{domain or client_name} 同类机构 项目 动态"),
-        ]
-        if project_terms:
-            timely_templates.append(("项目短期机会", f"{object_with_domain or client_name} {' '.join(project_terms[:3])} 机会"))
-        for line in _directive_lines(context, "timely_intelligence_focus_json"):
-            timely_templates.append((f"用户关注：{line}", f"{object_with_domain or client_name} {line}"))
+        timely_expires = (datetime.fromisoformat(timestamp) + timedelta(hours=cycle_hours.get("timely_intelligence", TIMELY_TTL_HOURS))).isoformat()
+        timely_stats = _recent_fetch_stats(context, "timely_intelligence")
+        timely_surface_inputs = [*inputs, "search_surface:timely_matrix"]
+        if timely_stats["no_results"] > max(4, timely_stats["success"] * 2):
+            timely_surface_inputs.append("search_surface:relaxed_after_no_results")
+        timely_atoms = timely_focus_atoms[:12] or profile_focus_atoms[:6] or [domain or client_name or "公益"]
         feedback_terms = context.get("feedbackTerms") if isinstance(context.get("feedbackTerms"), dict) else {}
         timely_feedback = feedback_terms.get("timely_intelligence") if isinstance(feedback_terms.get("timely_intelligence"), dict) else {}
         for line in _as_text_list(timely_feedback.get("positive"), limit=6):
-            timely_templates.append((f"用户反馈强化：{line}", f"{object_with_domain or client_name} {line}"))
-        for index, (reason, query) in enumerate(timely_templates, start=1):
+            timely_atoms.extend(_split_focus_atoms([line], object_terms=object_terms, limit=4))
+        timely_atoms = _dedupe(timely_atoms, limit=14)
+        route_index = 0
+        for atom in timely_atoms:
+            for route_label, route_terms in TIMELY_SEARCH_ROUTES:
+                route_index += 1
+                query_variants = [
+                    (f"{route_label}：对象主题", _short_query(object_with_domain or client_name, atom, route_terms[0], max_units=4)),
+                    (f"{route_label}：主题来源", _short_query(atom, *route_terms[:2], max_units=4)),
+                ]
+                if domain:
+                    query_variants.append((f"{route_label}：领域主题", _short_query(domain, atom, route_terms[0], max_units=4)))
+                for reason, query in query_variants:
+                    if not query:
+                        continue
+                    intents.append(
+                        _make_intent(
+                            scope=scope,
+                            content_kind="timely_intelligence",
+                            query=query,
+                            reason=f"用户关注：{atom}。时效情报路线：{reason}。",
+                            priority=98 - min(route_index, 28),
+                            exclude_terms=excludes,
+                            source_inputs=[*timely_surface_inputs, f"timely_route:{route_label}", f"focus_atom:{atom}"],
+                            input_hash=input_hash,
+                            expires_at=timely_expires,
+                        )
+                    )
+        for route_index, (route_label, route_terms) in enumerate(TIMELY_SEARCH_ROUTES, start=1):
             intents.append(
                 _make_intent(
                     scope=scope,
                     content_kind="timely_intelligence",
-                    query=query,
-                    reason=reason,
-                    priority=96 - index,
+                    query=_short_query(object_with_domain or client_name, *route_terms[:2], max_units=4),
+                    reason=f"时效情报基础路线：{route_label}。",
+                    priority=86 - route_index,
                     exclude_terms=excludes,
-                    source_inputs=inputs,
+                    source_inputs=[*timely_surface_inputs, f"timely_route:{route_label}"],
+                    input_hash=input_hash,
+                    expires_at=timely_expires,
+                )
+            )
+        if project_terms:
+            intents.append(
+                _make_intent(
+                    scope=scope,
+                    content_kind="timely_intelligence",
+                    query=_short_query(object_with_domain or client_name, *project_terms[:3], "机会", max_units=5),
+                    reason="由项目关键词生成的时效机会搜索意图",
+                    priority=84,
+                    exclude_terms=excludes,
+                    source_inputs=timely_surface_inputs,
                     input_hash=input_hash,
                     expires_at=timely_expires,
                 )
@@ -550,6 +868,7 @@ def _build_ai_intents(
     content_kinds: list[str],
     input_hash: str,
     timestamp: str,
+    cycle_hours: dict[str, int],
 ) -> tuple[list[GeneratedSearchIntent], list[str]]:
     if ai_service is None:
         return [], []
@@ -561,7 +880,7 @@ def _build_ai_intents(
         title, prompt = _build_ai_prompt(context, content_kind)
         expires_at = (
             datetime.fromisoformat(timestamp)
-            + timedelta(hours=PROFILE_TTL_HOURS if content_kind == "profile_completion" else TIMELY_TTL_HOURS)
+            + timedelta(hours=cycle_hours.get(content_kind, PROFILE_TTL_HOURS if content_kind == "profile_completion" else TIMELY_TTL_HOURS))
         ).isoformat()
         try:
             suggest = getattr(ai_service, "suggest_topic_search_queries")
@@ -588,6 +907,10 @@ def _build_ai_intents(
 
 def _cap_intents(intents: list[GeneratedSearchIntent]) -> list[GeneratedSearchIntent]:
     capped: list[GeneratedSearchIntent] = []
+    limits = {
+        "profile_completion": PROFILE_INTENT_LIMIT,
+        "timely_intelligence": TIMELY_INTENT_LIMIT,
+    }
     for content_kind in CONTENT_KINDS:
         kind_items = [item for item in intents if item.content_kind == content_kind and item.query]
         kind_items.sort(key=lambda item: (-item.priority, len(item.query), item.query))
@@ -598,7 +921,7 @@ def _cap_intents(intents: list[GeneratedSearchIntent]) -> list[GeneratedSearchIn
                 continue
             seen.add(key)
             capped.append(item)
-            if sum(1 for existing in capped if existing.content_kind == content_kind) >= 12:
+            if sum(1 for existing in capped if existing.content_kind == content_kind) >= limits.get(content_kind, 12):
                 break
     return capped
 
@@ -695,6 +1018,7 @@ def generate_intelligence_search_intents(
     context = _collect_context(db, scope)
     input_hash = _context_hash(context, content_kinds)
     timestamp = now_iso()
+    cycle_hours = {kind: _refresh_cycle_hours(db, kind) for kind in CONTENT_KINDS}
     if not force:
         existing_rows = db.fetchall(
             """
@@ -728,6 +1052,7 @@ def generate_intelligence_search_intents(
         content_kinds=content_kinds,
         input_hash=input_hash,
         timestamp=timestamp,
+        cycle_hours=cycle_hours,
     )
     ai_intents, errors = _build_ai_intents(
         ai_service=ai_service,
@@ -736,6 +1061,7 @@ def generate_intelligence_search_intents(
         content_kinds=content_kinds,
         input_hash=input_hash,
         timestamp=timestamp,
+        cycle_hours=cycle_hours,
     )
     saved = _persist_intents(
         db,

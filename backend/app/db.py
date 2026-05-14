@@ -1966,6 +1966,27 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_intelligence_fetch_jobs_config
                     ON intelligence_fetch_jobs(source_config_id, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS intelligence_refresh_runs (
+                    id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    client_id TEXT,
+                    project_module_id TEXT,
+                    content_kind TEXT NOT NULL,
+                    trigger_source TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    stage TEXT NOT NULL DEFAULT 'queued',
+                    message TEXT NOT NULL DEFAULT '',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    rejection_summary_json TEXT NOT NULL DEFAULT '{}',
+                    started_at TEXT,
+                    finished_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_intelligence_refresh_runs_scope
+                    ON intelligence_refresh_runs(scope_type, scope_id, content_kind, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS intelligence_candidate_items (
                     id TEXT PRIMARY KEY,
                     scope_type TEXT NOT NULL,
@@ -1999,6 +2020,11 @@ class Database:
                     is_user_visible_candidate INTEGER NOT NULL DEFAULT 1,
                     body_excerpt TEXT NOT NULL DEFAULT '',
                     body_fetched_at TEXT,
+                    page_type TEXT NOT NULL DEFAULT '',
+                    quality_flags_json TEXT NOT NULL DEFAULT '[]',
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    parent_candidate_id TEXT,
+                    source_page_url TEXT,
                     promoted_intelligence_item_id TEXT,
                     data_center_ingest_event_id TEXT,
                     created_at TEXT NOT NULL,
@@ -2442,6 +2468,16 @@ class Database:
             self._ensure_column("knowledge_documents", "human_folder_category", "TEXT")
             self._ensure_column("knowledge_documents", "reclassified_at", "TEXT")
             self._ensure_column("knowledge_documents", "reclass_reason", "TEXT")
+            self._ensure_column("intelligence_items", "intelligence_type", "TEXT")
+            self._ensure_column("intelligence_items", "timeliness_label", "TEXT")
+            self._ensure_column("intelligence_items", "relevance_reason", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("intelligence_items", "suggested_action", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("intelligence_items", "followup_questions_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_candidate_items", "page_type", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("intelligence_candidate_items", "quality_flags_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("intelligence_candidate_items", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._ensure_column("intelligence_candidate_items", "parent_candidate_id", "TEXT")
+            self._ensure_column("intelligence_candidate_items", "source_page_url", "TEXT")
             self._ensure_column("analysis_runs", "parent_run_id", "TEXT")
             self._ensure_column("analysis_runs", "coach_payload_json", "TEXT NOT NULL DEFAULT '{}'")
             self._ensure_column("handbook_entries", "source_object_type", "TEXT")
@@ -2658,6 +2694,7 @@ class Database:
                     attempts INTEGER NOT NULL DEFAULT 0,
                     max_attempts INTEGER NOT NULL DEFAULT 3,
                     input_hash TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
                     result_json TEXT NOT NULL DEFAULT '{}',
                     last_error TEXT,
                     locked_by TEXT,
@@ -3593,6 +3630,8 @@ class Database:
             str(row["name"])
             for row in self.conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
+        if not existing:
+            return
         if column_name in existing:
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")

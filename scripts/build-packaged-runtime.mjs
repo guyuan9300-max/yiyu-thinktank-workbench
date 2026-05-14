@@ -20,7 +20,10 @@ const runtimeRoot = path.join(projectRoot, 'dist', 'packaged-runtime');
 const pythonSeedDir = path.join(runtimeRoot, RUNTIME_PYTHON_SEED_DIR);
 const wheelhouseDir = path.join(runtimeRoot, RUNTIME_WHEELHOUSE_DIR);
 const requirementsPath = path.join(runtimeRoot, RUNTIME_BACKEND_REQUIREMENTS_FILE);
+const binaryRequirementsPath = path.join(runtimeRoot, 'backend-requirements-binary.txt');
 const manifestPath = path.join(runtimeRoot, RUNTIME_SEED_MANIFEST_FILE);
+const sourceWheelPackages = new Set(['crcmod', 'tos']);
+const extraBinaryWheelSpecs = ['sherpa-onnx-core==1.13.1'];
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -78,6 +81,35 @@ function countFiles(rootPath, predicate = () => true) {
   return count;
 }
 
+function requirementName(line) {
+  const match = line.match(/^([A-Za-z0-9_.-]+)\s*(?:==|~=|>=|<=|>|<|!=)/);
+  return match ? match[1].toLowerCase().replaceAll('_', '-') : null;
+}
+
+function writeBinaryOnlyRequirements() {
+  const lines = fs.readFileSync(requirementsPath, 'utf8').split(/\r?\n/);
+  const output = [];
+  const sourceSpecs = [];
+  let skippingSourceOnlyBlock = false;
+  for (const line of lines) {
+    const name = requirementName(line);
+    if (name) {
+      skippingSourceOnlyBlock = sourceWheelPackages.has(name);
+      if (skippingSourceOnlyBlock) {
+        sourceSpecs.push(line);
+        continue;
+      }
+    } else if (skippingSourceOnlyBlock && (line.startsWith(' ') || line.startsWith('\t'))) {
+      continue;
+    } else if (line.trim() !== '') {
+      skippingSourceOnlyBlock = false;
+    }
+    output.push(line);
+  }
+  fs.writeFileSync(binaryRequirementsPath, output.join('\n'));
+  return sourceSpecs;
+}
+
 function main() {
   requireMacArm64();
   const python = resolveUvManagedPython();
@@ -111,6 +143,7 @@ function main() {
   );
 
   console.log('[build-packaged-runtime] downloading offline wheelhouse');
+  const sourceSpecs = writeBinaryOnlyRequirements();
   fs.mkdirSync(wheelhouseDir, { recursive: true });
   run(
     python.pythonPath,
@@ -119,13 +152,50 @@ function main() {
       'pip',
       'download',
       '--only-binary=:all:',
+      '--no-deps',
       '--dest',
       wheelhouseDir,
       '--requirement',
-      requirementsPath,
+      binaryRequirementsPath,
     ],
     { stdio: 'inherit' },
   );
+  if (extraBinaryWheelSpecs.length > 0) {
+    console.log(`[build-packaged-runtime] downloading extra runtime wheels: ${extraBinaryWheelSpecs.join(', ')}`);
+    run(
+      python.pythonPath,
+      [
+        '-m',
+        'pip',
+        'download',
+        '--only-binary=:all:',
+        '--no-deps',
+        '--dest',
+        wheelhouseDir,
+        ...extraBinaryWheelSpecs,
+      ],
+      { stdio: 'inherit' },
+    );
+  }
+  for (const requirementSpec of sourceSpecs) {
+    const packageName = requirementName(requirementSpec);
+    console.log(`[build-packaged-runtime] building source-only wheel: ${requirementSpec}`);
+    run(
+      python.pythonPath,
+      [
+        '-m',
+        'pip',
+        'wheel',
+        '--no-deps',
+        '--no-binary',
+        packageName ?? ':all:',
+        '--wheel-dir',
+        wheelhouseDir,
+        requirementSpec,
+      ],
+      { stdio: 'inherit' },
+    );
+  }
 
   const manifest = {
     schemaVersion: 1,
