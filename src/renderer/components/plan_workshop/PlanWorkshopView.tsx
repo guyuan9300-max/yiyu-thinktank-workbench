@@ -412,7 +412,9 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
     return isAdmin || selectedItemParentPlan.departmentId === userDeptId;
   })();
 
-  // ─── Create-Plan Modal state ───────────────────────────────────────
+  // ─── Add-Plan Modal state ──────────────────────────────────────────
+  // 改成"新增计划"语义：进入时如果该部门+周期已有 plan，预填现有项，提交时复用
+  // plan.id 让后端走 upsert（不丢已挂任务）。
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [createDepartmentId, setCreateDepartmentId] = useState<string>('');
   const [createCycleType, setCreateCycleType] = useState<CycleType>('month');
@@ -420,28 +422,96 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
   const [createSummary, setCreateSummary] = useState('');
   const [pasteText, setPasteText] = useState('');
   const [draftItems, setDraftItems] = useState<DraftItem[]>([]);
+  const [editingExistingPlanId, setEditingExistingPlanId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [parseSummary, setParseSummary] = useState<string>('');
   const [parseConfidence, setParseConfidence] = useState<'low' | 'medium' | 'high' | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
 
+  /**
+   * 找出 modal 当前部门 + 周期值对应的现有 plan（如果有的话）。
+   * - 组织级 plan：departmentId 为 null
+   * - 部门级 plan：departmentId === 选中的部门 id
+   * - weekLabel 必须严格匹配（即"2026-05" 不会命中 "2026-05-修订"）
+   */
+  const findExistingPlanForScope = (
+    deptIdOrOrg: string,
+    periodKey: string,
+  ): OrgDepartmentPlanSettings | null => {
+    const trimmedPeriod = periodKey.trim();
+    if (!trimmedPeriod) return null;
+    const resolvedDept = deptIdOrOrg === ORG_LEVEL_ID ? null : deptIdOrOrg;
+    return (
+      value.departmentPlans.find(
+        (p) => (p.departmentId || null) === resolvedDept && (p.weekLabel || '').trim() === trimmedPeriod,
+      ) || null
+    );
+  };
+
+  /** 把 existingPlan.items 转成可编辑的 DraftItem 列表，**保留原 item.id** 以便提交时复用。 */
+  const draftFromExisting = (plan: OrgDepartmentPlanSettings): DraftItem[] =>
+    (plan.items || []).map((it) => ({
+      id: it.id, // 关键：复用原 id，确保后端 upsert 时挂接的任务不丢
+      title: it.title || '',
+      statement: it.statement || '',
+      expectedOutput: it.expectedOutput || '',
+      status: (it.status || 'active') as OrgDepartmentPlanItemStatus,
+    }));
+
   const openCreateModal = () => {
     // Admin defaults to org-level (季度/年度报告主体一般是组织); others default to own department.
     const defaultDept = isAdmin
       ? ORG_LEVEL_ID
       : (userDeptId || '');
+    const defaultCycle: CycleType = 'month';
+    const defaultPeriod = defaultPeriodValue(defaultCycle);
     setCreateDepartmentId(defaultDept);
-    setCreateCycleType('month');
-    setCreatePeriodValue(defaultPeriodValue('month'));
-    setCreateSummary('');
+    setCreateCycleType(defaultCycle);
+    setCreatePeriodValue(defaultPeriod);
     setPasteText('');
-    setDraftItems([newDraftItem()]);
     setCreateError(null);
     setParseSummary('');
     setParseConfidence(null);
+
+    // 检测该部门+周期是否已有 plan：有则进"追加"模式，预填现有项 + summary
+    const existing = findExistingPlanForScope(defaultDept, defaultPeriod);
+    if (existing) {
+      setEditingExistingPlanId(existing.id);
+      setCreateSummary(existing.summary || '');
+      setDraftItems(draftFromExisting(existing));
+    } else {
+      setEditingExistingPlanId(null);
+      setCreateSummary('');
+      setDraftItems([newDraftItem()]);
+    }
     setIsCreateOpen(true);
   };
+
+  /**
+   * 当用户在 modal 里切换部门/周期类型/周期值时，重新匹配是否有现有 plan：
+   * - 切到已有 plan 的 scope：自动加载已有项 + summary，进入追加模式
+   * - 切到未制定的 scope：清空，进入新建模式
+   * 注意：只在 isCreateOpen 时跑，避免关 modal 后还触发。
+   */
+  useEffect(() => {
+    if (!isCreateOpen) return;
+    const existing = findExistingPlanForScope(createDepartmentId, createPeriodValue);
+    const targetId = existing?.id || null;
+    if (targetId === editingExistingPlanId) return; // 没换 plan，保留用户已编辑内容
+    setEditingExistingPlanId(targetId);
+    if (existing) {
+      setCreateSummary(existing.summary || '');
+      setDraftItems(draftFromExisting(existing));
+    } else {
+      setCreateSummary('');
+      setDraftItems([newDraftItem()]);
+    }
+    setParseSummary('');
+    setParseConfidence(null);
+    setCreateError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createDepartmentId, createPeriodValue, isCreateOpen]);
 
   const closeCreateModal = () => {
     if (isSaving || isParsing) return;
@@ -500,26 +570,37 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
 
     const now = new Date().toISOString();
     const resolvedDepartmentId = createDepartmentId === ORG_LEVEL_ID ? null : createDepartmentId;
+    const existingPlan = editingExistingPlanId
+      ? value.departmentPlans.find((p) => p.id === editingExistingPlanId) || null
+      : null;
+    // 关键：保留 existing plan.id 让后端走 upsert（不丢已挂任务的关联）；
+    // 已有 item 复用其 id（避免 task_plan_links.department_plan_item_id 失效）。
     const plan: OrgDepartmentPlanSettings = {
-      id: `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: existingPlan?.id || `plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       departmentId: resolvedDepartmentId,
       weekLabel: createPeriodValue.trim(),
-      ownerUserId: null,
+      ownerUserId: existingPlan?.ownerUserId ?? null,
       summary: createSummary.trim(),
-      majorRisks: [],
-      dependencies: [],
-      status: 'active',
-      items: validItems.map((it, index) => ({
-        id: `item-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`,
-        focusItemId: null,
-        title: it.title.trim(),
-        statement: it.statement.trim(),
-        ownerUserId: null,
-        status: it.status,
-        expectedOutput: it.expectedOutput.trim(),
-        sortOrder: index,
-        updatedAt: now,
-      })),
+      majorRisks: existingPlan?.majorRisks || [],
+      dependencies: existingPlan?.dependencies || [],
+      status: existingPlan?.status || 'active',
+      items: validItems.map((it, index) => {
+        // DraftItem.id 以 `item-` 开头说明来自现有 plan（在 draftFromExisting 时复用了）；
+        // 以 `tmp-` 或其它开头则是用户在 modal 里新增的草稿，需要分配真实 id。
+        const isExisting = it.id.startsWith('item-');
+        const existingItem = isExisting ? existingPlan?.items.find((p) => p.id === it.id) : null;
+        return {
+          id: isExisting ? it.id : `item-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`,
+          focusItemId: existingItem?.focusItemId ?? null,
+          title: it.title.trim(),
+          statement: it.statement.trim(),
+          ownerUserId: existingItem?.ownerUserId ?? null,
+          status: it.status,
+          expectedOutput: it.expectedOutput.trim(),
+          sortOrder: index,
+          updatedAt: now,
+        };
+      }),
       updatedAt: now,
     };
 
@@ -559,7 +640,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
               onClick={openCreateModal}
               className="inline-flex items-center gap-2 rounded-2xl bg-[#5B7BFE] text-white px-4 py-2 text-[12px] font-bold shadow-sm hover:bg-[#4a6ae8] transition"
             >
-              <Plus size={14} /> 新建计划
+              <Plus size={14} /> 新增计划
             </button>
           )}
         </div>
@@ -830,9 +911,17 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
           onClick={(e) => { if (e.target === e.currentTarget) closeCreateModal(); }}
         >
           <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl flex flex-col" style={{ maxHeight: '90vh' }}>
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
-              <h3 className="text-[16px] font-bold text-gray-900">新建计划</h3>
-              <button type="button" onClick={closeCreateModal} disabled={isSaving} className="text-gray-400 hover:text-gray-700 disabled:opacity-50">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-start justify-between shrink-0">
+              <div>
+                <h3 className="text-[16px] font-bold text-gray-900">新增计划</h3>
+                {editingExistingPlanId && (
+                  <p className="mt-0.5 text-[11px] text-amber-600">
+                    该部门 + 周期已有 {(value.departmentPlans.find((p) => p.id === editingExistingPlanId)?.items?.length) || 0} 项计划项，
+                    保存会追加新增项 / 更新已修改项（不会删除已挂任务关系）
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={closeCreateModal} disabled={isSaving} className="text-gray-400 hover:text-gray-700 disabled:opacity-50 shrink-0">
                 <X size={18} />
               </button>
             </div>
@@ -904,58 +993,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                 />
               </div>
 
-              {/* 粘贴文本批量解析 */}
-              <div className="rounded-2xl border border-dashed border-[#5B7BFE]/30 bg-[#5B7BFE]/5 p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles size={14} className="text-[#5B7BFE]" />
-                  <span className="text-[12px] font-bold text-[#5B7BFE]">AI 智能解析</span>
-                  <span className="text-[10px] text-gray-400">把整段计划原文粘贴进来，AI 会合并多行说明、抽取期望产出、剥列表标记</span>
-                </div>
-                <textarea
-                  value={pasteText}
-                  onChange={(e) => setPasteText(e.target.value)}
-                  placeholder={'粘贴整段计划原文，比如月度计划、季度报告、年度战略等。\n\nAI 会自动：\n• 把每条计划的标题、说明、期望产出拆到不同字段\n• 合并多行属于同一条的内容（不会按行拆碎）\n• 忽略章节标题、空白段落、序号'}
-                  rows={6}
-                  disabled={isParsing}
-                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] outline-none resize-none disabled:bg-gray-50"
-                />
-                <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => void handleParseText()}
-                    disabled={!pasteText.trim() || isParsing}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3 py-1.5 text-[12px] font-bold hover:bg-[#4a6ae8] transition disabled:opacity-50"
-                  >
-                    {isParsing ? (
-                      <>
-                        <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                        AI 解析中…
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={12} />
-                        AI 解析为计划项
-                      </>
-                    )}
-                  </button>
-                  {parseConfidence && (
-                    <div className="flex items-center gap-2 text-[11px]">
-                      <span className={`rounded-full px-2 py-0.5 font-bold ${
-                        parseConfidence === 'high' ? 'bg-emerald-50 text-emerald-700'
-                        : parseConfidence === 'medium' ? 'bg-amber-50 text-amber-700'
-                        : 'bg-rose-50 text-rose-600'
-                      }`}>
-                        AI 置信度：{parseConfidence === 'high' ? '高' : parseConfidence === 'medium' ? '中' : '低'}
-                      </span>
-                      {parseSummary && (
-                        <span className="text-gray-500 truncate max-w-[300px]" title={parseSummary}>{parseSummary}</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 计划项列表（可编辑） */}
+              {/* 计划项列表（主入口：手动逐条新增）*/}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[12px] font-bold text-gray-700">计划项（{draftItems.length}）</span>
@@ -970,7 +1008,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                 <div className="space-y-2 max-h-[280px] overflow-y-auto">
                   {draftItems.length === 0 ? (
                     <p className="text-[11px] text-gray-400 px-3 py-3 text-center rounded-xl border border-dashed border-gray-200">
-                      还没有计划项，可在上方粘贴文本解析，或点 "+ 新增"
+                      还没有计划项，可点上方"+ 新增"逐条填写，或在下方粘贴整段文本让 AI 解析
                     </p>
                   ) : (
                     draftItems.map((item, index) => (
@@ -1016,6 +1054,66 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                 </div>
               </div>
 
+              {/* AI 智能解析（次要入口：批量粘贴整段文本）— 列表底部 */}
+              <details className="rounded-2xl border border-dashed border-[#5B7BFE]/30 bg-[#5B7BFE]/5" open={draftItems.length === 0 && !editingExistingPlanId}>
+                <summary className="cursor-pointer select-none px-4 py-3 flex items-center gap-2 text-[12px] font-bold text-[#5B7BFE]">
+                  <Sparkles size={14} />
+                  AI 智能解析
+                  <span className="ml-1 text-[10px] font-normal text-gray-400">
+                    粘贴整段计划原文 · AI 拆条 / 抽期望产出 / 剥列表标记
+                  </span>
+                </summary>
+                <div className="px-4 pb-4 space-y-2">
+                  <textarea
+                    value={pasteText}
+                    onChange={(e) => setPasteText(e.target.value)}
+                    placeholder={'粘贴整段计划原文，比如月度计划、季度报告、年度战略等。\n\nAI 会自动：\n• 把每条计划的标题、说明、期望产出拆到不同字段\n• 合并多行属于同一条的内容（不会按行拆碎）\n• 忽略章节标题、空白段落、序号'}
+                    rows={5}
+                    disabled={isParsing}
+                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-[12px] outline-none resize-none disabled:bg-gray-50"
+                  />
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => void handleParseText()}
+                      disabled={!pasteText.trim() || isParsing}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-[#5B7BFE] text-white px-3 py-1.5 text-[12px] font-bold hover:bg-[#4a6ae8] transition disabled:opacity-50"
+                    >
+                      {isParsing ? (
+                        <>
+                          <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                          AI 解析中…
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={12} />
+                          AI 解析为计划项
+                        </>
+                      )}
+                    </button>
+                    {parseConfidence && (
+                      <div className="flex items-center gap-2 text-[11px]">
+                        <span className={`rounded-full px-2 py-0.5 font-bold ${
+                          parseConfidence === 'high' ? 'bg-emerald-50 text-emerald-700'
+                          : parseConfidence === 'medium' ? 'bg-amber-50 text-amber-700'
+                          : 'bg-rose-50 text-rose-600'
+                        }`}>
+                          AI 置信度：{parseConfidence === 'high' ? '高' : parseConfidence === 'medium' ? '中' : '低'}
+                        </span>
+                        {parseSummary && (
+                          <span className="text-gray-500 truncate max-w-[300px]" title={parseSummary}>{parseSummary}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {editingExistingPlanId && (
+                    <p className="text-[10.5px] text-amber-700 mt-1">
+                      ⚠️ AI 解析会**覆盖**上方计划项列表。如果你只想补 1-2 条新项，建议直接用"+ 新增"按钮。
+                    </p>
+                  )}
+                </div>
+              </details>
+
               {createError && (
                 <div className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-[12px] text-rose-600">
                   {createError}
@@ -1038,7 +1136,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan }: Props) {
                 disabled={isSaving}
                 className="rounded-xl bg-[#5B7BFE] text-white px-4 py-2 text-[13px] font-bold hover:bg-[#4a6ae8] disabled:opacity-60"
               >
-                {isSaving ? '保存中…' : '保存计划'}
+                {isSaving ? '保存中…' : editingExistingPlanId ? '保存修改' : '新增计划'}
               </button>
             </div>
           </div>
