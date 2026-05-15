@@ -6,7 +6,7 @@ import {
   Activity, Bot, PenLine, Calendar,
   ArrowLeft, AlertTriangle, ChevronRight, X, XCircle,
   Users, Flag, AlertOctagon, HelpCircle, CornerDownRight,
-  RefreshCw, Star, Trash2, ChevronDown, ExternalLink
+  RefreshCw, Star, Trash2, ChevronDown, ExternalLink, X
 } from 'lucide-react';
 import { FileTypeIcon } from '../FileTypeIcon';
 import {
@@ -14,6 +14,7 @@ import {
   getClientDigitalAssets,
   getClientDuplicateDocuments,
   getClientKnowledgeStatus,
+  getClientStrategicPulse,
   resolveDuplicateDocuments,
   getDigitalAssetDashboard,
   getOrganizationDnaV2Snapshot,
@@ -27,6 +28,7 @@ import {
   type ClientKnowledgeStatus,
   type DigitalAssetClientDetail,
   type DuplicateDocumentGroup,
+  type DuplicateDocumentItem,
   type FactContradictionRow,
   type DigitalAssetClientSummary,
   type DigitalAssetDashboard,
@@ -39,6 +41,10 @@ import {
   type OrganizationDnaV2Item,
   type OrganizationDnaV2Kind,
   type OrganizationDnaV2Snapshot,
+  type StrategicPulse,
+  type StrategicPulseEvent,
+  type StrategicPulseTodo,
+  type StrategicPulseBlocker,
   type StrategicThought,
 } from '../../lib/api';
 
@@ -491,6 +497,203 @@ function DigitalAssetNarrativePanel({
   );
 }
 
+// ─── 战略陪伴 · 客户脉搏 (Phase 1 克制版主页) ───
+// 设计原则: 前台只放用户做事需要看的 (本周动态 / 待办 / 卡点),
+// 不炫耀后台知道多少. 后端 LLM 推理留给 Phase 2.
+
+interface PulseColumnProps {
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  children: React.ReactNode;
+}
+
+function PulseColumn({ icon, label, count, children }: PulseColumnProps) {
+  return (
+    <div className="min-w-0">
+      <header className="flex items-center gap-2 mb-3">
+        {icon}
+        <h3 className="text-[13px] font-bold text-slate-700">{label}</h3>
+        {count > 0 && <span className="text-[10px] font-bold text-slate-400">({count})</span>}
+      </header>
+      <div className="space-y-2">{children}</div>
+    </div>
+  );
+}
+
+function PulseEmptyHint({ text }: { text: string }) {
+  return <div className="text-[11px] text-slate-400 py-1">{text}</div>;
+}
+
+function PulseEventCard({ event }: { event: StrategicPulseEvent }) {
+  const tone =
+    event.impact === 'advance'
+      ? { border: 'border-l-emerald-500', text: 'text-emerald-600', label: '推进' }
+      : event.impact === 'block'
+        ? { border: 'border-l-rose-500', text: 'text-rose-600', label: '阻塞' }
+        : { border: 'border-l-slate-300', text: 'text-slate-500', label: '中性' };
+  const dateLabel = (event.occurredAt || '').slice(0, 10);
+  return (
+    <div className={`text-[12px] leading-relaxed border-l-2 ${tone.border} pl-3 py-1`}>
+      <div className="font-medium text-slate-800 line-clamp-2">{event.title}</div>
+      <div className="mt-0.5 flex items-center gap-1.5 text-[10px] font-bold text-slate-400">
+        <span className={tone.text}>{tone.label}</span>
+        {dateLabel && <span>· {dateLabel}</span>}
+      </div>
+    </div>
+  );
+}
+
+function PulseTodoCard({ todo }: { todo: StrategicPulseTodo }) {
+  const isOverdue = todo.urgency === 'overdue';
+  const isToday = todo.urgency === 'today';
+  const isThisWeek = todo.urgency === 'this_week';
+  const borderClass = isOverdue
+    ? 'border-l-rose-500 bg-rose-50/40'
+    : isToday
+      ? 'border-l-amber-500 bg-amber-50/40'
+      : isThisWeek
+        ? 'border-l-blue-400'
+        : 'border-l-slate-300';
+  const textColor = isOverdue
+    ? 'text-rose-600'
+    : isToday
+      ? 'text-amber-600'
+      : isThisWeek
+        ? 'text-blue-600'
+        : 'text-slate-400';
+  const urgencyLabel =
+    isOverdue && todo.daysUntilDue !== null
+      ? `已逾期 ${-todo.daysUntilDue} 天`
+      : isToday
+        ? '今日到期'
+        : isThisWeek && todo.daysUntilDue !== null
+          ? `还剩 ${todo.daysUntilDue} 天`
+          : todo.dueDate || '无期限';
+  return (
+    <div className={`text-[12px] leading-relaxed border-l-2 ${borderClass} pl-3 py-1`}>
+      <div className="font-medium text-slate-800 line-clamp-2">{todo.title}</div>
+      <div className="mt-0.5 flex items-center gap-1.5 text-[10px] font-bold">
+        <span className={textColor}>{urgencyLabel}</span>
+        {todo.eventLineName && (
+          <span className="text-slate-400 line-clamp-1">· {todo.eventLineName}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PulseBlockerCard({ blocker }: { blocker: StrategicPulseBlocker }) {
+  return (
+    <div className="text-[12px] leading-relaxed border-l-2 border-l-amber-400 bg-amber-50/40 pl-3 py-1">
+      <div className="font-medium text-slate-800 line-clamp-2">{blocker.title}</div>
+      <div className="mt-0.5 text-[10px] font-bold text-amber-700">停滞 {blocker.stuckDays} 天</div>
+      {blocker.reason && <div className="mt-1 text-[11px] text-slate-600 line-clamp-2">{blocker.reason}</div>}
+    </div>
+  );
+}
+
+function dedupePulseTodos(todos: StrategicPulseTodo[]): StrategicPulseTodo[] {
+  // 现状数据存在重复任务 (黔行测试数据); 前端按 title+dueDate 去重以减少噪音
+  const seen = new Set<string>();
+  const result: StrategicPulseTodo[] = [];
+  for (const t of todos) {
+    const key = `${t.title}|${t.dueDate || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(t);
+  }
+  return result;
+}
+
+function ClientStrategicPulseSection({ clientId }: { clientId: string }) {
+  const [pulse, setPulse] = useState<StrategicPulse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError(null);
+    getClientStrategicPulse(clientId)
+      .then((result) => {
+        if (mounted) setPulse(result);
+      })
+      .catch((err) => {
+        if (mounted) {
+          setError(err instanceof Error ? err.message : '加载失败');
+          setPulse(null);
+        }
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [clientId]);
+
+  if (loading) {
+    return (
+      <section className="rounded-[24px] border border-slate-200 bg-white px-6 py-5 shadow-sm">
+        <div className="text-[12px] text-slate-400">正在读取客户脉搏...</div>
+      </section>
+    );
+  }
+
+  if (error || !pulse) {
+    return (
+      <section className="rounded-[24px] border border-amber-100 bg-amber-50 px-6 py-5">
+        <div className="text-[12px] text-amber-700">客户脉搏暂不可用{error ? `（${error}）` : ''}</div>
+      </section>
+    );
+  }
+
+  const dedupedTodos = dedupePulseTodos(pulse.upcomingTodos);
+
+  return (
+    <section className="rounded-[24px] border border-slate-200 bg-white px-6 py-5 sm:px-8 sm:py-6 shadow-sm">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <PulseColumn
+          icon={<Activity size={14} className="text-slate-500" />}
+          label="本周新动态"
+          count={pulse.weeklyEvents.length}
+        >
+          {pulse.weeklyEvents.length === 0 ? (
+            <PulseEmptyHint text="本周无新动态记录" />
+          ) : (
+            pulse.weeklyEvents.map((event, i) => <PulseEventCard key={i} event={event} />)
+          )}
+        </PulseColumn>
+
+        <PulseColumn
+          icon={<Target size={14} className="text-slate-500" />}
+          label="你接下来要做"
+          count={dedupedTodos.length}
+        >
+          {dedupedTodos.length === 0 ? (
+            <PulseEmptyHint text="无未完成任务" />
+          ) : (
+            dedupedTodos.map((todo, i) => <PulseTodoCard key={i} todo={todo} />)
+          )}
+        </PulseColumn>
+
+        <PulseColumn
+          icon={<AlertTriangle size={14} className="text-amber-500" />}
+          label="当前卡点"
+          count={pulse.currentBlockers.length}
+        >
+          {pulse.currentBlockers.length === 0 ? (
+            <PulseEmptyHint text="暂无卡点" />
+          ) : (
+            pulse.currentBlockers.map((b, i) => <PulseBlockerCard key={i} blocker={b} />)
+          )}
+        </PulseColumn>
+      </div>
+    </section>
+  );
+}
+
 function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack: () => void }) {
   const [detail, setDetail] = useState<DigitalAssetClientDetail | null>(null);
   const [knowledgeStatus, setKnowledgeStatus] = useState<ClientKnowledgeStatus | null>(null);
@@ -583,7 +786,10 @@ function DigitalAssetDetailView({ clientId, onBack }: { clientId: string; onBack
         assetTrackTitle={profileType}
         onBack={onBack}
       />
-      <div className="max-w-full mx-auto px-6 py-8 pb-24">
+      <div className="max-w-full mx-auto px-6 py-8 pb-24 space-y-6">
+        {/* Phase 1 克制版主页：3 个区块 (本周动态/待办/卡点) */}
+        <ClientStrategicPulseSection clientId={clientId} />
+
         <section
           className="rounded-[28px] border border-blue-100 p-6 sm:p-8 relative overflow-hidden"
           style={{

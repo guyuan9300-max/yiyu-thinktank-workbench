@@ -210,19 +210,29 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
     : 0;
 
   const [expandedScopeId, setExpandedScopeId] = useState<string | null>(null);
-  // 只在首次加载时自动展开第一个有计划的 row，之后用户主动收起就保持收起。
-  // 不能让 effect 依赖 expandedScopeId — 否则用户点收起后 expandedScopeId=null
-  // 又触发 effect 复位回去，UI 表现为"收不起来"。
+  // 首次加载时按"看自己应该看的"自动展开：
+  //   - admin（CEO 等）→ 展开组织级（若有计划）
+  //   - 部门用户       → 展开自己部门（若有计划）；自己部门无计划就全部折叠，
+  //                       让用户感知"我们部门还没填"，而不是错位看别人的
+  // 用户主动收起后保持收起 — 不能让 effect 依赖 expandedScopeId，
+  // 否则用户点收起后 expandedScopeId=null 又触发 effect 复位，UI"收不起来"。
   const hasAutoExpandedRef = useRef(false);
   useEffect(() => {
     if (hasAutoExpandedRef.current) return;
     if (rows.length === 0) return;
-    const firstWithPlan = rows.find((r) => r.latestPlan !== null);
-    if (firstWithPlan) {
-      setExpandedScopeId(firstWithPlan.scopeId);
+    let targetScopeId: string | null = null;
+    if (isAdmin) {
+      const orgRow = rows.find((r) => r.scopeId === ORG_LEVEL_ID);
+      if (orgRow && orgRow.latestPlan) targetScopeId = ORG_LEVEL_ID;
+    } else if (userDeptId) {
+      const myRow = rows.find((r) => r.scopeId === userDeptId);
+      if (myRow && myRow.latestPlan) targetScopeId = userDeptId;
+    }
+    if (targetScopeId) {
+      setExpandedScopeId(targetScopeId);
     }
     hasAutoExpandedRef.current = true;
-  }, [rows]);
+  }, [rows, isAdmin, userDeptId]);
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [itemTasks, setItemTasks] = useState<Record<string, Task[]>>({});
@@ -775,7 +785,7 @@ export function PlanWorkshopView({ value, currentUser, onSavePlan, onOpenTask, o
                                     title="生成任务：把这条计划项作为内容新建一条任务并自动挂接"
                                     aria-label="生成任务"
                                   >
-                                    <Sparkles size={14} />
+                                    <ArrowRight size={14} />
                                   </button>
                                 )}
                                 <button

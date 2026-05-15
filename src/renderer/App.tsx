@@ -208,6 +208,7 @@ import type {
   WorkspacePendingQuestionState,
   WorkspaceRightPanelEvidenceSnapshot,
   WorkspaceRightTabKey,
+  WorkspaceAnswerActionName,
 } from './lib/workspaceClientUiStore';
 import {
   getTodayCalendarState,
@@ -258,6 +259,7 @@ import {
   createProjectFlow,
   createProjectModule,
   deleteClient,
+  deleteClientDocument,
   createGoal,
   launchFeishuMeeting,
   createHandbook,
@@ -17287,6 +17289,31 @@ export default function App() {
       if (!currentClientId) return;
       writeStoredRecentUsedDocuments(currentClientId, recentUsedDocuments);
     }, [currentClientId, recentUsedDocuments]);
+
+    // 客户工作台「文件」tab 上每张文件卡片可以单点删除：进回收站 30 天可恢复，
+    // 同时清掉数据中心 v2_documents/sections/chunks 的派生数据（CASCADE）。
+    // 之前没这个入口，导错文件只能借「删任务附件」或「重复文档去重」迂回。
+    const [pendingDeleteDocument, setPendingDeleteDocument] = useState<{
+      documentId: string;
+      fileName: string;
+    } | null>(null);
+    const [isDeletingDocument, setIsDeletingDocument] = useState(false);
+    const handleConfirmDeleteDocument = async () => {
+      if (!pendingDeleteDocument || !currentClientId) return;
+      setIsDeletingDocument(true);
+      try {
+        const result = await deleteClientDocument(currentClientId, pendingDeleteDocument.documentId);
+        setRecentUsedDocuments((prev) => prev.filter((d) => d.documentId !== pendingDeleteDocument.documentId));
+        await refreshWorkspace(currentClientId);
+        flash('success', `已删除「${result.fileName || pendingDeleteDocument.fileName}」，30 天内可在回收站恢复`);
+        setPendingDeleteDocument(null);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : '删除失败';
+        flash('error', `删除失败：${msg}`);
+      } finally {
+        setIsDeletingDocument(false);
+      }
+    };
     const markDocumentAsUsed = (params: { documentId: string; title: string; path: string }) => {
       const { documentId, title, path } = params;
       if (!documentId) return;
@@ -21915,6 +21942,20 @@ export default function App() {
                       >
                         <FolderOpen size={16} />
                       </button>
+                      <button
+                        type="button"
+                        disabled={!documentId}
+                        onClick={() => setPendingDeleteDocument({ documentId, fileName: fileLabel })}
+                        className={`rounded-lg p-1.5 transition-colors ${
+                          documentId
+                            ? 'text-slate-400 hover:text-rose-600 hover:bg-rose-50'
+                            : 'text-slate-300 cursor-not-allowed'
+                        }`}
+                        title="删除文件并清空数据中心数据"
+                        aria-label="删除文件"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </div>
                   </div>
                 );
@@ -21997,6 +22038,47 @@ export default function App() {
                       return combined.map((card) => renderFileCard(card));
                     })()}
                   </div>
+                  {pendingDeleteDocument && (
+                    <div
+                      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/40 px-6"
+                      onClick={(e) => { if (e.target === e.currentTarget && !isDeletingDocument) setPendingDeleteDocument(null); }}
+                    >
+                      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+                        <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
+                          <div className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-full bg-rose-50">
+                            <Trash2 size={16} className="text-rose-600" />
+                          </div>
+                          <h3 className="text-[14px] font-bold text-gray-900">删除文件并清空数据中心</h3>
+                        </div>
+                        <div className="px-5 py-4 space-y-2">
+                          <p className="text-[12px] text-gray-700 leading-5">
+                            确认将文件「<span className="font-bold text-gray-900">{pendingDeleteDocument.fileName}</span>」放入回收站？
+                          </p>
+                          <p className="text-[11px] text-gray-500 leading-5">
+                            将一并删除该文件在数据中心的解析数据（章节 / 切片 / 索引）。文件本身保留在回收站 30 天内可恢复。
+                          </p>
+                        </div>
+                        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteDocument(null)}
+                            disabled={isDeletingDocument}
+                            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleConfirmDeleteDocument()}
+                            disabled={isDeletingDocument}
+                            className="rounded-lg bg-rose-500 text-white px-3 py-1.5 text-[12px] font-bold hover:bg-rose-600 disabled:opacity-60"
+                          >
+                            {isDeletingDocument ? '删除中…' : '确认删除'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
