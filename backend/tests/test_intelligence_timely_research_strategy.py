@@ -317,11 +317,8 @@ def test_recruitment_and_generic_news_do_not_become_timely_cards(tmp_path: Path,
     )
 
     assert result.promoted_count == 0
+    assert result.candidate_count == 0
     assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 0
-    candidate = db.fetchone("SELECT verification_status, verification_reason FROM intelligence_candidate_items WHERE url='https://news.example.cn/forum'")
-    assert candidate is not None
-    assert candidate["verification_status"] == "rejected"
-    assert "决策" in str(candidate["verification_reason"]) or "策略" in str(candidate["verification_reason"])
 
 
 def test_tag_profile_drives_timely_queries_without_requiring_object_name(tmp_path: Path) -> None:
@@ -600,9 +597,8 @@ def test_object_name_only_static_material_does_not_promote(tmp_path: Path, monke
     )
 
     assert result.promoted_count == 0
-    row = db.fetchone("SELECT verification_reason FROM intelligence_candidate_items WHERE content_kind='timely_intelligence'")
-    assert row is not None
-    assert "静态" in str(row["verification_reason"]) or "资料补全" in str(row["verification_reason"])
+    assert result.static_profile_filtered_count >= 1
+    assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 0
 
 
 def test_timely_window_31_to_90_days_requires_review_but_can_promote(tmp_path: Path, monkeypatch) -> None:
@@ -736,3 +732,157 @@ def test_low_quality_recruitment_domain_does_not_enter_detail_budget(tmp_path: P
 
     assert result.candidate_count == 0
     assert result.detail_fetched_count == 0
+
+
+def test_timely_scout_uses_web_search_and_compact_queries(tmp_path: Path) -> None:
+    db = Database(tmp_path / "timely_strategy_web_scout.sqlite")
+    _seed_client(db, client_id="client_rici", name="广东省日慈公益基金会")
+    _insert_focus(db, client_id="client_rici", timely=["儿童青少年心理健康服务、公益创投、政府购买服务。"])
+    _insert_profile_card(
+        db,
+        client_id="client_rici",
+        title="儿童心理健康服务资料",
+        summary="日慈基金会关注儿童青少年心理健康服务、心理平台建设和教师心理素养培训。",
+    )
+    intent = _intent("client_rici", "广东 儿童青少年心理健康 公益创投 申报 通知", intent_id="intent_web_scout")
+    _insert_intent(db, intent)
+    seen: list[tuple[str, str]] = []
+
+    def fake_fetch(query: str, source_config):
+        seen.append((source_config.source_type, query))
+        return []
+
+    result = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_rici", "广东省日慈公益基金会"),
+        intents=[intent],
+        max_fetch_jobs=3,
+        hit_fetcher=fake_fetch,
+        official_site_hit_fetcher=lambda _query, _config: [],
+    )
+
+    assert result.query_count == 3
+    assert seen[0][0] == "web_search"
+    assert "广东 广东" not in "\n".join(query for _source, query in seen)
+    assert not any("监管 资助 申报 公益创投 征集 通知" in query for _source, query in seen)
+
+
+def test_timely_can_promote_at_most_five_cards_per_refresh(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "timely_strategy_card_cap.sqlite")
+    _seed_client(db, client_id="client_cap", name="春雨社区服务中心", domain="社区儿童服务")
+    _insert_focus(db, client_id="client_cap", timely=["困境儿童心理健康、公益创投、政府购买服务。"])
+    _insert_profile_card(
+        db,
+        client_id="client_cap",
+        title="社区儿童心理服务资料",
+        summary="机构服务困境儿童、青少年心理健康和家庭支持。",
+    )
+    intent = _intent("client_cap", "困境儿童 心理健康 公益创投 申报", intent_id="intent_cap")
+    _insert_intent(db, intent)
+
+    def fake_page_text(url: str):
+        index = url.rsplit("/", 1)[-1]
+        return (
+            "fetched",
+            f"发布时间：2026-05-01。第{index}号公益创投项目征集通知，重点支持困境儿童心理健康服务、家庭支持和社区服务平台建设。"
+            "申报对象为社会组织，申报截止时间为2026年06月30日，需要说明服务对象、地域覆盖、资源需求和执行方案。",
+            "",
+        )
+
+    monkeypatch.setattr(supply, "_fetch_page_text", fake_page_text)
+    hits = [
+        CandidateHit(
+            title=f"困境儿童心理健康公益创投征集通知 {index}",
+            url=f"https://grant.example.cn/opportunity/{index}",
+            snippet="支持困境儿童心理健康服务，仍在申报窗口内。",
+            source="公益创投公开源",
+            published_at="2026-05-01",
+        )
+        for index in range(7)
+    ]
+
+    result = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_cap", "春雨社区服务中心"),
+        intents=[intent],
+        max_fetch_jobs=1,
+        hit_fetcher=lambda _query, _source_config: hits,
+        official_site_hit_fetcher=lambda _query, _config: [],
+        timely_promote_limit=5,
+    )
+
+    assert result.scout_candidate_count == 7
+    assert result.promoted_count == 5
+    assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 5
+    overflow = db.scalar(
+        "SELECT COUNT(1) FROM intelligence_candidate_items WHERE promotion_reason LIKE '%5 条上限%'"
+    )
+    assert overflow == 2
+
+
+def test_continue_existing_fetched_timely_candidates_runs_ai_back_half(tmp_path: Path, monkeypatch) -> None:
+    db = Database(tmp_path / "timely_continue_back_half.sqlite")
+    _seed_client(db, client_id="client_continue", name="春雨社区服务中心", domain="社区儿童服务")
+    _insert_focus(db, client_id="client_continue", timely=["困境儿童心理健康服务、公益创投、政府购买服务。"])
+    _insert_profile_card(
+        db,
+        client_id="client_continue",
+        title="社区儿童心理服务资料",
+        summary="机构服务困境儿童和青少年心理健康，具备课程、家庭支持和社区服务基础。",
+        tags=["服务对象", "项目介绍"],
+    )
+    intent = _intent("client_continue", "困境儿童 心理健康 公益创投 申报", intent_id="intent_continue")
+    _insert_intent(db, intent)
+
+    monkeypatch.setattr(
+        supply,
+        "_fetch_page_text",
+        lambda _url: (
+            "fetched",
+            "发布时间：2026-05-01。南山区发布公益创投项目征集通知，重点支持困境儿童心理健康服务、家庭支持和社区服务平台建设。"
+            "申报对象为社会组织，申报截止时间为2026年06月30日，项目需说明服务对象、地域覆盖、资源需求和执行方案。",
+            "",
+        ),
+    )
+
+    first = run_intelligence_candidate_refresh(
+        db,
+        data_dir=tmp_path,
+        ai_service=None,
+        scope=_scope("client_continue", "春雨社区服务中心"),
+        intents=[intent],
+        max_fetch_jobs=1,
+        hit_fetcher=lambda _query, source_config: [
+            CandidateHit(
+                title="南山区公益创投项目征集通知",
+                url="https://grant.example.cn/continue-children-mental-health",
+                snippet="支持困境儿童心理健康服务，申报截止时间为2026年06月30日。",
+                source=source_config.source_name,
+                published_at="2026-05-01",
+            )
+        ],
+        official_site_hit_fetcher=lambda _query, _config: [],
+    )
+
+    assert first.promoted_count == 0
+    assert first.body_fetched_count == 1
+    assert "AI 不可用" in str(
+        db.scalar("SELECT COUNT(1) FROM intelligence_candidate_items WHERE promotion_reason LIKE '%AI 不可用%'")
+    ) or db.scalar("SELECT COUNT(1) FROM intelligence_candidate_items WHERE summary_status = 'not_attempted'") >= 1
+
+    continued = supply.continue_timely_candidate_review(
+        db,
+        data_dir=tmp_path,
+        ai_service=_ReadyTimelyAi(),
+        scope=_scope("client_continue", "春雨社区服务中心"),
+        since="2026-01-01T00:00:00",
+    )
+
+    assert continued.candidate_count == 1
+    assert continued.ai_reviewed_count == 1
+    assert continued.promoted_count == 1
+    assert db.scalar("SELECT COUNT(1) FROM intelligence_items WHERE content_kind='timely_intelligence'") == 1

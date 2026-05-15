@@ -29,7 +29,14 @@ export type WorkspaceRightPanelEvidenceSnapshot = {
 export type WorkspaceRightTabKey = 'overview' | 'files' | 'evidence' | 'memory' | 'proposals' | 'tools';
 export type WorkspaceSurfaceMode = 'setup' | 'workspace';
 export type WorkspaceImportDropZone = 'buffer' | 'composer' | null;
-export type WorkspaceAnswerActionName = 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | '';
+export type WorkspaceAnswerActionName =
+  | 'vectorize'
+  | 'export'
+  | 'create-task'
+  | 'request-evidence'
+  | 'create-proposal'
+  | 'promote-judgment'
+  | '';
 
 export type WorkspaceComposerFocusSnapshot = {
   key: string;

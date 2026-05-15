@@ -51,6 +51,20 @@ WINDOW_TERMS = (
     "截止", "报名", "申报", "征集", "有效期", "实施期", "执行期", "试点期", "自", "至",
     "仍在", "持续", "长期有效", "正在征集", "正在申报",
 )
+TIMELY_TAG_NOISE_TERMS = (
+    "官网",
+    "官方网站",
+    "首页",
+    "简介",
+    "介绍",
+    "资料",
+    "资料卡",
+    "可补充",
+    "已核验",
+    "呈现",
+    "说明从",
+    "它在",
+)
 
 
 @dataclass
@@ -195,10 +209,23 @@ def _is_probable_url_term(term: str) -> bool:
     return bool(re.search(r"https?://|www\.|[a-z0-9-]+\.[a-z]{2,}", text)) and not _contains_cjk(text)
 
 
+def _is_timely_noise_term(term: str) -> bool:
+    text = _clean_text(term, max_len=120)
+    if not text:
+        return True
+    if _is_probable_url_term(text):
+        return True
+    if any(token in text for token in TIMELY_TAG_NOISE_TERMS):
+        return True
+    if len(text) > 28 and not any(marker in text for marker in ("心理", "数字化", "政府购买", "公益创投", "资助", "监管", "合规")):
+        return True
+    return False
+
+
 def _add_weighted_terms(weights: dict[str, int], terms: list[str], weight: int) -> None:
     for term in terms:
         text = _clean_text(term, max_len=80)
-        if not text or _is_probable_url_term(text):
+        if not text or _is_timely_noise_term(text):
             continue
         current = int(weights.get(text) or 0)
         weights[text] = max(current, weight)
@@ -428,8 +455,8 @@ def build_timely_research_strategy(
     corpus_parts.extend(timely_focus)
     corpus = " ".join(part for part in corpus_parts if part)
 
-    focus_topics = _dedupe(_terms_from_focus(timely_focus, limit=14), limit=18)
-    service_targets = _hits(corpus, SERVICE_TARGET_TERMS, limit=10)
+    focus_topics = _dedupe([term for term in _terms_from_focus(timely_focus, limit=14) if not _is_timely_noise_term(term)], limit=18)
+    service_targets = _dedupe([term for term in _hits(corpus, SERVICE_TARGET_TERMS, limit=10) if not _is_timely_noise_term(term)], limit=10)
     regions = _hits(corpus, REGION_TERMS, limit=6)
     project_terms = _dedupe(
         [
@@ -439,7 +466,8 @@ def build_timely_research_strategy(
         ],
         limit=12,
     )
-    method_terms = _dedupe([*_hits(corpus, METHOD_TERMS, limit=12), *[term for term in focus_topics if term not in project_terms]], limit=12)
+    project_terms = _dedupe([term for term in project_terms if not _is_timely_noise_term(term)], limit=12)
+    method_terms = _dedupe([term for term in [*_hits(corpus, METHOD_TERMS, limit=12), *[term for term in focus_topics if term not in project_terms]] if not _is_timely_noise_term(term)], limit=12)
     partner_terms = _dedupe(re.findall(r"([\u4e00-\u9fffA-Za-z0-9]{2,24}(?:基金会|公益|资助方|合作方|伙伴))", corpus), limit=8)
     constraint_terms = _hits(corpus, CONSTRAINT_TERMS, limit=8)
     resource_terms = _hits(corpus, ["资助", "申报", "政府购买服务", "采购", "招标", "合作", "资源", "资金", "项目支持", "能力建设"], limit=8)

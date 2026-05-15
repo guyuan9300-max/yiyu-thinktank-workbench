@@ -307,9 +307,9 @@ def test_p5_profile_and_timely_streams_do_not_mix(tmp_path: Path, monkeypatch) -
     )
 
     assert timely_result.promoted_count == 0
+    assert timely_result.candidate_count == 0
     assert profile_result.promoted_count == 0
     reasons = [str(row["promotion_reason"]) for row in db.fetchall("SELECT promotion_reason FROM intelligence_candidate_items")]
-    assert any("静态登记" in reason for reason in reasons)
     assert any("不作为资料补全成卡" in reason for reason in reasons)
 
 
@@ -386,6 +386,43 @@ def test_p5_user_visible_items_api_does_not_leak_internal_scores_or_candidates(t
         )
         assert legacy_param_response.status_code == 200, legacy_param_response.text
         assert [entry["title"] for entry in legacy_param_response.json()["items"]] == ["真实资助机会"]
+
+
+def test_p5_items_api_defaults_to_captured_time_desc(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    with TestClient(app) as client:
+        db = client.app.state.app_state.db
+        _seed_client(db, client_id="client_rici", name="广东省日慈公益基金会")
+        for item_id, title, published_at, captured_at in [
+            ("item_old_capture_new_publish", "发布时间较新但较早抓取", "2026-05-15T10:00:00", "2026-05-15T09:00:00"),
+            ("item_new_capture_old_publish", "抓取时间较新但发布时间较旧", "2026-05-01T10:00:00", "2026-05-15T11:00:00"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO intelligence_items(
+                    id, content_kind, scope_type, scope_id, client_id, title, summary,
+                    key_points_json, analysis, impact, tags_json, source, source_url,
+                    published_at, captured_at, verified_at, verification_status, verification_reason,
+                    user_status, created_at, updated_at
+                )
+                VALUES(?, 'timely_intelligence', 'client', 'client_rici', 'client_rici',
+                    ?, '摘要', '[]', '相关性', '影响', '[]', '来源', 'https://example.org/source',
+                    ?, ?, ?, 'verified', '已核验', 'active', ?, ?)
+                """,
+                (item_id, title, published_at, captured_at, captured_at, captured_at, captured_at),
+            )
+
+        response = client.get(
+            "/api/v1/intelligence/items",
+            params={"contentKind": "timely_intelligence", "workObjectType": "client", "workObjectId": "client_rici"},
+        )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert [entry["title"] for entry in payload["items"]] == [
+            "抓取时间较新但发布时间较旧",
+            "发布时间较新但较早抓取",
+        ]
 
 
 def test_p5_refresh_runs_api_recovers_stale_running_status(tmp_path: Path) -> None:

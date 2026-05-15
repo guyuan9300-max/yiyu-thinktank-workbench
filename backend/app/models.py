@@ -8359,8 +8359,11 @@ class IntelligenceTaskDraftPayload(BaseModel):
     ddl: str = "本周"
     ownerId: str | None = None
     ownerName: str = ""
+    collaboratorIds: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     note: str = ""
+    ownerRoleHint: str = ""
+    collaboratorRoleHints: list[str] = Field(default_factory=list)
 
 
 class IntelligenceTaskDraftResponse(BaseModel):

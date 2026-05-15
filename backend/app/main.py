@@ -706,6 +706,10 @@ from app.models import (
     IntelligenceSourceDiagnosticsResponse,
     IntelligenceFeedbackDiagnosticsResponse,
     IntelligenceItemChatResponse,
+    IntelligenceTaskCreatePayload,
+    IntelligenceTaskCreateResponse,
+    IntelligenceTaskDraftPayload,
+    IntelligenceTaskDraftResponse,
     TopicCandidateChatMessageRecord,
 )
 from app.services.intelligence_search_intents import IntelligenceSearchScope
@@ -1023,6 +1027,10 @@ from app.services.intelligence_candidate_supply import (
     get_candidate_supply_status_for_scope,
     get_source_diagnostics,
     run_intelligence_candidate_refresh,
+)
+from app.services.intelligence_ai_runner import (
+    generate_intelligence_json,
+    generate_intelligence_text,
 )
 from app.services.intelligence_feedback import (
     FeedbackContext,
@@ -47578,27 +47586,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         contentKind: Literal["profile_completion", "timely_intelligence"] = Query(...),
         scopeType: str = Query(default="all"),
         scopeId: str | None = Query(default=None),
+        workObjectType: str | None = Query(default=None),
+        workObjectId: str | None = Query(default=None),
         userStatus: Literal["active", "dismissed", "following"] = Query(default="active"),
-        sort: str = Query(default="published_desc"),
+        sort: str = Query(default="captured_desc"),
         page: int = Query(default=1, ge=1),
         pageSize: int = Query(default=10, ge=1, le=100),
     ) -> IntelligenceItemsResponse:
         """按 contentKind + scope 分页返回 intelligence_items。"""
+        effective_scope_type = scopeType
+        effective_scope_id = scopeId
+        if (not effective_scope_id or effective_scope_type == "all") and workObjectType and workObjectId:
+            effective_scope_type = workObjectType
+            effective_scope_id = workObjectId
         sql_filters = ["content_kind = ?", "user_status = ?"]
         sql_params: list = [contentKind, userStatus]
-        if scopeType == "client" and scopeId:
+        if effective_scope_type == "client" and effective_scope_id:
             sql_filters.append("client_id = ?")
-            sql_params.append(scopeId)
-        elif scopeType == "project_module" and scopeId:
+            sql_params.append(effective_scope_id)
+        elif effective_scope_type == "project_module" and effective_scope_id:
             sql_filters.append("project_module_id = ?")
-            sql_params.append(scopeId)
+            sql_params.append(effective_scope_id)
         where_clause = " AND ".join(sql_filters)
         order_sql = {
             "published_desc": "published_at DESC NULLS LAST, captured_at DESC",
             "published_asc": "published_at ASC NULLS LAST, captured_at ASC",
-            "captured_desc": "captured_at DESC",
-            "captured_asc": "captured_at ASC",
-        }.get(sort, "captured_at DESC")
+            "captured_desc": "captured_at DESC, published_at DESC",
+            "captured_asc": "captured_at ASC, published_at ASC",
+        }.get(sort, "captured_at DESC, published_at DESC")
         # sqlite 不支持 NULLS LAST 直接，但用 COALESCE 改写
         if "NULLS LAST" in order_sql:
             order_sql = order_sql.replace(" NULLS LAST", "")
@@ -48065,6 +48080,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         activeOnly: bool = Query(default=False),
         limit: int = Query(default=20, ge=1, le=100),
     ) -> list[IntelligenceRefreshRunRecord]:
+        stale_threshold = datetime.utcnow() - timedelta(minutes=45)
+        stale_rows = state.db.fetchall(
+            "SELECT id, updated_at FROM intelligence_refresh_runs WHERE status = 'running'"
+        )
+        now_ts = _intel_now()
+        for stale_row in stale_rows:
+            updated_raw = str(stale_row["updated_at"] or "")
+            try:
+                updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                updated_at = datetime.min
+            if updated_at <= stale_threshold:
+                state.db.execute(
+                    """
+                    UPDATE intelligence_refresh_runs
+                    SET status = 'failed',
+                        stage = 'interrupted',
+                        message = '后台研究长时间没有进度更新，可能因软件关闭或进程中断，已自动收口为失败态。',
+                        finished_at = COALESCE(finished_at, ?),
+                        updated_at = ?
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    (now_ts, now_ts, stale_row["id"]),
+                )
         clauses: list[str] = []
         params: list[object] = []
         if contentKind:
@@ -48279,6 +48318,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             intents=generation.intents,
                             trigger_source="manual",
                             max_fetch_jobs=round_fetch_jobs,
+                            timely_promote_limit=(
+                                max(0, 5 - int(aggregate.get("promotedCount") or 0))
+                                if content_kind == "timely_intelligence"
+                                else None
+                            ),
                         )
                         refresh = fut2.result(timeout=max(10, int(deadline_monotonic - time.monotonic())))
                         last_payload = refresh.as_payload() if hasattr(refresh, "as_payload") else {}
@@ -48299,6 +48343,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         success_this_round = int(last_payload.get("successQueryCount") or 0)
                         no_progress_rounds = 0 if (promoted_this_round > 0 or effective_this_round > 0 or success_this_round > 0) else no_progress_rounds + 1
                         if content_kind == "profile_completion" and bool(last_payload.get("profileCompletionReady")):
+                            break
+                        if content_kind == "timely_intelligence" and int(aggregate.get("promotedCount") or 0) >= 5:
                             break
                         if no_progress_rounds >= 2:
                             break
@@ -48604,21 +48650,150 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         updated_row = _fetch_intelligence_item_or_404(item_id)
         return _row_to_intelligence_item_record(updated_row)
 
-    @app.post("/api/v1/intelligence/items/{item_id}/task-draft")
-    def get_intelligence_task_draft_endpoint(item_id: str) -> dict:  # noqa: ARG001
-        """task-draft 依赖完整 task 子系统（task_lists / task_settings / 操作员归属），
-        同事 backup 实现 507 行，本次不搬。前端这个按钮会拿 501 提示。"""
-        raise HTTPException(
-            status_code=501,
-            detail="task-draft 依赖 task 子系统，等同事下次 sync 后启用",
+    def _draft_from_intelligence_item(item: IntelligenceItemRecord) -> IntelligenceTaskDraftPayload:
+        def compact(value: object, limit: int) -> str:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            return text if len(text) <= limit else f"{text[: max(0, limit - 1)]}…"
+
+        context_lines = [
+            f"情报标题：{item.title}",
+            f"情报类型：{item.intelligenceType or item.contentKind}",
+            f"发生了什么：{item.summary or ''}",
+            f"为什么相关：{item.relevanceReason or ''}",
+            f"可能影响：{item.impact or item.analysis or ''}",
+            f"建议动作：{item.suggestedAction or ''}",
+            f"发布时间：{item.publishedAt or ''}",
+            f"来源：{item.source or ''}",
+            f"来源链接：{item.sourceUrl or ''}",
+            f"标签：{'、'.join(item.tags or [])}",
+        ]
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "title": {"type": "STRING"},
+                "desc": {"type": "STRING"},
+                "priority": {"type": "STRING"},
+                "ddl": {"type": "STRING"},
+                "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "note": {"type": "STRING"},
+                "ownerRoleHint": {"type": "STRING"},
+                "collaboratorRoleHints": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+            "required": ["title", "desc", "priority", "ddl", "tags", "note", "ownerRoleHint", "collaboratorRoleHints"],
+        }
+        result = generate_intelligence_json(
+            state.ai,
+            prompt=(
+                "请把下面这张资讯情报站卡片转成一个可执行的任务草稿。\n"
+                "要求：\n"
+                "- title 必须短，不能照抄建议动作，尽量 12-28 个字。\n"
+                "- desc 要结构化换行，包含：背景、目标、需要完成、验收标准、待核验。\n"
+                "- 不要强行猜负责人姓名，只给 ownerRoleHint 和 collaboratorRoleHints。\n"
+                "- 任务应体现 AI 对情报的理解，而不是把卡片字段机械拼接。\n"
+                "- 若只是值得阅读/研判，也应生成“研判/比对/核验”类任务。\n\n"
+                + "\n".join(context_lines)
+            ),
+            system_instruction=(
+                "你是资深项目经理，擅长把外部情报转成清晰、短标题、可验收的协作任务。"
+                "只输出 JSON，不要输出 Markdown。"
+            ),
+            response_schema=schema,
+            timeout_seconds=180.0,
+            max_tokens=1400,
+            temperature=0.24,
+            top_p=0.86,
+            task_kind="deep_analysis",
+            enable_thinking=True,
+        )
+        if not result.ok or not isinstance(result.payload, dict):
+            detail = result.error or "AI 没有返回可用任务草稿"
+            raise HTTPException(status_code=503, detail=f"AI 暂未生成稳定任务草稿：{detail}")
+        payload = result.payload
+        priority = compact(payload.get("priority") or "normal", 20)
+        if priority not in {"low", "normal", "high"}:
+            priority = "normal"
+        title = compact(payload.get("title") or item.title, 48)
+        desc = str(payload.get("desc") or "").strip()
+        desc = re.sub(r"\n{3,}", "\n\n", desc)
+        if len(title) < 4 or len(desc) < 80:
+            raise HTTPException(status_code=503, detail="AI 生成的任务草稿不够完整，请稍后重试")
+        raw_tags = payload.get("tags")
+        tags = [compact(tag, 20) for tag in raw_tags if str(tag or "").strip()] if isinstance(raw_tags, list) else []
+        if not tags:
+            tags = ["情报跟进"]
+        if item.intelligenceType and str(item.intelligenceType) not in tags:
+            tags.append(str(item.intelligenceType))
+        note = str(payload.get("note") or "").strip()
+        if item.sourceUrl and item.sourceUrl not in note:
+            note = "\n".join(part for part in (note, f"来源链接：{item.sourceUrl}") if part)
+        collaborator_hints = payload.get("collaboratorRoleHints")
+        return IntelligenceTaskDraftPayload(
+            title=title,
+            desc=desc[:2000],
+            priority=priority,  # type: ignore[arg-type]
+            listId=None,
+            dueDate=None,
+            ddl=compact(payload.get("ddl") or "本周", 30),
+            ownerId=None,
+            ownerName="",
+            collaboratorIds=[],
+            tags=tags[:4],
+            note=note,
+            ownerRoleHint=compact(payload.get("ownerRoleHint") or "由熟悉该客户/项目的人负责", 80),
+            collaboratorRoleHints=[
+                compact(hint, 80)
+                for hint in (collaborator_hints if isinstance(collaborator_hints, list) else [])
+                if str(hint or "").strip()
+            ][:4],
         )
 
-    @app.post("/api/v1/intelligence/items/{item_id}/tasks")
-    def create_intelligence_task_endpoint(item_id: str, payload: dict) -> dict:  # noqa: ARG001
-        raise HTTPException(
-            status_code=501,
-            detail="转任务依赖 task 子系统，等同事下次 sync 后启用",
+    @app.post("/api/v1/intelligence/items/{item_id}/task-draft", response_model=IntelligenceTaskDraftResponse)
+    def get_intelligence_task_draft_endpoint(item_id: str) -> IntelligenceTaskDraftResponse:
+        row = _fetch_intelligence_item_or_404(item_id)
+        item = _row_to_intelligence_item_record(row)
+        return IntelligenceTaskDraftResponse(itemId=item_id, draft=_draft_from_intelligence_item(item))
+
+    @app.post("/api/v1/intelligence/items/{item_id}/tasks", response_model=IntelligenceTaskCreateResponse)
+    def create_intelligence_task_endpoint(item_id: str, payload: IntelligenceTaskCreatePayload) -> IntelligenceTaskCreateResponse:
+        row = _fetch_intelligence_item_or_404(item_id)
+        item = _row_to_intelligence_item_record(row)
+        owner_name = payload.ownerName.strip() or current_operator_row()["name"]
+        task = create_task(
+            TaskPayload(
+                title=payload.title.strip(),
+                desc=(payload.desc or "").strip(),
+                priority=payload.priority,
+                listId=payload.listId or "list-0",
+                dueDate=payload.dueDate,
+                ddl=payload.ddl.strip() or "本周",
+                ownerId=payload.ownerId,
+                ownerName=owner_name,
+                collaboratorIds=[
+                    collaborator_id
+                    for collaborator_id in (payload.collaboratorIds or [])
+                    if collaborator_id and collaborator_id != payload.ownerId
+                ],
+                tags=payload.tags or ["情报跟进"],
+                sourceType="intelligence_item",
+                sourceId=item_id,
+                clientId=item.clientId,
+                projectModuleId=item.projectModuleId,
+                businessCategory=item.intelligenceType,
+                nextAction=item.suggestedAction or None,
+                recentDecision=item.relevanceReason or item.summary or None,
+                evidenceCount=1 if item.sourceUrl else 0,
+            ),
+            status="inbox",
         )
+        if payload.note.strip():
+            upsert_task_note(task.id, payload.note.strip())
+        now_ts = _intel_now()
+        state.db.execute(
+            "UPDATE intelligence_items SET converted_task_id = ?, updated_at = ? WHERE id = ?",
+            (task.id, now_ts, item_id),
+        )
+        updated = _row_to_intelligence_item_record(_fetch_intelligence_item_or_404(item_id))
+        return IntelligenceTaskCreateResponse(item=updated, task=task)
 
     @app.post("/api/v1/intelligence/items/{item_id}/chat", response_model=IntelligenceItemChatResponse)
     def chat_intelligence_item_endpoint(item_id: str, payload: dict) -> IntelligenceItemChatResponse:
@@ -48629,26 +48804,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="问题不能为空")
 
         item = _row_to_intelligence_item_record(row)
+        def _clip_text(value: object, limit: int = 260) -> str:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if len(text) <= limit:
+                return text
+            return text[: limit - 1].rstrip() + "…"
+
         context_lines = [
             f"标题：{item.title}",
             f"内容类型：{item.contentKind}",
         ]
         if item.summary:
-            context_lines.append(f"摘要：{item.summary}")
+            context_lines.append(f"摘要：{_clip_text(item.summary, 360)}")
         if item.analysis:
-            context_lines.append(f"分析：{item.analysis}")
+            context_lines.append(f"分析：{_clip_text(item.analysis, 360)}")
         if item.impact:
-            context_lines.append(f"影响：{item.impact}")
+            context_lines.append(f"影响：{_clip_text(item.impact, 320)}")
         if item.relevanceReason:
-            context_lines.append(f"相关性：{item.relevanceReason}")
+            context_lines.append(f"相关性：{_clip_text(item.relevanceReason, 320)}")
         if item.suggestedAction:
-            context_lines.append(f"建议动作：{item.suggestedAction}")
+            context_lines.append(f"建议动作：{_clip_text(item.suggestedAction, 280)}")
         if item.keyPoints:
-            context_lines.append("要点：" + " / ".join(item.keyPoints))
+            context_lines.append("要点：" + " / ".join(_clip_text(point, 140) for point in item.keyPoints[:6]))
         if item.tags:
-            context_lines.append("标签：" + ", ".join(item.tags))
+            context_lines.append("标签：" + ", ".join(item.tags[:12]))
         if item.source:
-            context_lines.append(f"来源：{item.source}")
+            context_lines.append(f"来源：{_clip_text(item.source, 120)}")
         if item.sourceUrl:
             context_lines.append(f"链接：{item.sourceUrl}")
         if item.publishedAt:
@@ -48662,25 +48843,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "不要只复述网页摘要，也不要只回答'这是什么、有哪些要点、怎么跟进'。"
             "如果材料不足，请直接指出缺什么，并给出最小核验动作。"
             "请用中文直接回答，不要输出 JSON 也不要 Markdown 包裹。"
+            "回答控制在 3 到 6 段，每段都要有具体判断。"
         )
 
-        try:
-            raw = state.ai._qwen_generate(
-                prompt=f"问题：{question}\n\n情报上下文：\n{context_summary}",
-                system_instruction=system_instruction,
-                response_schema=None,
-                timeout_seconds=30.0,
-                max_tokens=1200,
-                temperature=0.5,
-                top_p=0.9,
-            )
-        except Exception as exc:
-            logger.warning("intelligence chat LLM 调用失败: %s", exc)
-            raise HTTPException(status_code=502, detail=f"豆包调用失败：{exc}")
+        prompt = (
+            f"用户追问：{question}\n\n"
+            f"当前情报卡：\n{context_summary}\n\n"
+            "请直接回答用户追问。必须把这条外部信号与当前对象的标签、业务或资源需求联系起来；"
+            "如果只能得到启发而不能立即行动，也要说清启发在哪里、还缺什么证据。"
+        )
 
-        answer = str(raw or "").strip()
-        if not answer:
-            answer = "我暂时还没法基于这条情报给出稳定回答，建议先补充来源或关键事实后再继续追问。"
+        ai_result = generate_intelligence_text(
+            state.ai,
+            prompt=prompt,
+            system_instruction=system_instruction,
+            timeout_seconds=210.0,
+            max_tokens=1800,
+            temperature=0.32,
+            top_p=0.86,
+            task_kind="deep_analysis",
+            enable_thinking=True,
+            min_chars=80,
+        )
+        if not ai_result.ok or not ai_result.text.strip():
+            detail = ai_result.error or "模型没有返回可用追问分析"
+            logger.warning("intelligence chat AI failed: %s", detail)
+            raise HTTPException(status_code=503, detail=f"AI 追问分析没有稳定返回：{detail}")
+
+        answer = ai_result.text.strip()
 
         now_ts = _intel_now()
         try:

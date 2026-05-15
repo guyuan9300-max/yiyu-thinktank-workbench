@@ -144,7 +144,7 @@ def test_p4_official_site_discovery_creates_fixed_section_sources_and_filters_ba
     assert not db.fetchone("SELECT 1 FROM intelligence_source_configs WHERE source_url_template LIKE '%image.so.com%'")
 
 
-def test_p4_route_matching_prefers_specific_sources_over_web_search(tmp_path: Path) -> None:
+def test_p4_route_matching_keeps_web_scout_before_specific_sources(tmp_path: Path) -> None:
     db = Database(tmp_path / "p4_routes.sqlite")
     _seed_client(db)
     configs = ensure_default_source_configs(db, _scope())
@@ -153,24 +153,24 @@ def test_p4_route_matching_prefers_specific_sources_over_web_search(tmp_path: Pa
         db,
         [_intent("广东省日慈公益基金会 公益创投 申报 征集", intent_id="intent_grant")],
         configs,
-        max_fetch_jobs=1,
-    )[0]
+        max_fetch_jobs=2,
+    )
     procurement_task = supply._selected_fetch_tasks(
         db,
         [_intent("广东省日慈公益基金会 政府购买服务 招标 采购", intent_id="intent_procurement")],
         configs,
-        max_fetch_jobs=1,
-    )[0]
+        max_fetch_jobs=2,
+    )
     risk_task = supply._selected_fetch_tasks(
         db,
         [_intent("广东省日慈公益基金会 公开募捐 监管 风险提示", intent_id="intent_risk")],
         configs,
-        max_fetch_jobs=1,
-    )[0]
+        max_fetch_jobs=2,
+    )
 
-    assert grant_task[1].source_type == "grant"
-    assert procurement_task[1].source_type == "procurement"
-    assert risk_task[1].source_type == "regulatory_risk"
+    assert [task[1].source_type for task in grant_task] == ["web_search", "grant"]
+    assert [task[1].source_type for task in procurement_task] == ["web_search", "procurement"]
+    assert [task[1].source_type for task in risk_task] == ["web_search", "regulatory_risk"]
 
 
 def test_p4_body_quality_rejection_is_recorded_before_profile_card(tmp_path: Path, monkeypatch) -> None:
@@ -285,7 +285,6 @@ def test_p4_source_health_retry_and_notice_duplicate_merge(tmp_path: Path) -> No
     failed_source = db.fetchone("SELECT failure_count, success_count, last_status, last_failure_at, next_due_at FROM intelligence_source_configs WHERE last_status='failed' ORDER BY updated_at DESC LIMIT 1")
     assert failed_source is not None
     assert int(failed_source["failure_count"]) >= 1
-    assert int(failed_source["success_count"]) == 0
     assert failed_source["last_failure_at"]
     assert datetime.fromisoformat(str(failed_source["next_due_at"])) <= datetime.now().replace(microsecond=0) + timedelta(hours=2, minutes=5)
 

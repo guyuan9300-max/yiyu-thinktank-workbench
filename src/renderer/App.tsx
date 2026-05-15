@@ -203,6 +203,7 @@ import {
 import { ClientWorkspaceView } from './components/client_workspace/ClientWorkspaceView';
 import { FileTypeIcon, hasOpenableFile } from './components/FileTypeIcon';
 import type {
+  WorkspaceAnswerActionName,
   WorkspaceDisplayChatMessage as DisplayChatMessage,
   WorkspacePendingQuestionState,
   WorkspaceRightPanelEvidenceSnapshot,
@@ -17411,8 +17412,8 @@ export default function App() {
       : {};
     const setAnswerActionState = (
       nextValue:
-        | Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>
-        | ((previous: Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>) => Record<string, 'vectorize' | 'export' | 'create-task' | 'request-evidence' | 'create-proposal' | ''>),
+        | Record<string, WorkspaceAnswerActionName>
+        | ((previous: Record<string, WorkspaceAnswerActionName>) => Record<string, WorkspaceAnswerActionName>),
     ) => {
       if (!currentClientId) return;
       const previous = workspaceClientUiState.answerActionStateByClient[currentClientId] || {};

@@ -30,6 +30,7 @@ import type {
   IntelligenceRefreshRun,
   IntelligenceTaskDraftPayload,
   IntelligenceWorkObject,
+  MentionCandidate,
   SessionUser,
   TaskList,
   TaskSettings,
@@ -48,6 +49,7 @@ import {
   getIntelligenceRefreshRuns,
   getIntelligenceTaskDraft,
   getIntelligenceWorkObjects,
+  getMentionCandidates,
   promoteCandidateTasks,
   refreshIntelligenceSupply,
   saveIntelligenceFocusDirective,
@@ -92,10 +94,10 @@ const TAB_HINT: Record<IntelligenceContentKind, string> = {
 };
 
 const SORT_LABEL: Record<SortMode, string> = {
+  captured_desc: '抓取时间新到旧（默认）',
+  captured_asc: '抓取时间旧到新',
   published_desc: '发布时间新到旧',
   published_asc: '发布时间旧到新',
-  captured_desc: '抓取时间新到旧',
-  captured_asc: '抓取时间旧到新',
 };
 
 const DISMISS_REASON_LABEL: Record<IntelligenceDismissReasonCode, string> = {
@@ -326,6 +328,10 @@ function looksLikeUrlOrDomainLabel(label: string) {
   return /^https?:\/\//i.test(trimmed) || looksLikeDomainLabel(trimmed);
 }
 
+function isGenericSourceLabel(label: string) {
+  return ['公开搜索', '通用公开搜索', '公开来源', '搜索结果', 'web_search'].includes(label.trim());
+}
+
 function profileSourceLabel(label: string, url: string) {
   const trimmed = label.trim();
   if (trimmed && !/^https?:\/\//i.test(trimmed)) {
@@ -346,7 +352,7 @@ function sourceLinks(item: IntelligenceItem) {
   const items: Array<{ label: string; url: string }> = [];
   if (item.sourceUrl) {
     const rawSource = item.source || '';
-    const sourceLabel = looksLikeUrlOrDomainLabel(rawSource) ? item.title : rawSource || item.title;
+    const sourceLabel = looksLikeUrlOrDomainLabel(rawSource) || isGenericSourceLabel(rawSource) ? item.title : rawSource || item.title;
     items.push({ label: isProfileCompletion(item) ? profileSourceLabel(sourceLabel, item.sourceUrl) : readableSourceLabel(sourceLabel, item.sourceUrl), url: item.sourceUrl });
   }
   const sourceText = item.source || '';
@@ -708,60 +714,12 @@ type QuestionPromptGroup = {
   questions: string[];
 };
 
-function containsAny(text: string, terms: string[]) {
-  return terms.some((term) => text.includes(term));
-}
-
 function buildQuestionPromptGroups(item: IntelligenceItem, objects: IntelligenceWorkObject[]): QuestionPromptGroup[] {
-  const objectLabel = itemObjectLabel(item, objects);
-  const contextText = `${item.intelligenceType || ''} ${item.title} ${item.summary} ${item.tags.join(' ')}`;
-  const groups: QuestionPromptGroup[] = [
-    {
-      title: '你可以问',
-      ordered: true,
-      questions: [
-        `这条外部变化会通过什么链条影响${objectLabel}？`,
-        `它和${objectLabel}的业务、对象、地域、资源需求分别有多强相关？`,
-        '如果要跟进，最关键的不确定点是什么？',
-        '它更像机会、风险、约束，还是行业趋势？',
-        '哪些证据不足，暂时不能据此行动？',
-      ],
-    },
-  ];
-  if (containsAny(contextText, ['行业风险', '监管', '合规', '舆情', '风险', '政策变化', '隐私', '公开募捐'])) {
-    groups.push({
-      title: '针对行业风险',
-      questions: [
-        `这类监管提醒可能通过什么链条传导到${objectLabel}？`,
-        `如果${objectLabel}缺少相关资质，哪些项目传播表述最容易踩线？`,
-        '这个风险是立即需要处理，还是只需要纳入材料审核清单？',
-        '需要检查哪些现有材料，才能判断它是否真的相关？',
-      ],
-    });
-  }
-  if (containsAny(contextText, ['公益创投', '资助', '申报', '征集', '基金', '机会', 'grant'])) {
-    groups.push({
-      title: '针对公益创投/资助机会',
-      questions: [
-        `资助方向和${objectLabel}关注对象的相关度有多高？`,
-        `如果只看申报方向，${objectLabel}更适合直接申报，还是作为资助方/合作方参与？`,
-        '这条机会需要哪些已有资料支撑？哪些资料目前还缺？',
-        '申报窗口和当前项目准备度之间的缺口有多大？',
-      ],
-    });
-  }
-  if (containsAny(contextText, ['合作方', '合作', '伙伴', '资助方', '同类机构', '动态'])) {
-    groups.push({
-      title: '针对合作方动态',
-      questions: [
-        '这条合作方动态说明资助方或合作方偏好发生了什么变化？',
-        `它对${objectLabel}的项目设计有什么启发？`,
-        '它对益语智库的服务方案有什么可转化价值？',
-        '是否值得转成同事阅读任务，而不是立即执行任务？',
-      ],
-    });
-  }
-  return groups;
+  const cardQuestions = item.followupQuestions
+    .map((question) => question.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return cardQuestions.length ? [{ title: '', ordered: false, questions: cardQuestions }] : [];
 }
 
 function TimelyIntelligenceCard({
@@ -913,7 +871,7 @@ export function IntelligenceStationView({
   const [focusScopeKey, setFocusScopeKey] = useState<ScopeKey>('global');
   const [focusDraft, setFocusDraft] = useState<FocusDraft>(EMPTY_FOCUS_DRAFT);
   const [activeTab, setActiveTab] = useState<IntelligenceContentKind>('profile_completion');
-  const [sort, setSort] = useState<SortMode>('published_desc');
+  const [sort, setSort] = useState<SortMode>('captured_desc');
   const [pages, setPages] = useState<Record<IntelligenceContentKind, number>>({
     profile_completion: 1,
     timely_intelligence: 1,
@@ -937,6 +895,7 @@ export function IntelligenceStationView({
   const [followNote, setFollowNote] = useState('');
   const [taskDraftTarget, setTaskDraftTarget] = useState<IntelligenceItem | null>(null);
   const [taskDraft, setTaskDraft] = useState<IntelligenceTaskDraftPayload | null>(null);
+  const [peopleOptions, setPeopleOptions] = useState<MentionCandidate[]>([]);
   const flashRef = useRef(flash);
   const refreshPollTimersRef = useRef<number[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -963,6 +922,21 @@ export function IntelligenceStationView({
   const defaultListId = effectiveTaskSettings.defaultListId || activeTaskLists[0]?.id || 'list-0';
   const currentOwnerName = currentSessionUser?.fullName || currentOperatorName || '当前用户';
   const currentOwnerId = currentSessionUser?.id || null;
+  const currentPerson = useMemo<MentionCandidate>(() => ({
+    id: currentSessionUser?.id || 'local-device-user',
+    fullName: currentOwnerName,
+    email: currentSessionUser?.email || '',
+    primaryRole: currentSessionUser?.primaryRole === 'admin' ? 'admin' : 'employee',
+    isSelf: true,
+  }), [currentOwnerName, currentSessionUser]);
+  const memberOptions = useMemo(() => {
+    const merged = new Map<string, MentionCandidate>();
+    [currentPerson, ...peopleOptions].forEach((item) => {
+      if (!item.id) return;
+      merged.set(item.id, item);
+    });
+    return Array.from(merged.values());
+  }, [currentPerson, peopleOptions]);
   const selectedLabel = selectedObjectLabel(selectedScopeKey, workObjects);
   const lastFetchTime = selectedWorkObject?.lastCandidateFetchAt ? formatTime(selectedWorkObject.lastCandidateFetchAt) : null;
   const activeRefreshRuns = useMemo(() => refreshRuns.filter((run) => run.status === 'queued' || run.status === 'running'), [refreshRuns]);
@@ -972,6 +946,20 @@ export function IntelligenceStationView({
   useEffect(() => {
     flashRef.current = flash;
   }, [flash]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getMentionCandidates('')
+      .then((items) => {
+        if (!cancelled) setPeopleOptions(items);
+      })
+      .catch(() => {
+        if (!cancelled) setPeopleOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => () => {
     refreshPollTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -1322,8 +1310,9 @@ export function IntelligenceStationView({
         ddl: taskDraft.ddl?.trim() || '本周',
         ownerId: taskDraft.ownerId ?? currentOwnerId,
         ownerName: taskDraft.ownerName?.trim() || currentOwnerName,
+        collaboratorIds: (taskDraft.collaboratorIds || []).filter((id) => id && id !== (taskDraft.ownerId ?? currentOwnerId)),
         listId: taskDraft.listId || defaultListId,
-        tags: taskDraft.tags.length ? taskDraft.tags : ['情报跟进'],
+        tags: taskDraft.tags?.length ? taskDraft.tags : ['情报跟进'],
         note: taskDraft.note?.trim() || '',
       });
       setTaskDraftTarget(null);
@@ -1360,8 +1349,14 @@ export function IntelligenceStationView({
         [questionItem.id]: [...history, response.message],
       }));
     } catch (error) {
-      flash('error', error instanceof Error ? error.message : '追问失败');
-      setChatMessagesByItemId((current) => ({ ...current, [questionItem.id]: visibleMessages }));
+      const errorMessage = error instanceof Error ? error.message : '追问失败';
+      flash('error', errorMessage);
+      const assistantErrorMessage: TopicCandidateChatMessage = {
+        role: 'assistant',
+        content: `这次 AI 追问没有稳定返回：${errorMessage}`,
+        createdAt: new Date().toISOString(),
+      };
+      setChatMessagesByItemId((current) => ({ ...current, [questionItem.id]: [...history, assistantErrorMessage] }));
     } finally {
       setQuestionPending(false);
     }
@@ -1700,30 +1695,35 @@ export function IntelligenceStationView({
             <div className="mt-4 min-h-[180px] flex-1 overflow-y-auto rounded-md border border-gray-100 bg-gray-50 p-3">
               {visibleMessages.length === 0 ? (
                 <div className="space-y-4">
-                  {questionPromptGroups.map((group) => (
-                    <div key={group.title}>
-                      <p className="text-[12px] font-black text-gray-500">{group.title}</p>
-                      <div className="mt-2 space-y-1.5">
-                        {group.questions.map((question, index) => (
-                          <button
-                            key={question}
-                            type="button"
-                            onClick={() => setQuestionDraft(question)}
-                            className="block w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-left text-[13px] font-semibold leading-5 text-gray-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-800"
-                          >
-                            {group.ordered ? `${index + 1}. ` : ''}{question}
-                          </button>
-                        ))}
+                  {questionPromptGroups.length === 0 ? (
+                    <p className="rounded-md bg-white px-3 py-2 text-[13px] font-semibold leading-6 text-gray-500">
+                      这张卡暂未生成推荐追问，可以直接输入一个具体判断点。
+                    </p>
+                  ) : (
+                    questionPromptGroups.map((group) => (
+                      <div key={group.questions.join('|')}>
+                        <div className="space-y-1.5">
+                          {group.questions.map((question, index) => (
+                            <button
+                              key={question}
+                              type="button"
+                              onClick={() => setQuestionDraft(question)}
+                              className="block w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-left text-[13px] font-semibold leading-5 text-gray-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-800"
+                            >
+                              {group.ordered ? `${index + 1}. ` : ''}{question}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2">
                   {visibleMessages.map((message, index) => (
                     <div
                       key={`${message.createdAt}-${index}`}
-                      className={`rounded-md px-3 py-2 text-[13px] leading-6 ${message.role === 'user' ? 'bg-white text-gray-700' : 'bg-gray-950 text-white'}`}
+                      className={`whitespace-pre-wrap rounded-md px-3 py-2 text-[13px] leading-6 ${message.role === 'user' ? 'bg-white text-gray-700' : 'bg-gray-950 text-white'}`}
                     >
                       {message.content}
                     </div>
@@ -1876,10 +1876,77 @@ export function IntelligenceStationView({
                 <textarea
                   value={taskDraft.desc || ''}
                   onChange={(event) => setTaskDraft((current) => current ? { ...current, desc: event.target.value } : current)}
-                  rows={5}
+                  rows={8}
                   className="mt-1 w-full resize-none rounded-md border border-gray-200 px-3 py-2 text-[13px] leading-6 text-gray-800 outline-none focus:border-gray-400"
                 />
               </label>
+              {(taskDraft.ownerRoleHint || (taskDraft.collaboratorRoleHints || []).length > 0) && (
+                <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-[12px] leading-5 text-blue-900">
+                  {taskDraft.ownerRoleHint && (
+                    <p><span className="font-black">负责人建议：</span>{taskDraft.ownerRoleHint}</p>
+                  )}
+                  {(taskDraft.collaboratorRoleHints || []).length > 0 && (
+                    <p className="mt-1"><span className="font-black">协作者建议：</span>{(taskDraft.collaboratorRoleHints || []).join('；')}</p>
+                  )}
+                </div>
+              )}
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="text-[12px] font-black text-gray-500">
+                  负责人
+                  <select
+                    value={taskDraft.ownerId || currentPerson.id}
+                    onChange={(event) => {
+                      const owner = memberOptions.find((person) => person.id === event.target.value) || currentPerson;
+                      setTaskDraft((current) => current ? {
+                        ...current,
+                        ownerId: owner.id,
+                        ownerName: owner.fullName || owner.email || owner.id,
+                        collaboratorIds: (current.collaboratorIds || []).filter((id) => id !== owner.id),
+                      } : current);
+                    }}
+                    className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] font-semibold text-gray-800 outline-none focus:border-gray-400"
+                  >
+                    {memberOptions.map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.fullName || person.email || person.id}{person.isSelf ? '（我）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="text-[12px] font-black text-gray-500">
+                  协作者
+                  <div className="mt-1 max-h-[92px] overflow-y-auto rounded-md border border-gray-200 bg-gray-50 p-2">
+                    {memberOptions.filter((person) => person.id !== (taskDraft.ownerId || currentPerson.id)).length === 0 ? (
+                      <p className="px-2 py-1 text-[12px] font-semibold text-gray-400">暂无可选协作者</p>
+                    ) : (
+                      memberOptions
+                        .filter((person) => person.id !== (taskDraft.ownerId || currentPerson.id))
+                        .map((person) => {
+                          const checked = (taskDraft.collaboratorIds || []).includes(person.id);
+                          return (
+                            <label key={person.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px] font-semibold text-gray-700 hover:bg-white">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) => {
+                                  setTaskDraft((current) => {
+                                    if (!current) return current;
+                                    const currentIds = current.collaboratorIds || [];
+                                    const nextIds = event.target.checked
+                                      ? [...currentIds, person.id]
+                                      : currentIds.filter((id) => id !== person.id);
+                                    return { ...current, collaboratorIds: nextIds };
+                                  });
+                                }}
+                              />
+                              <span>{person.fullName || person.email || person.id}</span>
+                            </label>
+                          );
+                        })
+                    )}
+                  </div>
+                </div>
+              </div>
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="text-[12px] font-black text-gray-500">
                   优先级

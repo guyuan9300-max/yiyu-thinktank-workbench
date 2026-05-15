@@ -7301,8 +7301,11 @@ export interface IntelligenceTaskDraftPayload {
   ddl: string;
   ownerId?: string | null;
   ownerName: string;
+  collaboratorIds?: string[];
   tags: string[];
   note: string;
+  ownerRoleHint?: string;
+  collaboratorRoleHints?: string[];
 }
 
 export interface IntelligenceTaskDraftResponse {

@@ -75,6 +75,49 @@ FOCUS_STOPWORDS = {
     "服务",
     "政策",
 }
+BROAD_QUERY_TERMS = {
+    "全国",
+    "广东",
+    "广州",
+    "深圳",
+    "佛山",
+    "东莞",
+    "珠海",
+    "北京",
+    "上海",
+    "江苏",
+    "浙江",
+    "山东",
+    "四川",
+    "湖南",
+    "湖北",
+    "福建",
+    "广西",
+}
+TIMELY_QUERY_NOISE_TERMS = (
+    "官网",
+    "官方网站",
+    "首页",
+    "简介",
+    "介绍",
+    "资料",
+    "资料卡",
+    "可补充",
+    "已核验",
+    "呈现",
+    "说明从",
+    "它在",
+)
+TIMELY_ROUTE_QUERY_TERMS = {
+    "政策监管": ("政策", "通知"),
+    "资助申报": ("公益创投", "资助", "申报"),
+    "采购招标": ("政府购买服务", "采购", "招标"),
+    "合作方动态": ("合作", "资助方"),
+    "同类机构动态": ("案例", "启动"),
+    "行业风险": ("监管", "合规"),
+    "项目/方法趋势": ("案例", "培训"),
+    "新闻舆情": ("报道", "案例"),
+}
 
 
 def _refresh_cycle_hours(db: Database, content_kind: str) -> int:
@@ -209,6 +252,29 @@ def _dedupe(items: Iterable[str], *, limit: int = 20) -> list[str]:
         if len(result) >= limit:
             break
     return result
+
+
+def _is_timely_query_noise(term: str) -> bool:
+    text = _clean_text(term, max_len=120)
+    if not text:
+        return True
+    if _normalize_domain(text):
+        return True
+    if any(token in text for token in TIMELY_QUERY_NOISE_TERMS):
+        return True
+    return False
+
+
+def _clean_timely_query_atom(term: str) -> str:
+    text = _clean_text(term, max_len=80)
+    text = re.sub(r"^(与|和|及|以及)", "", text)
+    text = re.sub(r"(等有关的?|相关的?|有关的?)", "", text)
+    text = _clean_text(text, max_len=60)
+    return "" if _is_timely_query_noise(text) else text
+
+
+def _timely_route_terms(route_label: str, fallback_terms: tuple[str, ...]) -> tuple[str, ...]:
+    return TIMELY_ROUTE_QUERY_TERMS.get(route_label, fallback_terms[:2])
 
 
 def _profile_tag_terms(strategy: dict[str, object], *, limit: int = 32) -> list[str]:
@@ -888,12 +954,32 @@ def _build_rule_intents(
         timely_stats = _recent_fetch_stats(context, "timely_intelligence")
         strategy = context.get("timelyResearchStrategy") if isinstance(context.get("timelyResearchStrategy"), dict) else {}
         strategy_routes = [item for item in strategy.get("routes", []) or [] if isinstance(item, dict)]
-        strategy_atoms = _dedupe([*_profile_tag_terms(strategy, limit=30), *_as_text_list(strategy.get("searchAtoms"), limit=24)], limit=30)
+        strategy_atoms = _dedupe(
+            [
+                cleaned
+                for cleaned in (
+                    _clean_timely_query_atom(term)
+                    for term in [*_profile_tag_terms(strategy, limit=30), *_as_text_list(strategy.get("searchAtoms"), limit=24)]
+                )
+                if cleaned
+            ],
+            limit=30,
+        )
         strategy_regions = _dedupe(_as_text_list(strategy.get("regions"), limit=6), limit=6)
         timely_surface_inputs = [*base_inputs, *timely_focus_inputs, "search_surface:timely_strategy", *strategy_source_inputs(strategy)]
         if timely_stats["no_results"] > max(4, timely_stats["success"] * 2):
             timely_surface_inputs.append("search_surface:relaxed_after_no_results")
-        timely_atoms = _dedupe([*strategy_atoms, *timely_focus_atoms[:10]], limit=30) or [domain or "公益"]
+        timely_atoms = _dedupe(
+            [
+                cleaned
+                for cleaned in (
+                    _clean_timely_query_atom(term)
+                    for term in [*strategy_atoms, *timely_focus_atoms[:10]]
+                )
+                if cleaned
+            ],
+            limit=30,
+        ) or [domain or "公益"]
         feedback_terms = context.get("feedbackTerms") if isinstance(context.get("feedbackTerms"), dict) else {}
         timely_feedback = feedback_terms.get("timely_intelligence") if isinstance(feedback_terms.get("timely_intelligence"), dict) else {}
         for line in _as_text_list(timely_feedback.get("positive"), limit=6):
@@ -905,24 +991,35 @@ def _build_rule_intents(
             for route in strategy_routes:
                 label = _clean_text(route.get("label"), max_len=40)
                 keywords = tuple(_as_text_list(route.get("keywords"), limit=6))
-                atoms = _dedupe(_as_text_list(route.get("atoms"), limit=8), limit=8)
+                atoms = _dedupe(
+                    [
+                        cleaned
+                        for cleaned in (
+                            _clean_timely_query_atom(term)
+                            for term in _as_text_list(route.get("atoms"), limit=8)
+                        )
+                        if cleaned
+                    ],
+                    limit=8,
+                )
                 if label and keywords:
                     route_specs.append((label, keywords, atoms))
         if not route_specs:
             route_specs = [(label, terms, timely_atoms[:8]) for label, terms in TIMELY_SEARCH_ROUTES]
         for route_label, route_terms, route_atoms in route_specs:
             atoms_for_route = _dedupe([*route_atoms, *timely_atoms], limit=10)
+            route_query_terms = _timely_route_terms(route_label, route_terms)
             for atom in atoms_for_route:
                 route_index += 1
                 query_variants = [
-                    (f"{route_label}：标签变化", _short_query(atom, *route_terms[:2], max_units=4)),
+                    (f"{route_label}：快侦察", _short_query(atom, *route_query_terms[:2], max_units=4)),
                 ]
                 if strategy_regions:
-                    query_variants.append((f"{route_label}：地域主题", _short_query(strategy_regions[0], atom, route_terms[0], max_units=4)))
+                    query_variants.append((f"{route_label}：地域主题", _short_query(strategy_regions[0], atom, route_query_terms[0], max_units=4)))
                 if domain:
-                    query_variants.append((f"{route_label}：领域主题", _short_query(domain, atom, route_terms[0], max_units=4)))
+                    query_variants.append((f"{route_label}：领域主题", _short_query(domain, atom, route_query_terms[0], max_units=4)))
                 if route_label in {"合作方动态", "新闻舆情"} and (object_with_domain or client_name):
-                    query_variants.append((f"{route_label}：公开点名", _short_query(object_with_domain or client_name, route_terms[0], max_units=4)))
+                    query_variants.append((f"{route_label}：公开点名", _short_query(object_with_domain or client_name, route_query_terms[0], max_units=4)))
                 for reason, query in query_variants:
                     if not query:
                         continue
@@ -949,11 +1046,12 @@ def _build_rule_intents(
                     )
         for route_index, (route_label, route_terms) in enumerate(TIMELY_SEARCH_ROUTES, start=1):
             baseline_atom = timely_atoms[(route_index - 1) % len(timely_atoms)] if timely_atoms else "公益"
+            route_query_terms = _timely_route_terms(route_label, route_terms)
             intents.append(
                 _make_intent(
                     scope=scope,
                     content_kind="timely_intelligence",
-                    query=_short_query(baseline_atom, *route_terms[:2], max_units=4),
+                    query=_short_query(baseline_atom, *route_query_terms[:2], max_units=4),
                     reason=f"时效情报标签基础路线：{route_label}。",
                     priority=86 - route_index,
                     exclude_terms=excludes,

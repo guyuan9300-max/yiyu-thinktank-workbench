@@ -29,6 +29,25 @@ GENERIC_QUERY_TERMS = {
     "官网",
     "官方网站",
 }
+BROAD_QUERY_TERMS = {
+    "全国",
+    "广东",
+    "广州",
+    "深圳",
+    "佛山",
+    "东莞",
+    "珠海",
+    "北京",
+    "上海",
+    "江苏",
+    "浙江",
+    "山东",
+    "四川",
+    "湖南",
+    "湖北",
+    "福建",
+    "广西",
+}
 
 
 @dataclass(frozen=True)
@@ -310,8 +329,13 @@ def _expand_queries(query: str) -> list[str]:
     queries = [query]
     parts = [part.strip() for part in re.split(r"\s+", query) if part.strip()]
     candidate_terms = [part for part in parts if part not in GENERIC_QUERY_TERMS and not part.startswith("site:")]
-    if candidate_terms:
-        primary = candidate_terms[0]
+    specific_terms = [part for part in candidate_terms if part not in BROAD_QUERY_TERMS]
+    if len(specific_terms) >= 2:
+        compact = " ".join(specific_terms[:4])
+        if compact and compact not in queries:
+            queries.append(compact)
+    elif len(parts) <= 3 and specific_terms:
+        primary = specific_terms[0]
         if primary not in queries:
             queries.append(primary)
     return queries[:2]
@@ -320,6 +344,9 @@ def _expand_queries(query: str) -> list[str]:
 def _ranking_terms(query: str) -> list[str]:
     parts = [part.strip() for part in re.split(r"\s+", query) if part.strip()]
     terms = [part for part in parts if part not in GENERIC_QUERY_TERMS and not part.startswith("site:")]
+    specific_terms = [part for part in terms if part not in BROAD_QUERY_TERMS]
+    if specific_terms:
+        terms = specific_terms
     return terms[:4]
 
 

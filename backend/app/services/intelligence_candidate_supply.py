@@ -21,6 +21,11 @@ from app.services.intelligence_feedback import (
     source_domain_from_url,
     source_feedback_adjustment,
 )
+from app.services.intelligence_ai_runner import (
+    generate_intelligence_json,
+    generate_intelligence_text,
+    intelligence_ai_ready,
+)
 from app.services.intelligence_search_intents import GeneratedSearchIntent, IntelligenceSearchScope
 from app.services.intelligence_timely_strategy import (
     build_timely_research_strategy,
@@ -128,6 +133,44 @@ AGGREGATOR_DOMAINS = {
 }
 TIMELY_DETAIL_REVIEW_LIMIT = 24
 TIMELY_AI_REVIEW_LIMIT = 12
+TIMELY_PROMOTION_LIMIT_PER_REFRESH = 5
+BROAD_QUERY_TERMS = {
+    "全国",
+    "广东",
+    "广州",
+    "深圳",
+    "佛山",
+    "东莞",
+    "珠海",
+    "北京",
+    "上海",
+    "江苏",
+    "浙江",
+    "山东",
+    "四川",
+    "湖南",
+    "湖北",
+    "福建",
+    "广西",
+}
+TIMELY_SOURCE_QUERY_TERMS = {
+    "gov_policy": ("政策", "通知"),
+    "grant": ("公益创投", "资助", "申报"),
+    "procurement": ("政府购买服务", "采购", "招标"),
+    "regulatory_risk": ("监管", "合规"),
+    "partner_peer": ("合作", "资助方"),
+    "charity_media": ("报道", "案例"),
+}
+TIMELY_ROUTE_SOURCE_TYPES = {
+    "政策监管": ("web_search", "gov_policy", "regulatory_risk"),
+    "资助申报": ("web_search", "grant", "charity_media", "partner_peer"),
+    "采购招标": ("web_search", "procurement"),
+    "合作方动态": ("web_search", "partner_peer", "charity_media"),
+    "同类机构动态": ("web_search", "charity_media", "partner_peer"),
+    "行业风险": ("web_search", "regulatory_risk", "gov_policy"),
+    "项目/方法趋势": ("web_search", "charity_media", "partner_peer"),
+    "新闻舆情": ("web_search", "charity_media"),
+}
 
 OFFICIAL_SITE_SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...], int], ...] = (
     ("官网栏目：关于/简介", "关于 我们 简介 机构介绍", ("profile_completion",), 96),
@@ -173,6 +216,10 @@ PROFILE_MATERIAL_TERMS = (
 TIMELY_MATERIAL_TERMS = (
     "申报",
     "征集",
+    "资助",
+    "扶持",
+    "公益创投",
+    "政府购买",
     "招标",
     "采购",
     "中标",
@@ -238,6 +285,46 @@ GENERIC_MACRO_TIMELY_TERMS = (
     "理论研讨",
     "行业观察",
     "发展综述",
+)
+OFF_TOPIC_TIMELY_TERMS = (
+    "光伏",
+    "白酒",
+    "制造业",
+    "智能制造",
+    "房地产",
+    "私募",
+    "证券",
+    "股票",
+    "盘龙药业",
+    "医药股",
+    "人口计生",
+    "生育政策",
+    "汽车产业",
+    "半导体",
+)
+CORE_PUBLIC_WELFARE_TIMELY_TERMS = (
+    "公益",
+    "慈善",
+    "社会组织",
+    "基金会",
+    "民政",
+    "未成年人",
+    "儿童",
+    "青少年",
+    "困境儿童",
+    "心理健康",
+    "社区服务",
+    "志愿服务",
+    "公益创投",
+    "政府购买",
+)
+TIMELY_REVIEW_BUCKET_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("grant", ("资助", "扶持", "公益创投", "申报", "征集", "截止", "基金会")),
+    ("procurement", ("政府购买", "采购", "招标", "中标", "成交", "磋商", "比选")),
+    ("policy", ("政策", "通知", "办法", "意见", "指南", "民政", "未成年人", "心理健康")),
+    ("risk", ("监管", "合规", "公开募捐", "处罚", "整改", "风险提示", "规范")),
+    ("case", ("案例", "活动", "启动", "试点", "项目", "平台建设", "服务")),
+    ("partner", ("合作", "联合", "伙伴", "资助方", "同类机构", "社会组织")),
 )
 GENERIC_FOCUS_TERMS = {
     "官网",
@@ -1160,6 +1247,42 @@ def _intent_terms(intent: GeneratedSearchIntent) -> list[str]:
     return terms[:12]
 
 
+def _timely_specific_intent_terms(intent: GeneratedSearchIntent) -> list[str]:
+    return [term for term in _intent_terms(intent) if term not in BROAD_QUERY_TERMS]
+
+
+def _query_tokens(value: str) -> list[str]:
+    tokens: list[str] = []
+    for token in re.split(r"[\s,，;；、/|]+", value or ""):
+        cleaned = _clean_text(token, max_len=42)
+        cleaned = re.sub(r"^(与|和|及|以及)", "", cleaned)
+        cleaned = re.sub(r"(等有关的?|相关的?|有关的?)", "", cleaned)
+        cleaned = _clean_text(cleaned, max_len=42)
+        if len(cleaned) >= 2 and cleaned not in tokens:
+            tokens.append(cleaned)
+    return tokens
+
+
+def _compact_query_terms(*groups: object, limit: int = 6) -> str:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if isinstance(group, (list, tuple, set)):
+            raw_terms = [str(item) for item in group]
+        else:
+            raw_terms = _query_tokens(str(group or ""))
+        for term in raw_terms:
+            for token in _query_tokens(term):
+                key = re.sub(r"\s+", "", token).lower()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                terms.append(token)
+                if len(terms) >= limit:
+                    return " ".join(terms)
+    return " ".join(terms)
+
+
 def _normalize_url(url: str) -> str:
     text = _clean_text(url, max_len=500)
     if not text:
@@ -1281,6 +1404,12 @@ def _looks_like_generic_macro_signal(text: str) -> bool:
     return any(term in text for term in GENERIC_MACRO_TIMELY_TERMS)
 
 
+def _looks_like_off_topic_timely_signal(text: str) -> bool:
+    if not any(term in text for term in OFF_TOPIC_TIMELY_TERMS):
+        return False
+    return not any(term in text for term in CORE_PUBLIC_WELFARE_TIMELY_TERMS)
+
+
 def _external_signal_fast_screen(
     *,
     hit: CandidateHit,
@@ -1292,6 +1421,8 @@ def _external_signal_fast_screen(
     has_signal = _has_external_signal(text, config.source_type)
     if _looks_like_static_timely_hit(text, has_external_signal=has_signal):
         return False, -40.0, ["static_profile_filtered"], "static_profile"
+    if _looks_like_off_topic_timely_signal(text):
+        return False, -40.0, ["off_topic_filtered"], "generic_macro"
     if _looks_like_generic_macro_signal(text):
         return False, -40.0, ["generic_macro_filtered"], "generic_macro"
     signal_terms = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
@@ -1320,6 +1451,12 @@ def _external_signal_fast_screen(
 
 
 def _effective_query(intent: GeneratedSearchIntent, config: SourceConfig) -> str:
+    if intent.content_kind == "timely_intelligence" and config.source_type in TIMELY_SOURCE_TYPES:
+        base_terms = _query_tokens(intent.query)
+        source_terms = [] if config.source_type == "web_search" else list(TIMELY_SOURCE_QUERY_TERMS.get(config.source_type, ()))
+        if config.source_type != "web_search" and config.region and config.region != "全国" and config.region not in base_terms:
+            base_terms = [config.region, *base_terms]
+        return _clean_text(_compact_query_terms(base_terms, source_terms, limit=6), max_len=120)
     region_prefix = "" if config.region == "全国" else f"{config.region} "
     template = config.source_url_template or "{query}"
     if intent.query.strip().lower().startswith("site:") and template.strip().lower().startswith("site:"):
@@ -1427,7 +1564,7 @@ def _source_route_bonus(intent: GeneratedSearchIntent, config: SourceConfig) -> 
     source_type = config.source_type
     bonus = 0.0
     if source_type == "web_search":
-        bonus -= 10
+        bonus += 16 if intent.content_kind == "timely_intelligence" else -10
     if intent.content_kind == "profile_completion":
         if any(term in intent_text for term in ("登记", "信息公开", "社会组织", "统一社会信用代码")):
             if source_type == "social_org_registry":
@@ -1449,7 +1586,7 @@ def _source_route_bonus(intent: GeneratedSearchIntent, config: SourceConfig) -> 
         return bonus
     if any(term in intent_text for term in ("招标", "采购", "政府购买服务", "中标", "成交")):
         if source_type == "procurement":
-            bonus += 20
+            bonus += 36
     if any(term in intent_text for term in ("资助", "申报", "公益创投", "征集", "扶持")):
         if source_type == "grant":
             bonus += 20
@@ -1457,9 +1594,9 @@ def _source_route_bonus(intent: GeneratedSearchIntent, config: SourceConfig) -> 
             bonus += 6
     if any(term in intent_text for term in ("监管", "风险", "合规", "公开募捐", "处罚", "整改")):
         if source_type == "regulatory_risk":
-            bonus += 20
+            bonus += 36
         elif source_type == "gov_policy":
-            bonus += 10
+            bonus += 6
     if any(term in intent_text for term in ("政策", "通知", "办法", "规划", "指南")) and source_type == "gov_policy":
         bonus += 14
     if any(term in intent_text for term in ("合作", "伙伴", "资助方", "同类", "基金会动态")):
@@ -1485,7 +1622,14 @@ def _looks_like_domain_label(value: str) -> bool:
 
 def _source_display_name(draft: CandidateDraft) -> str:
     source = _clean_text(draft.hit.source, max_len=160)
-    if not source or _looks_like_domain_label(source) or source.startswith("http://") or source.startswith("https://"):
+    generic_source_labels = {"公开搜索", "通用公开搜索", "公开来源", "web_search", "搜索结果"}
+    if (
+        not source
+        or source in generic_source_labels
+        or _looks_like_domain_label(source)
+        or source.startswith("http://")
+        or source.startswith("https://")
+    ):
         return _clean_text(draft.hit.title, max_len=160) or source or _domain_label(draft.hit.url)
     return source or draft.source_config.source_name or _domain_label(draft.hit.url)
 
@@ -1817,7 +1961,16 @@ def _hit_matches_timely_context(hit: CandidateHit, intent: GeneratedSearchIntent
         return False
     if not _contains_cjk(text):
         return False
-    return bool(_matched_terms(text, object_terms)) or len(_matched_terms(text, _intent_terms(intent))) >= 2
+    intent_hits = _matched_terms(text, _timely_specific_intent_terms(intent))
+    signal_hits = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
+    if _matched_terms(text, object_terms):
+        return True
+    if len(intent_hits) >= 2:
+        return True
+    # Inspiration-style intelligence often does not name the current object.
+    # Let real external-signal pages reach the later AI strategy review when
+    # they have at least one non-generic object tag match.
+    return bool(intent_hits and signal_hits)
 
 
 def _hit_matches_intelligence_context(hit: CandidateHit, intent: GeneratedSearchIntent, object_terms: list[str]) -> bool:
@@ -2107,6 +2260,50 @@ def _extract_research_evidence(
     )
 
 
+def _fallback_timely_evidence(
+    *,
+    brief: ResearchBrief,
+    draft: CandidateDraft,
+    body_text: str,
+) -> EvidenceExtraction | None:
+    sentences = _split_sentences(body_text)
+    if not sentences:
+        return None
+    text = f"{draft.hit.title} {draft.hit.snippet} {body_text[:2400]}"
+    terms = _unique_items(
+        [*_timely_strategy_terms(brief), *list(EXTERNAL_SIGNAL_TERMS), *list(CORE_PUBLIC_WELFARE_TIMELY_TERMS)],
+        limit=80,
+    )
+    scored: list[tuple[int, str]] = []
+    for sentence in sentences:
+        score = min(len(_matched_terms(sentence, terms)), 6) * 2
+        if any(term in sentence for term in EXTERNAL_SIGNAL_TERMS):
+            score += 5
+        if any(term in sentence for term in CORE_PUBLIC_WELFARE_TIMELY_TERMS):
+            score += 3
+        if score >= 4:
+            scored.append((score, sentence))
+    scored.sort(key=lambda item: (-item[0], len(item[1])))
+    quotes = _unique_items([sentence for _score, sentence in scored], limit=4)
+    if not quotes and any(term in text for term in EXTERNAL_SIGNAL_TERMS):
+        quotes = _unique_items(sentences[:4], limit=4)
+    if not quotes:
+        return None
+    intelligence_type = _timely_intelligence_type(draft, body_text) or "外部变化"
+    focus_hits = _matched_terms(text, _timely_strategy_terms(brief))
+    if not _direct_identity_hits(text, brief) and focus_hits and _has_external_signal(text, draft.source_config.source_type):
+        intelligence_type = "启发型情报"
+    return EvidenceExtraction(
+        summary=quotes[0],
+        facts=quotes,
+        quotes=quotes,
+        focus_hits=focus_hits[:6],
+        missing="AI 研判前保留的候选证据句，需继续判断对象关系和传导链条。",
+        intelligence_type=intelligence_type,
+        timeliness_label=_timeliness_label(draft, intelligence_type),
+    )
+
+
 def _looks_like_template_summary(*values: str) -> bool:
     text = " ".join(values)
     return any(marker in text for marker in TEMPLATE_SUMMARY_MARKERS)
@@ -2126,12 +2323,14 @@ def _timely_ai_output_is_specific(
     joined = " ".join(values)
     if _looks_like_template_summary(*values):
         return False
-    if "资料摘要" in joined or "可复用事实" in joined:
+    if "资料摘要" in joined or "可复用事实" in joined or "通用背景" in joined or "不是基于当前客户原始资料" in joined:
         return False
     if summary in {draft.hit.title, draft.hit.snippet}:
         return False
     normalized_summary = re.sub(r"\s+", "", summary)
-    if any(normalized_summary and normalized_summary == re.sub(r"\s+", "", quote) for quote in evidence.quotes[:4]):
+    if not evidence.quotes:
+        return False
+    if len(joined) < 60:
         return False
     strategy_terms = []
     if brief.timely_strategy:
@@ -2139,7 +2338,27 @@ def _timely_ai_output_is_specific(
         strategy_terms.extend(_as_text_list(brief.timely_strategy.get("serviceTargets"), limit=8))
         strategy_terms.extend(_as_text_list(brief.timely_strategy.get("projectTerms"), limit=8))
     object_or_focus_terms = _unique_items([*brief.object_terms, *brief.timely_focus_terms, *strategy_terms, *evidence.focus_hits], limit=28)
-    if object_or_focus_terms and not _matched_terms(joined, object_or_focus_terms):
+    evidence_text = " ".join(evidence.quotes)
+    weak_anchor_terms = {"合作", "资源", "项目", "服务", "平台", "发展", "支持", "需求", "机会", "广东", "全国"}
+    strong_anchor_terms = [
+        term
+        for term in object_or_focus_terms
+        if len(term) >= 2 and term not in weak_anchor_terms
+    ]
+    core_relation_terms = (
+        "儿童", "青少年", "困境", "心理", "心理健康", "社会组织", "公益创投", "政府购买",
+        "资助", "扶持", "慈善", "公益", "民政", "社区服务", "公开募捐", "志愿服务",
+        "AI 公益", "数字化", "公益组织数字化",
+    )
+    evidence_has_focus = bool(_matched_terms(evidence_text, strong_anchor_terms)) or any(term in evidence_text for term in core_relation_terms)
+    response_has_decision_signal = any(term in joined for term in ("机会", "风险", "约束", "启发", "申报", "合作", "服务对象", "资源", "方案", "材料", "合规", "研判", "窗口", "传导"))
+    action_terms = ("核验", "检查", "评估", "研判", "关注", "比对", "整理", "联系", "纳入", "申报", "跟进", "阅读", "判断")
+    response_mentions_evidence = any(term in joined for term in _unique_items([*evidence.focus_hits, *strong_anchor_terms], limit=12))
+    if response_has_decision_signal and suggested_action and any(term in suggested_action for term in action_terms) and (evidence_has_focus or response_mentions_evidence):
+        return True
+    if object_or_focus_terms and not _matched_terms(joined, object_or_focus_terms) and not (evidence_has_focus and response_has_decision_signal):
+        return False
+    if not evidence_has_focus and not _direct_identity_hits(evidence_text, brief):
         return False
     relation_terms = ("影响", "相关", "对应", "传导", "适用", "机会", "风险", "约束", "趋势", "申报", "合作", "合规", "资源", "服务对象")
     if not any(term in f"{relevance} {impact}" for term in relation_terms):
@@ -2148,6 +2367,231 @@ def _timely_ai_output_is_specific(
     if not any(term in suggested_action for term in action_terms):
         return False
     return True
+
+
+def _timely_structured_ai_response(
+    ai_service: object,
+    *,
+    prompt: str,
+    draft: CandidateDraft,
+    intelligence_type: str,
+) -> AiStructuredResponse | None:
+    """Use a grounded, field-specific call for timely cards instead of generic chat fallback."""
+    compact_prompt = _minimal_timely_ai_prompt(prompt)
+    schema = {
+        "type": "OBJECT",
+        "properties": {
+            "summary": {"type": "STRING"},
+            "relevanceReason": {"type": "STRING"},
+            "impact": {"type": "STRING"},
+            "suggestedAction": {"type": "STRING"},
+            "evidenceGap": {"type": "STRING"},
+            "timeliness": {"type": "STRING"},
+        },
+        "required": ["summary", "relevanceReason", "impact", "suggestedAction", "evidenceGap", "timeliness"],
+    }
+    system_instruction = (
+        "你是益语智库的时效情报研究员，只能基于给定网页正文和证据句研判。"
+        "不要写通用背景说明，不要说“以下不是正式分析”，不要输出 Markdown。"
+        "如果证据不足，也要在 evidenceGap 里具体说明不足点；其他字段仍尽量给出审慎判断。"
+        "字段要求：summary 写 80-160 字说明发生了什么、主体、动作和时间窗口；"
+        "relevanceReason 写 100-220 字说明它为什么对当前对象有启发，必须点出对象标签关系；"
+        "impact 写 120-260 字说明机会/风险/约束/趋势如何传导到当前对象；"
+        "suggestedAction 写 60-140 字下一步研判或跟进行动；"
+        "timeliness 写发布时间、截止期、征集期或有效窗口判断。"
+    )
+    result = generate_intelligence_json(
+        ai_service,
+        prompt=compact_prompt,
+        system_instruction=system_instruction,
+        response_schema=schema,
+        timeout_seconds=180.0,
+        max_tokens=1600,
+        temperature=0.2,
+        top_p=0.84,
+        task_kind="deep_analysis",
+        enable_thinking=True,
+    )
+    payload = result.payload if result.ok else None
+    if not isinstance(payload, dict):
+        payload = _timely_labeled_ai_payload(
+            getattr(ai_service, "_qwen_generate", None),
+            compact_prompt,
+            system_instruction,
+            ai_service=ai_service,
+        )
+    if not isinstance(payload, dict):
+        # Backend tests use a narrow AI double that exposes only generate_general_fallback.
+        # Production AiService reaches the runner path above.
+        legacy = getattr(ai_service, "generate_general_fallback", None)
+        if callable(legacy) and not callable(getattr(ai_service, "_qwen_generate", None)):
+            try:
+                legacy_response = legacy(compact_prompt, "情报候选自动分流", subject_name=draft.hit.title)
+            except Exception:
+                legacy_response = None
+            if isinstance(legacy_response, AiStructuredResponse):
+                return legacy_response
+        return None
+    summary = _clean_text(payload.get("summary"), max_len=520)
+    relevance = _clean_text(payload.get("relevanceReason"), max_len=720)
+    impact = _clean_text(payload.get("impact"), max_len=720)
+    suggested_action = _clean_text(payload.get("suggestedAction"), max_len=520)
+    evidence_gap = _clean_text(payload.get("evidenceGap"), max_len=360)
+    timeliness = _clean_text(payload.get("timeliness"), max_len=280)
+    if not any((summary, relevance, impact, suggested_action)):
+        return None
+    analysis_parts = [part for part in (impact, f"证据缺口：{evidence_gap}" if evidence_gap else "") if part]
+    return AiStructuredResponse(
+        content=summary or draft.hit.snippet or draft.hit.title,
+        judgment=relevance,
+        analysis="\n".join(analysis_parts) or impact or relevance,
+        actions=suggested_action,
+        timeline=timeliness or _timeliness_label(draft, intelligence_type),
+    )
+
+
+def _compact_timely_ai_prompt(prompt: str) -> str:
+    text = str(prompt or "")
+    text = re.sub(
+        r"网页正文摘录：([\s\S]*?)(\n请只基于|\Z)",
+        lambda match: f"网页正文摘录：{_clean_text(match.group(1), max_len=600)}{match.group(2)}",
+        text,
+    )
+    text = re.sub(
+        r"已抽取证据句：([^\n]*)",
+        lambda match: f"已抽取证据句：{_clean_text(match.group(1), max_len=320)}",
+        text,
+    )
+    return text[:1300]
+
+
+def _minimal_timely_ai_prompt(prompt: str) -> str:
+    text = _compact_timely_ai_prompt(prompt)
+    def field(label: str, max_len: int) -> str:
+        match = re.search(rf"{re.escape(label)}：([^\n]*)", text)
+        return _clean_text(match.group(1) if match else "", max_len=max_len)
+
+    subject = field("当前对象", 80)
+    atoms = field("对象画像主题", 90)
+    title = field("标题", 120)
+    source = field("来源", 80)
+    query = field("命中搜索意图", 80)
+    intelligence_type = field("情报类型", 40)
+    evidence = field("已抽取证据句", 260)
+    body_match = re.search(r"网页正文摘录：([\s\S]*)", text)
+    body = _clean_text(body_match.group(1) if body_match else "", max_len=360)
+    parts = [
+        f"对象：{subject}" if subject else "",
+        f"对象标签：{_clean_timely_prompt_atoms(atoms)}" if atoms else "",
+        f"外部信号：{title}" if title else "",
+        f"来源：{source}" if source else "",
+        f"类型：{intelligence_type}" if intelligence_type else "",
+        f"搜索方向：{query}" if query else "",
+        f"网页证据：{evidence}" if evidence else "",
+        f"正文片段：{body}" if body else "",
+        "请基于证据判断这条外部信号对当前对象是否有启发。不要假设对象一定符合资格；资格、地域、时间窗口不明时写明需核验。",
+    ]
+    return "\n".join(part for part in parts if part)[:980]
+
+
+def _clean_timely_prompt_atoms(value: str) -> str:
+    raw_terms = _as_text_list(value, limit=8)
+    weak_terms = {"合作机会", "政策导向", "资源", "平台", "基金会"}
+    terms = [term for term in raw_terms if term and term not in weak_terms]
+    return "、".join(terms[:5]) or _clean_text(value, max_len=80)
+
+
+def _timely_labeled_ai_payload(
+    generator: object,
+    prompt: str,
+    system_instruction: str,
+    *,
+    ai_service: object | None = None,
+) -> dict[str, object] | None:
+    if not callable(generator) and not _ai_ready(ai_service):
+        return None
+    labeled_prompt = (
+        f"{prompt}\n\n"
+        "请直接按下面 6 个中文标签回答，每项 2-4 句，必须具体到证据和当前对象标签，不要解释格式：\n"
+        "发生了什么：说明外部信号、主体、动作和时间/窗口。\n"
+        "为什么有关：说明它与当前对象的服务对象、业务方法、资源需求或合规约束的关系。\n"
+        "可能影响：说明机会、风险、约束或趋势如何传导到当前对象。\n"
+        "建议动作：说明下一步最小研判或跟进动作，不强行写成立即执行任务。\n"
+        "证据缺口：说明仍缺哪些资格、地域、截止期、主体身份或适用条件证据。\n"
+        "时效性：说明发布时间、截止期、征集期、有效期或为什么仍在窗口内。"
+    )
+    text = ""
+    if _ai_ready(ai_service):
+        text = _intelligence_ai_text(
+            ai_service,
+            prompt=labeled_prompt,
+            system_instruction=system_instruction + " 请按指定中文标签输出，不要输出 JSON。",
+            timeout_seconds=180.0,
+            max_tokens=1500,
+            temperature=0.22,
+            top_p=0.84,
+            task_kind="deep_analysis",
+        )
+    if not text and callable(generator):
+        try:
+            text = str(
+                generator(
+                    prompt=labeled_prompt,
+                    system_instruction=system_instruction + " 请按指定中文标签输出，不要输出 JSON。",
+                    response_schema=None,
+                    timeout_seconds=150.0,
+                    max_tokens=1300,
+                    temperature=0.22,
+                    top_p=0.84,
+                    enable_thinking=True,
+                    task_kind="deep_analysis",
+                )
+                or ""
+            )
+        except Exception:
+            return None
+    cleaned = str(text or "").strip()
+    if len(cleaned) < 60:
+        return None
+    payload = {
+        "summary": _extract_labeled_value(cleaned, ("发生了什么", "summary", "事件")),
+        "relevanceReason": _extract_labeled_value(cleaned, ("为什么有关", "相关性", "启发")),
+        "impact": _extract_labeled_value(cleaned, ("可能影响", "影响", "传导链条")),
+        "suggestedAction": _extract_labeled_value(cleaned, ("建议动作", "下一步", "行动")),
+        "evidenceGap": _extract_labeled_value(cleaned, ("证据不足", "证据缺口", "不足")),
+        "timeliness": _extract_labeled_value(cleaned, ("时效性", "时间性", "有效窗口")),
+    }
+    if not any(str(value or "").strip() for value in payload.values()):
+        lines = [
+            _clean_text(re.sub(r"^\s*[-*]?\s*(?:[一二三四五六]、|\d+[.、])?\s*", "", line), max_len=700)
+            for line in cleaned.splitlines()
+            if _clean_text(line, max_len=20)
+        ]
+        if len(lines) >= 4:
+            payload.update(
+                {
+                    "summary": lines[0],
+                    "relevanceReason": lines[1],
+                    "impact": lines[2],
+                    "suggestedAction": lines[3],
+                    "evidenceGap": lines[4] if len(lines) >= 5 else "",
+                    "timeliness": lines[5] if len(lines) >= 6 else "",
+                }
+            )
+    return payload
+
+
+def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    next_labels = "发生了什么|为什么有关|相关性|启发|可能影响|影响|传导链条|建议动作|下一步|行动|证据不足|证据缺口|不足|时效性|时间性|有效窗口"
+    match = re.search(
+        rf"(?:^|\n)\s*(?:{label_pattern})\s*[:：]\s*([\s\S]*?)(?=\n\s*(?:{next_labels})\s*[:：]|\Z)",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return _clean_text(match.group(1), max_len=700)
+    return ""
 
 
 def _map_profile_tags(intent: GeneratedSearchIntent, hit: CandidateHit, body_text: str, positive_rules: list[str]) -> list[str]:
@@ -2404,7 +2848,7 @@ def _build_profile_enrichment(
     mapped_tags: list[str],
     evidence: EvidenceExtraction,
 ) -> tuple[str, list[str], str] | None:
-    if not _ai_ready(ai_service) or not hasattr(ai_service, "generate_general_fallback"):
+    if not _ai_ready(ai_service):
         return None
     prompt = "\n".join(
         [
@@ -2421,10 +2865,23 @@ def _build_profile_enrichment(
             "不要写“已围绕标题整理”“内部判断”等模板话，不要把下一步建议混进可复用事实。",
         ]
     )
-    try:
-        response = ai_service.generate_general_fallback(prompt, "资料补全核验摘要", subject_name=draft.hit.title)
-    except Exception:
+    raw_text = _intelligence_ai_text(
+        ai_service,
+        prompt=prompt,
+        system_instruction=(
+            "你是资料补全研究员。必须只基于给定网页正文和证据句提炼资料事实。"
+            "不要写通用背景，不要写不能被证据支持的判断。"
+            "请严格使用：资料摘要：...\\n可复用事实：\\n- ...\\n- ...\\n证据缺口：..."
+        ),
+        timeout_seconds=90.0,
+        max_tokens=1100,
+        temperature=0.24,
+        top_p=0.86,
+        task_kind="deep_analysis",
+    )
+    if not raw_text:
         return None
+    response = AiStructuredResponse(content=raw_text, analysis=raw_text, actions=raw_text, judgment=raw_text, timeline="")
     if not isinstance(response, AiStructuredResponse):
         return None
     summary = _clean_text(response.content or response.judgment or "", max_len=500)
@@ -3154,6 +3611,100 @@ def _score_candidate(
     return min(float(score), 98.0), signal_count, [*matched_object_terms, *matched_intent_terms]
 
 
+def _timely_review_bucket(draft: CandidateDraft) -> str:
+    text = f"{draft.intent.query} {draft.intent.reason} {draft.hit.title} {draft.hit.snippet} {draft.source_config.source_type}"
+    for bucket, terms in TIMELY_REVIEW_BUCKET_TERMS:
+        if any(term in text for term in terms):
+            return bucket
+    if any(term in text for term in CORE_PUBLIC_WELFARE_TIMELY_TERMS):
+        return "sector"
+    return "other"
+
+
+def _timely_review_priority(draft: CandidateDraft, brief: ResearchBrief, *, timestamp: str | None = None) -> float:
+    text = f"{draft.intent.query} {draft.intent.reason} {draft.hit.title} {draft.hit.snippet} {draft.hit.source}"
+    keep, external_bonus, flags, _reject_kind = _external_signal_fast_screen(
+        hit=draft.hit,
+        intent=draft.intent,
+        config=draft.source_config,
+        brief=brief,
+    )
+    if not keep:
+        return -1000.0
+    score = float(draft.confidence_score) + external_bonus
+    signal_hits = _matched_terms(text, list(EXTERNAL_SIGNAL_TERMS))
+    tag_hits = _matched_terms(text, _timely_strategy_terms(brief))
+    core_hits = _matched_terms(text, list(CORE_PUBLIC_WELFARE_TIMELY_TERMS))
+    score += min(len(signal_hits), 5) * 5
+    score += min(len(tag_hits), 6) * 4
+    score += min(len(core_hits), 4) * 3
+    if "inspiration_signal" in flags:
+        score += 10
+    if draft.source_config.source_type == "web_search":
+        score += 8
+    elif draft.source_config.source_type in {"grant", "procurement", "gov_policy", "regulatory_risk"}:
+        score += 10
+    if draft.hit.published_at:
+        published_dt = _parse_publication_date(draft.hit.published_at)
+        now_dt = _parse_iso(timestamp) if timestamp else datetime.now()
+        if published_dt and now_dt:
+            age = now_dt - published_dt
+            if age <= timedelta(days=30):
+                score += 18
+            elif age <= timedelta(days=90):
+                score += 10
+            elif not any(term in text for term in ("截止", "有效期", "征集", "申报", "仍在", "2026")):
+                score -= 24
+    if _looks_like_off_topic_timely_signal(text):
+        score -= 80
+    if _looks_like_generic_macro_signal(text):
+        score -= 45
+    return score
+
+
+def _select_timely_review_drafts(
+    drafts: list[CandidateDraft],
+    *,
+    brief: ResearchBrief,
+    timestamp: str,
+    detail_limit: int,
+    ai_limit: int,
+) -> tuple[set[str], set[str]]:
+    ranked = [
+        (draft, _timely_review_priority(draft, brief, timestamp=timestamp), _timely_review_bucket(draft))
+        for draft in drafts
+        if draft.content_kind == "timely_intelligence"
+    ]
+    ranked = [(draft, score, bucket) for draft, score, bucket in ranked if score > 0]
+    buckets: dict[str, list[tuple[CandidateDraft, float]]] = {}
+    for draft, score, bucket in ranked:
+        buckets.setdefault(bucket, []).append((draft, score))
+    for items in buckets.values():
+        items.sort(key=lambda item: (-item[1], item[0].hit.title))
+
+    selected: list[CandidateDraft] = []
+    bucket_order = ["grant", "procurement", "policy", "risk", "case", "partner", "sector", "other"]
+    while len(selected) < detail_limit:
+        advanced = False
+        for bucket in bucket_order:
+            items = buckets.get(bucket) or []
+            while items and any(existing.dedupe_key == items[0][0].dedupe_key for existing in selected):
+                items.pop(0)
+            if not items:
+                continue
+            selected.append(items.pop(0)[0])
+            advanced = True
+            if len(selected) >= detail_limit:
+                break
+        if not advanced:
+            break
+
+    selected_ids = {draft.id for draft in selected}
+    selected_scores = {draft.id: _timely_review_priority(draft, brief, timestamp=timestamp) for draft in selected}
+    ai_selected = sorted(selected, key=lambda item: (-selected_scores.get(item.id, 0), item.hit.title))[:ai_limit]
+    return selected_ids, {draft.id for draft in ai_selected}
+
+
 def _apply_feedback_to_candidate_score(
     db: Database,
     *,
@@ -3204,6 +3755,30 @@ def _profile_source_window(intent: GeneratedSearchIntent) -> int:
     return 3
 
 
+def _timely_route_label(intent: GeneratedSearchIntent) -> str:
+    for item in intent.source_inputs:
+        if item.startswith("timely_route:"):
+            return item.split(":", 1)[1]
+    text = f"{intent.query} {intent.reason}"
+    if any(term in text for term in ("招标", "采购", "政府购买服务", "中标", "成交", "比选")):
+        return "采购招标"
+    if any(term in text for term in ("资助", "申报", "公益创投", "征集", "扶持")):
+        return "资助申报"
+    if any(term in text for term in ("公开募捐", "监管", "风险", "处罚", "整改", "合规")):
+        return "行业风险"
+    if any(term in text for term in ("政策", "通知", "办法", "规范", "民政")):
+        return "政策监管"
+    return ""
+
+
+def _timely_allowed_source_types(intent: GeneratedSearchIntent) -> set[str]:
+    route_label = _timely_route_label(intent)
+    configured = TIMELY_ROUTE_SOURCE_TYPES.get(route_label)
+    if configured:
+        return set(configured)
+    return {"web_search", "charity_media", "partner_peer", "gov_policy", "grant"}
+
+
 def _selected_fetch_tasks(
     db: Database,
     intents: list[GeneratedSearchIntent],
@@ -3233,9 +3808,15 @@ def _selected_fetch_tasks(
         kind_task_count = 0
         for intent in kind_intents:
             allowed_profile_types = _profile_allowed_source_types(intent) if content_kind == "profile_completion" else set()
-            current_source_window = _profile_source_window(intent) if content_kind == "profile_completion" else source_window
+            if content_kind == "timely_intelligence":
+                allowed_timely_types = _timely_allowed_source_types(intent)
+                current_source_window = 3
+                eligible_configs = [item for item in kind_configs if item.source_type in allowed_timely_types]
+            else:
+                current_source_window = _profile_source_window(intent)
+                eligible_configs = [item for item in kind_configs if item.source_type in allowed_profile_types]
             routed_configs = sorted(
-                [item for item in kind_configs if content_kind != "profile_completion" or item.source_type in allowed_profile_types],
+                eligible_configs,
                 key=lambda item: (
                     -(
                         _source_priority_score_for_kind(db, item, content_kind=content_kind, timestamp=timestamp)
@@ -3245,6 +3826,10 @@ def _selected_fetch_tasks(
                     item.source_name,
                 ),
             )
+            if content_kind == "timely_intelligence":
+                web_configs = [item for item in routed_configs if item.source_type == "web_search"]
+                other_configs = [item for item in routed_configs if item.source_type != "web_search"]
+                routed_configs = [*web_configs[:1], *other_configs]
             for config in routed_configs[:current_source_window]:
                 intent_site_domain = _site_domain_from_text(intent.query)
                 config_site_domain = _site_domain_from_text(config.source_url_template)
@@ -3254,6 +3839,8 @@ def _selected_fetch_tasks(
                     continue
                 effective_query = _effective_query(intent, config)
                 query_key = re.sub(r"\s+", "", effective_query).lower()
+                if content_kind == "timely_intelligence":
+                    query_key = f"{config.source_type}:{query_key}"
                 if query_key in seen_effective_queries:
                     continue
                 seen_effective_queries.add(query_key)
@@ -3478,6 +4065,16 @@ def _apply_source_classification_delta(
 
 
 def _is_high_confidence(draft: CandidateDraft) -> tuple[bool, str]:
+    if draft.content_kind == "timely_intelligence":
+        if (
+            draft.confidence_score >= 55
+            and (
+                draft.signal_count >= 2
+                or any(flag in draft.quality_flags for flag in ("external_signal", "tag_relevant_signal", "inspiration_signal"))
+                or any(term in f"{draft.hit.title} {draft.hit.snippet}" for term in EXTERNAL_SIGNAL_TERMS)
+            )
+        ):
+            return True, "候选呈现外部信号，进入时效研判流程"
     object_hit = any(term in f"{draft.hit.title} {draft.hit.snippet}" for term in draft.matched_terms[:4])
     if draft.source_config.reliability_tier == "strong" and object_hit and draft.confidence_score >= 70:
         return True, "来源和内容命中工作对象，进入核验流程"
@@ -3487,13 +4084,36 @@ def _is_high_confidence(draft: CandidateDraft) -> tuple[bool, str]:
 
 
 def _ai_ready(ai_service: object | None) -> bool:
-    if ai_service is None or not hasattr(ai_service, "get_health"):
-        return False
-    try:
-        health = ai_service.get_health()
-        return bool(getattr(health, "ready", False)) and str(getattr(health, "provider", "mock")) != "mock"
-    except Exception:
-        return False
+    return intelligence_ai_ready(ai_service)
+
+
+def _intelligence_ai_text(
+    ai_service: object | None,
+    *,
+    prompt: str,
+    system_instruction: str,
+    timeout_seconds: float = 90.0,
+    max_tokens: int = 1000,
+    temperature: float = 0.28,
+    top_p: float = 0.88,
+    task_kind: str = "default",
+) -> str:
+    """Shared AI text path for intelligence analysis with long timeout and retries."""
+    result = generate_intelligence_text(
+        ai_service,
+        prompt=prompt,
+        system_instruction=system_instruction,
+        timeout_seconds=max(120.0, timeout_seconds),
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        task_kind="deep_analysis" if task_kind == "default" else task_kind,
+        enable_thinking=True,
+        min_chars=20,
+    )
+    if not result.ok:
+        logger.warning("intelligence AI text failed: %s", result.error)
+    return result.text.strip()
 
 
 def _timely_intelligence_type(draft: CandidateDraft, body_text: str = "") -> str | None:
@@ -3544,6 +4164,8 @@ def _profile_published_at(draft: CandidateDraft, body_text: str) -> str | None:
     header = _clean_text(f"{draft.hit.title} {draft.hit.snippet} {body_text[:1200]}", max_len=1800)
     patterns = (
         r"(?:发布时间|发布日期|发表时间|更新于|来源[:：][^0-9]{0,40}|作者[:：][^0-9]{0,40}|写在前面[:：]?)[:：]?\s*(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})",
+        r"(?:成文日期|发布日期|发布时间|日期|时间)[:：]\s*(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})",
+        r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})\s+\d{1,2}:\d{2}\s*(?:来源|发布|浏览|\(|（)",
         r"(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})\s*(?:来源|作者|写在前面|编者按)",
     )
     for pattern in patterns:
@@ -3552,11 +4174,18 @@ def _profile_published_at(draft: CandidateDraft, body_text: str) -> str | None:
             continue
         year, month, day = match.group(1), match.group(2), match.group(3)
         return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    url_date = re.search(r"/(20\d{2})[-_/]?(\d{2})[-_/]?(\d{2})(?:/|_|-|\\.|$)", draft.hit.url or "")
+    if url_date:
+        return f"{int(url_date.group(1)):04d}-{int(url_date.group(2)):02d}-{int(url_date.group(3)):02d}"
     return None
 
 
-def _timely_followup_questions(draft: CandidateDraft, intelligence_type: str) -> list[str]:
-    object_name = draft.intent.source_inputs[0].replace("client:", "") if draft.intent.source_inputs else "当前客户/项目"
+def _fallback_timely_followup_questions(
+    draft: CandidateDraft,
+    intelligence_type: str,
+    brief: ResearchBrief,
+) -> list[str]:
+    object_name = brief.scope.display_name or "当前客户/项目"
     base = [
         f"这条外部变化会通过什么链条影响{object_name}？",
         f"它和{object_name}的业务、对象、地域、资源需求分别有多强相关？",
@@ -3568,7 +4197,67 @@ def _timely_followup_questions(draft: CandidateDraft, intelligence_type: str) ->
         base.insert(1, "机会中提到的服务对象和当前客户/项目关注对象的相关度有多高？")
     if intelligence_type == "合作方动态":
         base.insert(1, "这条动态说明资助方或合作方偏好发生了什么变化？")
-    return _unique_items(base, limit=5)
+    return _unique_items(base, limit=3)
+
+
+def _parse_ai_followup_questions(text: str) -> list[str]:
+    questions: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = _clean_text(
+            re.sub(r"^\s*(?:[-*]|\d+[.、)]|[一二三四五六七八九十]+[、.])\s*", "", raw_line),
+            max_len=120,
+        )
+        if not line:
+            continue
+        for part in re.split(r"[；;]\s*", line):
+            question = _clean_text(part, max_len=120)
+            if not question:
+                continue
+            if not question.endswith(("？", "?")) and any(term in question for term in ("什么", "是否", "如何", "哪些", "多大", "怎样")):
+                question = f"{question}？"
+            if question.endswith(("？", "?")) and not any(weak in question for weak in ("这是什么", "有哪些要点", "怎么跟进")):
+                questions.append(question)
+    return _unique_items(questions, limit=3)
+
+
+def _timely_ai_followup_questions(
+    ai_service: object | None,
+    *,
+    draft: CandidateDraft,
+    brief: ResearchBrief,
+    intelligence_type: str,
+    summary: str,
+    relevance: str,
+    impact: str,
+    suggested_action: str,
+    evidence: EvidenceExtraction,
+) -> list[str]:
+    prompt = "\n".join(
+        [
+            f"当前对象：{brief.scope.display_name or '当前客户/项目'}",
+            f"情报类型：{intelligence_type}",
+            f"标题：{draft.hit.title}",
+            f"发生了什么：{summary}",
+            f"为什么有关：{relevance}",
+            f"可能影响：{impact}",
+            f"建议动作：{suggested_action}",
+            f"证据句：{'；'.join(evidence.quotes[:3])}",
+            "请为这张情报卡生成 2-3 条推荐追问。问题必须围绕传导链条、对象相关度、证据缺口或下一步判断，且要贴合这张卡的具体内容。",
+            "只输出问题本身，每行一个，不要标题，不要解释。",
+        ]
+    )
+    raw = _intelligence_ai_text(
+        ai_service,
+        prompt=prompt,
+        system_instruction="你是资讯情报站的追问设计助手。只生成具体、深入、可继续分析的问题。",
+        timeout_seconds=45.0,
+        max_tokens=320,
+        temperature=0.28,
+        top_p=0.88,
+        task_kind="deep_analysis",
+    )
+    questions = _parse_ai_followup_questions(str(raw or ""))
+    return questions
 
 
 def _timely_candidate_gate(draft: CandidateDraft, body_text: str = "", brief: ResearchBrief | None = None) -> tuple[bool, str, str | None]:
@@ -3625,15 +4314,16 @@ def _build_timely_enrichment(
     if not passed or not intelligence_type:
         draft.hit.snippet = draft.hit.snippet or reason
         return None
-    if not _ai_ready(ai_service) or not hasattr(ai_service, "generate_general_fallback"):
+    if not _ai_ready(ai_service):
         return None
-    followups = _timely_followup_questions(draft, intelligence_type)
     strategy = brief.timely_strategy or {}
     strategy_routes = []
     for route in strategy.get("routes") or []:
         if isinstance(route, dict) and route.get("label"):
             strategy_routes.append(_clean_text(route.get("label"), max_len=24))
     strategy_atoms = _as_text_list(strategy.get("searchAtoms"), limit=10)
+    body_excerpt = _clean_text(body_text, max_len=1200)
+    evidence_text = _clean_text("；".join(evidence.quotes[:4]), max_len=900)
     prompt = "\n".join(
         [
             f"当前对象：{strategy.get('objectName') or brief.scope.display_name or '当前客户/项目'}",
@@ -3644,16 +4334,21 @@ def _build_timely_enrichment(
             f"搜索短摘：{draft.hit.snippet}",
             f"命中搜索意图：{draft.intent.query}",
             f"情报类型：{intelligence_type}",
-            f"已抽取证据句：{'；'.join(evidence.quotes[:4])}",
-            f"网页正文摘录：{body_text[:3200]}",
+            f"已抽取证据句：{evidence_text}",
+            f"网页正文摘录：{body_excerpt}",
             "请只基于网页正文和证据句整理时效情报卡。",
             "必须输出：发生了什么、为什么和当前客户/项目有关、可能影响、建议动作、证据不足点；不得只复述标题或搜索短摘。",
             "建议动作可以是阅读/研判任务，不要强行写成执行任务；不要使用“先确认负责人、再补材料”这类模板空话。",
+            "不能假设当前对象一定符合资格；资格、地域和窗口不明时，要写成需核验。",
         ]
     )
-    try:
-        response = ai_service.generate_general_fallback(prompt, "情报候选自动分流", subject_name=draft.hit.title)
-    except Exception:
+    response = _timely_structured_ai_response(
+        ai_service,
+        prompt=prompt,
+        draft=draft,
+        intelligence_type=intelligence_type,
+    )
+    if response is None:
         return None
     if not isinstance(response, AiStructuredResponse):
         return None
@@ -3677,6 +4372,17 @@ def _build_timely_enrichment(
         )
     ):
         return None
+    followups = _timely_ai_followup_questions(
+        ai_service,
+        draft=draft,
+        brief=brief,
+        intelligence_type=intelligence_type,
+        summary=summary,
+        relevance=relevance,
+        impact=impact,
+        suggested_action=suggested_action,
+        evidence=evidence,
+    )
     return TimelyEnrichmentResult(
         intelligence_type=intelligence_type,
         timeliness_label=_timeliness_label(draft, intelligence_type),
@@ -3981,14 +4687,17 @@ def _promote_candidate(
             body_text=body_text,
         )
         if evidence is None:
+            evidence = _fallback_timely_evidence(brief=brief, draft=draft, body_text=body_text)
+        if evidence is None:
             strategy_match = evaluate_timely_strategy_match(
                 f"{draft.hit.title} {draft.hit.snippet} {draft.intent.query} {draft.intent.reason} {body_text[:2400]}",
                 brief.timely_strategy,
             )
             strategy_reason = _clean_text(strategy_match.get("reason") if isinstance(strategy_match, dict) else "", max_len=140)
+            strategy_failed = bool(strategy_reason) and (not isinstance(strategy_match, dict) or not bool(strategy_match.get("ok")))
             reason = (
                 f"策略复核未通过：{strategy_reason}"
-                if strategy_reason
+                if strategy_failed
                 else "策略复核未通过：正文未回应当前重点关注，或缺少外部变化与影响链条证据，暂不成卡"
             )
             _update_candidate_verification(
@@ -5144,6 +5853,7 @@ def run_intelligence_candidate_refresh(
     max_fetch_jobs: int = 40,
     hit_fetcher: Callable[[str, SourceConfig], list[CandidateHit | dict[str, object]]] | None = None,
     official_site_hit_fetcher: Callable[[str, SourceConfig], list[CandidateHit | dict[str, object]]] | None = None,
+    timely_promote_limit: int | None = None,
 ) -> CandidateRefreshResult:
     timestamp = now_iso()
     brief = _load_research_brief(db, scope)
@@ -5326,14 +6036,24 @@ def run_intelligence_candidate_refresh(
         for draft in sorted(canonical_by_key.values(), key=lambda item: (-item.confidence_score, item.hit.title))
         if draft.content_kind == "timely_intelligence"
     ]
-    timely_review_ids = {draft.id for draft in timely_review_pool[:TIMELY_DETAIL_REVIEW_LIMIT]}
-    timely_ai_review_ids = {draft.id for draft in timely_review_pool[:TIMELY_AI_REVIEW_LIMIT]}
+    timely_review_ids, timely_ai_review_ids = _select_timely_review_drafts(
+        timely_review_pool,
+        brief=brief,
+        timestamp=timestamp,
+        detail_limit=TIMELY_DETAIL_REVIEW_LIMIT,
+        ai_limit=TIMELY_AI_REVIEW_LIMIT,
+    )
     promoted_count = 0
     duplicate_count = 0
     review_candidate_count = 0
+    timely_promote_limit = TIMELY_PROMOTION_LIMIT_PER_REFRESH if timely_promote_limit is None else max(0, int(timely_promote_limit))
     ordered_drafts = sorted(
         drafts,
-        key=lambda item: 0 if canonical_by_key.get(item.dedupe_key) and canonical_by_key[item.dedupe_key].id == item.id else 1,
+        key=lambda item: (
+            0 if canonical_by_key.get(item.dedupe_key) and canonical_by_key[item.dedupe_key].id == item.id else 1,
+            -item.confidence_score,
+            item.hit.title,
+        ),
     )
     for draft in ordered_drafts:
         existing = db.fetchone(
@@ -5383,6 +6103,20 @@ def run_intelligence_candidate_refresh(
         if should_deep_review:
             if draft.content_kind == "timely_intelligence":
                 review_candidate_count += 1
+        if (
+            should_deep_review
+            and draft.content_kind == "timely_intelligence"
+            and promoted_count >= timely_promote_limit
+        ):
+            db.execute(
+                """
+                UPDATE intelligence_candidate_items
+                SET promotion_reason = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                ("本轮时效情报成卡已达 5 条上限，保留为后台候选诊断", timestamp, draft.id),
+            )
+            continue
         if should_deep_review and _promote_candidate(
             db,
             data_dir=data_dir,
@@ -5582,6 +6316,270 @@ def run_intelligence_candidate_refresh(
         own_official_filtered_count=own_official_filtered_count if has_timely_intents else 0,
         static_profile_filtered_count=static_profile_filtered_count if has_timely_intents else 0,
         generic_macro_filtered_count=generic_macro_filtered_count if has_timely_intents else 0,
+    )
+
+
+def _candidate_source_config_from_row(row: object, scope: IntelligenceSearchScope) -> SourceConfig:
+    return SourceConfig(
+        id=str(row["source_config_id"] or row["cfg_id"] or "existing_candidate_source"),
+        scope_type=str(row["cfg_scope_type"] or scope.scope_type),
+        scope_id=str(row["cfg_scope_id"] or scope.scope_id),
+        client_id=str(row["cfg_client_id"] or scope.client_id),
+        project_module_id=str(row["cfg_project_module_id"] or scope.project_module_id or "") or None,
+        source_type=str(row["cfg_source_type"] or "web_search"),
+        source_name=str(row["cfg_source_name"] or row["source"] or "公开搜索"),
+        source_url_template=str(row["cfg_source_url_template"] or "{query}"),
+        region=str(row["cfg_region"] or "全国"),
+        reliability_tier=str(row["cfg_reliability_tier"] or row["source_tier"] or "standard"),
+        priority=int(row["cfg_priority"] or 50),
+        content_kinds=_as_text_list(_safe_json(str(row["cfg_content_kinds_json"] or "[]"), []), limit=4),
+        enabled=bool(int(row["cfg_enabled"] or 1)),
+        discovery_source=str(row["cfg_discovery_source"] or "existing_candidate"),
+        discovery_reason=str(row["cfg_discovery_reason"] or ""),
+        discovery_samples=[],
+        health_score=float(row["cfg_health_score"] or 70.0),
+        success_count=int(row["cfg_success_count"] or 0),
+        failure_count=int(row["cfg_failure_count"] or 0),
+        candidate_count=int(row["cfg_candidate_count"] or 0),
+        promoted_count=int(row["cfg_promoted_count"] or 0),
+        duplicate_count=int(row["cfg_duplicate_count"] or 0),
+        last_status=str(row["cfg_last_status"] or "unknown"),
+        last_checked_at=str(row["cfg_last_checked_at"] or "") or None,
+        last_success_at=str(row["cfg_last_success_at"] or "") or None,
+        last_failure_at=str(row["cfg_last_failure_at"] or "") or None,
+        next_due_at=str(row["cfg_next_due_at"] or "") or None,
+    )
+
+
+def _candidate_intent_from_row(row: object, scope: IntelligenceSearchScope) -> GeneratedSearchIntent:
+    return GeneratedSearchIntent(
+        id=str(row["intent_id"] or f"intent_existing_{row['id']}"),
+        scope_type=scope.scope_type,
+        scope_id=scope.scope_id,
+        client_id=scope.client_id,
+        project_module_id=scope.project_module_id,
+        content_kind="timely_intelligence",
+        query=str(row["intent_query"] or row["title"] or scope.display_name),
+        exclude_terms=_as_text_list(_safe_json(str(row["intent_exclude_terms_json"] or "[]"), []), limit=12),
+        source_inputs=_as_text_list(_safe_json(str(row["intent_source_inputs_json"] or "[]"), []), limit=16) or [f"client:{scope.scope_id}", "existing_candidate"],
+        reason=str(row["intent_reason"] or "继续复核最近一轮时效候选"),
+        priority=int(row["intent_priority"] or 80),
+        status="ready",
+        input_hash=str(row["intent_input_hash"] or f"existing_candidate:{row['id']}"),
+        expires_at=str(row["intent_expires_at"] or now_iso()),
+    )
+
+
+def _timely_candidate_draft_from_row(row: object, scope: IntelligenceSearchScope) -> CandidateDraft:
+    hit = CandidateHit(
+        title=str(row["title"] or ""),
+        url=str(row["url"] or ""),
+        snippet=str(row["snippet"] or ""),
+        source=str(row["source"] or ""),
+        published_at=str(row["published_at"] or "") or None,
+        provider=str(row["provider"] or "existing_candidate"),
+    )
+    flags = _as_text_list(_safe_json(str(row["quality_flags_json"] or "[]"), []), limit=18)
+    matched_terms = _as_text_list(_safe_json(str(row["matched_terms_json"] or "[]"), []), limit=18)
+    return CandidateDraft(
+        id=str(row["id"]),
+        content_kind="timely_intelligence",
+        intent=_candidate_intent_from_row(row, scope),
+        source_config=_candidate_source_config_from_row(row, scope),
+        fetch_job_id=str(row["fetch_job_id"] or ""),
+        hit=hit,
+        normalized_url=str(row["normalized_url"] or _normalize_url(hit.url)),
+        dedupe_key=str(row["dedupe_key"] or _dedupe_key(hit.title, _normalize_url(hit.url))),
+        matched_terms=matched_terms,
+        confidence_score=float(row["confidence_score"] or 60.0),
+        signal_count=max(1, len(matched_terms)),
+        page_type=str(row["page_type"] or ""),
+        quality_flags=flags,
+    )
+
+
+def continue_timely_candidate_review(
+    db: Database,
+    *,
+    data_dir: Path,
+    ai_service: object | None,
+    scope: IntelligenceSearchScope,
+    since: str | None = None,
+    candidate_limit: int = 60,
+    promote_limit: int = TIMELY_PROMOTION_LIMIT_PER_REFRESH,
+) -> CandidateRefreshResult:
+    timestamp = now_iso()
+    brief = _load_research_brief(db, scope)
+    params: list[object] = [scope.scope_type, scope.scope_id]
+    since_clause = ""
+    if since:
+        since_clause = "AND c.created_at >= ?"
+        params.append(since)
+    rows = db.fetchall(
+        f"""
+        SELECT
+            c.*,
+            s.id AS cfg_id,
+            s.scope_type AS cfg_scope_type,
+            s.scope_id AS cfg_scope_id,
+            s.client_id AS cfg_client_id,
+            s.project_module_id AS cfg_project_module_id,
+            s.source_type AS cfg_source_type,
+            s.source_name AS cfg_source_name,
+            s.source_url_template AS cfg_source_url_template,
+            s.region AS cfg_region,
+            s.reliability_tier AS cfg_reliability_tier,
+            s.priority AS cfg_priority,
+            s.content_kinds_json AS cfg_content_kinds_json,
+            s.enabled AS cfg_enabled,
+            s.discovery_source AS cfg_discovery_source,
+            s.discovery_reason AS cfg_discovery_reason,
+            s.health_score AS cfg_health_score,
+            s.success_count AS cfg_success_count,
+            s.failure_count AS cfg_failure_count,
+            s.candidate_count AS cfg_candidate_count,
+            s.promoted_count AS cfg_promoted_count,
+            s.duplicate_count AS cfg_duplicate_count,
+            s.last_status AS cfg_last_status,
+            s.last_checked_at AS cfg_last_checked_at,
+            s.last_success_at AS cfg_last_success_at,
+            s.last_failure_at AS cfg_last_failure_at,
+            s.next_due_at AS cfg_next_due_at,
+            i.query AS intent_query,
+            i.exclude_terms_json AS intent_exclude_terms_json,
+            i.source_inputs_json AS intent_source_inputs_json,
+            i.reason AS intent_reason,
+            i.priority AS intent_priority,
+            i.input_hash AS intent_input_hash,
+            i.expires_at AS intent_expires_at
+        FROM intelligence_candidate_items c
+        LEFT JOIN intelligence_source_configs s ON s.id = c.source_config_id
+        LEFT JOIN intelligence_search_intents i ON i.id = c.intent_id
+        WHERE c.scope_type = ? AND c.scope_id = ?
+          AND c.content_kind = 'timely_intelligence'
+          AND c.classification_status = 'candidate'
+          AND c.summary_status IN ('not_attempted', 'failed')
+          AND c.promoted_intelligence_item_id IS NULL
+          {since_clause}
+        ORDER BY c.created_at DESC, c.confidence_score DESC
+        LIMIT ?
+        """,
+        tuple([*params, int(candidate_limit)]),
+    )
+    drafts = [_timely_candidate_draft_from_row(row, scope) for row in rows]
+    drafts.sort(key=lambda draft: (-_timely_review_priority(draft, brief, timestamp=timestamp), draft.hit.title))
+    promoted_count = 0
+    candidate_ids: list[str] = [draft.id for draft in drafts]
+    for draft in drafts:
+        if promoted_count >= promote_limit:
+            db.execute(
+                "UPDATE intelligence_candidate_items SET promotion_reason = ?, updated_at = ? WHERE id = ?",
+                ("本轮时效情报成卡已达 5 条上限，保留为后台候选诊断", timestamp, draft.id),
+            )
+            continue
+        if _promote_candidate(
+            db,
+            data_dir=data_dir,
+            ai_service=ai_service,
+            scope=scope,
+            brief=brief,
+            draft=draft,
+            timestamp=timestamp,
+            allow_ai_review=True,
+        ):
+            promoted_count += 1
+            _apply_source_classification_delta(
+                db,
+                source_config_id=draft.source_config.id,
+                promoted_delta=1,
+                timestamp=timestamp,
+            )
+
+    body_fetched_count = 0
+    verified_count = 0
+    summary_success_count = 0
+    ai_reviewed_count = 0
+    fresh_window_count = 0
+    extended_window_count = 0
+    timely_effective_window_exception_count = 0
+    inspiration_card_count = 0
+    rejection_counts: dict[str, int] = {}
+    if candidate_ids:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        stat_rows = db.fetchall(
+            f"""
+            SELECT body_fetch_status, verification_status, summary_status, promotion_reason, COUNT(1) AS count
+            FROM intelligence_candidate_items
+            WHERE id IN ({placeholders})
+            GROUP BY body_fetch_status, verification_status, summary_status, promotion_reason
+            """,
+            tuple(candidate_ids),
+        )
+        for row in stat_rows:
+            count = int(row["count"] or 0)
+            if str(row["body_fetch_status"] or "") == "fetched":
+                body_fetched_count += count
+            if str(row["verification_status"] or "") == "verified":
+                verified_count += count
+            if str(row["summary_status"] or "") == "generated":
+                summary_success_count += count
+            if str(row["summary_status"] or "") in {"generated", "failed"}:
+                ai_reviewed_count += count
+            reason = _clean_text(str(row["promotion_reason"] or ""), max_len=80)
+            if reason and str(row["summary_status"] or "") != "generated":
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + count
+        fresh_window_count = int(db.scalar(f"SELECT COUNT(1) FROM intelligence_candidate_items WHERE id IN ({placeholders}) AND quality_flags_json LIKE '%fresh_window%'", tuple(candidate_ids)) or 0)
+        extended_window_count = int(db.scalar(f"SELECT COUNT(1) FROM intelligence_candidate_items WHERE id IN ({placeholders}) AND quality_flags_json LIKE '%extended_window%'", tuple(candidate_ids)) or 0)
+        timely_effective_window_exception_count = int(db.scalar(f"SELECT COUNT(1) FROM intelligence_candidate_items WHERE id IN ({placeholders}) AND quality_flags_json LIKE '%effective_window_exception%'", tuple(candidate_ids)) or 0)
+        inspiration_card_count = int(
+            db.scalar(
+                f"""
+                SELECT COUNT(1)
+                FROM intelligence_candidate_items c
+                JOIN intelligence_items i ON i.id = c.promoted_intelligence_item_id
+                WHERE c.id IN ({placeholders}) AND i.intelligence_type = '启发型情报' AND i.user_status = 'active'
+                """,
+                tuple(candidate_ids),
+            )
+            or 0
+        )
+    timely_strategy = brief.timely_strategy or {}
+    timely_profile_gaps = _as_text_list(timely_strategy.get("profileGaps"), limit=8)
+    timely_routes = [item for item in timely_strategy.get("routes", []) or [] if isinstance(item, dict)]
+    status_payload = get_candidate_supply_status_for_scope(db, scope_type=scope.scope_type, scope_id=scope.scope_id)
+    return CandidateRefreshResult(
+        source_config_count=int(db.scalar("SELECT COUNT(1) FROM intelligence_source_configs WHERE scope_type = ? AND scope_id = ? AND enabled = 1", (scope.scope_type, scope.scope_id)) or 0),
+        fetch_job_count=0,
+        candidate_count=len(drafts),
+        promoted_count=promoted_count,
+        duplicate_count=0,
+        failed_count=0,
+        body_fetched_count=body_fetched_count,
+        verified_count=verified_count,
+        summary_success_count=summary_success_count,
+        rejection_counts=rejection_counts,
+        source_coverage_status=str(status_payload.get("sourceCoverageStatus") or "ready"),
+        candidate_refresh_status=str(status_payload.get("candidateRefreshStatus") or "ready"),
+        last_candidate_fetch_at=str(status_payload.get("lastCandidateFetchAt") or timestamp),
+        candidate_counts=dict(status_payload.get("candidateCounts") or {}),
+        scout_candidate_count=len(drafts),
+        review_candidate_count=len(drafts),
+        detail_fetched_count=body_fetched_count,
+        ai_reviewed_count=ai_reviewed_count,
+        fresh_window_count=fresh_window_count,
+        extended_window_count=extended_window_count,
+        effective_window_exception_count=timely_effective_window_exception_count,
+        uncovered_gaps=timely_profile_gaps,
+        timely_profile_ready=bool(timely_strategy.get("profileReady")),
+        timely_profile_score=int(timely_strategy.get("profileScore") or 0),
+        timely_profile_gaps=timely_profile_gaps,
+        timely_strategy_route_count=len(timely_routes),
+        timely_candidate_review_count=len(drafts),
+        timely_effective_window_exception_count=timely_effective_window_exception_count,
+        external_signal_candidate_count=len(drafts),
+        external_signal_review_count=len(drafts),
+        ai_judged_count=ai_reviewed_count,
+        inspiration_card_count=inspiration_card_count,
     )
 
 

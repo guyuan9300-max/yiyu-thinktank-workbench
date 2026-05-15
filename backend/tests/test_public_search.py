@@ -53,3 +53,12 @@ def test_public_search_filters_image_vertical_results() -> None:
     results = public_search._parse_bing_results(html)
 
     assert [item.url for item in results] == ["https://www.yiyu.example/news"]
+
+
+def test_public_search_does_not_relax_long_timely_query_to_region_only() -> None:
+    expanded = public_search._expand_queries("广东 儿童青少年心理健康 公益创投 申报 通知")
+    ranking_terms = public_search._ranking_terms("广东 儿童青少年心理健康 公益创投 申报 通知")
+
+    assert "广东" not in expanded[1:]
+    assert "广东" not in ranking_terms
+    assert any("儿童青少年心理健康" in item or "公益创投" in item for item in expanded)

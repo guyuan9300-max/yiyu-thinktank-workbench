@@ -1981,7 +1981,7 @@ export async function deleteProjectFlow(clientId: string, flowId: string) {
 }
 
 export async function getClientKnowledgeStatus(clientId: string) {
-  return request<KnowledgeStatus>(`/api/v1/clients/${clientId}/knowledge/status`);
+  return request<ClientKnowledgeStatus>(`/api/v1/clients/${clientId}/knowledge/status`);
 }
 
 export async function getClientKnowledgeProgress(clientId: string) {
@@ -3713,7 +3713,7 @@ export async function getCandidateInsights(id: string) {
 
 export async function askCandidateQuestion(id: string, payload: TopicCandidateChatPayload) {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+  const timeoutId = window.setTimeout(() => controller.abort(), 130000);
   try {
     return await request<TopicCandidateChatResponse>(`/api/v1/topics/candidates/${id}/chat`, {
       method: 'POST',
@@ -3723,7 +3723,7 @@ export async function askCandidateQuestion(id: string, payload: TopicCandidateCh
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (/abort|aborted|signal is aborted/i.test(detail)) {
-      throw new Error('大周这次追问超时了。可以直接再问一次，或者把问题问得更具体一点。');
+      throw new Error('大周这次追问超过 2 分钟仍未返回。可以稍后再问一次，或把问题收窄到一个判断点。');
     }
     throw error;
   } finally {
@@ -4210,7 +4210,7 @@ export async function createIntelligenceTask(id: string, payload: IntelligenceTa
 
 export async function askIntelligenceItemQuestion(id: string, payload: TopicCandidateChatPayload) {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+  const timeoutId = window.setTimeout(() => controller.abort(), 260000);
   try {
     return await request<IntelligenceItemChatResponse>(`/api/v1/intelligence/items/${id}/chat`, {
       method: 'POST',
@@ -4220,7 +4220,7 @@ export async function askIntelligenceItemQuestion(id: string, payload: TopicCand
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (/abort|aborted|signal is aborted/i.test(detail)) {
-      throw new Error('大周这次追问超时了。可以直接再问一次，或者把问题问得更具体一点。');
+      throw new Error('大周这次追问超过 4 分钟仍未返回。可以稍后再问一次，或把问题收窄到一个判断点。');
     }
     throw error;
   } finally {

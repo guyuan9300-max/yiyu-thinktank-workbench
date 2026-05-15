@@ -4,7 +4,7 @@ import {
   GitBranch, Award, Layers,
   AlertCircle, ClipboardList, Check, Folder, Target, FolderTree,
   Activity, Bot, PenLine, Calendar,
-  ArrowLeft, AlertTriangle, ChevronRight, XCircle,
+  ArrowLeft, AlertTriangle, ChevronRight, X, XCircle,
   Users, Flag, AlertOctagon, HelpCircle, CornerDownRight,
   RefreshCw, Star, Trash2, ChevronDown, ExternalLink
 } from 'lucide-react';
@@ -35,6 +35,7 @@ import {
   type DigitalAssetMetric,
   type DigitalAssetNarrative,
   type DigitalAssetPulse,
+  type DuplicateDocumentItem,
   type OrganizationDnaV2Item,
   type OrganizationDnaV2Kind,
   type OrganizationDnaV2Snapshot,
